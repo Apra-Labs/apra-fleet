@@ -2,6 +2,22 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+
+// Append short git hash to version (e.g. 1.1.0.a1b2c3)
+let serverVersion = pkg.version;
+try {
+  const gitHash = execSync('git rev-parse --short=6 HEAD', { encoding: 'utf-8', timeout: 5000 }).trim();
+  if (gitHash) serverVersion = `${pkg.version}.${gitHash}`;
+} catch {
+  // Not in a git repo or git not available — use plain version
+}
 
 // Tool schemas and handlers
 import { registerAgentSchema, registerAgent } from './tools/register-agent.js';
@@ -21,7 +37,7 @@ import { closeAllConnections } from './services/ssh.js';
 
 const server = new McpServer({
   name: 'claude-code-fleet',
-  version: '1.0.0',
+  version: serverVersion,
 });
 
 // --- Core Agent Management ---

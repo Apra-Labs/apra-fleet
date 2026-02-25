@@ -3,7 +3,10 @@
     "claude-code-fleet": {
       "command": "node",
       "args": ["dist/index.js"],
-      "cwd": "."
+      "cwd": ".",
+      "env": {
+        "NODE_ENV": "development"
+      }
     }
   }
 }

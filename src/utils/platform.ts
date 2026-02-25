@@ -144,5 +144,5 @@ export function getUnsetEnvCommand(os: RemoteOS, name: string): string[] {
 }
 
 export function getUpdateClaudeCommand(os: RemoteOS): string {
-  return 'claude update || npm update -g @anthropic-ai/claude-code';
+  return 'npm install -g @anthropic-ai/claude-code@latest';
 }
