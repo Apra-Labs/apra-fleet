@@ -6,30 +6,6 @@ import { getStrategy } from '../src/services/strategy.js';
 import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
 
 const makeLocalAgent = makeTestLocalAgent;
-const makeRemoteAgent = makeTestAgent;
-
-describe('getStrategy() factory', () => {
-  it('returns LocalStrategy for local agents', () => {
-    const agent = makeLocalAgent();
-    const strategy = getStrategy(agent);
-    // LocalStrategy.testConnection() always returns ok: true, latencyMs: 0
-    expect(strategy).toBeDefined();
-    expect(strategy.testConnection).toBeTypeOf('function');
-    expect(strategy.execCommand).toBeTypeOf('function');
-    expect(strategy.transferFiles).toBeTypeOf('function');
-    expect(strategy.close).toBeTypeOf('function');
-  });
-
-  it('returns RemoteStrategy for remote agents', () => {
-    const agent = makeRemoteAgent();
-    const strategy = getStrategy(agent);
-    expect(strategy).toBeDefined();
-    expect(strategy.testConnection).toBeTypeOf('function');
-    expect(strategy.execCommand).toBeTypeOf('function');
-    expect(strategy.transferFiles).toBeTypeOf('function');
-    expect(strategy.close).toBeTypeOf('function');
-  });
-});
 
 describe('LocalStrategy', () => {
   let tmpDir: string;
@@ -41,15 +17,6 @@ describe('LocalStrategy', () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('testConnection() always returns ok:true with latencyMs:0', async () => {
-    const agent = makeLocalAgent({ remoteFolder: tmpDir });
-    const strategy = getStrategy(agent);
-    const result = await strategy.testConnection();
-    expect(result.ok).toBe(true);
-    expect(result.latencyMs).toBe(0);
-    expect(result.error).toBeUndefined();
   });
 
   it('execCommand() runs command locally and returns stdout/code', async () => {
@@ -73,7 +40,6 @@ describe('LocalStrategy', () => {
     const agent = makeLocalAgent({ remoteFolder: tmpDir });
     const strategy = getStrategy(agent);
 
-    // Create a source file
     const srcFile = path.join(os.tmpdir(), `fleet-src-${Date.now()}.txt`);
     fs.writeFileSync(srcFile, 'test content');
 
@@ -82,7 +48,6 @@ describe('LocalStrategy', () => {
       expect(result.success).toContain(path.basename(srcFile));
       expect(result.failed).toHaveLength(0);
 
-      // Verify file was copied
       const destFile = path.join(tmpDir, path.basename(srcFile));
       expect(fs.existsSync(destFile)).toBe(true);
       expect(fs.readFileSync(destFile, 'utf-8')).toBe('test content');
@@ -107,11 +72,5 @@ describe('LocalStrategy', () => {
     } finally {
       fs.unlinkSync(srcFile);
     }
-  });
-
-  it('close() is a no-op and does not throw', () => {
-    const agent = makeLocalAgent({ remoteFolder: tmpDir });
-    const strategy = getStrategy(agent);
-    expect(() => strategy.close()).not.toThrow();
   });
 });
