@@ -93,9 +93,10 @@ Unregisters a fleet agent and cleans up its connection.
 **What it does:**
 
 1. Looks up the agent by ID.
-2. Calls `strategy.close()` — for remote agents, this closes the pooled SSH connection. For local agents, this is a no-op.
-3. Removes the agent from the registry file.
+2. **Best-effort OAuth token cleanup** — tests connectivity to the agent, and if reachable, runs OS-specific commands to remove `CLAUDE_CODE_OAUTH_TOKEN` from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). Uses `sed` to delete matching lines from profile files, then `unset` in the current shell. If the agent is offline, a warning is returned but the removal still proceeds.
+3. Calls `strategy.close()` — for remote agents, this closes the pooled SSH connection. For local agents, this is a no-op.
+4. Removes the agent from the registry file.
 
-**Output:** Confirmation message with agent name and ID.
+**Output:** Confirmation message with agent name and ID. Includes warnings if the token could not be cleared (e.g. agent was offline).
 
 **Note:** This does NOT delete the working folder on the target machine, nor does it remove any deployed SSH keys from the remote's `authorized_keys` file. Those remain as-is.

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
-import { getProcessCheckCommand } from '../utils/platform.js';
+import { getFleetProcessCheckCommand } from '../utils/platform.js';
 
 export const fleetStatusSchema = z.object({});
 
@@ -51,11 +51,21 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (conn.ok) {
       row.status = 'online';
 
-      // Check if Claude is running
+      // Check if a fleet-related Claude process is running in this agent's folder
       try {
         const os = (agent.os ?? 'linux') as 'linux' | 'macos' | 'windows';
-        const busyCheck = await strategy.execCommand(getProcessCheckCommand(os), 10000);
-        row.busy = busyCheck.stdout.trim().toLowerCase().includes('busy') ? 'BUSY' : 'idle';
+        const busyCheck = await strategy.execCommand(
+          getFleetProcessCheckCommand(os, agent.remoteFolder, agent.sessionId),
+          10000,
+        );
+        const output = busyCheck.stdout.trim().toLowerCase();
+        if (output.includes('fleet-busy')) {
+          row.busy = 'BUSY';
+        } else if (output.includes('other-busy')) {
+          row.busy = 'idle*';
+        } else {
+          row.busy = 'idle';
+        }
       } catch {
         row.busy = 'unknown';
       }
@@ -109,6 +119,10 @@ export async function fleetStatus(): Promise<string> {
 
   for (const row of rows) {
     table += `| ${pad(row.name, nameW)} | ${pad(row.host, hostW)} | ${pad(row.status, statusW)} | ${pad(row.busy, busyW)} | ${pad(row.session, sessW)} | ${pad(row.lastActivity, actW)} |\n`;
+  }
+
+  if (rows.some(r => r.busy === 'idle*')) {
+    table += `\n* idle* = Claude processes detected on the machine but none are servicing this fleet agent`;
   }
 
   return table;

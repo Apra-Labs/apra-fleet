@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getAgent } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
-import { getClaudeVersionCommand, getCpuLoadCommand, getMemoryCommand, getDiskCommand } from '../utils/platform.js';
+import { getClaudeVersionCommand, getCpuLoadCommand, getMemoryCommand, getDiskCommand, getFleetProcessCheckCommand } from '../utils/platform.js';
 
 export const agentDetailSchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to inspect'),
@@ -74,21 +74,21 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   report += `  Session ID: ${agent.sessionId ?? '(none)'}\n`;
   report += `  Last activity: ${agent.lastUsed ?? 'never'}\n`;
 
-  if (agent.sessionId) {
-    try {
-      const busyCmd = os === 'windows'
-        ? `tasklist /FI "IMAGENAME eq claude.exe" /NH`
-        : `pgrep -af "claude.*${agent.sessionId}" 2>/dev/null || echo "idle"`;
-      const busyResult = await strategy.execCommand(busyCmd, 10000);
-      const isBusy = os === 'windows'
-        ? busyResult.stdout.toLowerCase().includes('claude')
-        : !busyResult.stdout.trim().includes('idle');
-      report += `  Status: ${isBusy ? 'BUSY (Claude is running)' : 'idle'}\n`;
-    } catch {
-      report += `  Status: unknown\n`;
+  try {
+    const busyCheck = await strategy.execCommand(
+      getFleetProcessCheckCommand(os as any, agent.remoteFolder, agent.sessionId),
+      10000,
+    );
+    const output = busyCheck.stdout.trim().toLowerCase();
+    if (output.includes('fleet-busy')) {
+      report += `  Status: BUSY (fleet Claude process running in ${agent.remoteFolder})\n`;
+    } else if (output.includes('other-busy')) {
+      report += `  Status: idle (Claude processes found but none related to this agent)\n`;
+    } else {
+      report += `  Status: idle\n`;
     }
-  } else {
-    report += `  Status: no active session\n`;
+  } catch {
+    report += `  Status: unknown\n`;
   }
 
   // -- System Resources --

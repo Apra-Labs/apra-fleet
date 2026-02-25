@@ -95,19 +95,19 @@ Two agents cannot share the same working directory on the same device. For remot
 
 ## The Twelve Tools
 
-The tools break into natural groups:
+The tools break into natural groups. Each group has detailed documentation:
 
-**Lifecycle** — `register_agent`, `list_agents`, `update_agent`, `remove_agent`
-Manage the fleet roster. Registration validates connectivity, detects the OS, and checks that Claude CLI is available.
+**[Lifecycle](tools-lifecycle.md)** — `register_agent`, `list_agents`, `update_agent`, `remove_agent`
+Manage the fleet roster. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of provisioned OAuth tokens on the agent.
 
-**Work** — `send_files`, `execute_prompt`, `reset_session`
+**[Work](tools-work.md)** — `send_files`, `execute_prompt`, `reset_session`
 The core workflow. Push files to an agent, run Claude prompts against them, manage conversation sessions.
 
-**Infrastructure** — `provision_auth`, `setup_ssh_key`, `update_claude`
+**[Infrastructure](tools-infrastructure.md)** — `provision_auth`, `setup_ssh_key`, `update_claude`
 One-time setup and maintenance. Provision OAuth tokens, migrate from password to key auth, update the Claude CLI remotely.
 
-**Observability** — `fleet_status`, `agent_detail`
-Two-layer monitoring. `fleet_status` gives a quick summary table across all agents (online/offline, busy/idle). `agent_detail` drills into one agent with connectivity, CLI version, session state, and system resource metrics.
+**[Observability](tools-observability.md)** — `fleet_status`, `agent_detail`
+Two-layer monitoring. `fleet_status` gives a quick summary table across all agents with fleet-aware busy detection (distinguishes between Claude processes serving this agent vs unrelated Claude activity). `agent_detail` drills into one agent with connectivity, CLI version, session state, and system resource metrics.
 
 ## Cross-Platform Support
 

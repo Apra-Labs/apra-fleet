@@ -46,14 +46,40 @@ export function getDiskCommand(os: RemoteOS, folder: string): string {
   }
 }
 
-export function getProcessCheckCommand(os: RemoteOS): string {
-  switch (os) {
-    case 'linux':
-    case 'macos':
-      return 'pgrep -f "claude" > /dev/null 2>&1 && echo "busy" || echo "idle"';
-    case 'windows':
-      return 'tasklist /FI "IMAGENAME eq claude.exe" /NH 2>nul | findstr /i "claude" >nul && echo busy || echo idle';
+/**
+ * Generate a command that checks whether a Claude process is running
+ * for a specific fleet agent. Returns multi-line output:
+ *   - "fleet-busy" if a Claude process is found working in the agent's folder or session
+ *   - "other-busy" if Claude processes exist but none match the agent's folder/session
+ *   - "idle" if no Claude processes are running at all
+ */
+export function getFleetProcessCheckCommand(os: RemoteOS, folder: string, sessionId?: string): string {
+  if (os === 'windows') {
+    // Windows: check tasklist for claude.exe, then use wmic to inspect command lines
+    // wmic gives us the full command line so we can match the folder
+    const escapedFolder = folder.replace(/\\/g, '\\\\');
+    const folderMatch = `findstr /i /c:"${escapedFolder}"`;
+    const sessionMatch = sessionId ? ` | findstr /c:"${sessionId}"` : '';
+    return [
+      `wmic process where "name='claude.exe'" get CommandLine /format:list 2>nul`,
+      `| ${folderMatch}${sessionMatch} >nul 2>nul`,
+      `&& echo fleet-busy`,
+      `|| (tasklist /FI "IMAGENAME eq claude.exe" /NH 2>nul | findstr /i "claude" >nul && echo other-busy || echo idle)`,
+    ].join(' ');
   }
+
+  // Unix (Linux/macOS): use ps to get full command lines of claude processes,
+  // then grep for the agent's folder or session ID
+  const folderPattern = folder.replace(/"/g, '\\"');
+  const fleetMatch = sessionId
+    ? `grep -E "(${folderPattern}|${sessionId})"`
+    : `grep "${folderPattern}"`;
+
+  return `CLAUDE_PIDS=$(pgrep -f "claude" 2>/dev/null); `
+    + `if [ -z "$CLAUDE_PIDS" ]; then echo "idle"; `
+    + `else CMDLINES=$(ps -o args= -p $CLAUDE_PIDS 2>/dev/null); `
+    + `if echo "$CMDLINES" | ${fleetMatch} > /dev/null 2>&1; then echo "fleet-busy"; `
+    + `else echo "other-busy"; fi; fi`;
 }
 
 export function getClaudeVersionCommand(os: RemoteOS): string {
@@ -92,6 +118,26 @@ export function getSetEnvCommand(os: RemoteOS, name: string, value: string): str
       ];
     case 'windows':
       return [`setx ${name} "${value}"`];
+  }
+}
+
+export function getUnsetEnvCommand(os: RemoteOS, name: string): string[] {
+  switch (os) {
+    case 'linux':
+      return [
+        `sed -i '/export ${name}=/d' ~/.bashrc 2>/dev/null || true`,
+        `sed -i '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
+        `unset ${name}`,
+      ];
+    case 'macos':
+      return [
+        `sed -i '' '/export ${name}=/d' ~/.bashrc 2>/dev/null || true`,
+        `sed -i '' '/export ${name}=/d' ~/.zshrc 2>/dev/null || true`,
+        `sed -i '' '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
+        `unset ${name}`,
+      ];
+    case 'windows':
+      return [`reg delete "HKCU\\Environment" /v ${name} /f 2>nul & setx ${name} ""`];
   }
 }
 

@@ -5,11 +5,12 @@ import {
   getCpuLoadCommand,
   getMemoryCommand,
   getDiskCommand,
-  getProcessCheckCommand,
+  getFleetProcessCheckCommand,
   getClaudeCheckCommand,
   getScpCheckCommand,
   getMkdirCommand,
   getSetEnvCommand,
+  getUnsetEnvCommand,
 } from '../src/utils/platform.js';
 
 describe('detectOS', () => {
@@ -67,10 +68,41 @@ describe('platform command generators', () => {
     expect(getDiskCommand('windows', 'C:\\work')).toContain("caption='C:'");
   });
 
-  it('generates process check commands', () => {
-    expect(getProcessCheckCommand('linux')).toContain('pgrep');
-    expect(getProcessCheckCommand('macos')).toContain('pgrep');
-    expect(getProcessCheckCommand('windows')).toContain('tasklist');
+  it('generates fleet-aware process check commands for Unix', () => {
+    const cmd = getFleetProcessCheckCommand('linux', '/home/user/project');
+    expect(cmd).toContain('pgrep');
+    expect(cmd).toContain('/home/user/project');
+    expect(cmd).toContain('fleet-busy');
+    expect(cmd).toContain('other-busy');
+    expect(cmd).toContain('idle');
+
+    // macOS same logic
+    const macCmd = getFleetProcessCheckCommand('macos', '/opt/app');
+    expect(macCmd).toContain('pgrep');
+    expect(macCmd).toContain('/opt/app');
+  });
+
+  it('generates fleet-aware process check commands for Windows', () => {
+    const cmd = getFleetProcessCheckCommand('windows', 'C:\\Users\\dev\\project');
+    expect(cmd).toContain('wmic process');
+    expect(cmd).toContain('fleet-busy');
+    expect(cmd).toContain('other-busy');
+    expect(cmd).toContain('idle');
+  });
+
+  it('includes session ID in fleet process check when provided', () => {
+    const cmd = getFleetProcessCheckCommand('linux', '/home/user/project', 'sess-abc-123');
+    expect(cmd).toContain('sess-abc-123');
+    expect(cmd).toContain('/home/user/project');
+
+    const winCmd = getFleetProcessCheckCommand('windows', 'C:\\work', 'sess-xyz');
+    expect(winCmd).toContain('sess-xyz');
+  });
+
+  it('works without session ID in fleet process check', () => {
+    const cmd = getFleetProcessCheckCommand('linux', '/srv/app');
+    expect(cmd).toContain('/srv/app');
+    expect(cmd).not.toContain('undefined');
   });
 
   it('generates claude check commands', () => {
@@ -102,5 +134,26 @@ describe('platform command generators', () => {
     const winCmds = getSetEnvCommand('windows', 'MY_VAR', 'value');
     expect(winCmds.length).toBe(1);
     expect(winCmds[0]).toContain('setx');
+  });
+
+  it('generates unsetenv commands for each OS', () => {
+    const linuxCmds = getUnsetEnvCommand('linux', 'MY_VAR');
+    expect(linuxCmds.length).toBe(3);
+    expect(linuxCmds[0]).toContain('sed');
+    expect(linuxCmds[0]).toContain('.bashrc');
+    expect(linuxCmds[1]).toContain('.profile');
+    expect(linuxCmds[2]).toContain('unset MY_VAR');
+
+    const macosCmds = getUnsetEnvCommand('macos', 'MY_VAR');
+    expect(macosCmds.length).toBe(4);
+    expect(macosCmds.some(c => c.includes('.zshrc'))).toBe(true);
+    expect(macosCmds.some(c => c.includes('.bashrc'))).toBe(true);
+    expect(macosCmds.some(c => c.includes('.profile'))).toBe(true);
+    expect(macosCmds[3]).toContain('unset MY_VAR');
+
+    const winCmds = getUnsetEnvCommand('windows', 'MY_VAR');
+    expect(winCmds.length).toBe(1);
+    expect(winCmds[0]).toContain('reg delete');
+    expect(winCmds[0]).toContain('MY_VAR');
   });
 });
