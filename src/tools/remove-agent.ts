@@ -19,24 +19,28 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
   const strategy = getStrategy(agent);
   const warnings: string[] = [];
 
-  // Best-effort: clear the OAuth token from the agent before removing
+  // Best-effort: clear auth credentials from the agent before removing
   try {
     const conn = await strategy.testConnection();
     if (conn.ok) {
       const os = getAgentOS(agent);
-      const commands = getUnsetEnvCommand(os, 'CLAUDE_CODE_OAUTH_TOKEN');
+
+      // Remove credentials file
+      const rmCredCmd = os === 'windows'
+        ? 'del "%USERPROFILE%\\.claude\\.credentials.json" 2>nul'
+        : 'rm -f ~/.claude/.credentials.json';
+      await strategy.execCommand(rmCredCmd, 10000).catch(() => {});
+
+      // Remove ANTHROPIC_API_KEY from shell profiles
+      const commands = getUnsetEnvCommand(os, 'ANTHROPIC_API_KEY');
       for (const cmd of commands) {
-        try {
-          await strategy.execCommand(cmd, 10000);
-        } catch {
-          // Individual command failures are expected (e.g. file doesn't exist)
-        }
+        await strategy.execCommand(cmd, 10000).catch(() => {});
       }
     } else {
-      warnings.push('Agent was offline — could not clear OAuth token from shell profiles');
+      warnings.push('Agent was offline — could not clear auth credentials');
     }
   } catch {
-    warnings.push('Could not connect to agent — OAuth token may still be present in shell profiles');
+    warnings.push('Could not connect to agent — auth credentials may still be present');
   }
 
   strategy.close();

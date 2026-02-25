@@ -85,8 +85,13 @@ export function getFleetProcessCheckCommand(os: RemoteOS, folder: string, sessio
 // Native Claude install lives in ~/.local/bin — non-interactive SSH sessions may not have it in PATH
 const UNIX_CLAUDE_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
 
+/** Build a claude CLI command with proper PATH for non-interactive SSH sessions */
+export function getClaudeCommand(os: RemoteOS, args: string): string {
+  return os === 'windows' ? `claude ${args}` : `${UNIX_CLAUDE_PATH}claude ${args}`;
+}
+
 export function getClaudeVersionCommand(os: RemoteOS): string {
-  return os === 'windows' ? 'claude --version 2>&1' : `${UNIX_CLAUDE_PATH}claude --version 2>&1`;
+  return getClaudeCommand(os, '--version 2>&1');
 }
 
 export function getClaudeCheckCommand(os: RemoteOS): string {
@@ -147,7 +152,7 @@ export function getUnsetEnvCommand(os: RemoteOS, name: string): string[] {
 }
 
 export function getUpdateClaudeCommand(os: RemoteOS): string {
-  return os === 'windows' ? 'claude update' : `${UNIX_CLAUDE_PATH}claude update`;
+  return getClaudeCommand(os, 'update');
 }
 
 export function getInstallClaudeCommand(os: RemoteOS): string {

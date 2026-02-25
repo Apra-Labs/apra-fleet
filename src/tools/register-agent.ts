@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
-import { detectOS, getClaudeVersionCommand, getScpCheckCommand, getMkdirCommand } from '../utils/platform.js';
+import { detectOS, getClaudeVersionCommand, getClaudeCommand, getScpCheckCommand, getMkdirCommand } from '../utils/platform.js';
 import { addAgent, hasDuplicateFolder } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 
@@ -95,7 +95,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   // Step 4: Quick Claude auth test (remote only — local agents inherit the current session's auth)
   if (!isLocal) {
     try {
-      const authCheck = await strategy.execCommand('claude -p "hello" --output-format json --max-turns 1', 60000);
+      const authCheck = await strategy.execCommand(getClaudeCommand(detectedOS, '-p "hello" --output-format json --max-turns 1'), 60000);
       if (authCheck.code !== 0) {
         warnings.push('Claude CLI auth check failed — you may need to run provision_auth');
       }

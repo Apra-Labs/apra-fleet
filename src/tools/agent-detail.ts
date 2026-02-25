@@ -54,19 +54,32 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
     report += `  Version: unknown (could not run claude --version)\n`;
   }
 
-  // Check auth status
+  // Check auth status — look for credentials file, OAuth token, and API key
+  const authMethods: string[] = [];
   try {
-    let tokenCheckCmd: string;
-    if (os === 'windows') {
-      tokenCheckCmd = 'echo %CLAUDE_CODE_OAUTH_TOKEN:~0,10%';
-    } else {
-      tokenCheckCmd = 'echo "${CLAUDE_CODE_OAUTH_TOKEN:0:10}"';
+    const credCheckCmd = os === 'windows'
+      ? 'if exist "%USERPROFILE%\\.claude\\.credentials.json" (echo found) else (echo missing)'
+      : 'test -f ~/.claude/.credentials.json && echo found || echo missing';
+    const credResult = await strategy.execCommand(credCheckCmd, 10000);
+    if (credResult.stdout.trim() === 'found') {
+      authMethods.push('OAuth credentials file');
     }
-    const tokenResult = await strategy.execCommand(tokenCheckCmd, 10000);
-    const hasToken = tokenResult.stdout.trim().length > 5;
-    report += `  Auth: ${hasToken ? 'OAuth token present' : 'No OAuth token detected'}\n`;
-  } catch {
-    report += `  Auth: unknown\n`;
+  } catch { /* ignore */ }
+
+  try {
+    const apiKeyCheckCmd = os === 'windows'
+      ? 'echo %ANTHROPIC_API_KEY:~0,10%'
+      : 'bash -l -c \'echo "${ANTHROPIC_API_KEY:0:10}"\'';
+    const apiKeyResult = await strategy.execCommand(apiKeyCheckCmd, 10000);
+    if (apiKeyResult.stdout.trim().length > 5) {
+      authMethods.push('API key (env)');
+    }
+  } catch { /* ignore */ }
+
+  if (authMethods.length > 0) {
+    report += `  Auth: ${authMethods.join(', ')}\n`;
+  } else {
+    report += `  Auth: No authentication detected\n`;
   }
 
   // -- Session --

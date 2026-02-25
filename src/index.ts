@@ -128,7 +128,7 @@ server.tool(
 
 server.tool(
   'provision_auth',
-  'Set CLAUDE_CODE_OAUTH_TOKEN on a remote agent for Claude authentication.',
+  'Authenticate a fleet agent. Default: copies this machine\'s OAuth credentials to the agent. Override: pass api_key to deploy an Anthropic API key instead.',
   provisionAuthSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await provisionAuth(input as any) }],

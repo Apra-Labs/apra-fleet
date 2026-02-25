@@ -8,8 +8,6 @@ import {
   updateAgent,
   removeAgent,
   resetSession,
-  setFleetToken,
-  getFleetToken,
   hasDuplicateFolder,
 } from '../src/services/registry.js';
 import { makeTestAgent, REGISTRY_PATH, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
@@ -87,34 +85,6 @@ describe('registry - sessions', () => {
     expect(resetSession()).toBe(2);
     expect(getAgent('a1')!.sessionId).toBeUndefined();
     expect(getAgent('a2')!.sessionId).toBeUndefined();
-  });
-});
-
-describe('registry - fleet token', () => {
-  it('stores and retrieves fleet token (encrypted at rest)', () => {
-    setFleetToken('my-fleet-token-123');
-    expect(getFleetToken()).toBe('my-fleet-token-123');
-
-    const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
-    expect(raw).not.toContain('my-fleet-token-123');
-    expect(raw).toContain('encryptedFleetToken');
-  });
-
-  it('overwrites previous fleet token', () => {
-    setFleetToken('token-1');
-    setFleetToken('token-2');
-    expect(getFleetToken()).toBe('token-2');
-  });
-
-  it('migrates legacy plaintext fleetToken on read', () => {
-    const registry = { version: '1.0', agents: [], fleetToken: 'legacy-plain-token' };
-    fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
-
-    expect(getFleetToken()).toBe('legacy-plain-token');
-
-    const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
-    expect(raw).not.toContain('"fleetToken"');
-    expect(raw).toContain('encryptedFleetToken');
   });
 });
 

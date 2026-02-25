@@ -1,29 +1,109 @@
 import { z } from 'zod';
-import { setFleetToken } from '../services/registry.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { getStrategy } from '../services/strategy.js';
-import { getSetEnvCommand } from '../utils/platform.js';
+import { getSetEnvCommand, getClaudeCommand } from '../utils/platform.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
+import type { RemoteOS } from '../utils/platform.js';
 
 export const provisionAuthSchema = z.object({
   agent_id: z.string().describe('The UUID of the target agent'),
-  fleet_token: z.string().describe('The CLAUDE_CODE_OAUTH_TOKEN to provision on the remote agent'),
+  api_key: z.string().optional().describe(
+    'Anthropic API key override. If provided, deploys this key as ANTHROPIC_API_KEY instead of running OAuth login. Use for pay-per-use billing without a Claude subscription.'
+  ),
 });
 
 export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
 
-export async function provisionAuth(input: ProvisionAuthInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
-  if (typeof agentOrError === 'string') return agentOrError;
-  const agent = agentOrError as Agent;
-
-  const os = getAgentOS(agent);
+/**
+ * Real auth check via `claude -p "hello"` — makes an actual API call.
+ * This is the only reliable validation for both OAuth and API key auth,
+ * since `claude auth status` doesn't actually validate API keys.
+ */
+async function verifyWithPrompt(agent: Agent, os: RemoteOS, envPrefix?: string): Promise<boolean> {
   const strategy = getStrategy(agent);
-  const commands = getSetEnvCommand(os, 'CLAUDE_CODE_OAUTH_TOKEN', input.fleet_token);
+  const prefix = envPrefix ? `${envPrefix} ` : '';
+  const escapedFolder = escapeDoubleQuoted(agent.remoteFolder);
+  const cmd = `cd "${escapedFolder}" && ${prefix}${getClaudeCommand(os, '-p "hello" --output-format json --max-turns 1')}`;
+  try {
+    const result = await strategy.execCommand(cmd, 60000);
+    return result.code === 0;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Flow A — Copy master's OAuth credentials (default)
+// ---------------------------------------------------------------------------
+
+/** Read the master machine's credentials file */
+function readMasterCredentials(): string | null {
+  const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
+  try {
+    if (fs.existsSync(credPath)) {
+      return fs.readFileSync(credPath, 'utf-8').trim();
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function provisionMasterToken(agent: Agent): Promise<string> {
+  const agentOS = getAgentOS(agent);
+  const strategy = getStrategy(agent);
+
+  const creds = readMasterCredentials();
+  if (!creds) {
+    return `❌ No OAuth credentials found on this machine (~/.claude/.credentials.json).\n`
+      + `  Run "claude auth login" locally first, or use the api_key parameter instead.`;
+  }
+
+  // Ensure ~/.claude exists on remote
+  const mkdirCmd = agentOS === 'windows'
+    ? 'if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"'
+    : 'mkdir -p ~/.claude';
+  await strategy.execCommand(mkdirCmd, 10000).catch(() => {});
+
+  // Write credentials file to remote
+  const escaped = escapeDoubleQuoted(creds);
+  const writeCmd = agentOS === 'windows'
+    ? `powershell -Command "Set-Content -Path \\"$env:USERPROFILE\\.claude\\.credentials.json\\" -Value '${escaped.replace(/'/g, "''")}' -NoNewline"`
+    : `printf '%s' "${escaped}" > ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json`;
+
+  try {
+    const result = await strategy.execCommand(writeCmd, 10000);
+    if (result.code !== 0 && result.stderr) {
+      return `❌ Failed to write credentials on "${agent.friendlyName}": ${result.stderr}`;
+    }
+  } catch (err: any) {
+    return `❌ Failed to write credentials on "${agent.friendlyName}": ${err.message}`;
+  }
+
+  // Verify auth with a real API call
+  const authWorks = await verifyWithPrompt(agent, agentOS);
+  touchAgent(agent.id);
+
+  if (authWorks) {
+    return `✅ OAuth credentials deployed to "${agent.friendlyName}"\n`
+      + `  Auth: verified with a successful Claude API call\n`;
+  }
+  return `⚠️ Credentials deployed to "${agent.friendlyName}" but could not verify auth.\n`
+    + `  The credentials file was written — try running a prompt to confirm.\n`;
+}
+
+// ---------------------------------------------------------------------------
+// Flow B — API Key Override
+// ---------------------------------------------------------------------------
+
+async function provisionApiKey(agent: Agent, apiKey: string): Promise<string> {
+  const agentOS = getAgentOS(agent);
+  const strategy = getStrategy(agent);
+  const commands = getSetEnvCommand(agentOS, 'ANTHROPIC_API_KEY', apiKey);
 
   const errors: string[] = [];
-
   for (const cmd of commands) {
     try {
       const result = await strategy.execCommand(cmd, 15000);
@@ -35,56 +115,62 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     }
   }
 
-  // Verify the token was set
+  // Verify the key was persisted in a new shell
   let verified = false;
   try {
-    let verifyCmd: string;
-    if (os === 'windows') {
-      verifyCmd = 'echo %CLAUDE_CODE_OAUTH_TOKEN%';
-    } else {
-      verifyCmd = 'echo $CLAUDE_CODE_OAUTH_TOKEN';
-    }
-    // Need to start a new login shell to pick up the changes
-    const shellVerify = os === 'windows'
-      ? verifyCmd
-      : `bash -l -c '${verifyCmd}'`;
-    const verifyResult = await strategy.execCommand(shellVerify, 10000);
-    verified = verifyResult.stdout.trim().length > 10;
+    const verifyCmd = agentOS === 'windows'
+      ? 'echo %ANTHROPIC_API_KEY:~0,10%'
+      : `bash -l -c 'echo "\${ANTHROPIC_API_KEY:0:10}"'`;
+    const verifyResult = await strategy.execCommand(verifyCmd, 10000);
+    verified = verifyResult.stdout.trim().length > 5;
   } catch {
-    // Verification failed but token may still be set for new sessions
+    // May still work after re-login
   }
 
-  // Quick Claude auth test
-  let authWorks = false;
-  try {
-    const escapedFolder = escapeDoubleQuoted(agent.remoteFolder);
-    const escapedToken = escapeDoubleQuoted(input.fleet_token);
-    const authTest = await strategy.execCommand(
-      `cd "${escapedFolder}" && CLAUDE_CODE_OAUTH_TOKEN="${escapedToken}" claude -p "hello" --output-format json --max-turns 1`,
-      60000
-    );
-    authWorks = authTest.code === 0;
-  } catch {
-    // Auth test failed
-  }
+  // Verify with a real API call — auth status doesn't validate API keys
+  const escapedKey = escapeDoubleQuoted(apiKey);
+  const envPrefix = agentOS === 'windows'
+    ? `set "ANTHROPIC_API_KEY=${escapedKey}" &&`
+    : `ANTHROPIC_API_KEY="${escapedKey}"`;
+  const authWorks = await verifyWithPrompt(agent, agentOS, envPrefix);
 
-  // Store fleet token
-  setFleetToken(input.fleet_token);
   touchAgent(agent.id);
 
   let result = '';
   if (errors.length === 0) {
-    result += `✅ OAuth token provisioned on "${agent.friendlyName}"\n`;
+    result += `✅ API key provisioned on "${agent.friendlyName}"\n`;
   } else {
-    result += `⚠️ Token provisioned with some issues on "${agent.friendlyName}":\n`;
+    result += `⚠️ API key provisioned with some issues on "${agent.friendlyName}":\n`;
     for (const e of errors) {
       result += `  - ${e}\n`;
     }
   }
 
-  result += `\n  Environment: CLAUDE_CODE_OAUTH_TOKEN set in shell profiles\n`;
-  result += `  Verification: ${verified ? 'Token visible in new shell' : 'Token will be available after re-login'}\n`;
+  result += `\n  Environment: ANTHROPIC_API_KEY set in shell profiles\n`;
+  result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}\n`;
   result += `  Auth test: ${authWorks ? 'Claude CLI authenticated successfully' : 'Could not verify — may need to re-login'}\n`;
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+export async function provisionAuth(input: ProvisionAuthInput): Promise<string> {
+  const agentOrError = getAgentOrFail(input.agent_id);
+  if (typeof agentOrError === 'string') return agentOrError;
+  const agent = agentOrError as Agent;
+
+  // Verify agent is online
+  const strategy = getStrategy(agent);
+  const conn = await strategy.testConnection();
+  if (!conn.ok) {
+    return `❌ Agent "${agent.friendlyName}" is offline: ${conn.error}`;
+  }
+
+  if (input.api_key) {
+    return provisionApiKey(agent, input.api_key);
+  }
+  return provisionMasterToken(agent);
 }

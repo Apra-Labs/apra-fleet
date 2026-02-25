@@ -24,8 +24,6 @@ export interface TransferResult {
 export interface FleetRegistry {
   version: string;
   agents: Agent[];
-  fleetToken?: string;              // Legacy plaintext (migrated on read)
-  encryptedFleetToken?: string;     // Encrypted fleet token
 }
 
 export interface SSHExecResult {

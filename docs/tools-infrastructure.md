@@ -4,33 +4,51 @@ One-time setup and maintenance tools — provisioning authentication, migrating 
 
 ## provision_auth
 
-Sets the `CLAUDE_CODE_OAUTH_TOKEN` environment variable on an agent so Claude CLI can authenticate.
+Authenticates a fleet agent for Claude CLI usage. Two flows: copy master's OAuth credentials (default) or deploy an API key.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `agent_id` | string | yes | UUID of the target agent |
-| `fleet_token` | string | yes | The OAuth token value to provision |
+| `api_key` | string | no | Anthropic API key override. If provided, deploys this key instead of copying OAuth credentials |
 
-**What it does:**
+### Flow A — Copy Master Credentials (default, no `api_key`)
 
-1. Looks up the agent by ID.
-2. **Writes the token to shell profiles** using OS-specific commands:
-   - Linux: appends `export CLAUDE_CODE_OAUTH_TOKEN="..."` to `~/.bashrc` and `~/.profile`, plus sets it in the current shell.
-   - macOS: same as Linux, plus `~/.zshrc`.
-   - Windows: runs `setx CLAUDE_CODE_OAUTH_TOKEN "..."`.
-3. **Verifies the token** — starts a new login shell and checks if the environment variable is visible.
-4. **Runs a quick auth test** — executes `claude -p "hello"` with the token explicitly set to confirm Claude can authenticate.
-5. **Stores the fleet token** in the registry (separate from per-agent data) for reference.
-6. Updates the agent's `lastUsed` timestamp.
+Used when the user has a Max subscription. Copies `~/.claude/.credentials.json` from this machine to the remote agent.
 
-**Output:** Reports whether the token was provisioned successfully, whether it's visible in a new shell, and whether the Claude auth test passed.
+1. Looks up the agent by ID, verifies it's online.
+2. Reads `~/.claude/.credentials.json` from the master machine.
+3. Creates `~/.claude/` on the remote agent if needed.
+4. Writes the credentials file to the remote agent (with `chmod 600` on Unix).
+5. Verifies with `claude -p "hello" --max-turns 1` to confirm a real API call succeeds.
+
+**Output:** Reports whether credentials were deployed and whether the auth test passed.
+
+**Fails if:** No credentials file exists on the master machine — prompts the user to run `claude auth login` locally first or use `api_key` instead.
+
+### Flow B — API Key Override (`api_key` provided)
+
+Used for pay-per-use billing without a Claude subscription.
+
+1. Looks up the agent by ID, verifies it's online.
+2. Deploys `ANTHROPIC_API_KEY` to the remote agent's shell profiles:
+   - Linux: `~/.bashrc` and `~/.profile`
+   - macOS: `~/.bashrc`, `~/.zshrc`, and `~/.profile`
+   - Windows: `setx ANTHROPIC_API_KEY "..."`
+3. Verifies the key is visible in a new shell.
+4. Runs `claude -p "hello" --max-turns 1` with the key passed inline to confirm auth works.
+5. Reports success.
+
+**Output:** Reports whether the API key was provisioned, visible in a new shell, and whether the auth test passed.
+
+### Future: Flow C — SSH Tunnel OAuth (backlog)
+
+For users who need per-agent OAuth without sharing credentials, a future flow will use SSH port forwarding to tunnel the `claude auth login` callback server to the user's local machine. This requires solving the `claude auth login` interactive callback flow over SSH.
 
 **Important notes:**
-- The token is written to shell profile files, so it persists across SSH sessions and reboots.
-- If verification fails, the token may still work after a re-login (the profile files were written, but the current shell session doesn't reflect them yet).
-- Works for both local and remote agents via the strategy pattern.
+- Both flows verify the agent is online before proceeding.
+- `agent_detail` detects all auth methods: credentials file, OAuth token env, and API key env.
 
 ## setup_ssh_key
 

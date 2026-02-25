@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Agent, FleetRegistry } from '../types.js';
-import { encryptPassword, decryptPassword } from '../utils/crypto.js';
+import { encryptPassword } from '../utils/crypto.js';
 
 const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
@@ -69,34 +69,6 @@ export function removeAgent(id: string): boolean {
   if (registry.agents.length === before) return false;
   saveRegistry(registry);
   return true;
-}
-
-export function setFleetToken(token: string): void {
-  const registry = loadRegistry();
-  registry.encryptedFleetToken = encryptPassword(token);
-  // Clean up legacy plaintext field if present
-  delete registry.fleetToken;
-  saveRegistry(registry);
-}
-
-export function getFleetToken(): string | undefined {
-  const registry = loadRegistry();
-  // Prefer encrypted token
-  if (registry.encryptedFleetToken) {
-    try {
-      return decryptPassword(registry.encryptedFleetToken);
-    } catch {
-      return undefined;
-    }
-  }
-  // Backward compat: migrate plaintext token
-  if (registry.fleetToken) {
-    const token = registry.fleetToken;
-    // Migrate to encrypted storage
-    setFleetToken(token);
-    return token;
-  }
-  return undefined;
 }
 
 export function getKeysDir(): string {

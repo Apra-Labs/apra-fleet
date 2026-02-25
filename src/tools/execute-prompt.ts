@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { escapeDoubleQuoted, sanitizeSessionId } from '../utils/shell-escape.js';
+import { getClaudeCommand } from '../utils/platform.js';
 import type { RemoteOS } from '../utils/platform.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
@@ -29,9 +30,9 @@ export function buildClaudeCommand(
   let cmd: string;
   if (os === 'windows') {
     const decodeCmd = `powershell -Command "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}'))"`;
-    cmd = `cd "${escapedFolder}" && for /f "delims=" %i in ('${decodeCmd}') do claude -p "%i" --output-format json --max-turns 50`;
+    cmd = `cd "${escapedFolder}" && for /f "delims=" %i in ('${decodeCmd}') do ${getClaudeCommand(os, '-p "%i" --output-format json --max-turns 50')}`;
   } else {
-    cmd = `cd "${escapedFolder}" && claude -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns 50`;
+    cmd = `cd "${escapedFolder}" && ${getClaudeCommand(os, `-p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns 50`)}`;
   }
 
   if (sessionId) {
