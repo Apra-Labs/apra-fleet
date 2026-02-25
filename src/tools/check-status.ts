@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getFleetProcessCheckCommand } from '../utils/platform.js';
+import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
 
 export const fleetStatusSchema = z.object({});
 
@@ -27,7 +28,7 @@ function formatTimeAgo(isoDate?: string): string {
 }
 
 async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promise<AgentStatusRow> {
-  const hostLabel = agent.agentType === 'local' ? '(local)' : `${agent.host}:${agent.port}`;
+  const hostLabel = formatAgentHost(agent);
 
   const row: AgentStatusRow = {
     name: agent.friendlyName,
@@ -53,7 +54,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
 
       // Check if a fleet-related Claude process is running in this agent's folder
       try {
-        const os = (agent.os ?? 'linux') as 'linux' | 'macos' | 'windows';
+        const os = getAgentOS(agent);
         const busyCheck = await strategy.execCommand(
           getFleetProcessCheckCommand(os, agent.remoteFolder, agent.sessionId),
           10000,
@@ -89,7 +90,7 @@ export async function fleetStatus(): Promise<string> {
 
   const rows: AgentStatusRow[] = results.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
-    const hostLabel = agents[i].agentType === 'local' ? '(local)' : `${agents[i].host}:${agents[i].port}`;
+    const hostLabel = formatAgentHost(agents[i]);
     return {
       name: agents[i].friendlyName,
       host: hostLabel,

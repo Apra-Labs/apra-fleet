@@ -1,4 +1,5 @@
 import type { Agent, SSHExecResult } from '../types.js';
+import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from './shell-escape.js';
 
 export type RemoteOS = 'windows' | 'macos' | 'linux';
 
@@ -38,9 +39,9 @@ export function getDiskCommand(os: RemoteOS, folder: string): string {
   switch (os) {
     case 'linux':
     case 'macos':
-      return `df -h "${folder}"`;
+      return `df -h "${escapeDoubleQuoted(folder)}"`;
     case 'windows': {
-      const drive = folder.charAt(0);
+      const drive = escapeWindowsArg(folder.charAt(0));
       return `wmic logicaldisk where "caption='${drive}:'" get size,freespace,caption /value`;
     }
   }
@@ -56,10 +57,9 @@ export function getDiskCommand(os: RemoteOS, folder: string): string {
 export function getFleetProcessCheckCommand(os: RemoteOS, folder: string, sessionId?: string): string {
   if (os === 'windows') {
     // Windows: check tasklist for claude.exe, then use wmic to inspect command lines
-    // wmic gives us the full command line so we can match the folder
-    const escapedFolder = folder.replace(/\\/g, '\\\\');
+    const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
     const folderMatch = `findstr /i /c:"${escapedFolder}"`;
-    const sessionMatch = sessionId ? ` | findstr /c:"${sessionId}"` : '';
+    const sessionMatch = sessionId ? ` | findstr /c:"${escapeWindowsArg(sanitizeSessionId(sessionId))}"` : '';
     return [
       `wmic process where "name='claude.exe'" get CommandLine /format:list 2>nul`,
       `| ${folderMatch}${sessionMatch} >nul 2>nul`,
@@ -70,9 +70,9 @@ export function getFleetProcessCheckCommand(os: RemoteOS, folder: string, sessio
 
   // Unix (Linux/macOS): use ps to get full command lines of claude processes,
   // then grep for the agent's folder or session ID
-  const folderPattern = folder.replace(/"/g, '\\"');
+  const folderPattern = escapeGrepPattern(folder);
   const fleetMatch = sessionId
-    ? `grep -E "(${folderPattern}|${sessionId})"`
+    ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`
     : `grep "${folderPattern}"`;
 
   return `CLAUDE_PIDS=$(pgrep -f "claude" 2>/dev/null); `
@@ -96,28 +96,30 @@ export function getScpCheckCommand(os: RemoteOS): string {
 
 export function getMkdirCommand(os: RemoteOS, folder: string): string {
   if (os === 'windows') {
-    return `if not exist "${folder}" mkdir "${folder}"`;
+    return `if not exist "${escapeWindowsArg(folder)}" mkdir "${escapeWindowsArg(folder)}"`;
   }
-  return `mkdir -p "${folder}"`;
+  return `mkdir -p "${escapeDoubleQuoted(folder)}"`;
 }
 
 export function getSetEnvCommand(os: RemoteOS, name: string, value: string): string[] {
+  const escaped = escapeDoubleQuoted(value);
+  const winEscaped = escapeWindowsArg(value);
   switch (os) {
     case 'linux':
       return [
-        `echo 'export ${name}="${value}"' >> ~/.bashrc`,
-        `echo 'export ${name}="${value}"' >> ~/.profile`,
-        `export ${name}="${value}"`,
+        `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
+        `echo 'export ${name}="${escaped}"' >> ~/.profile`,
+        `export ${name}="${escaped}"`,
       ];
     case 'macos':
       return [
-        `echo 'export ${name}="${value}"' >> ~/.bashrc`,
-        `echo 'export ${name}="${value}"' >> ~/.zshrc`,
-        `echo 'export ${name}="${value}"' >> ~/.profile`,
-        `export ${name}="${value}"`,
+        `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
+        `echo 'export ${name}="${escaped}"' >> ~/.zshrc`,
+        `echo 'export ${name}="${escaped}"' >> ~/.profile`,
+        `export ${name}="${escaped}"`,
       ];
     case 'windows':
-      return [`setx ${name} "${value}"`];
+      return [`setx ${name} "${winEscaped}"`];
   }
 }
 

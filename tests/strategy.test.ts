@@ -3,35 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../src/services/strategy.js';
-import type { Agent } from '../src/types.js';
+import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
 
-function makeLocalAgent(overrides: Partial<Agent> = {}): Agent {
-  return {
-    id: 'local-test',
-    friendlyName: 'local-dev',
-    agentType: 'local',
-    remoteFolder: path.join(os.tmpdir(), `fleet-test-${Date.now()}`),
-    os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux',
-    createdAt: new Date().toISOString(),
-    ...overrides,
-  };
-}
-
-function makeRemoteAgent(overrides: Partial<Agent> = {}): Agent {
-  return {
-    id: 'remote-test',
-    friendlyName: 'remote-dev',
-    agentType: 'remote',
-    host: '192.168.1.100',
-    port: 22,
-    username: 'testuser',
-    authType: 'password',
-    encryptedPassword: 'fake-encrypted',
-    remoteFolder: '/home/testuser/project',
-    createdAt: new Date().toISOString(),
-    ...overrides,
-  };
-}
+const makeLocalAgent = makeTestLocalAgent;
+const makeRemoteAgent = makeTestAgent;
 
 describe('getStrategy() factory', () => {
   it('returns LocalStrategy for local agents', () => {

@@ -2,8 +2,10 @@ import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { getAgent, updateAgent, getKeysDir } from '../services/registry.js';
+import { updateAgent, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
+import { getAgentOrFail } from '../utils/agent-helpers.js';
+import type { Agent } from '../types.js';
 
 export const setupSSHKeySchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to set up SSH key auth for'),
@@ -12,10 +14,9 @@ export const setupSSHKeySchema = z.object({
 export type SetupSSHKeyInput = z.infer<typeof setupSSHKeySchema>;
 
 export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
-  const agent = getAgent(input.agent_id);
-  if (!agent) {
-    return `Agent "${input.agent_id}" not found.`;
-  }
+  const agentOrError = getAgentOrFail(input.agent_id);
+  if (typeof agentOrError === 'string') return agentOrError;
+  const agent = agentOrError as Agent;
 
   if (agent.agentType === 'local') {
     return `❌ SSH key setup is not applicable for local agents. Agent "${agent.friendlyName}" runs on the same machine — no SSH authentication is needed.`;

@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import { getAgent, updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
+import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
 import { encryptPassword } from '../utils/crypto.js';
+import { getAgentOrFail } from '../utils/agent-helpers.js';
+import type { Agent } from '../types.js';
 
 export const updateAgentSchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to update'),
@@ -17,10 +19,9 @@ export const updateAgentSchema = z.object({
 export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
 
 export async function updateAgent(input: UpdateAgentInput): Promise<string> {
-  const existing = getAgent(input.agent_id);
-  if (!existing) {
-    return `Agent "${input.agent_id}" not found.`;
-  }
+  const existingOrError = getAgentOrFail(input.agent_id);
+  if (typeof existingOrError === 'string') return existingOrError;
+  const existing = existingOrError as Agent;
 
   // Check for duplicate folder if remote_folder is being changed
   if (input.remote_folder && input.remote_folder !== existing.remoteFolder) {

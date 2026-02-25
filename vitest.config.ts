@@ -5,5 +5,6 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    fileParallelism: false,  // Tests share ~/.claude-fleet/registry.json
   },
 });

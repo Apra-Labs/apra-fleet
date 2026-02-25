@@ -1,7 +1,9 @@
 import { z } from 'zod';
-import { getAgent, getAllAgents } from '../services/registry.js';
+import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getClaudeVersionCommand, getUpdateClaudeCommand } from '../utils/platform.js';
+import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import type { Agent } from '../types.js';
 
 export const updateClaudeSchema = z.object({
   agent_id: z.string().optional().describe('The UUID of the agent to update. Omit to update ALL online agents.'),
@@ -17,8 +19,8 @@ interface UpdateResult {
   error?: string;
 }
 
-async function updateSingleAgent(agent: any): Promise<UpdateResult> {
-  const os = agent.os ?? 'linux';
+async function updateSingleAgent(agent: Agent): Promise<UpdateResult> {
+  const os = getAgentOS(agent);
   const strategy = getStrategy(agent);
   const result: UpdateResult = {
     name: agent.friendlyName,
@@ -55,14 +57,12 @@ async function updateSingleAgent(agent: any): Promise<UpdateResult> {
 }
 
 export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
-  let agents: any[];
+  let agents: Agent[];
 
   if (input.agent_id) {
-    const agent = getAgent(input.agent_id);
-    if (!agent) {
-      return `Agent "${input.agent_id}" not found.`;
-    }
-    agents = [agent];
+    const agentOrError = getAgentOrFail(input.agent_id);
+    if (typeof agentOrError === 'string') return agentOrError;
+    agents = [agentOrError as Agent];
   } else {
     // Update all online agents
     const allAgents = getAllAgents();

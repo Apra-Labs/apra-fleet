@@ -121,6 +121,48 @@ describe('platform command generators', () => {
     expect(getMkdirCommand('windows', 'C:\\test')).toContain('mkdir');
   });
 
+  it('escapes folder paths with injection attempts in disk command', () => {
+    const malicious = '/home/user/$(whoami)/project';
+    const cmd = getDiskCommand('linux', malicious);
+    // $ should be escaped to \$ inside double quotes
+    expect(cmd).toContain('\\$(whoami)');
+
+    // Windows: getDiskCommand only uses first char as drive letter, so injection in path is neutralized
+    const winCmd = getDiskCommand('windows', 'C:\\Users\\project');
+    expect(winCmd).toContain("caption='C:'");
+  });
+
+  it('escapes folder paths with injection attempts in mkdir command', () => {
+    const malicious = '/tmp/$(rm -rf /)';
+    const cmd = getMkdirCommand('linux', malicious);
+    // $ is escaped to \$ preventing command substitution
+    expect(cmd).toContain('\\$(rm');
+
+    const winMalicious = 'C:\\test"&whoami&"';
+    const winCmd = getMkdirCommand('windows', winMalicious);
+    // Double quotes are doubled, & is escaped with ^
+    expect(winCmd).toContain('""');
+    expect(winCmd).toContain('^&');
+  });
+
+  it('escapes folder paths with injection attempts in fleet process check', () => {
+    const malicious = '/home/user/$(whoami)';
+    const cmd = getFleetProcessCheckCommand('linux', malicious);
+    // grep metacharacters in folder should be escaped
+    expect(cmd).toContain('\\$');
+    expect(cmd).toContain('\\(');
+
+    const winMalicious = 'C:\\Users\\dev"&whoami&"project';
+    const winCmd = getFleetProcessCheckCommand('windows', winMalicious);
+    expect(winCmd).toContain('""');
+    expect(winCmd).toContain('^&');
+  });
+
+  it('rejects invalid session IDs in fleet process check', () => {
+    expect(() => getFleetProcessCheckCommand('linux', '/home/user', 'sess;whoami')).toThrow('Invalid session ID');
+    expect(() => getFleetProcessCheckCommand('windows', 'C:\\work', 'sess$(cmd)')).toThrow('Invalid session ID');
+  });
+
   it('generates setenv commands for each OS', () => {
     const linuxCmds = getSetEnvCommand('linux', 'MY_VAR', 'value');
     expect(linuxCmds.length).toBe(3);
@@ -134,6 +176,20 @@ describe('platform command generators', () => {
     const winCmds = getSetEnvCommand('windows', 'MY_VAR', 'value');
     expect(winCmds.length).toBe(1);
     expect(winCmds[0]).toContain('setx');
+  });
+
+  it('escapes values with injection attempts in setenv commands', () => {
+    const malicious = '"; rm -rf / #';
+    const linuxCmds = getSetEnvCommand('linux', 'MY_VAR', malicious);
+    // The " is escaped to \" preventing quote-breaking
+    for (const cmd of linuxCmds) {
+      expect(cmd).toContain('\\"');
+    }
+
+    const winCmds = getSetEnvCommand('windows', 'MY_VAR', '"&whoami&"');
+    // Double quotes are doubled, & is caret-escaped
+    expect(winCmds[0]).toContain('""');
+    expect(winCmds[0]).toContain('^&');
   });
 
   it('generates unsetenv commands for each OS', () => {

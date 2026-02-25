@@ -1,7 +1,8 @@
 import { z } from 'zod';
-import { getAgent } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getClaudeVersionCommand, getCpuLoadCommand, getMemoryCommand, getDiskCommand, getFleetProcessCheckCommand } from '../utils/platform.js';
+import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import type { Agent } from '../types.js';
 
 export const agentDetailSchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to inspect'),
@@ -10,12 +11,11 @@ export const agentDetailSchema = z.object({
 export type AgentDetailInput = z.infer<typeof agentDetailSchema>;
 
 export async function agentDetail(input: AgentDetailInput): Promise<string> {
-  const agent = getAgent(input.agent_id);
-  if (!agent) {
-    return `Agent "${input.agent_id}" not found.`;
-  }
+  const agentOrError = getAgentOrFail(input.agent_id);
+  if (typeof agentOrError === 'string') return agentOrError;
+  const agent = agentOrError as Agent;
 
-  const os = agent.os ?? 'linux';
+  const os = getAgentOS(agent);
   const isLocal = agent.agentType === 'local';
   const strategy = getStrategy(agent);
 
@@ -48,7 +48,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   // -- Claude CLI --
   report += `\n── Claude CLI ──\n`;
   try {
-    const versionResult = await strategy.execCommand(getClaudeVersionCommand(os as any), 10000);
+    const versionResult = await strategy.execCommand(getClaudeVersionCommand(os), 10000);
     report += `  Version: ${versionResult.stdout.trim()}\n`;
   } catch {
     report += `  Version: unknown (could not run claude --version)\n`;
@@ -76,7 +76,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   try {
     const busyCheck = await strategy.execCommand(
-      getFleetProcessCheckCommand(os as any, agent.remoteFolder, agent.sessionId),
+      getFleetProcessCheckCommand(os, agent.remoteFolder, agent.sessionId),
       10000,
     );
     const output = busyCheck.stdout.trim().toLowerCase();
@@ -96,7 +96,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   // CPU
   try {
-    const cpuResult = await strategy.execCommand(getCpuLoadCommand(os as any), 10000);
+    const cpuResult = await strategy.execCommand(getCpuLoadCommand(os), 10000);
     report += `  CPU: ${cpuResult.stdout.trim()}\n`;
   } catch {
     report += `  CPU: unavailable\n`;
@@ -104,7 +104,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   // Memory
   try {
-    const memResult = await strategy.execCommand(getMemoryCommand(os as any), 10000);
+    const memResult = await strategy.execCommand(getMemoryCommand(os), 10000);
     const memLines = memResult.stdout.trim().split('\n');
     if (os === 'linux') {
       // Parse free -m output
@@ -126,7 +126,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   // Disk
   try {
-    const diskResult = await strategy.execCommand(getDiskCommand(os as any, agent.remoteFolder), 10000);
+    const diskResult = await strategy.execCommand(getDiskCommand(os, agent.remoteFolder), 10000);
     const diskLines = diskResult.stdout.trim().split('\n');
     if (os !== 'windows' && diskLines.length >= 2) {
       report += `  Disk: ${diskLines[1].trim()}\n`;

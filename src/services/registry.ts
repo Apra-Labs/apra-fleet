@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Agent, FleetRegistry } from '../types.js';
+import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 
 const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
@@ -9,10 +10,10 @@ const KEYS_DIR = path.join(FLEET_DIR, 'keys');
 
 function ensureFleetDir(): void {
   if (!fs.existsSync(FLEET_DIR)) {
-    fs.mkdirSync(FLEET_DIR, { recursive: true });
+    fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
   }
   if (!fs.existsSync(KEYS_DIR)) {
-    fs.mkdirSync(KEYS_DIR, { recursive: true });
+    fs.mkdirSync(KEYS_DIR, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -72,12 +73,30 @@ export function removeAgent(id: string): boolean {
 
 export function setFleetToken(token: string): void {
   const registry = loadRegistry();
-  registry.fleetToken = token;
+  registry.encryptedFleetToken = encryptPassword(token);
+  // Clean up legacy plaintext field if present
+  delete registry.fleetToken;
   saveRegistry(registry);
 }
 
 export function getFleetToken(): string | undefined {
-  return loadRegistry().fleetToken;
+  const registry = loadRegistry();
+  // Prefer encrypted token
+  if (registry.encryptedFleetToken) {
+    try {
+      return decryptPassword(registry.encryptedFleetToken);
+    } catch {
+      return undefined;
+    }
+  }
+  // Backward compat: migrate plaintext token
+  if (registry.fleetToken) {
+    const token = registry.fleetToken;
+    // Migrate to encrypted storage
+    setFleetToken(token);
+    return token;
+  }
+  return undefined;
 }
 
 export function getKeysDir(): string {

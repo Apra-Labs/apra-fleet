@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import {
   getAllAgents,
   getAgent,
@@ -14,50 +12,12 @@ import {
   getFleetToken,
   hasDuplicateFolder,
 } from '../src/services/registry.js';
-import type { Agent } from '../src/types.js';
+import { makeTestAgent, REGISTRY_PATH, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
-const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
+const makeAgent = makeTestAgent;
 
-let backupContent: string | null = null;
-
-function makeAgent(overrides: Partial<Agent> = {}): Agent {
-  return {
-    id: `test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    friendlyName: 'test-agent',
-    agentType: 'remote',
-    host: '192.168.1.100',
-    port: 22,
-    username: 'testuser',
-    authType: 'password',
-    encryptedPassword: 'fake-encrypted',
-    remoteFolder: '/home/testuser/project',
-    createdAt: new Date().toISOString(),
-    ...overrides,
-  };
-}
-
-beforeEach(() => {
-  // Backup existing registry if it exists
-  if (fs.existsSync(REGISTRY_PATH)) {
-    backupContent = fs.readFileSync(REGISTRY_PATH, 'utf-8');
-  }
-  // Reset to empty registry
-  if (!fs.existsSync(FLEET_DIR)) {
-    fs.mkdirSync(FLEET_DIR, { recursive: true });
-  }
-  fs.writeFileSync(REGISTRY_PATH, JSON.stringify({ version: '1.0', agents: [] }, null, 2));
-});
-
-afterEach(() => {
-  // Restore original registry
-  if (backupContent !== null) {
-    fs.writeFileSync(REGISTRY_PATH, backupContent);
-    backupContent = null;
-  } else if (fs.existsSync(REGISTRY_PATH)) {
-    fs.writeFileSync(REGISTRY_PATH, JSON.stringify({ version: '1.0', agents: [] }, null, 2));
-  }
-});
+beforeEach(() => backupAndResetRegistry());
+afterEach(() => restoreRegistry());
 
 describe('registry CRUD', () => {
   it('starts with an empty agent list', () => {
@@ -167,15 +127,34 @@ describe('registry - sessions', () => {
 });
 
 describe('registry - fleet token', () => {
-  it('stores and retrieves fleet token', () => {
+  it('stores and retrieves fleet token (encrypted)', () => {
     setFleetToken('my-fleet-token-123');
     expect(getFleetToken()).toBe('my-fleet-token-123');
+
+    // Verify it's stored encrypted, not plaintext
+    const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
+    expect(raw).not.toContain('my-fleet-token-123');
+    expect(raw).toContain('encryptedFleetToken');
   });
 
   it('overwrites previous fleet token', () => {
     setFleetToken('token-1');
     setFleetToken('token-2');
     expect(getFleetToken()).toBe('token-2');
+  });
+
+  it('migrates legacy plaintext fleetToken on read', () => {
+    // Write a registry with legacy plaintext token
+    const registry = { version: '1.0', agents: [], fleetToken: 'legacy-plain-token' };
+    fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
+
+    // Reading should return the token and migrate it
+    expect(getFleetToken()).toBe('legacy-plain-token');
+
+    // After migration, plaintext should be gone
+    const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
+    expect(raw).not.toContain('"fleetToken"');
+    expect(raw).toContain('encryptedFleetToken');
   });
 });
 

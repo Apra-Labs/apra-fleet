@@ -1,7 +1,9 @@
 import { z } from 'zod';
-import { getAgent, removeAgent as removeFromRegistry } from '../services/registry.js';
+import { removeAgent as removeFromRegistry } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getUnsetEnvCommand } from '../utils/platform.js';
+import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import type { Agent } from '../types.js';
 
 export const removeAgentSchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to remove'),
@@ -10,10 +12,9 @@ export const removeAgentSchema = z.object({
 export type RemoveAgentInput = z.infer<typeof removeAgentSchema>;
 
 export async function removeAgent(input: RemoveAgentInput): Promise<string> {
-  const agent = getAgent(input.agent_id);
-  if (!agent) {
-    return `Agent "${input.agent_id}" not found.`;
-  }
+  const agentOrError = getAgentOrFail(input.agent_id);
+  if (typeof agentOrError === 'string') return agentOrError;
+  const agent = agentOrError as Agent;
 
   const strategy = getStrategy(agent);
   const warnings: string[] = [];
@@ -22,7 +23,7 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
   try {
     const conn = await strategy.testConnection();
     if (conn.ok) {
-      const os = agent.os ?? 'linux';
+      const os = getAgentOS(agent);
       const commands = getUnsetEnvCommand(os, 'CLAUDE_CODE_OAUTH_TOKEN');
       for (const cmd of commands) {
         try {

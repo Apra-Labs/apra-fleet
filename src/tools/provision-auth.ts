@@ -1,7 +1,10 @@
 import { z } from 'zod';
-import { getAgent, updateAgent, setFleetToken } from '../services/registry.js';
+import { setFleetToken } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getSetEnvCommand } from '../utils/platform.js';
+import { escapeDoubleQuoted } from '../utils/shell-escape.js';
+import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import type { Agent } from '../types.js';
 
 export const provisionAuthSchema = z.object({
   agent_id: z.string().describe('The UUID of the target agent'),
@@ -11,12 +14,11 @@ export const provisionAuthSchema = z.object({
 export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
 
 export async function provisionAuth(input: ProvisionAuthInput): Promise<string> {
-  const agent = getAgent(input.agent_id);
-  if (!agent) {
-    return `Agent "${input.agent_id}" not found.`;
-  }
+  const agentOrError = getAgentOrFail(input.agent_id);
+  if (typeof agentOrError === 'string') return agentOrError;
+  const agent = agentOrError as Agent;
 
-  const os = agent.os ?? 'linux';
+  const os = getAgentOS(agent);
   const strategy = getStrategy(agent);
   const commands = getSetEnvCommand(os, 'CLAUDE_CODE_OAUTH_TOKEN', input.fleet_token);
 
@@ -55,8 +57,10 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   // Quick Claude auth test
   let authWorks = false;
   try {
+    const escapedFolder = escapeDoubleQuoted(agent.remoteFolder);
+    const escapedToken = escapeDoubleQuoted(input.fleet_token);
     const authTest = await strategy.execCommand(
-      `cd "${agent.remoteFolder}" && CLAUDE_CODE_OAUTH_TOKEN="${input.fleet_token}" claude -p "hello" --output-format json --max-turns 1`,
+      `cd "${escapedFolder}" && CLAUDE_CODE_OAUTH_TOKEN="${escapedToken}" claude -p "hello" --output-format json --max-turns 1`,
       60000
     );
     authWorks = authTest.code === 0;
@@ -66,7 +70,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
 
   // Store fleet token
   setFleetToken(input.fleet_token);
-  updateAgent(agent.id, { lastUsed: new Date().toISOString() });
+  touchAgent(agent.id);
 
   let result = '';
   if (errors.length === 0) {

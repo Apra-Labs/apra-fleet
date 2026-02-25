@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
+
+const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
+const SALT_PATH = path.join(FLEET_DIR, 'salt');
 
 describe('crypto', () => {
   it('encrypts and decrypts a password round-trip', () => {
@@ -62,5 +68,22 @@ describe('crypto', () => {
     const tampered = parts.join(':');
 
     expect(() => decryptPassword(tampered)).toThrow();
+  });
+
+  it('creates a salt file on first encryption', () => {
+    // The salt file should exist after any encrypt/decrypt call
+    expect(fs.existsSync(SALT_PATH)).toBe(true);
+    const salt = fs.readFileSync(SALT_PATH, 'utf-8').trim();
+    // 32 random bytes = 64 hex chars
+    expect(salt).toHaveLength(64);
+    expect(/^[0-9a-f]+$/.test(salt)).toBe(true);
+  });
+
+  it('uses consistent salt across encrypt/decrypt cycles', () => {
+    const salt1 = fs.readFileSync(SALT_PATH, 'utf-8').trim();
+    const encrypted = encryptPassword('test-consistent');
+    const salt2 = fs.readFileSync(SALT_PATH, 'utf-8').trim();
+    expect(salt1).toBe(salt2);
+    expect(decryptPassword(encrypted)).toBe('test-consistent');
   });
 });
