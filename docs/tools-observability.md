@@ -65,7 +65,7 @@ Runs a series of commands on the agent via `strategy.execCommand()` and assemble
 
 ### Section 2: Claude CLI
 - Runs `claude --version` to get the installed version.
-- Checks if `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment (reads first 10 characters to confirm presence without exposing the full token).
+- Checks for auth: `~/.claude/.credentials.json` (OAuth credentials file) and `ANTHROPIC_API_KEY` env var. Reports all detected methods or "No authentication detected".
 
 ### Section 3: Session
 - Shows the stored session ID (or "none").

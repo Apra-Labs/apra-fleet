@@ -54,7 +54,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
     report += `  Version: unknown (could not run claude --version)\n`;
   }
 
-  // Check auth status — look for credentials file, OAuth token, and API key
+  // Check auth status — look for credentials file and API key
   const authMethods: string[] = [];
   try {
     const credCheckCmd = os === 'windows'

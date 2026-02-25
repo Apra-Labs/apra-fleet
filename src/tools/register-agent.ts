@@ -100,7 +100,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
         warnings.push('Claude CLI auth check failed — you may need to run provision_auth');
       }
     } catch {
-      warnings.push('Claude CLI auth check timed out or failed — run provision_auth to set up the OAuth token');
+      warnings.push('Claude CLI auth check timed out or failed — run provision_auth to set up authentication');
     }
   }
 

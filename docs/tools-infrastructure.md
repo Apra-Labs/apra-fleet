@@ -48,7 +48,7 @@ For users who need per-agent OAuth without sharing credentials, a future flow wi
 
 **Important notes:**
 - Both flows verify the agent is online before proceeding.
-- `agent_detail` detects all auth methods: credentials file, OAuth token env, and API key env.
+- `agent_detail` detects all auth methods: credentials file and API key env.
 
 ## setup_ssh_key
 
