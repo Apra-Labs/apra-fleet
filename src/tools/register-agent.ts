@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
-import { detectOS, getClaudeCheckCommand, getScpCheckCommand, getMkdirCommand } from '../utils/platform.js';
+import { detectOS, getClaudeVersionCommand, getScpCheckCommand, getMkdirCommand } from '../utils/platform.js';
 import { addAgent, hasDuplicateFolder } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 
@@ -79,24 +79,29 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   }
   tempAgent.os = detectedOS;
 
-  // Step 3: Check if Claude CLI exists
+  // Step 3: Verify Claude CLI is installed and get version
+  let claudeVersion: string | undefined;
   try {
-    const claudeCheck = await strategy.execCommand(getClaudeCheckCommand(detectedOS), 10000);
+    const claudeCheck = await strategy.execCommand(getClaudeVersionCommand(detectedOS), 15000);
     if (claudeCheck.code !== 0) {
-      warnings.push('Claude CLI not found on remote machine — install it before using execute_prompt');
+      warnings.push(`Claude CLI not found on ${isLocal ? 'this machine' : 'remote machine'} — install it before using execute_prompt`);
+    } else {
+      claudeVersion = claudeCheck.stdout.trim();
     }
   } catch {
     warnings.push('Could not verify Claude CLI availability');
   }
 
-  // Step 4: Quick Claude auth test
-  try {
-    const authCheck = await strategy.execCommand('claude -p "hello" --output-format json --max-turns 1', 60000);
-    if (authCheck.code !== 0) {
-      warnings.push('Claude CLI auth check failed — you may need to run provision_auth');
+  // Step 4: Quick Claude auth test (remote only — local agents inherit the current session's auth)
+  if (!isLocal) {
+    try {
+      const authCheck = await strategy.execCommand('claude -p "hello" --output-format json --max-turns 1', 60000);
+      if (authCheck.code !== 0) {
+        warnings.push('Claude CLI auth check failed — you may need to run provision_auth');
+      }
+    } catch {
+      warnings.push('Could not verify Claude authentication');
     }
-  } catch {
-    warnings.push('Could not verify Claude authentication');
   }
 
   // Step 5: Check SCP availability (remote only)
@@ -133,6 +138,9 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   }
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.remoteFolder}\n`;
+  if (claudeVersion) {
+    result += `  Claude:  ${claudeVersion}\n`;
+  }
   if (!isLocal) {
     result += `  Auth:    ${tempAgent.authType}\n`;
     result += `  SCP:     ${tempAgent.scpAvailable ? 'available' : 'not available (will use SFTP)'}\n`;
