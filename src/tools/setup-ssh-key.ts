@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { getAgent, updateAgent, getKeysDir } from '../services/registry.js';
-import { execCommand } from '../services/ssh.js';
+import { getStrategy } from '../services/strategy.js';
 
 export const setupSSHKeySchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to set up SSH key auth for'),
@@ -17,6 +17,10 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
     return `Agent "${input.agent_id}" not found.`;
   }
 
+  if (agent.agentType === 'local') {
+    return `❌ SSH key setup is not applicable for local agents. Agent "${agent.friendlyName}" runs on the same machine — no SSH authentication is needed.`;
+  }
+
   if (agent.authType === 'key') {
     return `Agent "${agent.friendlyName}" is already using key-based authentication.`;
   }
@@ -25,6 +29,8 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
   const keyName = `${agent.id}_rsa`;
   const privateKeyPath = path.join(keysDir, keyName);
   const publicKeyPath = `${privateKeyPath}.pub`;
+
+  const strategy = getStrategy(agent);
 
   // Step 1: Generate RSA-4096 key pair
   try {
@@ -53,7 +59,7 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
     ];
 
     for (const cmd of deployCommands) {
-      const result = await execCommand(agent, cmd, 10000);
+      const result = await strategy.execCommand(cmd, 10000);
       if (result.code !== 0) {
         return `❌ Failed to deploy key to "${agent.friendlyName}": ${result.stderr}`;
       }
@@ -61,8 +67,9 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
 
     // Step 3: Test key-based login
     const testAgent = { ...agent, authType: 'key' as const, keyPath: privateKeyPath, encryptedPassword: undefined };
+    const testStrategy = getStrategy(testAgent);
     try {
-      const testResult = await execCommand(testAgent, 'echo "key-auth-ok"', 10000);
+      const testResult = await testStrategy.execCommand('echo "key-auth-ok"', 10000);
       if (!testResult.stdout.includes('key-auth-ok')) {
         return `❌ Key-based authentication test failed for "${agent.friendlyName}".`;
       }

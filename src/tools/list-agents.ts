@@ -13,12 +13,18 @@ export async function listAgents(): Promise<string> {
   let result = `Fleet: ${agents.length} agent(s)\n\n`;
 
   for (const agent of agents) {
+    const isLocal = agent.agentType === 'local';
     result += `┌─ ${agent.friendlyName}\n`;
     result += `│  ID:       ${agent.id}\n`;
-    result += `│  Host:     ${agent.host}:${agent.port}\n`;
+    result += `│  Type:     ${agent.agentType}\n`;
+    if (!isLocal) {
+      result += `│  Host:     ${agent.host}:${agent.port}\n`;
+    }
     result += `│  OS:       ${agent.os ?? 'unknown'}\n`;
     result += `│  Folder:   ${agent.remoteFolder}\n`;
-    result += `│  Auth:     ${agent.authType}\n`;
+    if (!isLocal) {
+      result += `│  Auth:     ${agent.authType}\n`;
+    }
     result += `│  Session:  ${agent.sessionId ?? '(none)'}\n`;
     result += `│  Created:  ${agent.createdAt}\n`;
     result += `│  Last used: ${agent.lastUsed ?? 'never'}\n`;

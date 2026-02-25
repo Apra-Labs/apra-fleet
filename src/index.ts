@@ -28,7 +28,7 @@ const server = new McpServer({
 
 server.tool(
   'register_agent',
-  'Register a remote machine as a fleet agent. Tests SSH connectivity, detects OS, checks Claude CLI.',
+  'Register a machine as a fleet agent. Use agent_type "local" for same-machine agents (no SSH needed) or "remote" (default) for SSH-based remote agents. Tests connectivity, detects OS, checks Claude CLI.',
   registerAgentSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await registerAgent(input as any) }],

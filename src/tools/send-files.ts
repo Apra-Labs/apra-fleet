@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAgent, updateAgent } from '../services/registry.js';
-import { uploadFiles } from '../services/file-transfer.js';
+import { getStrategy } from '../services/strategy.js';
 
 export const sendFilesSchema = z.object({
   agent_id: z.string().describe('The UUID of the target agent'),
@@ -16,8 +16,10 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
     return `Agent "${input.agent_id}" not found.`;
   }
 
+  const strategy = getStrategy(agent);
+
   try {
-    const result = await uploadFiles(agent, input.local_paths, input.remote_subfolder);
+    const result = await strategy.transferFiles(input.local_paths, input.remote_subfolder);
 
     updateAgent(agent.id, { lastUsed: new Date().toISOString() });
 

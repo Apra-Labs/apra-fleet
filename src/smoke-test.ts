@@ -58,6 +58,7 @@ try {
   const testAgent: Agent = {
     id: 'smoke-test-agent-001',
     friendlyName: 'smoke-test-server',
+    agentType: 'remote',
     host: '10.0.0.99',
     port: 22,
     username: 'smokeuser',

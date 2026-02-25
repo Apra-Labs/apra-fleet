@@ -12,6 +12,7 @@ import {
   resetSession,
   setFleetToken,
   getFleetToken,
+  hasDuplicateFolder,
 } from '../src/services/registry.js';
 import type { Agent } from '../src/types.js';
 
@@ -24,6 +25,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
     id: `test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     friendlyName: 'test-agent',
+    agentType: 'remote',
     host: '192.168.1.100',
     port: 22,
     username: 'testuser',
@@ -200,5 +202,99 @@ describe('registry - JSON file integrity', () => {
     // The field is "encryptedPassword", not "password"
     expect(raw).toContain('encryptedPassword');
     expect(raw).not.toMatch(/"password"\s*:/);
+  });
+});
+
+describe('registry - duplicate folder validation', () => {
+  it('detects duplicate local folder', () => {
+    addAgent(makeAgent({
+      id: 'local-1',
+      agentType: 'local',
+      remoteFolder: '/home/user/project',
+      host: undefined,
+    }));
+
+    expect(hasDuplicateFolder('local', '/home/user/project')).toBe(true);
+  });
+
+  it('detects duplicate remote host+folder', () => {
+    addAgent(makeAgent({
+      id: 'remote-1',
+      agentType: 'remote',
+      host: '10.0.0.1',
+      remoteFolder: '/srv/app',
+    }));
+
+    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.1')).toBe(true);
+  });
+
+  it('allows same folder on different remote hosts', () => {
+    addAgent(makeAgent({
+      id: 'remote-1',
+      agentType: 'remote',
+      host: '10.0.0.1',
+      remoteFolder: '/srv/app',
+    }));
+
+    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.2')).toBe(false);
+  });
+
+  it('allows same path for local + remote agents', () => {
+    addAgent(makeAgent({
+      id: 'remote-1',
+      agentType: 'remote',
+      host: '10.0.0.1',
+      remoteFolder: '/home/user/project',
+    }));
+
+    // A local agent with the same path should be allowed (different device scope)
+    expect(hasDuplicateFolder('local', '/home/user/project')).toBe(false);
+  });
+
+  it('normalizes trailing slashes', () => {
+    addAgent(makeAgent({
+      id: 'local-1',
+      agentType: 'local',
+      remoteFolder: '/home/user/project',
+      host: undefined,
+    }));
+
+    // With trailing slash should still match
+    expect(hasDuplicateFolder('local', '/home/user/project/')).toBe(true);
+  });
+
+  it('excludes agent by ID (for updates)', () => {
+    addAgent(makeAgent({
+      id: 'local-1',
+      agentType: 'local',
+      remoteFolder: '/home/user/project',
+      host: undefined,
+    }));
+
+    // Excluding the same agent should not be a duplicate
+    expect(hasDuplicateFolder('local', '/home/user/project', undefined, 'local-1')).toBe(false);
+  });
+
+  it('returns false when no agents exist', () => {
+    expect(hasDuplicateFolder('local', '/any/path')).toBe(false);
+    expect(hasDuplicateFolder('remote', '/any/path', 'host')).toBe(false);
+  });
+
+  it('rejects update_agent folder change when duplicate exists', () => {
+    addAgent(makeAgent({
+      id: 'local-1',
+      agentType: 'local',
+      remoteFolder: '/home/user/project-a',
+      host: undefined,
+    }));
+    addAgent(makeAgent({
+      id: 'local-2',
+      agentType: 'local',
+      remoteFolder: '/home/user/project-b',
+      host: undefined,
+    }));
+
+    // local-2 trying to move to local-1's folder should be detected
+    expect(hasDuplicateFolder('local', '/home/user/project-a', undefined, 'local-2')).toBe(true);
   });
 });

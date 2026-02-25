@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAgent } from '../services/registry.js';
-import { testConnection, execCommand } from '../services/ssh.js';
+import { getStrategy } from '../services/strategy.js';
 import { getClaudeVersionCommand, getCpuLoadCommand, getMemoryCommand, getDiskCommand } from '../utils/platform.js';
 
 export const agentDetailSchema = z.object({
@@ -16,16 +16,28 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   }
 
   const os = agent.os ?? 'linux';
+  const isLocal = agent.agentType === 'local';
+  const strategy = getStrategy(agent);
+
   let report = `Agent: ${agent.friendlyName} (${agent.id})\n`;
-  report += `Host: ${agent.host}:${agent.port} (${os})\n`;
+  report += `Type: ${agent.agentType}\n`;
+  if (!isLocal) {
+    report += `Host: ${agent.host}:${agent.port} (${os})\n`;
+  } else {
+    report += `OS: ${os}\n`;
+  }
   report += `Folder: ${agent.remoteFolder}\n\n`;
 
   // -- Connectivity --
   report += `── Connectivity ──\n`;
-  const conn = await testConnection(agent);
+  const conn = await strategy.testConnection();
   if (conn.ok) {
-    report += `  SSH: Connected (latency: ${conn.latencyMs}ms)\n`;
-    report += `  Auth: ${agent.authType}${agent.keyPath ? ` (${agent.keyPath})` : ''}\n`;
+    if (isLocal) {
+      report += `  Status: Connected (local)\n`;
+    } else {
+      report += `  SSH: Connected (latency: ${conn.latencyMs}ms)\n`;
+      report += `  Auth: ${agent.authType}${agent.keyPath ? ` (${agent.keyPath})` : ''}\n`;
+    }
   } else {
     report += `  SSH: FAILED — ${conn.error}\n`;
     report += `  Auth: ${agent.authType}\n`;
@@ -36,7 +48,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   // -- Claude CLI --
   report += `\n── Claude CLI ──\n`;
   try {
-    const versionResult = await execCommand(agent, getClaudeVersionCommand(os as any), 10000);
+    const versionResult = await strategy.execCommand(getClaudeVersionCommand(os as any), 10000);
     report += `  Version: ${versionResult.stdout.trim()}\n`;
   } catch {
     report += `  Version: unknown (could not run claude --version)\n`;
@@ -50,7 +62,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
     } else {
       tokenCheckCmd = 'echo "${CLAUDE_CODE_OAUTH_TOKEN:0:10}"';
     }
-    const tokenResult = await execCommand(agent, tokenCheckCmd, 10000);
+    const tokenResult = await strategy.execCommand(tokenCheckCmd, 10000);
     const hasToken = tokenResult.stdout.trim().length > 5;
     report += `  Auth: ${hasToken ? 'OAuth token present' : 'No OAuth token detected'}\n`;
   } catch {
@@ -67,7 +79,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
       const busyCmd = os === 'windows'
         ? `tasklist /FI "IMAGENAME eq claude.exe" /NH`
         : `pgrep -af "claude.*${agent.sessionId}" 2>/dev/null || echo "idle"`;
-      const busyResult = await execCommand(agent, busyCmd, 10000);
+      const busyResult = await strategy.execCommand(busyCmd, 10000);
       const isBusy = os === 'windows'
         ? busyResult.stdout.toLowerCase().includes('claude')
         : !busyResult.stdout.trim().includes('idle');
@@ -84,7 +96,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   // CPU
   try {
-    const cpuResult = await execCommand(agent, getCpuLoadCommand(os as any), 10000);
+    const cpuResult = await strategy.execCommand(getCpuLoadCommand(os as any), 10000);
     report += `  CPU: ${cpuResult.stdout.trim()}\n`;
   } catch {
     report += `  CPU: unavailable\n`;
@@ -92,7 +104,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   // Memory
   try {
-    const memResult = await execCommand(agent, getMemoryCommand(os as any), 10000);
+    const memResult = await strategy.execCommand(getMemoryCommand(os as any), 10000);
     const memLines = memResult.stdout.trim().split('\n');
     if (os === 'linux') {
       // Parse free -m output
@@ -114,7 +126,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   // Disk
   try {
-    const diskResult = await execCommand(agent, getDiskCommand(os as any, agent.remoteFolder), 10000);
+    const diskResult = await strategy.execCommand(getDiskCommand(os as any, agent.remoteFolder), 10000);
     const diskLines = diskResult.stdout.trim().split('\n');
     if (os !== 'windows' && diskLines.length >= 2) {
       report += `  Disk: ${diskLines[1].trim()}\n`;

@@ -1,10 +1,11 @@
 export interface Agent {
   id: string;
   friendlyName: string;
-  host: string;
-  port: number;
-  username: string;
-  authType: 'password' | 'key';
+  agentType: 'local' | 'remote';
+  host?: string;
+  port?: number;
+  username?: string;
+  authType?: 'password' | 'key';
   encryptedPassword?: string;
   keyPath?: string;
   remoteFolder: string;
@@ -13,6 +14,11 @@ export interface Agent {
   scpAvailable?: boolean;
   createdAt: string;
   lastUsed?: string;
+}
+
+export interface TransferResult {
+  success: string[];
+  failed: { path: string; error: string }[];
 }
 
 export interface FleetRegistry {

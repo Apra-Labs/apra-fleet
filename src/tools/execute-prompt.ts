@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAgent, updateAgent } from '../services/registry.js';
-import { execCommand } from '../services/ssh.js';
+import { getStrategy } from '../services/strategy.js';
 
 export const executePromptSchema = z.object({
   agent_id: z.string().describe('The UUID of the target agent'),
@@ -16,6 +16,8 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   if (!agent) {
     return `Agent "${input.agent_id}" not found.`;
   }
+
+  const strategy = getStrategy(agent);
 
   // Base64-encode the prompt to avoid shell escaping issues
   const b64Prompt = Buffer.from(input.prompt).toString('base64');
@@ -39,7 +41,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   }
 
   try {
-    const result = await execCommand(agent, claudeCmd, input.timeout_ms);
+    const result = await strategy.execCommand(claudeCmd, input.timeout_ms);
 
     // Try to parse session_id from JSON output
     let responseText = result.stdout;
@@ -64,7 +66,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
         retryCmd = `cd "${agent.remoteFolder}" && claude -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns 50`;
       }
 
-      const retryResult = await execCommand(agent, retryCmd, input.timeout_ms);
+      const retryResult = await strategy.execCommand(retryCmd, input.timeout_ms);
       responseText = retryResult.stdout;
 
       try {

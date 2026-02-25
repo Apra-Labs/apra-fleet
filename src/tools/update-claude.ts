@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAgent, getAllAgents } from '../services/registry.js';
-import { execCommand, testConnection } from '../services/ssh.js';
+import { getStrategy } from '../services/strategy.js';
 import { getClaudeVersionCommand, getUpdateClaudeCommand } from '../utils/platform.js';
 
 export const updateClaudeSchema = z.object({
@@ -19,6 +19,7 @@ interface UpdateResult {
 
 async function updateSingleAgent(agent: any): Promise<UpdateResult> {
   const os = agent.os ?? 'linux';
+  const strategy = getStrategy(agent);
   const result: UpdateResult = {
     name: agent.friendlyName,
     oldVersion: 'unknown',
@@ -28,18 +29,18 @@ async function updateSingleAgent(agent: any): Promise<UpdateResult> {
 
   try {
     // Get current version
-    const vBefore = await execCommand(agent, getClaudeVersionCommand(os), 15000);
+    const vBefore = await strategy.execCommand(getClaudeVersionCommand(os), 15000);
     result.oldVersion = vBefore.stdout.trim();
 
     // Run update
-    const updateResult = await execCommand(agent, getUpdateClaudeCommand(os), 120000);
+    const updateResult = await strategy.execCommand(getUpdateClaudeCommand(os), 120000);
     if (updateResult.code !== 0) {
       result.error = updateResult.stderr || 'Update command failed';
       // Still check version — update might have partially succeeded
     }
 
     // Get new version
-    const vAfter = await execCommand(agent, getClaudeVersionCommand(os), 15000);
+    const vAfter = await strategy.execCommand(getClaudeVersionCommand(os), 15000);
     result.newVersion = vAfter.stdout.trim();
     result.success = true;
 
@@ -72,7 +73,8 @@ export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
     // Filter to online agents
     const onlineChecks = await Promise.allSettled(
       allAgents.map(async a => {
-        const conn = await testConnection(a);
+        const strategy = getStrategy(a);
+        const conn = await strategy.testConnection();
         return { agent: a, online: conn.ok };
       })
     );

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
-import { testConnection, execCommand } from '../services/ssh.js';
+import { getStrategy } from '../services/strategy.js';
 import { getProcessCheckCommand } from '../utils/platform.js';
 
 export const fleetStatusSchema = z.object({});
@@ -26,19 +26,23 @@ function formatTimeAgo(isoDate?: string): string {
   return `${days}d ago`;
 }
 
-async function checkAgent(agent: { id: string; friendlyName: string; host: string; port: number; os?: string; sessionId?: string; lastUsed?: string } & Record<string, any>): Promise<AgentStatusRow> {
+async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promise<AgentStatusRow> {
+  const hostLabel = agent.agentType === 'local' ? '(local)' : `${agent.host}:${agent.port}`;
+
   const row: AgentStatusRow = {
     name: agent.friendlyName,
-    host: `${agent.host}:${agent.port}`,
+    host: hostLabel,
     status: 'OFFLINE',
     busy: '-',
     session: agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : '(none)',
     lastActivity: formatTimeAgo(agent.lastUsed),
   };
 
+  const strategy = getStrategy(agent);
+
   try {
     const conn = await Promise.race([
-      testConnection(agent as any),
+      strategy.testConnection(),
       new Promise<{ ok: false; latencyMs: number; error: string }>((_, reject) =>
         setTimeout(() => reject(new Error('timeout')), 10000)
       ),
@@ -50,7 +54,7 @@ async function checkAgent(agent: { id: string; friendlyName: string; host: strin
       // Check if Claude is running
       try {
         const os = (agent.os ?? 'linux') as 'linux' | 'macos' | 'windows';
-        const busyCheck = await execCommand(agent as any, getProcessCheckCommand(os), 10000);
+        const busyCheck = await strategy.execCommand(getProcessCheckCommand(os), 10000);
         row.busy = busyCheck.stdout.trim().toLowerCase().includes('busy') ? 'BUSY' : 'idle';
       } catch {
         row.busy = 'unknown';
@@ -75,9 +79,10 @@ export async function fleetStatus(): Promise<string> {
 
   const rows: AgentStatusRow[] = results.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
+    const hostLabel = agents[i].agentType === 'local' ? '(local)' : `${agents[i].host}:${agents[i].port}`;
     return {
       name: agents[i].friendlyName,
-      host: `${agents[i].host}:${agents[i].port}`,
+      host: hostLabel,
       status: 'OFFLINE' as const,
       busy: '-',
       session: agents[i].sessionId?.substring(0, 8) + '...' || '(none)',

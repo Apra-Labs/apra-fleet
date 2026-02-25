@@ -85,6 +85,53 @@ export function getKeysDir(): string {
   return KEYS_DIR;
 }
 
+/**
+ * Normalize a folder path for comparison: resolve, strip trailing slashes,
+ * and lowercase on Windows (case-insensitive filesystem).
+ */
+function normalizeFolderPath(folder: string): string {
+  let normalized = path.resolve(folder);
+  // Strip trailing slashes (but keep root "/" or "C:\")
+  normalized = normalized.replace(/[\\/]+$/, '') || normalized;
+  // Case-insensitive comparison on Windows
+  if (process.platform === 'win32') {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+/**
+ * Check if another agent already uses the same folder on the same device.
+ * - Local agents: match any existing local agent with the same normalized folder.
+ * - Remote agents: match any existing remote agent with the same host + normalized folder.
+ * Returns true if a duplicate exists.
+ */
+export function hasDuplicateFolder(
+  agentType: 'local' | 'remote',
+  folder: string,
+  host?: string,
+  excludeId?: string,
+): boolean {
+  const agents = getAllAgents();
+  const normalizedFolder = normalizeFolderPath(folder);
+
+  for (const agent of agents) {
+    if (excludeId && agent.id === excludeId) continue;
+
+    const agentFolder = normalizeFolderPath(agent.remoteFolder);
+    if (agentFolder !== normalizedFolder) continue;
+
+    if (agentType === 'local' && agent.agentType === 'local') {
+      return true;
+    }
+    if (agentType === 'remote' && agent.agentType === 'remote' && agent.host === host) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function resetSession(agentId?: string): number {
   const registry = loadRegistry();
   let count = 0;

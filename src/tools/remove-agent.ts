@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAgent, removeAgent as removeFromRegistry } from '../services/registry.js';
-import { closeConnection } from '../services/ssh.js';
+import { getStrategy } from '../services/strategy.js';
 
 export const removeAgentSchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to remove'),
@@ -14,7 +14,8 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
     return `Agent "${input.agent_id}" not found.`;
   }
 
-  closeConnection(agent);
+  const strategy = getStrategy(agent);
+  strategy.close();
   const removed = removeFromRegistry(input.agent_id);
 
   if (removed) {

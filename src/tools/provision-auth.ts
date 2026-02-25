@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getAgent, updateAgent, setFleetToken } from '../services/registry.js';
-import { execCommand } from '../services/ssh.js';
+import { getStrategy } from '../services/strategy.js';
 import { getSetEnvCommand } from '../utils/platform.js';
 
 export const provisionAuthSchema = z.object({
@@ -17,13 +17,14 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   }
 
   const os = agent.os ?? 'linux';
+  const strategy = getStrategy(agent);
   const commands = getSetEnvCommand(os, 'CLAUDE_CODE_OAUTH_TOKEN', input.fleet_token);
 
   const errors: string[] = [];
 
   for (const cmd of commands) {
     try {
-      const result = await execCommand(agent, cmd, 15000);
+      const result = await strategy.execCommand(cmd, 15000);
       if (result.code !== 0 && result.stderr) {
         errors.push(`Command "${cmd.substring(0, 40)}..." stderr: ${result.stderr}`);
       }
@@ -45,7 +46,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     const shellVerify = os === 'windows'
       ? verifyCmd
       : `bash -l -c '${verifyCmd}'`;
-    const verifyResult = await execCommand(agent, shellVerify, 10000);
+    const verifyResult = await strategy.execCommand(shellVerify, 10000);
     verified = verifyResult.stdout.trim().length > 10;
   } catch {
     // Verification failed but token may still be set for new sessions
@@ -54,8 +55,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   // Quick Claude auth test
   let authWorks = false;
   try {
-    const authTest = await execCommand(
-      agent,
+    const authTest = await strategy.execCommand(
       `cd "${agent.remoteFolder}" && CLAUDE_CODE_OAUTH_TOKEN="${input.fleet_token}" claude -p "hello" --output-format json --max-turns 1`,
       60000
     );
