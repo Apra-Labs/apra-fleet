@@ -26,8 +26,8 @@ Registers a new machine as a fleet agent. This is the entry point for every agen
 2. **Duplicate folder check** — rejects if another agent already uses the same folder on the same device (same host for remote, same machine for local).
 3. **Tests connectivity** — remote agents get an SSH connection test with latency measurement. Local agents always pass (they're on the same machine).
 4. **Detects OS** — remote agents run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local agents read `process.platform` directly.
-5. **Checks Claude CLI** — runs the OS-appropriate `which claude` or `where claude` to verify Claude Code is installed.
-6. **Auth test** — runs a quick `claude -p "hello"` to verify Claude can authenticate.
+5. **Checks Claude CLI** — runs `claude --version` to verify Claude Code is installed and capture the version.
+6. **Auth test (remote only)** — runs a quick `claude -p "hello"` to verify Claude can authenticate. Skipped for local agents since they inherit the current session's auth.
 7. **Checks SCP availability** — remote only, used to choose file transfer strategy.
 8. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
 9. **Persists** — saves the agent to `~/.claude-fleet/registry.json` with a generated UUID.
@@ -100,3 +100,16 @@ Unregisters a fleet agent and cleans up its connection.
 **Output:** Confirmation message with agent name and ID. Includes warnings if the token could not be cleared (e.g. agent was offline).
 
 **Note:** This does NOT delete the working folder on the target machine, nor does it remove any deployed SSH keys from the remote's `authorized_keys` file. Those remain as-is.
+
+## shutdown_server
+
+Gracefully shuts down the MCP server process. Since MCP servers communicate over stdio, the server cannot self-restart — the client owns the process lifecycle.
+
+**Parameters:** None.
+
+**What it does:**
+
+1. Closes all pooled SSH connections.
+2. Exits the process after a short delay (allowing the response to be sent).
+
+**Usage:** Call this tool, then run `/mcp` to start a fresh instance with the latest code. Primarily useful during development when code changes need to be picked up.

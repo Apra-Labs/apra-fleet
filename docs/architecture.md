@@ -93,12 +93,12 @@ All fleet state lives in `~/.claude-fleet/registry.json` — a single JSON file 
 
 Two agents cannot share the same working directory on the same device. For remote agents, "same device" means same SSH host. For local agents, "same device" is always the master machine. This is enforced during registration and updates. It prevents two Claude sessions from stomping on each other's files.
 
-## The Twelve Tools
+## Tools
 
 The tools break into natural groups. Each group has detailed documentation:
 
-**[Lifecycle](tools-lifecycle.md)** — `register_agent`, `list_agents`, `update_agent`, `remove_agent`
-Manage the fleet roster. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of provisioned OAuth tokens on the agent.
+**[Lifecycle](tools-lifecycle.md)** — `register_agent`, `list_agents`, `update_agent`, `remove_agent`, `shutdown_server`
+Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of provisioned OAuth tokens on the agent.
 
 **[Work](tools-work.md)** — `send_files`, `execute_prompt`, `reset_session`
 The core workflow. Push files to an agent, run Claude prompts against them, manage conversation sessions.

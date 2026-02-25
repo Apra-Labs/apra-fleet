@@ -2,22 +2,34 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { readFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
 
-// Append short git hash to version (e.g. 1.1.0.a1b2c3)
-let serverVersion = pkg.version;
-try {
-  const gitHash = execSync('git rev-parse --short=6 HEAD', { encoding: 'utf-8', timeout: 5000 }).trim();
-  if (gitHash) serverVersion = `${pkg.version}.${gitHash}`;
-} catch {
-  // Not in a git repo or git not available — use plain version
+// Append short git hash to version (e.g. 1.1.0.a1b2c3) — pure Node.js, no git binary needed
+function getGitHash(): string | null {
+  try {
+    const repoRoot = join(__dirname, '..');
+    const headPath = join(repoRoot, '.git', 'HEAD');
+    if (!existsSync(headPath)) return null;
+    const head = readFileSync(headPath, 'utf-8').trim();
+    if (head.startsWith('ref: ')) {
+      const refPath = join(repoRoot, '.git', head.slice(5));
+      if (!existsSync(refPath)) return null;
+      return readFileSync(refPath, 'utf-8').trim().slice(0, 6);
+    }
+    // Detached HEAD — hash is directly in HEAD
+    return head.slice(0, 6);
+  } catch {
+    return null;
+  }
 }
+
+const gitHash = getGitHash();
+const serverVersion = gitHash ? `${pkg.version}.${gitHash}` : pkg.version;
 
 // Tool schemas and handlers
 import { registerAgentSchema, registerAgent } from './tools/register-agent.js';
@@ -32,11 +44,12 @@ import { setupSSHKeySchema, setupSSHKey } from './tools/setup-ssh-key.js';
 import { fleetStatusSchema, fleetStatus } from './tools/check-status.js';
 import { agentDetailSchema, agentDetail } from './tools/agent-detail.js';
 import { updateClaudeSchema, updateClaude } from './tools/update-claude.js';
+import { shutdownServerSchema, shutdownServer } from './tools/shutdown-server.js';
 
 import { closeAllConnections } from './services/ssh.js';
 
 const server = new McpServer({
-  name: 'claude-code-fleet',
+  name: `claude-code-fleet v${serverVersion}`,
   version: serverVersion,
 });
 
@@ -155,10 +168,19 @@ server.tool(
 
 server.tool(
   'update_claude',
-  'Update Claude Code CLI on one or all remote agents. Reports version changes.',
+  'Update or install Claude Code CLI on agents. Set install_if_missing=true to install on agents that don\'t have it.',
   updateClaudeSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await updateClaude(input as any) }],
+  })
+);
+
+server.tool(
+  'shutdown_server',
+  'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.',
+  shutdownServerSchema.shape,
+  async () => ({
+    content: [{ type: 'text', text: await shutdownServer() }],
   })
 );
 

@@ -75,15 +75,18 @@ export function getFleetProcessCheckCommand(os: RemoteOS, folder: string, sessio
     ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`
     : `grep "${folderPattern}"`;
 
-  return `CLAUDE_PIDS=$(pgrep -f "claude" 2>/dev/null); `
+  return `CLAUDE_PIDS=$(pgrep -f "[c]laude" 2>/dev/null); `
     + `if [ -z "$CLAUDE_PIDS" ]; then echo "idle"; `
     + `else CMDLINES=$(ps -o args= -p $CLAUDE_PIDS 2>/dev/null); `
     + `if echo "$CMDLINES" | ${fleetMatch} > /dev/null 2>&1; then echo "fleet-busy"; `
     + `else echo "other-busy"; fi; fi`;
 }
 
+// Native Claude install lives in ~/.local/bin — non-interactive SSH sessions may not have it in PATH
+const UNIX_CLAUDE_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
+
 export function getClaudeVersionCommand(os: RemoteOS): string {
-  return os === 'windows' ? 'claude --version 2>&1' : 'claude --version 2>&1';
+  return os === 'windows' ? 'claude --version 2>&1' : `${UNIX_CLAUDE_PATH}claude --version 2>&1`;
 }
 
 export function getClaudeCheckCommand(os: RemoteOS): string {
@@ -144,5 +147,12 @@ export function getUnsetEnvCommand(os: RemoteOS, name: string): string[] {
 }
 
 export function getUpdateClaudeCommand(os: RemoteOS): string {
-  return 'npm install -g @anthropic-ai/claude-code@latest';
+  return os === 'windows' ? 'claude update' : `${UNIX_CLAUDE_PATH}claude update`;
+}
+
+export function getInstallClaudeCommand(os: RemoteOS): string {
+  if (os === 'windows') {
+    return 'powershell -Command "irm https://claude.ai/install.ps1 | iex"';
+  }
+  return 'curl -fsSL https://claude.ai/install.sh | bash';
 }

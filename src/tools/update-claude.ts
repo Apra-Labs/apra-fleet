@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
-import { getClaudeVersionCommand, getUpdateClaudeCommand } from '../utils/platform.js';
+import { getClaudeVersionCommand, getUpdateClaudeCommand, getInstallClaudeCommand } from '../utils/platform.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
 export const updateClaudeSchema = z.object({
   agent_id: z.string().optional().describe('The UUID of the agent to update. Omit to update ALL online agents.'),
+  install_if_missing: z.boolean().default(false).describe('Install Claude Code on the agent if not already installed (default: false)'),
 });
 
 export type UpdateClaudeInput = z.infer<typeof updateClaudeSchema>;
@@ -16,10 +17,11 @@ interface UpdateResult {
   oldVersion: string;
   newVersion: string;
   success: boolean;
+  installed?: boolean;
   error?: string;
 }
 
-async function updateSingleAgent(agent: Agent): Promise<UpdateResult> {
+async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promise<UpdateResult> {
   const os = getAgentOS(agent);
   const strategy = getStrategy(agent);
   const result: UpdateResult = {
@@ -32,21 +34,37 @@ async function updateSingleAgent(agent: Agent): Promise<UpdateResult> {
   try {
     // Get current version
     const vBefore = await strategy.execCommand(getClaudeVersionCommand(os), 15000);
-    result.oldVersion = vBefore.stdout.trim();
+    const claudeFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
+    result.oldVersion = claudeFound ? vBefore.stdout.trim() : 'not installed';
 
-    // Run update
-    const updateResult = await strategy.execCommand(getUpdateClaudeCommand(os), 120000);
-    if (updateResult.code !== 0) {
-      result.error = updateResult.stderr || 'Update command failed';
-      // Still check version — update might have partially succeeded
+    if (!claudeFound && !installIfMissing) {
+      result.error = 'Claude CLI not found — use install_if_missing: true to install';
+      return result;
+    }
+
+    if (!claudeFound && installIfMissing) {
+      // Install Claude Code
+      const installResult = await strategy.execCommand(getInstallClaudeCommand(os), 180000);
+      if (installResult.code !== 0) {
+        result.error = installResult.stderr || 'Install command failed';
+        return result;
+      }
+      result.installed = true;
+    } else {
+      // Update existing installation
+      const updateResult = await strategy.execCommand(getUpdateClaudeCommand(os), 120000);
+      if (updateResult.code !== 0) {
+        result.error = updateResult.stderr || 'Update command failed';
+        // Still check version — update might have partially succeeded
+      }
     }
 
     // Get new version
     const vAfter = await strategy.execCommand(getClaudeVersionCommand(os), 15000);
-    result.newVersion = vAfter.stdout.trim();
+    result.newVersion = vAfter.stdout.trim() || 'unknown';
     result.success = true;
 
-    if (result.oldVersion === result.newVersion) {
+    if (!result.installed && result.oldVersion === result.newVersion) {
       result.error = 'Already up to date';
     }
   } catch (err: any) {
@@ -89,7 +107,7 @@ export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
   }
 
   // Update all selected agents in parallel
-  const results = await Promise.allSettled(agents.map(a => updateSingleAgent(a)));
+  const results = await Promise.allSettled(agents.map(a => updateSingleAgent(a, input.install_if_missing)));
 
   let report = `Claude CLI Update Report\n${'='.repeat(40)}\n\n`;
 
@@ -98,7 +116,11 @@ export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
       const res = r.value;
       const icon = res.success ? '✅' : '❌';
       report += `${icon} ${res.name}\n`;
-      report += `   ${res.oldVersion} → ${res.newVersion}\n`;
+      if (res.installed) {
+        report += `   Installed: ${res.newVersion}\n`;
+      } else {
+        report += `   ${res.oldVersion} → ${res.newVersion}\n`;
+      }
       if (res.error) {
         report += `   Note: ${res.error}\n`;
       }

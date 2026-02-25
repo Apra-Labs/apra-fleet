@@ -65,27 +65,32 @@ Generates an RSA-4096 key pair and migrates a remote agent from password-based t
 
 ## update_claude
 
-Updates the Claude Code CLI on one or all fleet agents.
+Updates or installs the Claude Code CLI on one or all fleet agents. Assumes agents use the native Claude installer (not npm).
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `agent_id` | string | no | UUID of a specific agent. Omit to update ALL online agents |
+| `install_if_missing` | boolean | no | Default: `false`. Set to `true` to install Claude on agents that don't have it |
 
 **What it does:**
 
 1. **Selects agents:**
    - If `agent_id` provided: targets that single agent.
    - If omitted: tests connectivity on all registered agents in parallel, filters to only online ones.
-2. **Updates each agent in parallel** (`Promise.allSettled`):
+2. **Updates or installs each agent in parallel** (`Promise.allSettled`):
    - Gets the current Claude version via `claude --version`.
-   - Runs the update command: `claude update || npm update -g @anthropic-ai/claude-code`.
-   - Gets the new version via `claude --version`.
+   - If Claude is not found and `install_if_missing` is `true`: installs using the native installer (`curl -fsSL https://claude.ai/install.sh | bash` on Linux/macOS, `irm https://claude.ai/install.ps1 | iex` on Windows).
+   - If Claude is found: runs `claude update`.
+   - If Claude is not found and `install_if_missing` is `false`: reports "not found" with guidance.
+   - Gets the new version via `claude --version` to confirm.
    - Compares old vs new — marks "Already up to date" if unchanged.
 
-**Output:** A report showing each agent with `oldVersion → newVersion` and success/failure status.
+**PATH handling:** On Linux/macOS, the native installer places Claude in `~/.local/bin`, which may not be in PATH for non-interactive SSH sessions. All Claude commands are prefixed with `export PATH="$HOME/.local/bin:$PATH"` to ensure the binary is found.
 
-**Timeout:** The update command has a 2-minute timeout per agent (120,000ms), since package downloads can be slow.
+**Output:** A report showing each agent with `oldVersion → newVersion` (or `Installed: version` for fresh installs) and success/failure status.
+
+**Timeout:** Update has a 2-minute timeout; install has a 3-minute timeout per agent.
 
 **Note:** Offline agents are silently skipped when updating all agents — they don't appear as errors in the report, they simply aren't included.

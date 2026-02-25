@@ -13,6 +13,35 @@ export const setupSSHKeySchema = z.object({
 
 export type SetupSSHKeyInput = z.infer<typeof setupSSHKeySchema>;
 
+/**
+ * Convert an RSA public key (PEM) to OpenSSH authorized_keys format.
+ * Uses JWK export to extract modulus (n) and exponent (e), then builds
+ * the ssh-rsa wire format per RFC 4253.
+ */
+function rsaPublicKeyToOpenSSH(publicKeyPem: string, comment: string): string {
+  const keyObj = crypto.createPublicKey(publicKeyPem);
+  const jwk = keyObj.export({ format: 'jwk' }) as { n?: string; e?: string };
+
+  const e = Buffer.from(jwk.e!, 'base64url');
+  const n = Buffer.from(jwk.n!, 'base64url');
+
+  const typeStr = 'ssh-rsa';
+  const typeLen = Buffer.alloc(4);
+  typeLen.writeUInt32BE(typeStr.length);
+
+  // Leading zero byte needed if high bit is set (to avoid being interpreted as negative)
+  const ePadded = (e[0] & 0x80) ? Buffer.concat([Buffer.from([0]), e]) : e;
+  const eLen = Buffer.alloc(4);
+  eLen.writeUInt32BE(ePadded.length);
+
+  const nPadded = (n[0] & 0x80) ? Buffer.concat([Buffer.from([0]), n]) : n;
+  const nLen = Buffer.alloc(4);
+  nLen.writeUInt32BE(nPadded.length);
+
+  const blob = Buffer.concat([typeLen, Buffer.from(typeStr), eLen, ePadded, nLen, nPadded]);
+  return `ssh-rsa ${blob.toString('base64')} ${comment}`;
+}
+
 export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
   const agentOrError = getAgentOrFail(input.agent_id);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -33,22 +62,20 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
 
   const strategy = getStrategy(agent);
 
-  // Step 1: Generate RSA-4096 key pair
+  // Step 1: Generate RSA-4096 key pair using Node crypto (no external tools needed)
   try {
     const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', {
       modulusLength: 4096,
       publicKeyEncoding: { type: 'spki', format: 'pem' },
-      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
     });
 
-    // Convert public key to OpenSSH format for authorized_keys
-    const keyObj = crypto.createPublicKey(publicKey);
-    const sshPubKey = keyObj.export({ type: 'spki', format: 'der' });
-    const sshPubKeyB64 = sshPubKey.toString('base64');
-    const openSSHPubKey = `ssh-rsa ${sshPubKeyB64} claude-fleet-${agent.friendlyName}`;
+    // Convert to OpenSSH authorized_keys format
+    const comment = `claude-fleet-${agent.friendlyName}`;
+    const opensshPubKey = rsaPublicKeyToOpenSSH(publicKey, comment);
 
     fs.writeFileSync(privateKeyPath, privateKey, { mode: 0o600 });
-    fs.writeFileSync(publicKeyPath, openSSHPubKey);
+    fs.writeFileSync(publicKeyPath, opensshPubKey, { mode: 0o644 });
 
     // Step 2: Deploy public key to remote
     const deployCommands = [
@@ -56,7 +83,7 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
       'chmod 700 ~/.ssh',
       'touch ~/.ssh/authorized_keys',
       'chmod 600 ~/.ssh/authorized_keys',
-      `echo '${openSSHPubKey}' >> ~/.ssh/authorized_keys`,
+      `echo '${opensshPubKey}' >> ~/.ssh/authorized_keys`,
     ];
 
     for (const cmd of deployCommands) {
@@ -66,19 +93,19 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
       }
     }
 
-    // Step 3: Test key-based login
+    // Step 3: Test key-based login before committing the change
     const testAgent = { ...agent, authType: 'key' as const, keyPath: privateKeyPath, encryptedPassword: undefined };
     const testStrategy = getStrategy(testAgent);
     try {
       const testResult = await testStrategy.execCommand('echo "key-auth-ok"', 10000);
       if (!testResult.stdout.includes('key-auth-ok')) {
-        return `❌ Key-based authentication test failed for "${agent.friendlyName}".`;
+        return `❌ Key-based authentication test failed for "${agent.friendlyName}". Password auth is still active.`;
       }
     } catch (err: any) {
       return `❌ Key-based authentication test failed: ${err.message}. Password auth is still active.`;
     }
 
-    // Step 4: Update agent registration
+    // Step 4: Update agent registration (only after successful verification)
     updateAgent(agent.id, {
       authType: 'key',
       keyPath: privateKeyPath,
