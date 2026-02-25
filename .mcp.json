@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "claude-code-fleet": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "cwd": "."
+    }
+  }
+}
