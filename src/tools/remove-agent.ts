@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import fs from 'node:fs';
 import { removeAgent as removeFromRegistry } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { removeKnownHost } from '../services/known-hosts.js';
 import type { Agent } from '../types.js';
 
 export const removeAgentSchema = z.object({
@@ -43,6 +45,18 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
   }
 
   strategy.close();
+
+  // Clean up local key files (before registry removal loses the reference)
+  if (agent.keyPath) {
+    try { fs.unlinkSync(agent.keyPath); } catch {}
+    try { fs.unlinkSync(`${agent.keyPath}.pub`); } catch {}
+  }
+
+  // Clean up known_hosts entry
+  if (agent.host && agent.port) {
+    removeKnownHost(agent.host, agent.port);
+  }
+
   const removed = removeFromRegistry(input.agent_id);
 
   if (removed) {

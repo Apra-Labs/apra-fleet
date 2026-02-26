@@ -49,6 +49,10 @@ function saveKnownHosts(store: KnownHostsStore): void {
     fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
   }
   fs.writeFileSync(KNOWN_HOSTS_PATH, JSON.stringify(store, null, 2), { mode: 0o600 });
+  // writeFileSync mode only applies at creation — chmod ensures permissions on existing files
+  if (process.platform !== 'win32') {
+    fs.chmodSync(KNOWN_HOSTS_PATH, 0o600);
+  }
 }
 
 /**

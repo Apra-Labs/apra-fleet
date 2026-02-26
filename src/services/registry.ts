@@ -17,11 +17,18 @@ function ensureFleetDir(): void {
   }
 }
 
+function enforceFilePermissions(filePath: string): void {
+  if (process.platform !== 'win32') {
+    fs.chmodSync(filePath, 0o600);
+  }
+}
+
 function loadRegistry(): FleetRegistry {
   ensureFleetDir();
   if (!fs.existsSync(REGISTRY_PATH)) {
     const empty: FleetRegistry = { version: '1.0', agents: [] };
     fs.writeFileSync(REGISTRY_PATH, JSON.stringify(empty, null, 2), { mode: 0o600 });
+    enforceFilePermissions(REGISTRY_PATH);
     return empty;
   }
   const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
@@ -31,6 +38,7 @@ function loadRegistry(): FleetRegistry {
 function saveRegistry(registry: FleetRegistry): void {
   ensureFleetDir();
   fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), { mode: 0o600 });
+  enforceFilePermissions(REGISTRY_PATH);
 }
 
 export function getAllAgents(): Agent[] {

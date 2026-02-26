@@ -1,8 +1,8 @@
 /**
  * End-to-end integration test for the fleet.
  *
- * Tears down all agents, cleans known_hosts, re-registers, provisions auth,
- * verifies list/detail tools, and tests prompts on every agent.
+ * Tears down all agents (keys + known_hosts + registry cleaned by remove_agent),
+ * re-registers, provisions auth, verifies list/detail tools, and tests prompts.
  *
  * Agent-level operations run in parallel for speed.
  *
@@ -49,8 +49,6 @@ interface FleetConfig {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
-const KNOWN_HOSTS_PATH = path.join(FLEET_DIR, 'known_hosts');
 const CRED_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 
 let passed = 0;
@@ -125,13 +123,6 @@ async function teardown() {
   );
   for (const r of results) {
     r.success ? ok(`Removed ${r.name}`) : fail(`Remove ${r.name}`, r.result);
-  }
-
-  if (fs.existsSync(KNOWN_HOSTS_PATH)) {
-    fs.unlinkSync(KNOWN_HOSTS_PATH);
-    ok('Deleted known_hosts');
-  } else {
-    ok('known_hosts already clean');
   }
 
   closeAllConnections();
