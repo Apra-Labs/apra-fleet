@@ -1,0 +1,125 @@
+# Fleet Learnings
+
+Operational knowledge gathered from real fleet usage. Will eventually become a skill for guiding users through common scenarios.
+
+## Agent Registration Troubleshooting
+
+### SSH Connection Refused (ECONNREFUSED)
+
+**Symptom:** `register_agent` fails with `connect ECONNREFUSED <host>:22 — Agent was NOT registered.`
+
+**Root cause:** SSH server is not running or not enabled on the target machine.
+
+**Platform-specific steps:**
+
+#### macOS
+
+SSH (Remote Login) is disabled by default on macOS.
+
+**Via System Settings (GUI):**
+
+1. Open **System Settings** (or System Preferences on older macOS)
+2. Go to **General → Sharing**
+3. Toggle on **Remote Login**
+4. Choose whether to allow access for all users or specific users
+
+**Via Terminal:**
+
+```bash
+# Enable SSH (Remote Login)
+sudo systemsetup -setremotelogin on
+
+# Verify it's running
+sudo systemsetup -getremotelogin
+```
+
+#### Linux (Ubuntu/Debian)
+
+```bash
+# Install and enable SSH server
+sudo apt install openssh-server
+sudo systemctl enable --now sshd
+
+# Verify it's running
+sudo systemctl status sshd
+```
+
+#### Linux (RHEL/Fedora)
+
+```bash
+# Install and enable SSH server
+sudo dnf install openssh-server
+sudo systemctl enable --now sshd
+
+# Verify it's running
+sudo systemctl status sshd
+```
+
+#### Windows
+
+**Via Settings (GUI):**
+
+1. Open **Settings > Apps > Optional Features**
+2. Click **Add a feature**, search for and install **OpenSSH Server**
+3. Open **Services** (services.msc), find **OpenSSH SSH Server**, set startup type to **Automatic**, and start it
+
+**Via PowerShell (Admin):**
+
+```powershell
+# Install OpenSSH Server
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+
+# Start the service
+Start-Service sshd
+
+# Auto-start on boot
+Set-Service sshd -StartupType Automatic
+
+# Verify it's running
+Get-Service sshd
+```
+
+### Authentication Failed (All configured authentication methods failed)
+
+**Symptom:** `register_agent` fails with `All configured authentication methods failed — Agent was NOT registered.`
+
+SSH is reachable but the credentials are wrong. Common causes:
+
+- **Wrong password** — macOS uses the user's login password, not a separate SSH password
+- **Password auth disabled** — some systems only allow key-based auth by default. Check `/etc/ssh/sshd_config` for `PasswordAuthentication yes`
+- **Wrong username** — macOS usernames are case-sensitive and may differ from the display name (check with `whoami` on the target)
+
+### Firewall Blocking Port 22
+
+If SSH is enabled but connection still refused, check firewall rules:
+
+- **Linux:** `sudo ufw allow ssh` or `sudo firewall-cmd --add-service=ssh --permanent && sudo firewall-cmd --reload`
+- **macOS:** SSH through the firewall is allowed automatically when Remote Login is enabled
+- **Windows:** `New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22`
+
+## Auth Provisioning
+
+### Flow A — Copy Master Credentials (OAuth)
+
+- Works by copying `~/.claude/.credentials.json` from the master machine to the remote agent
+- Requires the user to have run `claude auth login` locally first
+- Verification: `claude -p "hello"` makes a real API call (the only reliable check)
+- `claude auth status` does NOT validate API keys — it just checks if the env var exists
+
+### Flow B — API Key
+
+- Deploys `ANTHROPIC_API_KEY` to shell profiles (bashrc, zshrc, profile)
+- Also verified with `claude -p "hello"` (real API call)
+- Key is passed inline via env prefix during verification so it works even before re-login
+
+## SSH Stream Stdin
+
+The `ssh2` library's `client.exec()` returns a duplex stream. If you don't call `stream.end()` to close stdin, commands that read from stdin (like `claude -p`) will hang forever waiting for EOF. This caused `execute_prompt` and `provision_auth` verification to timeout on macOS (and potentially any agent) while simpler commands like `claude --version` worked fine (they don't read stdin).
+
+**Fix:** Call `stream.end()` immediately after `client.exec()` returns the stream.
+
+## SSH Key Migration
+
+- `setup_ssh_key` generates RSA-4096 per-agent key pairs
+- One key per agent allows granular revocation
+- If key deployment fails, agent stays on password auth (safe fallback)

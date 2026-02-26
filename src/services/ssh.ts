@@ -109,6 +109,9 @@ export async function execCommand(
         return;
       }
 
+      // Close stdin so commands that read from it (e.g. claude -p) get EOF
+      stream.end();
+
       let stdout = '';
       let stderr = '';
 
