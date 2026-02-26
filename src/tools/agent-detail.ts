@@ -26,6 +26,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
     id: agent.id,
     type: agent.agentType,
     host: isLocal ? '(local)' : `${agent.host}:${agent.port}`,
+    username: agent.username ?? undefined,
     os,
     folder: agent.remoteFolder,
   };
@@ -128,7 +129,8 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   const sessId = agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : 'none';
   const sessStatus = String(session.status ?? 'unknown');
 
-  let t = `${agent.friendlyName} (${agent.agentType}) | ${connStatus} | os=${os} | claude=${cli.version}\n`;
+  const userStr = agent.username ? ` | user=${agent.username}` : '';
+  let t = `${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | claude=${cli.version}\n`;
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}\n`;
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}\n`;
   return t;

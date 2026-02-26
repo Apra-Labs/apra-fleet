@@ -35,6 +35,9 @@ export interface OsCommands {
   unsetEnv(name: string): string[];
   envPrefix(name: string, value: string): string;
 
+  // --- SSH key deployment ---
+  deploySSHPublicKey(publicKeyLine: string): string[];
+
   // --- Shell ---
   shellWrap(command: string): string;
 

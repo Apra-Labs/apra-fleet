@@ -30,8 +30,10 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     input.resume && agent.sessionId ? agent.sessionId : undefined,
   );
 
+  const timeoutMs = input.timeout_ms ?? 300000;
+
   try {
-    const result = await strategy.execCommand(claudeCmd, input.timeout_ms);
+    const result = await strategy.execCommand(claudeCmd, timeoutMs);
 
     // Try to parse session_id from JSON output
     let responseText = result.stdout;
@@ -48,7 +50,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // If resume failed (stale session), retry without it
     if (result.code !== 0 && input.resume && agent.sessionId) {
       const retryCmd = cmds.buildPromptCommand(agent.remoteFolder, b64Prompt);
-      const retryResult = await strategy.execCommand(retryCmd, input.timeout_ms);
+      const retryResult = await strategy.execCommand(retryCmd, timeoutMs);
       responseText = retryResult.stdout;
 
       try {

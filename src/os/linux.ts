@@ -1,5 +1,6 @@
 import type { OsCommands } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
+import { escapeShellArg } from '../utils/shell-escape.js';
 
 const CLAUDE_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
 
@@ -103,6 +104,19 @@ export class LinuxCommands implements OsCommands {
 
   envPrefix(name: string, value: string): string {
     return `${name}="${escapeDoubleQuoted(value)}"`;
+  }
+
+  // --- SSH key deployment ---
+
+  deploySSHPublicKey(publicKeyLine: string): string[] {
+    const escaped = escapeShellArg(publicKeyLine);
+    return [
+      'mkdir -p ~/.ssh',
+      'chmod 700 ~/.ssh',
+      'touch ~/.ssh/authorized_keys',
+      'chmod 600 ~/.ssh/authorized_keys',
+      `echo ${escaped} >> ~/.ssh/authorized_keys`,
+    ];
   }
 
   // --- Shell ---

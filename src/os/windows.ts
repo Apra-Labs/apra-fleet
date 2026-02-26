@@ -1,5 +1,5 @@
 import type { OsCommands } from './os-commands.js';
-import { escapeDoubleQuoted, escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 
 const CLAUDE_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
@@ -51,11 +51,11 @@ export class WindowsCommands implements OsCommands {
   }
 
   claudeCheck(): string {
-    return 'where claude 2>nul';
+    return 'Get-Command claude -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source';
   }
 
   installClaude(): string {
-    return 'powershell -Command "irm https://claude.ai/install.ps1 | iex"';
+    return 'irm https://claude.ai/install.ps1 | iex';
   }
 
   updateClaude(): string {
@@ -65,60 +65,73 @@ export class WindowsCommands implements OsCommands {
   // --- Filesystem ---
 
   mkdir(folder: string): string {
-    return `if not exist "${escapeWindowsArg(folder)}" mkdir "${escapeWindowsArg(folder)}"`;
+    return `New-Item -Path "${escapeWindowsArg(folder)}" -ItemType Directory -Force | Out-Null`;
   }
 
   scpCheck(): string {
-    return 'where scp 2>nul';
+    return 'Get-Command scp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source';
   }
 
   // --- Auth ---
 
   credentialFileCheck(): string {
-    return 'if exist "%USERPROFILE%\\.claude\\.credentials.json" (echo found) else (echo missing)';
+    return 'if (Test-Path "$env:USERPROFILE\\.claude\\.credentials.json") { echo "found" } else { echo "missing" }';
   }
 
   credentialFileWrite(json: string): string {
-    const escaped = escapeDoubleQuoted(json).replace(/'/g, "''");
-    return `powershell -Command "Set-Content -Path \\"$env:USERPROFILE\\.claude\\.credentials.json\\" -Value '${escaped}' -NoNewline"`;
+    const psScript = `$d='${json.replace(/'/g, "''")}'; New-Item -Path "$env:USERPROFILE\\.claude" -ItemType Directory -Force | Out-Null; Set-Content -Path "$env:USERPROFILE\\.claude\\.credentials.json" -Value $d -NoNewline`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    return `powershell -EncodedCommand ${encoded}`;
   }
 
   credentialFileRemove(): string {
-    return 'del "%USERPROFILE%\\.claude\\.credentials.json" 2>nul';
+    return 'Remove-Item "$env:USERPROFILE\\.claude\\.credentials.json" -Force -ErrorAction SilentlyContinue';
   }
 
   apiKeyCheck(): string {
-    return 'echo %ANTHROPIC_API_KEY:~0,10%';
+    return 'if ($env:ANTHROPIC_API_KEY) { $env:ANTHROPIC_API_KEY.Substring(0,10) } else { echo "" }';
   }
 
   setEnv(name: string, value: string): string[] {
-    return [`setx ${name} "${escapeWindowsArg(value)}"`];
+    const escaped = value.replace(/'/g, "''");
+    return [`[Environment]::SetEnvironmentVariable('${name}', '${escaped}', 'User')`];
   }
 
   unsetEnv(name: string): string[] {
-    return [`reg delete "HKCU\\Environment" /v ${name} /f 2>nul & setx ${name} ""`];
+    return [`[Environment]::SetEnvironmentVariable('${name}', $null, 'User')`];
   }
 
   envPrefix(name: string, value: string): string {
-    return `set "${name}=${escapeDoubleQuoted(value)}" &&`;
+    const escaped = value.replace(/'/g, "''");
+    return `$env:${name}='${escaped}';`;
+  }
+
+  // --- SSH key deployment ---
+
+  deploySSHPublicKey(publicKeyLine: string): string[] {
+    const escaped = publicKeyLine.replace(/'/g, "''");
+    return [
+      'New-Item -Path "$env:USERPROFILE\\.ssh" -ItemType Directory -Force | Out-Null',
+      `Add-Content -Path "$env:USERPROFILE\\.ssh\\authorized_keys" -Value '${escaped}'`,
+      'icacls "$env:USERPROFILE\\.ssh\\authorized_keys" /inheritance:r /grant:r "$env:USERNAME:F"',
+    ];
   }
 
   // --- Shell ---
 
   shellWrap(command: string): string {
-    return `cmd /c "${command}"`;
+    return command;
   }
 
   // --- Prompt building ---
 
   buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string): string {
-    const escapedFolder = escapeDoubleQuoted(folder);
-    const decodeCmd = `powershell -Command "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}'))"`;
-    let cmd = `cd "${escapedFolder}" && for /f "delims=" %i in ('${decodeCmd}') do ${this.claudeCommand('-p "%i" --output-format json --max-turns 50')}`;
+    const escapedFolder = escapeWindowsArg(folder);
+    let resume = '';
     if (sessionId) {
-      cmd += ` --resume "${sanitizeSessionId(sessionId)}"`;
+      resume = ` --resume "${sanitizeSessionId(sessionId)}"`;
     }
-    return cmd;
+    return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns 50${resume}`;
   }
 
   // --- Resource output parsing ---

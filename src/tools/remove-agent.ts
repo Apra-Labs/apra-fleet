@@ -20,23 +20,26 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
   const warnings: string[] = [];
 
   // Best-effort: clear auth credentials from the agent before removing
-  try {
-    const conn = await strategy.testConnection();
-    if (conn.ok) {
-      const cmds = getOsCommands(getAgentOS(agent));
+  // Skip for local agents — their credentials belong to the host machine
+  if (agent.agentType === 'remote') {
+    try {
+      const conn = await strategy.testConnection();
+      if (conn.ok) {
+        const cmds = getOsCommands(getAgentOS(agent));
 
-      // Remove credentials file
-      await strategy.execCommand(cmds.credentialFileRemove(), 10000).catch(() => {});
+        // Remove credentials file
+        await strategy.execCommand(cmds.credentialFileRemove(), 10000).catch(() => {});
 
-      // Remove ANTHROPIC_API_KEY from shell profiles
-      for (const cmd of cmds.unsetEnv('ANTHROPIC_API_KEY')) {
-        await strategy.execCommand(cmd, 10000).catch(() => {});
+        // Remove ANTHROPIC_API_KEY from shell profiles
+        for (const cmd of cmds.unsetEnv('ANTHROPIC_API_KEY')) {
+          await strategy.execCommand(cmd, 10000).catch(() => {});
+        }
+      } else {
+        warnings.push('Agent was offline — could not clear auth credentials');
       }
-    } else {
-      warnings.push('Agent was offline — could not clear auth credentials');
+    } catch {
+      warnings.push('Could not connect to agent — auth credentials may still be present');
     }
-  } catch {
-    warnings.push('Could not connect to agent — auth credentials may still be present');
   }
 
   strategy.close();

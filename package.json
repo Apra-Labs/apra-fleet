@@ -10,7 +10,8 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "tsc && node dist/smoke-test.js"
+    "smoke": "tsc && node dist/smoke-test.js",
+    "integration": "tsc && npx tsx tests/integration.test.ts"
   },
   "keywords": [
     "mcp",

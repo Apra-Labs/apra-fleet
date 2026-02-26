@@ -1,0 +1,49 @@
+{
+  "agents": [
+    {
+      "friendly_name": "agent-win-local-1",
+      "agent_type": "local",
+      "remote_folder": "C:\\temp\\fake-project-fortests"
+    },
+    {
+      "friendly_name": "agent-lin-remote-1",
+      "agent_type": "remote",
+      "host": "192.168.1.102",
+      "port": 22,
+      "username": "akhil",
+      "auth_type": "key",
+      "key_path": "USE_EXISTING_OR_PATH_TO_KEY",
+      "remote_folder": "/tmp/fake-project-test"
+    },
+    {
+      "friendly_name": "agent-mac-remote-1",
+      "agent_type": "remote",
+      "host": "192.168.1.13",
+      "port": 22,
+      "username": "akhil",
+      "auth_type": "key",
+      "key_path": "USE_EXISTING_OR_PATH_TO_KEY",
+      "remote_folder": "/tmp/akhil-fake-test"
+    },
+    {
+      "friendly_name": "agent-win-remote-admin",
+      "agent_type": "remote",
+      "host": "192.168.1.20",
+      "port": 22,
+      "username": "akhil",
+      "auth_type": "password",
+      "password": "REPLACE_WITH_REAL_PASSWORD",
+      "remote_folder": "C:\\Temp\\akhil-fake-project"
+    },
+    {
+      "friendly_name": "agent-win-remote-1",
+      "agent_type": "remote",
+      "host": "192.168.1.20",
+      "port": 22,
+      "username": "fleet_user",
+      "auth_type": "password",
+      "password": "REPLACE_WITH_REAL_PASSWORD",
+      "remote_folder": "C:\\Temp\\fleet-project"
+    }
+  ]
+}

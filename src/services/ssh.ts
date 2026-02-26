@@ -1,7 +1,13 @@
-import { Client } from 'ssh2';
+import { Client, type ConnectConfig } from 'ssh2';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
+import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
+
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
 interface PoolEntry {
   client: Client;
@@ -36,12 +42,15 @@ function resetIdleTimer(key: string): void {
   }
 }
 
-export function getSSHConfig(agent: Agent): object {
-  const config: Record<string, unknown> = {
+export function getSSHConfig(agent: Agent): ConnectConfig {
+  const config: ConnectConfig = {
     host: agent.host,
     port: agent.port,
     username: agent.username,
     readyTimeout: 15000,
+    hostVerifier: (key: Buffer) => {
+      return verifyHostKey(agent.host!, agent.port!, key);
+    },
   };
 
   if (agent.authType === 'key' && agent.keyPath) {
@@ -85,8 +94,27 @@ export async function getConnection(agent: Agent): Promise<Client> {
       reject(err);
     });
 
-    client.connect(config as any);
+    client.connect(config);
   });
+}
+
+/**
+ * Connect with TOFU: on HostKeyMismatchError, auto-accept the new key and retry once.
+ * Returns the client and an optional warning string if the key was updated.
+ */
+export async function connectWithTOFU(agent: Agent): Promise<{ client: Client; warning?: string }> {
+  try {
+    const client = await getConnection(agent);
+    return { client };
+  } catch (err) {
+    if (err instanceof HostKeyMismatchError) {
+      replaceKnownHost(err.host, err.port, err.newFingerprint);
+      closeConnection(agent);
+      const client = await getConnection(agent);
+      return { client, warning: `Host key updated for ${err.host}:${err.port}` };
+    }
+    throw err;
+  }
 }
 
 export async function execCommand(
@@ -94,7 +122,7 @@ export async function execCommand(
   command: string,
   timeoutMs: number = 30000
 ): Promise<SSHExecResult> {
-  const client = await getConnection(agent);
+  const { client, warning } = await connectWithTOFU(agent);
   resetIdleTimer(poolKey(agent));
 
   return new Promise<SSHExecResult>((resolve, reject) => {
@@ -114,31 +142,70 @@ export async function execCommand(
 
       let stdout = '';
       let stderr = '';
+      let stdoutLen = 0;
+      let stderrLen = 0;
+      let stdoutSpillStream: fs.WriteStream | null = null;
+      let stderrSpillStream: fs.WriteStream | null = null;
+      let stdoutSpillPath: string | null = null;
+      let stderrSpillPath: string | null = null;
 
       stream.on('data', (data: Buffer) => {
-        stdout += data.toString();
+        stdoutLen += data.length;
+        if (stdoutLen <= MAX_OUTPUT_BYTES) {
+          stdout += data.toString();
+        } else {
+          if (!stdoutSpillStream) {
+            stdoutSpillPath = path.join(os.tmpdir(), `fleet-stdout-${uuid()}.txt`);
+            stdoutSpillStream = fs.createWriteStream(stdoutSpillPath);
+            stdoutSpillStream.write(stdout);
+          }
+          stdoutSpillStream.write(data);
+        }
       });
       stream.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
+        stderrLen += data.length;
+        if (stderrLen <= MAX_OUTPUT_BYTES) {
+          stderr += data.toString();
+        } else {
+          if (!stderrSpillStream) {
+            stderrSpillPath = path.join(os.tmpdir(), `fleet-stderr-${uuid()}.txt`);
+            stderrSpillStream = fs.createWriteStream(stderrSpillPath);
+            stderrSpillStream.write(stderr);
+          }
+          stderrSpillStream.write(data);
+        }
       });
       stream.on('close', (code: number) => {
         clearTimeout(timer);
+        if (stdoutSpillStream) stdoutSpillStream.end();
+        if (stderrSpillStream) stderrSpillStream.end();
+        if (stdoutSpillPath) {
+          stdout = `[OUTPUT TRUNCATED — full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
+        }
+        if (stderrSpillPath) {
+          stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
+        }
+        if (warning) {
+          stderr = `⚠️ ${warning}\n${stderr}`;
+        }
         resolve({ stdout, stderr, code: code ?? 0 });
       });
       stream.on('error', (err: Error) => {
         clearTimeout(timer);
+        if (stdoutSpillStream) stdoutSpillStream.end();
+        if (stderrSpillStream) stderrSpillStream.end();
         reject(err);
       });
     });
   });
 }
 
-export async function testConnection(agent: Agent): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+export async function testConnection(agent: Agent): Promise<{ ok: boolean; latencyMs: number; error?: string; warning?: string }> {
   const start = Date.now();
   try {
-    const client = await getConnection(agent);
+    const { warning } = await connectWithTOFU(agent);
     const latencyMs = Date.now() - start;
-    return { ok: true, latencyMs };
+    return { ok: true, latencyMs, warning };
   } catch (err: any) {
     return { ok: false, latencyMs: Date.now() - start, error: err.message };
   }

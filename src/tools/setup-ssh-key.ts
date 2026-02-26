@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { updateAgent, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { getOsCommands } from '../os/index.js';
 import type { Agent } from '../types.js';
 
 export const setupSSHKeySchema = z.object({
@@ -77,14 +78,9 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
     fs.writeFileSync(privateKeyPath, privateKey, { mode: 0o600 });
     fs.writeFileSync(publicKeyPath, opensshPubKey, { mode: 0o644 });
 
-    // Step 2: Deploy public key to remote
-    const deployCommands = [
-      'mkdir -p ~/.ssh',
-      'chmod 700 ~/.ssh',
-      'touch ~/.ssh/authorized_keys',
-      'chmod 600 ~/.ssh/authorized_keys',
-      `echo '${opensshPubKey}' >> ~/.ssh/authorized_keys`,
-    ];
+    // Step 2: Deploy public key to remote using OS-specific commands
+    const cmds = getOsCommands(agent.os ?? 'linux');
+    const deployCommands = cmds.deploySSHPublicKey(opensshPubKey);
 
     for (const cmd of deployCommands) {
       const result = await strategy.execCommand(cmd, 10000);

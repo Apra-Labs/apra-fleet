@@ -21,6 +21,7 @@ export async function listAgents(input?: ListAgentsInput): Promise<string> {
         name: a.friendlyName,
         type: a.agentType,
         host: a.agentType === 'local' ? '(local)' : `${a.host}:${a.port}`,
+        username: a.username ?? undefined,
         os: a.os ?? 'unknown',
         folder: a.remoteFolder,
         auth: a.agentType === 'local' ? undefined : a.authType,
@@ -36,7 +37,7 @@ export async function listAgents(input?: ListAgentsInput): Promise<string> {
   for (const a of agents) {
     const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
     t += `  ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'}`;
-    if (a.agentType !== 'local') t += ` | auth=${a.authType}`;
+    if (a.agentType !== 'local') t += ` | user=${a.username} | auth=${a.authType}`;
     t += '\n';
   }
   return t;

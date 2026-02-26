@@ -8,7 +8,10 @@ import { addAgent, hasDuplicateFolder } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 
 export const registerAgentSchema = z.object({
-  friendly_name: z.string().describe('Human-friendly name for this agent (e.g. "web-server")'),
+  friendly_name: z.string()
+    .min(1).max(64)
+    .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')
+    .describe('Human-friendly name for this agent (e.g. "web-server")'),
   agent_type: z.enum(['local', 'remote']).default('remote').describe('Agent type: "local" for same machine, "remote" for SSH (default: "remote")'),
   host: z.string().optional().describe('IP address or hostname of the remote machine (required for remote agents)'),
   port: z.number().default(22).describe('SSH port (default: 22, remote agents only)'),
@@ -62,20 +65,20 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
     return `❌ Failed to connect to ${target} — ${connResult.error}\nAgent was NOT registered.`;
   }
 
-  // Step 2: Detect OS
+  // Step 2: Detect OS — run all probes in parallel
   let detectedOS: Agent['os'];
   if (isLocal) {
-    // Detect local OS from process.platform
     const p = process.platform;
     detectedOS = p === 'win32' ? 'windows' : p === 'darwin' ? 'macos' : 'linux';
   } else {
     detectedOS = 'linux';
     try {
-      // Run probes independently — one will succeed depending on the remote shell (bash, cmd, powershell)
-      const unameResult = await strategy.execCommand('uname -s', 10000).catch(() => ({ stdout: '', stderr: '', code: 1 }));
-      const verResult = await strategy.execCommand('ver', 10000).catch(() => ({ stdout: '', stderr: '', code: 1 }));
-      // PowerShell: $env:OS returns "Windows_NT"
-      const psResult = await strategy.execCommand('echo $env:OS', 10000).catch(() => ({ stdout: '', stderr: '', code: 1 }));
+      const noop = { stdout: '', stderr: '', code: 1 };
+      const [unameResult, verResult, psResult] = await Promise.all([
+        strategy.execCommand('uname -s', 10000).catch(() => noop),
+        strategy.execCommand('ver', 10000).catch(() => noop),
+        strategy.execCommand('echo $env:OS', 10000).catch(() => noop),
+      ]);
       detectedOS = detectOS(unameResult.stdout, verResult.stdout + ' ' + psResult.stdout);
     } catch {
       warnings.push('Could not detect OS — defaulting to Linux');
@@ -86,52 +89,37 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   // Now we know the OS — get the command builder
   const cmds = getOsCommands(detectedOS);
 
-  // Step 3: Verify Claude CLI is installed and get version
+  // Steps 3-5: Run Claude version, auth check, SCP check, and mkdir in parallel
   let claudeVersion: string | undefined;
-  try {
-    const claudeCheck = await strategy.execCommand(cmds.claudeVersion(), 15000);
-    if (claudeCheck.code !== 0) {
-      warnings.push(`Claude CLI not found on ${isLocal ? 'this machine' : 'remote machine'} — install it before using execute_prompt`);
-    } else {
-      claudeVersion = claudeCheck.stdout.trim();
-    }
-  } catch {
-    warnings.push('Could not verify Claude CLI availability');
-  }
 
-  // Step 4: Quick Claude auth test (remote only — local agents inherit the current session's auth)
-  if (!isLocal) {
-    try {
-      const authCheck = await strategy.execCommand(cmds.claudeCommand('-p "hello" --output-format json --max-turns 1'), 60000);
-      if (authCheck.code !== 0) {
-        warnings.push('Claude CLI auth check failed — you may need to run provision_auth');
-      }
-    } catch {
-      warnings.push('Claude CLI auth check timed out or failed — run provision_auth to set up authentication');
-    }
-  }
+  const versionCheck = strategy.execCommand(cmds.claudeVersion(), 15000)
+    .then(r => {
+      r.code === 0
+        ? (claudeVersion = r.stdout.trim())
+        : warnings.push(`Claude CLI not found on ${isLocal ? 'this machine' : 'remote machine'} — install it before using execute_prompt`);
+    })
+    .catch(() => { warnings.push('Could not verify Claude CLI availability'); });
 
-  // Step 5: Check SCP availability (remote only)
-  if (!isLocal) {
-    try {
-      const scpCheck = await strategy.execCommand(cmds.scpCheck(), 10000);
-      tempAgent.scpAvailable = scpCheck.code === 0;
-    } catch {
-      tempAgent.scpAvailable = false;
-    }
-  }
+  const authCheck = !isLocal
+    ? strategy.execCommand(cmds.claudeCommand('-p "hello" --output-format json --max-turns 1'), 60000)
+        .then(r => { r.code !== 0 && warnings.push('Claude CLI auth check failed — you may need to run provision_auth'); })
+        .catch(() => { warnings.push('Claude CLI auth check timed out or failed — run provision_auth to set up authentication'); })
+    : Promise.resolve();
 
-  // Step 6: Create working folder
-  try {
-    if (isLocal) {
-      const { mkdirSync } = await import('node:fs');
-      mkdirSync(input.remote_folder, { recursive: true });
-    } else {
-      await strategy.execCommand(cmds.mkdir(input.remote_folder), 10000);
-    }
-  } catch {
-    warnings.push(`Could not create folder "${input.remote_folder}" — it may already exist or permissions may be needed`);
-  }
+  const scpCheck = !isLocal
+    ? strategy.execCommand(cmds.scpCheck(), 10000)
+        .then(r => { tempAgent.scpAvailable = r.code === 0; })
+        .catch(() => { tempAgent.scpAvailable = false; })
+    : Promise.resolve();
+
+  const mkdirCheck = isLocal
+    ? import('node:fs').then(({ mkdirSync }) => {
+        mkdirSync(input.remote_folder, { recursive: true });
+      }).catch(() => { warnings.push(`Could not create folder "${input.remote_folder}"`); })
+    : strategy.execCommand(cmds.mkdir(input.remote_folder), 10000)
+        .catch(() => { warnings.push(`Could not create folder "${input.remote_folder}"`); });
+
+  await Promise.all([versionCheck, authCheck, scpCheck, mkdirCheck]);
 
   // Persist
   addAgent(tempAgent);

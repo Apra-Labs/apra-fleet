@@ -65,7 +65,7 @@ describe('OsCommands via getOsCommands', () => {
     it('wraps commands appropriately per OS', () => {
       expect(linux.shellWrap('echo hi')).toBe('echo hi');
       expect(macos.shellWrap('echo hi')).toBe('echo hi');
-      expect(windows.shellWrap('echo hi')).toBe('cmd /c "echo hi"');
+      expect(windows.shellWrap('echo hi')).toBe('echo hi');
     });
   });
 
@@ -90,7 +90,7 @@ describe('OsCommands via getOsCommands', () => {
     it('generates mkdir commands', () => {
       expect(linux.mkdir('/tmp/test')).toBe('mkdir -p "/tmp/test"');
       expect(macos.mkdir('/tmp/test')).toBe('mkdir -p "/tmp/test"');
-      expect(windows.mkdir('C:\\test')).toContain('mkdir');
+      expect(windows.mkdir('C:\\test')).toContain('New-Item');
     });
   });
 
@@ -106,7 +106,7 @@ describe('OsCommands via getOsCommands', () => {
 
       const winCmds = windows.setEnv('MY_VAR', 'value');
       expect(winCmds.length).toBe(1);
-      expect(winCmds[0]).toContain('setx');
+      expect(winCmds[0]).toContain('SetEnvironmentVariable');
     });
 
     it('generates unsetenv commands for each OS', () => {
@@ -120,7 +120,7 @@ describe('OsCommands via getOsCommands', () => {
       expect(macosCmds[3]).toContain('unset MY_VAR');
 
       const winCmds = windows.unsetEnv('MY_VAR');
-      expect(winCmds[0]).toContain('reg delete');
+      expect(winCmds[0]).toContain('SetEnvironmentVariable');
     });
   });
 
@@ -133,7 +133,7 @@ describe('OsCommands via getOsCommands', () => {
 
       it(`${name}: credentialFileWrite produces a write command`, () => {
         const cmd = cmds.credentialFileWrite('{"token":"abc"}');
-        expect(cmd).toContain('credentials.json');
+        expect(cmd).toMatch(/credentials\.json|EncodedCommand/);
       });
 
       it(`${name}: credentialFileRemove produces a remove command`, () => {
@@ -225,6 +225,7 @@ describe('injection prevention', () => {
     expect(cmd).toContain('\\$(rm');
 
     const winCmd = windows.mkdir('C:\\test"&whoami&"');
+    expect(winCmd).toContain('New-Item');
     expect(winCmd).toContain('""');
     expect(winCmd).toContain('^&');
   });
@@ -245,8 +246,9 @@ describe('injection prevention', () => {
       expect(cmd).toContain('\\"');
     }
 
-    const winCmds = windows.setEnv('MY_VAR', '"&whoami&"');
-    expect(winCmds[0]).toContain('""');
-    expect(winCmds[0]).toContain('^&');
+    // PowerShell single-quote escaping: values are wrapped in '...', no shell metachar expansion
+    const winCmds = windows.setEnv('MY_VAR', "test'injection");
+    expect(winCmds[0]).toContain("''");
+    expect(winCmds[0]).toContain('SetEnvironmentVariable');
   });
 });

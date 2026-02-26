@@ -8,7 +8,6 @@ const KEY_LENGTH = 32;
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 const SALT_LENGTH = 32;
-const LEGACY_SALT = 'claude-fleet-salt';
 
 const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const SALT_PATH = path.join(FLEET_DIR, 'salt');
@@ -40,13 +39,6 @@ function deriveKey(salt?: string): Buffer {
   return crypto.scryptSync(machineId, actualSalt, KEY_LENGTH);
 }
 
-/**
- * Derive a key using the legacy static salt (for backward compatibility).
- */
-function deriveLegacyKey(): Buffer {
-  return deriveKey(LEGACY_SALT);
-}
-
 export function encryptPassword(plaintext: string): string {
   const key = deriveKey();
   const iv = crypto.randomBytes(IV_LENGTH);
@@ -64,21 +56,10 @@ export function decryptPassword(ciphertext: string): string {
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
 
-  // Try with per-installation salt first
-  try {
-    const key = deriveKey();
-    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-  } catch {
-    // Fall back to legacy static salt for backward compatibility
-    const legacyKey = deriveLegacyKey();
-    const decipher = crypto.createDecipheriv(ALGORITHM, legacyKey, iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-  }
+  const key = deriveKey();
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(authTag);
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
 }

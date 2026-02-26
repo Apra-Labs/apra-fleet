@@ -143,6 +143,10 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
+  if (agent.agentType === 'local') {
+    return `⏭️ Skipping "${agent.friendlyName}" — local agents use this machine's credentials directly.`;
+  }
+
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
   if (!conn.ok) {

@@ -1,7 +1,11 @@
 import { exec } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
+
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles } from './file-transfer.js';
 
@@ -41,11 +45,25 @@ class LocalStrategy implements AgentStrategy {
         reject(new Error(`Command timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      exec(command, { cwd: this.agent.remoteFolder, timeout: timeoutMs }, (error, stdout, stderr) => {
+      const shell = this.agent.os === 'windows' ? 'powershell.exe' : undefined;
+      // Strip CLAUDECODE env var so local claude invocations don't see it as a nested session
+      const env = { ...process.env };
+      delete env.CLAUDECODE;
+      exec(command, { cwd: this.agent.remoteFolder, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, shell, env }, (error, stdout, stderr) => {
         clearTimeout(timer);
+        let out = stdout ?? '';
+        let err = stderr ?? '';
+        // On maxBuffer overflow, Node kills the process and sets error.code to 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+        if (error && (error as any).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+          const spillPath = path.join(os.tmpdir(), `fleet-local-output-${uuid()}.txt`);
+          fs.writeFileSync(spillPath, out + err);
+          out = `[OUTPUT TRUNCATED — full output saved to ${spillPath}]\n${out}`;
+          resolve({ stdout: out, stderr: err, code: 1 });
+          return;
+        }
         resolve({
-          stdout: stdout ?? '',
-          stderr: stderr ?? '',
+          stdout: out,
+          stderr: err,
           code: error ? (error as any).code ?? 1 : 0,
         });
       });

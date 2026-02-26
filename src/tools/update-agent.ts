@@ -6,7 +6,11 @@ import type { Agent } from '../types.js';
 
 export const updateAgentSchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to update'),
-  friendly_name: z.string().optional().describe('New friendly name'),
+  friendly_name: z.string()
+    .min(1).max(64)
+    .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')
+    .optional()
+    .describe('New friendly name'),
   host: z.string().optional().describe('New host (remote agents only)'),
   port: z.number().optional().describe('New SSH port (remote agents only)'),
   username: z.string().optional().describe('New SSH username (remote agents only)'),

@@ -4,4 +4,5 @@ data/
 *.js.map
 *.tsbuildinfo
 .env
+fleet.config.json
 ~/.claude-fleet/

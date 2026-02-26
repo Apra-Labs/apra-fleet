@@ -21,7 +21,7 @@ function loadRegistry(): FleetRegistry {
   ensureFleetDir();
   if (!fs.existsSync(REGISTRY_PATH)) {
     const empty: FleetRegistry = { version: '1.0', agents: [] };
-    fs.writeFileSync(REGISTRY_PATH, JSON.stringify(empty, null, 2));
+    fs.writeFileSync(REGISTRY_PATH, JSON.stringify(empty, null, 2), { mode: 0o600 });
     return empty;
   }
   const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
@@ -30,7 +30,7 @@ function loadRegistry(): FleetRegistry {
 
 function saveRegistry(registry: FleetRegistry): void {
   ensureFleetDir();
-  fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
+  fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), { mode: 0o600 });
 }
 
 export function getAllAgents(): Agent[] {
