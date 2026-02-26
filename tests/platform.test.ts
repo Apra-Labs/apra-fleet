@@ -25,6 +25,16 @@ describe('detectOS', () => {
   it('prioritizes Windows detection from ver over uname', () => {
     expect(detectOS('Linux', 'Microsoft Windows')).toBe('windows');
   });
+
+  it('detects Windows from Git Bash / MSYS2 / Cygwin uname output', () => {
+    expect(detectOS('MINGW64_NT-10.0-19045', '')).toBe('windows');
+    expect(detectOS('MSYS_NT-10.0', '')).toBe('windows');
+    expect(detectOS('CYGWIN_NT-10.0', '')).toBe('windows');
+  });
+
+  it('detects Windows from PowerShell $env:OS output', () => {
+    expect(detectOS('', 'Windows_NT')).toBe('windows');
+  });
 });
 
 describe('getShellCommand', () => {
@@ -39,16 +49,16 @@ describe('platform command generators', () => {
   it('generates OS-specific resource commands', () => {
     expect(getCpuLoadCommand('linux')).toBe('uptime');
     expect(getCpuLoadCommand('macos')).toContain('vm.loadavg');
-    expect(getCpuLoadCommand('windows')).toContain('wmic');
+    expect(getCpuLoadCommand('windows')).toContain('dwMemoryLoad');
     expect(getMemoryCommand('linux')).toBe('free -m');
     expect(getMemoryCommand('macos')).toContain('vm_stat');
-    expect(getMemoryCommand('windows')).toContain('wmic');
+    expect(getMemoryCommand('windows')).toContain('ullTotalPhys');
   });
 
   it('generates disk commands with folder interpolation', () => {
     expect(getDiskCommand('linux', '/home/user')).toContain('/home/user');
     expect(getDiskCommand('macos', '/opt/app')).toContain('/opt/app');
-    expect(getDiskCommand('windows', 'C:\\work')).toContain("caption='C:'");
+    expect(getDiskCommand('windows', 'C:\\work')).toContain("DriveInfo");
   });
 
   it('generates fleet-aware process check commands for Unix', () => {
@@ -61,7 +71,7 @@ describe('platform command generators', () => {
 
   it('generates fleet-aware process check commands for Windows', () => {
     const cmd = getFleetProcessCheckCommand('windows', 'C:\\Users\\dev\\project');
-    expect(cmd).toContain('wmic process');
+    expect(cmd).toContain('Get-Process claude');
     expect(cmd).toContain('fleet-busy');
     expect(cmd).toContain('other-busy');
     expect(cmd).toContain('idle');

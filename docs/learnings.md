@@ -79,6 +79,37 @@ Set-Service sshd -StartupType Automatic
 Get-Service sshd
 ```
 
+#### Windows — Additional Setup for Remote Agents
+
+After installing OpenSSH Server, Windows has some quirks that can block fleet registration:
+
+**Default shell:** Windows OpenSSH defaults to `cmd.exe`. For best compatibility with fleet commands, switch to PowerShell:
+
+```powershell
+# Set PowerShell as the default SSH shell
+New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -PropertyType String -Force
+```
+
+**Admin users and authorized_keys:** Windows OpenSSH has a special rule for administrator accounts — it ignores `~/.ssh/authorized_keys` and instead reads `C:\ProgramData\ssh\administrators_authorized_keys`. If key-based auth fails for an admin user:
+
+```powershell
+# Add your public key to the administrators file
+Add-Content -Path C:\ProgramData\ssh\administrators_authorized_keys -Value "ssh-rsa AAAA..."
+
+# Fix permissions (must match sshd expectations)
+icacls C:\ProgramData\ssh\administrators_authorized_keys /inheritance:r /grant "SYSTEM:F" /grant "BUILTIN\Administrators:F"
+```
+
+For non-admin users, `~/.ssh/authorized_keys` works normally.
+
+**Elevated sessions:** Windows OpenSSH runs with full admin privileges when the SSH user is in the Administrators group — UAC is bypassed entirely. This means all fleet commands will execute as admin. Be aware of the security implications, especially on production machines. To avoid this, use a non-admin user account for SSH.
+
+**Admin vs non-admin:** Fleet operations (registration, status checks, auth provisioning, execute_prompt) do **not** require admin privileges — they work with standard user accounts. Using a non-admin user is recommended for better security.
+
+**Claude install/update on Windows:** Both install and update work without admin. Claude installs per-user to `C:\Users\<username>\.local\bin\claude.exe` — same pattern as Linux/macOS (`~/.local/bin`). The installer warns that `.local\bin` is not in PATH; the fleet server handles this automatically by prepending the path before running claude commands.
+
+**Verify SSH is reachable:** From another machine, test with `ssh username@windows-host`. If it connects but immediately closes, the default shell may not be set correctly (see above).
+
 ### Authentication Failed (All configured authentication methods failed)
 
 **Symptom:** `register_agent` fails with `All configured authentication methods failed — Agent was NOT registered.`

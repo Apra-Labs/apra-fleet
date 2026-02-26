@@ -70,9 +70,12 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   } else {
     detectedOS = 'linux';
     try {
-      const unameResult = await strategy.execCommand('uname -s', 10000);
-      const verResult = await strategy.execCommand('cmd /c ver 2>/dev/null || echo ""', 10000).catch(() => ({ stdout: '', stderr: '', code: 1 }));
-      detectedOS = detectOS(unameResult.stdout, verResult.stdout);
+      // Run probes independently — one will succeed depending on the remote shell (bash, cmd, powershell)
+      const unameResult = await strategy.execCommand('uname -s', 10000).catch(() => ({ stdout: '', stderr: '', code: 1 }));
+      const verResult = await strategy.execCommand('ver', 10000).catch(() => ({ stdout: '', stderr: '', code: 1 }));
+      // PowerShell: $env:OS returns "Windows_NT"
+      const psResult = await strategy.execCommand('echo $env:OS', 10000).catch(() => ({ stdout: '', stderr: '', code: 1 }));
+      detectedOS = detectOS(unameResult.stdout, verResult.stdout + ' ' + psResult.stdout);
     } catch {
       warnings.push('Could not detect OS — defaulting to Linux');
     }

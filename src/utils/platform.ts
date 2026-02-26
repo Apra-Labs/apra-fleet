@@ -9,6 +9,10 @@ export function detectOS(unameOutput: string, verOutput: string): RemoteOS {
   }
   const uname = unameOutput.trim().toLowerCase();
   if (uname === 'darwin') return 'macos';
+  // Git Bash / MSYS2 / Cygwin on Windows report MINGW*, MSYS*, or CYGWIN*
+  if (uname.startsWith('mingw') || uname.startsWith('msys') || uname.startsWith('cygwin')) {
+    return 'windows';
+  }
   return 'linux';
 }
 
@@ -23,7 +27,8 @@ export function getCpuLoadCommand(os: RemoteOS): string {
   switch (os) {
     case 'linux': return 'uptime';
     case 'macos': return 'sysctl -n vm.loadavg';
-    case 'windows': return 'wmic cpu get loadpercentage /value';
+    // kernel32 GlobalMemoryStatusEx gives dwMemoryLoad (% of physical memory in use) — works without admin
+    case 'windows': return WIN_MEMINFO_CMD + '; Write-Output ("cpu:" + $m.dwMemoryLoad + "%")';
   }
 }
 
@@ -31,7 +36,8 @@ export function getMemoryCommand(os: RemoteOS): string {
   switch (os) {
     case 'linux': return 'free -m';
     case 'macos': return 'vm_stat && echo "---" && sysctl -n hw.memsize';
-    case 'windows': return 'wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /value';
+    // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
+    case 'windows': return WIN_MEMINFO_CMD + '; Write-Output ([math]::Round(($m.ullTotalPhys - $m.ullAvailPhys)/1MB).ToString() + " MB / " + [math]::Round($m.ullTotalPhys/1MB).ToString() + " MB")';
   }
 }
 
@@ -40,9 +46,10 @@ export function getDiskCommand(os: RemoteOS, folder: string): string {
     case 'linux':
     case 'macos':
       return `df -h "${escapeDoubleQuoted(folder)}"`;
+    // System.IO.DriveInfo — works without admin, no WMI needed
     case 'windows': {
       const drive = escapeWindowsArg(folder.charAt(0));
-      return `wmic logicaldisk where "caption='${drive}:'" get size,freespace,caption /value`;
+      return `$d=[System.IO.DriveInfo]::new('${drive}'); $d.Name + ' ' + [math]::Round($d.AvailableFreeSpace/1GB).ToString() + 'GB free / ' + [math]::Round($d.TotalSize/1GB).ToString() + 'GB'`;
     }
   }
 }
@@ -56,16 +63,15 @@ export function getDiskCommand(os: RemoteOS, folder: string): string {
  */
 export function getFleetProcessCheckCommand(os: RemoteOS, folder: string, sessionId?: string): string {
   if (os === 'windows') {
-    // Windows: check tasklist for claude.exe, then use wmic to inspect command lines
+    // PowerShell: Get-Process + CommandLine — works without admin, no WMI needed
     const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
-    const folderMatch = `findstr /i /c:"${escapedFolder}"`;
-    const sessionMatch = sessionId ? ` | findstr /c:"${escapeWindowsArg(sanitizeSessionId(sessionId))}"` : '';
+    const sessionFilter = sessionId ? ` -or $_.CommandLine -match '${escapeWindowsArg(sanitizeSessionId(sessionId))}'` : '';
     return [
-      `wmic process where "name='claude.exe'" get CommandLine /format:list 2>nul`,
-      `| ${folderMatch}${sessionMatch} >nul 2>nul`,
-      `&& echo fleet-busy`,
-      `|| (tasklist /FI "IMAGENAME eq claude.exe" /NH 2>nul | findstr /i "claude" >nul && echo other-busy || echo idle)`,
-    ].join(' ');
+      `$procs = Get-Process claude -ErrorAction SilentlyContinue`,
+      `if (-not $procs) { echo 'idle' }`,
+      `elseif ($procs | Where-Object { $_.CommandLine -match '${escapedFolder}'${sessionFilter} }) { echo 'fleet-busy' }`,
+      `else { echo 'other-busy' }`,
+    ].join('; ');
   }
 
   // Unix (Linux/macOS): use ps to get full command lines of claude processes,
@@ -82,12 +88,22 @@ export function getFleetProcessCheckCommand(os: RemoteOS, folder: string, sessio
     + `else echo "other-busy"; fi; fi`;
 }
 
+// PowerShell: kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
+// Reused by getCpuLoadCommand (dwMemoryLoad %) and getMemoryCommand (used/total)
+const WIN_MEMINFO_CMD = [
+  'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class MI{[DllImport("kernel32.dll")]public static extern bool GlobalMemoryStatusEx(ref MS m);[StructLayout(LayoutKind.Sequential)]public struct MS{public uint dwLength;public uint dwMemoryLoad;public ulong ullTotalPhys;public ulong ullAvailPhys;public ulong ullTotalPageFile;public ulong ullAvailPageFile;public ulong ullTotalVirtual;public ulong ullAvailVirtual;public ulong ullAvailExtendedVirtual;}}\'',
+  '$m=New-Object MI+MS',
+  '$m.dwLength=[uint32][Runtime.InteropServices.Marshal]::SizeOf($m)',
+  '[void][MI]::GlobalMemoryStatusEx([ref]$m)',
+].join('; ');
+
 // Native Claude install lives in ~/.local/bin — non-interactive SSH sessions may not have it in PATH
 const UNIX_CLAUDE_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
+const WIN_CLAUDE_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
 /** Build a claude CLI command with proper PATH for non-interactive SSH sessions */
 export function getClaudeCommand(os: RemoteOS, args: string): string {
-  return os === 'windows' ? `claude ${args}` : `${UNIX_CLAUDE_PATH}claude ${args}`;
+  return os === 'windows' ? `${WIN_CLAUDE_PATH}claude ${args}` : `${UNIX_CLAUDE_PATH}claude ${args}`;
 }
 
 export function getClaudeVersionCommand(os: RemoteOS): string {
