@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
-import { getClaudeVersionCommand, getUpdateClaudeCommand, getInstallClaudeCommand } from '../utils/platform.js';
+import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
@@ -22,7 +22,7 @@ interface UpdateResult {
 }
 
 async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promise<UpdateResult> {
-  const os = getAgentOS(agent);
+  const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
   const result: UpdateResult = {
     name: agent.friendlyName,
@@ -33,7 +33,7 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
 
   try {
     // Get current version
-    const vBefore = await strategy.execCommand(getClaudeVersionCommand(os), 15000);
+    const vBefore = await strategy.execCommand(cmds.claudeVersion(), 15000);
     const claudeFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
     result.oldVersion = claudeFound ? vBefore.stdout.trim() : 'not installed';
 
@@ -43,24 +43,21 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
     }
 
     if (!claudeFound && installIfMissing) {
-      // Install Claude Code
-      const installResult = await strategy.execCommand(getInstallClaudeCommand(os), 180000);
+      const installResult = await strategy.execCommand(cmds.installClaude(), 180000);
       if (installResult.code !== 0) {
         result.error = installResult.stderr || 'Install command failed';
         return result;
       }
       result.installed = true;
     } else {
-      // Update existing installation
-      const updateResult = await strategy.execCommand(getUpdateClaudeCommand(os), 120000);
+      const updateResult = await strategy.execCommand(cmds.updateClaude(), 120000);
       if (updateResult.code !== 0) {
         result.error = updateResult.stderr || 'Update command failed';
-        // Still check version — update might have partially succeeded
       }
     }
 
     // Get new version
-    const vAfter = await strategy.execCommand(getClaudeVersionCommand(os), 15000);
+    const vAfter = await strategy.execCommand(cmds.claudeVersion(), 15000);
     result.newVersion = vAfter.stdout.trim() || 'unknown';
     result.success = true;
 

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
-import { getFleetProcessCheckCommand } from '../utils/platform.js';
+import { getOsCommands } from '../os/index.js';
 import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
 
 export const fleetStatusSchema = z.object({
@@ -56,9 +56,9 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
 
       // Check if a fleet-related Claude process is running in this agent's folder
       try {
-        const os = getAgentOS(agent);
+        const cmds = getOsCommands(getAgentOS(agent));
         const busyCheck = await strategy.execCommand(
-          getFleetProcessCheckCommand(os, agent.remoteFolder, agent.sessionId),
+          cmds.fleetProcessCheck(agent.remoteFolder, agent.sessionId),
           10000,
         );
         const output = busyCheck.stdout.trim().toLowerCase();

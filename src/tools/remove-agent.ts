@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { removeAgent as removeFromRegistry } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
-import { getUnsetEnvCommand } from '../utils/platform.js';
+import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
@@ -23,17 +23,13 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
   try {
     const conn = await strategy.testConnection();
     if (conn.ok) {
-      const os = getAgentOS(agent);
+      const cmds = getOsCommands(getAgentOS(agent));
 
       // Remove credentials file
-      const rmCredCmd = os === 'windows'
-        ? 'del "%USERPROFILE%\\.claude\\.credentials.json" 2>nul'
-        : 'rm -f ~/.claude/.credentials.json';
-      await strategy.execCommand(rmCredCmd, 10000).catch(() => {});
+      await strategy.execCommand(cmds.credentialFileRemove(), 10000).catch(() => {});
 
       // Remove ANTHROPIC_API_KEY from shell profiles
-      const commands = getUnsetEnvCommand(os, 'ANTHROPIC_API_KEY');
-      for (const cmd of commands) {
+      for (const cmd of cmds.unsetEnv('ANTHROPIC_API_KEY')) {
         await strategy.execCommand(cmd, 10000).catch(() => {});
       }
     } else {

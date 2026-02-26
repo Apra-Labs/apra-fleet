@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
-import { getClaudeVersionCommand, getCpuLoadCommand, getMemoryCommand, getDiskCommand, getFleetProcessCheckCommand } from '../utils/platform.js';
+import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
@@ -17,6 +17,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   const agent = agentOrError as Agent;
 
   const os = getAgentOS(agent);
+  const cmds = getOsCommands(os);
   const isLocal = agent.agentType === 'local';
   const strategy = getStrategy(agent);
 
@@ -44,7 +45,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   // -- Claude CLI --
   const cli: Record<string, unknown> = {};
   try {
-    const versionResult = await strategy.execCommand(getClaudeVersionCommand(os), 10000);
+    const versionResult = await strategy.execCommand(cmds.claudeVersion(), 10000);
     cli.version = versionResult.stdout.trim();
   } catch {
     cli.version = 'unknown';
@@ -52,20 +53,14 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   const authMethods: string[] = [];
   try {
-    const credCheckCmd = os === 'windows'
-      ? 'if exist "%USERPROFILE%\\.claude\\.credentials.json" (echo found) else (echo missing)'
-      : 'test -f ~/.claude/.credentials.json && echo found || echo missing';
-    const credResult = await strategy.execCommand(credCheckCmd, 10000);
+    const credResult = await strategy.execCommand(cmds.credentialFileCheck(), 10000);
     if (credResult.stdout.trim() === 'found') {
       authMethods.push('OAuth credentials file');
     }
   } catch { /* ignore */ }
 
   try {
-    const apiKeyCheckCmd = os === 'windows'
-      ? 'echo %ANTHROPIC_API_KEY:~0,10%'
-      : 'bash -l -c \'echo "${ANTHROPIC_API_KEY:0:10}"\'';
-    const apiKeyResult = await strategy.execCommand(apiKeyCheckCmd, 10000);
+    const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(), 10000);
     if (apiKeyResult.stdout.trim().length > 5) {
       authMethods.push('API key (env)');
     }
@@ -82,7 +77,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   try {
     const busyCheck = await strategy.execCommand(
-      getFleetProcessCheckCommand(os, agent.remoteFolder, agent.sessionId),
+      cmds.fleetProcessCheck(agent.remoteFolder, agent.sessionId),
       10000,
     );
     const output = busyCheck.stdout.trim().toLowerCase();
@@ -102,38 +97,22 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   const resources: Record<string, string> = {};
 
   try {
-    const cpuResult = await strategy.execCommand(getCpuLoadCommand(os), 10000);
+    const cpuResult = await strategy.execCommand(cmds.cpuLoad(), 10000);
     resources.cpu = cpuResult.stdout.trim();
   } catch {
     resources.cpu = 'unavailable';
   }
 
   try {
-    const memResult = await strategy.execCommand(getMemoryCommand(os), 10000);
-    const memLines = memResult.stdout.trim().split('\n');
-    if (os === 'linux') {
-      const memLine = memLines.find(l => l.startsWith('Mem:'));
-      if (memLine) {
-        const parts = memLine.split(/\s+/);
-        resources.memory = `${parts[2]} MB / ${parts[1]} MB`;
-      } else {
-        resources.memory = memResult.stdout.trim();
-      }
-    } else {
-      resources.memory = memResult.stdout.trim().substring(0, 200);
-    }
+    const memResult = await strategy.execCommand(cmds.memory(), 10000);
+    resources.memory = cmds.parseMemory(memResult.stdout);
   } catch {
     resources.memory = 'unavailable';
   }
 
   try {
-    const diskResult = await strategy.execCommand(getDiskCommand(os, agent.remoteFolder), 10000);
-    const diskLines = diskResult.stdout.trim().split('\n');
-    if (os !== 'windows' && diskLines.length >= 2) {
-      resources.disk = diskLines[1].trim();
-    } else {
-      resources.disk = diskResult.stdout.trim().substring(0, 200);
-    }
+    const diskResult = await strategy.execCommand(cmds.disk(agent.remoteFolder), 10000);
+    resources.disk = cmds.parseDisk(diskResult.stdout);
   } catch {
     resources.disk = 'unavailable';
   }

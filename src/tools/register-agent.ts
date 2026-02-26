@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
-import { detectOS, getClaudeVersionCommand, getClaudeCommand, getScpCheckCommand, getMkdirCommand } from '../utils/platform.js';
+import { detectOS } from '../utils/platform.js';
+import { getOsCommands } from '../os/index.js';
 import { addAgent, hasDuplicateFolder } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 
@@ -82,10 +83,13 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   }
   tempAgent.os = detectedOS;
 
+  // Now we know the OS — get the command builder
+  const cmds = getOsCommands(detectedOS);
+
   // Step 3: Verify Claude CLI is installed and get version
   let claudeVersion: string | undefined;
   try {
-    const claudeCheck = await strategy.execCommand(getClaudeVersionCommand(detectedOS), 15000);
+    const claudeCheck = await strategy.execCommand(cmds.claudeVersion(), 15000);
     if (claudeCheck.code !== 0) {
       warnings.push(`Claude CLI not found on ${isLocal ? 'this machine' : 'remote machine'} — install it before using execute_prompt`);
     } else {
@@ -98,7 +102,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   // Step 4: Quick Claude auth test (remote only — local agents inherit the current session's auth)
   if (!isLocal) {
     try {
-      const authCheck = await strategy.execCommand(getClaudeCommand(detectedOS, '-p "hello" --output-format json --max-turns 1'), 60000);
+      const authCheck = await strategy.execCommand(cmds.claudeCommand('-p "hello" --output-format json --max-turns 1'), 60000);
       if (authCheck.code !== 0) {
         warnings.push('Claude CLI auth check failed — you may need to run provision_auth');
       }
@@ -110,7 +114,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   // Step 5: Check SCP availability (remote only)
   if (!isLocal) {
     try {
-      const scpCheck = await strategy.execCommand(getScpCheckCommand(detectedOS), 10000);
+      const scpCheck = await strategy.execCommand(cmds.scpCheck(), 10000);
       tempAgent.scpAvailable = scpCheck.code === 0;
     } catch {
       tempAgent.scpAvailable = false;
@@ -123,7 +127,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
       const { mkdirSync } = await import('node:fs');
       mkdirSync(input.remote_folder, { recursive: true });
     } else {
-      await strategy.execCommand(getMkdirCommand(detectedOS, input.remote_folder), 10000);
+      await strategy.execCommand(cmds.mkdir(input.remote_folder), 10000);
     }
   } catch {
     warnings.push(`Could not create folder "${input.remote_folder}" — it may already exist or permissions may be needed`);

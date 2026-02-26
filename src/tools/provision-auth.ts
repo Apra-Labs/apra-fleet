@@ -3,11 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../services/strategy.js';
-import { getSetEnvCommand, getClaudeCommand } from '../utils/platform.js';
+import { getOsCommands } from '../os/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
-import type { RemoteOS } from '../utils/platform.js';
 
 export const provisionAuthSchema = z.object({
   agent_id: z.string().describe('The UUID of the target agent'),
@@ -23,11 +22,12 @@ export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
  * This is the only reliable validation for both OAuth and API key auth,
  * since `claude auth status` doesn't actually validate API keys.
  */
-async function verifyWithPrompt(agent: Agent, os: RemoteOS, envPrefix?: string): Promise<boolean> {
+async function verifyWithPrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
+  const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
-  const prefix = envPrefix ? `${envPrefix} ` : '';
   const escapedFolder = escapeDoubleQuoted(agent.remoteFolder);
-  const cmd = `cd "${escapedFolder}" && ${prefix}${getClaudeCommand(os, '-p "hello" --output-format json --max-turns 1')}`;
+  const prefix = envPrefix ? `${envPrefix} ` : '';
+  const cmd = `cd "${escapedFolder}" && ${prefix}${cmds.claudeCommand('-p "hello" --output-format json --max-turns 1')}`;
   try {
     const result = await strategy.execCommand(cmd, 60000);
     return result.code === 0;
@@ -40,7 +40,6 @@ async function verifyWithPrompt(agent: Agent, os: RemoteOS, envPrefix?: string):
 // Flow A — Copy master's OAuth credentials (default)
 // ---------------------------------------------------------------------------
 
-/** Read the master machine's credentials file */
 function readMasterCredentials(): string | null {
   const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
   try {
@@ -52,7 +51,7 @@ function readMasterCredentials(): string | null {
 }
 
 async function provisionMasterToken(agent: Agent): Promise<string> {
-  const agentOS = getAgentOS(agent);
+  const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
 
   const creds = readMasterCredentials();
@@ -61,20 +60,9 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
       + `  Run "claude auth login" locally first, or use the api_key parameter instead.`;
   }
 
-  // Ensure ~/.claude exists on remote
-  const mkdirCmd = agentOS === 'windows'
-    ? 'if not exist "%USERPROFILE%\\.claude" mkdir "%USERPROFILE%\\.claude"'
-    : 'mkdir -p ~/.claude';
-  await strategy.execCommand(mkdirCmd, 10000).catch(() => {});
-
-  // Write credentials file to remote
-  const escaped = escapeDoubleQuoted(creds);
-  const writeCmd = agentOS === 'windows'
-    ? `powershell -Command "Set-Content -Path \\"$env:USERPROFILE\\.claude\\.credentials.json\\" -Value '${escaped.replace(/'/g, "''")}' -NoNewline"`
-    : `printf '%s' "${escaped}" > ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json`;
-
+  // Write credentials file to remote (mkdir + write in one command)
   try {
-    const result = await strategy.execCommand(writeCmd, 10000);
+    const result = await strategy.execCommand(cmds.credentialFileWrite(creds), 10000);
     if (result.code !== 0 && result.stderr) {
       return `❌ Failed to write credentials on "${agent.friendlyName}": ${result.stderr}`;
     }
@@ -82,8 +70,7 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
     return `❌ Failed to write credentials on "${agent.friendlyName}": ${err.message}`;
   }
 
-  // Verify auth with a real API call
-  const authWorks = await verifyWithPrompt(agent, agentOS);
+  const authWorks = await verifyWithPrompt(agent);
   touchAgent(agent.id);
 
   if (authWorks) {
@@ -99,9 +86,9 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
 // ---------------------------------------------------------------------------
 
 async function provisionApiKey(agent: Agent, apiKey: string): Promise<string> {
-  const agentOS = getAgentOS(agent);
+  const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
-  const commands = getSetEnvCommand(agentOS, 'ANTHROPIC_API_KEY', apiKey);
+  const commands = cmds.setEnv('ANTHROPIC_API_KEY', apiKey);
 
   const errors: string[] = [];
   for (const cmd of commands) {
@@ -118,21 +105,15 @@ async function provisionApiKey(agent: Agent, apiKey: string): Promise<string> {
   // Verify the key was persisted in a new shell
   let verified = false;
   try {
-    const verifyCmd = agentOS === 'windows'
-      ? 'echo %ANTHROPIC_API_KEY:~0,10%'
-      : `bash -l -c 'echo "\${ANTHROPIC_API_KEY:0:10}"'`;
-    const verifyResult = await strategy.execCommand(verifyCmd, 10000);
+    const verifyResult = await strategy.execCommand(cmds.apiKeyCheck(), 10000);
     verified = verifyResult.stdout.trim().length > 5;
   } catch {
     // May still work after re-login
   }
 
-  // Verify with a real API call — auth status doesn't validate API keys
-  const escapedKey = escapeDoubleQuoted(apiKey);
-  const envPrefix = agentOS === 'windows'
-    ? `set "ANTHROPIC_API_KEY=${escapedKey}" &&`
-    : `ANTHROPIC_API_KEY="${escapedKey}"`;
-  const authWorks = await verifyWithPrompt(agent, agentOS, envPrefix);
+  // Verify with a real API call
+  const envPrefix = cmds.envPrefix('ANTHROPIC_API_KEY', apiKey);
+  const authWorks = await verifyWithPrompt(agent, envPrefix);
 
   touchAgent(agent.id);
 
@@ -162,7 +143,6 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
-  // Verify agent is online
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
   if (!conn.ok) {

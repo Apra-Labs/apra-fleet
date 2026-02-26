@@ -1,8 +1,6 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
-import { escapeDoubleQuoted, sanitizeSessionId } from '../utils/shell-escape.js';
-import { getClaudeCommand } from '../utils/platform.js';
-import type { RemoteOS } from '../utils/platform.js';
+import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
@@ -15,48 +13,18 @@ export const executePromptSchema = z.object({
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
 
-/**
- * Build a Claude CLI command string with proper escaping.
- * Centralizes command construction to avoid duplication and injection.
- */
-export function buildClaudeCommand(
-  os: RemoteOS,
-  folder: string,
-  b64Prompt: string,
-  sessionId?: string,
-): string {
-  const escapedFolder = escapeDoubleQuoted(folder);
-
-  let cmd: string;
-  if (os === 'windows') {
-    const decodeCmd = `powershell -Command "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}'))"`;
-    cmd = `cd "${escapedFolder}" && for /f "delims=" %i in ('${decodeCmd}') do ${getClaudeCommand(os, '-p "%i" --output-format json --max-turns 50')}`;
-  } else {
-    cmd = `cd "${escapedFolder}" && ${getClaudeCommand(os, `-p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns 50`)}`;
-  }
-
-  if (sessionId) {
-    const safeSessionId = sanitizeSessionId(sessionId);
-    cmd += ` --resume "${safeSessionId}"`;
-  }
-
-  return cmd;
-}
-
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
   const agentOrError = getAgentOrFail(input.agent_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
   const strategy = getStrategy(agent);
-  const os = getAgentOS(agent);
+  const cmds = getOsCommands(getAgentOS(agent));
 
   // Base64-encode the prompt to avoid shell escaping issues
   const b64Prompt = Buffer.from(input.prompt).toString('base64');
 
-  // Build the Claude command with proper escaping
-  const claudeCmd = buildClaudeCommand(
-    os,
+  const claudeCmd = cmds.buildPromptCommand(
     agent.remoteFolder,
     b64Prompt,
     input.resume && agent.sessionId ? agent.sessionId : undefined,
@@ -79,7 +47,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // If resume failed (stale session), retry without it
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = buildClaudeCommand(os, agent.remoteFolder, b64Prompt);
+      const retryCmd = cmds.buildPromptCommand(agent.remoteFolder, b64Prompt);
       const retryResult = await strategy.execCommand(retryCmd, input.timeout_ms);
       responseText = retryResult.stdout;
 
