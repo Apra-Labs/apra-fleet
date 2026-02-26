@@ -107,3 +107,7 @@ If SSH is enabled but connection still refused, check firewall rules:
 ### Auth Check Failed Warning During Registration
 
 If `register_agent` succeeds but shows `Claude CLI auth check failed — you may need to run provision_auth`, this is normal for new agents. Run `provision_auth` with the agent's ID to set up authentication.
+
+## MCP Tool Output
+
+MCP tool results get collapsed in Claude Code's console (shown as "+N lines", requiring Ctrl+O to expand). Returning JSON from tools works best — the agent parses the structured data and renders it in its own response, which displays fully. Avoid formatting tables or reports in tool output; let the agent handle presentation.
