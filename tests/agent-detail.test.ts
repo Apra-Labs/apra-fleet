@@ -43,7 +43,7 @@ describe('agentDetail auth detection', () => {
     addAgent(agent);
     setupDefaultMock();
 
-    const result = JSON.parse(await agentDetail({ agent_id: agent.id }));
+    const result = JSON.parse(await agentDetail({ agent_id: agent.id, format: 'json' }));
     expect(result.claude.auth).toBe('none');
   });
 
@@ -60,7 +60,7 @@ describe('agentDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await agentDetail({ agent_id: agent.id }));
+    const result = JSON.parse(await agentDetail({ agent_id: agent.id, format: 'json' }));
     expect(result.claude.auth).toContain('OAuth credentials file');
     expect(result.claude.auth).toContain('API key (env)');
   });
@@ -78,7 +78,7 @@ describe('agentDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await agentDetail({ agent_id: agent.id }));
+    const result = JSON.parse(await agentDetail({ agent_id: agent.id, format: 'json' }));
     expect(result.claude.auth).toContain('API key (env)');
     expect(result.claude.auth).not.toContain('OAuth credentials file');
   });

@@ -66,10 +66,10 @@ server.tool(
 
 server.tool(
   'list_agents',
-  'List all registered fleet agents. Returns JSON. IMPORTANT: Always render the result as a markdown table for the user.',
+  'List all registered fleet agents. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
   listAgentsSchema.shape,
-  async () => ({
-    content: [{ type: 'text', text: await listAgents() }],
+  async (input) => ({
+    content: [{ type: 'text', text: await listAgents(input as any) }],
   })
 );
 
@@ -148,16 +148,16 @@ server.tool(
 
 server.tool(
   'fleet_status',
-  'Get fleet agent status. Returns JSON. IMPORTANT: Always render the result as a markdown table for the user.',
+  'Get fleet agent status. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
   fleetStatusSchema.shape,
-  async () => ({
-    content: [{ type: 'text', text: await fleetStatus() }],
+  async (input) => ({
+    content: [{ type: 'text', text: await fleetStatus(input as any) }],
   })
 );
 
 server.tool(
   'agent_detail',
-  'Deep-dive status for one agent. Returns JSON with connectivity, Claude CLI, session, and system resources. IMPORTANT: Always render the result clearly for the user.',
+  'Deep-dive status for one agent. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
   agentDetailSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await agentDetail(input as any) }],

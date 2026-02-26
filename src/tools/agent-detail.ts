@@ -6,6 +6,7 @@ import type { Agent } from '../types.js';
 
 export const agentDetailSchema = z.object({
   agent_id: z.string().describe('The UUID of the agent to inspect'),
+  format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
 });
 
 export type AgentDetailInput = z.infer<typeof agentDetailSchema>;
@@ -138,5 +139,18 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   }
   result.resources = resources;
 
-  return JSON.stringify(result);
+  if (input.format === 'json') {
+    return JSON.stringify(result);
+  }
+
+  // Compact: pack key info into a few lines
+  const connStatus = conn.ok ? 'online' : 'OFFLINE';
+  const authStr = Array.isArray(cli.auth) ? (cli.auth as string[]).join(', ') : String(cli.auth);
+  const sessId = agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : 'none';
+  const sessStatus = String(session.status ?? 'unknown');
+
+  let t = `${agent.friendlyName} (${agent.agentType}) | ${connStatus} | os=${os} | claude=${cli.version}\n`;
+  t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}\n`;
+  t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}\n`;
+  return t;
 }
