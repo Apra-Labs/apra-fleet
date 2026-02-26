@@ -99,27 +99,11 @@ If SSH is enabled but connection still refused, check firewall rules:
 
 ## Auth Provisioning
 
-### Flow A — Copy Master Credentials (OAuth)
+### Prerequisites
 
-- Works by copying `~/.claude/.credentials.json` from the master machine to the remote agent
-- Requires the user to have run `claude auth login` locally first
-- Verification: `claude -p "hello"` makes a real API call (the only reliable check)
-- `claude auth status` does NOT validate API keys — it just checks if the env var exists
+- **For OAuth (default):** Run `claude auth login` on your local machine first. `provision_auth` copies your credentials to the remote agent.
+- **For API key:** Have your Anthropic API key ready. Pass it as the `api_key` parameter to `provision_auth`.
 
-### Flow B — API Key
+### Auth Check Failed Warning During Registration
 
-- Deploys `ANTHROPIC_API_KEY` to shell profiles (bashrc, zshrc, profile)
-- Also verified with `claude -p "hello"` (real API call)
-- Key is passed inline via env prefix during verification so it works even before re-login
-
-## SSH Stream Stdin
-
-The `ssh2` library's `client.exec()` returns a duplex stream. If you don't call `stream.end()` to close stdin, commands that read from stdin (like `claude -p`) will hang forever waiting for EOF. This caused `execute_prompt` and `provision_auth` verification to timeout on macOS (and potentially any agent) while simpler commands like `claude --version` worked fine (they don't read stdin).
-
-**Fix:** Call `stream.end()` immediately after `client.exec()` returns the stream.
-
-## SSH Key Migration
-
-- `setup_ssh_key` generates RSA-4096 per-agent key pairs
-- One key per agent allows granular revocation
-- If key deployment fails, agent stays on password auth (safe fallback)
+If `register_agent` succeeds but shows `Claude CLI auth check failed — you may need to run provision_auth`, this is normal for new agents. Run `provision_auth` with the agent's ID to set up authentication.
