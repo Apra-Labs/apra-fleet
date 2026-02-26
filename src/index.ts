@@ -148,7 +148,7 @@ server.tool(
 
 server.tool(
   'fleet_status',
-  'Get a summary table of all fleet agents: online/offline, busy/idle, session info.',
+  'Get fleet agent status. Returns JSON. IMPORTANT: Always render the result as a markdown table for the user.',
   fleetStatusSchema.shape,
   async () => ({
     content: [{ type: 'text', text: await fleetStatus() }],
