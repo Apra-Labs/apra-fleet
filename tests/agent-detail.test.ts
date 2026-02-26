@@ -38,13 +38,13 @@ describe('agentDetail auth detection', () => {
     restoreRegistry();
   });
 
-  it('reports "No authentication" when nothing is found', async () => {
+  it('reports no auth when nothing is found', async () => {
     const agent = makeTestAgent({ friendlyName: 'bare-agent' });
     addAgent(agent);
     setupDefaultMock();
 
-    const result = await agentDetail({ agent_id: agent.id });
-    expect(result).toContain('No authentication detected');
+    const result = JSON.parse(await agentDetail({ agent_id: agent.id }));
+    expect(result.claude.auth).toBe('none');
   });
 
   it('detects both auth methods when present', async () => {
@@ -60,9 +60,9 @@ describe('agentDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = await agentDetail({ agent_id: agent.id });
-    expect(result).toContain('OAuth credentials file');
-    expect(result).toContain('API key (env)');
+    const result = JSON.parse(await agentDetail({ agent_id: agent.id }));
+    expect(result.claude.auth).toContain('OAuth credentials file');
+    expect(result.claude.auth).toContain('API key (env)');
   });
 
   it('detects API key only', async () => {
@@ -78,8 +78,8 @@ describe('agentDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = await agentDetail({ agent_id: agent.id });
-    expect(result).toContain('API key (env)');
-    expect(result).not.toContain('OAuth credentials file');
+    const result = JSON.parse(await agentDetail({ agent_id: agent.id }));
+    expect(result.claude.auth).toContain('API key (env)');
+    expect(result.claude.auth).not.toContain('OAuth credentials file');
   });
 });

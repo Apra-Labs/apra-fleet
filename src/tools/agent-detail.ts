@@ -19,42 +19,36 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   const isLocal = agent.agentType === 'local';
   const strategy = getStrategy(agent);
 
-  let report = `Agent: ${agent.friendlyName} (${agent.id})\n`;
-  report += `Type: ${agent.agentType}\n`;
-  if (!isLocal) {
-    report += `Host: ${agent.host}:${agent.port} (${os})\n`;
-  } else {
-    report += `OS: ${os}\n`;
-  }
-  report += `Folder: ${agent.remoteFolder}\n\n`;
+  const result: Record<string, unknown> = {
+    name: agent.friendlyName,
+    id: agent.id,
+    type: agent.agentType,
+    host: isLocal ? '(local)' : `${agent.host}:${agent.port}`,
+    os,
+    folder: agent.remoteFolder,
+  };
 
   // -- Connectivity --
-  report += `── Connectivity ──\n`;
   const conn = await strategy.testConnection();
   if (conn.ok) {
-    if (isLocal) {
-      report += `  Status: Connected (local)\n`;
-    } else {
-      report += `  SSH: Connected (latency: ${conn.latencyMs}ms)\n`;
-      report += `  Auth: ${agent.authType}${agent.keyPath ? ` (${agent.keyPath})` : ''}\n`;
-    }
+    result.connectivity = isLocal
+      ? { status: 'connected', type: 'local' }
+      : { status: 'connected', latencyMs: conn.latencyMs, auth: agent.authType, keyPath: agent.keyPath };
   } else {
-    report += `  SSH: FAILED — ${conn.error}\n`;
-    report += `  Auth: ${agent.authType}\n`;
-    report += `\n⚠️ Cannot retrieve further details — agent is offline.\n`;
-    return report;
+    result.connectivity = { status: 'offline', error: conn.error, auth: agent.authType };
+    result.offline = true;
+    return JSON.stringify(result);
   }
 
   // -- Claude CLI --
-  report += `\n── Claude CLI ──\n`;
+  const cli: Record<string, unknown> = {};
   try {
     const versionResult = await strategy.execCommand(getClaudeVersionCommand(os), 10000);
-    report += `  Version: ${versionResult.stdout.trim()}\n`;
+    cli.version = versionResult.stdout.trim();
   } catch {
-    report += `  Version: unknown (could not run claude --version)\n`;
+    cli.version = 'unknown';
   }
 
-  // Check auth status — look for credentials file and API key
   const authMethods: string[] = [];
   try {
     const credCheckCmd = os === 'windows'
@@ -76,16 +70,14 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
     }
   } catch { /* ignore */ }
 
-  if (authMethods.length > 0) {
-    report += `  Auth: ${authMethods.join(', ')}\n`;
-  } else {
-    report += `  Auth: No authentication detected\n`;
-  }
+  cli.auth = authMethods.length > 0 ? authMethods : 'none';
+  result.claude = cli;
 
   // -- Session --
-  report += `\n── Session ──\n`;
-  report += `  Session ID: ${agent.sessionId ?? '(none)'}\n`;
-  report += `  Last activity: ${agent.lastUsed ?? 'never'}\n`;
+  const session: Record<string, unknown> = {
+    id: agent.sessionId ?? null,
+    lastActivity: agent.lastUsed ?? 'never',
+  };
 
   try {
     const busyCheck = await strategy.execCommand(
@@ -94,61 +86,57 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
     );
     const output = busyCheck.stdout.trim().toLowerCase();
     if (output.includes('fleet-busy')) {
-      report += `  Status: BUSY (fleet Claude process running in ${agent.remoteFolder})\n`;
+      session.status = 'busy';
     } else if (output.includes('other-busy')) {
-      report += `  Status: idle (Claude processes found but none related to this agent)\n`;
+      session.status = 'idle (unrelated Claude processes running)';
     } else {
-      report += `  Status: idle\n`;
+      session.status = 'idle';
     }
   } catch {
-    report += `  Status: unknown\n`;
+    session.status = 'unknown';
   }
+  result.session = session;
 
   // -- System Resources --
-  report += `\n── System Resources ──\n`;
+  const resources: Record<string, string> = {};
 
-  // CPU
   try {
     const cpuResult = await strategy.execCommand(getCpuLoadCommand(os), 10000);
-    report += `  CPU: ${cpuResult.stdout.trim()}\n`;
+    resources.cpu = cpuResult.stdout.trim();
   } catch {
-    report += `  CPU: unavailable\n`;
+    resources.cpu = 'unavailable';
   }
 
-  // Memory
   try {
     const memResult = await strategy.execCommand(getMemoryCommand(os), 10000);
     const memLines = memResult.stdout.trim().split('\n');
     if (os === 'linux') {
-      // Parse free -m output
       const memLine = memLines.find(l => l.startsWith('Mem:'));
       if (memLine) {
         const parts = memLine.split(/\s+/);
-        const total = parts[1];
-        const used = parts[2];
-        report += `  Memory: ${used} MB / ${total} MB\n`;
+        resources.memory = `${parts[2]} MB / ${parts[1]} MB`;
       } else {
-        report += `  Memory: ${memResult.stdout.trim()}\n`;
+        resources.memory = memResult.stdout.trim();
       }
     } else {
-      report += `  Memory: ${memResult.stdout.trim().substring(0, 200)}\n`;
+      resources.memory = memResult.stdout.trim().substring(0, 200);
     }
   } catch {
-    report += `  Memory: unavailable\n`;
+    resources.memory = 'unavailable';
   }
 
-  // Disk
   try {
     const diskResult = await strategy.execCommand(getDiskCommand(os, agent.remoteFolder), 10000);
     const diskLines = diskResult.stdout.trim().split('\n');
     if (os !== 'windows' && diskLines.length >= 2) {
-      report += `  Disk: ${diskLines[1].trim()}\n`;
+      resources.disk = diskLines[1].trim();
     } else {
-      report += `  Disk: ${diskResult.stdout.trim().substring(0, 200)}\n`;
+      resources.disk = diskResult.stdout.trim().substring(0, 200);
     }
   } catch {
-    report += `  Disk: unavailable\n`;
+    resources.disk = 'unavailable';
   }
+  result.resources = resources;
 
-  return report;
+  return JSON.stringify(result);
 }

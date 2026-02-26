@@ -7,29 +7,22 @@ export async function listAgents(): Promise<string> {
   const agents = getAllAgents();
 
   if (agents.length === 0) {
-    return 'No agents registered. Use register_agent to add one.';
+    return JSON.stringify({ total: 0, agents: [] });
   }
 
-  let result = `Fleet: ${agents.length} agent(s)\n\n`;
-
-  for (const agent of agents) {
-    const isLocal = agent.agentType === 'local';
-    result += `┌─ ${agent.friendlyName}\n`;
-    result += `│  ID:       ${agent.id}\n`;
-    result += `│  Type:     ${agent.agentType}\n`;
-    if (!isLocal) {
-      result += `│  Host:     ${agent.host}:${agent.port}\n`;
-    }
-    result += `│  OS:       ${agent.os ?? 'unknown'}\n`;
-    result += `│  Folder:   ${agent.remoteFolder}\n`;
-    if (!isLocal) {
-      result += `│  Auth:     ${agent.authType}\n`;
-    }
-    result += `│  Session:  ${agent.sessionId ?? '(none)'}\n`;
-    result += `│  Created:  ${agent.createdAt}\n`;
-    result += `│  Last used: ${agent.lastUsed ?? 'never'}\n`;
-    result += `└──────────────────────\n\n`;
-  }
-
-  return result;
+  return JSON.stringify({
+    total: agents.length,
+    agents: agents.map(a => ({
+      id: a.id,
+      name: a.friendlyName,
+      type: a.agentType,
+      host: a.agentType === 'local' ? '(local)' : `${a.host}:${a.port}`,
+      os: a.os ?? 'unknown',
+      folder: a.remoteFolder,
+      auth: a.agentType === 'local' ? undefined : a.authType,
+      session: a.sessionId ?? null,
+      created: a.createdAt,
+      lastUsed: a.lastUsed ?? 'never',
+    })),
+  });
 }

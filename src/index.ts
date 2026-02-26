@@ -66,7 +66,7 @@ server.tool(
 
 server.tool(
   'list_agents',
-  'List all registered fleet agents with their details.',
+  'List all registered fleet agents. Returns JSON. IMPORTANT: Always render the result as a markdown table for the user.',
   listAgentsSchema.shape,
   async () => ({
     content: [{ type: 'text', text: await listAgents() }],
@@ -157,7 +157,7 @@ server.tool(
 
 server.tool(
   'agent_detail',
-  'Deep-dive status for one agent: connectivity, Claude CLI, session, and system resources.',
+  'Deep-dive status for one agent. Returns JSON with connectivity, Claude CLI, session, and system resources. IMPORTANT: Always render the result clearly for the user.',
   agentDetailSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await agentDetail(input as any) }],
