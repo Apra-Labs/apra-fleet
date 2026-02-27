@@ -209,6 +209,46 @@ describe('OsCommands via getOsCommands', () => {
       expect(linux.parseDisk(dfOutput)).toBe('/dev/sda1       461G   78G  360G  18% /');
     });
   });
+
+  describe('cleanExec', () => {
+    it('linux: wraps with env -i bash -l -c', () => {
+      const { command, env, shell } = linux.cleanExec('echo hello');
+      expect(command).toBe("env -i bash -l -c 'echo hello'");
+      expect(env).toBeUndefined();
+      expect(shell).toBeUndefined();
+    });
+
+    it('linux: escapes single quotes in command', () => {
+      const { command } = linux.cleanExec("echo 'quoted'");
+      expect(command).toBe("env -i bash -l -c 'echo '\\''quoted'\\'''");
+    });
+
+    it('macos: inherits linux cleanExec', () => {
+      const { command, env, shell } = macos.cleanExec('echo hello');
+      expect(command).toBe("env -i bash -l -c 'echo hello'");
+      expect(env).toBeUndefined();
+      expect(shell).toBeUndefined();
+    });
+
+    it.skipIf(process.platform !== 'win32')('windows: returns pristine env and powershell shell', () => {
+      const { command, env, shell } = windows.cleanExec('echo hello');
+      expect(command).toBe('echo hello');
+      expect(shell).toBe('powershell.exe');
+      expect(env).toBeDefined();
+      expect(env!['Path'] ?? env!['PATH']).toBeTruthy();
+      expect(env!['USERPROFILE']).toBeTruthy();
+    });
+
+    it.skipIf(process.platform !== 'win32')('windows: env excludes process-only vars', () => {
+      process.env.__FLEET_TEST_MARKER__ = 'should-not-appear';
+      try {
+        const { env } = windows.cleanExec('echo hello');
+        expect(env!['__FLEET_TEST_MARKER__']).toBeUndefined();
+      } finally {
+        delete process.env.__FLEET_TEST_MARKER__;
+      }
+    });
+  });
 });
 
 describe('injection prevention', () => {

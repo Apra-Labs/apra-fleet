@@ -141,6 +141,40 @@ If SSH is enabled but connection still refused, check firewall rules:
 
 If `register_agent` succeeds but shows `Claude CLI auth check failed — you may need to run provision_auth`, this is normal for new agents. Run `provision_auth` with the agent's ID to set up authentication.
 
+## Local Agent on Windows — Pristine Shell Issues
+
+### Problem: `claude -p` Hangs Inside a Claude Code Session
+
+When the MCP server runs inside a Claude Code session, `LocalStrategy.execCommand()` spawns child processes that inherit the parent's environment. Two issues caused `claude -p` to hang indefinitely with zero output:
+
+**Issue 1: `CLAUDECODE` env var leaks into child process**
+
+Claude Code sets `CLAUDECODE=1` in its process environment. When a child `claude -p` process sees this var, it refuses to start (nested session protection). The original fix (`delete env.CLAUDECODE` from a copy of `process.env`) was fragile — it only stripped one known var and leaked the full parent environment.
+
+**Fix:** Added `cleanExec(command)` to the `OsCommands` strategy interface. Each OS provides a pristine shell:
+- **Linux/macOS:** Wraps command in `env -i bash -l -c '...'` — clears the entire env, rebuilds from login profiles.
+- **Windows:** Reads Machine + User registry env vars via `[Environment]::GetEnvironmentVariables()`, adds Windows session-level vars (USERPROFILE, APPDATA, SystemRoot, etc.), caches the result. Returns this as the `env` option to `exec()`, completely replacing `process.env`.
+
+**Issue 2: `exec()` leaves stdin open**
+
+Node's `child_process.exec()` connects the child's stdin to the parent. `claude -p` detects it's connected to a non-TTY pipe and waits for input that never arrives — hanging indefinitely. This happened regardless of environment variables.
+
+**Fix:** Added `child.stdin?.end()` immediately after the `exec()` call in `LocalStrategy.execCommand()`. This closes stdin so `claude` proceeds with the `-p` prompt argument instead of waiting for piped input.
+
+**Issue 3: Windows session-level env vars missing from registry**
+
+The initial `getCleanEnv()` implementation only added 4 session vars (USERPROFILE, HOMEDRIVE, HOMEPATH, USERNAME). Windows creates ~18 session-level vars at login that are NOT stored in the registry (SystemRoot, APPDATA, LOCALAPPDATA, ProgramFiles, etc.). Without SystemRoot, many Windows system APIs fail. Without APPDATA, applications can't find their config directories.
+
+**Fix:** Expanded the session var list to include all well-known Windows login-time variables.
+
+### Debugging Technique
+
+To isolate the stdin hang, tested with `spawn()` + `child.stdin.end()` vs `exec()` (which leaves stdin open). The `spawn` variant completed in 2 seconds; `exec` hung for 60+ seconds until killed. This confirmed the root cause was stdin, not environment.
+
+### Key Takeaway
+
+When spawning CLI tools from Node.js that are designed for interactive use, always close stdin if you don't intend to pipe input. This applies to any tool that might check for TTY/pipe and alter its behavior accordingly.
+
 ## MCP Tool Output
 
 MCP tool results get collapsed in Claude Code's console (shown as "+N lines", requiring Ctrl+O to expand). Returning JSON from tools works best — the agent parses the structured data and renders it in its own response, which displays fully. Avoid formatting tables or reports in tool output; let the agent handle presentation.

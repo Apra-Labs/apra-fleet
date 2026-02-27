@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
+import { getOsCommands } from '../os/index.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
@@ -45,11 +47,9 @@ class LocalStrategy implements AgentStrategy {
         reject(new Error(`Command timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      const shell = this.agent.os === 'windows' ? 'powershell.exe' : undefined;
-      // Strip CLAUDECODE env var so local claude invocations don't see it as a nested session
-      const env = { ...process.env };
-      delete env.CLAUDECODE;
-      exec(command, { cwd: this.agent.remoteFolder, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, shell, env }, (error, stdout, stderr) => {
+      const cmds = getOsCommands(getAgentOS(this.agent));
+      const { command: wrapped, env, shell } = cmds.cleanExec(command);
+      const child = exec(wrapped, { cwd: this.agent.remoteFolder, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, env, shell }, (error, stdout, stderr) => {
         clearTimeout(timer);
         let out = stdout ?? '';
         let err = stderr ?? '';
@@ -67,6 +67,7 @@ class LocalStrategy implements AgentStrategy {
           code: error ? (error as any).code ?? 1 : 0,
         });
       });
+      child.stdin?.end();
     });
   }
 

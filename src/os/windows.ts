@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import type { OsCommands } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 
@@ -12,6 +13,35 @@ const MEMINFO_CMD = [
 ].join('; ');
 
 export class WindowsCommands implements OsCommands {
+  private cachedEnv: Record<string, string> | null = null;
+
+  private getCleanEnv(): Record<string, string> {
+    if (this.cachedEnv) return this.cachedEnv;
+    // Session-level vars Windows creates at login but doesn't store in registry
+    const sessionVars = [
+      'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME', 'COMPUTERNAME',
+      'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'PUBLIC', 'ALLUSERSPROFILE',
+      'SystemRoot', 'SystemDrive',
+      'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+      'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432',
+    ];
+    const sessionBlock = sessionVars
+      .map(v => `$v=[Environment]::GetEnvironmentVariable('${v}','Process');if($v){$a['${v}']=$v}`)
+      .join(';');
+    const script = [
+      "$m=[Environment]::GetEnvironmentVariables('Machine')",
+      "$u=[Environment]::GetEnvironmentVariables('User')",
+      '$a=@{}',
+      'foreach($k in $m.Keys){$a[$k]=$m[$k]}',
+      "foreach($k in $u.Keys){if($k -ieq 'Path' -and $a.ContainsKey('Path')){$a['Path']=$a['Path']+';'+$u[$k]}else{$a[$k]=$u[$k]}}",
+      sessionBlock,
+      '$a|ConvertTo-Json -Compress',
+    ].join('; ');
+    const result = execSync(script, { encoding: 'utf-8', shell: 'powershell.exe' });
+    this.cachedEnv = JSON.parse(result.trim());
+    return this.cachedEnv!;
+  }
+
   // --- Resources ---
 
   cpuLoad(): string {
@@ -115,6 +145,12 @@ export class WindowsCommands implements OsCommands {
       `Add-Content -Path "$env:USERPROFILE\\.ssh\\authorized_keys" -Value '${escaped}'`,
       'icacls "$env:USERPROFILE\\.ssh\\authorized_keys" /inheritance:r /grant:r "$env:USERNAME:F"',
     ];
+  }
+
+  // --- Local exec ---
+
+  cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
+    return { command, env: this.getCleanEnv(), shell: 'powershell.exe' };
   }
 
   // --- Shell ---

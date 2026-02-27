@@ -28,6 +28,21 @@ describe('LocalStrategy', () => {
     expect(result.code).toBe(0);
   });
 
+  it('execCommand() does not leak CLAUDECODE to child process', async () => {
+    process.env.CLAUDECODE = 'test-leak-marker';
+    try {
+      const agent = makeLocalAgent({ remoteFolder: tmpDir });
+      const strategy = getStrategy(agent);
+      const echoCmd = process.platform === 'win32'
+        ? 'if ($env:CLAUDECODE) { Write-Output $env:CLAUDECODE }'
+        : 'printenv CLAUDECODE || true';
+      const result = await strategy.execCommand(echoCmd);
+      expect(result.stdout.trim()).toBe('');
+    } finally {
+      delete process.env.CLAUDECODE;
+    }
+  });
+
   it('execCommand() returns non-zero code for failed commands', async () => {
     const agent = makeLocalAgent({ remoteFolder: tmpDir });
     const strategy = getStrategy(agent);

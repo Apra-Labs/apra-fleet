@@ -38,6 +38,9 @@ export interface OsCommands {
   // --- SSH key deployment ---
   deploySSHPublicKey(publicKeyLine: string): string[];
 
+  // --- Local exec ---
+  cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string };
+
   // --- Shell ---
   shellWrap(command: string): string;
 

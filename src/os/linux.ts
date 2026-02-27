@@ -119,6 +119,13 @@ export class LinuxCommands implements OsCommands {
     ];
   }
 
+  // --- Local exec ---
+
+  cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
+    const escaped = command.replace(/'/g, "'\\''");
+    return { command: `env -i bash -l -c '${escaped}'` };
+  }
+
   // --- Shell ---
 
   shellWrap(command: string): string {

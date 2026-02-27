@@ -7,9 +7,11 @@
  * Agent-level operations run in parallel for speed.
  *
  * Usage:
- *   npm run integration                          # uses fleet.config.json
- *   npm run integration -- --config path.json    # custom config
- *   FLEET_PASSWORD=xxx npm run integration       # password via env var
+ *   npm run integration                                      # all agents
+ *   npm run integration -- --agents agent-lin-remote-1       # single agent
+ *   npm run integration -- --agents agent-lin-remote-1,agent-mac-remote-1
+ *   npm run integration -- --config path.json                # custom config
+ *   FLEET_PASSWORD=xxx npm run integration                   # password via env var
  *
  * Requires: fleet.config.json (see fleet.config.example.json)
  * The config file is gitignored — it contains passwords.
@@ -25,6 +27,7 @@ import { registerAgent } from '../src/tools/register-agent.js';
 import { removeAgent } from '../src/tools/remove-agent.js';
 import { provisionAuth } from '../src/tools/provision-auth.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
+import { sendFiles } from '../src/tools/send-files.js';
 import { listAgents } from '../src/tools/list-agents.js';
 import { agentDetail } from '../src/tools/agent-detail.js';
 import { setupSSHKey } from '../src/tools/setup-ssh-key.js';
@@ -198,11 +201,6 @@ async function testAuthErrorDetection(nameToId: Map<string, string>, config: Fle
     return;
   }
 
-  if (process.env.CLAUDECODE) {
-    skip('Running inside Claude Code session — skipping auth error detection');
-    return;
-  }
-
   const tasks = remoteAgents.map(async ac => {
     const id = nameToId.get(ac.friendly_name);
     if (!id) { skip(`Auth detect ${ac.friendly_name} — not registered`); return; }
@@ -328,8 +326,65 @@ async function provision(nameToId: Map<string, string>, config: FleetConfig, has
   await Promise.all(tasks);
 }
 
+async function testSendFileAndPrompt(nameToId: Map<string, string>, config: FleetConfig, hasCreds: boolean) {
+  section('6. Send File + Prompt Validation');
+
+  // Create temp files with unique numbers per agent
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-test-'));
+  const eligible = config.agents
+    .map((ac, i) => ({ ac, id: nameToId.get(ac.friendly_name), num: i + 1 }))
+    .filter((e): e is typeof e & { id: string } => !!e.id);
+
+  const tasks = eligible.map(async ({ ac, id, num }) => {
+    if (ac.agent_type === 'remote' && !hasCreds) {
+      skip(`SendFile ${ac.friendly_name} — skipped (no credentials deployed)`);
+      return;
+    }
+
+    // Write a temp file with this agent's unique number
+    const tmpFile = path.join(tmpDir, `test-${num}.txt`);
+    fs.writeFileSync(tmpFile, String(num));
+
+    // Send file to agent
+    const sendResult = await sendFiles({ agent_id: id, local_paths: [tmpFile] });
+    sendResult.includes('uploaded') || sendResult.includes('copied')
+      ? ok(`Sent test-${num}.txt to ${ac.friendly_name}`)
+      : fail(`Send file to ${ac.friendly_name}`, sendResult);
+
+    // Prompt 1: read the number
+    const readResult = await executePrompt({
+      agent_id: id,
+      prompt: 'Read the file test-' + num + '.txt and respond with ONLY the number inside it, nothing else.',
+      resume: false,
+      timeout_ms: 60000,
+    });
+
+    readResult.includes('Response from') && readResult.includes(String(num))
+      ? ok(`${ac.friendly_name} — read number ${num} correctly`)
+      : fail(`${ac.friendly_name} — expected ${num} in response`, readResult.substring(0, 200));
+
+    // Prompt 2: double the number (resume session)
+    const doubled = num * 2;
+    const doubleResult = await executePrompt({
+      agent_id: id,
+      prompt: 'Double this number and respond with ONLY the result, nothing else.',
+      resume: true,
+      timeout_ms: 60000,
+    });
+
+    doubleResult.includes('Response from') && doubleResult.includes(String(doubled))
+      ? ok(`${ac.friendly_name} — doubled to ${doubled} correctly`)
+      : fail(`${ac.friendly_name} — expected ${doubled} in response`, doubleResult.substring(0, 200));
+  });
+
+  await Promise.all(tasks);
+
+  // Cleanup temp dir
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+}
+
 async function testPrompts(nameToId: Map<string, string>, config: FleetConfig, hasCreds: boolean) {
-  section('6. Test Prompts');
+  section('7. Test Prompts');
 
   const tasks = config.agents.map(async ac => {
     const id = nameToId.get(ac.friendly_name);
@@ -340,13 +395,7 @@ async function testPrompts(nameToId: Map<string, string>, config: FleetConfig, h
       return;
     }
 
-    // Local agent prompts hang when run inside a Claude Code session (resource contention)
-    if (ac.agent_type === 'local' && process.env.CLAUDECODE) {
-      skip(`Prompt ${ac.friendly_name} — skipped (running inside Claude Code session)`);
-      return;
-    }
-
-    const result = await executePrompt({ agent_id: id, prompt: 'respond with exactly: FLEET_OK', timeout_ms: 300000 });
+    const result = await executePrompt({ agent_id: id, prompt: 'respond with exactly: FLEET_OK', timeout_ms: 60000 });
 
     result.includes('FLEET_OK') || result.includes('Response from')
       ? ok(`Prompt OK on ${ac.friendly_name}`)
@@ -373,8 +422,24 @@ async function main() {
     process.exit(1);
   }
 
-  const config: FleetConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  console.log(`  Config: ${configPath} (${config.agents.length} agents)`);
+  const fullConfig: FleetConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+  const agentsArg = process.argv.indexOf('--agents');
+  const agentFilter = agentsArg >= 0
+    ? process.argv[agentsArg + 1]?.split(',').map(s => s.trim())
+    : null;
+
+  const config: FleetConfig = agentFilter
+    ? { agents: fullConfig.agents.filter(a => agentFilter.includes(a.friendly_name)) }
+    : fullConfig;
+
+  if (agentFilter && config.agents.length === 0) {
+    console.error(`\n  No agents matched filter: ${agentFilter.join(', ')}`);
+    console.error(`  Available: ${fullConfig.agents.map(a => a.friendly_name).join(', ')}\n`);
+    process.exit(1);
+  }
+
+  console.log(`  Config: ${configPath} (${config.agents.length} agent${config.agents.length === 1 ? '' : 's'}${agentFilter ? ` — filtered: ${agentFilter.join(', ')}` : ''})`);
 
   const { hasCreds } = await preflight(config);
   await teardown();
@@ -383,6 +448,7 @@ async function main() {
   await verifyListAgents(nameToId);
   await verifyAgentDetail(nameToId, config);
   await provision(nameToId, config, hasCreds);
+  await testSendFileAndPrompt(nameToId, config, hasCreds);
   await testPrompts(nameToId, config, hasCreds);
 
   // Summary
