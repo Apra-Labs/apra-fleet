@@ -19,7 +19,7 @@ export const registerAgentSchema = z.object({
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for remote agents)'),
   password: z.string().optional().describe('SSH password (required if auth_type is "password")'),
   key_path: z.string().optional().describe('Path to SSH private key (required if auth_type is "key")'),
-  remote_folder: z.string().describe('Working directory on the target machine'),
+  work_folder: z.string().describe('Working directory on the target machine'),
 });
 
 export type RegisterAgentInput = z.infer<typeof registerAgentSchema>;
@@ -36,9 +36,9 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   }
 
   // Duplicate folder check
-  if (hasDuplicateFolder(input.agent_type, input.remote_folder, input.host)) {
+  if (hasDuplicateFolder(input.agent_type, input.work_folder, input.host)) {
     const scope = isLocal ? 'this machine' : `host ${input.host}`;
-    return `❌ Another agent already uses folder "${input.remote_folder}" on ${scope}. Agent was NOT registered.`;
+    return `❌ Another agent already uses folder "${input.work_folder}" on ${scope}. Agent was NOT registered.`;
   }
 
   // Build a temporary agent object
@@ -52,7 +52,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
     authType: isLocal ? undefined : input.auth_type,
     encryptedPassword: (!isLocal && input.password) ? encryptPassword(input.password) : undefined,
     keyPath: isLocal ? undefined : input.key_path,
-    remoteFolder: input.remote_folder,
+    workFolder: input.work_folder,
     createdAt: new Date().toISOString(),
   };
 
@@ -114,10 +114,10 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
 
   const mkdirCheck = isLocal
     ? import('node:fs').then(({ mkdirSync }) => {
-        mkdirSync(input.remote_folder, { recursive: true });
-      }).catch(() => { warnings.push(`Could not create folder "${input.remote_folder}"`); })
-    : strategy.execCommand(cmds.mkdir(input.remote_folder), 10000)
-        .catch(() => { warnings.push(`Could not create folder "${input.remote_folder}"`); });
+        mkdirSync(input.work_folder, { recursive: true });
+      }).catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); })
+    : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
+        .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
 
   await Promise.all([versionCheck, authCheck, scpCheck, mkdirCheck]);
 
@@ -132,7 +132,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
     result += `  Host:    ${tempAgent.host}:${tempAgent.port}\n`;
   }
   result += `  OS:      ${detectedOS}\n`;
-  result += `  Folder:  ${tempAgent.remoteFolder}\n`;
+  result += `  Folder:  ${tempAgent.workFolder}\n`;
   if (claudeVersion) {
     result += `  Claude:  ${claudeVersion}\n`;
   }

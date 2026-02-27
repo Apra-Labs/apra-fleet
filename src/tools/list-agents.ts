@@ -23,7 +23,7 @@ export async function listAgents(input?: ListAgentsInput): Promise<string> {
         host: a.agentType === 'local' ? '(local)' : `${a.host}:${a.port}`,
         username: a.username ?? undefined,
         os: a.os ?? 'unknown',
-        folder: a.remoteFolder,
+        folder: a.workFolder,
         auth: a.agentType === 'local' ? undefined : a.authType,
         session: a.sessionId ?? null,
         created: a.createdAt,

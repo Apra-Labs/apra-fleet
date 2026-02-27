@@ -26,7 +26,7 @@ export function makeTestAgent(overrides: Partial<Agent> = {}): Agent {
     username: 'testuser',
     authType: 'password',
     encryptedPassword: 'fake-encrypted',
-    remoteFolder: '/home/testuser/project',
+    workFolder: '/home/testuser/project',
     createdAt: new Date().toISOString(),
     ...overrides,
   };
@@ -43,7 +43,7 @@ export function makeTestLocalAgent(overrides: Partial<Agent> = {}): Agent {
     username: undefined,
     authType: undefined,
     encryptedPassword: undefined,
-    remoteFolder: path.join(os.tmpdir(), `fleet-test-${Date.now()}`),
+    workFolder: path.join(os.tmpdir(), `fleet-test-${Date.now()}`),
     os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux',
     ...overrides,
   });

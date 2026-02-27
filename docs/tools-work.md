@@ -26,7 +26,7 @@ Uploads local files to an agent's working directory.
 
 **Behavior details:**
 - Files are placed flat in the destination — only the basename is used, not the full source path structure.
-- If `remote_subfolder` is provided, files go to `{remoteFolder}/{remote_subfolder}/`.
+- If `remote_subfolder` is provided, files go to `{workFolder}/{remote_subfolder}/`.
 - Each file is transferred independently — one failure doesn't stop the others.
 
 ## execute_prompt

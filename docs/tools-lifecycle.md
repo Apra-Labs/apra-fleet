@@ -18,7 +18,7 @@ Registers a new machine as a fleet agent. This is the entry point for every agen
 | `auth_type` | `"password"` \| `"key"` | remote only | Authentication method |
 | `password` | string | conditional | Required when `auth_type` is `"password"` |
 | `key_path` | string | conditional | Required when `auth_type` is `"key"` |
-| `remote_folder` | string | yes | Working directory on the target machine |
+| `work_folder` | string | yes | Working directory on the target machine |
 
 **What it does, step by step:**
 
@@ -67,12 +67,12 @@ Modifies an existing agent's registration. All fields except `agent_id` are opti
 | `auth_type` | `"password"` \| `"key"` | no | New auth method (remote only) |
 | `password` | string | no | New password (encrypted before storage) |
 | `key_path` | string | no | New private key path |
-| `remote_folder` | string | no | New working directory |
+| `work_folder` | string | no | New working directory |
 
 **What it does:**
 
 1. Looks up the agent by ID.
-2. If `remote_folder` is changing, runs the duplicate folder check (same logic as `register_agent`) — rejects if the new folder is already in use by another agent on the same device. The check excludes the current agent's own ID so "updating to the same folder" doesn't falsely trigger.
+2. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_agent`) — rejects if the new folder is already in use by another agent on the same device. The check excludes the current agent's own ID so "updating to the same folder" doesn't falsely trigger.
 3. Encrypts password if provided (AES-256-GCM).
 4. Applies updates and persists to registry.
 

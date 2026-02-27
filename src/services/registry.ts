@@ -113,7 +113,7 @@ export function hasDuplicateFolder(
   for (const agent of agents) {
     if (excludeId && agent.id === excludeId) continue;
 
-    const agentFolder = normalizeFolderPath(agent.remoteFolder);
+    const agentFolder = normalizeFolderPath(agent.workFolder);
     if (agentFolder !== normalizedFolder) continue;
 
     if (agentType === 'local' && agent.agentType === 'local') {

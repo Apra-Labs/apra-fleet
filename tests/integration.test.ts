@@ -44,7 +44,7 @@ interface AgentConfig {
   auth_type?: 'password' | 'key';
   password?: string;
   key_path?: string;
-  remote_folder: string;
+  work_folder: string;
 }
 
 interface FleetConfig {
@@ -329,32 +329,35 @@ async function provision(nameToId: Map<string, string>, config: FleetConfig, has
 async function testSendFileAndPrompt(nameToId: Map<string, string>, config: FleetConfig, hasCreds: boolean) {
   section('6. Send File + Prompt Validation');
 
-  // Create temp files with unique numbers per agent
+  // Create temp files with random numbers per agent — random values ensure
+  // stale files from a previous run can't produce false passes.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-test-'));
+  const randNum = () => Math.floor(Math.random() * 9000) + 1000; // 1000–9999
   const eligible = config.agents
-    .map((ac, i) => ({ ac, id: nameToId.get(ac.friendly_name), num: i + 1 }))
+    .map((ac, i) => ({ ac, id: nameToId.get(ac.friendly_name), idx: i + 1, num: randNum() }))
     .filter((e): e is typeof e & { id: string } => !!e.id);
 
-  const tasks = eligible.map(async ({ ac, id, num }) => {
+  const tasks = eligible.map(async ({ ac, id, idx, num }) => {
     if (ac.agent_type === 'remote' && !hasCreds) {
       skip(`SendFile ${ac.friendly_name} — skipped (no credentials deployed)`);
       return;
     }
 
-    // Write a temp file with this agent's unique number
-    const tmpFile = path.join(tmpDir, `test-${num}.txt`);
+    // Write a temp file with a random number as content
+    const fileName = `test-${idx}.txt`;
+    const tmpFile = path.join(tmpDir, fileName);
     fs.writeFileSync(tmpFile, String(num));
 
     // Send file to agent
     const sendResult = await sendFiles({ agent_id: id, local_paths: [tmpFile] });
     sendResult.includes('uploaded') || sendResult.includes('copied')
-      ? ok(`Sent test-${num}.txt to ${ac.friendly_name}`)
+      ? ok(`Sent ${fileName} to ${ac.friendly_name}`)
       : fail(`Send file to ${ac.friendly_name}`, sendResult);
 
     // Prompt 1: read the number
     const readResult = await executePrompt({
       agent_id: id,
-      prompt: 'Read the file test-' + num + '.txt and respond with ONLY the number inside it, nothing else.',
+      prompt: `Read the file ${fileName} and respond with ONLY the number inside it, nothing else.`,
       resume: false,
       timeout_ms: 60000,
     });

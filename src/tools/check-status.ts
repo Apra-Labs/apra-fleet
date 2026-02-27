@@ -58,7 +58,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
       try {
         const cmds = getOsCommands(getAgentOS(agent));
         const busyCheck = await strategy.execCommand(
-          cmds.fleetProcessCheck(agent.remoteFolder, agent.sessionId),
+          cmds.fleetProcessCheck(agent.workFolder, agent.sessionId),
           10000,
         );
         const output = busyCheck.stdout.trim().toLowerCase();

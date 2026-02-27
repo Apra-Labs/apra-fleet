@@ -26,7 +26,7 @@ export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
 async function verifyWithPrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
   const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
-  const escapedFolder = escapeDoubleQuoted(agent.remoteFolder);
+  const escapedFolder = escapeDoubleQuoted(agent.workFolder);
   const prefix = envPrefix ? `${envPrefix} ` : '';
   const cmd = `cd "${escapedFolder}" && ${prefix}${cmds.claudeCommand('-p "hello" --output-format json --max-turns 1')}`;
   try {

@@ -45,7 +45,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   const b64Prompt = Buffer.from(input.prompt).toString('base64');
 
   const claudeCmd = cmds.buildPromptCommand(
-    agent.remoteFolder,
+    agent.workFolder,
     b64Prompt,
     input.resume && agent.sessionId ? agent.sessionId : undefined,
   );
@@ -58,7 +58,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = cmds.buildPromptCommand(agent.remoteFolder, b64Prompt);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }
@@ -66,7 +66,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(classifyPromptError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = cmds.buildPromptCommand(agent.remoteFolder, b64Prompt);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }

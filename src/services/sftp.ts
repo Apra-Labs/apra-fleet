@@ -53,7 +53,7 @@ export async function uploadViaSFTP(
   const client = await getConnection(agent);
   const sftp = await getSFTP(client);
 
-  let remoteBase = agent.remoteFolder.replace(/\\/g, '/');
+  let remoteBase = agent.workFolder.replace(/\\/g, '/');
   if (remoteSubfolder) {
     remoteBase = `${remoteBase}/${remoteSubfolder}`;
   }

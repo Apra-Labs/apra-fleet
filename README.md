@@ -143,12 +143,12 @@ For bulk registration or integration testing, you can define agents in `fleet.co
       "port": 22,
       "username": "akhil",
       "auth_type": "key",
-      "remote_folder": "/home/akhil/project"
+      "work_folder": "/home/akhil/project"
     },
     {
       "friendly_name": "test-local",
       "agent_type": "local",
-      "remote_folder": "/tmp/test-workspace"
+      "work_folder": "/tmp/test-workspace"
     }
   ]
 }

@@ -28,7 +28,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
     host: isLocal ? '(local)' : `${agent.host}:${agent.port}`,
     username: agent.username ?? undefined,
     os,
-    folder: agent.remoteFolder,
+    folder: agent.workFolder,
   };
 
   // -- Connectivity --
@@ -78,7 +78,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
 
   try {
     const busyCheck = await strategy.execCommand(
-      cmds.fleetProcessCheck(agent.remoteFolder, agent.sessionId),
+      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId),
       10000,
     );
     const output = busyCheck.stdout.trim().toLowerCase();
@@ -112,7 +112,7 @@ export async function agentDetail(input: AgentDetailInput): Promise<string> {
   }
 
   try {
-    const diskResult = await strategy.execCommand(cmds.disk(agent.remoteFolder), 10000);
+    const diskResult = await strategy.execCommand(cmds.disk(agent.workFolder), 10000);
     resources.disk = cmds.parseDisk(diskResult.stdout);
   } catch {
     resources.disk = 'unavailable';

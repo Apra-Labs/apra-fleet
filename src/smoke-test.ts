@@ -64,7 +64,7 @@ try {
     username: 'smokeuser',
     authType: 'password',
     encryptedPassword: encryptPassword('smokepass'),
-    remoteFolder: '/home/smokeuser/project',
+    workFolder: '/home/smokeuser/project',
     os: 'linux',
     scpAvailable: true,
     createdAt: new Date().toISOString(),

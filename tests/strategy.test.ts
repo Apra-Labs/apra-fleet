@@ -20,7 +20,7 @@ describe('LocalStrategy', () => {
   });
 
   it('execCommand() runs command locally and returns stdout/code', async () => {
-    const agent = makeLocalAgent({ remoteFolder: tmpDir });
+    const agent = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(agent);
 
     const result = await strategy.execCommand('echo hello-fleet');
@@ -31,7 +31,7 @@ describe('LocalStrategy', () => {
   it('execCommand() does not leak CLAUDECODE to child process', async () => {
     process.env.CLAUDECODE = 'test-leak-marker';
     try {
-      const agent = makeLocalAgent({ remoteFolder: tmpDir });
+      const agent = makeLocalAgent({ workFolder: tmpDir });
       const strategy = getStrategy(agent);
       const echoCmd = process.platform === 'win32'
         ? 'if ($env:CLAUDECODE) { Write-Output $env:CLAUDECODE }'
@@ -44,7 +44,7 @@ describe('LocalStrategy', () => {
   });
 
   it('execCommand() returns non-zero code for failed commands', async () => {
-    const agent = makeLocalAgent({ remoteFolder: tmpDir });
+    const agent = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(agent);
 
     const result = await strategy.execCommand('exit 42');
@@ -52,7 +52,7 @@ describe('LocalStrategy', () => {
   });
 
   it('transferFiles() copies files to target folder', async () => {
-    const agent = makeLocalAgent({ remoteFolder: tmpDir });
+    const agent = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(agent);
 
     const srcFile = path.join(os.tmpdir(), `fleet-src-${Date.now()}.txt`);
@@ -72,7 +72,7 @@ describe('LocalStrategy', () => {
   });
 
   it('transferFiles() copies to subfolder', async () => {
-    const agent = makeLocalAgent({ remoteFolder: tmpDir });
+    const agent = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(agent);
 
     const srcFile = path.join(os.tmpdir(), `fleet-src-${Date.now()}.txt`);

@@ -17,7 +17,7 @@ export const updateAgentSchema = z.object({
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote agents only)'),
   password: z.string().optional().describe('New SSH password'),
   key_path: z.string().optional().describe('New path to SSH private key'),
-  remote_folder: z.string().optional().describe('New working directory on target machine'),
+  work_folder: z.string().optional().describe('New working directory on target machine'),
 });
 
 export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
@@ -27,12 +27,12 @@ export async function updateAgent(input: UpdateAgentInput): Promise<string> {
   if (typeof existingOrError === 'string') return existingOrError;
   const existing = existingOrError as Agent;
 
-  // Check for duplicate folder if remote_folder is being changed
-  if (input.remote_folder && input.remote_folder !== existing.remoteFolder) {
+  // Check for duplicate folder if work_folder is being changed
+  if (input.work_folder && input.work_folder !== existing.workFolder) {
     const host = input.host ?? existing.host;
-    if (hasDuplicateFolder(existing.agentType, input.remote_folder, host, existing.id)) {
+    if (hasDuplicateFolder(existing.agentType, input.work_folder, host, existing.id)) {
       const scope = existing.agentType === 'local' ? 'this machine' : `host ${host}`;
-      return `❌ Another agent already uses folder "${input.remote_folder}" on ${scope}. Update rejected.`;
+      return `❌ Another agent already uses folder "${input.work_folder}" on ${scope}. Update rejected.`;
     }
   }
 
@@ -45,7 +45,7 @@ export async function updateAgent(input: UpdateAgentInput): Promise<string> {
   if (input.auth_type) updates.authType = input.auth_type;
   if (input.password) updates.encryptedPassword = encryptPassword(input.password);
   if (input.key_path) updates.keyPath = input.key_path;
-  if (input.remote_folder) updates.remoteFolder = input.remote_folder;
+  if (input.work_folder) updates.workFolder = input.work_folder;
 
   const updated = updateInRegistry(input.agent_id, updates);
   if (!updated) {
@@ -59,7 +59,7 @@ export async function updateAgent(input: UpdateAgentInput): Promise<string> {
   if (updated.agentType === 'remote') {
     result += `  Host:    ${updated.host}:${updated.port}\n`;
   }
-  result += `  Folder:  ${updated.remoteFolder}\n`;
+  result += `  Folder:  ${updated.workFolder}\n`;
   if (updated.authType) {
     result += `  Auth:    ${updated.authType}\n`;
   }

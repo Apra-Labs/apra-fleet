@@ -8,7 +8,7 @@ export interface Agent {
   authType?: 'password' | 'key';
   encryptedPassword?: string;
   keyPath?: string;
-  remoteFolder: string;
+  workFolder: string;
   sessionId?: string;
   os?: 'windows' | 'macos' | 'linux';
   scpAvailable?: boolean;

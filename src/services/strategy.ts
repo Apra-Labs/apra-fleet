@@ -49,7 +49,7 @@ class LocalStrategy implements AgentStrategy {
 
       const cmds = getOsCommands(getAgentOS(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
-      const child = exec(wrapped, { cwd: this.agent.remoteFolder, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, env, shell }, (error, stdout, stderr) => {
+      const child = exec(wrapped, { cwd: this.agent.workFolder, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, env, shell }, (error, stdout, stderr) => {
         clearTimeout(timer);
         let out = stdout ?? '';
         let err = stderr ?? '';
@@ -72,7 +72,7 @@ class LocalStrategy implements AgentStrategy {
   }
 
   async transferFiles(localPaths: string[], remoteSubfolder?: string): Promise<TransferResult> {
-    let destBase = this.agent.remoteFolder;
+    let destBase = this.agent.workFolder;
     if (remoteSubfolder) {
       destBase = path.join(destBase, remoteSubfolder);
     }

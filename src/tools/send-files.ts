@@ -40,8 +40,8 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
     }
 
     const remoteDest = input.remote_subfolder
-      ? `${agent.remoteFolder}/${input.remote_subfolder}`
-      : agent.remoteFolder;
+      ? `${agent.workFolder}/${input.remote_subfolder}`
+      : agent.workFolder;
     output += `\nRemote destination: ${remoteDest}`;
 
     return output;
