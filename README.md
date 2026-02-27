@@ -1,6 +1,6 @@
 # Claude Code Fleet MCP
 
-An MCP server that turns any machine — Linux, macOS, or Windows — into a Claude Code agent you can coordinate from a single conversation.
+Coordinate Claude Code agents across every machine in your network — from a single conversation.
 
 ## Why
 
