@@ -2,7 +2,6 @@
 set -euo pipefail
 
 INSTALL_DIR="$HOME/.claude-fleet-mcp"
-SETTINGS_FILE="$HOME/.claude/settings.json"
 REPO_URL="https://github.com/Apra-Labs/claude-code-fleet-mcp.git"
 
 echo "Installing Claude Code Fleet MCP..."
@@ -23,39 +22,13 @@ echo ""
 echo "Build complete."
 echo ""
 
-MCP_ENTRY=$(cat <<EOF
-{
-  "mcpServers": {
-    "fleet": {
-      "command": "node",
-      "args": ["$INSTALL_DIR/dist/index.js"]
-    }
-  }
-}
-EOF
-)
-
 if [ "${1:-}" = "--auto" ]; then
-  mkdir -p "$(dirname "$SETTINGS_FILE")"
-  if [ -f "$SETTINGS_FILE" ]; then
-    # Merge fleet entry into existing mcpServers
-    MERGED=$(node -e "
-      const fs = require('fs');
-      const settings = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf8'));
-      settings.mcpServers = settings.mcpServers || {};
-      settings.mcpServers.fleet = { command: 'node', args: ['$INSTALL_DIR/dist/index.js'] };
-      console.log(JSON.stringify(settings, null, 2));
-    ")
-    echo "$MERGED" > "$SETTINGS_FILE"
-    echo "Updated $SETTINGS_FILE with fleet MCP server entry."
-  else
-    echo "$MCP_ENTRY" > "$SETTINGS_FILE"
-    echo "Created $SETTINGS_FILE with fleet MCP server entry."
-  fi
+  claude mcp add --scope user fleet -- node "$INSTALL_DIR/dist/index.js"
+  echo "Registered fleet MCP server for your user."
 else
-  echo "Add this to $SETTINGS_FILE:"
+  echo "Run this to register the MCP server:"
   echo ""
-  echo "$MCP_ENTRY"
+  echo "  claude mcp add --scope user fleet -- node $INSTALL_DIR/dist/index.js"
   echo ""
   echo "Or re-run with --auto to do it automatically:"
   echo "  bash $INSTALL_DIR/install.sh --auto"

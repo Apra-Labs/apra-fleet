@@ -37,22 +37,13 @@ curl -fsSL https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/mai
 irm https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/main/install.ps1 | iex
 ```
 
-**2. Add to Claude Code's MCP config**
+**2. Add to Claude Code**
 
-Add this to `~/.claude/settings.json` under `"mcpServers"`:
-
-```json
-{
-  "mcpServers": {
-    "fleet": {
-      "command": "node",
-      "args": ["/full/path/to/claude-code-fleet-mcp/dist/index.js"]
-    }
-  }
-}
+```bash
+claude mcp add --scope user fleet -- node /full/path/to/claude-code-fleet-mcp/dist/index.js
 ```
 
-Replace `/full/path/to/` with the actual path where you cloned the repo.
+Replace `/full/path/to/` with the actual path where you cloned the repo. The `--scope user` flag makes it available across all your projects.
 
 **3. Load the server**
 
