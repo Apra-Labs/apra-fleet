@@ -19,15 +19,7 @@ Fleet MCP is an [MCP server](https://modelcontextprotocol.io/) that Claude Code 
 
 ## Quick start
 
-**1. Clone and build**
-
-```bash
-git clone https://github.com/Apra-Labs/claude-code-fleet-mcp.git
-cd claude-code-fleet-mcp
-npm install && npm run build
-```
-
-Or use the install script (clones, builds, and registers the MCP server automatically):
+**1. Install**
 
 ```bash
 # macOS / Linux
@@ -37,15 +29,25 @@ curl -fsSL https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/mai
 irm https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/main/install.ps1 | iex
 ```
 
-If you cloned manually, register the server yourself:
-
-```bash
-claude mcp add --scope user fleet -- node /full/path/to/claude-code-fleet-mcp/dist/index.js
-```
+This clones, builds, and registers the MCP server — all in one step.
 
 **2. Load the server**
 
 Run `/mcp` in Claude Code to pick up the new server. You should see the fleet tools listed.
+
+<details>
+<summary>Manual install</summary>
+
+```bash
+git clone https://github.com/Apra-Labs/claude-code-fleet-mcp.git
+cd claude-code-fleet-mcp
+npm install && npm run build
+claude mcp add --scope user fleet -- node /full/path/to/claude-code-fleet-mcp/dist/index.js
+```
+
+Replace `/full/path/to/` with the actual path where you cloned the repo.
+
+</details>
 
 ## Registering your first agent
 
@@ -61,7 +63,45 @@ For a local agent (same machine, isolated workspace):
 
 No SSH needed — it runs as a child process.
 
+## Installing Claude on agents
+
+Don't have Claude Code on a remote machine yet? Fleet can handle that too:
+
+> "Install Claude Code on build-server."
+
+Or update it across your entire fleet:
+
+> "Update Claude on all agents."
+
+Uses the `update_claude` tool — works on Linux, macOS, and Windows agents.
+
 ## Real-world examples
+
+### Offload to a powerful machine
+
+> "Register my cloud VM at dev.example.com as `gpu-box`, username ubuntu, password temp123, setup key auth, folder `/home/ubuntu/ml-project`. Send over the training script and run it."
+
+Claude uploads the file via SFTP and kicks off the job on the remote machine. Code from your laptop, run on a 96-core beast.
+
+### Parallel feature development
+
+Register three agents — `frontend`, `backend`, `tests` — each in its own workspace. Then:
+
+> "On `frontend`, add a login form component. On `backend`, add the /auth/login endpoint. When both are done, have `tests` write integration tests for the login flow."
+
+Three agents working simultaneously, each with full Claude Code capabilities.
+
+### Large-scale refactoring
+
+> "Register local agents `refactor-1` through `refactor-5`. Split the migration of all API handlers from Express to Hono across them — each agent takes a different module."
+
+Parallelize a refactor that would take hours into work across multiple isolated workspaces.
+
+### Deploy and verify across environments
+
+> "On `staging-server`, pull main and run the deploy script. Once it's done, on `test-runner`, run the full E2E suite against staging."
+
+Chain work across agents — deploy on one, verify on another.
 
 ### Multi-platform testing
 
@@ -70,24 +110,6 @@ Register agents on Linux, macOS, and Windows. Then:
 > "Run `npm test` on build-server, mac-mini, and win-desktop at the same time. Show me the results side by side."
 
 Claude sends the prompt to all three agents in parallel and reports back.
-
-### Parallel feature work
-
-Register three agents — `frontend`, `backend`, `tests` — each in its own workspace. Then:
-
-> "On `frontend`, add a login form component. On `backend`, add the /auth/login endpoint. When both are done, have `tests` write integration tests for the login flow."
-
-### Local isolated workspaces
-
-> "Register two local agents: `feature-a` in `/tmp/feature-a` and `feature-b` in `/tmp/feature-b`. Clone the repo into both."
-
-Now you have two agents working on different features without conflicting.
-
-### Remote dev boxes
-
-> "Register my cloud VM at dev.example.com as `gpu-box`, username ubuntu, key auth, folder `/home/ubuntu/ml-project`. Send over the training script and run it."
-
-Claude uploads the file via SFTP and executes the prompt on the remote machine.
 
 ## Tools
 
@@ -135,18 +157,6 @@ For bulk registration or integration testing, you can define agents in `fleet.co
 See `fleet.config.example.json` for a full example with password auth and Windows agents.
 
 This file is used by the integration test suite and is gitignored. For normal usage, register agents conversationally — it's easier.
-
-## Installing Claude on agents
-
-Don't have Claude Code on a remote machine yet? Fleet can handle that too:
-
-> "Install Claude Code on build-server."
-
-Or update it across your entire fleet:
-
-> "Update Claude on all agents."
-
-Uses the `update_claude` tool — works on Linux, macOS, and Windows agents.
 
 ## Requirements
 
