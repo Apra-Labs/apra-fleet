@@ -19,20 +19,6 @@ npm install --no-fund --no-audit
 npm run build
 
 echo ""
-echo "Build complete."
+claude mcp add --scope user fleet -- node "$INSTALL_DIR/dist/index.js"
 echo ""
-
-if [ "${1:-}" = "--auto" ]; then
-  claude mcp add --scope user fleet -- node "$INSTALL_DIR/dist/index.js"
-  echo "Registered fleet MCP server for your user."
-else
-  echo "Run this to register the MCP server:"
-  echo ""
-  echo "  claude mcp add --scope user fleet -- node $INSTALL_DIR/dist/index.js"
-  echo ""
-  echo "Or re-run with --auto to do it automatically:"
-  echo "  bash $INSTALL_DIR/install.sh --auto"
-fi
-
-echo ""
-echo "Then run /mcp in Claude Code to load the server."
+echo "Done. Run /mcp in Claude Code to load the server."

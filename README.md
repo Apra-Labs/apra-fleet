@@ -27,7 +27,7 @@ cd claude-code-fleet-mcp
 npm install && npm run build
 ```
 
-Or use the install script:
+Or use the install script (clones, builds, and registers the MCP server automatically):
 
 ```bash
 # macOS / Linux
@@ -37,15 +37,13 @@ curl -fsSL https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/mai
 irm https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/main/install.ps1 | iex
 ```
 
-**2. Add to Claude Code**
+If you cloned manually, register the server yourself:
 
 ```bash
 claude mcp add --scope user fleet -- node /full/path/to/claude-code-fleet-mcp/dist/index.js
 ```
 
-Replace `/full/path/to/` with the actual path where you cloned the repo. The `--scope user` flag makes it available across all your projects.
-
-**3. Load the server**
+**2. Load the server**
 
 Run `/mcp` in Claude Code to pick up the new server. You should see the fleet tools listed.
 

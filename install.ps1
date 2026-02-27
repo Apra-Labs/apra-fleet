@@ -18,23 +18,7 @@ npm install --no-fund --no-audit
 npm run build
 
 Write-Host ""
-Write-Host "Build complete."
-Write-Host ""
-
 $NodePath = "$InstallDir\dist\index.js" -replace '\\', '/'
-$Auto = $args -contains "--auto" -or $args -contains "-Auto"
-
-if ($Auto) {
-    claude mcp add --scope user fleet -- node $NodePath
-    Write-Host "Registered fleet MCP server for your user."
-} else {
-    Write-Host "Run this to register the MCP server:"
-    Write-Host ""
-    Write-Host "  claude mcp add --scope user fleet -- node $NodePath"
-    Write-Host ""
-    Write-Host "Or re-run with -Auto to do it automatically:"
-    Write-Host "  powershell -File $InstallDir\install.ps1 -Auto"
-}
-
+claude mcp add --scope user fleet -- node $NodePath
 Write-Host ""
-Write-Host "Then run /mcp in Claude Code to load the server."
+Write-Host "Done. Run /mcp in Claude Code to load the server."
