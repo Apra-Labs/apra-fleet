@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { enforceOwnerOnly } from '../utils/file-permissions.js';
 
 const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const KNOWN_HOSTS_PATH = path.join(FLEET_DIR, 'known_hosts');
@@ -49,10 +50,7 @@ function saveKnownHosts(store: KnownHostsStore): void {
     fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
   }
   fs.writeFileSync(KNOWN_HOSTS_PATH, JSON.stringify(store, null, 2), { mode: 0o600 });
-  // writeFileSync mode only applies at creation — chmod ensures permissions on existing files
-  if (process.platform !== 'win32') {
-    fs.chmodSync(KNOWN_HOSTS_PATH, 0o600);
-  }
+  enforceOwnerOnly(KNOWN_HOSTS_PATH);
 }
 
 /**

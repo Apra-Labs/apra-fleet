@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
-import type { Agent } from '../types.js';
+import { classifyPromptError, isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
+import type { Agent, SSHExecResult } from '../types.js';
 
 export const executePromptSchema = z.object({
   agent_id: z.string().describe('The UUID of the target agent'),
@@ -12,6 +13,25 @@ export const executePromptSchema = z.object({
 });
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
+
+function parseResponse(result: SSHExecResult): { text: string; sessionId?: string } {
+  try {
+    const json = JSON.parse(result.stdout);
+    return { text: json.result ?? result.stdout, sessionId: json.session_id };
+  } catch {
+    return { text: result.stdout };
+  }
+}
+
+function buildFailureMessage(agentName: string, result: SSHExecResult): string {
+  const output = result.stderr || result.stdout;
+  const category = classifyPromptError(output);
+  return category === 'auth'
+    ? authErrorAdvice(agentName)
+    : `❌ Claude prompt failed on "${agentName}":\n${output}`;
+}
+
+const SERVER_RETRY_DELAY_MS = 5000;
 
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
   const agentOrError = getAgentOrFail(input.agent_id);
@@ -33,47 +53,34 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   const timeoutMs = input.timeout_ms ?? 300000;
 
   try {
-    const result = await strategy.execCommand(claudeCmd, timeoutMs);
+    let result = await strategy.execCommand(claudeCmd, timeoutMs);
+    let parsed = parseResponse(result);
 
-    // Try to parse session_id from JSON output
-    let responseText = result.stdout;
-    let newSessionId: string | undefined;
-
-    try {
-      const jsonResponse = JSON.parse(result.stdout);
-      newSessionId = jsonResponse.session_id;
-      responseText = jsonResponse.result ?? result.stdout;
-    } catch {
-      // Output might not be valid JSON — that's fine, use raw stdout
-    }
-
-    // If resume failed (stale session), retry without it
+    // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
       const retryCmd = cmds.buildPromptCommand(agent.remoteFolder, b64Prompt);
-      const retryResult = await strategy.execCommand(retryCmd, timeoutMs);
-      responseText = retryResult.stdout;
+      result = await strategy.execCommand(retryCmd, timeoutMs);
+      parsed = parseResponse(result);
+    }
 
-      try {
-        const jsonResponse = JSON.parse(retryResult.stdout);
-        newSessionId = jsonResponse.session_id;
-        responseText = jsonResponse.result ?? retryResult.stdout;
-      } catch {
-        // Use raw stdout
-      }
+    // Server/overloaded error retry — single attempt after delay
+    if (result.code !== 0 && isRetryable(classifyPromptError(result.stderr || result.stdout))) {
+      await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
+      const retryCmd = cmds.buildPromptCommand(agent.remoteFolder, b64Prompt);
+      result = await strategy.execCommand(retryCmd, timeoutMs);
+      parsed = parseResponse(result);
+    }
 
-      if (retryResult.code !== 0) {
-        return `❌ Claude prompt failed on "${agent.friendlyName}":\n${retryResult.stderr || retryResult.stdout}`;
-      }
-    } else if (result.code !== 0) {
-      return `❌ Claude prompt failed on "${agent.friendlyName}":\n${result.stderr || result.stdout}`;
+    if (result.code !== 0) {
+      return buildFailureMessage(agent.friendlyName, result);
     }
 
     // Update session ID and last used
-    touchAgent(agent.id, newSessionId);
+    touchAgent(agent.id, parsed.sessionId);
 
-    let output = `📋 Response from ${agent.friendlyName}:\n\n${responseText}`;
-    if (newSessionId) {
-      output += `\n\n🔗 Session: ${newSessionId}`;
+    let output = `📋 Response from ${agent.friendlyName}:\n\n${parsed.text}`;
+    if (parsed.sessionId) {
+      output += `\n\n🔗 Session: ${parsed.sessionId}`;
     }
     return output;
   } catch (err: any) {

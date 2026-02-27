@@ -132,8 +132,10 @@ If SSH is enabled but connection still refused, check firewall rules:
 
 ### Prerequisites
 
-- **For OAuth (default):** Run `claude auth login` on your local machine first. `provision_auth` copies your credentials to the remote agent.
+- **For OAuth (default):** Run `/login` in your Claude Code session (or `claude auth login` from terminal) first. `provision_auth` copies your credentials to the remote agent.
 - **For API key:** Have your Anthropic API key ready. Pass it as the `api_key` parameter to `provision_auth`.
+
+`provision_auth` checks token expiry before deploying. If your access token is expired but a refresh token exists, deployment proceeds — the agent CLI will auto-refresh on first use.
 
 ### Auth Check Failed Warning During Registration
 

@@ -57,6 +57,10 @@ Runs a Claude prompt on an agent. This is the primary tool for doing actual work
 
 **Output:** Claude's response text, plus the session ID if one was returned.
 
+**Error handling:**
+- If the prompt fails due to an authentication issue, returns actionable guidance (run `/login` + `provision_auth`) instead of raw error output.
+- Automatically retries once with a 5-second backoff on transient server errors (HTTP 500/502/503/529).
+
 **Session behavior:**
 - First prompt on an agent: no session exists, Claude starts fresh.
 - Subsequent prompts with `resume=true`: Claude continues the conversation with full context of prior exchanges.

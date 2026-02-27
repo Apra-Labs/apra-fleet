@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { Agent, FleetRegistry } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
+import { enforceOwnerOnly } from '../utils/file-permissions.js';
 
 const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
@@ -17,18 +18,13 @@ function ensureFleetDir(): void {
   }
 }
 
-function enforceFilePermissions(filePath: string): void {
-  if (process.platform !== 'win32') {
-    fs.chmodSync(filePath, 0o600);
-  }
-}
 
 function loadRegistry(): FleetRegistry {
   ensureFleetDir();
   if (!fs.existsSync(REGISTRY_PATH)) {
     const empty: FleetRegistry = { version: '1.0', agents: [] };
     fs.writeFileSync(REGISTRY_PATH, JSON.stringify(empty, null, 2), { mode: 0o600 });
-    enforceFilePermissions(REGISTRY_PATH);
+    enforceOwnerOnly(REGISTRY_PATH);
     return empty;
   }
   const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
@@ -38,7 +34,7 @@ function loadRegistry(): FleetRegistry {
 function saveRegistry(registry: FleetRegistry): void {
   ensureFleetDir();
   fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), { mode: 0o600 });
-  enforceFilePermissions(REGISTRY_PATH);
+  enforceOwnerOnly(REGISTRY_PATH);
 }
 
 export function getAllAgents(): Agent[] {

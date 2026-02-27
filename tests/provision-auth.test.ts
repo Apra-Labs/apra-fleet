@@ -101,6 +101,60 @@ describe('provisionAuth', () => {
 
     const result = await provisionAuth({ agent_id: agent.id });
     expect(result).toContain('No OAuth credentials found');
+    expect(result).toContain('/login');
     expect(result).toContain('api_key');
+  });
+
+  it('blocks deployment when token is expired with no refresh token', async () => {
+    const agent = makeTestAgent({ friendlyName: 'expired-agent' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-ant-oat01-test', expiresAt: '2020-01-01T00:00:00Z' },
+    }));
+
+    const result = await provisionAuth({ agent_id: agent.id });
+    expect(result).toContain('expired');
+    expect(result).toContain('/login');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('deploys with auto-refresh note when token is expired but refreshable', async () => {
+    const agent = makeTestAgent({ friendlyName: 'refresh-agent' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'sk-ant-oat01-test',
+        expiresAt: '2020-01-01T00:00:00Z',
+        refreshToken: 'rt-test',
+      },
+    }));
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionAuth({ agent_id: agent.id });
+    expect(result).toContain('OAuth credentials deployed');
+    expect(result).toContain('auto-refresh');
+  });
+
+  it('deploys with near-expiry warning when token is close to expiry', async () => {
+    const agent = makeTestAgent({ friendlyName: 'expiring-agent' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'sk-ant-oat01-test',
+        expiresAt: new Date(Date.now() + 30 * 60000).toISOString(), // 30 min
+        refreshToken: 'rt-test',
+      },
+    }));
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionAuth({ agent_id: agent.id });
+    expect(result).toContain('OAuth credentials deployed');
+    expect(result).toMatch(/expires in ~\d+ minute/);
   });
 });

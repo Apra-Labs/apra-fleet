@@ -6,6 +6,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
 import type { Agent } from '../types.js';
 
 export const provisionAuthSchema = z.object({
@@ -57,7 +58,13 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
   const creds = readMasterCredentials();
   if (!creds) {
     return `❌ No OAuth credentials found on this machine (~/.claude/.credentials.json).\n`
-      + `  Run "claude auth login" locally first, or use the api_key parameter instead.`;
+      + `  Run /login in your Claude Code session, or use the api_key parameter instead.`;
+  }
+
+  const credStatus = validateCredentials(creds);
+  if (credStatus?.status === 'expired-no-refresh') {
+    return `❌ OAuth token is expired with no refresh token.\n`
+      + `  Run /login to get a fresh token, then re-run provision_auth.`;
   }
 
   // Write credentials file to remote (mkdir + write in one command)
@@ -73,12 +80,15 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
   const authWorks = await verifyWithPrompt(agent);
   touchAgent(agent.id);
 
+  const statusNote = credentialStatusNote(credStatus);
+  const suffix = statusNote ? `\n  ${statusNote}\n` : '';
+
   if (authWorks) {
     return `✅ OAuth credentials deployed to "${agent.friendlyName}"\n`
-      + `  Auth: verified with a successful Claude API call\n`;
+      + `  Auth: verified with a successful Claude API call\n` + suffix;
   }
   return `⚠️ Credentials deployed to "${agent.friendlyName}" but could not verify auth.\n`
-    + `  The credentials file was written — try running a prompt to confirm.\n`;
+    + `  The credentials file was written — try running a prompt to confirm.\n` + suffix;
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import { executePrompt } from '../src/tools/execute-prompt.js';
 import { listAgents } from '../src/tools/list-agents.js';
 import { agentDetail } from '../src/tools/agent-detail.js';
 import { setupSSHKey } from '../src/tools/setup-ssh-key.js';
+import { validateCredentials, credentialStatusNote } from '../src/utils/credential-validation.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,15 @@ async function preflight(config: FleetConfig) {
   hasCreds
     ? ok('~/.claude/.credentials.json exists')
     : skip('~/.claude/.credentials.json missing — provision_auth will be skipped for remote agents');
+
+  // Token health reporting (informational only)
+  if (hasCreds) {
+    const raw = fs.readFileSync(CRED_PATH, 'utf-8');
+    const cs = validateCredentials(raw);
+    const note = cs ? credentialStatusNote(cs) : '';
+    const label = cs?.status ?? 'unknown structure';
+    console.log(`  Token status: ${label}${note ? ` — ${note}` : ''}`);
+  }
 
   for (const a of config.agents.filter(a => a.auth_type === 'key' && a.key_path)) {
     fs.existsSync(a.key_path!)
@@ -179,6 +189,33 @@ async function register(config: FleetConfig): Promise<Map<string, string>> {
   return nameToId;
 }
 
+async function testAuthErrorDetection(nameToId: Map<string, string>, config: FleetConfig) {
+  section('2.5 Auth Error Detection (unprovisioned)');
+
+  const remoteAgents = config.agents.filter(a => a.agent_type === 'remote');
+  if (remoteAgents.length === 0) {
+    skip('No remote agents to test auth error detection');
+    return;
+  }
+
+  if (process.env.CLAUDECODE) {
+    skip('Running inside Claude Code session — skipping auth error detection');
+    return;
+  }
+
+  const tasks = remoteAgents.map(async ac => {
+    const id = nameToId.get(ac.friendly_name);
+    if (!id) { skip(`Auth detect ${ac.friendly_name} — not registered`); return; }
+
+    const result = await executePrompt({ agent_id: id, prompt: 'hello', resume: false, timeout_ms: 30000 });
+
+    result.includes('/login') && result.includes('provision_auth')
+      ? ok(`Auth error detected on ${ac.friendly_name}`)
+      : skip(`Auth detect ${ac.friendly_name} — unexpected result (agent may have residual auth)`);
+  });
+  await Promise.all(tasks);
+}
+
 async function verifyListAgents(nameToId: Map<string, string>) {
   section('3. Verify list_agents');
 
@@ -251,6 +288,11 @@ async function verifyAgentDetail(nameToId: Map<string, string>, config: FleetCon
 async function provision(nameToId: Map<string, string>, config: FleetConfig, hasCreds: boolean) {
   section('5. Provision Auth');
 
+  // Compute credential status once for annotation validation
+  const credStatus = hasCreds
+    ? validateCredentials(fs.readFileSync(CRED_PATH, 'utf-8'))
+    : null;
+
   const tasks = config.agents.map(async ac => {
     const id = nameToId.get(ac.friendly_name);
     if (!id) { skip(`Provision ${ac.friendly_name} — not registered`); return; }
@@ -268,6 +310,19 @@ async function provision(nameToId: Map<string, string>, config: FleetConfig, has
       ok(`Provisioned ${ac.friendly_name} (unverified — will test with prompt)`);
     } else {
       fail(`Provision ${ac.friendly_name}`, result);
+    }
+
+    // Validate output annotations based on credential status
+    if (ac.agent_type === 'remote' && credStatus) {
+      credStatus.status === 'near-expiry' && result.includes('expires in')
+        ? ok(`${ac.friendly_name} — near-expiry annotation present`)
+        : credStatus.status === 'expired-refreshable' && result.includes('auto-refresh')
+        ? ok(`${ac.friendly_name} — auto-refresh annotation present`)
+        : credStatus.status === 'expired-no-refresh' && result.includes('/login')
+        ? ok(`${ac.friendly_name} — expired-no-refresh blocked with /login`)
+        : credStatus.status === 'valid'
+        ? ok(`${ac.friendly_name} — no extra annotations (valid token)`)
+        : skip(`${ac.friendly_name} — annotation check inconclusive`);
     }
   });
   await Promise.all(tasks);
@@ -324,6 +379,7 @@ async function main() {
   const { hasCreds } = await preflight(config);
   await teardown();
   const nameToId = await register(config);
+  await testAuthErrorDetection(nameToId, config);
   await verifyListAgents(nameToId);
   await verifyAgentDetail(nameToId, config);
   await provision(nameToId, config, hasCreds);

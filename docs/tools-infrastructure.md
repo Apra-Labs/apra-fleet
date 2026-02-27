@@ -23,9 +23,13 @@ Used when the user has a Max subscription. Copies `~/.claude/.credentials.json` 
 4. Writes the credentials file to the remote agent (with `chmod 600` on Unix).
 5. Verifies with `claude -p "hello" --max-turns 1` to confirm a real API call succeeds.
 
-**Output:** Reports whether credentials were deployed and whether the auth test passed.
+**Output:** Reports whether credentials were deployed and whether the auth test passed. Includes advisory notes for near-expiry or expired-refreshable tokens.
 
-**Fails if:** No credentials file exists on the master machine — prompts the user to run `claude auth login` locally first or use `api_key` instead.
+**Fails if:**
+- No credentials file exists on the master machine — prompts the user to run `/login` or use `api_key` instead.
+- Token is expired with no refresh token — blocks deployment and suggests running `/login`.
+
+**Token validation:** Before deploying, `provision_auth` checks the OAuth token's expiry. If the token is expired but has a refresh token, deployment proceeds — the agent CLI will auto-refresh on first use. If near-expiry, a warning is appended to the output.
 
 ### Flow B — API Key Override (`api_key` provided)
 
