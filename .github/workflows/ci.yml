@@ -8,10 +8,11 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node-version: [20.x, 22.x]
 
     steps:
@@ -31,7 +32,7 @@ jobs:
         run: npm run build
 
       - name: Verify build output
-        run: test -f dist/index.js || (echo "Build output dist/index.js not found" && exit 1)
+        run: node -e "require('fs').existsSync('dist/index.js') || (console.error('Build output dist/index.js not found'), process.exit(1))"
 
       - name: Run tests
         run: npm test

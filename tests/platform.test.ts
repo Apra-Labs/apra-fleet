@@ -221,7 +221,7 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('cleanExec', () => {
-    it.skipIf(process.platform === 'win32')('linux: returns pristine env from login shell', () => {
+    it.skipIf(process.platform !== 'linux')('linux: returns pristine env from login shell', () => {
       const { command, env, shell } = linux.cleanExec('echo hello');
       expect(command).toBe('echo hello');
       expect(shell).toBeUndefined();
@@ -230,7 +230,7 @@ describe('OsCommands via getOsCommands', () => {
       expect(env!['PATH']).toBeTruthy();
     });
 
-    it.skipIf(process.platform === 'win32')('linux: env excludes process-only vars', () => {
+    it.skipIf(process.platform !== 'linux')('linux: env excludes process-only vars', () => {
       process.env.__FLEET_TEST_MARKER__ = 'should-not-appear';
       try {
         const { env } = linux.cleanExec('echo hello');
@@ -240,7 +240,7 @@ describe('OsCommands via getOsCommands', () => {
       }
     });
 
-    it.skipIf(process.platform === 'win32')('macos: inherits linux cleanExec', () => {
+    it.skipIf(process.platform !== 'darwin')('macos: inherits linux cleanExec', () => {
       const { command, env, shell } = macos.cleanExec('echo hello');
       expect(command).toBe('echo hello');
       expect(shell).toBeUndefined();
