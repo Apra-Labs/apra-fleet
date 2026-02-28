@@ -153,6 +153,10 @@ export class LinuxCommands implements OsCommands {
 
   // --- Shell ---
 
+  wrapInWorkFolder(folder: string, command: string): string {
+    return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
+  }
+
   shellWrap(command: string): string {
     return command;
   }

@@ -77,6 +77,41 @@ Do NOT enable this for open-ended prompts on agents with access to sensitive dat
 - If a session becomes stale (e.g. expired server-side), the tool automatically retries without resume — the user sees the response, not an error.
 - Use `reset_session` to explicitly start fresh.
 
+## execute_command
+
+Runs a shell command directly on an agent without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `agent_id` | string | yes | UUID of the target agent |
+| `command` | string | yes | The shell command to execute |
+| `timeout_ms` | number | no | Default: 120000 (2 minutes). Max time to wait for the command to finish |
+| `work_folder` | string | no | Directory to cd into before running the command. Defaults to the agent's registered work folder |
+
+**What it does:**
+
+1. Looks up the agent by ID.
+2. Resolves the working directory — uses `work_folder` if provided, otherwise the agent's registered `workFolder`.
+3. Wraps the command with a `cd` (Unix) or `Set-Location` (Windows) into the resolved folder.
+4. Executes via `strategy.execCommand()` with the specified timeout.
+5. Returns stdout, stderr, and exit code.
+
+**Output:** Exit code followed by stdout (and stderr prefixed with `[stderr]` if present).
+
+**Security warning:** This tool executes **raw shell commands** on the target machine. It is not sandboxed — the command runs with the full privileges of the SSH user (remote agents) or the local process user (local agents). Do not pass untrusted input as the command string. Access is gated by agent registration (same as `execute_prompt`), and output is subject to the existing 10MB stdout/stderr cap.
+
+**When to use `execute_command` vs `execute_prompt`:**
+
+| Scenario | Tool |
+|----------|------|
+| Install a package (`npm install`, `apt-get install`) | `execute_command` |
+| Check a version (`node --version`, `git --version`) | `execute_command` |
+| Run a build or test script | `execute_command` |
+| Ask Claude to analyze code, write code, or reason about a task | `execute_prompt` |
+| Tasks requiring multi-step reasoning or tool use | `execute_prompt` |
+
 ## reset_session
 
 Clears stored session IDs so the next prompt starts a fresh Claude conversation.

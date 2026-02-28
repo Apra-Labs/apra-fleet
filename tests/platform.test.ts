@@ -220,6 +220,36 @@ describe('OsCommands via getOsCommands', () => {
     });
   });
 
+  describe('wrapInWorkFolder', () => {
+    it('linux: wraps with cd and &&', () => {
+      expect(linux.wrapInWorkFolder('/home/user/project', 'echo hi'))
+        .toBe('cd "/home/user/project" && echo hi');
+    });
+
+    it('macos: inherits linux wrapInWorkFolder', () => {
+      expect(macos.wrapInWorkFolder('/opt/app', 'ls -la'))
+        .toBe('cd "/opt/app" && ls -la');
+    });
+
+    it('windows: wraps with Set-Location', () => {
+      expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
+        .toContain('Set-Location');
+      expect(windows.wrapInWorkFolder('C:\\Users\\dev\\project', 'Get-ChildItem'))
+        .toContain('Get-ChildItem');
+    });
+
+    it('escapes folder injection in linux', () => {
+      const cmd = linux.wrapInWorkFolder('/home/$(whoami)/project', 'echo hi');
+      expect(cmd).toContain('\\$(whoami)');
+    });
+
+    it('escapes folder injection in windows', () => {
+      const cmd = windows.wrapInWorkFolder('C:\\test"&whoami&"', 'echo hi');
+      expect(cmd).toContain('""');
+      expect(cmd).toContain('^&');
+    });
+  });
+
   describe('cleanExec', () => {
     it.skipIf(process.platform !== 'linux')('linux: returns pristine env from login shell', () => {
       const { command, env, shell } = linux.cleanExec('echo hello');

@@ -122,6 +122,7 @@ Claude sends the prompt to all three agents in parallel and reports back.
 | `agent_detail` | Deep-dive status for a single agent |
 | `fleet_status` | Overview status of all agents |
 | `execute_prompt` | Run a Claude prompt on an agent (supports session resume) |
+| `execute_command` | Run a shell command directly on an agent (no Claude CLI needed) |
 | `reset_session` | Clear session ID so the next prompt starts fresh |
 | `send_files` | Upload local files to a remote agent via SFTP |
 | `provision_auth` | Deploy OAuth credentials or an API key to an agent |

@@ -42,6 +42,7 @@ export interface OsCommands {
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string };
 
   // --- Shell ---
+  wrapInWorkFolder(folder: string, command: string): string;
   shellWrap(command: string): string;
 
   // --- Prompt building ---

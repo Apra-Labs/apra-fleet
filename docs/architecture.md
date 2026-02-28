@@ -100,8 +100,8 @@ The tools break into natural groups. Each group has detailed documentation:
 **[Lifecycle](tools-lifecycle.md)** — `register_agent`, `list_agents`, `update_agent`, `remove_agent`, `shutdown_server`
 Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of auth credentials on the agent.
 
-**[Work](tools-work.md)** — `send_files`, `execute_prompt`, `reset_session`
-The core workflow. Push files to an agent, run Claude prompts against them, manage conversation sessions.
+**[Work](tools-work.md)** — `send_files`, `execute_prompt`, `execute_command`, `reset_session`
+The core workflow. Push files to an agent, run Claude prompts against them, run shell commands directly, manage conversation sessions.
 
 **[Infrastructure](tools-infrastructure.md)** — `provision_auth`, `setup_ssh_key`, `update_claude`
 One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key), migrate from password to key auth, update the Claude CLI remotely.

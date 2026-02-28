@@ -38,6 +38,7 @@ import { removeAgentSchema, removeAgent } from './tools/remove-agent.js';
 import { updateAgentSchema, updateAgent } from './tools/update-agent.js';
 import { sendFilesSchema, sendFiles } from './tools/send-files.js';
 import { executePromptSchema, executePrompt } from './tools/execute-prompt.js';
+import { executeCommandSchema, executeCommand } from './tools/execute-command.js';
 import { resetSessionSchema, resetSession } from './tools/reset-session.js';
 import { provisionAuthSchema, provisionAuth } from './tools/provision-auth.js';
 import { setupSSHKeySchema, setupSSHKey } from './tools/setup-ssh-key.js';
@@ -110,6 +111,15 @@ server.tool(
   executePromptSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await executePrompt(input as any) }],
+  })
+);
+
+server.tool(
+  'execute_command',
+  'Run a shell command directly on an agent without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.',
+  executeCommandSchema.shape,
+  async (input) => ({
+    content: [{ type: 'text', text: await executeCommand(input as any) }],
   })
 );
 

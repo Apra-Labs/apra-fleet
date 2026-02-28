@@ -155,6 +155,10 @@ export class WindowsCommands implements OsCommands {
 
   // --- Shell ---
 
+  wrapInWorkFolder(folder: string, command: string): string {
+    return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
+  }
+
   shellWrap(command: string): string {
     return command;
   }
