@@ -41,6 +41,16 @@ Runs a Claude prompt on an agent. This is the primary tool for doing actual work
 | `prompt` | string | yes | The prompt text to send to Claude |
 | `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
 | `timeout_ms` | number | no | Default: 300000 (5 minutes). Max time to wait for Claude's response |
+| `dangerously_skip_permissions` | boolean | no | Default: `false`. Runs Claude with `--dangerously-skip-permissions` so it can execute tools without interactive approval |
+
+**When to use `dangerously_skip_permissions`:**
+
+This flag is intended for specific unattended workflows where no human is present at the remote terminal to approve tool calls:
+- Installing software or dependencies on a remote agent
+- Running build/test scripts that require shell access
+- Automated CI/CD-style tasks dispatched across the fleet
+
+Do NOT enable this for open-ended prompts on agents with access to sensitive data or production systems. The remote Claude will execute any tool call — file edits, shell commands, network requests — without confirmation.
 
 **What it does:**
 

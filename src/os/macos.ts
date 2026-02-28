@@ -2,6 +2,8 @@ import { LinuxCommands } from './linux.js';
 import { escapeDoubleQuoted } from './os-commands.js';
 
 export class MacOSCommands extends LinuxCommands {
+  protected override loginShell(): string { return 'zsh'; }
+
   override cpuLoad(): string {
     return 'sysctl -n vm.loadavg';
   }

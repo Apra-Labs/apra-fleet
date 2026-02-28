@@ -187,6 +187,16 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmd).toContain('--resume');
         expect(cmd).toContain('abc-123-def');
       });
+
+      it(`${name}: includes --dangerously-skip-permissions when flag is true`, () => {
+        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, true);
+        expect(cmd).toContain('--dangerously-skip-permissions');
+      });
+
+      it(`${name}: omits --dangerously-skip-permissions by default`, () => {
+        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
+        expect(cmd).not.toContain('--dangerously-skip-permissions');
+      });
     }
   });
 
@@ -211,23 +221,31 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('cleanExec', () => {
-    it('linux: wraps with env -i bash -l -c', () => {
+    it.skipIf(process.platform === 'win32')('linux: returns pristine env from login shell', () => {
       const { command, env, shell } = linux.cleanExec('echo hello');
-      expect(command).toBe("env -i bash -l -c 'echo hello'");
-      expect(env).toBeUndefined();
+      expect(command).toBe('echo hello');
       expect(shell).toBeUndefined();
+      expect(env).toBeDefined();
+      expect(env!['HOME']).toBeTruthy();
+      expect(env!['PATH']).toBeTruthy();
     });
 
-    it('linux: escapes single quotes in command', () => {
-      const { command } = linux.cleanExec("echo 'quoted'");
-      expect(command).toBe("env -i bash -l -c 'echo '\\''quoted'\\'''");
+    it.skipIf(process.platform === 'win32')('linux: env excludes process-only vars', () => {
+      process.env.__FLEET_TEST_MARKER__ = 'should-not-appear';
+      try {
+        const { env } = linux.cleanExec('echo hello');
+        expect(env!['__FLEET_TEST_MARKER__']).toBeUndefined();
+      } finally {
+        delete process.env.__FLEET_TEST_MARKER__;
+      }
     });
 
-    it('macos: inherits linux cleanExec', () => {
+    it.skipIf(process.platform === 'win32')('macos: inherits linux cleanExec', () => {
       const { command, env, shell } = macos.cleanExec('echo hello');
-      expect(command).toBe("env -i bash -l -c 'echo hello'");
-      expect(env).toBeUndefined();
+      expect(command).toBe('echo hello');
       expect(shell).toBeUndefined();
+      expect(env).toBeDefined();
+      expect(env!['HOME']).toBeTruthy();
     });
 
     it.skipIf(process.platform !== 'win32')('windows: returns pristine env and powershell shell', () => {

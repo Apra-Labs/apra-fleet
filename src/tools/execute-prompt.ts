@@ -10,6 +10,7 @@ export const executePromptSchema = z.object({
   prompt: z.string().describe('The prompt to send to Claude on the remote agent'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
   timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
+  dangerously_skip_permissions: z.boolean().default(false).describe('Run Claude with --dangerously-skip-permissions so it can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
 });
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
@@ -48,6 +49,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     agent.workFolder,
     b64Prompt,
     input.resume && agent.sessionId ? agent.sessionId : undefined,
+    input.dangerously_skip_permissions,
   );
 
   const timeoutMs = input.timeout_ms ?? 300000;
@@ -58,7 +60,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }
@@ -66,7 +68,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(classifyPromptError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }
