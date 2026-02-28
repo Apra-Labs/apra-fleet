@@ -134,6 +134,20 @@ describe('executePrompt', () => {
     expect(mockExecCommand).toHaveBeenCalledTimes(2);
   });
 
+  it('passes model parameter to the generated command', async () => {
+    const agent = makeTestAgent({ friendlyName: 'model-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-m' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ agent_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'opus' });
+    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[0][0]).toContain('opus');
+  });
+
   it('returns raw error for unknown error without retry', async () => {
     const agent = makeTestAgent({ friendlyName: 'unknown-err' });
     addAgent(agent);

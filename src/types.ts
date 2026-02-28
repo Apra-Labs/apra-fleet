@@ -11,7 +11,6 @@ export interface Agent {
   workFolder: string;
   sessionId?: string;
   os?: 'windows' | 'macos' | 'linux';
-  scpAvailable?: boolean;
   createdAt: string;
   lastUsed?: string;
 }

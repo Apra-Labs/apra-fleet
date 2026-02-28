@@ -73,22 +73,7 @@ describe('friendlyName Zod validation', () => {
   });
 });
 
-// --- Item 3: Legacy salt removal ---
-
-describe('legacy salt removal', () => {
-  it('encrypts and decrypts without legacy fallback', () => {
-    const password = 'test-password-secure!';
-    const encrypted = encryptPassword(password);
-    expect(decryptPassword(encrypted)).toBe(password);
-  });
-
-  it('throws on tampered ciphertext (no silent fallback)', () => {
-    const encrypted = encryptPassword('secret');
-    const parts = encrypted.split(':');
-    parts[2] = 'ff' + parts[2].slice(2);
-    expect(() => decryptPassword(parts.join(':'))).toThrow();
-  });
-});
+// Legacy salt removal: covered by crypto.test.ts (round-trip + tampered ciphertext)
 
 // --- Item 4: Cross-platform SSH key deployment ---
 

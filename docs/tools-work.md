@@ -18,7 +18,7 @@ Uploads local files to an agent's working directory.
 
 1. Looks up the agent by ID.
 2. Calls `strategy.transferFiles()`:
-   - **Remote agents:** uploads via SFTP (creates remote directories recursively, then uses `sftp.fastPut()` for each file). Falls back from SCP to SFTP transparently.
+   - **Remote agents:** uploads via SFTP (creates remote directories recursively, then uses `sftp.fastPut()` for each file).
    - **Local agents:** uses `fs.copyFileSync()` to copy files to the target folder. Creates the destination directory with `fs.mkdirSync({ recursive: true })` if needed.
 3. Updates the agent's `lastUsed` timestamp.
 
@@ -42,6 +42,7 @@ Runs a Claude prompt on an agent. This is the primary tool for doing actual work
 | `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
 | `timeout_ms` | number | no | Default: 300000 (5 minutes). Max time to wait for Claude's response |
 | `dangerously_skip_permissions` | boolean | no | Default: `false`. Runs Claude with `--dangerously-skip-permissions` so it can execute tools without interactive approval |
+| `model` | string | no | Model to use (e.g. `opus`, `sonnet`, `haiku`, or full model ID like `claude-sonnet-4-6`). Applies to both new and resumed sessions |
 
 **When to use `dangerously_skip_permissions`:**
 

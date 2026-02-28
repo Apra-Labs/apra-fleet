@@ -66,7 +66,6 @@ try {
     encryptedPassword: encryptPassword('smokepass'),
     workFolder: '/home/smokeuser/project',
     os: 'linux',
-    scpAvailable: true,
     createdAt: new Date().toISOString(),
   };
 

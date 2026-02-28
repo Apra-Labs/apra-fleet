@@ -28,9 +28,8 @@ Registers a new machine as a fleet agent. This is the entry point for every agen
 4. **Detects OS** — remote agents run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local agents read `process.platform` directly.
 5. **Checks Claude CLI** — runs `claude --version` to verify Claude Code is installed and capture the version.
 6. **Auth test (remote only)** — runs a quick `claude -p "hello"` to verify Claude can authenticate. Skipped for local agents since they inherit the current session's auth.
-7. **Checks SCP availability** — remote only, used to choose file transfer strategy.
-8. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
-9. **Persists** — saves the agent to `~/.claude-fleet/registry.json` with a generated UUID.
+7. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
+8. **Persists** — saves the agent to `~/.claude-fleet/registry.json` with a generated UUID.
 
 **Output:** Agent ID, name, type, OS, folder, auth method, latency, and any warnings (e.g. Claude CLI not found, auth failed).
 

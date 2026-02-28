@@ -89,7 +89,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   // Now we know the OS — get the command builder
   const cmds = getOsCommands(detectedOS);
 
-  // Steps 3-5: Run Claude version, auth check, SCP check, and mkdir in parallel
+  // Steps 3-5: Run Claude version, auth check, and mkdir in parallel
   let claudeVersion: string | undefined;
 
   const versionCheck = strategy.execCommand(cmds.claudeVersion(), 15000)
@@ -106,12 +106,6 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
         .catch(() => { warnings.push('Claude CLI auth check timed out or failed — run provision_auth to set up authentication'); })
     : Promise.resolve();
 
-  const scpCheck = !isLocal
-    ? strategy.execCommand(cmds.scpCheck(), 10000)
-        .then(r => { tempAgent.scpAvailable = r.code === 0; })
-        .catch(() => { tempAgent.scpAvailable = false; })
-    : Promise.resolve();
-
   const mkdirCheck = isLocal
     ? import('node:fs').then(({ mkdirSync }) => {
         mkdirSync(input.work_folder, { recursive: true });
@@ -119,7 +113,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
     : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
         .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
 
-  await Promise.all([versionCheck, authCheck, scpCheck, mkdirCheck]);
+  await Promise.all([versionCheck, authCheck, mkdirCheck]);
 
   // Persist
   addAgent(tempAgent);
@@ -138,7 +132,6 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   }
   if (!isLocal) {
     result += `  Auth:    ${tempAgent.authType}\n`;
-    result += `  SCP:     ${tempAgent.scpAvailable ? 'available' : 'not available (will use SFTP)'}\n`;
     result += `  Latency: ${connResult.latencyMs}ms\n`;
   }
 

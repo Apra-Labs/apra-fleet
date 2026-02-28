@@ -24,7 +24,6 @@ export interface OsCommands {
 
   // --- Filesystem ---
   mkdir(folder: string): string;
-  scpCheck(): string;
 
   // --- Auth ---
   credentialFileCheck(): string;
@@ -43,10 +42,9 @@ export interface OsCommands {
 
   // --- Shell ---
   wrapInWorkFolder(folder: string, command: string): string;
-  shellWrap(command: string): string;
 
   // --- Prompt building ---
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean): string;
+  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string): string;
 
   // --- Resource output parsing ---
   parseMemory(stdout: string): string;

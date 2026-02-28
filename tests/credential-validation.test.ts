@@ -15,15 +15,13 @@ function makeCreds(overrides: Record<string, any> = {}) {
 describe('validateCredentials', () => {
   afterEach(() => { vi.useRealTimers(); });
 
-  it('returns valid for a token with > 1 hour left', () => {
+  it('returns valid for a token with >= 1 hour left', () => {
     expect(validateCredentials(makeCreds())).toEqual({ status: 'valid' });
-  });
 
-  it('returns valid at exactly 1 hour boundary', () => {
+    // Boundary: exactly 1 hour = threshold, msLeft < threshold is false → valid
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2025-01-01T00:00:00Z'));
     const creds = makeCreds({ expiresAt: '2025-01-01T01:00:00Z' });
-    // exactly 1 hour = 3600000ms, threshold is 3600000ms, so msLeft < threshold is false → valid
     expect(validateCredentials(creds)).toEqual({ status: 'valid' });
   });
 
@@ -58,25 +56,16 @@ describe('validateCredentials', () => {
     expect(validateCredentials(creds)).toEqual({ status: 'expired-no-refresh' });
   });
 
-  it('returns null for unparseable JSON', () => {
+  it('returns null for invalid or incomplete input', () => {
     expect(validateCredentials('not json')).toBeNull();
-  });
-
-  it('returns null for missing claudeAiOauth', () => {
     expect(validateCredentials('{}')).toBeNull();
-  });
-
-  it('returns null for missing expiresAt', () => {
     expect(validateCredentials(JSON.stringify({ claudeAiOauth: { accessToken: 'x' } }))).toBeNull();
   });
 });
 
 describe('credentialStatusNote', () => {
-  it('returns empty for valid', () => {
+  it('returns empty for valid or null', () => {
     expect(credentialStatusNote({ status: 'valid' })).toBe('');
-  });
-
-  it('returns empty for null', () => {
     expect(credentialStatusNote(null)).toBe('');
   });
 

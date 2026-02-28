@@ -61,14 +61,6 @@ describe('OsCommands via getOsCommands', () => {
     });
   });
 
-  describe('shell wrapping', () => {
-    it('wraps commands appropriately per OS', () => {
-      expect(linux.shellWrap('echo hi')).toBe('echo hi');
-      expect(macos.shellWrap('echo hi')).toBe('echo hi');
-      expect(windows.shellWrap('echo hi')).toBe('echo hi');
-    });
-  });
-
   describe('claude CLI commands', () => {
     for (const [name, cmds] of all) {
       it(`${name}: claudeVersion includes --version`, () => {
@@ -196,6 +188,26 @@ describe('OsCommands via getOsCommands', () => {
       it(`${name}: omits --dangerously-skip-permissions by default`, () => {
         const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
         expect(cmd).not.toContain('--dangerously-skip-permissions');
+      });
+
+      it(`${name}: includes --model when provided`, () => {
+        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, false, 'sonnet');
+        expect(cmd).toContain('--model');
+        expect(cmd).toContain('sonnet');
+      });
+
+      it(`${name}: omits --model when not provided`, () => {
+        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
+        expect(cmd).not.toContain('--model');
+      });
+
+      it(`${name}: combines --model with --resume and --dangerously-skip-permissions`, () => {
+        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', 'sess-123', true, 'claude-opus-4-6');
+        expect(cmd).toContain('--resume');
+        expect(cmd).toContain('sess-123');
+        expect(cmd).toContain('--dangerously-skip-permissions');
+        expect(cmd).toContain('--model');
+        expect(cmd).toContain('claude-opus-4-6');
       });
     }
   });

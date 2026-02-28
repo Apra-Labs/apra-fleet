@@ -98,10 +98,6 @@ export class WindowsCommands implements OsCommands {
     return `New-Item -Path "${escapeWindowsArg(folder)}" -ItemType Directory -Force | Out-Null`;
   }
 
-  scpCheck(): string {
-    return 'Get-Command scp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source';
-  }
-
   // --- Auth ---
 
   credentialFileCheck(): string {
@@ -159,20 +155,17 @@ export class WindowsCommands implements OsCommands {
     return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
   }
 
-  shellWrap(command: string): string {
-    return command;
-  }
-
   // --- Prompt building ---
 
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean): string {
+  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string): string {
     const escapedFolder = escapeWindowsArg(folder);
     let resume = '';
     if (sessionId) {
       resume = ` --resume "${sanitizeSessionId(sessionId)}"`;
     }
     const skipPerms = dangerouslySkipPermissions ? ' --dangerously-skip-permissions' : '';
-    return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns 50${resume}${skipPerms}`;
+    const modelFlag = model ? ` --model "${escapeWindowsArg(model)}"` : '';
+    return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns 50${resume}${skipPerms}${modelFlag}`;
   }
 
   // --- Resource output parsing ---

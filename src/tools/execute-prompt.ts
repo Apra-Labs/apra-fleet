@@ -11,6 +11,7 @@ export const executePromptSchema = z.object({
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
   timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
   dangerously_skip_permissions: z.boolean().default(false).describe('Run Claude with --dangerously-skip-permissions so it can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
+  model: z.string().optional().describe('Model to use (e.g. "opus", "sonnet", "haiku", or full model ID). Applies to both new and resumed sessions.'),
 });
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
@@ -50,6 +51,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     b64Prompt,
     input.resume && agent.sessionId ? agent.sessionId : undefined,
     input.dangerously_skip_permissions,
+    input.model,
   );
 
   const timeoutMs = input.timeout_ms ?? 300000;
@@ -60,7 +62,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }
@@ -68,7 +70,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(classifyPromptError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }

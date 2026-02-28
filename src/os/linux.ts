@@ -88,10 +88,6 @@ export class LinuxCommands implements OsCommands {
     return `mkdir -p "${escapeDoubleQuoted(folder)}"`;
   }
 
-  scpCheck(): string {
-    return 'which scp 2>/dev/null';
-  }
-
   // --- Auth ---
 
   credentialFileCheck(): string {
@@ -157,13 +153,9 @@ export class LinuxCommands implements OsCommands {
     return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
   }
 
-  shellWrap(command: string): string {
-    return command;
-  }
-
   // --- Prompt building ---
 
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean): string {
+  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string): string {
     const escapedFolder = escapeDoubleQuoted(folder);
     let cmd = `cd "${escapedFolder}" && ${this.claudeCommand(`-p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns 50`)}`;
     if (sessionId) {
@@ -171,6 +163,9 @@ export class LinuxCommands implements OsCommands {
     }
     if (dangerouslySkipPermissions) {
       cmd += ' --dangerously-skip-permissions';
+    }
+    if (model) {
+      cmd += ` --model "${escapeDoubleQuoted(model)}"`;
     }
     return cmd;
   }

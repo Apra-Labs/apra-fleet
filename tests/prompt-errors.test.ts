@@ -20,10 +20,12 @@ describe('classifyPromptError', () => {
 });
 
 describe('isRetryable', () => {
-  it('returns true for server', () => expect(isRetryable('server')).toBe(true));
-  it('returns true for overloaded', () => expect(isRetryable('overloaded')).toBe(true));
-  it('returns false for auth', () => expect(isRetryable('auth')).toBe(false));
-  it('returns false for unknown', () => expect(isRetryable('unknown')).toBe(false));
+  it('returns true only for server/overloaded categories', () => {
+    expect(isRetryable('server')).toBe(true);
+    expect(isRetryable('overloaded')).toBe(true);
+    expect(isRetryable('auth')).toBe(false);
+    expect(isRetryable('unknown')).toBe(false);
+  });
 });
 
 describe('authErrorAdvice', () => {
