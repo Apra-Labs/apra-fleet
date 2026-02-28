@@ -21,6 +21,7 @@ rm -rf node_modules
 npm install --omit=dev --no-fund --no-audit
 
 echo ""
+claude mcp remove fleet 2>/dev/null || true
 claude mcp add --scope user fleet -- node "$INSTALL_DIR/dist/index.js"
 echo ""
 echo "Done. Run /mcp in Claude Code to load the server."
