@@ -17,7 +17,8 @@ fi
 cd "$INSTALL_DIR"
 npm install --no-fund --no-audit
 npm run build
-npm prune --omit=dev --no-fund --no-audit 2>/dev/null || true
+rm -rf node_modules
+npm install --omit=dev --no-fund --no-audit
 
 echo ""
 claude mcp add --scope user fleet -- node "$INSTALL_DIR/dist/index.js"
