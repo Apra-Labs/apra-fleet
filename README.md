@@ -111,13 +111,49 @@ Register agents on Linux, macOS, and Windows. Then:
 
 Claude sends the prompt to all three agents in parallel and reports back.
 
+## Git authentication
+
+Fleet can provision scoped, short-lived GitHub tokens to agents — so each agent gets only the git access it needs.
+
+**One-time setup:** Create a [GitHub App](https://docs.github.com/en/apps/creating-github-apps) on your org, install it, then register it with Fleet:
+
+> "Set up git auth with app ID 12345, installation ID 67890, and the private key at ~/my-app.pem."
+
+This calls `setup_git_app`, which verifies connectivity and stores the credentials securely.
+
+**Per-agent provisioning:** Set git access when registering or updating agents:
+
+> "Register build-server with git_access push and git_repos Apra-Labs/ApraPipes."
+
+Then provision credentials:
+
+> "Provision git auth for build-server."
+
+This calls `provision_git_auth`, which mints a 1-hour scoped token and deploys a git credential helper to the agent. The token is limited to the declared repos and access level.
+
+**Access levels:**
+
+| Level | Git operations | Non-git |
+|-------|---------------|---------|
+| `read` | clone, pull, fetch | — |
+| `push` | read + push to branches | — |
+| `admin` | push + force-push + tags + releases | CI/CD triggers |
+| `issues` | — | issues, PRs, comments |
+| `full` | admin + issues | everything |
+
+You can override access level and repos per call:
+
+> "Provision git auth for build-server with admin access to Apra-Labs/ApraPipes."
+
+See `docs/design-git-auth.md` for the full design.
+
 ## Tools
 
 | Tool | Description |
 |------|-------------|
 | `register_agent` | Register a machine as a fleet agent (local or remote via SSH) |
 | `remove_agent` | Unregister a fleet agent |
-| `update_agent` | Update an agent's registration (rename, change host, folder, auth) |
+| `update_agent` | Update an agent's registration (rename, change host, folder, auth, git access) |
 | `list_agents` | List all registered fleet agents |
 | `agent_detail` | Deep-dive status for a single agent |
 | `fleet_status` | Overview status of all agents |
@@ -127,6 +163,8 @@ Claude sends the prompt to all three agents in parallel and reports back.
 | `send_files` | Upload local files to a remote agent via SFTP |
 | `provision_auth` | Deploy OAuth credentials or an API key to an agent |
 | `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
+| `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
+| `provision_git_auth` | Mint a scoped, short-lived git token for an agent and deploy credentials |
 | `update_claude` | Update or install Claude Code CLI on agents |
 | `shutdown_server` | Gracefully shut down the MCP server |
 
