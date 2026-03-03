@@ -165,6 +165,7 @@ See `docs/design-git-auth.md` for the full design.
 | `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_git_auth` | Mint a scoped, short-lived git token for an agent and deploy credentials |
+| `revoke_git_auth` | Remove deployed git credentials from an agent |
 | `update_claude` | Update or install Claude Code CLI on agents |
 | `shutdown_server` | Gracefully shut down the MCP server |
 

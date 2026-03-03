@@ -44,6 +44,7 @@ import { provisionAuthSchema, provisionAuth } from './tools/provision-auth.js';
 import { setupSSHKeySchema, setupSSHKey } from './tools/setup-ssh-key.js';
 import { setupGitAppSchema, setupGitApp } from './tools/setup-git-app.js';
 import { provisionGitAuthSchema, provisionGitAuth } from './tools/provision-git-auth.js';
+import { revokeGitAuthSchema, revokeGitAuth } from './tools/revoke-git-auth.js';
 import { fleetStatusSchema, fleetStatus } from './tools/check-status.js';
 import { agentDetailSchema, agentDetail } from './tools/agent-detail.js';
 import { updateClaudeSchema, updateClaude } from './tools/update-claude.js';
@@ -171,6 +172,15 @@ server.tool(
   provisionGitAuthSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await provisionGitAuth(input as any) }],
+  })
+);
+
+server.tool(
+  'revoke_git_auth',
+  'Remove deployed git credentials from an agent. Deletes the credential helper file and unsets git config.',
+  revokeGitAuthSchema.shape,
+  async (input) => ({
+    content: [{ type: 'text', text: await revokeGitAuth(input as any) }],
   })
 );
 
