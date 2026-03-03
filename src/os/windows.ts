@@ -132,6 +132,27 @@ export class WindowsCommands implements OsCommands {
     return `$env:${name}='${escaped}';`;
   }
 
+  // --- Git credential helper ---
+
+  gitCredentialHelperWrite(host: string, username: string, token: string): string {
+    const escaped = token.replace(/'/g, "''");
+    return [
+      `$script = @'`,
+      `@echo off`,
+      `echo protocol=https`,
+      `echo host=${host}`,
+      `echo username=${username}`,
+      `echo password=${escaped}`,
+      `'@`,
+      `Set-Content -Path "$env:USERPROFILE\\.fleet-git-credential.bat" -Value $script -NoNewline`,
+      `git config --global credential.helper "$env:USERPROFILE\\.fleet-git-credential.bat"`,
+    ].join('; ');
+  }
+
+  gitCredentialHelperRemove(): string {
+    return 'Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset credential.helper 2>$null';
+  }
+
   // --- SSH key deployment ---
 
   deploySSHPublicKey(publicKeyLine: string): string[] {

@@ -128,6 +128,17 @@ export class LinuxCommands implements OsCommands {
     return `${name}="${escapeDoubleQuoted(value)}"`;
   }
 
+  // --- Git credential helper ---
+
+  gitCredentialHelperWrite(host: string, username: string, token: string): string {
+    const escapedToken = escapeDoubleQuoted(token);
+    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${host}"\\necho "username=${username}"\\necho "password=${escapedToken}"\\n' > ~/.fleet-git-credential && chmod 600 ~/.fleet-git-credential && chmod +x ~/.fleet-git-credential && git config --global credential.helper ~/.fleet-git-credential`;
+  }
+
+  gitCredentialHelperRemove(): string {
+    return 'rm -f ~/.fleet-git-credential && git config --global --unset credential.helper 2>/dev/null || true';
+  }
+
   // --- SSH key deployment ---
 
   deploySSHPublicKey(publicKeyLine: string): string[] {

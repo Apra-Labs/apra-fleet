@@ -18,6 +18,8 @@ export const updateAgentSchema = z.object({
   password: z.string().optional().describe('New SSH password'),
   key_path: z.string().optional().describe('New path to SSH private key'),
   work_folder: z.string().optional().describe('New working directory on target machine'),
+  git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this agent'),
+  git_repos: z.array(z.string()).optional().describe('Git repositories this agent can access (e.g. ["Apra-Labs/ApraPipes"])'),
 });
 
 export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
@@ -46,6 +48,8 @@ export async function updateAgent(input: UpdateAgentInput): Promise<string> {
   if (input.password) updates.encryptedPassword = encryptPassword(input.password);
   if (input.key_path) updates.keyPath = input.key_path;
   if (input.work_folder) updates.workFolder = input.work_folder;
+  if (input.git_access) updates.gitAccess = input.git_access;
+  if (input.git_repos) updates.gitRepos = input.git_repos;
 
   const updated = updateInRegistry(input.agent_id, updates);
   if (!updated) {

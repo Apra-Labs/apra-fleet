@@ -13,6 +13,20 @@ export interface Agent {
   os?: 'windows' | 'macos' | 'linux';
   createdAt: string;
   lastUsed?: string;
+  gitAccess?: 'read' | 'push' | 'admin' | 'issues' | 'full';
+  gitRepos?: string[];
+}
+
+export interface GitHubAppConfig {
+  appId: string;
+  privateKeyPath: string;
+  installationId: number;
+  createdAt: string;
+}
+
+export interface FleetGitConfig {
+  version: string;
+  github?: GitHubAppConfig;
 }
 
 export interface TransferResult {

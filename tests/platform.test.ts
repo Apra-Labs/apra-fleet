@@ -262,6 +262,36 @@ describe('OsCommands via getOsCommands', () => {
     });
   });
 
+  describe('git credential helper', () => {
+    for (const [name, cmds] of all) {
+      it(`${name}: gitCredentialHelperWrite includes host, username, and credential.helper config`, () => {
+        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_testtoken123');
+        expect(cmd).toContain('github.com');
+        expect(cmd).toContain('x-access-token');
+        expect(cmd).toContain('credential.helper');
+        expect(cmd).toContain('fleet-git-credential');
+      });
+
+      it(`${name}: gitCredentialHelperRemove cleans up helper and git config`, () => {
+        const cmd = cmds.gitCredentialHelperRemove();
+        expect(cmd).toContain('fleet-git-credential');
+        expect(cmd).toContain('credential.helper');
+      });
+    }
+
+    it('linux: writes a shell script credential helper', () => {
+      const cmd = linux.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
+      expect(cmd).toContain('#!/bin/sh');
+      expect(cmd).toContain('chmod');
+    });
+
+    it('windows: writes a batch script credential helper', () => {
+      const cmd = windows.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
+      expect(cmd).toContain('@echo off');
+      expect(cmd).toContain('Set-Content');
+    });
+  });
+
   describe('cleanExec', () => {
     it.skipIf(process.platform !== 'linux')('linux: returns pristine env from login shell', () => {
       const { command, env, shell } = linux.cleanExec('echo hello');

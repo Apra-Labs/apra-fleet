@@ -34,6 +34,10 @@ export interface OsCommands {
   unsetEnv(name: string): string[];
   envPrefix(name: string, value: string): string;
 
+  // --- Git credential helper ---
+  gitCredentialHelperWrite(host: string, username: string, token: string): string;
+  gitCredentialHelperRemove(): string;
+
   // --- SSH key deployment ---
   deploySSHPublicKey(publicKeyLine: string): string[];
 

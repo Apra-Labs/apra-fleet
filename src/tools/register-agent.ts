@@ -20,6 +20,8 @@ export const registerAgentSchema = z.object({
   password: z.string().optional().describe('SSH password (required if auth_type is "password")'),
   key_path: z.string().optional().describe('Path to SSH private key (required if auth_type is "key")'),
   work_folder: z.string().describe('Working directory on the target machine'),
+  git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this agent'),
+  git_repos: z.array(z.string()).optional().describe('Git repositories this agent can access (e.g. ["Apra-Labs/ApraPipes"])'),
 });
 
 export type RegisterAgentInput = z.infer<typeof registerAgentSchema>;
@@ -54,6 +56,8 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
     keyPath: isLocal ? undefined : input.key_path,
     workFolder: input.work_folder,
     createdAt: new Date().toISOString(),
+    gitAccess: input.git_access,
+    gitRepos: input.git_repos,
   };
 
   const strategy = getStrategy(tempAgent);

@@ -42,6 +42,8 @@ import { executeCommandSchema, executeCommand } from './tools/execute-command.js
 import { resetSessionSchema, resetSession } from './tools/reset-session.js';
 import { provisionAuthSchema, provisionAuth } from './tools/provision-auth.js';
 import { setupSSHKeySchema, setupSSHKey } from './tools/setup-ssh-key.js';
+import { setupGitAppSchema, setupGitApp } from './tools/setup-git-app.js';
+import { provisionGitAuthSchema, provisionGitAuth } from './tools/provision-git-auth.js';
 import { fleetStatusSchema, fleetStatus } from './tools/check-status.js';
 import { agentDetailSchema, agentDetail } from './tools/agent-detail.js';
 import { updateClaudeSchema, updateClaude } from './tools/update-claude.js';
@@ -151,6 +153,24 @@ server.tool(
   setupSSHKeySchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await setupSSHKey(input as any) }],
+  })
+);
+
+server.tool(
+  'setup_git_app',
+  'One-time setup: register a GitHub App for git token minting. Requires a GitHub App ID, private key (.pem) file path, and installation ID. The app must already be created at github.com/organizations/{org}/settings/apps.',
+  setupGitAppSchema.shape,
+  async (input) => ({
+    content: [{ type: 'text', text: await setupGitApp(input as any) }],
+  })
+);
+
+server.tool(
+  'provision_git_auth',
+  'Mint a scoped, short-lived git token for an agent and deploy credentials. Requires setup_git_app to be configured first. Access level and repos can be set per-agent or overridden per call.',
+  provisionGitAuthSchema.shape,
+  async (input) => ({
+    content: [{ type: 'text', text: await provisionGitAuth(input as any) }],
   })
 );
 
