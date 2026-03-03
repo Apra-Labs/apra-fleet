@@ -90,6 +90,10 @@ export async function mintGitToken(
 ): Promise<{ token: string; expiresAt: string }> {
   const jwt = createAppJWT(appId, privateKey);
 
+  if (repos.some(r => r !== '*' && !/^[\w.-]+\/[\w.-]+$/.test(r))) {
+    throw new Error('Invalid repo name format');
+  }
+
   // repos are "owner/name" — GitHub API wants just the name part
   const repoNames = repos.filter(r => r !== '*').map(r => r.split('/').pop()!);
 

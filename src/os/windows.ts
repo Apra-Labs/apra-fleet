@@ -119,11 +119,13 @@ export class WindowsCommands implements OsCommands {
   }
 
   setEnv(name: string, value: string): string[] {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     const escaped = value.replace(/'/g, "''");
     return [`[Environment]::SetEnvironmentVariable('${name}', '${escaped}', 'User')`];
   }
 
   unsetEnv(name: string): string[] {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     return [`[Environment]::SetEnvironmentVariable('${name}', $null, 'User')`];
   }
 

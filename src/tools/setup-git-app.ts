@@ -10,7 +10,7 @@ const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const STORED_KEY_PATH = path.join(FLEET_DIR, 'github-app.pem');
 
 export const setupGitAppSchema = z.object({
-  app_id: z.string().describe('The GitHub App ID (numeric string)'),
+  app_id: z.string().regex(/^\d+$/, 'App ID must be numeric').describe('The GitHub App ID (numeric string)'),
   private_key_path: z.string().describe('Path to the GitHub App private key (.pem) file'),
   installation_id: z.number().describe('The GitHub App installation ID for your organization'),
 });

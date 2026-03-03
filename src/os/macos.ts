@@ -13,6 +13,7 @@ export class MacOSCommands extends LinuxCommands {
   }
 
   override setEnv(name: string, value: string): string[] {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     const escaped = escapeDoubleQuoted(value);
     return [
       `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
@@ -23,6 +24,7 @@ export class MacOSCommands extends LinuxCommands {
   }
 
   override unsetEnv(name: string): string[] {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     return [
       `sed -i '' '/export ${name}=/d' ~/.bashrc 2>/dev/null || true`,
       `sed -i '' '/export ${name}=/d' ~/.zshrc 2>/dev/null || true`,

@@ -96,7 +96,7 @@ export async function provisionGitAuth(input: ProvisionGitAuthInput): Promise<st
 
   touchAgent(agent.id);
 
-  const maskedToken = token.substring(0, 8) + '****';
+  const maskedToken = token.substring(0, 4) + '****';
   return `✅ Git credentials deployed to "${agent.friendlyName}"\n`
     + `  Access: ${accessLevel}\n`
     + `  Repos: ${repos.join(', ')}\n`

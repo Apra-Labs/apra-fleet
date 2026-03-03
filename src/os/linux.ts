@@ -108,6 +108,7 @@ export class LinuxCommands implements OsCommands {
   }
 
   setEnv(name: string, value: string): string[] {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     const escaped = escapeDoubleQuoted(value);
     return [
       `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
@@ -117,6 +118,7 @@ export class LinuxCommands implements OsCommands {
   }
 
   unsetEnv(name: string): string[] {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     return [
       `sed -i '/export ${name}=/d' ~/.bashrc 2>/dev/null || true`,
       `sed -i '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
@@ -131,8 +133,10 @@ export class LinuxCommands implements OsCommands {
   // --- Git credential helper ---
 
   gitCredentialHelperWrite(host: string, username: string, token: string): string {
+    const escapedHost = escapeDoubleQuoted(host);
+    const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
-    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${host}"\\necho "username=${username}"\\necho "password=${escapedToken}"\\n' > ~/.fleet-git-credential && chmod 600 ~/.fleet-git-credential && chmod +x ~/.fleet-git-credential && git config --global credential.helper ~/.fleet-git-credential`;
+    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > ~/.fleet-git-credential && chmod 600 ~/.fleet-git-credential && chmod +x ~/.fleet-git-credential && git config --global credential.helper ~/.fleet-git-credential`;
   }
 
   gitCredentialHelperRemove(): string {

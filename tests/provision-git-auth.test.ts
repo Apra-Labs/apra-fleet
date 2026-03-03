@@ -148,7 +148,7 @@ describe('provisionGitAuth', () => {
     expect(result).toContain('✅');
     expect(result).toContain('push');
     expect(result).toContain('Apra-Labs/ApraPipes');
-    expect(result).toContain('ghs_abcd****');
+    expect(result).toContain('ghs_****');
     expect(result).not.toContain('ghs_abcdefghijklmnop');
     expect(result).toContain('2026-03-03T16:00:00Z');
 
