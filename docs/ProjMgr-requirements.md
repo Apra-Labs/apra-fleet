@@ -570,7 +570,7 @@ PM creates fix tasks from backlog items, assigns them to available agents on new
 
 ### 7.3 Phase Overlap
 
-While testers work on phase N, PM can start assigning phase N+1 development tasks on new branches. This keeps agents productive. The constraint is that phase N+1 branches are based on the phase N milestone (`development` after all phase N PRs are merged).
+While testers work on phase N, PM can start assigning phase N+1 development tasks on new branches. This keeps agents productive. Phase N+1 branches are created from `development` as-is — they don't wait for phase N to merge. When phase N merges into `development`, PM triggers a rebase of in-progress N+1 branches (see Section 6.5) so they pick up the new code.
 
 ---
 
