@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__fleet__register_agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude-fleet-mcp/hooks/post-register-agent.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
