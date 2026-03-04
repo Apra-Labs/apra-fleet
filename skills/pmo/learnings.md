@@ -151,6 +151,8 @@ Push three files to the agent's work_folder root:
 
 3. **progress.json** — Machine-readable task tracker. Each task has: `id`, `step` (title), `type` ("work" or "verify"), `status` ("pending"/"completed"/"blocked"), `commit` (hash after completion), and `notes`.
 
+**Naming convention:** PMO keeps a local copy as **planned.json** — the immutable original ("what I asked you to do"). The agent's copy is **progress.json** — the living state that the agent updates as it works ("where I am"). PMO queries the agent's progress.json for status; the local planned.json is only a reference snapshot.
+
 ### Verification Checkpoints
 Insert "verify" tasks between phases. When the agent hits a verify task, it:
 - Runs the full test suite

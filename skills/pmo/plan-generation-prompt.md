@@ -73,10 +73,11 @@ Output the final plan in the PLAN.md format (see template).
 The PMO should:
 1. Review the plan for quality (use the critique checklist above)
 2. Generate progress.json from the task list
-3. Generate CLAUDE.md from the template
-4. Push all 3 files to the agent's work_folder
-5. Add CLAUDE.md, PLAN.md, progress.json to agent's .gitignore
-6. Kick off execution with `execute_prompt`
+3. Save a local copy as **planned.json** (immutable original — "what I asked you to do")
+4. Generate CLAUDE.md from the template
+5. Push all 3 files to the agent's work_folder (agent's copy stays **progress.json** — the living state it updates)
+6. Add CLAUDE.md, PLAN.md, progress.json to agent's .gitignore
+7. Kick off execution with `execute_prompt`
 
 ## Examples of Good Plans
 

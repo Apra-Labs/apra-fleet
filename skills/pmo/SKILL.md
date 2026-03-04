@@ -48,6 +48,8 @@ Push three files to the agent's work_folder root:
 2. **PLAN.md** — full implementation plan with phases and task details
 3. **progress.json** — machine-readable task tracker (from [templates/progress.json.template](templates/progress.json.template))
 
+**Naming convention:** PMO saves a local copy as **planned.json** (immutable original — "what I asked you to do"). The agent's copy stays **progress.json** (living state, agent updates it — "where I am"). PMO always queries the agent's progress.json for current status, never relies on the local planned.json for current state.
+
 ### Execution Loop
 ```
 PMO generates plan → pushes 3 files → kicks off agent
