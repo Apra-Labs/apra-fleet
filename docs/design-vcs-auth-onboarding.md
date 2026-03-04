@@ -122,6 +122,47 @@ Each agent supports a single VCS provider at a time. Multi-provider configuratio
 - Skills: bitbucket-devops (installed)
 ```
 
+## Workstream 3: Versioning, CI & Distribution
+
+The MCP server and PMO skill live in the same repository and share a single version. This workstream adds consistent versioning, CI artifact generation, and a unified installer.
+
+### Version Format
+
+`v0.5.0_<githash>` — semantic version + short git hash for traceability. Both the MCP server and PMO skill share this version since they live in the same repo and are released together.
+
+### Where Version Appears
+
+- `version.json` at repo root — single source of truth: `{ version: 0.5.0 }`
+- **MCP server**: reads `version.json`, reports version in `fleet_status` output so users can see what version is running
+- **PMO skill**: `SKILL.md` header includes version, so the PMO knows which skill version it's using
+- **Agent status files**: record the PMO/MCP version at time of last interaction, so you can tell which team member is running which version
+- **Git tag**: CI tags releases as `v0.5.0`
+
+### CI Pipeline (`ci.yml`)
+
+Improve the existing CI workflow to:
+
+1. **Build** — `npm install && npm run build` (existing)
+2. **Test** — `npm test` (existing)
+3. **Version** — read `version.json`, append short git hash to produce `v0.5.0_abc1234`
+4. **Package** — create a tarball `claude-fleet-mcp-v0.5.0_abc1234.tar.gz` containing:
+   - Built MCP server (`dist/`, `package.json`, `node_modules/` or install step)
+   - PMO skill files (`skills/pmo/`)
+   - `install.sh`
+5. **Release** — upload tarball as a GitHub release artifact (on tagged commits)
+
+### `install.sh`
+
+A tarball-only installer that:
+1. Extracts the tarball to `~/.claude-fleet-mcp/` (copies dist + package files)
+2. Runs `npm ci --omit=dev` for runtime dependencies
+3. Copies PMO skill files to `~/.claude/skills/pmo/`
+4. Installs PostToolUse hook from `hooks/` to user's `~/.claude/settings.json`
+5. Registers the MCP server in Claude Code config if not already present
+6. Prints the installed version
+
+No symlinks, no `--from-checkout` mode. Pure copy. Works on Linux, macOS, and Windows (Git Bash/WSL).
+
 ## File Changes
 
 ### New Files
@@ -135,12 +176,15 @@ Each agent supports a single VCS provider at a time. Multi-provider configuratio
 | `src/services/vcs/azure-devops.ts` | Azure DevOps credential deployment logic |
 | `src/services/vcs/types.ts` | Shared VCS types and interfaces |
 | `tests/vcs-auth.test.ts` | Unit tests for VCS auth tools |
-| `.claude/hooks/post-register-agent.sh` | PostToolUse hook for onboarding trigger |
+| `hooks/post-register-agent.sh` | PostToolUse hook for onboarding trigger (installed to user config by `install.sh`) |
 | `skills/pmo/docs/agent-onboarding.md` | Full onboarding flow (steps 1-8) + decision tree |
 | `skills/pmo/docs/bitbucket-auth.md` | Bitbucket-specific: scope table, token creation steps, test commands, troubleshooting |
 | `skills/pmo/docs/github-auth.md` | GitHub-specific: gh CLI setup, GitHub App vs PAT, scope mapping |
 | `skills/pmo/docs/azure-devops-auth.md` | Azure DevOps-specific: PAT creation, scope table, test commands |
 | `skills/pmo/docs/skill-matrix.md` | Project type + role to required skills mapping |
+| `version.json` | Single source of truth for version number |
+| `install.sh` | Unified installer for MCP server + PMO skill |
+| `.github/workflows/ci.yml` | Updated CI pipeline with packaging and release |
 
 ### Modified Files
 
@@ -149,6 +193,7 @@ Each agent supports a single VCS provider at a time. Multi-provider configuratio
 | `src/index.ts` | Register `provision_vcs_auth` / `revoke_vcs_auth`, remove old `provision_git_auth` / `revoke_git_auth` |
 | `src/services/git-auth.ts` | Refactor shared logic into `src/services/vcs/` modules |
 | `skills/pmo/SKILL.md` | Add brief `## Agent Onboarding` section that references `docs/agent-onboarding.md` |
+| `src/tools/fleet-status.ts` | Include version from `version.json` in status output |
 
 ### Skill Docs Structure
 
@@ -203,10 +248,10 @@ This works because the two contexts have complementary strengths:
 
 Neither context alone produces the right output. The review loop bridges them. This should be the default workflow for design docs, architecture decisions, and any artifact that needs both user alignment and codebase grounding.
 
-## Open Questions
+## Design Decisions
 
-1. **Credential storage location** — unified location (e.g., `~/.fleet/credentials/`) or provider-specific paths? Unified is simpler but may conflict with provider CLIs that expect specific locations.
+1. **Credential storage** — single file per agent with templated key names. Keys follow the pattern `{provider}_{field}` (e.g., `bitbucket_workspace`, `bitbucket_email`, `bitbucket_api_token`, `azdevops_org_url`, `azdevops_pat`, `github_pat`). One file, no bloat. Location: `~/.fleet/credentials/{agent_id}.json` on the agent, or the agent's work folder under `.claude/credentials.json`.
 
-2. **Token rotation** — should `provision_vcs_auth` support automatic token renewal for GitHub App tokens (which expire after 1 hour)? The existing `setup_git_app` flow handles minting; wrapping renewal adds complexity.
+2. **Token rotation** — lazy approach. No proactive rotation. When an agent operation fails due to expired/invalid token, the PMO detects the auth failure and initiates token refresh — ideally without user involvement (e.g., re-mint GitHub App token automatically) but without compromising security (e.g., don't store long-lived tokens that bypass expiry). For Bitbucket/Azure DevOps API tokens that don't auto-expire, no rotation needed unless the user revokes them.
 
-3. **Onboarding hook scope** — should the PostToolUse hook trigger for all registered agents, or only PMO-managed ones? Non-PMO agents may not need the full onboarding flow.
+3. **Onboarding hook scope** — the PostToolUse hook for agent onboarding is a PMO-specific concept. It is installed as part of the PMO skill installation (via `install.sh`), not as a global fleet MCP feature. All agents registered through a PMO session get onboarded. There is no concept of "non-PMO agents" — if you're using the PMO skill, all your agents go through onboarding.

@@ -1,0 +1,324 @@
+{
+  "project": "claude-code-fleet-mcp v0.0.1",
+  "plan_file": "PLAN.md",
+  "created": "2026-03-04",
+  "total_tasks": 25,
+  "completed": 1,
+  "tasks": [
+    {
+      "id": 1,
+      "step": "Finalize design doc — tarball-only deployment model",
+      "type": "work",
+      "phase": 1,
+      "status": "done",
+      "commit": "",
+      "notes": "Removed symlink/checkout mode from install.sh section, updated hook path to hooks/ in repo root"
+    },
+    {
+      "id": 2,
+      "step": "Commit pending design doc + SKILL.md changes",
+      "type": "work",
+      "phase": 1,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 3,
+      "step": "Create VCS types and provider interface (src/services/vcs/types.ts)",
+      "type": "work",
+      "phase": 1,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V1",
+      "step": "VERIFY: Phase 1 — build succeeds, types compile",
+      "type": "verify",
+      "phase": 1,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 4,
+      "step": "Implement GitHub provider (src/services/vcs/github.ts)",
+      "type": "work",
+      "phase": 2,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 5,
+      "step": "Implement Bitbucket provider (src/services/vcs/bitbucket.ts)",
+      "type": "work",
+      "phase": 2,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 6,
+      "step": "Implement Azure DevOps provider (src/services/vcs/azure-devops.ts)",
+      "type": "work",
+      "phase": 2,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 7,
+      "step": "Verify OsCommands credential helper works for all VCS hosts",
+      "type": "work",
+      "phase": 2,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V2",
+      "step": "VERIFY: Phase 2 — providers compile, credential helper works for all hosts",
+      "type": "verify",
+      "phase": 2,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 8,
+      "step": "Implement provision_vcs_auth tool (src/tools/provision-vcs-auth.ts)",
+      "type": "work",
+      "phase": 3,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 9,
+      "step": "Implement revoke_vcs_auth tool (src/tools/revoke-vcs-auth.ts)",
+      "type": "work",
+      "phase": 3,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 10,
+      "step": "Register new tools in src/index.ts (keep old tools for now)",
+      "type": "work",
+      "phase": 3,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V3",
+      "step": "VERIFY: Phase 3 — build + tests pass, server starts with new tools",
+      "type": "verify",
+      "phase": 3,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 11,
+      "step": "Unit tests for VCS provider modules (tests/vcs-auth.test.ts)",
+      "type": "work",
+      "phase": 4,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 12,
+      "step": "Unit tests for provision_vcs_auth and revoke_vcs_auth tools",
+      "type": "work",
+      "phase": 4,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V4",
+      "step": "VERIFY: Phase 4 — all tests pass including new VCS tests",
+      "type": "verify",
+      "phase": 4,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 13,
+      "step": "Remove old provision_git_auth and revoke_git_auth (files + tests + index.ts)",
+      "type": "work",
+      "phase": 5,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 14,
+      "step": "Update integration test to use new VCS auth tools",
+      "type": "work",
+      "phase": 5,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V5",
+      "step": "VERIFY: Phase 5 — build + tests pass, old tools gone",
+      "type": "verify",
+      "phase": 5,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 15,
+      "step": "Create skills/pmo/docs/agent-onboarding.md (full flow Steps 1-8)",
+      "type": "work",
+      "phase": 6,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 16,
+      "step": "Create provider-specific auth docs (github, bitbucket, azure-devops)",
+      "type": "work",
+      "phase": 6,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 17,
+      "step": "Create skills/pmo/docs/skill-matrix.md",
+      "type": "work",
+      "phase": 6,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 18,
+      "step": "Update skills/pmo/SKILL.md — onboarding, fixes, and new sections (18a-18h)",
+      "type": "work",
+      "phase": 6,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V6",
+      "step": "VERIFY: Phase 6 — all docs exist, internally consistent",
+      "type": "verify",
+      "phase": 6,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 19,
+      "step": "Create PostToolUse hook for register_agent onboarding",
+      "type": "work",
+      "phase": 7,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V7",
+      "step": "VERIFY: Phase 7 — hook fires after register_agent",
+      "type": "verify",
+      "phase": 7,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 20,
+      "step": "Add version.json and version reporting in fleet_status + server name",
+      "type": "work",
+      "phase": 8,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V8",
+      "step": "VERIFY: Phase 8 — fleet_status shows version",
+      "type": "verify",
+      "phase": 8,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 21,
+      "step": "Update CI workflow for tarball packaging and GitHub release",
+      "type": "work",
+      "phase": 9,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 22,
+      "step": "Create install.sh — tarball-only unified installer",
+      "type": "work",
+      "phase": 9,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V9",
+      "step": "VERIFY: Phase 9 — CI valid, install.sh works, tarball correct",
+      "type": "verify",
+      "phase": 9,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 23,
+      "step": "Sync package.json version to 0.0.1",
+      "type": "work",
+      "phase": 10,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 24,
+      "step": "Final test run — full suite (build + test)",
+      "type": "work",
+      "phase": 10,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 25,
+      "step": "Tag v0.0.1 release, push, verify tarball",
+      "type": "work",
+      "phase": 10,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V10",
+      "step": "VERIFY: Phase 10 — release exists, tarball installs, MCP works",
+      "type": "verify",
+      "phase": 10,
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    }
+  ]
+}

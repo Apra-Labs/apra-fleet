@@ -80,6 +80,20 @@ Before git push operations on agents:
 2. After push: clean up with `revoke_git_auth`
 3. Token lifetime: 1 hour — factor into task timing
 
+## Model Selection for Fleet Operations
+
+Select the model based on task complexity. User can override per-agent or per-task.
+
+| Task Type | Model | Examples |
+|-----------|-------|---------|
+| Simple command execution | haiku | auth checks, file copies, API calls, `cat progress.json`, `git log` |
+| File reads, status checks | haiku | reading config files, checking agent status |
+| Targeted code edits, small fixes | sonnet | single-file bug fixes, config changes, small revisions |
+| Multi-step implementation | sonnet | plan execution tasks, feature implementation |
+| Design docs, architecture | opus | design documents, architecture decisions, complex brainstorming |
+| Code review | opus | PR reviews, security audits, code critique |
+| User explicitly specified | as requested | e.g., use
+
 ## Agent Response Formatting
 
 When reporting results, prepend the agent name with a colored label:
