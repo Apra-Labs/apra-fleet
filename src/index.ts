@@ -45,6 +45,8 @@ import { setupSSHKeySchema, setupSSHKey } from './tools/setup-ssh-key.js';
 import { setupGitAppSchema, setupGitApp } from './tools/setup-git-app.js';
 import { provisionGitAuthSchema, provisionGitAuth } from './tools/provision-git-auth.js';
 import { revokeGitAuthSchema, revokeGitAuth } from './tools/revoke-git-auth.js';
+import { provisionVcsAuthSchema, provisionVcsAuth } from './tools/provision-vcs-auth.js';
+import { revokeVcsAuthSchema, revokeVcsAuth } from './tools/revoke-vcs-auth.js';
 import { fleetStatusSchema, fleetStatus } from './tools/check-status.js';
 import { agentDetailSchema, agentDetail } from './tools/agent-detail.js';
 import { updateClaudeSchema, updateClaude } from './tools/update-claude.js';
@@ -181,6 +183,24 @@ server.tool(
   revokeGitAuthSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await revokeGitAuth(input as any) }],
+  })
+);
+
+server.tool(
+  'provision_vcs_auth',
+  'Deploy VCS credentials to an agent. Supports GitHub (App or PAT), Bitbucket (API token), and Azure DevOps (PAT). Configures git credential helper and tests connectivity.',
+  provisionVcsAuthSchema.shape,
+  async (input) => ({
+    content: [{ type: 'text', text: await provisionVcsAuth(input as any) }],
+  })
+);
+
+server.tool(
+  'revoke_vcs_auth',
+  'Remove VCS credentials from an agent. Specify the provider (github, bitbucket, or azure-devops) to revoke.',
+  revokeVcsAuthSchema.shape,
+  async (input) => ({
+    content: [{ type: 'text', text: await revokeVcsAuth(input as any) }],
   })
 );
 
