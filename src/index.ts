@@ -110,7 +110,7 @@ server.tool(
 
 server.tool(
   'execute_prompt',
-  'Run a Claude prompt on a remote agent. Supports session resume for conversational context.',
+  'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a Claude prompt on a remote agent. Supports session resume for conversational context.',
   executePromptSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await executePrompt(input as any) }],
@@ -119,7 +119,7 @@ server.tool(
 
 server.tool(
   'execute_command',
-  'Run a shell command directly on an agent without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.',
+  'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command directly on an agent without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.',
   executeCommandSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await executeCommand(input as any) }],
