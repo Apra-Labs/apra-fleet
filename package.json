@@ -1,6 +1,6 @@
 {
   "name": "claude-code-fleet-mcp",
-  "version": "1.1.0",
+  "version": "0.0.1",
   "description": "MCP server for managing a fleet of remote Claude Code agents via SSH",
   "type": "module",
   "main": "dist/index.js",
