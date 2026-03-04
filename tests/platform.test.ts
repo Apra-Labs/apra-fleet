@@ -290,6 +290,23 @@ describe('OsCommands via getOsCommands', () => {
       expect(cmd).toContain('@echo off');
       expect(cmd).toContain('Set-Content');
     });
+
+    // VCS multi-host: verify credential helper works for all three VCS hosts
+    const vcsHosts: [string, string, string][] = [
+      ['github.com', 'x-access-token', 'ghs_token123'],
+      ['bitbucket.org', 'user@example.com', 'ATBBtoken456'],
+      ['dev.azure.com', '', 'azure-pat-789'],
+    ];
+    for (const [name, cmds] of all) {
+      for (const [host, user, token] of vcsHosts) {
+        it(`${name}: credential helper embeds ${host} host and credentials`, () => {
+          const cmd = cmds.gitCredentialHelperWrite(host, user, token);
+          expect(cmd).toContain(host);
+          expect(cmd).toContain(token);
+          expect(cmd).toContain('credential.helper');
+        });
+      }
+    }
   });
 
   describe('cleanExec', () => {
