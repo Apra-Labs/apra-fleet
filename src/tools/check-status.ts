@@ -3,6 +3,7 @@ import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
+import { serverVersion } from '../version.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -109,11 +110,11 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const online = rows.filter(r => r.status === 'online').length;
 
   if (format === 'json') {
-    return JSON.stringify({ summary: { total: rows.length, online, offline: rows.length - online }, agents: rows });
+    return JSON.stringify({ version: serverVersion, summary: { total: rows.length, online, offline: rows.length - online }, agents: rows });
   }
 
   // Compact: 1 summary line + 1 line per agent, multiple fields per line
-  let t = `Fleet: ${online}/${rows.length} online | `;
+  let t = `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
   t += rows.map(r => {
     const st = r.status === 'online' ? r.busy : 'OFF';
     return `${r.name}(${st})`;

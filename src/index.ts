@@ -2,34 +2,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { readFileSync, existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
-
-// Append short git hash to version (e.g. 1.1.0.a1b2c3) — pure Node.js, no git binary needed
-function getGitHash(): string | null {
-  try {
-    const repoRoot = join(__dirname, '..');
-    const headPath = join(repoRoot, '.git', 'HEAD');
-    if (!existsSync(headPath)) return null;
-    const head = readFileSync(headPath, 'utf-8').trim();
-    if (head.startsWith('ref: ')) {
-      const refPath = join(repoRoot, '.git', head.slice(5));
-      if (!existsSync(refPath)) return null;
-      return readFileSync(refPath, 'utf-8').trim().slice(0, 6);
-    }
-    // Detached HEAD — hash is directly in HEAD
-    return head.slice(0, 6);
-  } catch {
-    return null;
-  }
-}
-
-const gitHash = getGitHash();
-const serverVersion = gitHash ? `${pkg.version}.${gitHash}` : pkg.version;
+import { serverVersion } from './version.js';
 
 // Tool schemas and handlers
 import { registerAgentSchema, registerAgent } from './tools/register-agent.js';
