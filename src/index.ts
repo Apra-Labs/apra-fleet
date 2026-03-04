@@ -43,8 +43,6 @@ import { resetSessionSchema, resetSession } from './tools/reset-session.js';
 import { provisionAuthSchema, provisionAuth } from './tools/provision-auth.js';
 import { setupSSHKeySchema, setupSSHKey } from './tools/setup-ssh-key.js';
 import { setupGitAppSchema, setupGitApp } from './tools/setup-git-app.js';
-import { provisionGitAuthSchema, provisionGitAuth } from './tools/provision-git-auth.js';
-import { revokeGitAuthSchema, revokeGitAuth } from './tools/revoke-git-auth.js';
 import { provisionVcsAuthSchema, provisionVcsAuth } from './tools/provision-vcs-auth.js';
 import { revokeVcsAuthSchema, revokeVcsAuth } from './tools/revoke-vcs-auth.js';
 import { fleetStatusSchema, fleetStatus } from './tools/check-status.js';
@@ -165,24 +163,6 @@ server.tool(
   setupGitAppSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await setupGitApp(input as any) }],
-  })
-);
-
-server.tool(
-  'provision_git_auth',
-  'Mint a scoped, short-lived git token for an agent and deploy credentials. Requires setup_git_app to be configured first. Access level and repos can be set per-agent or overridden per call.',
-  provisionGitAuthSchema.shape,
-  async (input) => ({
-    content: [{ type: 'text', text: await provisionGitAuth(input as any) }],
-  })
-);
-
-server.tool(
-  'revoke_git_auth',
-  'Remove deployed git credentials from an agent. Deletes the credential helper file and unsets git config.',
-  revokeGitAuthSchema.shape,
-  async (input) => ({
-    content: [{ type: 'text', text: await revokeGitAuth(input as any) }],
   })
 );
 
