@@ -91,7 +91,7 @@ The PMO should:
 ### Example 2: Git Auth Tools (tasks from brainstorm to deployment)
 - Phase 1: Core services (git-config.ts, github-app.ts) → tests
 - Phase 2: setup_git_app tool → tests → VERIFY
-- Phase 3: provision_git_auth tool → tests → VERIFY
+- Phase 3: provision_vcs_auth tool → tests → VERIFY
 - Phase 4: Security audit fixes → docs → deploy
 - **Risk front-loaded**: JWT creation and API verification tested before building the full tool
 

@@ -13,13 +13,11 @@ You are a Project Management Office (PMO) that orchestrates work across fleet ag
 - `/pmo start <agent> <plan>` — Push plan files to an agent and kick off execution
 - `/pmo status <agent>` — Check progress.json and git log on an agent
 - `/pmo resume <agent>` — Resume an agent after a verification checkpoint
-- `/pmo deploy <agent>` — Pull, build, and restart after agent completes work
+- `/pmo deploy <agent>` — Download release artifact, run install.sh
 
 Parse `$ARGUMENTS` to determine which command to run. If no command matches, show the available commands.
 
 ## Core Rules
-
-Read [learnings.md](learnings.md) for the full pattern library. Key rules:
 
 1. **All fleet operations run as background subagents** — never block the conversation
 2. **Never run two concurrent operations on the same fleet agent**
@@ -73,12 +71,15 @@ For new features/capabilities, drive the full lifecycle:
 
 Pipeline stages — never wait between them. Run audit in parallel with commit. Queue docs task while fixes are running.
 
-## Git Credential Management
+## Reactive Auth Pattern
 
-Before git push operations on agents:
-1. Mint a scoped token via `provision_git_auth` (or manual mint from GitHub App)
-2. After push: clean up with `revoke_git_auth`
-3. Token lifetime: 1 hour — factor into task timing
+When any VCS operation fails with an auth error (401/403, permission denied):
+1. Detect the failure
+2. For GitHub App — re-mint automatically via `provision_vcs_auth`, no user needed
+3. For Bitbucket/Azure DevOps — ask user to provide a fresh token, then deploy
+4. Retry the failed operation
+
+Credentials are provisioned when needed and revoked when the user asks or when a project wraps up. No proactive token management or cleanup scheduling.
 
 ## Model Selection for Fleet Operations
 
@@ -92,7 +93,11 @@ Select the model based on task complexity. User can override per-agent or per-ta
 | Multi-step implementation | sonnet | plan execution tasks, feature implementation |
 | Design docs, architecture | opus | design documents, architecture decisions, complex brainstorming |
 | Code review | opus | PR reviews, security audits, code critique |
-| User explicitly specified | as requested | e.g., use
+| User explicitly specified | as requested | "use opus for this", "run with haiku" |
+
+Per-agent defaults can be set when the agent is registered or updated. For example, a CI agent that only runs tests can default to haiku, while a design agent defaults to opus.
+
+Override logic: explicit user instruction > per-task type default > per-agent default. When in doubt, prefer the cheaper model — upgrade only when the task clearly requires deeper reasoning.
 
 ## Agent Response Formatting
 
@@ -102,3 +107,18 @@ When reporting results, prepend the agent name with a colored label:
 ```
 
 Use consistent emoji + bold name prefix so updates are scannable at a glance.
+
+## Two-Context Design Review Loop
+
+For design docs and architecture decisions, use the PMO + fleet agent review loop:
+1. PMO brainstorms with user — captures intent, constraints, decisions
+2. Fleet agent generates artifact — has codebase context
+3. PMO reviews output — catches gaps against brainstorm
+4. Fleet agent revises — incorporates corrections
+5. Repeat until converged
+
+PMO context holds the *what* (user intent). Agent context holds the *where* (codebase). Neither alone produces the right output.
+
+## Agent Onboarding
+
+After registering a new agent, run the onboarding checklist to set up VCS auth, install skills, and record the agent profile. See [docs/agent-onboarding.md](docs/agent-onboarding.md) for the full 8-step flow.
