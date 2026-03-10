@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/.claude-fleet-mcp/hooks/post-register-agent.sh\""
+            "command": "\"$HOME/.apra-fleet/hooks/post-register-agent.sh\""
           }
         ]
       }

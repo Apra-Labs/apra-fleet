@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Stop"
 
-$InstallDir = "$env:USERPROFILE\.claude-fleet-mcp"
-$RepoUrl = "https://github.com/Apra-Labs/claude-code-fleet-mcp.git"
+$InstallDir = "$env:USERPROFILE\.apra-fleet"
+$RepoUrl = "https://github.com/Apra-Labs/apra-fleet.git"
 
-Write-Host "Installing Claude Code Fleet MCP..."
+Write-Host "Installing Apra Fleet..."
 
 if (Test-Path $InstallDir) {
     Write-Host "Updating existing installation at $InstallDir"

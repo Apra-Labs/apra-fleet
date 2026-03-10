@@ -7,3 +7,5 @@ data/
 *.pem
 fleet.config.json
 ~/.claude-fleet/
+materials/*
+.claude/settings.local.json

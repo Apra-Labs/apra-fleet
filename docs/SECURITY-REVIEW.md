@@ -1,4 +1,4 @@
-# Security Review — claude-code-fleet-mcp
+# Security Review — apra-fleet
 
 **Date:** 2026-02-25
 **Reviewer:** Claude Opus 4.6 (automated deep review)

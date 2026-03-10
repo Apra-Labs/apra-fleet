@@ -9,14 +9,23 @@ A Claude Code skill that automates the Project Management Office workflow. Curre
 ## ProjMgr Skill (In Progress — Brainstorming)
 A Claude Code skill for project management workflows on fleet agents. See **[ProjMgr-requirements.md](ProjMgr-requirements.md)** for requirements and design discussions. Being brainstormed in `docs/`.
 
+## Auto-Push in Verify Tasks (High Priority)
+When generating planned.json / progress.json, every VERIFY checkpoint task should automatically include a `git push origin <branch>` step. This ensures the code is on origin before the reviewer is triggered — no more "branch not found" failures. The PMO/ProjMgr skill should bake this into plan generation so it's not dependent on the operator remembering.
+
+## Feature Shipping Pipeline Documentation (Medium Priority)
+The PMO skill documentation should clearly describe the end-to-end pipeline for shipping features: **vision → requirements → design → plan → progress**. Each stage should be explained simply — what it is, what artifact it produces, and how it flows into the next. This gives operators (and Claude) a shared mental model of how work moves from idea to shipped code.
+
+
+## Vocabulary Cleanup — "agent" → "worker" (Medium Priority)
+The term "agent" is overloaded — it means both fleet members and Claude subagents, causing confusion in logs and conversation. See **[vocabulary.md](vocabulary.md)** for the proposed terminology. Rename "agent" to "worker" in user-facing descriptions, keep `agent_id` in API for backwards compatibility.
 
 ## Apra Labs Branding (Medium Priority)
 The fleet MCP server has no Apra Labs branding anywhere — no logo, no company name in package.json, README, CLI output, or tool descriptions. Add consistent branding:
 - `package.json`: author, homepage, repository fields
 - `README.md`: Apra Labs header/logo, "Built by Apra Labs" footer
-- CLI/server startup banner: show "Apra Labs — Claude Code Fleet MCP"
+- CLI/server startup banner: show "Apra Labs — Apra Fleet"
 - GitHub repo: description, topics, social preview image
-- GitHub Pages site (`apra-labs.github.io/claude-code-fleet-mcp`) for docs/marketing
+- GitHub Pages site (`apra-labs.github.io/apra-fleet`) for docs/marketing
 - License header in source files if needed
 
 ## Shell Strategy Variants (Low Priority)

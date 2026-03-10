@@ -29,7 +29,7 @@ function assert(condition: boolean, message: string) {
   }
 }
 
-console.log('=== Smoke Test: Claude Code Fleet MCP ===\n');
+console.log('=== Smoke Test: Apra Fleet ===\n');
 
 // --- Test 1: Crypto ---
 console.log('1. Crypto (AES-256-GCM encrypt/decrypt)');

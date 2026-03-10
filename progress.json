@@ -1,9 +1,9 @@
 {
-  "project": "claude-code-fleet-mcp v0.0.1",
+  "project": "apra-fleet v0.0.1",
   "plan_file": "PLAN.md",
   "created": "2026-03-04",
   "total_tasks": 25,
-  "completed": 12,
+  "completed": 25,
   "tasks": [
     {
       "id": 1,
@@ -154,171 +154,171 @@
       "step": "Remove old provision_git_auth and revoke_git_auth (files + tests + index.ts)",
       "type": "work",
       "phase": 5,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "e92dbd9",
+      "notes": "Deleted 4 files (2 src + 2 test), removed imports and registrations from index.ts"
     },
     {
       "id": 14,
       "step": "Update integration test to use new VCS auth tools",
       "type": "work",
       "phase": 5,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "fb5b374",
+      "notes": "No-op: integration test uses provision_auth (OAuth), not provision_git_auth. Already clean."
     },
     {
       "id": "V5",
       "step": "VERIFY: Phase 5 — build + tests pass, old tools gone",
       "type": "verify",
       "phase": 5,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "Approved by user. 253 tests green, old tools removed."
     },
     {
       "id": 15,
       "step": "Create skills/pmo/docs/agent-onboarding.md (full flow Steps 1-8)",
       "type": "work",
       "phase": 6,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "b676e70",
+      "notes": "Full 8-step onboarding checklist with scope tables and skill references"
     },
     {
       "id": 16,
       "step": "Create provider-specific auth docs (github, bitbucket, azure-devops)",
       "type": "work",
       "phase": 6,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c6e05a0",
+      "notes": "3 docs: setup, deploy, scope table, test commands, troubleshooting per provider"
     },
     {
       "id": 17,
       "step": "Create skills/pmo/docs/skill-matrix.md",
       "type": "work",
       "phase": 6,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "6946ac8",
+      "notes": "Project + VCS + role -> required skills matrix"
     },
     {
       "id": 18,
       "step": "Update skills/pmo/SKILL.md — onboarding, fixes, and new sections (18a-18h)",
       "type": "work",
       "phase": 6,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "6f4445a",
+      "notes": "All 8 subtasks: table fix, defaults, reactive auth, learnings.md removal, deploy cmd, review loop, onboarding link"
     },
     {
       "id": "V6",
       "step": "VERIFY: Phase 6 — all docs exist, internally consistent",
       "type": "verify",
       "phase": 6,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "Approved by user. All docs created, zero stale references."
     },
     {
       "id": 19,
       "step": "Create PostToolUse hook for register_agent onboarding",
       "type": "work",
       "phase": 7,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "1274997",
+      "notes": "hooks/post-register-agent.sh + hooks-config.json. Matcher: mcp__fleet__register_agent. Outputs onboarding checklist to stdout."
     },
     {
       "id": "V7",
       "step": "VERIFY: Phase 7 — hook fires after register_agent",
       "type": "verify",
       "phase": 7,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "Approved by user."
     },
     {
       "id": 20,
       "step": "Add version.json and version reporting in fleet_status + server name",
       "type": "work",
       "phase": 8,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "326c5b8",
+      "notes": "version.json + src/version.ts module. fleet_status compact shows 'Fleet v0.0.1_hash:', JSON includes version field."
     },
     {
       "id": "V8",
       "step": "VERIFY: Phase 8 — fleet_status shows version",
       "type": "verify",
       "phase": 8,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "Build clean, 253 tests pass. Version in server name + fleet_status output."
     },
     {
       "id": 21,
       "step": "Update CI workflow for tarball packaging and GitHub release",
       "type": "work",
       "phase": 9,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "40e2752",
+      "notes": "3-job pipeline: build-and-test (matrix), package (tarball + artifact), release (on v* tag via softprops/action-gh-release)"
     },
     {
       "id": 22,
       "step": "Create install.sh — tarball-only unified installer",
       "type": "work",
       "phase": 9,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "c3537ae",
+      "notes": "Tarball extract, npm ci --omit=dev, copy skills, merge hooks into settings.json, register MCP, print version"
     },
     {
       "id": "V9",
       "step": "VERIFY: Phase 9 — CI valid, install.sh works, tarball correct",
       "type": "verify",
       "phase": 9,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "CI workflow valid YAML, install.sh idempotent tarball-only. Build + 253 tests pass."
     },
     {
       "id": 23,
       "step": "Sync package.json version to 0.0.1",
       "type": "work",
       "phase": 10,
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "done",
+      "commit": "fd260d7",
+      "notes": "package.json 1.1.0 -> 0.0.1, aligned with version.json"
     },
     {
       "id": 24,
       "step": "Final test run — full suite (build + test)",
       "type": "work",
       "phase": 10,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "Build clean, 253 tests pass (20 files, 3 skipped). Package version 0.0.1."
     },
     {
       "id": 25,
       "step": "Tag v0.0.1 release, push, verify tarball",
       "type": "work",
       "phase": 10,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "Tagged v0.0.1 at fd260d7, pushed to origin. CI passed. Release published 2026-03-04T23:37Z."
     },
     {
       "id": "V10",
       "step": "VERIFY: Phase 10 — release exists, tarball installs, MCP works",
       "type": "verify",
       "phase": 10,
-      "status": "pending",
+      "status": "done",
       "commit": "",
-      "notes": ""
+      "notes": "CI passed on main and v0.0.1 tag. GitHub release v0.0.1 published with tarball. 25/25 tasks complete."
     }
   ]
 }

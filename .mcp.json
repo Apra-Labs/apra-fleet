@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "claude-code-fleet": {
+    "apra-fleet": {
       "command": "node",
       "args": ["dist/index.js"],
       "cwd": ".",

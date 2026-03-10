@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="$HOME/.claude-fleet-mcp"
+INSTALL_DIR="$HOME/.apra-fleet"
 SKILLS_DIR="$HOME/.claude/skills"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 
-echo "Installing Claude Code Fleet MCP..."
+echo "Installing Apra Fleet..."
 
 # --- Step 1: Detect mode (tarball extract vs in-place) ---
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +23,7 @@ if [ -d "$SCRIPT_DIR/dist" ]; then
   cp "$SCRIPT_DIR/version.json" "$INSTALL_DIR/"
 else
   echo "Error: dist/ not found. Run install.sh from an extracted tarball."
-  echo "Download the tarball from: https://github.com/Apra-Labs/claude-code-fleet-mcp/releases"
+  echo "Download the tarball from: https://github.com/Apra-Labs/apra-fleet/releases"
   exit 1
 fi
 
@@ -77,7 +77,7 @@ claude mcp add --scope user fleet -- node "$INSTALL_DIR/dist/index.js"
 # --- Step 6: Print version ---
 VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$INSTALL_DIR/version.json','utf-8')).version)")
 echo ""
-echo "Claude Code Fleet MCP v${VERSION} installed successfully."
+echo "Apra Fleet v${VERSION} installed successfully."
 echo "  Install dir: $INSTALL_DIR"
 echo "  PMO skill:   $SKILLS_DIR/pmo/"
 echo ""

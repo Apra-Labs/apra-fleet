@@ -1,4 +1,4 @@
-# Project Memory — claude-code-fleet-mcp
+# Project Memory — apra-fleet
 
 ## MCP Server Restart Workflow
 After every `npm run build`:

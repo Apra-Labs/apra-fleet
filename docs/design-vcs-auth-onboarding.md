@@ -145,7 +145,7 @@ Improve the existing CI workflow to:
 1. **Build** — `npm install && npm run build` (existing)
 2. **Test** — `npm test` (existing)
 3. **Version** — read `version.json`, append short git hash to produce `v0.5.0_abc1234`
-4. **Package** — create a tarball `claude-fleet-mcp-v0.5.0_abc1234.tar.gz` containing:
+4. **Package** — create a tarball `apra-fleet-v0.5.0_abc1234.tar.gz` containing:
    - Built MCP server (`dist/`, `package.json`, `node_modules/` or install step)
    - PMO skill files (`skills/pmo/`)
    - `install.sh`
@@ -154,7 +154,7 @@ Improve the existing CI workflow to:
 ### `install.sh`
 
 A tarball-only installer that:
-1. Extracts the tarball to `~/.claude-fleet-mcp/` (copies dist + package files)
+1. Extracts the tarball to `~/.apra-fleet/` (copies dist + package files)
 2. Runs `npm ci --omit=dev` for runtime dependencies
 3. Copies PMO skill files to `~/.claude/skills/pmo/`
 4. Installs PostToolUse hook from `hooks/` to user's `~/.claude/settings.json`

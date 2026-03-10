@@ -68,7 +68,7 @@ jobs:
 
       - name: Create tarball
         run: |
-          TARBALL_NAME="claude-code-fleet-mcp-${{ steps.version.outputs.version }}.tar.gz"
+          TARBALL_NAME="apra-fleet-${{ steps.version.outputs.version }}.tar.gz"
           tar czf "$TARBALL_NAME" \
             dist/ \
             skills/ \
@@ -84,7 +84,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fleet-mcp-tarball
+          name: apra-fleet-tarball
           path: ${{ env.TARBALL_NAME }}
           retention-days: 30
 
@@ -120,7 +120,7 @@ jobs:
 
       - name: Create release tarball
         run: |
-          TARBALL_NAME="claude-code-fleet-mcp-${{ steps.version.outputs.version }}.tar.gz"
+          TARBALL_NAME="apra-fleet-${{ steps.version.outputs.version }}.tar.gz"
           tar czf "$TARBALL_NAME" \
             dist/ \
             skills/ \

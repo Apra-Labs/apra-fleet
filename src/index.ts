@@ -26,7 +26,7 @@ import { shutdownServerSchema, shutdownServer } from './tools/shutdown-server.js
 import { closeAllConnections } from './services/ssh.js';
 
 const server = new McpServer({
-  name: `claude-code-fleet v${serverVersion}`,
+  name: `apra-fleet v${serverVersion}`,
   version: serverVersion,
 });
 

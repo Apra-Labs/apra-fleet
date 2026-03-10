@@ -1,4 +1,4 @@
-# claude-code-fleet-mcp v0.0.1 — Implementation Plan
+# apra-fleet v0.0.1 — Implementation Plan
 
 > Unified VCS auth (GitHub/Bitbucket/Azure DevOps), agent onboarding flow, versioning, CI packaging, and installer. Replaces `provision_git_auth`/`revoke_git_auth` with provider-aware `provision_vcs_auth`/`revoke_vcs_auth`. Adds PMO skill onboarding docs, PostToolUse hook, version.json, release tarball, and install.sh.
 
@@ -12,7 +12,7 @@
 
 #### Task 1: Finalize design doc — tarball-only deployment model
 - **Files**: `docs/design-vcs-auth-onboarding.md`
-- **What**: Remove symlink mode and repo-checkout mode from Workstream 3. `install.sh` extracts tarball to `~/.claude-fleet-mcp/`, copies skills, registers MCP server. No symlinks, no `--from-checkout`.
+- **What**: Remove symlink mode and repo-checkout mode from Workstream 3. `install.sh` extracts tarball to `~/.apra-fleet/`, copies skills, registers MCP server. No symlinks, no `--from-checkout`.
 - **Acceptance**: Design doc references tarball-only in all distribution/install sections. No mention of symlinks or checkout mode.
 - **Blocker**: None.
 
@@ -301,7 +301,7 @@
 #### Task 22: Create `install.sh` — tarball-only installer
 - **Files**: `install.sh` (new)
 - **What**: Bash script:
-  1. Install to `~/.claude-fleet-mcp/` (copy dist + package files)
+  1. Install to `~/.apra-fleet/` (copy dist + package files)
   2. Run `npm ci --omit=dev` for runtime deps
   3. Copy `skills/pmo/` to `~/.claude/skills/pmo/`
   4. Install PostToolUse hook from `.claude/hooks/` to user's `.claude/settings.json`

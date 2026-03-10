@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-fleet-mcp",
+  "name": "apra-fleet",
   "version": "0.0.1",
   "description": "MCP server for managing a fleet of remote Claude Code agents via SSH",
   "type": "module",

@@ -1,4 +1,4 @@
-# Claude Code Fleet MCP
+# Apra Fleet
 
 Coordinate Claude Code agents across every machine in your network — from a single conversation.
 
@@ -11,11 +11,11 @@ You're working in Claude Code and you want to:
 - Spin up isolated workspaces on the same machine without them stepping on each other
 - Use a beefy cloud VM for compilation while coding from your laptop
 
-Fleet MCP makes all of this a conversation. No dashboards, no orchestration YAML — just tell Claude what you want and it happens.
+Apra Fleet makes all of this a conversation. No dashboards, no orchestration YAML — just tell Claude what you want and it happens.
 
 ## How it works
 
-Fleet MCP is an [MCP server](https://modelcontextprotocol.io/) that Claude Code connects to. It manages a registry of agents (machines with Claude Code installed) and provides tools to register them, send files, execute prompts, and check status. Remote agents connect via SSH. Local agents run as isolated child processes on the same machine.
+Apra Fleet is an [MCP server](https://modelcontextprotocol.io/) that Claude Code connects to. It manages a registry of agents (machines with Claude Code installed) and provides tools to register them, send files, execute prompts, and check status. Remote agents connect via SSH. Local agents run as isolated child processes on the same machine.
 
 ## Quick start
 
@@ -23,10 +23,10 @@ Fleet MCP is an [MCP server](https://modelcontextprotocol.io/) that Claude Code 
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Apra-Labs/apra-fleet/main/install.sh | bash
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/Apra-Labs/claude-code-fleet-mcp/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Apra-Labs/apra-fleet/main/install.ps1 | iex
 ```
 
 This clones, builds, and registers the MCP server — all in one step.
@@ -39,10 +39,10 @@ Run `/mcp` in Claude Code to pick up the new server. You should see the fleet to
 <summary>Manual install</summary>
 
 ```bash
-git clone https://github.com/Apra-Labs/claude-code-fleet-mcp.git
-cd claude-code-fleet-mcp
+git clone https://github.com/Apra-Labs/apra-fleet.git
+cd apra-fleet
 npm install && npm run build
-claude mcp add --scope user fleet -- node /full/path/to/claude-code-fleet-mcp/dist/index.js
+claude mcp add --scope user fleet -- node /full/path/to/apra-fleet/dist/index.js
 ```
 
 Replace `/full/path/to/` with the actual path where you cloned the repo.
@@ -51,7 +51,7 @@ Replace `/full/path/to/` with the actual path where you cloned the repo.
 
 ## Registering your first agent
 
-Once Fleet MCP is running, just talk to Claude:
+Once Apra Fleet is running, just talk to Claude:
 
 > "Register 192.168.1.10 as `build-server`. Username is akhil, password is blah-blah, setup key based authentication and work in `/home/akhil/projects/myapp`."
 

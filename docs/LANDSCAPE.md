@@ -1,10 +1,10 @@
-# Claude Code Fleet MCP — Competitive Landscape (February 2026)
+# Apra Fleet — Competitive Landscape (February 2026)
 
 ## The Problem
 
 AI-assisted coding has gone from autocomplete to autonomous agents. But every solution today forces a tradeoff: either you get a single agent locked to one machine, or you get a general-purpose orchestration framework that knows nothing about real infrastructure. None of them give you a fleet of agents running on actual hardware across your network, coordinated through a standard protocol, with persistent state across sessions.
 
-Claude Code Fleet MCP does.
+Apra Fleet does.
 
 ## The Landscape
 
@@ -24,15 +24,15 @@ Claude Code Fleet MCP does.
 
 **LangGraph** takes a graph-based approach to agent orchestration with conditional logic and multi-team coordination. Fast (2.2x faster than CrewAI in benchmarks), but again — no infrastructure layer. It orchestrates abstract agents, not real machines.
 
-**Microsoft Agent Framework** (public preview) merges AutoGen and Semantic Kernel into a unified SDK with A2A protocol and MCP support. Enterprise-grade and well-resourced, but general-purpose. Building a coding-specific fleet on top of it would mean reimplementing most of what Fleet MCP already provides.
+**Microsoft Agent Framework** (public preview) merges AutoGen and Semantic Kernel into a unified SDK with A2A protocol and MCP support. Enterprise-grade and well-resourced, but general-purpose. Building a coding-specific fleet on top of it would mean reimplementing most of what Apra Fleet already provides.
 
 ### Claude Code Swarm Tools
 
 **Ruflo**, **Gas Town**, and **Multiclaude** are community-built orchestrators for running Claude Code in parallel. They vary in maturity and are typically single-machine tools that wrap Claude Code's CLI — not distributed systems with cross-platform infrastructure, persistent state, and protocol-level integration.
 
-## Where Fleet MCP Sits
+## Where Apra Fleet Sits
 
-| Capability | Fleet MCP | Agent Teams | Devin | CrewAI / MetaGPT | MS Agent Framework |
+| Capability | Apra Fleet | Agent Teams | Devin | CrewAI / MetaGPT | MS Agent Framework |
 |---|---|---|---|---|---|
 | Distributed agents via SSH | Yes | No | No (own VMs) | No | No |
 | Cross-platform (Win / Mac / Linux) | Yes | Same-machine | Linux | N/A | N/A |
@@ -46,11 +46,11 @@ Claude Code Fleet MCP does.
 
 ## The Differentiation
 
-Fleet MCP is the only solution that combines:
+Apra Fleet is the only solution that combines:
 
 1. **Real infrastructure** — SSH connections to actual machines you own, with connection pooling, TOFU host key verification, and cross-platform command abstraction (bash, zsh, PowerShell).
 
-2. **MCP-native architecture** — Fleet MCP is an MCP server, not a wrapper around one. Any MCP client (Claude Code, Copilot, custom tooling) can drive the fleet through a standard protocol. This means the fleet is composable with every other MCP tool in the ecosystem.
+2. **MCP-native architecture** — Apra Fleet is an MCP server, not a wrapper around one. Any MCP client (Claude Code, Copilot, custom tooling) can drive the fleet through a standard protocol. This means the fleet is composable with every other MCP tool in the ecosystem.
 
 3. **Persistent state** — Agents are registered once and persist across sessions. Work folders, session IDs, OS detection, auth credentials — all stored and reusable. No re-setup on every run.
 
@@ -64,4 +64,4 @@ Fleet MCP is the only solution that combines:
 
 The trajectory of AI-assisted development points clearly toward teams of agents working continuously on well-decomposed tasks, with human oversight at the architectural level. The infrastructure for this needs to be distributed (agents on real machines), persistent (state survives sessions), protocol-native (composable with the MCP ecosystem), and cross-platform (the real world isn't all Linux).
 
-Fleet MCP is that infrastructure.
+Apra Fleet is that infrastructure.

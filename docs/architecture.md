@@ -4,7 +4,7 @@
 
 AI coding agents are powerful on a single machine. But real work spans many machines — a dev server, a staging box, a GPU trainer, a production host. Today, if you want Claude Code working across all of them, you SSH in manually, run prompts one at a time, and copy files by hand. There's no single pane of glass.
 
-Claude Code Fleet MCP gives one Claude instance the ability to orchestrate many. Register machines, push files, run prompts, monitor health — all through natural language from your terminal. One master, many agents.
+Apra Fleet gives one Claude instance the ability to orchestrate many. Register machines, push files, run prompts, monitor health — all through natural language from your terminal. One master, many agents.
 
 ## Conceptual Model
 
@@ -26,7 +26,7 @@ This distinction is hidden behind a **Strategy pattern**: every tool interacts w
 ┌────────────────────────────────────────────────────┐
 │  Master Machine                                    │
 │                                                    │
-│  Claude Code CLI ◄──stdio──► Fleet MCP Server      │
+│  Claude Code CLI ◄──stdio──► Apra Fleet Server      │
 │                               │                    │
 │                    ┌──────────┴──────────┐         │
 │                    │  Agent Strategy     │         │
