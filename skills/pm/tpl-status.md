@@ -17,7 +17,7 @@
 - **Branch:** {{branch}}
 - **Agent:** {{member_name}} ({{model}})
 - **Tests:** {{count}} passing
-- **Review:** {{APPROVED | REQUEST CHANGES}} by {{reviewer}} (session `{{id}}`)
+- **Review:** {{APPROVED | CHANGES NEEDED}} by {{reviewer}} (session `{{id}}`)
 - **Merged:** {{commit}} on {{target_branch}}
 
 ## Blockers
