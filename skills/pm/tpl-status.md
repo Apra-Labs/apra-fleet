@@ -1,5 +1,9 @@
 # {{PROJECT_NAME}} — Status
 
+## Project
+- **Base branch:** {{main | v020_dev | etc}}
+- **Repo:** {{org/repo}}
+
 ## Members
 
 ### {{member_name}} ({{role}})

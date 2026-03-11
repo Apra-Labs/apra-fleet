@@ -129,7 +129,7 @@ Then provision credentials:
 
 > "Provision git auth for build-server."
 
-This calls `provision_git_auth`, which mints a 1-hour scoped token and deploys a git credential helper to the agent. The token is limited to the declared repos and access level.
+This calls `provision_vcs_auth`, which mints a 1-hour scoped token and deploys a git credential helper to the agent. The token is limited to the declared repos and access level.
 
 **Access levels:**
 
@@ -164,8 +164,8 @@ See `docs/design-git-auth.md` for the full design.
 | `provision_auth` | Deploy OAuth credentials or an API key to an agent |
 | `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
-| `provision_git_auth` | Mint a scoped, short-lived git token for an agent and deploy credentials |
-| `revoke_git_auth` | Remove deployed git credentials from an agent |
+| `provision_vcs_auth` | Deploy VCS credentials to an agent (GitHub App, Bitbucket, Azure DevOps) |
+| `revoke_vcs_auth` | Remove deployed VCS credentials from an agent |
 | `update_claude` | Update or install Claude Code CLI on agents |
 | `shutdown_server` | Gracefully shut down the MCP server |
 

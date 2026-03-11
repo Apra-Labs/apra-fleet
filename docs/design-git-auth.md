@@ -62,7 +62,7 @@ For GitHub-hosted repos, use a **GitHub App** installed on the org.
 ┌─────────────────────────────────────────────┐
 │  claude-fleet-app (GitHub App)              │
 │  Installed on: Apra-Labs org                │
-│  App private key stored on PMO/master       │
+│  App private key stored on PM/master         │
 │                                             │
 │  Max permissions (app-level):               │
 │  - contents: write                          │
@@ -72,7 +72,7 @@ For GitHub-hosted repos, use a **GitHub App** installed on the org.
 │  - administration: write                    │
 └──────────────┬──────────────────────────────┘
                │
-  PMO mints scoped tokens per agent at runtime:
+  PM mints scoped tokens per agent at runtime:
                │
                ├──→ code-analyst:  { contents: read,  repos: [ApraPipes] }
                ├──→ feature-dev:   { contents: write, repos: [ApraPipes] }
@@ -173,7 +173,7 @@ Use a **Bitbucket OAuth Consumer** or **Repository Access Token**:
 Agent startup / first git operation
         │
         ▼
-  PMO mints scoped token (1hr TTL)
+  PM mints scoped token (1hr TTL)
         │
         ▼
   Deploy credential to agent via execute_command

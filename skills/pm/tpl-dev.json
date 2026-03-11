@@ -6,6 +6,7 @@
       "Bash(npm:*)", "Bash(node:*)",
       "Bash(make:*)", "Bash(cargo:*)",
       "Bash(python:*)", "Bash(python3:*)",
+      "Bash(curl:*)",
       "Bash(which:*)", "Bash(ls:*)", "Bash(cat:*)",
       "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)"
     ]

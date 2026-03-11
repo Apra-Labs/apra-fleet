@@ -29,3 +29,5 @@ Tasks with type "verify" are checkpoints. When you reach one:
 - Read PLAN.md before starting each task
 - Commit and push PLAN.md, progress.json, and all project docs (design.md, feedback-*.md) at every turn — reviewers depend on them
 - NEVER commit CLAUDE.md — it is role-specific and not shared
+- NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
+- Before creating a branch: `git fetch origin && git checkout origin/<base-branch>`

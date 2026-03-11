@@ -33,9 +33,9 @@ cd "$INSTALL_DIR"
 npm ci --omit=dev --no-fund --no-audit
 
 # --- Step 3: Copy skills ---
-echo "Installing PMO skill..."
+echo "Installing PM skill..."
 mkdir -p "$SKILLS_DIR"
-cp -r "$INSTALL_DIR/skills/pmo" "$SKILLS_DIR/"
+cp -r "$INSTALL_DIR/skills/pm" "$SKILLS_DIR/"
 
 # --- Step 4: Install PostToolUse hook ---
 echo "Installing hooks..."
@@ -79,6 +79,6 @@ VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$INSTALL_D
 echo ""
 echo "Apra Fleet v${VERSION} installed successfully."
 echo "  Install dir: $INSTALL_DIR"
-echo "  PMO skill:   $SKILLS_DIR/pmo/"
+echo "  PM skill:    $SKILLS_DIR/pm/"
 echo ""
 echo "Run /mcp in Claude Code to load the server."

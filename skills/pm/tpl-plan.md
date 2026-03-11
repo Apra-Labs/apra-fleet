@@ -9,13 +9,22 @@
 ### Phase 1: {{PHASE_1_NAME}}
 
 #### Task 1: {{TASK_TITLE}}
-{{TASK_DETAILS}}
+- **Change:** {{what to do}}
+- **Files:** {{which files}}
+- **Done when:** {{acceptance criteria}}
+- **Blockers:** {{potential blockers}}
 
 #### Task 2: {{TASK_TITLE}}
-{{TASK_DETAILS}}
+- **Change:** {{what to do}}
+- **Files:** {{which files}}
+- **Done when:** {{acceptance criteria}}
+- **Blockers:** {{potential blockers}}
 
 #### Task 3: {{TASK_TITLE}}
-{{TASK_DETAILS}}
+- **Change:** {{what to do}}
+- **Files:** {{which files}}
+- **Done when:** {{acceptance criteria}}
+- **Blockers:** {{potential blockers}}
 
 #### VERIFY: {{PHASE_1_NAME}}
 - Run full test suite
@@ -35,6 +44,13 @@
 
 ---
 
+## Risk Register
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| {{risk}} | {{high/med/low}} | {{mitigation}} |
+
 ## Notes
 - Each task should result in a git commit
 - Verify tasks are checkpoints — stop and report after each one
+- Base branch: {{base_branch}}

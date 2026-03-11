@@ -15,13 +15,15 @@ Reviews are CUMULATIVE — review all phases up to and including the current one
 3. Read PLAN.md — understand what each task was supposed to do
 4. `git diff` the relevant commits against the base branch
 5. Check each completed task against its "done" criteria in PLAN.md
-6. Run the test suite — confirm all tests pass
-7. Check for regressions in previously approved phases
+6. Run ALL tests (unit, integration, e2e) — every test must pass. If any fail, CHANGES NEEDED
+7. Verify CI passes for the latest push — if CI is red, CHANGES NEEDED regardless of code quality
+8. Check for regressions in previously approved phases
 
 ## What to check
 
 - Does the code match what PLAN.md specified?
 - Do tests pass? Are new tests added for new behavior?
+- Test quality: flag overlapping/redundant tests that add no value. Flag untested exposed surfaces (public APIs, error paths, edge cases). Phase does not close until test coverage is meaningful, not just present
 - Are there security issues (injection, auth bypass, secrets in code)?
 - Is the code consistent with existing patterns and conventions?
 - Are docs updated if behavior changed?
@@ -29,3 +31,7 @@ Reviews are CUMULATIVE — review all phases up to and including the current one
 ## Output
 
 Commit findings to feedback.md. Output verdict as final line: APPROVED or CHANGES NEEDED.
+
+## Rules
+- NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
+- NEVER commit CLAUDE.md — it is role-specific and not shared

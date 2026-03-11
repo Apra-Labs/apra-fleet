@@ -14,6 +14,7 @@ You are reviewing a plan in PLAN.md against requirements.md.
 8. Dependencies satisfied in order?
 9. Any vague tasks that two developers would interpret differently?
 10. Any hidden dependencies between tasks?
+11. Does the plan include a risk register? If missing or incomplete, identify the risks yourself and add them as findings
 
 ## Output
 
