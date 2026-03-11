@@ -9,7 +9,7 @@ import { getOsCommands } from '../os/index.js';
 import type { Agent } from '../types.js';
 
 export const setupSSHKeySchema = z.object({
-  agent_id: z.string().describe('The UUID of the agent to set up SSH key auth for'),
+  member_id: z.string().describe('The UUID of the member (worker) to set up SSH key auth for'),
 });
 
 export type SetupSSHKeyInput = z.infer<typeof setupSSHKeySchema>;
@@ -44,16 +44,16 @@ function rsaPublicKeyToOpenSSH(publicKeyPem: string, comment: string): string {
 }
 
 export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
   if (agent.agentType === 'local') {
-    return `❌ SSH key setup is not applicable for local agents. Agent "${agent.friendlyName}" runs on the same machine — no SSH authentication is needed.`;
+    return `❌ SSH key setup is not applicable for local members. Member "${agent.friendlyName}" runs on the same machine — no SSH authentication is needed.`;
   }
 
   if (agent.authType === 'key') {
-    return `Agent "${agent.friendlyName}" is already using key-based authentication.`;
+    return `Member "${agent.friendlyName}" is already using key-based authentication.`;
   }
 
   const keysDir = getKeysDir();

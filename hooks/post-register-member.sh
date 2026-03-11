@@ -1,5 +1,5 @@
 #!/bin/bash
-# PostToolUse hook for mcp__fleet__register_agent
+# PostToolUse hook for mcp__fleet__register_member
 # Nudges the PM to run the member onboarding checklist after registration.
 # All intelligence lives in the skill docs — this is just the trigger.
 #

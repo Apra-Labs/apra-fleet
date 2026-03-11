@@ -56,7 +56,7 @@ describe('provisionAuth', () => {
     addAgent(agent);
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'Connection refused' });
 
-    const result = await provisionAuth({ agent_id: agent.id });
+    const result = await provisionAuth({ member_id: agent.id });
     expect(result).toContain('offline');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
@@ -67,7 +67,7 @@ describe('provisionAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ agent_id: agent.id, api_key: 'sk-ant-api03-TESTKEY' });
+    const result = await provisionAuth({ member_id: agent.id, api_key: 'sk-ant-api03-TESTKEY' });
     expect(result).toContain('API key provisioned');
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0]);
@@ -84,7 +84,7 @@ describe('provisionAuth', () => {
     // All commands succeed — including the `claude -p "hello"` verification
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ agent_id: agent.id });
+    const result = await provisionAuth({ member_id: agent.id });
     expect(result).toContain('OAuth credentials deployed');
     expect(result).toContain('verified with a successful Claude API call');
 
@@ -99,7 +99,7 @@ describe('provisionAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExistsSync.mockReturnValue(false);
 
-    const result = await provisionAuth({ agent_id: agent.id });
+    const result = await provisionAuth({ member_id: agent.id });
     expect(result).toContain('No OAuth credentials found');
     expect(result).toContain('/login');
     expect(result).toContain('api_key');
@@ -114,7 +114,7 @@ describe('provisionAuth', () => {
       claudeAiOauth: { accessToken: 'sk-ant-oat01-test', expiresAt: '2020-01-01T00:00:00Z' },
     }));
 
-    const result = await provisionAuth({ agent_id: agent.id });
+    const result = await provisionAuth({ member_id: agent.id });
     expect(result).toContain('expired');
     expect(result).toContain('/login');
     expect(mockExecCommand).not.toHaveBeenCalled();
@@ -134,7 +134,7 @@ describe('provisionAuth', () => {
     }));
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ agent_id: agent.id });
+    const result = await provisionAuth({ member_id: agent.id });
     expect(result).toContain('OAuth credentials deployed');
     expect(result).toContain('auto-refresh');
   });
@@ -153,7 +153,7 @@ describe('provisionAuth', () => {
     }));
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await provisionAuth({ agent_id: agent.id });
+    const result = await provisionAuth({ member_id: agent.id });
     expect(result).toContain('OAuth credentials deployed');
     expect(result).toMatch(/expires in ~\d+ minute/);
   });

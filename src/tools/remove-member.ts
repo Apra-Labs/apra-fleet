@@ -7,22 +7,22 @@ import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import type { Agent } from '../types.js';
 
-export const removeAgentSchema = z.object({
-  agent_id: z.string().describe('The UUID of the agent to remove'),
+export const removeMemberSchema = z.object({
+  member_id: z.string().describe('The UUID of the member (worker) to remove'),
 });
 
-export type RemoveAgentInput = z.infer<typeof removeAgentSchema>;
+export type RemoveMemberInput = z.infer<typeof removeMemberSchema>;
 
-export async function removeAgent(input: RemoveAgentInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+export async function removeMember(input: RemoveMemberInput): Promise<string> {
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
   const strategy = getStrategy(agent);
   const warnings: string[] = [];
 
-  // Best-effort: clear auth credentials from the agent before removing
-  // Skip for local agents — their credentials belong to the host machine
+  // Best-effort: clear auth credentials from the member before removing
+  // Skip for local members — their credentials belong to the host machine
   if (agent.agentType === 'remote') {
     try {
       const conn = await strategy.testConnection();
@@ -37,10 +37,10 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
           await strategy.execCommand(cmd, 10000).catch(() => {});
         }
       } else {
-        warnings.push('Agent was offline — could not clear auth credentials');
+        warnings.push('Member was offline — could not clear auth credentials');
       }
     } catch {
-      warnings.push('Could not connect to agent — auth credentials may still be present');
+      warnings.push('Could not connect to member — auth credentials may still be present');
     }
   }
 
@@ -57,10 +57,10 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
     removeKnownHost(agent.host, agent.port);
   }
 
-  const removed = removeFromRegistry(input.agent_id);
+  const removed = removeFromRegistry(input.member_id);
 
   if (removed) {
-    let result = `✅ Agent "${agent.friendlyName}" (${agent.id}) has been removed.`;
+    let result = `✅ Member "${agent.friendlyName}" (${agent.id}) has been removed.`;
     if (warnings.length > 0) {
       result += `\n\n⚠️ Warnings:\n`;
       for (const w of warnings) {
@@ -69,5 +69,5 @@ export async function removeAgent(input: RemoveAgentInput): Promise<string> {
     }
     return result;
   }
-  return `Failed to remove agent "${input.agent_id}".`;
+  return `Failed to remove member "${input.member_id}".`;
 }

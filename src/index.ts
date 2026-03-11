@@ -5,10 +5,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { serverVersion } from './version.js';
 
 // Tool schemas and handlers
-import { registerAgentSchema, registerAgent } from './tools/register-agent.js';
-import { listAgentsSchema, listAgents } from './tools/list-agents.js';
-import { removeAgentSchema, removeAgent } from './tools/remove-agent.js';
-import { updateAgentSchema, updateAgent } from './tools/update-agent.js';
+import { registerMemberSchema, registerMember } from './tools/register-member.js';
+import { listMembersSchema, listMembers } from './tools/list-members.js';
+import { removeMemberSchema, removeMember } from './tools/remove-member.js';
+import { updateMemberSchema, updateMember } from './tools/update-member.js';
 import { sendFilesSchema, sendFiles } from './tools/send-files.js';
 import { executePromptSchema, executePrompt } from './tools/execute-prompt.js';
 import { executeCommandSchema, executeCommand } from './tools/execute-command.js';
@@ -19,7 +19,7 @@ import { setupGitAppSchema, setupGitApp } from './tools/setup-git-app.js';
 import { provisionVcsAuthSchema, provisionVcsAuth } from './tools/provision-vcs-auth.js';
 import { revokeVcsAuthSchema, revokeVcsAuth } from './tools/revoke-vcs-auth.js';
 import { fleetStatusSchema, fleetStatus } from './tools/check-status.js';
-import { agentDetailSchema, agentDetail } from './tools/agent-detail.js';
+import { memberDetailSchema, memberDetail } from './tools/member-detail.js';
 import { updateClaudeSchema, updateClaude } from './tools/update-claude.js';
 import { shutdownServerSchema, shutdownServer } from './tools/shutdown-server.js';
 
@@ -30,41 +30,41 @@ const server = new McpServer({
   version: serverVersion,
 });
 
-// --- Core Agent Management ---
+// --- Core Member Management ---
 
 server.tool(
-  'register_agent',
-  'Register a machine as a fleet agent. Use agent_type "local" for same-machine agents (no SSH needed) or "remote" (default) for SSH-based remote agents. Tests connectivity, detects OS, checks Claude CLI.',
-  registerAgentSchema.shape,
+  'register_member',
+  'Register a machine as a fleet member (worker). Use member_type "local" for same-machine members (no SSH needed) or "remote" (default) for SSH-based remote members. Tests connectivity, detects OS, checks Claude CLI.',
+  registerMemberSchema.shape,
   async (input) => ({
-    content: [{ type: 'text', text: await registerAgent(input as any) }],
+    content: [{ type: 'text', text: await registerMember(input as any) }],
   })
 );
 
 server.tool(
-  'list_agents',
-  'List all registered fleet agents. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
-  listAgentsSchema.shape,
+  'list_members',
+  'List all registered fleet members. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
+  listMembersSchema.shape,
   async (input) => ({
-    content: [{ type: 'text', text: await listAgents(input as any) }],
+    content: [{ type: 'text', text: await listMembers(input as any) }],
   })
 );
 
 server.tool(
-  'remove_agent',
-  'Unregister a fleet agent by its ID.',
-  removeAgentSchema.shape,
+  'remove_member',
+  'Unregister a fleet member by its ID.',
+  removeMemberSchema.shape,
   async (input) => ({
-    content: [{ type: 'text', text: await removeAgent(input as any) }],
+    content: [{ type: 'text', text: await removeMember(input as any) }],
   })
 );
 
 server.tool(
-  'update_agent',
-  'Update an agent\'s registration (rename, change host, folder, auth, etc.).',
-  updateAgentSchema.shape,
+  'update_member',
+  'Update a member\'s registration (rename, change host, folder, auth, etc.).',
+  updateMemberSchema.shape,
   async (input) => ({
-    content: [{ type: 'text', text: await updateAgent(input as any) }],
+    content: [{ type: 'text', text: await updateMember(input as any) }],
   })
 );
 
@@ -72,7 +72,7 @@ server.tool(
 
 server.tool(
   'send_files',
-  'Upload local files to a remote agent via SFTP. Files are placed in the agent\'s remote folder.',
+  'Upload local files to a remote member (worker) via SFTP. Files are placed in the member\'s remote folder.',
   sendFilesSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await sendFiles(input as any) }],
@@ -83,7 +83,7 @@ server.tool(
 
 server.tool(
   'execute_prompt',
-  'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a Claude prompt on a remote agent. Supports session resume for conversational context.',
+  'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a Claude prompt on a remote member. Supports session resume for conversational context.',
   executePromptSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await executePrompt(input as any) }],
@@ -92,7 +92,7 @@ server.tool(
 
 server.tool(
   'execute_command',
-  'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command directly on an agent without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.',
+  'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command directly on a member without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.',
   executeCommandSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await executeCommand(input as any) }],
@@ -103,7 +103,7 @@ server.tool(
 
 server.tool(
   'reset_session',
-  'Clear stored session ID so the next prompt starts a fresh Claude session. Omit agent_id to reset all agents.',
+  'Clear stored session ID so the next prompt starts a fresh Claude session. Omit member_id to reset all members.',
   resetSessionSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await resetSession(input as any) }],
@@ -114,7 +114,7 @@ server.tool(
 
 server.tool(
   'provision_auth',
-  'Authenticate a fleet agent. Default: copies this machine\'s OAuth credentials to the agent. Override: pass api_key to deploy an Anthropic API key instead.',
+  'Authenticate a fleet member (worker). Default: copies this machine\'s OAuth credentials to the member. Override: pass api_key to deploy an Anthropic API key instead.',
   provisionAuthSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await provisionAuth(input as any) }],
@@ -123,7 +123,7 @@ server.tool(
 
 server.tool(
   'setup_ssh_key',
-  'Generate an SSH key pair and migrate an agent from password to key-based authentication.',
+  'Generate an SSH key pair and migrate a member from password to key-based authentication.',
   setupSSHKeySchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await setupSSHKey(input as any) }],
@@ -141,7 +141,7 @@ server.tool(
 
 server.tool(
   'provision_vcs_auth',
-  'Deploy VCS credentials to an agent. Supports GitHub (App or PAT), Bitbucket (API token), and Azure DevOps (PAT). Configures git credential helper and tests connectivity.',
+  'Deploy VCS credentials to a member (worker). Supports GitHub (App or PAT), Bitbucket (API token), and Azure DevOps (PAT). Configures git credential helper and tests connectivity.',
   provisionVcsAuthSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await provisionVcsAuth(input as any) }],
@@ -150,7 +150,7 @@ server.tool(
 
 server.tool(
   'revoke_vcs_auth',
-  'Remove VCS credentials from an agent. Specify the provider (github, bitbucket, or azure-devops) to revoke.',
+  'Remove VCS credentials from a member. Specify the provider (github, bitbucket, or azure-devops) to revoke.',
   revokeVcsAuthSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await revokeVcsAuth(input as any) }],
@@ -161,7 +161,7 @@ server.tool(
 
 server.tool(
   'fleet_status',
-  'Get fleet agent status. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
+  'Get fleet member (worker) status. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
   fleetStatusSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await fleetStatus(input as any) }],
@@ -169,11 +169,11 @@ server.tool(
 );
 
 server.tool(
-  'agent_detail',
-  'Deep-dive status for one agent. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
-  agentDetailSchema.shape,
+  'member_detail',
+  'Deep-dive status for one member. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.',
+  memberDetailSchema.shape,
   async (input) => ({
-    content: [{ type: 'text', text: await agentDetail(input as any) }],
+    content: [{ type: 'text', text: await memberDetail(input as any) }],
   })
 );
 
@@ -181,7 +181,7 @@ server.tool(
 
 server.tool(
   'update_claude',
-  'Update or install Claude Code CLI on agents. Set install_if_missing=true to install on agents that don\'t have it.',
+  'Update or install Claude Code CLI on members. Set install_if_missing=true to install on members that don\'t have it.',
   updateClaudeSchema.shape,
   async (input) => ({
     content: [{ type: 'text', text: await updateClaude(input as any) }],

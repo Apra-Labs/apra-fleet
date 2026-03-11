@@ -2,11 +2,11 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__fleet__register_agent",
+        "matcher": "mcp__fleet__register_member",
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/.apra-fleet/hooks/post-register-agent.sh\""
+            "command": "\"$HOME/.apra-fleet/hooks/post-register-member.sh\""
           }
         ]
       }

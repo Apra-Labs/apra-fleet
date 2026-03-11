@@ -6,8 +6,8 @@ import { classifyPromptError, isRetryable, authErrorAdvice } from '../utils/prom
 import type { Agent, SSHExecResult } from '../types.js';
 
 export const executePromptSchema = z.object({
-  agent_id: z.string().describe('The UUID of the target agent'),
-  prompt: z.string().describe('The prompt to send to Claude on the remote agent'),
+  member_id: z.string().describe('The UUID of the target member (worker)'),
+  prompt: z.string().describe('The prompt to send to Claude on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
   timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
   dangerously_skip_permissions: z.boolean().default(false).describe('Run Claude with --dangerously-skip-permissions so it can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
@@ -36,7 +36,7 @@ function buildFailureMessage(agentName: string, result: SSHExecResult): string {
 const SERVER_RETRY_DELAY_MS = 5000;
 
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

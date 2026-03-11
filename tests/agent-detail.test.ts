@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { agentDetail } from '../src/tools/agent-detail.js';
+import { memberDetail } from '../src/tools/member-detail.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -28,7 +28,7 @@ function setupDefaultMock() {
   });
 }
 
-describe('agentDetail auth detection', () => {
+describe('memberDetail auth detection', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
@@ -43,7 +43,7 @@ describe('agentDetail auth detection', () => {
     addAgent(agent);
     setupDefaultMock();
 
-    const result = JSON.parse(await agentDetail({ agent_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
     expect(result.claude.auth).toBe('none');
   });
 
@@ -60,7 +60,7 @@ describe('agentDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await agentDetail({ agent_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
     expect(result.claude.auth).toContain('OAuth credentials file');
     expect(result.claude.auth).toContain('API key (env)');
   });
@@ -78,7 +78,7 @@ describe('agentDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await agentDetail({ agent_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
     expect(result.claude.auth).toContain('API key (env)');
     expect(result.claude.auth).not.toContain('OAuth credentials file');
   });

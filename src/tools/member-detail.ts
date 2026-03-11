@@ -4,15 +4,15 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
-export const agentDetailSchema = z.object({
-  agent_id: z.string().describe('The UUID of the agent to inspect'),
+export const memberDetailSchema = z.object({
+  member_id: z.string().describe('The UUID of the member (worker) to inspect'),
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
 });
 
-export type AgentDetailInput = z.infer<typeof agentDetailSchema>;
+export type MemberDetailInput = z.infer<typeof memberDetailSchema>;
 
-export async function agentDetail(input: AgentDetailInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+export async function memberDetail(input: MemberDetailInput): Promise<string> {
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

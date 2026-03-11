@@ -6,8 +6,8 @@ import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
 export const updateClaudeSchema = z.object({
-  agent_id: z.string().optional().describe('The UUID of the agent to update. Omit to update ALL online agents.'),
-  install_if_missing: z.boolean().default(false).describe('Install Claude Code on the agent if not already installed (default: false)'),
+  member_id: z.string().optional().describe('The UUID of the member to update. Omit to update ALL online members.'),
+  install_if_missing: z.boolean().default(false).describe('Install Claude Code on the member if not already installed (default: false)'),
 });
 
 export type UpdateClaudeInput = z.infer<typeof updateClaudeSchema>;
@@ -74,18 +74,18 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
 export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
   let agents: Agent[];
 
-  if (input.agent_id) {
-    const agentOrError = getAgentOrFail(input.agent_id);
+  if (input.member_id) {
+    const agentOrError = getAgentOrFail(input.member_id);
     if (typeof agentOrError === 'string') return agentOrError;
     agents = [agentOrError as Agent];
   } else {
     // Update all online agents
     const allAgents = getAllAgents();
     if (allAgents.length === 0) {
-      return 'No agents registered.';
+      return 'No members registered.';
     }
 
-    // Filter to online agents
+    // Filter to online members
     const onlineChecks = await Promise.allSettled(
       allAgents.map(async a => {
         const strategy = getStrategy(a);
@@ -99,11 +99,11 @@ export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
       .map(r => (r as PromiseFulfilledResult<any>).value.agent);
 
     if (agents.length === 0) {
-      return 'No agents are currently online.';
+      return 'No members are currently online.';
     }
   }
 
-  // Update all selected agents in parallel
+  // Update all selected members in parallel
   const results = await Promise.allSettled(agents.map(a => updateSingleAgent(a, input.install_if_missing)));
 
   let report = `Claude CLI Update Report\n${'='.repeat(40)}\n\n`;

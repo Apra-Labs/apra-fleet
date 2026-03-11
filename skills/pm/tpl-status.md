@@ -6,9 +6,10 @@
 
 ## Members
 
-### {{member_name}} ({{role}})
+### {{icon}} {{member_name}} ({{role}})
 - **Agent ID:** {{agent_id}}
 - **Work folder:** {{work_folder}}
+- **Icon:** {{🔵 | 🔷 | 🟢 | 🟩 | etc}}
 - **Current role:** doer | reviewer
 - **Branch:** {{branch}}
 

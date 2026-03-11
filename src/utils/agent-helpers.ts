@@ -12,7 +12,7 @@ import { getAgent, updateAgent } from '../services/registry.js';
 export function getAgentOrFail(id: string): Agent | string {
   const agent = getAgent(id);
   if (!agent) {
-    return `Agent "${id}" not found.`;
+    return `Member "${id}" not found.`;
   }
   return agent;
 }

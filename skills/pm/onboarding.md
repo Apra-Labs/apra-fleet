@@ -1,6 +1,6 @@
 # Member Onboarding
 
-After `register_agent`, run these 5 steps before dispatching any work.
+After `register_member`, run these 5 steps before dispatching any work.
 
 ## Step 1: Detect VCS Provider
 

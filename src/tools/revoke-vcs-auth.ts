@@ -15,14 +15,14 @@ const providers: Record<string, VcsProviderService> = {
 };
 
 export const revokeVcsAuthSchema = z.object({
-  agent_id: z.string().describe('The UUID of the agent to revoke VCS credentials from'),
+  member_id: z.string().describe('The UUID of the member to revoke VCS credentials from'),
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider whose credentials to revoke'),
 });
 
 export type RevokeVcsAuthInput = z.infer<typeof revokeVcsAuthSchema>;
 
 export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
@@ -30,7 +30,7 @@ export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> 
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
-  if (!conn.ok) return `❌ Agent "${agent.friendlyName}" is offline: ${conn.error}`;
+  if (!conn.ok) return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
 
   const cmds = getOsCommands(getAgentOS(agent));
   const exec = async (cmd: string): Promise<string> => {

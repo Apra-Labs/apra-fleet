@@ -7,47 +7,47 @@ import { getOsCommands } from '../os/index.js';
 import { addAgent, hasDuplicateFolder } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 
-export const registerAgentSchema = z.object({
+export const registerMemberSchema = z.object({
   friendly_name: z.string()
     .min(1).max(64)
     .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')
-    .describe('Human-friendly name for this agent (e.g. "web-server")'),
-  agent_type: z.enum(['local', 'remote']).default('remote').describe('Agent type: "local" for same machine, "remote" for SSH (default: "remote")'),
-  host: z.string().optional().describe('IP address or hostname of the remote machine (required for remote agents)'),
-  port: z.number().default(22).describe('SSH port (default: 22, remote agents only)'),
-  username: z.string().optional().describe('SSH username (required for remote agents)'),
-  auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for remote agents)'),
+    .describe('Human-friendly name for this member (worker) (e.g. "web-server")'),
+  member_type: z.enum(['local', 'remote']).default('remote').describe('Member type: "local" for same machine, "remote" for SSH (default: "remote")'),
+  host: z.string().optional().describe('IP address or hostname of the remote machine (required for remote members)'),
+  port: z.number().default(22).describe('SSH port (default: 22, remote members only)'),
+  username: z.string().optional().describe('SSH username (required for remote members)'),
+  auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for remote members)'),
   password: z.string().optional().describe('SSH password (required if auth_type is "password")'),
   key_path: z.string().optional().describe('Path to SSH private key (required if auth_type is "key")'),
   work_folder: z.string().describe('Working directory on the target machine'),
-  git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this agent'),
-  git_repos: z.array(z.string()).optional().describe('Git repositories this agent can access (e.g. ["Apra-Labs/ApraPipes"])'),
+  git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
+  git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
 });
 
-export type RegisterAgentInput = z.infer<typeof registerAgentSchema>;
+export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
 
-export async function registerAgent(input: RegisterAgentInput): Promise<string> {
+export async function registerMember(input: RegisterMemberInput): Promise<string> {
   const warnings: string[] = [];
-  const isLocal = input.agent_type === 'local';
+  const isLocal = input.member_type === 'local';
 
   // Validate remote-specific fields
   if (!isLocal) {
-    if (!input.host) return '❌ "host" is required for remote agents. Agent was NOT registered.';
-    if (!input.username) return '❌ "username" is required for remote agents. Agent was NOT registered.';
-    if (!input.auth_type) return '❌ "auth_type" is required for remote agents. Agent was NOT registered.';
+    if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
+    if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
+    if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
   }
 
   // Duplicate folder check
-  if (hasDuplicateFolder(input.agent_type, input.work_folder, input.host)) {
+  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host)) {
     const scope = isLocal ? 'this machine' : `host ${input.host}`;
-    return `❌ Another agent already uses folder "${input.work_folder}" on ${scope}. Agent was NOT registered.`;
+    return `❌ Another member already uses folder "${input.work_folder}" on ${scope}. Member was NOT registered.`;
   }
 
   // Build a temporary agent object
   const tempAgent: Agent = {
     id: uuid(),
     friendlyName: input.friendly_name,
-    agentType: input.agent_type,
+    agentType: input.member_type,
     host: isLocal ? undefined : input.host,
     port: isLocal ? undefined : input.port,
     username: isLocal ? undefined : input.username,
@@ -66,7 +66,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   const connResult = await strategy.testConnection();
   if (!connResult.ok) {
     const target = isLocal ? 'local machine' : `${input.host}:${input.port}`;
-    return `❌ Failed to connect to ${target} — ${connResult.error}\nAgent was NOT registered.`;
+    return `❌ Failed to connect to ${target} — ${connResult.error}\nMember was NOT registered.`;
   }
 
   // Step 2: Detect OS — run all probes in parallel
@@ -122,7 +122,7 @@ export async function registerAgent(input: RegisterAgentInput): Promise<string> 
   // Persist
   addAgent(tempAgent);
 
-  let result = `✅ Agent registered successfully!\n\n`;
+  let result = `✅ Member registered successfully!\n\n`;
   result += `  ID:      ${tempAgent.id}\n`;
   result += `  Name:    ${tempAgent.friendlyName}\n`;
   result += `  Type:    ${tempAgent.agentType}\n`;

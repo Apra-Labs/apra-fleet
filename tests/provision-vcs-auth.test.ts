@@ -64,7 +64,7 @@ describe('provisionVcsAuth', () => {
   });
 
   it('returns not found for invalid agent ID', async () => {
-    const result = await provisionVcsAuth({ agent_id: 'nonexistent', provider: 'github' });
+    const result = await provisionVcsAuth({ member_id: 'nonexistent', provider: 'github' });
     expect(result).toContain('not found');
   });
 
@@ -74,7 +74,7 @@ describe('provisionVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'Timeout' });
 
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'bitbucket',
+      member_id: agent.id, provider: 'bitbucket',
       email: 'a@b.com', api_token: 'tok', workspace: 'ws',
     });
     expect(result).toContain('❌');
@@ -86,7 +86,7 @@ describe('provisionVcsAuth', () => {
   it('bitbucket: fails when required fields are missing', async () => {
     const agent = makeTestAgent({ friendlyName: 'bb-missing' });
     addAgent(agent);
-    const result = await provisionVcsAuth({ agent_id: agent.id, provider: 'bitbucket' });
+    const result = await provisionVcsAuth({ member_id: agent.id, provider: 'bitbucket' });
     expect(result).toContain('❌');
     expect(result).toContain('email');
   });
@@ -98,7 +98,7 @@ describe('provisionVcsAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'bitbucket',
+      member_id: agent.id, provider: 'bitbucket',
       email: 'dev@co.com', api_token: 'ATBB_xyz', workspace: 'my-ws',
     });
     expect(result).toContain('✅');
@@ -111,7 +111,7 @@ describe('provisionVcsAuth', () => {
   it('azure-devops: fails when required fields are missing', async () => {
     const agent = makeTestAgent({ friendlyName: 'az-missing' });
     addAgent(agent);
-    const result = await provisionVcsAuth({ agent_id: agent.id, provider: 'azure-devops' });
+    const result = await provisionVcsAuth({ member_id: agent.id, provider: 'azure-devops' });
     expect(result).toContain('❌');
     expect(result).toContain('org_url');
   });
@@ -123,7 +123,7 @@ describe('provisionVcsAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'azure-devops',
+      member_id: agent.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', pat: 'az-pat-999',
     });
     expect(result).toContain('✅');
@@ -137,7 +137,7 @@ describe('provisionVcsAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'azure-devops',
+      member_id: agent.id, provider: 'azure-devops',
       org_url: 'https://dev.azure.com/myorg', token: 'az-pat-via-token',
     });
     expect(result).toContain('✅');
@@ -152,7 +152,7 @@ describe('provisionVcsAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'github',
+      member_id: agent.id, provider: 'github',
       github_mode: 'pat', token: 'ghp_testtoken123',
     });
     expect(result).toContain('✅');
@@ -163,7 +163,7 @@ describe('provisionVcsAuth', () => {
     const agent = makeTestAgent({ friendlyName: 'gh-pat-notoken' });
     addAgent(agent);
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'github', github_mode: 'pat',
+      member_id: agent.id, provider: 'github', github_mode: 'pat',
     });
     expect(result).toContain('❌');
     expect(result).toContain('token');
@@ -178,7 +178,7 @@ describe('provisionVcsAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'github',
+      member_id: agent.id, provider: 'github',
     });
     expect(result).toContain('✅');
     expect(result).toContain('GitHub App');
@@ -193,7 +193,7 @@ describe('provisionVcsAuth', () => {
     mockExecCommand.mockRejectedValue(new Error('permission denied'));
 
     const result = await provisionVcsAuth({
-      agent_id: agent.id, provider: 'bitbucket',
+      member_id: agent.id, provider: 'bitbucket',
       email: 'a@b.com', api_token: 'tok', workspace: 'ws',
     });
     expect(result).toContain('❌');

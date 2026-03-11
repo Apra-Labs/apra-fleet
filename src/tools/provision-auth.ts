@@ -10,7 +10,7 @@ import { validateCredentials, credentialStatusNote } from '../utils/credential-v
 import type { Agent } from '../types.js';
 
 export const provisionAuthSchema = z.object({
-  agent_id: z.string().describe('The UUID of the target agent'),
+  member_id: z.string().describe('The UUID of the target member (worker)'),
   api_key: z.string().optional().describe(
     'Anthropic API key override. If provided, deploys this key as ANTHROPIC_API_KEY instead of running OAuth login. Use for pay-per-use billing without a Claude subscription.'
   ),
@@ -149,18 +149,18 @@ async function provisionApiKey(agent: Agent, apiKey: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 export async function provisionAuth(input: ProvisionAuthInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
   if (agent.agentType === 'local') {
-    return `⏭️ Skipping "${agent.friendlyName}" — local agents use this machine's credentials directly.`;
+    return `⏭️ Skipping "${agent.friendlyName}" — local members use this machine's credentials directly.`;
   }
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
   if (!conn.ok) {
-    return `❌ Agent "${agent.friendlyName}" is offline: ${conn.error}`;
+    return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
   }
 
   if (input.api_key) {

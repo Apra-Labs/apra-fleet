@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
-import { registerAgentSchema } from '../src/tools/register-agent.js';
-import { updateAgentSchema } from '../src/tools/update-agent.js';
+import { registerMemberSchema } from '../src/tools/register-member.js';
+import { updateMemberSchema } from '../src/tools/update-member.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { LinuxCommands } from '../src/os/linux.js';
 import { WindowsCommands } from '../src/os/windows.js';
@@ -31,7 +31,7 @@ describe('friendlyName Zod validation', () => {
   it('accepts valid names: alphanumeric, dots, dashes, underscores', () => {
     const validNames = ['web-server', 'my_agent.v2', 'Test123', 'a', 'a'.repeat(64)];
     for (const name of validNames) {
-      const result = registerAgentSchema.shape.friendly_name.safeParse(name);
+      const result = registerMemberSchema.shape.friendly_name.safeParse(name);
       expect(result.success, `Expected "${name}" to be valid`).toBe(true);
     }
   });
@@ -49,26 +49,26 @@ describe('friendlyName Zod validation', () => {
       "it's",
     ];
     for (const name of invalidNames) {
-      const result = registerAgentSchema.shape.friendly_name.safeParse(name);
+      const result = registerMemberSchema.shape.friendly_name.safeParse(name);
       expect(result.success, `Expected "${name}" to be rejected`).toBe(false);
     }
   });
 
   it('rejects empty string', () => {
-    const result = registerAgentSchema.shape.friendly_name.safeParse('');
+    const result = registerMemberSchema.shape.friendly_name.safeParse('');
     expect(result.success).toBe(false);
   });
 
   it('rejects names longer than 64 characters', () => {
-    const result = registerAgentSchema.shape.friendly_name.safeParse('a'.repeat(65));
+    const result = registerMemberSchema.shape.friendly_name.safeParse('a'.repeat(65));
     expect(result.success).toBe(false);
   });
 
   it('update-agent schema applies the same validation', () => {
-    const result = updateAgentSchema.shape.friendly_name.safeParse('test;whoami');
+    const result = updateMemberSchema.shape.friendly_name.safeParse('test;whoami');
     expect(result.success).toBe(false);
 
-    const validResult = updateAgentSchema.shape.friendly_name.safeParse('valid-name');
+    const validResult = updateMemberSchema.shape.friendly_name.safeParse('valid-name');
     expect(validResult.success).toBe(true);
   });
 });

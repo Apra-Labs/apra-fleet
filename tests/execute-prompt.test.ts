@@ -36,7 +36,7 @@ describe('executePrompt', () => {
       code: 0,
     });
 
-    const result = await executePrompt({ agent_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     expect(result).toContain('Hello world');
     expect(result).toContain('sess-123');
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
@@ -51,7 +51,7 @@ describe('executePrompt', () => {
       code: 1,
     });
 
-    const promise = executePrompt({ agent_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
@@ -71,7 +71,7 @@ describe('executePrompt', () => {
         code: 0,
       });
 
-    const promise = executePrompt({ agent_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
@@ -86,7 +86,7 @@ describe('executePrompt', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 Internal Server Error', code: 1 })
       .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 Internal Server Error', code: 1 });
 
-    const promise = executePrompt({ agent_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
@@ -107,7 +107,7 @@ describe('executePrompt', () => {
         code: 0,
       });
 
-    const promise = executePrompt({ agent_id: agent.id, prompt: 'hi', resume: true, timeout_ms: 5000 });
+    const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: true, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
@@ -126,7 +126,7 @@ describe('executePrompt', () => {
         code: 0,
       });
 
-    const promise = executePrompt({ agent_id: agent.id, prompt: 'hi', resume: true, timeout_ms: 5000 });
+    const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: true, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
@@ -143,7 +143,7 @@ describe('executePrompt', () => {
       code: 0,
     });
 
-    await executePrompt({ agent_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'opus' });
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'opus' });
     expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
     expect(mockExecCommand.mock.calls[0][0]).toContain('opus');
   });
@@ -157,7 +157,7 @@ describe('executePrompt', () => {
       code: 1,
     });
 
-    const promise = executePrompt({ agent_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 

@@ -55,7 +55,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (conn.ok) {
       row.status = 'online';
 
-      // Check if a fleet-related Claude process is running in this agent's folder
+      // Check if a fleet-related Claude process is running in this member's folder
       try {
         const cmds = getOsCommands(getAgentOS(agent));
         const busyCheck = await strategy.execCommand(
@@ -88,10 +88,10 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const agents = getAllAgents();
 
   if (agents.length === 0) {
-    return 'No agents registered. Use register_agent to add one.';
+    return 'No members registered. Use register_member to add one.';
   }
 
-  // Query all agents in parallel
+  // Query all members in parallel
   const results = await Promise.allSettled(agents.map(a => checkAgent(a)));
 
   const rows: AgentStatusRow[] = results.map((r, i) => {
@@ -110,10 +110,10 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const online = rows.filter(r => r.status === 'online').length;
 
   if (format === 'json') {
-    return JSON.stringify({ version: serverVersion, summary: { total: rows.length, online, offline: rows.length - online }, agents: rows });
+    return JSON.stringify({ version: serverVersion, summary: { total: rows.length, online, offline: rows.length - online }, members: rows });
   }
 
-  // Compact: 1 summary line + 1 line per agent, multiple fields per line
+  // Compact: 1 summary line + 1 line per member, multiple fields per line
   let t = `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
   t += rows.map(r => {
     const st = r.status === 'online' ? r.busy : 'OFF';

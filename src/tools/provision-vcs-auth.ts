@@ -15,7 +15,7 @@ const providers: Record<string, VcsProviderService> = {
 };
 
 export const provisionVcsAuthSchema = z.object({
-  agent_id: z.string().describe('The UUID of the target agent'),
+  member_id: z.string().describe('The UUID of the target member (worker)'),
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
 
   // GitHub fields
@@ -61,7 +61,7 @@ function buildCredentials(input: ProvisionVcsAuthInput): unknown | string {
 }
 
 export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
@@ -72,7 +72,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
-  if (!conn.ok) return `❌ Agent "${agent.friendlyName}" is offline: ${conn.error}`;
+  if (!conn.ok) return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
 
   const cmds = getOsCommands(getAgentOS(agent));
   const exec = async (cmd: string): Promise<string> => {

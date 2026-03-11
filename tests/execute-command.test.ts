@@ -30,7 +30,7 @@ describe('executeCommand', () => {
     addAgent(agent);
     mockExecCommand.mockResolvedValue({ stdout: 'hello world\n', stderr: '', code: 0 });
 
-    const result = await executeCommand({ agent_id: agent.id, command: 'echo hello world', timeout_ms: 5000 });
+    const result = await executeCommand({ member_id: agent.id, command: 'echo hello world', timeout_ms: 5000 });
     expect(result).toContain('Exit code: 0');
     expect(result).toContain('hello world');
   });
@@ -40,7 +40,7 @@ describe('executeCommand', () => {
     addAgent(agent);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    await executeCommand({ agent_id: agent.id, command: 'ls', timeout_ms: 5000 });
+    await executeCommand({ member_id: agent.id, command: 'ls', timeout_ms: 5000 });
     expect(mockExecCommand).toHaveBeenCalledWith(
       expect.stringContaining('/home/user/project'),
       5000,
@@ -52,7 +52,7 @@ describe('executeCommand', () => {
     addAgent(agent);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    await executeCommand({ agent_id: agent.id, command: 'ls', timeout_ms: 5000, work_folder: '/tmp/other' });
+    await executeCommand({ member_id: agent.id, command: 'ls', timeout_ms: 5000, work_folder: '/tmp/other' });
     expect(mockExecCommand).toHaveBeenCalledWith(
       expect.stringContaining('/tmp/other'),
       5000,
@@ -68,7 +68,7 @@ describe('executeCommand', () => {
     addAgent(agent);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: 'command not found', code: 127 });
 
-    const result = await executeCommand({ agent_id: agent.id, command: 'nonexistent', timeout_ms: 5000 });
+    const result = await executeCommand({ member_id: agent.id, command: 'nonexistent', timeout_ms: 5000 });
     expect(result).toContain('Exit code: 127');
     expect(result).toContain('command not found');
   });
@@ -78,13 +78,13 @@ describe('executeCommand', () => {
     addAgent(agent);
     mockExecCommand.mockRejectedValue(new Error('connection timeout'));
 
-    const result = await executeCommand({ agent_id: agent.id, command: 'echo hi', timeout_ms: 5000 });
+    const result = await executeCommand({ member_id: agent.id, command: 'echo hi', timeout_ms: 5000 });
     expect(result).toContain('Failed to execute command');
     expect(result).toContain('connection timeout');
   });
 
   it('returns agent not found for invalid ID', async () => {
-    const result = await executeCommand({ agent_id: 'nonexistent', command: 'echo hi', timeout_ms: 5000 });
+    const result = await executeCommand({ member_id: 'nonexistent', command: 'echo hi', timeout_ms: 5000 });
     expect(result).toContain('not found');
   });
 
@@ -93,7 +93,7 @@ describe('executeCommand', () => {
     addAgent(agent);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await executeCommand({ agent_id: agent.id, command: 'true', timeout_ms: 5000 });
+    const result = await executeCommand({ member_id: agent.id, command: 'true', timeout_ms: 5000 });
     expect(result).toContain('(no output)');
   });
 
@@ -102,7 +102,7 @@ describe('executeCommand', () => {
     addAgent(agent);
     mockExecCommand.mockResolvedValue({ stdout: 'output', stderr: 'warning', code: 0 });
 
-    const result = await executeCommand({ agent_id: agent.id, command: 'cmd', timeout_ms: 5000 });
+    const result = await executeCommand({ member_id: agent.id, command: 'cmd', timeout_ms: 5000 });
     expect(result).toContain('output');
     expect(result).toContain('[stderr]');
     expect(result).toContain('warning');

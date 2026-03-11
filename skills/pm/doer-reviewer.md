@@ -32,4 +32,4 @@ Use `send_files` to place tpl-dev.json (doers) or tpl-reviewer.json (reviewers) 
 ## PM responsibilities
 
 - Distribute work across pairs based on cohesion (high cohesion within a pair, loose coupling between pairs)
-- Keep going autonomously (rule 11) — don't wait for user between doer and reviewer handoffs
+- Keep going autonomously (rule 7) — don't wait for user between doer and reviewer handoffs

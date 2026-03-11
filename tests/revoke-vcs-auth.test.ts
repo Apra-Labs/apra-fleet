@@ -27,7 +27,7 @@ describe('revokeVcsAuth', () => {
   });
 
   it('returns not found for invalid agent ID', async () => {
-    const result = await revokeVcsAuth({ agent_id: 'nonexistent', provider: 'github' });
+    const result = await revokeVcsAuth({ member_id: 'nonexistent', provider: 'github' });
     expect(result).toContain('not found');
   });
 
@@ -36,7 +36,7 @@ describe('revokeVcsAuth', () => {
     addAgent(agent);
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'Timeout' });
 
-    const result = await revokeVcsAuth({ agent_id: agent.id, provider: 'bitbucket' });
+    const result = await revokeVcsAuth({ member_id: agent.id, provider: 'bitbucket' });
     expect(result).toContain('❌');
     expect(result).toContain('offline');
   });
@@ -48,7 +48,7 @@ describe('revokeVcsAuth', () => {
       mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-      const result = await revokeVcsAuth({ agent_id: agent.id, provider });
+      const result = await revokeVcsAuth({ member_id: agent.id, provider });
       expect(result).toContain('✅');
       expect(result).toContain('revoked');
 
@@ -64,7 +64,7 @@ describe('revokeVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockRejectedValue(new Error('SSH channel closed'));
 
-    const result = await revokeVcsAuth({ agent_id: agent.id, provider: 'github' });
+    const result = await revokeVcsAuth({ member_id: agent.id, provider: 'github' });
     expect(result).toContain('❌');
     expect(result).toContain('SSH channel closed');
   });

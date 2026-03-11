@@ -5,16 +5,16 @@ import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.j
 import type { Agent } from '../types.js';
 
 export const executeCommandSchema = z.object({
-  agent_id: z.string().describe('The UUID of the target agent'),
+  member_id: z.string().describe('The UUID of the target member (worker)'),
   command: z.string().describe('The shell command to execute'),
   timeout_ms: z.number().default(120000).describe('Timeout in milliseconds (default: 2 minutes)'),
-  work_folder: z.string().optional().describe("Directory to cd into before running the command. Defaults to the agent's registered work folder."),
+  work_folder: z.string().optional().describe("Directory to cd into before running the command. Defaults to the member's registered work folder."),
 });
 
 export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 
 export async function executeCommand(input: ExecuteCommandInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.agent_id);
+  const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

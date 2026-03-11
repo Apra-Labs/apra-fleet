@@ -23,13 +23,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { getAllAgents } from '../src/services/registry.js';
 import { closeAllConnections } from '../src/services/ssh.js';
-import { registerAgent } from '../src/tools/register-agent.js';
-import { removeAgent } from '../src/tools/remove-agent.js';
+import { registerMember } from '../src/tools/register-member.js';
+import { removeMember } from '../src/tools/remove-member.js';
 import { provisionAuth } from '../src/tools/provision-auth.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import { sendFiles } from '../src/tools/send-files.js';
-import { listAgents } from '../src/tools/list-agents.js';
-import { agentDetail } from '../src/tools/agent-detail.js';
+import { listMembers } from '../src/tools/list-members.js';
+import { memberDetail } from '../src/tools/member-detail.js';
 import { setupSSHKey } from '../src/tools/setup-ssh-key.js';
 import { validateCredentials, credentialStatusNote } from '../src/utils/credential-validation.js';
 
@@ -37,7 +37,7 @@ import { validateCredentials, credentialStatusNote } from '../src/utils/credenti
 
 interface AgentConfig {
   friendly_name: string;
-  agent_type: 'local' | 'remote';
+  member_type: 'local' | 'remote';
   host?: string;
   port?: number;
   username?: string;
@@ -130,7 +130,7 @@ async function teardown() {
   // Remove agents in parallel
   const results = await Promise.all(
     agents.map(async agent => {
-      const result = await removeAgent({ agent_id: agent.id });
+      const result = await removeMember({ member_id: agent.id });
       return { name: agent.friendlyName, success: result.includes('removed'), result };
     })
   );
@@ -158,7 +158,7 @@ async function registerOne(rawAc: AgentConfig): Promise<{ name: string; id?: str
     needsSetupSSHKey = true;
   }
 
-  const result = await registerAgent(ac);
+  const result = await registerMember(ac);
   const idMatch = result.match(/ID:\s+([a-f0-9-]+)/);
 
   if (!result.includes('registered successfully') || !idMatch) {
@@ -170,7 +170,7 @@ async function registerOne(rawAc: AgentConfig): Promise<{ name: string; id?: str
   ok(`Registered ${ac.friendly_name} → ${id.substring(0, 8)}...`);
 
   if (needsSetupSSHKey) {
-    const keyResult = await setupSSHKey({ agent_id: id });
+    const keyResult = await setupSSHKey({ member_id: id });
     keyResult.includes('✅')
       ? ok(`SSH key deployed for ${ac.friendly_name}`)
       : fail(`SSH key setup for ${ac.friendly_name}`, keyResult.split('\n')[0]);
@@ -195,7 +195,7 @@ async function register(config: FleetConfig): Promise<Map<string, string>> {
 async function testAuthErrorDetection(nameToId: Map<string, string>, config: FleetConfig) {
   section('2.5 Auth Error Detection (unprovisioned)');
 
-  const remoteAgents = config.agents.filter(a => a.agent_type === 'remote');
+  const remoteAgents = config.agents.filter(a => a.member_type === 'remote');
   if (remoteAgents.length === 0) {
     skip('No remote agents to test auth error detection');
     return;
@@ -205,7 +205,7 @@ async function testAuthErrorDetection(nameToId: Map<string, string>, config: Fle
     const id = nameToId.get(ac.friendly_name);
     if (!id) { skip(`Auth detect ${ac.friendly_name} — not registered`); return; }
 
-    const result = await executePrompt({ agent_id: id, prompt: 'hello', resume: false, timeout_ms: 30000 });
+    const result = await executePrompt({ member_id: id, prompt: 'hello', resume: false, timeout_ms: 30000 });
 
     result.includes('/login') && result.includes('provision_auth')
       ? ok(`Auth error detected on ${ac.friendly_name}`)
@@ -221,8 +221,8 @@ async function verifyListAgents(nameToId: Map<string, string>) {
 
   // Both formats in parallel
   const [compact, json] = await Promise.all([
-    listAgents({ format: 'compact' }),
-    listAgents({ format: 'json' }),
+    listMembers({ format: 'compact' }),
+    listMembers({ format: 'json' }),
   ]);
 
   [...nameToId.keys()].every(name => compact.includes(name))
@@ -235,7 +235,7 @@ async function verifyListAgents(nameToId: Map<string, string>) {
       ? ok(`JSON total = ${parsed.total}`)
       : fail(`JSON total mismatch: expected ${registeredCount}, got ${parsed.total}`);
 
-    const remoteAgents = parsed.agents.filter((a: any) => a.type === 'remote');
+    const remoteAgents = parsed.members.filter((a: any) => a.type === 'remote');
     remoteAgents.every((a: any) => a.username)
       ? ok('All remote agents have username in JSON')
       : fail('Some remote agents missing username');
@@ -247,8 +247,8 @@ async function verifyListAgents(nameToId: Map<string, string>) {
 async function verifyOneAgent(ac: AgentConfig, id: string) {
   // Both formats in parallel
   const [compact, json] = await Promise.all([
-    agentDetail({ agent_id: id, format: 'compact' }),
-    agentDetail({ agent_id: id, format: 'json' }),
+    memberDetail({ member_id: id, format: 'compact' }),
+    memberDetail({ member_id: id, format: 'json' }),
   ]);
 
   compact.includes('online')
@@ -261,7 +261,7 @@ async function verifyOneAgent(ac: AgentConfig, id: string) {
       ? ok(`${ac.friendly_name} — connected (json)`)
       : fail(`${ac.friendly_name} — not connected`, JSON.stringify(parsed.connectivity));
 
-    if (ac.agent_type === 'remote') {
+    if (ac.member_type === 'remote') {
       parsed.username === ac.username
         ? ok(`${ac.friendly_name} — username=${parsed.username}`)
         : fail(`${ac.friendly_name} — wrong username: ${parsed.username}`);
@@ -295,12 +295,12 @@ async function provision(nameToId: Map<string, string>, config: FleetConfig, has
     const id = nameToId.get(ac.friendly_name);
     if (!id) { skip(`Provision ${ac.friendly_name} — not registered`); return; }
 
-    if (ac.agent_type === 'remote' && !hasCreds) {
+    if (ac.member_type === 'remote' && !hasCreds) {
       skip(`Provision ${ac.friendly_name} — no local credentials.json (run /login)`);
       return;
     }
 
-    const result = await provisionAuth({ agent_id: id });
+    const result = await provisionAuth({ member_id: id });
 
     if (result.includes('✅') || result.includes('⏭️')) {
       ok(`Provisioned ${ac.friendly_name}`);
@@ -311,7 +311,7 @@ async function provision(nameToId: Map<string, string>, config: FleetConfig, has
     }
 
     // Validate output annotations based on credential status
-    if (ac.agent_type === 'remote' && credStatus) {
+    if (ac.member_type === 'remote' && credStatus) {
       credStatus.status === 'near-expiry' && result.includes('expires in')
         ? ok(`${ac.friendly_name} — near-expiry annotation present`)
         : credStatus.status === 'expired-refreshable' && result.includes('auto-refresh')
@@ -338,7 +338,7 @@ async function testSendFileAndPrompt(nameToId: Map<string, string>, config: Flee
     .filter((e): e is typeof e & { id: string } => !!e.id);
 
   const tasks = eligible.map(async ({ ac, id, idx, num }) => {
-    if (ac.agent_type === 'remote' && !hasCreds) {
+    if (ac.member_type === 'remote' && !hasCreds) {
       skip(`SendFile ${ac.friendly_name} — skipped (no credentials deployed)`);
       return;
     }
@@ -349,14 +349,14 @@ async function testSendFileAndPrompt(nameToId: Map<string, string>, config: Flee
     fs.writeFileSync(tmpFile, String(num));
 
     // Send file to agent
-    const sendResult = await sendFiles({ agent_id: id, local_paths: [tmpFile] });
+    const sendResult = await sendFiles({ member_id: id, local_paths: [tmpFile] });
     sendResult.includes('uploaded') || sendResult.includes('copied')
       ? ok(`Sent ${fileName} to ${ac.friendly_name}`)
       : fail(`Send file to ${ac.friendly_name}`, sendResult);
 
     // Prompt 1: read the number
     const readResult = await executePrompt({
-      agent_id: id,
+      member_id: id,
       prompt: `Read the file ${fileName} and respond with ONLY the number inside it, nothing else.`,
       resume: false,
       timeout_ms: 60000,
@@ -369,7 +369,7 @@ async function testSendFileAndPrompt(nameToId: Map<string, string>, config: Flee
     // Prompt 2: double the number (resume session)
     const doubled = num * 2;
     const doubleResult = await executePrompt({
-      agent_id: id,
+      member_id: id,
       prompt: 'Double this number and respond with ONLY the result, nothing else.',
       resume: true,
       timeout_ms: 60000,
@@ -393,12 +393,12 @@ async function testPrompts(nameToId: Map<string, string>, config: FleetConfig, h
     const id = nameToId.get(ac.friendly_name);
     if (!id) { skip(`Prompt ${ac.friendly_name} — not registered`); return; }
 
-    if (ac.agent_type === 'remote' && !hasCreds) {
+    if (ac.member_type === 'remote' && !hasCreds) {
       skip(`Prompt ${ac.friendly_name} — skipped (no credentials deployed)`);
       return;
     }
 
-    const result = await executePrompt({ agent_id: id, prompt: 'respond with exactly: FLEET_OK', timeout_ms: 60000 });
+    const result = await executePrompt({ member_id: id, prompt: 'respond with exactly: FLEET_OK', timeout_ms: 60000 });
 
     result.includes('FLEET_OK') || result.includes('Response from')
       ? ok(`Prompt OK on ${ac.friendly_name}`)
@@ -466,7 +466,7 @@ async function main() {
   }
 
   section('Final Fleet State');
-  console.log(await listAgents());
+  console.log(await listMembers());
 
   closeAllConnections();
 
