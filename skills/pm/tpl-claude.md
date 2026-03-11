@@ -1,0 +1,31 @@
+# {{PROJECT_NAME}} — Plan Execution
+
+## Context Recovery
+Before starting any work: `git log --oneline -10`
+
+## Execution Model
+You are executing a plan defined in PLAN.md. Progress tracked in progress.json.
+
+On each invocation:
+1. Read progress.json — find next task with status "pending"
+2. Read PLAN.md — get full details for that task
+3. Execute — write code, run tests, fix issues
+4. Commit with descriptive message referencing the task ID
+5. Update progress.json — set task to "completed", add notes
+6. Continue to next pending task
+
+## Verify Checkpoints
+Tasks with type "verify" are checkpoints. When you reach one:
+1. Run full test suite
+2. Confirm all prior tasks in the group work correctly
+3. Update progress.json with test results and issues found
+4. STOP — do not continue. Report status so the PM can review.
+
+## Rules
+- ONE task at a time, then commit, then continue
+- Always update progress.json after each task
+- Blocker? Set status to "blocked" with notes, then STOP
+- NEVER skip tasks — execute in order
+- Read PLAN.md before starting each task
+- Commit and push PLAN.md, progress.json, and all project docs (design.md, feedback-*.md) at every turn — reviewers depend on them
+- NEVER commit CLAUDE.md — it is role-specific and not shared

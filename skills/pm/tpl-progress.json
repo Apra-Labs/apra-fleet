@@ -1,0 +1,25 @@
+{
+  "project": "{{PROJECT_NAME}}",
+  "plan_file": "PLAN.md",
+  "created": "{{DATE}}",
+  "total_tasks": 0,
+  "completed": 0,
+  "tasks": [
+    {
+      "id": 1,
+      "step": "{{TASK_TITLE}}",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 2,
+      "step": "VERIFY: {{PHASE_NAME}}",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    }
+  ]
+}

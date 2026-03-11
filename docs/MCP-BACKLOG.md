@@ -28,6 +28,18 @@ The fleet MCP server has no Apra Labs branding anywhere — no logo, no company 
 - GitHub Pages site (`apra-labs.github.io/apra-fleet`) for docs/marketing
 - License header in source files if needed
 
+## send_files Flat Placement (Low Priority)
+`send_files` uses basename only when placing files on the agent. Sending two files with the same basename from different folders silently overwrites the first. Consider preserving relative directory structure or warning on basename collisions.
+
+## reset_session Should Check for Running Work (Low Priority)
+`reset_session` clears the stored session ID but does NOT stop any running Claude process on the agent. If called while an agent is mid-task, the process keeps running but PMO loses the ability to resume that conversation, and the next `execute_prompt` starts a fresh session that may conflict. Consider checking BUSY status before allowing reset, or optionally killing the running process.
+
+## execute_prompt max-turns Awareness (Medium Priority)
+`execute_prompt` hardcodes `--max-turns 50`. Complex tasks can exhaust this limit, causing the agent to stop mid-work without explicit failure. Consider making max-turns configurable per call, or returning a signal when the turn limit was reached so callers can distinguish "task complete" from "ran out of turns."
+
+## Agent Decommissioning Protocol (Low Priority)
+`remove_agent` does best-effort credential cleanup but doesn't remove SSH keys from `authorized_keys` or delete working folders on the remote machine. Consider a full decommissioning flow: (1) verify no running work, (2) revoke VCS auth, (3) remove SSH public key from authorized_keys, (4) optionally clean working folder, (5) remove from registry.
+
 ## Shell Strategy Variants (Low Priority)
 Add support for different Windows SSH shell types: `windows-cmdExe`, `windows-gitbash` (derives from linux). Currently all Windows commands assume PowerShell as the SSH default shell, but some Windows SSH servers use cmd.exe or Git Bash.
 
