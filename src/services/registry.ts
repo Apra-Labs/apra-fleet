@@ -5,6 +5,7 @@ import type { Agent, FleetRegistry } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { FLEET_DIR } from '../paths.js';
+import { assignIcon } from './icons.js';
 
 const LEGACY_FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
@@ -61,7 +62,24 @@ function loadRegistry(): FleetRegistry {
     return empty;
   }
   const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
-  return JSON.parse(raw) as FleetRegistry;
+  const registry = JSON.parse(raw) as FleetRegistry;
+
+  // Backfill icons for legacy registries where agents lack icons.
+  // This only triggers a write when at least one agent is missing an icon,
+  // which naturally means it runs once (on first load after migration) and
+  // becomes a no-op on subsequent loads since all agents will have icons.
+  let needsSave = false;
+  const usedIcons = registry.agents.map(a => a.icon).filter(Boolean) as string[];
+  for (const agent of registry.agents) {
+    if (!agent.icon) {
+      agent.icon = assignIcon(usedIcons);
+      usedIcons.push(agent.icon);
+      needsSave = true;
+    }
+  }
+  if (needsSave) saveRegistry(registry);
+
+  return registry;
 }
 
 function saveRegistry(registry: FleetRegistry): void {

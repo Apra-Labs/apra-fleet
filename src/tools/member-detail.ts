@@ -3,6 +3,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
+import { DEFAULT_ICON } from '../services/icons.js';
 
 export const memberDetailSchema = z.object({
   member_id: z.string().describe('The UUID of the member (worker) to inspect'),
@@ -23,6 +24,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   const result: Record<string, unknown> = {
     name: agent.friendlyName,
+    icon: agent.icon ?? DEFAULT_ICON,
     id: agent.id,
     type: agent.agentType,
     host: isLocal ? '(local)' : `${agent.host}:${agent.port}`,
@@ -129,8 +131,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const sessId = agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : 'none';
   const sessStatus = String(session.status ?? 'unknown');
 
+  const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
-  let t = `${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | claude=${cli.version}\n`;
+  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | claude=${cli.version}\n`;
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}\n`;
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}\n`;
   return t;

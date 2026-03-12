@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const executeCommandSchema = z.object({
@@ -24,6 +25,9 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   const folder = input.work_folder ?? agent.workFolder;
   const wrapped = cmds.wrapInWorkFolder(folder, input.command);
 
+  // Mark agent as busy in statusline
+  writeStatusline(new Map([[agent.id, 'busy']]));
+
   try {
     const result = await strategy.execCommand(wrapped, input.timeout_ms);
     touchAgent(agent.id);
@@ -33,10 +37,13 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
     if (result.stderr) parts.push(`[stderr]\n${result.stderr}`);
     const output = parts.join('\n') || '(no output)';
 
+    writeStatusline();
+
     return result.code === 0
       ? `Exit code: 0\n${output}`
       : `Exit code: ${result.code}\n${output}`;
   } catch (err: any) {
+    writeStatusline(new Map([[agent.id, 'offline']]));
     return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
   }
 }

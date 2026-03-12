@@ -4,8 +4,10 @@ import type { Agent } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
-import { addAgent, hasDuplicateFolder } from '../services/registry.js';
+import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
+import { assignIcon } from '../services/icons.js';
+import { writeStatusline } from '../services/statusline.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -119,10 +121,15 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   await Promise.all([versionCheck, authCheck, mkdirCheck]);
 
+  // Auto-assign icon
+  tempAgent.icon = assignIcon(getAllAgents().map(a => a.icon).filter(Boolean) as string[]);
+
   // Persist
   addAgent(tempAgent);
+  writeStatusline();
 
   let result = `✅ Member registered successfully!\n\n`;
+  result += `  Icon:    ${tempAgent.icon}\n`;
   result += `  ID:      ${tempAgent.id}\n`;
   result += `  Name:    ${tempAgent.friendlyName}\n`;
   result += `  Type:    ${tempAgent.agentType}\n`;

@@ -4,12 +4,15 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
 import { serverVersion } from '../version.js';
+import { DEFAULT_ICON } from '../services/icons.js';
+import { writeStatusline } from '../services/statusline.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
 });
 
 interface AgentStatusRow {
+  icon: string;
   name: string;
   host: string;
   status: 'online' | 'OFFLINE';
@@ -34,6 +37,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
   const hostLabel = formatAgentHost(agent);
 
   const row: AgentStatusRow = {
+    icon: agent.icon ?? DEFAULT_ICON,
     name: agent.friendlyName,
     host: hostLabel,
     status: 'OFFLINE',
@@ -98,16 +102,31 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     if (r.status === 'fulfilled') return r.value;
     const hostLabel = formatAgentHost(agents[i]);
     return {
+      icon: agents[i].icon ?? DEFAULT_ICON,
       name: agents[i].friendlyName,
       host: hostLabel,
       status: 'OFFLINE' as const,
       busy: '-',
-      session: agents[i].sessionId?.substring(0, 8) + '...' || '(none)',
+      session: agents[i].sessionId ? agents[i].sessionId.substring(0, 8) + '...' : '(none)',
       lastActivity: formatTimeAgo(agents[i].lastUsed),
     };
   });
 
   const online = rows.filter(r => r.status === 'online').length;
+
+  // Update statusline with actual connectivity state from this check
+  const statusOverrides = new Map<string, string>();
+  for (let i = 0; i < agents.length; i++) {
+    const row = rows[i];
+    if (row.status === 'OFFLINE') {
+      statusOverrides.set(agents[i].id, 'offline');
+    } else if (row.busy === 'BUSY') {
+      statusOverrides.set(agents[i].id, 'busy');
+    } else {
+      statusOverrides.set(agents[i].id, 'idle');
+    }
+  }
+  writeStatusline(statusOverrides);
 
   if (format === 'json') {
     return JSON.stringify({ version: serverVersion, summary: { total: rows.length, online, offline: rows.length - online }, members: rows });
@@ -117,11 +136,11 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   let t = `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
   t += rows.map(r => {
     const st = r.status === 'online' ? r.busy : 'OFF';
-    return `${r.name}(${st})`;
+    return `${r.icon} ${r.name}(${st})`;
   }).join(', ');
   t += '\n';
   for (const r of rows) {
-    t += `  ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}\n`;
+    t += `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}\n`;
   }
   return t;
 }

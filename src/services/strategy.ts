@@ -98,6 +98,9 @@ class LocalStrategy implements AgentStrategy {
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+    if (!fs.existsSync(this.agent.workFolder)) {
+      return { ok: false, latencyMs: 0, error: `work_folder missing: ${this.agent.workFolder}` };
+    }
     return { ok: true, latencyMs: 0 };
   }
 

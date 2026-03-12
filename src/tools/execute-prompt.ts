@@ -3,6 +3,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { classifyPromptError, isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
+import { writeStatusline } from '../services/statusline.js';
 import type { Agent, SSHExecResult } from '../types.js';
 
 export const executePromptSchema = z.object({
@@ -56,6 +57,9 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const timeoutMs = input.timeout_ms ?? 300000;
 
+  // Mark agent as busy in statusline
+  writeStatusline(new Map([[agent.id, 'busy']]));
+
   try {
     let result = await strategy.execCommand(claudeCmd, timeoutMs);
     let parsed = parseResponse(result);
@@ -82,12 +86,15 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Update session ID and last used
     touchAgent(agent.id, parsed.sessionId);
 
+    writeStatusline();
+
     let output = `📋 Response from ${agent.friendlyName}:\n\n${parsed.text}`;
     if (parsed.sessionId) {
       output += `\n\n🔗 Session: ${parsed.sessionId}`;
     }
     return output;
   } catch (err: any) {
+    writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   }
 }

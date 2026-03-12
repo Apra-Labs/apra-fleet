@@ -13,6 +13,7 @@ export interface Agent {
   os?: 'windows' | 'macos' | 'linux';
   createdAt: string;
   lastUsed?: string;
+  icon?: string;
   gitAccess?: 'read' | 'push' | 'admin' | 'issues' | 'full';
   gitRepos?: string[];
 }

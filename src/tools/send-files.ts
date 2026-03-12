@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getAgentOrFail, touchAgent } from '../utils/agent-helpers.js';
+import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const sendFilesSchema = z.object({
@@ -17,6 +18,8 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
   const agent = agentOrError as Agent;
 
   const strategy = getStrategy(agent);
+
+  writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
     const result = await strategy.transferFiles(input.local_paths, input.remote_subfolder);
@@ -46,6 +49,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
 
     return output;
   } catch (err: any) {
+    writeStatusline(new Map([[agent.id, 'offline']]));
     return `Failed to upload files to "${agent.friendlyName}": ${err.message}`;
   }
 }

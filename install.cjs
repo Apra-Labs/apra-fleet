@@ -40,7 +40,7 @@ if (!fs.existsSync(path.join(scriptDir, "dist"))) {
 console.log(`Installing from tarball to ${installDir}`);
 fs.mkdirSync(installDir, { recursive: true });
 
-for (const dir of ["dist", "skills", "hooks"]) {
+for (const dir of ["dist", "skills", "hooks", "scripts"]) {
   copyDirSync(path.join(scriptDir, dir), path.join(installDir, dir));
 }
 for (const file of ["package.json", "package-lock.json", "version.json"]) {
@@ -84,7 +84,19 @@ if (fs.existsSync(settingsFile)) {
   fs.copyFileSync(hookConfigPath, settingsFile);
 }
 
-// --- Step 5: Register MCP server ---
+// --- Step 5: Configure statusline ---
+console.log("Configuring statusline...");
+const statuslineScript = path.join(installDir, "scripts", "fleet-statusline.sh");
+{
+  const settings = JSON.parse(fs.readFileSync(settingsFile, "utf-8"));
+  settings.statusLine = {
+    type: "command",
+    command: statuslineScript,
+  };
+  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+}
+
+// --- Step 6: Register MCP server ---
 console.log("Registering MCP server...");
 try {
   run("claude mcp remove fleet", { stdio: "ignore" });
@@ -94,14 +106,15 @@ try {
 const indexJs = path.join(installDir, "dist", "index.js");
 run(`claude mcp add --scope user fleet -- node "${indexJs}"`);
 
-// --- Step 6: Print version ---
+// --- Step 7: Print version ---
 const version = JSON.parse(
   fs.readFileSync(path.join(installDir, "version.json"), "utf-8")
 ).version;
 
 console.log("");
 console.log(`Apra Fleet v${version} installed successfully.`);
-console.log(`  Install dir: ${installDir}`);
-console.log(`  PM skill:    ${pmDest}`);
+console.log(`  Install dir:  ${installDir}`);
+console.log(`  PM skill:     ${pmDest}`);
+console.log(`  Statusline:   ${statuslineScript}`);
 console.log("");
 console.log("Run /mcp in Claude Code to load the server.");

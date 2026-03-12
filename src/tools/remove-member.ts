@@ -5,6 +5,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import { removeKnownHost } from '../services/known-hosts.js';
+import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const removeMemberSchema = z.object({
@@ -58,6 +59,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
 
   const removed = removeFromRegistry(input.member_id);
+  writeStatusline();
 
   if (removed) {
     let result = `✅ Member "${agent.friendlyName}" (${agent.id}) has been removed.`;

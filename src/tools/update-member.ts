@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
+import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const updateMemberSchema = z.object({
@@ -20,6 +22,7 @@ export const updateMemberSchema = z.object({
   work_folder: z.string().optional().describe('New working directory on target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
+  icon: z.string().optional().describe('Override the auto-assigned emoji icon. Use named aliases: blue-circle, green-square, red-circle, etc. (8 colors × 2 shapes: circle, square). Or pass raw emoji.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -38,8 +41,17 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
   }
 
+  // Resolve named alias (e.g. "blue-circle" → "🔵") before validation
+  const resolvedIcon = input.icon !== undefined ? resolveIcon(input.icon) : undefined;
+
+  // Validate icon if provided
+  if (resolvedIcon !== undefined && !isValidIcon(resolvedIcon)) {
+    return `❌ Invalid icon "${input.icon}". Use a named alias (e.g., blue-circle, red-square, green-square) or a valid emoji.`;
+  }
+
   const updates: Record<string, unknown> = {};
 
+  if (resolvedIcon) updates.icon = resolvedIcon;
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.host) updates.host = input.host;
   if (input.port) updates.port = input.port;
@@ -55,8 +67,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (!updated) {
     return `Failed to update member "${input.member_id}".`;
   }
+  writeStatusline();
 
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;
+  result += `  Icon:    ${updated.icon ?? DEFAULT_ICON}\n`;
   result += `  ID:      ${updated.id}\n`;
   result += `  Name:    ${updated.friendlyName}\n`;
   result += `  Type:    ${updated.agentType}\n`;
