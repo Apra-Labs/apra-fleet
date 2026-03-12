@@ -4,7 +4,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
 
-const SALT_PATH = path.join(os.homedir(), '.apra-fleet', 'data', 'salt');
+const SALT_PATH = path.join(
+  process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data'),
+  'salt',
+);
 
 describe('crypto', () => {
   it('encrypts and decrypts a password round-trip', () => {
