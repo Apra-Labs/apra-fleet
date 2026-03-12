@@ -7,7 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { Agent } from '../src/types.js';
 
-export const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
+export const FLEET_DIR = process.env.APRA_FLEET_DATA_DIR ?? path.join(os.tmpdir(), 'apra-fleet-test-data');
 export const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
 
 let backupContent: string | null = null;

@@ -72,7 +72,7 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
     });
 
     // Convert to OpenSSH authorized_keys format
-    const comment = `claude-fleet-${agent.friendlyName}`;
+    const comment = `apra-fleet-${agent.friendlyName}`;
     const opensshPubKey = rsaPublicKeyToOpenSSH(publicKey, comment);
 
     fs.writeFileSync(privateKeyPath, privateKey, { mode: 0o600 });

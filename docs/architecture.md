@@ -87,7 +87,7 @@ Each agent stores an optional `sessionId` — a Claude conversation thread ID. W
 
 ### File-Based Registry
 
-All fleet state lives in `~/.claude-fleet/registry.json` — a single JSON file in the user's home directory. It's deliberately not in the project directory (won't be git-committed accidentally) and not in a database (no server to run, no migrations). For a fleet of dozens of agents, JSON is more than sufficient.
+All fleet state lives in `~/.apra-fleet/data/registry.json` — a single JSON file in the user's home directory. It's deliberately not in the project directory (won't be git-committed accidentally) and not in a database (no server to run, no migrations). For a fleet of dozens of agents, JSON is more than sufficient.
 
 ### Duplicate Folder Prevention
 

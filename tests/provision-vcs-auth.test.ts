@@ -2,12 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, FLEET_DIR } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import type { SSHExecResult } from '../src/types.js';
-
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();

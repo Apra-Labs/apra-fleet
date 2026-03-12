@@ -1,10 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import type { FleetGitConfig, GitHubAppConfig } from '../types.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
-
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
+import { FLEET_DIR } from '../paths.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
 function ensureFleetDir(): void {

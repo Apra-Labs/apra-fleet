@@ -60,7 +60,7 @@ For GitHub-hosted repos, use a **GitHub App** installed on the org.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  claude-fleet-app (GitHub App)              │
+│  apra-fleet-app (GitHub App)                │
 │  Installed on: Apra-Labs org                │
 │  App private key stored on PM/master         │
 │                                             │

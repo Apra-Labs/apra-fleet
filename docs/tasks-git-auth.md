@@ -19,7 +19,7 @@ One-time setup tool. User provides GitHub App credentials (app ID, private key p
 
 ### Config storage layer (`src/services/git-config.ts`)
 
-- [ ] Create `src/services/git-config.ts` — disk-backed config at `~/.claude-fleet/git-config.json`
+- [ ] Create `src/services/git-config.ts` — disk-backed config at `~/.apra-fleet/data/git-config.json`
 - [ ] `loadGitConfig(): FleetGitConfig` — reads file, returns empty config if missing
 - [ ] `saveGitConfig(config: FleetGitConfig): void` — writes with mode `0o600` + `enforceOwnerOnly`
 - [ ] `getGitHubApp(): GitHubAppConfig | undefined` — convenience getter
@@ -38,7 +38,7 @@ One-time setup tool. User provides GitHub App credentials (app ID, private key p
 - [ ] Handler steps:
   1. Validate `private_key_path` exists and is readable (fs.accessSync)
   2. Read the .pem file contents, validate format
-  3. Copy the .pem file to `~/.claude-fleet/github-app.pem`, set mode `0o600`
+  3. Copy the .pem file to `~/.apra-fleet/data/github-app.pem`, set mode `0o600`
   4. Call `verifyAppConnectivity()` — fail early if credentials are bad
   5. Store config via `setGitHubApp()` (store the copied pem path, not the original)
   6. Return success message with app name, org, installation ID
@@ -54,7 +54,7 @@ One-time setup tool. User provides GitHub App credentials (app ID, private key p
 - [ ] Test: rejects missing .pem file path (file not found)
 - [ ] Test: rejects invalid .pem content (not a valid private key)
 - [ ] Test: stores config to `git-config.json` with correct fields on success
-- [ ] Test: copies .pem to `~/.claude-fleet/github-app.pem` with `0o600` permissions
+- [ ] Test: copies .pem to `~/.apra-fleet/data/github-app.pem` with `0o600` permissions
 - [ ] Test: returns error message when GitHub API verification fails (mock `@octokit/app`)
 - [ ] Test: returns success with app name and org on successful verification
 - [ ] Test: overwrites previous config on re-run (idempotent)

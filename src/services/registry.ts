@@ -4,8 +4,9 @@ import os from 'node:os';
 import type { Agent, FleetRegistry } from '../types.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
+import { FLEET_DIR } from '../paths.js';
 
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
+const LEGACY_FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
 const KEYS_DIR = path.join(FLEET_DIR, 'keys');
 
@@ -19,7 +20,39 @@ function ensureFleetDir(): void {
 }
 
 
+function migrateFromLegacyDir(): void {
+  if (fs.existsSync(LEGACY_FLEET_DIR) && !fs.existsSync(FLEET_DIR)) {
+    fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
+    const entries = fs.readdirSync(LEGACY_FLEET_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      const src = path.join(LEGACY_FLEET_DIR, entry.name);
+      const dst = path.join(FLEET_DIR, entry.name);
+      if (entry.isDirectory()) {
+        fs.cpSync(src, dst, { recursive: true });
+      } else {
+        fs.copyFileSync(src, dst);
+      }
+    }
+    // Fix stored paths that reference the old directory
+    const regPath = path.join(FLEET_DIR, 'registry.json');
+    if (fs.existsSync(regPath)) {
+      const reg = JSON.parse(fs.readFileSync(regPath, 'utf-8')) as FleetRegistry;
+      for (const agent of reg.agents) {
+        for (const key of Object.keys(agent) as (keyof Agent)[]) {
+          const val = agent[key];
+          if (typeof val === 'string' && val.includes(LEGACY_FLEET_DIR)) {
+            (agent as any)[key] = val.replace(LEGACY_FLEET_DIR, FLEET_DIR);
+          }
+        }
+      }
+      fs.writeFileSync(regPath, JSON.stringify(reg, null, 2), { mode: 0o600 });
+    }
+    process.stderr.write('Migrated data from ~/.claude-fleet/ to ~/.apra-fleet/data/\n');
+  }
+}
+
 function loadRegistry(): FleetRegistry {
+  migrateFromLegacyDir();
   ensureFleetDir();
   if (!fs.existsSync(REGISTRY_PATH)) {
     const empty: FleetRegistry = { version: '1.0', agents: [] };

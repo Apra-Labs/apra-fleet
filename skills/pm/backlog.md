@@ -1,11 +1,4 @@
 # PM Skill — Backlog
 
-## Pending
-
-### ~~CI Green Before Merge~~ (Low Priority) — DONE
-Rule 12 in SKILL.md. Reviewer approval (includes CI green) required before any merge.
-
-## Done
-
-### Member Icons/Colors (Medium Priority)
-Assign unique emoji icons to each member. Paired members share color (doer=circle, reviewer=diamond). Prefix all output with icon. Stored in status.md.
+14. **Project backlogs in project folders** (Medium) — PM should create/append backlogs in `<project>/backlog.md`, never in a shared root file. Add as a convention in skill rules.
+15. **Inter-session attention mechanism** (High) — Rule 2 surfaces blocked/verify members on session start, but between sessions there's no alerting. Options: needs-attention file, Slack DM, desktop toast, or dashboard widget. May overlap with fleet statusline (#15 in MCP-BACKLOG.md).

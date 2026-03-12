@@ -3,9 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { FLEET_DIR } from './test-helpers.js';
 import { setupGitApp } from '../src/tools/setup-git-app.js';
-
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 const STORED_KEY_PATH = path.join(FLEET_DIR, 'github-app.pem');
 

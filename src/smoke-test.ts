@@ -13,8 +13,9 @@ import os from 'node:os';
 import { encryptPassword, decryptPassword } from './utils/crypto.js';
 import { addAgent, getAgent, getAllAgents, removeAgent } from './services/registry.js';
 import type { Agent } from './types.js';
+import { FLEET_DIR } from './paths.js';
 
-const REGISTRY_PATH = path.join(os.homedir(), '.claude-fleet', 'registry.json');
+const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
 
 let passed = 0;
 let failed = 0;

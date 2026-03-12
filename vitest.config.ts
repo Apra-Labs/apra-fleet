@@ -6,6 +6,7 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     exclude: ['tests/integration.test.ts'],
-    fileParallelism: false,  // Tests share ~/.claude-fleet/registry.json
+    setupFiles: ['tests/setup.ts'],
+    fileParallelism: false,  // Tests share registry.json in temp dir
   },
 });

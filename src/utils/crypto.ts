@@ -2,19 +2,18 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { FLEET_DIR } from '../paths.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
 const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 const SALT_LENGTH = 32;
-
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const SALT_PATH = path.join(FLEET_DIR, 'salt');
 
 /**
  * Get or create a per-installation random salt.
- * The salt is stored in ~/.claude-fleet/salt (32 random bytes, hex-encoded).
+ * The salt is stored in ~/.apra-fleet/data/salt (32 random bytes, hex-encoded).
  */
 function getOrCreateSalt(): string {
   try {
@@ -34,7 +33,7 @@ function getOrCreateSalt(): string {
 }
 
 function deriveKey(salt?: string): Buffer {
-  const machineId = `${os.hostname()}-${os.userInfo().username}-claude-fleet`;
+  const machineId = `${os.hostname()}-${os.userInfo().username}-apra-fleet`;
   const actualSalt = salt ?? getOrCreateSalt();
   return crypto.scryptSync(machineId, actualSalt, KEY_LENGTH);
 }

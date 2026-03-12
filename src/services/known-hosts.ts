@@ -1,10 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
-
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
+import { FLEET_DIR } from '../paths.js';
 const KNOWN_HOSTS_PATH = path.join(FLEET_DIR, 'known_hosts');
 
 export class HostKeyMismatchError extends Error {
@@ -18,7 +16,7 @@ export class HostKeyMismatchError extends Error {
       `SSH HOST KEY MISMATCH for ${host}:${port}! ` +
       `Expected ${oldFingerprint}, got ${newFingerprint}. ` +
       `This could indicate a server reinstall or a man-in-the-middle attack. ` +
-      `Delete the entry from ~/.claude-fleet/known_hosts to accept the new key.`
+      `Delete the entry from ~/.apra-fleet/data/known_hosts to accept the new key.`
     );
     this.name = 'HostKeyMismatchError';
   }

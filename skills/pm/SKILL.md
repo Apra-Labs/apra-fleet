@@ -78,7 +78,7 @@ Auth error (401/403)? GitHub App: re-mint via `provision_vcs_auth`. Bitbucket/Az
 
 ## Member Icons
 
-Assign each member a unique emoji icon when first added to status.md. Pick from: 🔵🟢🔴🟡🟣🟠. Paired members share color — doer gets circle (🔵), reviewer gets diamond (🔷). Unpaired members get any unused circle. Prefix every member reference in output with their icon: `🔵 alice: building auth module`. Icons stored in status.md, stable across sessions.
+Server auto-assigns a unique icon on `register_member`. Read icons from `list_members` / `member_detail`. On `/pm pair`, override via `update_member` so paired members share color — doer gets circle (🔵), reviewer gets diamond (🔷). Prefix every member reference in output with their icon: `🔵 alice: building auth module`.
 
 ## Design Review
 

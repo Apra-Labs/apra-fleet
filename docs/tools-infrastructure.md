@@ -70,8 +70,8 @@ Generates an RSA-4096 key pair and migrates a remote agent from password-based t
 2. **Rejects agents already using key auth** — no-op if already migrated.
 3. **Generates an RSA-4096 key pair** using Node's `crypto.generateKeyPairSync()`.
 4. **Saves keys locally:**
-   - Private key: `~/.claude-fleet/keys/{agent-id}_rsa` (mode 0600)
-   - Public key: `~/.claude-fleet/keys/{agent-id}_rsa.pub`
+   - Private key: `~/.apra-fleet/data/keys/{agent-id}_rsa` (mode 0600)
+   - Public key: `~/.apra-fleet/data/keys/{agent-id}_rsa.pub`
 5. **Deploys the public key to the remote** — runs a series of commands via the existing password-based SSH connection:
    - `mkdir -p ~/.ssh && chmod 700 ~/.ssh`
    - `touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`

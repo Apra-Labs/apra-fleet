@@ -42,7 +42,7 @@ No `hostVerifier` or `hostHash` option is set. This means the tool blindly trust
 
 **Recommendation:** Implement host key verification — either trust-on-first-use (TOFU) with a local known_hosts file, or prompt the user to confirm fingerprints.
 
-> **Resolution:** Implemented TOFU host key verification. New `src/services/known-hosts.ts` stores fingerprints in `~/.claude-fleet/known_hosts` (JSON, mode 0o600). `getSSHConfig()` now sets `hostVerifier` callback with SHA-256 fingerprint checks. `connectWithTOFU()` auto-accepts new keys on mismatch with a warning. Also removed the `config as any` cast (see L1).
+> **Resolution:** Implemented TOFU host key verification. New `src/services/known-hosts.ts` stores fingerprints in `~/.apra-fleet/data/known_hosts` (JSON, mode 0o600). `getSSHConfig()` now sets `hostVerifier` callback with SHA-256 fingerprint checks. `connectWithTOFU()` auto-accepts new keys on mismatch with a warning. Also removed the `config as any` cast (see L1).
 
 ---
 
@@ -56,7 +56,7 @@ fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
 
 The registry file contains encrypted passwords and agent metadata. It is written with **default permissions** (typically 0o644 on Linux — world-readable). Compare this to the salt file which is correctly written with `{ mode: 0o600 }`.
 
-On a multi-user system, any local user can read `~/.claude-fleet/registry.json` and obtain encrypted passwords. Combined with the salt file (if also readable), they could decrypt them.
+On a multi-user system, any local user can read `~/.apra-fleet/data/registry.json` and obtain encrypted passwords. Combined with the salt file (if also readable), they could decrypt them.
 
 **Note:** The fleet directory itself is created with 0o700, which mitigates this on initial creation. However, if the directory permissions are ever changed or the directory already exists with wider permissions, the registry file is exposed.
 
@@ -75,14 +75,14 @@ On a multi-user system, any local user can read `~/.claude-fleet/registry.json` 
 **File:** `src/utils/crypto.ts:38`
 
 ```ts
-const machineId = `${os.hostname()}-${os.userInfo().username}-claude-fleet`;
+const machineId = `${os.hostname()}-${os.userInfo().username}-apra-fleet`;
 ```
 
-The encryption key is derived from hostname + username + a random salt stored on disk. If an attacker obtains both the salt file (`~/.claude-fleet/salt`) and the registry file, they can derive the key trivially because hostname and username are not secrets.
+The encryption key is derived from hostname + username + a random salt stored on disk. If an attacker obtains both the salt file (`~/.apra-fleet/data/salt`) and the registry file, they can derive the key trivially because hostname and username are not secrets.
 
 The security of the encrypted passwords therefore rests entirely on file-system access controls to the salt file. This is an acceptable trade-off for a CLI tool (similar to how SSH agent works), but it means encryption provides **obfuscation, not true protection** against a local attacker.
 
-**Impact:** An attacker with read access to `~/.claude-fleet/` can decrypt all stored passwords.
+**Impact:** An attacker with read access to `~/.apra-fleet/data/` can decrypt all stored passwords.
 
 **Recommendation:** Document this threat model explicitly. Optionally, integrate with OS keyring (macOS Keychain, Windows Credential Manager, Linux libsecret) for stronger protection.
 
@@ -93,10 +93,10 @@ The security of the encrypted passwords therefore rests entirely on file-system 
 **File:** `src/utils/crypto.ts:11, 46-48, 75-83`
 
 ```ts
-const LEGACY_SALT = 'claude-fleet-salt';
+const LEGACY_SALT = 'apra-fleet-salt';  // removed
 ```
 
-The decryption function falls back to a hardcoded static salt (`'claude-fleet-salt'`) if the per-installation salt fails. Any passwords encrypted before the random salt was introduced use this **publicly known, hardcoded value** as their salt. The key derivation for these passwords is deterministic given hostname + username — both are trivially discoverable.
+The decryption function fell back to a hardcoded static salt if the per-installation salt failed. Any passwords encrypted before the random salt was introduced use this **publicly known, hardcoded value** as their salt. The key derivation for these passwords is deterministic given hostname + username — both are trivially discoverable.
 
 **Impact:** Passwords encrypted with the legacy salt can be decrypted by anyone who knows the target's hostname and username.
 
@@ -117,7 +117,7 @@ The decryption function falls back to a hardcoded static salt (`'claude-fleet-sa
 The OpenSSH public key is interpolated into a shell command using single quotes. While the key content is generated internally (not user-supplied), the `comment` field comes from `agent.friendlyName`:
 
 ```ts
-const comment = `claude-fleet-${agent.friendlyName}`;
+const comment = `apra-fleet-${agent.friendlyName}`;
 ```
 
 If a user registers an agent with a `friendly_name` containing a single quote (e.g., `my'agent`), this would break out of the single-quoted string and enable command injection on the remote machine.
@@ -202,12 +202,12 @@ The load-modify-save pattern on `registry.json` has no file locking. If two MCP 
 
 ---
 
-### L3. `.gitignore` Pattern for `~/.claude-fleet/` May Not Work
+### L3. `.gitignore` Pattern for `~/.apra-fleet/` May Not Work
 
 **File:** `.gitignore:7`
 
 ```
-~/.claude-fleet/
+~/.apra-fleet/
 ```
 
 Git `.gitignore` does not expand `~`. This pattern would only match a literal directory named `~` in the repo root. The fleet directory is outside the repo in the home directory so it wouldn't be committed regardless, but the gitignore entry is misleading and non-functional.

@@ -3,9 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { FLEET_DIR } from './test-helpers.js';
 import { verifyHostKey, replaceKnownHost, removeKnownHost, HostKeyMismatchError } from '../src/services/known-hosts.js';
-
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const KNOWN_HOSTS_PATH = path.join(FLEET_DIR, 'known_hosts');
 
 let backupContent: string | null = null;

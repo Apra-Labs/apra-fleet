@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { FLEET_DIR } from './test-helpers.js';
 import { loadGitConfig, saveGitConfig, getGitHubApp, setGitHubApp } from '../src/services/git-config.js';
 import type { FleetGitConfig, GitHubAppConfig } from '../src/types.js';
-
-const FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
 let backupContent: string | null = null;
@@ -60,7 +59,7 @@ describe('git-config', () => {
   it('setGitHubApp + getGitHubApp round-trip', () => {
     const appConfig: GitHubAppConfig = {
       appId: '12345',
-      privateKeyPath: '/home/test/.claude-fleet/github-app.pem',
+      privateKeyPath: '/home/test/.apra-fleet/data/github-app.pem',
       installationId: 99999,
       createdAt: '2026-03-03T12:00:00Z',
     };

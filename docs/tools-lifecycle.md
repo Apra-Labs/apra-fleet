@@ -29,7 +29,7 @@ Registers a new machine as a fleet agent. This is the entry point for every agen
 5. **Checks Claude CLI** — runs `claude --version` to verify Claude Code is installed and capture the version.
 6. **Auth test (remote only)** — runs a quick `claude -p "hello"` to verify Claude can authenticate. Skipped for local agents since they inherit the current session's auth.
 7. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
-8. **Persists** — saves the agent to `~/.claude-fleet/registry.json` with a generated UUID.
+8. **Persists** — saves the agent to `~/.apra-fleet/data/registry.json` with a generated UUID.
 
 **Output:** Agent ID, name, type, OS, folder, auth method, latency, and any warnings (e.g. Claude CLI not found, auth failed).
 
