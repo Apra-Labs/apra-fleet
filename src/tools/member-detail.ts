@@ -4,6 +4,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 import { DEFAULT_ICON } from '../services/icons.js';
+import { writeStatusline } from '../services/statusline.js';
 
 export const memberDetailSchema = z.object({
   member_id: z.string().describe('The UUID of the member (worker) to inspect'),
@@ -42,6 +43,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   } else {
     result.connectivity = { status: 'offline', error: conn.error, auth: agent.authType };
     result.offline = true;
+    writeStatusline(new Map([[agent.id, 'offline']]));
     return JSON.stringify(result);
   }
 
@@ -120,6 +122,10 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     resources.disk = 'unavailable';
   }
   result.resources = resources;
+
+  // Update statusline with observed state
+  const slStatus = session.status === 'busy' ? 'busy' : 'idle';
+  writeStatusline(new Map([[agent.id, slStatus]]));
 
   if (input.format === 'json') {
     return JSON.stringify(result);
