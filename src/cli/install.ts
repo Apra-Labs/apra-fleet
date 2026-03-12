@@ -228,18 +228,18 @@ export async function runInstall(args: string[]): Promise<void> {
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
   try {
-    run('claude mcp remove fleet', { stdio: 'ignore' });
+    run('claude mcp remove apra-fleet', { stdio: 'ignore' });
   } catch { /* not registered */ }
 
   if (isSea()) {
     const binaryName = process.platform === 'win32' ? 'apra-fleet.exe' : 'apra-fleet';
     const binaryPath = path.join(BIN_DIR, binaryName);
-    run(`claude mcp add --scope user fleet -- "${binaryPath}"`);
+    run(`claude mcp add --scope user apra-fleet -- "${binaryPath}"`);
   } else {
     // Dev mode: use node + dist/index.js
     const root = findProjectRoot();
     const indexJs = path.join(root, 'dist', 'index.js');
-    run(`claude mcp add --scope user fleet -- node "${indexJs}"`);
+    run(`claude mcp add --scope user apra-fleet -- node "${indexJs}"`);
   }
 
   // --- Step 6: Install PM skill (optional) ---

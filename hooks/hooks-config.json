@@ -2,7 +2,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__fleet__register_member",
+        "matcher": "mcp__apra-fleet__register_member",
         "hooks": [
           {
             "type": "command",
