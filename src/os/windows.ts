@@ -149,7 +149,7 @@ export class WindowsCommands implements OsCommands {
       `echo password=${escapedToken}`,
       `'@`,
       `Set-Content -Path "$env:USERPROFILE\\.fleet-git-credential.bat" -Value $script -NoNewline`,
-      `icacls "$env:USERPROFILE\\.fleet-git-credential.bat" /inheritance:r /grant:r "$env:USERNAME:F"`,
+      '$gcFile = "$env:USERPROFILE\\.fleet-git-credential.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "${u}:F"',
       `git config --global credential.helper "$env:USERPROFILE\\.fleet-git-credential.bat"`,
     ].join('; ');
   }
@@ -163,9 +163,12 @@ export class WindowsCommands implements OsCommands {
   deploySSHPublicKey(publicKeyLine: string): string[] {
     const escaped = publicKeyLine.replace(/'/g, "''");
     return [
+      // Deploy to user's authorized_keys
       'New-Item -Path "$env:USERPROFILE\\.ssh" -ItemType Directory -Force | Out-Null',
       `Add-Content -Path "$env:USERPROFILE\\.ssh\\authorized_keys" -Value '${escaped}'`,
-      'icacls "$env:USERPROFILE\\.ssh\\authorized_keys" /inheritance:r /grant:r "$env:USERNAME:F"',
+      '$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; $u = $env:USERNAME; icacls $akFile /inheritance:r /grant:r "${u}:F"',
+      // Windows OpenSSH ignores ~/.ssh/authorized_keys for admin users — deploy to admin keys too
+      `$adminKeys = "$env:ProgramData\\ssh\\administrators_authorized_keys"; Add-Content -Path $adminKeys -Value '${escaped}' -ErrorAction SilentlyContinue; if (Test-Path $adminKeys) { icacls $adminKeys /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F" }`,
     ];
   }
 

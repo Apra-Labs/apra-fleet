@@ -108,12 +108,14 @@ describe('deploySSHPublicKey', () => {
     const cmds = new WindowsCommands();
     const result = cmds.deploySSHPublicKey(testKey);
 
-    expect(result).toHaveLength(3);
+    expect(result).toHaveLength(4);
     expect(result[0]).toContain('New-Item');
     expect(result[0]).toContain('.ssh');
     expect(result[1]).toContain('Add-Content');
     expect(result[1]).toContain('authorized_keys');
     expect(result[2]).toContain('icacls');
+    // Deploy to admin authorized_keys (Windows OpenSSH admin user workaround)
+    expect(result[3]).toContain('administrators_authorized_keys');
   });
 
   it('Windows: escapes single quotes in key', () => {
