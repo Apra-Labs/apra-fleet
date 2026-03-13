@@ -163,12 +163,14 @@ export class WindowsCommands implements OsCommands {
   deploySSHPublicKey(publicKeyLine: string): string[] {
     const escaped = publicKeyLine.replace(/'/g, "''");
     return [
-      // Deploy to user's authorized_keys
+      // Deploy to user's authorized_keys (force UTF-8 no BOM — OpenSSH requires it)
       'New-Item -Path "$env:USERPROFILE\\.ssh" -ItemType Directory -Force | Out-Null',
-      `Add-Content -Path "$env:USERPROFILE\\.ssh\\authorized_keys" -Value '${escaped}'`,
+      `[System.IO.File]::AppendAllText("$env:USERPROFILE\\.ssh\\authorized_keys", '${escaped}' + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))`,
       '$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; $u = $env:USERNAME; icacls $akFile /inheritance:r /grant:r "${u}:F"',
-      // Windows OpenSSH ignores ~/.ssh/authorized_keys for admin users — deploy to admin keys too
-      `$adminKeys = "$env:ProgramData\\ssh\\administrators_authorized_keys"; Add-Content -Path $adminKeys -Value '${escaped}' -ErrorAction SilentlyContinue; if (Test-Path $adminKeys) { icacls $adminKeys /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F" }`,
+      // Windows OpenSSH ignores ~/.ssh/authorized_keys for admin users —
+      // sshd_config: Match Group administrators → AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys
+      // Only attempt if user is in Administrators group (non-admins can't write to ProgramData\ssh).
+      `$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); if ($isAdmin) { $adminKeys = "$env:ProgramData\\ssh\\administrators_authorized_keys"; if (!(Test-Path $adminKeys)) { New-Item -Path $adminKeys -ItemType File -Force | Out-Null }; [System.IO.File]::AppendAllText($adminKeys, '${escaped}' + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false)); icacls $adminKeys /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F" }`,
     ];
   }
 

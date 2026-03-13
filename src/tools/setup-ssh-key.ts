@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { updateAgent, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
+import { testAuthConnection } from '../services/ssh.js';
 import { getAgentOrFail } from '../utils/agent-helpers.js';
 import { getOsCommands } from '../os/index.js';
 import type { Agent } from '../types.js';
@@ -41,6 +42,11 @@ function rsaPublicKeyToOpenSSH(publicKeyPem: string, comment: string): string {
 
   const blob = Buffer.concat([typeLen, Buffer.from(typeStr), eLen, ePadded, nLen, nPadded]);
   return `ssh-rsa ${blob.toString('base64')} ${comment}`;
+}
+
+function cleanupLocalKeys(privateKeyPath: string, publicKeyPath: string): void {
+  try { fs.unlinkSync(privateKeyPath); } catch {}
+  try { fs.unlinkSync(publicKeyPath); } catch {}
 }
 
 export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
@@ -85,19 +91,23 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
     for (const cmd of deployCommands) {
       const result = await strategy.execCommand(cmd, 10000);
       if (result.code !== 0) {
+        cleanupLocalKeys(privateKeyPath, publicKeyPath);
         return `❌ Failed to deploy key to "${agent.friendlyName}": ${result.stderr}`;
       }
     }
 
-    // Step 3: Test key-based login before committing the change
+    // Step 3: Test key-based login with a dedicated non-pooled connection.
+    // This avoids reusing the cached password-based session from the pool
+    // and avoids TOCTOU races with other agents sharing the same host.
     const testAgent = { ...agent, authType: 'key' as const, keyPath: privateKeyPath, encryptedPassword: undefined };
-    const testStrategy = getStrategy(testAgent);
     try {
-      const testResult = await testStrategy.execCommand('echo "key-auth-ok"', 10000);
+      const testResult = await testAuthConnection(testAgent, 'echo "key-auth-ok"', 10000);
       if (!testResult.stdout.includes('key-auth-ok')) {
+        cleanupLocalKeys(privateKeyPath, publicKeyPath);
         return `❌ Key-based authentication test failed for "${agent.friendlyName}". Password auth is still active.`;
       }
     } catch (err: any) {
+      cleanupLocalKeys(privateKeyPath, publicKeyPath);
       return `❌ Key-based authentication test failed: ${err.message}. Password auth is still active.`;
     }
 
@@ -116,6 +126,7 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
 
     return result;
   } catch (err: any) {
+    cleanupLocalKeys(privateKeyPath, publicKeyPath);
     return `❌ Failed to set up SSH key: ${err.message}`;
   }
 }

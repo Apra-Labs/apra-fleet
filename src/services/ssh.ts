@@ -62,18 +62,9 @@ export function getSSHConfig(agent: Agent): ConnectConfig {
   return config;
 }
 
-export async function getConnection(agent: Agent): Promise<Client> {
-  const key = poolKey(agent);
-  const entry = pool.get(key);
-
-  if (entry) {
-    resetIdleTimer(key);
-    return entry.client;
-  }
-
+function connectClient(config: ConnectConfig, key: string): Promise<Client> {
   return new Promise<Client>((resolve, reject) => {
     const client = new Client();
-    const config = getSSHConfig(agent);
 
     client.on('ready', () => {
       const timer = setTimeout(() => cleanupEntry(key), IDLE_TIMEOUT);
@@ -96,6 +87,18 @@ export async function getConnection(agent: Agent): Promise<Client> {
 
     client.connect(config);
   });
+}
+
+export async function getConnection(agent: Agent): Promise<Client> {
+  const key = poolKey(agent);
+  const entry = pool.get(key);
+
+  if (entry) {
+    resetIdleTimer(key);
+    return entry.client;
+  }
+
+  return connectClient(getSSHConfig(agent), key);
 }
 
 /**
@@ -218,5 +221,45 @@ export function closeConnection(agent: Agent): void {
 export function closeAllConnections(): void {
   for (const key of pool.keys()) {
     cleanupEntry(key);
+  }
+}
+
+/**
+ * Test SSH auth with a dedicated non-pooled connection.
+ * Used by setup_ssh_key to verify key auth works without
+ * touching the connection pool (avoids TOCTOU races with
+ * other agents sharing the same host).
+ */
+export async function testAuthConnection(agent: Agent, command: string, timeoutMs = 10000): Promise<SSHExecResult> {
+  const config = getSSHConfig(agent);
+  const client = await new Promise<Client>((resolve, reject) => {
+    const c = new Client();
+    c.on('ready', () => resolve(c));
+    c.on('error', (err) => reject(err));
+    c.connect(config);
+  });
+
+  try {
+    return await new Promise<SSHExecResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Command timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      client.exec(command, (err, stream) => {
+        if (err) { clearTimeout(timer); reject(err); return; }
+        stream.end();
+        let stdout = '';
+        let stderr = '';
+        stream.on('data', (data: Buffer) => { stdout += data.toString(); });
+        stream.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+        stream.on('close', (code: number) => {
+          clearTimeout(timer);
+          resolve({ stdout, stderr, code: code ?? 0 });
+        });
+        stream.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
+      });
+    });
+  } finally {
+    try { client.end(); } catch {}
   }
 }

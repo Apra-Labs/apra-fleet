@@ -11,3 +11,4 @@
 9. **Member Decommissioning Protocol** (Low) — `remove_member` does best-effort cleanup but doesn't remove SSH keys from authorized_keys or delete remote working folders. Full flow: verify idle → revoke VCS → remove SSH key → clean folder → remove from registry.
 10. **Shell Strategy Variants** (Low) — Support `windows-cmdExe` and `windows-gitbash` shell types. Currently assumes PowerShell for all Windows SSH.
 11. **Read Remote File Tool** (Low) — New tool: `read_remote_file` to fetch files (especially binaries) from a member's work folder. Text files can use `execute_command` + `cat`.
+12. **SEA Binary Icon Branding** (Medium) — Replace Node.js icon on SEA binary with Apra Labs icon. Use `rcedit` (Windows) or `.icns` (macOS) during `scripts/package-sea.mjs`. Source assets at `C:\akhil\NewVenture\website\Logo\`. Need multi-size .ico (256/128/64/48/32/16) generated from source PNG.
