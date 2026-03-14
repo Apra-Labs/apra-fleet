@@ -17,10 +17,24 @@ export const executePromptSchema = z.object({
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
 
-function parseResponse(result: SSHExecResult): { text: string; sessionId?: string } {
+interface ParsedResponse {
+  text: string;
+  sessionId?: string;
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+function parseResponse(result: SSHExecResult): ParsedResponse {
   try {
     const json = JSON.parse(result.stdout);
-    return { text: json.result ?? result.stdout, sessionId: json.session_id };
+    return {
+      text: json.result ?? result.stdout,
+      sessionId: json.session_id,
+      totalTokens: json.totalTokens,
+      inputTokens: json.inputTokens,
+      outputTokens: json.outputTokens,
+    };
   } catch {
     return { text: result.stdout };
   }
@@ -89,9 +103,10 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     writeStatusline();
 
     let output = `📋 Response from ${agent.friendlyName}:\n\n${parsed.text}`;
-    if (parsed.sessionId) {
-      output += `\n\n🔗 Session: ${parsed.sessionId}`;
-    }
+    const meta: string[] = [];
+    if (parsed.sessionId) meta.push(`session: ${parsed.sessionId}`);
+    if (parsed.totalTokens) meta.push(`tokens: ${parsed.inputTokens ?? '?'} in / ${parsed.outputTokens ?? '?'} out / ${parsed.totalTokens} total`);
+    if (meta.length) output += `\n\n---\n${meta.join(' | ')}`;
     return output;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
