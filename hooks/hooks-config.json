@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/.apra-fleet/hooks/post-register-member.sh\""
+            "command": "bash ~/.apra-fleet/hooks/post-register-member.sh"
           }
         ]
       }
