@@ -1,6 +1,6 @@
 # Plan Review
 
-You are reviewing a plan in PLAN.md against requirements.md.
+You are reviewing a plan in PLAN.md against requirements.md and any design docs in the work folder.
 
 ## Check each item
 
@@ -15,6 +15,7 @@ You are reviewing a plan in PLAN.md against requirements.md.
 9. Any vague tasks that two developers would interpret differently?
 10. Any hidden dependencies between tasks?
 11. Does the plan include a risk register? If missing or incomplete, identify the risks yourself and add them as findings
+12. Does the plan align with requirements.md intent — solving the right problem, not just a technically clean plan?
 
 ## Output
 

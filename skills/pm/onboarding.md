@@ -1,8 +1,16 @@
 # Member Onboarding
 
-After `register_member`, run these 5 steps before dispatching any work.
+After `register_member`, run these 7 steps before dispatching any work.
 
-## Step 1: Detect VCS Provider
+## Step 1: Setup SSH Key Auth (remote members only)
+
+Check `member_detail` — if `agentType` is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
+
+## Step 2: Disable AI Attribution
+
+Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
+
+## Step 3: Detect VCS Provider
 
 Run on the member: `git remote -v`
 
@@ -12,19 +20,19 @@ Run on the member: `git remote -v`
 
 No remotes? Ask the user for VCS provider and repo URL.
 
-## Step 2: Determine Roles
+## Step 4: Determine Roles
 
 Ask the user. Roles: development, code-review, testing, devops, debugging. A member can have multiple.
 
-## Step 3: Setup VCS Auth
+## Step 5: Setup VCS Auth
 
-Verify auth, provision if needed. See auth-{provider}.md for provider-specific steps and required scopes per role.
+Verify auth, provision if needed. See auth-{provider}.md for provider-specific steps and required scopes per role. Skip for local members — they inherit the user's native git credentials.
 
-## Step 4: Check/Install Required Skills
+## Step 6: Check/Install Required Skills
 
 Look up the member's project + VCS + roles in skill-matrix.md. Install any missing skills.
 
-## Step 5: Update Member Status File
+## Step 7: Update Member Status File
 
 Add to the member's status file:
 

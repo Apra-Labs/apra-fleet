@@ -19,7 +19,12 @@ Tasks with type "verify" are checkpoints. When you reach one:
 1. Run full test suite
 2. Confirm all prior tasks in the group work correctly
 3. Update progress.json with test results and issues found
-4. STOP — do not continue. Report status so the PM can review.
+4. `git push origin <branch>` — code must be on origin before PM reviews
+5. STOP — do not continue. Report status so the PM can review.
+
+## Branch Hygiene
+- Before creating a branch: `git fetch origin && git checkout origin/<base-branch>`
+- Before pushing a PR or at PM's request: `git fetch origin && git rebase origin/<base-branch>`, rerun tests after rebase
 
 ## Rules
 - ONE task at a time, then commit, then continue
@@ -30,4 +35,3 @@ Tasks with type "verify" are checkpoints. When you reach one:
 - Commit and push PLAN.md, progress.json, and all project docs (design.md, feedback-*.md) at every turn — reviewers depend on them
 - NEVER commit CLAUDE.md — it is role-specific and not shared
 - NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
-- Before creating a branch: `git fetch origin && git checkout origin/<base-branch>`
