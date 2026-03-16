@@ -113,6 +113,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install rcedit (Windows only)
+        if: runner.os == 'Windows'
+        run: npm install -g rcedit
+
       - name: Build SEA bundle
         run: node scripts/build-sea.mjs
 

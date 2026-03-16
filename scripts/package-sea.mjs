@@ -53,6 +53,33 @@ if (!existsSync(blob)) {
 console.log('  [2/3] Copying Node.js binary...');
 copyFileSync(process.execPath, outputBinary);
 
+// Windows: apply custom icon BEFORE postject (postject corrupts PE resources)
+if (platform === 'win32') {
+  const icoPath = join(root, 'assets', 'icons', 'apra-fleet.ico');
+  if (existsSync(icoPath)) {
+    console.log('  [2.5/3] Applying Apra Labs icon...');
+    // Find rcedit: try PATH, .cmd, npm global root
+    let rcedit = '';
+    try { execSync('rcedit --help', { stdio: 'pipe' }); rcedit = 'rcedit'; } catch {}
+    if (!rcedit) try { execSync('rcedit.cmd --help', { stdio: 'pipe' }); rcedit = 'rcedit.cmd'; } catch {}
+    if (!rcedit) try { execSync('rcedit.exe --help', { stdio: 'pipe' }); rcedit = 'rcedit.exe'; } catch {}
+    if (!rcedit) {
+      // npm global root
+      try {
+        const npmRoot = execSync('npm root -g', { encoding: 'utf-8' }).trim();
+        const candidate = join(npmRoot, 'rcedit', 'bin', 'rcedit.exe');
+        if (existsSync(candidate)) rcedit = candidate;
+      } catch {}
+    }
+    if (rcedit) {
+      execSync(`"${rcedit}" "${outputBinary}" --set-icon "${icoPath}"`, { stdio: 'inherit', shell: true });
+      console.log('  Icon injection succeeded');
+    } else {
+      console.error('WARNING: rcedit not found — icon not replaced. Install with: npm install -g rcedit');
+    }
+  }
+}
+
 // macOS: strip existing signature before postject
 if (platform === 'darwin') {
   console.log('  [2.5/3] Stripping macOS codesign...');
