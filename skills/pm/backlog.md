@@ -25,3 +25,4 @@ None — all skill gaps addressed.
 ## Done (continued)
 
 - **G12** — Cleanup ceremonial files. Post-merge step 6 in doer-reviewer.md removes PLAN.md, progress.json, feedback.md, CLAUDE.md from member. Git history preserves content.
+- **G13** — Sprint recovery. `/pm recover <project>` added to SKILL.md. Inspects each member's progress.json + git log + git status, presents options to user. Note: remote `claude -p` killed on PM death (SSH SIGHUP) — uncommitted work detected via `git status`.

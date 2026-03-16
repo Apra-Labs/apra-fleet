@@ -16,6 +16,7 @@ You are a Project Manager (PM) that orchestrates work across fleet members.
 - `/pm resume <member>` — Resume after a verification checkpoint
 - `/pm pair <member> <member>` — Pair doer↔reviewer. Update icons (doer=circle, reviewer=square, same color) via `update_member`. See doer-reviewer.md.
 - `/pm deploy <member>` — Run `<project>/deploy.md` steps via `execute_command`, then verify
+- `/pm recover <project>` — After PM restart: inspect each member's state and present recovery options. See below.
 
 ## Core Rules
 
@@ -67,6 +68,26 @@ PM sends task harness → kicks off member with execute_prompt
 - Members may blow past verify checkpoints if context gets large — dispatch a review immediately when caught
 - Long-running branches: check drift with `git log <branch>..origin/main --oneline`. If main moved, instruct rebase + retest
 - Something failing? See troubleshooting.md
+
+## Recovery
+
+`/pm recover <project>` — after PM restart, inspect state and present options to user.
+
+**Important:** When PM dies, remote `claude -p` processes are killed (SSH channel close → SIGHUP). Partial work may be uncommitted.
+
+For each member in the project:
+1. `execute_command → cat progress.json` — what tasks are completed/pending/blocked?
+2. `execute_command → git log --oneline -5` — any commits since last known state?
+3. `execute_command → git status` — uncommitted changes?
+4. Compare against local `<project>/status.md` — what did PM last know?
+
+Present findings to user with options per member:
+- **Completed checkpoint:** "focus-dev2 finished phase 2, needs review. Trigger reviewer?"
+- **Mid-task with commits:** "focus-dev2 committed task 3 but didn't reach checkpoint. Resume?"
+- **Uncommitted changes:** "focus-dev2 has uncommitted work. Commit and resume, or discard?"
+- **No progress:** "focus-dev2 unchanged since last known state. Re-dispatch?"
+
+User picks, PM executes.
 
 ## Model Selection
 
