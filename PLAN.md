@@ -40,11 +40,11 @@
 
 ### Phase 3: SEA Binary Icon (#12)
 
-#### Task 5: Create icon generation script and assets
-- **Change:** Copy apra-focus approach: create `scripts/gen-ico.mjs` (from `C:\akhil\git\apra-focus\scripts\gen-ico.mjs`, adapted for apra-fleet paths). Copy source logo to `assets/icons/`. Create square 512x512 PNG from `Apra_labs_Logo.png` (730x500 — pad with transparent to 730x730, then resize to 512x512). Generate `apra-fleet.ico`.
-- **Files:** `scripts/gen-ico.mjs` (new), `assets/icons/icon-512.png` (new), `assets/icons/apra-fleet.ico` (new)
+#### Task 5: Generate icon assets
+- **Change:** Source logo committed at `assets/icons/logo-source.png` (730x500). Create square 512x512 `icon-512.png` (pad with transparent background). Run `node scripts/gen-ico.mjs` to generate `assets/icons/apra-fleet.ico`. Script already in repo (adapted from apra-focus). Commit the `.ico`.
+- **Files:** `assets/icons/icon-512.png` (new), `assets/icons/apra-fleet.ico` (new)
 - **Done when:** `.ico` exists with 16/32/48/256px sizes
-- **Blockers:** sips (macOS) or ImageMagick for resizing — CI has ImageMagick
+- **Blockers:** sips (macOS) or ImageMagick for resizing
 
 #### Task 6: Add icon injection to SEA packaging
 - **Change:** In `scripts/package-sea.mjs`, add step BEFORE postject (critical ordering): detect `.exe` output → run `rcedit --set-icon assets/icons/apra-fleet.ico`. Follow apra-focus pattern: search for rcedit in PATH, .cmd, npm global root.
