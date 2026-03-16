@@ -149,6 +149,31 @@ function mergeHooksConfig(hooksConfig: any): void {
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
 }
 
+function mergePermissions(): void {
+  let settings: any = {};
+  if (fs.existsSync(SETTINGS_FILE)) {
+    settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+  }
+
+  const requiredPerms = [
+    'mcp__apra-fleet__*',
+    'Agent(*)',
+    'Read(~/.claude/skills/pm/**)',
+  ];
+
+  settings.permissions = settings.permissions || {};
+  settings.permissions.allow = settings.permissions.allow || [];
+  const existing = new Set(settings.permissions.allow as string[]);
+  for (const perm of requiredPerms) {
+    if (!existing.has(perm)) {
+      settings.permissions.allow.push(perm);
+    }
+  }
+
+  fs.mkdirSync(CLAUDE_DIR, { recursive: true });
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
+}
+
 function configureStatusline(scriptPath: string): void {
   // settings.json should already exist from mergeHooksConfig, but be defensive
   let settings: any = {};
@@ -221,6 +246,7 @@ export async function runInstall(args: string[]): Promise<void> {
     fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
   );
   mergeHooksConfig(installedHooksConfig);
+  mergePermissions();
 
   const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
   configureStatusline(statuslineScript);
