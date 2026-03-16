@@ -10,6 +10,7 @@
    - `design.md` — architecture and design decisions (tpl-design.md)
    - `backlog.md` — project-specific backlog items
    - `deploy.md` — deploy + verify steps (tpl-deploy.md)
+   - `permissions.json` — learned permission grants, grows over sprints (profiles/tpl-permissions.json)
    - `planned.json` — immutable plan copy (created during `/pm start`)
 4. Add project row to projects.md
 

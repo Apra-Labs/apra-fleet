@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(npm:*)", "Bash(npx:*)", "Bash(node:*)", "Bash(yarn:*)", "Bash(pnpm:*)", "Bash(tsx:*)"],
+  "reviewer": ["Bash(npm test:*)", "Bash(npm run test:*)", "Bash(npm run lint:*)", "Bash(npx:*)"]
+}

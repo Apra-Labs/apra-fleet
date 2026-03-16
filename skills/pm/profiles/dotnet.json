@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(dotnet:*)"],
+  "reviewer": ["Bash(dotnet test:*)"]
+}

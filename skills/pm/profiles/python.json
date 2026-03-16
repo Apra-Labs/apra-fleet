@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(python:*)", "Bash(python3:*)", "Bash(pip:*)", "Bash(pip3:*)", "Bash(pytest:*)", "Bash(uv:*)", "Bash(poetry:*)", "Bash(ruff:*)", "Bash(mypy:*)"],
+  "reviewer": ["Bash(pytest:*)", "Bash(python -m pytest:*)", "Bash(ruff:*)", "Bash(mypy:*)"]
+}

@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(go:*)", "Bash(gofmt:*)", "Bash(golangci-lint:*)"],
+  "reviewer": ["Bash(go test:*)", "Bash(go vet:*)", "Bash(golangci-lint:*)"]
+}

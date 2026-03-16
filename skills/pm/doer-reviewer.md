@@ -30,7 +30,7 @@ PM sends role-specific CLAUDE.md via `send_files`:
 
 ## Permissions
 
-Use `send_files` to place tpl-dev.json (doers) or tpl-reviewer.json (reviewers) as `.claude/settings.local.json`.
+Compose and deliver `settings.local.json` per permissions.md. Recompose when switching roles (doer↔reviewer).
 
 ## PM responsibilities
 

@@ -54,6 +54,7 @@ async function startServer() {
   const { memberDetailSchema, memberDetail } = await import('./tools/member-detail.js');
   const { updateClaudeSchema, updateClaude } = await import('./tools/update-claude.js');
   const { shutdownServerSchema, shutdownServer } = await import('./tools/shutdown-server.js');
+  const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { closeAllConnections } = await import('./services/ssh.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
@@ -94,6 +95,9 @@ async function startServer() {
   // --- Maintenance ---
   server.tool('update_claude', "Update or install Claude Code CLI on members. Set install_if_missing=true to install on members that don't have it.", updateClaudeSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateClaude(input as any) }] }));
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, async () => ({ content: [{ type: 'text', text: await shutdownServer() }] }));
+
+  // --- Permissions ---
+  server.tool('compose_permissions', 'Compose and deliver member permissions (.claude/settings.local.json). Detects project stack, merges base + stack profiles + project ledger. Use grant param for reactive mid-sprint permission additions.', composePermissionsSchema.shape, async (input) => ({ content: [{ type: 'text', text: await composePermissions(input as any) }] }));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

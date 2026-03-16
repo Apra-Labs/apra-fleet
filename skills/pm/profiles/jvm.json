@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(gradle:*)", "Bash(./gradlew:*)", "Bash(mvn:*)", "Bash(java:*)", "Bash(javac:*)"],
+  "reviewer": ["Bash(gradle test:*)", "Bash(./gradlew test:*)", "Bash(mvn test:*)"]
+}

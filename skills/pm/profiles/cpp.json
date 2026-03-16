@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(make:*)", "Bash(cmake:*)", "Bash(gcc:*)", "Bash(g++:*)", "Bash(clang:*)", "Bash(ninja:*)"],
+  "reviewer": ["Bash(make test:*)", "Bash(ctest:*)"]
+}

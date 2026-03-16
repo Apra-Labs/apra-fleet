@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(cargo:*)", "Bash(rustc:*)", "Bash(rustup:*)"],
+  "reviewer": ["Bash(cargo test:*)", "Bash(cargo clippy:*)", "Bash(cargo check:*)"]
+}

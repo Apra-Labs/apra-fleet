@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read", "Glob", "Grep",
+      "Write(docs/**)", "Write(feedback.md)", "Write(feedback-*.md)",
+      "Edit(docs/**)", "Edit(feedback.md)", "Edit(feedback-*.md)",
+      "Bash(git:*)",
+      "Bash(which:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
+      "Bash(find:*)", "Bash(wc:*)"
+    ]
+  }
+}

@@ -10,6 +10,8 @@
 - **G7** — Troubleshooting playbook. `troubleshooting.md` created, referenced from SKILL.md.
 - **G8** — Pre-flight access checks. SKILL.md Rule 4 updated.
 - **G9** — Session ID tracking. SKILL.md Rule 2 updated.
+- **G10** — Proactive permission provisioning. Stack profiles in `profiles/`, composition guide in `permissions.md`, project ledger in `permissions.json`.
+- **G11** — Installer pre-approves fleet tools, Agent(*), skill reads.
 - **#16** — White-label attribution. Onboarding Step 2 writes `.claude/settings.json` with attribution disabled.
 
 ## Closed
@@ -18,5 +20,4 @@
 
 ## Open
 
-- **G10** — Proactive permission provisioning (High). Members hit permission denials mid-sprint, stalling work. PM should analyze the plan before `/pm start` and predict which tools/commands each member will need (build tools, test runners, git ops, file writes). Deliver `.claude/settings.local.json` with appropriate permissions BEFORE execution starts. Mid-sprint: when a member hits a denial, PM should grant and also update the baseline for future sprints. Goal: zero permission interrupts during execution.
-- **G11** — Installer should pre-approve fleet tools (High). Currently, fleet tools (`execute_command`, `execute_prompt`, `send_files`, etc.) and related commands (`ssh`, `git`) require manual approval on first use. The installer should add these to the user-level allow list in `~/.claude/settings.json` so the PM can operate without interruption from the first session. See MCP-BACKLOG for implementation.
+None — all skill gaps addressed. See MCP-BACKLOG.md #14 for inter-session attention mechanism (fleet-level feature).
