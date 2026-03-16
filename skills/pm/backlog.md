@@ -20,4 +20,8 @@
 
 ## Open
 
-None — all skill gaps addressed. See MCP-BACKLOG.md #14 for inter-session attention mechanism (fleet-level feature).
+None — all skill gaps addressed.
+
+## Done (continued)
+
+- **G12** — Cleanup ceremonial files. Post-merge step 6 in doer-reviewer.md removes PLAN.md, progress.json, feedback.md, CLAUDE.md from member. Git history preserves content.

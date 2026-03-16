@@ -19,8 +19,9 @@
    - Rev side: `git fetch origin && git checkout <branch> && git reset --hard origin/<branch>`
 3. PM sends context docs to reviewer via `send_files`: `<project>/requirements.md`, `<project>/design.md`, and relevant `<project>/*plan.md`. Then dispatches reviewer
 4. Reviewer reads deliverables + diff, conducts cumulative review (all phases up to current, not just the latest) per its CLAUDE.md. Commits findings to feedback.md, pushes, and outputs verdict: APPROVED or CHANGES NEEDED
-5. PM reads verdict. APPROVED → resumes doer on next phase. CHANGES NEEDED → sends fixes back to doer → back to step 1
-6. Loop until APPROVED
+5. PM reads verdict. APPROVED → merge → cleanup → next phase. CHANGES NEEDED → back to step 1
+6. **Post-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md; git commit -m "cleanup: remove fleet control files"`. These are transport files — git history preserves the content.
+7. Loop until all phases APPROVED
 
 ## Git as transport
 
