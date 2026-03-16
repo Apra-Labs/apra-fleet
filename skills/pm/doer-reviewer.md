@@ -1,14 +1,15 @@
 # Doer-Reviewer Loop
 
-## Setup
+## Setup Checklist
 
-`/pm pair <member> <member>` — pairs two members as doer↔reviewer. Multiple pairs per project is normal. Record pairs in `<project>/status.md`. Override icons via `update_member` so paired members share color — doer gets circle (🔵), reviewer gets diamond (🔷).
+1. Record pair in `<project>/status.md`. Multiple pairs per project is normal.
+2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color. This is not optional.
+3. Compose and deliver permissions per permissions.md for each member's role.
+4. Send role-specific CLAUDE.md via `send_files`:
+   - Doer: plan-prompt.md (planning) or tpl-claude.md (execution)
+   - Reviewer: tpl-reviewer-plan.md (planning) or tpl-reviewer.md (execution)
 
-Single member can fill both roles via `reset_session` — doer session finishes, PM resets, sends reviewer CLAUDE.md, same member reviews with fresh context. PM tracks current role and session ID in `<project>/status.md` so it can switch hats correctly on each iteration.
-
-PM sends role-specific CLAUDE.md via `send_files`:
-- Doer gets CLAUDE.md scoped to the phase (plan-prompt.md for planning, tpl-claude.md for execution)
-- Reviewer gets CLAUDE.md with review criteria for that phase (tpl-reviewer-plan.md for planning, tpl-reviewer.md for execution)
+**Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's CLAUDE.md + permissions, same member reviews with fresh context. Track current role and session ID in status.md.
 
 ## Flow
 
