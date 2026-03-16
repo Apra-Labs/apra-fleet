@@ -201,6 +201,17 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmd).not.toContain('--model');
       });
 
+      it(`${name}: uses default max-turns 50 when not specified`, () => {
+        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
+        expect(cmd).toContain('--max-turns 50');
+      });
+
+      it(`${name}: uses custom max-turns when specified`, () => {
+        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, false, undefined, 10);
+        expect(cmd).toContain('--max-turns 10');
+        expect(cmd).not.toContain('--max-turns 50');
+      });
+
       it(`${name}: combines --model with --resume and --dangerously-skip-permissions`, () => {
         const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', 'sess-123', true, 'claude-opus-4-6');
         expect(cmd).toContain('--resume');
