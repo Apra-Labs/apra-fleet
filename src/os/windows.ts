@@ -188,15 +188,16 @@ export class WindowsCommands implements OsCommands {
 
   // --- Prompt building ---
 
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string): string {
+  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string {
     const escapedFolder = escapeWindowsArg(folder);
+    const turns = maxTurns ?? 50;
     let resume = '';
     if (sessionId) {
       resume = ` --resume "${sanitizeSessionId(sessionId)}"`;
     }
     const skipPerms = dangerouslySkipPermissions ? ' --dangerously-skip-permissions' : '';
     const modelFlag = model ? ` --model "${escapeWindowsArg(model)}"` : '';
-    return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns 50${resume}${skipPerms}${modelFlag}`;
+    return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns ${turns}${resume}${skipPerms}${modelFlag}`;
   }
 
   // --- Resource output parsing ---

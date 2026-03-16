@@ -11,6 +11,7 @@ export const executePromptSchema = z.object({
   prompt: z.string().describe('The prompt to send to Claude on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
   timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
+  max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   dangerously_skip_permissions: z.boolean().default(false).describe('Run Claude with --dangerously-skip-permissions so it can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
   model: z.string().optional().describe('Model to use (e.g. "opus", "sonnet", "haiku", or full model ID). Applies to both new and resumed sessions.'),
 });
@@ -67,6 +68,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     input.resume && agent.sessionId ? agent.sessionId : undefined,
     input.dangerously_skip_permissions,
     input.model,
+    input.max_turns,
   );
 
   const timeoutMs = input.timeout_ms ?? 300000;
@@ -80,7 +82,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model, input.max_turns);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }
@@ -88,7 +90,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(classifyPromptError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model);
+      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model, input.max_turns);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = parseResponse(result);
     }

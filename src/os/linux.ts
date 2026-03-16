@@ -170,9 +170,10 @@ export class LinuxCommands implements OsCommands {
 
   // --- Prompt building ---
 
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string): string {
+  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string {
     const escapedFolder = escapeDoubleQuoted(folder);
-    let cmd = `cd "${escapedFolder}" && ${this.claudeCommand(`-p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns 50`)}`;
+    const turns = maxTurns ?? 50;
+    let cmd = `cd "${escapedFolder}" && ${this.claudeCommand(`-p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns ${turns}`)}`;
     if (sessionId) {
       cmd += ` --resume "${sanitizeSessionId(sessionId)}"`;
     }

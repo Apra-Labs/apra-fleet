@@ -48,7 +48,7 @@ export interface OsCommands {
   wrapInWorkFolder(folder: string, command: string): string;
 
   // --- Prompt building ---
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string): string;
+  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string;
 
   // --- Resource output parsing ---
   parseMemory(stdout: string): string;
