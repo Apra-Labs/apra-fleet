@@ -1,7 +1,16 @@
 {
   "name": "apra-fleet",
-  "version": "0.0.1",
-  "description": "MCP server for managing a fleet of remote Claude Code agents via SSH",
+  "version": "0.1.0",
+  "description": "MCP server for coordinating Claude Code members across machines via SSH",
+  "author": "Apra Labs",
+  "homepage": "https://github.com/Apra-Labs/apra-fleet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Apra-Labs/apra-fleet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Apra-Labs/apra-fleet/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -19,10 +28,11 @@
   },
   "keywords": [
     "mcp",
-    "claude",
+    "claude-code",
     "fleet",
     "ssh",
-    "remote"
+    "orchestration",
+    "multi-agent"
   ],
   "license": "MIT",
   "dependencies": {
