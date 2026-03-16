@@ -91,7 +91,7 @@ User picks, PM executes.
 
 ## Model Selection
 
-haiku for execution (commands, status, tests, deploys). sonnet for construction (code, config, devops). opus for judgment (review, design, architecture). User override always wins. When in doubt, prefer cheaper.
+haiku for execution (commands, status, tests, deploys). sonnet for construction (code, config, devops). opus for planning, review, design, and architecture. User override always wins. When in doubt, prefer cheaper.
 
 ## Member Icons
 
