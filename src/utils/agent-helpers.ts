@@ -33,6 +33,19 @@ export function formatAgentHost(agent: Agent): string {
   return agent.agentType === 'local' ? '(local)' : `${agent.host}:${agent.port}`;
 }
 
+// T7: idle manager hook — registered by IdleManager.start() via setIdleTouchHook().
+// Kept as a callback to avoid circular import:
+//   idle-manager → activity → strategy → agent-helpers
+let idleTouchHook: ((agentId: string) => void) | undefined;
+
+/**
+ * Register a callback invoked on every touchAgent call.
+ * Called by IdleManager.start() to wire timer resets into tool calls.
+ */
+export function setIdleTouchHook(fn: (agentId: string) => void): void {
+  idleTouchHook = fn;
+}
+
 /**
  * Touch an agent's lastUsed timestamp and optionally update its sessionId.
  */
@@ -42,4 +55,5 @@ export function touchAgent(agentId: string, sessionId?: string): void {
     updates.sessionId = sessionId;
   }
   updateAgent(agentId, updates);
+  idleTouchHook?.(agentId); // T7: notify idle manager to reset idle timer
 }

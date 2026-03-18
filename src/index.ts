@@ -56,6 +56,7 @@ async function startServer() {
   const { shutdownServerSchema, shutdownServer } = await import('./tools/shutdown-server.js');
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { closeAllConnections } = await import('./services/ssh.js');
+  const { idleManager } = await import('./services/cloud/idle-manager.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
@@ -102,6 +103,8 @@ async function startServer() {
   // --- Start Server ---
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  idleManager.start();
 
   process.on('SIGINT', () => { closeAllConnections(); process.exit(0); });
   process.on('SIGTERM', () => { closeAllConnections(); process.exit(0); });
