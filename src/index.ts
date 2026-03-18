@@ -56,6 +56,7 @@ async function startServer() {
   const { shutdownServerSchema, shutdownServer } = await import('./tools/shutdown-server.js');
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
+  const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
@@ -103,6 +104,7 @@ async function startServer() {
 
   // --- Cloud Control ---
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. start waits for SSH readiness; stop is immediate.', cloudControlSchema.shape, async (input) => ({ content: [{ type: 'text', text: await cloudControl(input as any) }] }));
+  server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Use task_id returned by execute_command. Set auto_stop=true to stop the cloud instance when the task completes.', monitorTaskSchema.shape, async (input) => ({ content: [{ type: 'text', text: await monitorTask(input as any) }] }));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
