@@ -1,7 +1,11 @@
+export type { CloudConfig } from './services/cloud/types.js';
+import type { CloudConfig } from './services/cloud/types.js';
+
 export interface Agent {
   id: string;
   friendlyName: string;
   agentType: 'local' | 'remote';
+  cloud?: CloudConfig;
   host?: string;
   port?: number;
   username?: string;

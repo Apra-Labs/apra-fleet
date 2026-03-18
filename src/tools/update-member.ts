@@ -23,6 +23,11 @@ export const updateMemberSchema = z.object({
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   icon: z.string().optional().describe('Override the auto-assigned emoji icon. Use named aliases: blue-circle, green-square, red-circle, etc. (8 colors × 2 shapes: circle, square). Or pass raw emoji.'),
+  // Cloud fields
+  cloud_region: z.string().optional().describe('AWS region for the cloud instance'),
+  cloud_profile: z.string().optional().describe('AWS CLI profile name'),
+  cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
+  cloud_ssh_key_path: z.string().optional().describe('Path to SSH private key for cloud lifecycle. Also updates the member key_path.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -62,6 +67,21 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.work_folder) updates.workFolder = input.work_folder;
   if (input.git_access) updates.gitAccess = input.git_access;
   if (input.git_repos) updates.gitRepos = input.git_repos;
+
+  // Cloud field updates: merge into existing cloud config
+  if (input.cloud_ssh_key_path || input.cloud_region || input.cloud_profile !== undefined || input.cloud_idle_timeout_min) {
+    if (existing.cloud) {
+      const updatedCloud = { ...existing.cloud };
+      if (input.cloud_region) updatedCloud.region = input.cloud_region;
+      if (input.cloud_profile !== undefined) updatedCloud.profile = input.cloud_profile || undefined;
+      if (input.cloud_idle_timeout_min) updatedCloud.idleTimeoutMin = input.cloud_idle_timeout_min;
+      if (input.cloud_ssh_key_path) {
+        updatedCloud.sshKeyPath = input.cloud_ssh_key_path;
+        updates.keyPath = input.cloud_ssh_key_path; // keep top-level keyPath in sync (F4)
+      }
+      updates.cloud = updatedCloud;
+    }
+  }
 
   const updated = updateInRegistry(input.member_id, updates);
   if (!updated) {
