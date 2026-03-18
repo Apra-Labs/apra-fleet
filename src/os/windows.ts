@@ -200,6 +200,17 @@ export class WindowsCommands implements OsCommands {
     return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns ${turns}${resume}${skipPerms}${modelFlag}`;
   }
 
+  // --- GPU activity ---
+
+  gpuProcessCheck(): string {
+    // Windows fleet members don't use nvidia-smi — signal not available (exit 1).
+    return 'exit 1';
+  }
+
+  gpuUtilization(): string {
+    return 'Write-Output "0"';
+  }
+
   // --- Resource output parsing ---
 
   parseMemory(stdout: string): string {
