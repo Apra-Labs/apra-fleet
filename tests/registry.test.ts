@@ -98,6 +98,97 @@ describe('registry - security', () => {
   });
 });
 
+describe('registry - cloud agent storage', () => {
+  it('stores and retrieves cloud config in agent', () => {
+    const agent = makeAgent({
+      cloud: {
+        provider: 'aws',
+        instanceId: 'i-0abc1234def567890',
+        region: 'us-east-1',
+        idleTimeoutMin: 30,
+        sshKeyPath: '/home/user/.ssh/id_rsa',
+      },
+    });
+    addAgent(agent);
+
+    const retrieved = getAgent(agent.id);
+    expect(retrieved).toBeDefined();
+    expect(retrieved!.cloud).toBeDefined();
+    expect(retrieved!.cloud!.instanceId).toBe('i-0abc1234def567890');
+    expect(retrieved!.cloud!.region).toBe('us-east-1');
+    expect(retrieved!.cloud!.sshKeyPath).toBe('/home/user/.ssh/id_rsa');
+  });
+
+  it('stores cloud config with optional profile', () => {
+    const agent = makeAgent({
+      cloud: {
+        provider: 'aws',
+        instanceId: 'i-0abc1234def567890',
+        region: 'eu-west-1',
+        profile: 'my-profile',
+        idleTimeoutMin: 60,
+        sshKeyPath: '/home/user/.ssh/key.pem',
+      },
+    });
+    addAgent(agent);
+
+    const retrieved = getAgent(agent.id);
+    expect(retrieved!.cloud!.profile).toBe('my-profile');
+    expect(retrieved!.cloud!.idleTimeoutMin).toBe(60);
+  });
+
+  it('updates cloud config fields via updateAgent', () => {
+    const agent = makeAgent({
+      cloud: {
+        provider: 'aws',
+        instanceId: 'i-0abc1234def567890',
+        region: 'us-east-1',
+        idleTimeoutMin: 30,
+        sshKeyPath: '/home/user/.ssh/id_rsa',
+      },
+    });
+    addAgent(agent);
+
+    const updatedCloud = {
+      ...agent.cloud!,
+      region: 'us-west-2',
+      idleTimeoutMin: 60,
+    };
+    const updated = updateAgent(agent.id, { cloud: updatedCloud });
+    expect(updated!.cloud!.region).toBe('us-west-2');
+    expect(updated!.cloud!.idleTimeoutMin).toBe(60);
+    expect(updated!.cloud!.instanceId).toBe('i-0abc1234def567890'); // unchanged
+  });
+
+  it('persists cloud config to disk and reloads correctly', () => {
+    const agent = makeAgent({
+      cloud: {
+        provider: 'aws',
+        instanceId: 'i-0abc1234def567890',
+        region: 'us-east-1',
+        idleTimeoutMin: 30,
+        sshKeyPath: '/home/user/.ssh/id_rsa',
+      },
+    });
+    addAgent(agent);
+
+    // Simulate reload by reading raw registry file
+    const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const stored = parsed.agents[0];
+    expect(stored.cloud).toBeDefined();
+    expect(stored.cloud.instanceId).toBe('i-0abc1234def567890');
+    expect(stored.cloud.sshKeyPath).toBe('/home/user/.ssh/id_rsa');
+  });
+
+  it('non-cloud agents have no cloud field', () => {
+    const agent = makeAgent(); // no cloud field
+    addAgent(agent);
+    const retrieved = getAgent(agent.id);
+    expect(retrieved!.cloud).toBeUndefined();
+  });
+});
+
 describe('registry - duplicate folder validation', () => {
   it('detects duplicate local folder', () => {
     addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined }));
