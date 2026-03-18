@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getAgentOrFail, touchAgent } from '../utils/agent-helpers.js';
 import { writeStatusline } from '../services/statusline.js';
+import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import type { Agent } from '../types.js';
 
 export const sendFilesSchema = z.object({
@@ -15,7 +16,12 @@ export type SendFilesInput = z.infer<typeof sendFilesSchema>;
 export async function sendFiles(input: SendFilesInput): Promise<string> {
   const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
-  const agent = agentOrError as Agent;
+  let agent: Agent;
+  try {
+    agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+  } catch (err: any) {
+    return `Failed to upload files to "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+  }
 
   const strategy = getStrategy(agent);
 
@@ -24,7 +30,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
   try {
     const result = await strategy.transferFiles(input.local_paths, input.remote_subfolder);
 
-    touchAgent(agent.id);
+    touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
     let output = '';
 

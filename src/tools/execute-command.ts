@@ -3,6 +3,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { writeStatusline } from '../services/statusline.js';
+import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import type { Agent } from '../types.js';
 
 export const executeCommandSchema = z.object({
@@ -17,7 +18,12 @@ export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 export async function executeCommand(input: ExecuteCommandInput): Promise<string> {
   const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
-  const agent = agentOrError as Agent;
+  let agent: Agent;
+  try {
+    agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+  } catch (err: any) {
+    return `Failed to execute command on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+  }
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
@@ -30,7 +36,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   try {
     const result = await strategy.execCommand(wrapped, input.timeout_ms);
-    touchAgent(agent.id);
+    touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
     const parts: string[] = [];
     if (result.stdout) parts.push(result.stdout);
