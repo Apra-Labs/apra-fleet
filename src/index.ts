@@ -55,6 +55,7 @@ async function startServer() {
   const { updateClaudeSchema, updateClaude } = await import('./tools/update-claude.js');
   const { shutdownServerSchema, shutdownServer } = await import('./tools/shutdown-server.js');
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
+  const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
@@ -99,6 +100,9 @@ async function startServer() {
 
   // --- Permissions ---
   server.tool('compose_permissions', 'Compose and deliver member permissions (.claude/settings.local.json). Detects project stack, merges base + stack profiles + project ledger. Use grant param for reactive mid-sprint permission additions.', composePermissionsSchema.shape, async (input) => ({ content: [{ type: 'text', text: await composePermissions(input as any) }] }));
+
+  // --- Cloud Control ---
+  server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. start waits for SSH readiness; stop is immediate.', cloudControlSchema.shape, async (input) => ({ content: [{ type: 'text', text: await cloudControl(input as any) }] }));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
