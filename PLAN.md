@@ -28,8 +28,12 @@ cloud?: {
   region: string;          // default 'us-east-1'
   profile?: string;        // AWS CLI profile
   idleTimeoutMin: number;  // default 30
+  sshKeyPath: string;      // path to SSH private key on PM machine (F4)
 };
 ```
+
+### SSH Key for Cloud Members (F4)
+The SSH key path for cloud members lives in `cloud.sshKeyPath`, **not** in the member's top-level `keyPath` field. During registration, both are populated from the same user-supplied value so RemoteStrategy can use `keyPath` for SSH connections. The canonical source for cloud lifecycle logic (e.g. SSH readiness polling in `ensureCloudReady`) is `cloud.sshKeyPath`.
 
 ### AWS via CLI (No SDK)
 All AWS operations use `child_process.exec('aws ec2 ...')` on the PM machine. No new npm dependencies.
@@ -78,12 +82,13 @@ Only AWS implemented now. GCP/Azure slot in later by adding new providers.
   - `cloud_region: z.string().default('us-east-1').optional()`
   - `cloud_profile: z.string().optional()`
   - `cloud_idle_timeout_min: z.number().default(30).optional()`
-- Validation: if `cloud_provider` is set, `cloud_instance_id` is required
-- Build `cloud` object and attach to `tempAgent` before save
+  - `cloud_ssh_key_path: z.string().optional()` (required if cloud_provider set; also sets top-level `keyPath` for RemoteStrategy — see F4 note in Design Decisions)
+- Validation: if `cloud_provider` is set, both `cloud_instance_id` and `cloud_ssh_key_path` are required
+- Build `cloud` object (including `sshKeyPath`) and attach to `tempAgent`; also set top-level `keyPath` and `authType: 'key'` so RemoteStrategy works
 - Skip SSH connectivity test if instance is stopped — validate instance exists via AWS CLI instead
 - Add cloud fields to `updateMemberSchema` too
 
-**Done**: Can register a cloud member with `cloud_provider: "aws"` + `cloud_instance_id`. Registry stores cloud config. Non-cloud registration unchanged. Tests pass.
+**Done**: Can register a cloud member with `cloud_provider: "aws"` + `cloud_instance_id` + `cloud_ssh_key_path`. Registry stores cloud config. Non-cloud registration unchanged. Tests pass.
 **Could block**: Connectivity check assumes instance is running — handle stopped state gracefully.
 
 ### T3 — Unit tests for cloud provider + registration
@@ -114,10 +119,11 @@ Build succeeds. All existing + new tests pass. Can register a cloud member in th
   5. If `stopping` — wait for stopped, then start (same as stopped flow)
   6. If `terminated` — return error
   7. Return updated agent (re-fetched from registry after IP update)
-- SSH readiness: poll with retry (port 22 connect check), max 30 attempts x 2s
+- SSH readiness: poll with retry (port 22 connect check), max 30 attempts x 2s; uses `cloud.sshKeyPath`
 - Reset idle timer on successful start
+- **After a fresh start (F5)**: re-run `provision_auth` (deploy OAuth credentials) and `provision_vcs_auth` (deploy git tokens) if credentials/tokens are available on the PM machine. Both are best-effort — log warnings on failure but do not abort. This ensures auth is restored after a stopped instance restarts without manual intervention.
 
-**Done**: `ensureCloudReady` returns a running, SSH-ready agent. IP is updated in registry. Mocked tests cover: already-running, stopped-to-started, stopping-to-waited-to-started, IP changed.
+**Done**: `ensureCloudReady` returns a running, SSH-ready agent. IP is updated in registry. Auth re-provisioned after fresh start. Mocked tests cover: already-running, stopped-to-started (auth re-run), stopping-to-waited-to-started, IP changed.
 **Could block**: SSH readiness timing varies — use generous timeout (60s).
 
 ### T5 — Wire auto-start into work tools
@@ -128,13 +134,14 @@ Build succeeds. All existing + new tests pass. Can register a cloud member in th
   const readyAgent = await ensureCloudReady(agent);
   ```
 - 3-line addition per tool. The rest of each tool is unchanged.
+- `touchAgent` is also updated here to call `idleManager.resetTimer(agentId)` after every successful operation — this is the wiring point that T7's idle manager depends on.
 - Add tests: mock cloud provider, verify ensureCloudReady called for cloud members, skipped for non-cloud.
 
 **Done**: `execute_command` on a stopped cloud member auto-starts it, updates IP, executes command. Non-cloud members unaffected.
 **Could block**: Agent object mutation — ensureCloudReady returns fresh agent from registry, not stale reference.
 
 ### VERIFY (V2)
-Dispatch work to a stopped cloud member — it auto-starts — command executes — member IP updated. Existing non-cloud tools unchanged.
+Dispatch work to a stopped cloud member — it auto-starts — auth re-provisioned — command executes — member IP updated. Existing non-cloud tools unchanged.
 
 ---
 
@@ -157,6 +164,7 @@ Dispatch work to a stopped cloud member — it auto-starts — command executes 
 **Could block**: `nvidia-smi` output varies across driver versions — parse defensively, treat parse errors as "unknown" (don't stop).
 
 ### T7 — Idle manager service
+**Depends on**: T5 — `touchAgent` (modified in T5) calls `idleManager.resetTimer(agentId)`, which is the mechanism that feeds activity back into the idle manager.
 **Files**: `src/services/cloud/idle-manager.ts` (new), `src/index.ts` (start on server init)
 **What**:
 - `IdleManager` class:
@@ -171,7 +179,7 @@ Dispatch work to a stopped cloud member — it auto-starts — command executes 
     5. If idle > timeout AND not busy — `stopInstance()`, log to stderr
   - Timer is `unref()`'d (doesn't prevent Node exit)
   - Mutex per instance: never run two stop attempts concurrently
-- Wire into `src/index.ts`: start idle manager after server connects
+- Wire into `src/index.ts`: start idle manager after server connects; on startup, reload `lastUsed` from registry for all cloud members so in-memory timers reflect persisted state (mitigates R-9)
 - Wire `resetTimer` into `touchAgent` helper so every tool call resets it
 
 **Done**: Idle manager stops instances after configured timeout. GPU activity prevents stop. Timer resets on tool calls. Tests with mocked provider + activity check.
@@ -185,6 +193,7 @@ Cloud member left idle > timeout auto-stops. Cloud member with active GPU stays 
 ## Phase 4: Cloud Status & Control
 
 ### T8 — fleet_status + member_detail cloud enrichment
+**Depends on**: T6 — `gpuUtilization()` is added to `OsCommands` in T6 and used here.
 **Files**: `src/tools/check-status.ts`, `src/tools/member-detail.ts`
 **What**:
 - For cloud members, add to status output:
@@ -224,23 +233,30 @@ Cloud member left idle > timeout auto-stops. Cloud member with active GPU stays 
 ### T10 — Task wrapper script + launch mechanism
 **Files**: `src/services/cloud/task-wrapper.ts` (new), extend `src/tools/execute-command.ts` schema
 **What**:
-- `generateTaskWrapper(config)` generates a bash script that:
-  - Runs the user's command via `nohup`
-  - Redirects stdout/stderr to `~/.fleet-tasks/<task-id>/output.log`
-  - Writes PID to `~/.fleet-tasks/<task-id>/pid`
-  - Writes status to `~/.fleet-tasks/<task-id>/status` (`running | completed:0 | crashed:N`)
-  - On crash (non-zero exit): retry up to N times (configurable, default 3)
-  - Touches fleet activity marker on each retry (prevents idle stop during retries)
-  - On completion: writes final status
-- Add `long_running: boolean` and `max_retries: number` options to `execute_command` schema
+- `generateTaskWrapper(config)` accepts:
+  - `command: string` — the initial run command (e.g. `python train.py --epochs 100`)
+  - `restart_command?: string` — command to use for retries (e.g. `python train.py --resume checkpoint.pt`). If omitted, retries use `command` (user must ensure idempotency). **ML training tasks should always supply `restart_command` — the initial run and the checkpoint-resume run differ, and retrying the original command restarts training from scratch, discarding all progress.**
+  - `max_retries: number` (default 3)
+  - `task_id: string`
+
+- Generated bash script behavior:
+  1. Run `command` as the initial execution via nohup
+  2. Redirect stdout/stderr to `~/.fleet-tasks/<task-id>/output.log`
+  3. Write PID to `~/.fleet-tasks/<task-id>/pid`
+  4. Write status to `~/.fleet-tasks/<task-id>/status` (`running | completed:0 | crashed:N`)
+  5. **Background activity loop (F3)**: launch a background subshell that touches the fleet activity marker file every 5 minutes while the child PID is alive. This prevents the idle manager from stopping the instance during multi-hour training. Touching only on retries is insufficient — a healthy 6-hour run with no crashes would exceed the 30-min idle timeout without this loop.
+  6. On crash (non-zero exit): if retries remain, run `restart_command` (or `command` if not supplied) and decrement retry count. Touch activity marker on retry.
+  7. On completion (exit 0): write `completed:0` to status; background loop exits naturally when PID is gone.
+
+- Add `long_running: boolean`, `max_retries: number`, and `restart_command?: string` options to `execute_command` schema
 - When `long_running: true`:
   1. Generate wrapper script with unique task ID
   2. Push to member via strategy.transferFiles
   3. Execute wrapper via nohup (non-blocking)
   4. Return task ID for later monitoring
 
-**Done**: Can launch a long-running command that survives SSH disconnect. Task ID returned. Script logs to known location. Auto-retries on crash.
-**Could block**: `screen` not installed — fall back to plain `nohup` (always available on Linux).
+**Done**: Can launch a long-running command that survives SSH disconnect. Task ID returned. Script logs to known location. Auto-retries on crash using `restart_command`. Activity marker touched every 5 min — instance stays alive through multi-hour training.
+**Could block**: `screen` not installed — fall back to plain nohup (always available on Linux).
 
 ### T11 — monitor_task tool
 **Files**: `src/tools/monitor-task.ts` (new), `src/index.ts` (register)
@@ -251,7 +267,7 @@ Cloud member left idle > timeout auto-stops. Cloud member with active GPU stays 
     1. Read `status` file
     2. Check if PID alive (`kill -0 $PID`)
     3. If GPU available: `nvidia-smi` for utilization + memory
-    4. Crash detection: PID dead but GPU memory held = `crashed (GPU memory leak)`
+    4. Crash detection: PID dead but GPU memory held = crashed (GPU memory leak)
     5. Tail last 50 lines of `output.log`
   - Returns structured JSON: `{ status, pid_alive, gpu_util, gpu_memory, log_tail, retries_remaining }`
   - If task completed and `auto_stop` is true, trigger instance stop
@@ -260,7 +276,7 @@ Cloud member left idle > timeout auto-stops. Cloud member with active GPU stays 
 **Could block**: Race between task completion and monitor — status file is authoritative.
 
 ### VERIFY (V5)
-Launch long-running task — disconnect — reconnect — monitor shows status. Crashed task auto-retries. Completed task optionally stops instance. All tests pass.
+Launch long-running task — disconnect — reconnect — monitor shows status. Crashed task auto-retries using `restart_command`. Activity marker touched every 5 min — idle manager does not stop instance during task. Completed task optionally stops instance. All tests pass.
 
 ---
 
@@ -282,8 +298,8 @@ Launch long-running task — disconnect — reconnect — monitor shows status. 
 **Files**: `docs/architecture.md`, `docs/tools-lifecycle.md`, `docs/tools-work.md`, `docs/tools-observability.md`, `README.md`
 **What**:
 - Architecture: add "Cloud Lifecycle" section explaining the wrapper layer
-- tools-lifecycle: document `cloud_control` tool, cloud registration fields
-- tools-work: document `long_running` option, `monitor_task` tool
+- tools-lifecycle: document `cloud_control` tool, cloud registration fields, `cloud_ssh_key_path` note
+- tools-work: document `long_running` option, `restart_command` param, `monitor_task` tool
 - tools-observability: document cloud fields in fleet_status/member_detail
 - README: add cloud setup section (AWS CLI prereq, registration example)
 
@@ -307,6 +323,7 @@ All tests pass. Docs complete. Full build clean. Non-cloud functionality verifie
 | R-6 | nohup unavailable on member | Very Low | Medium (can't run long tasks) | nohup is POSIX — available on all Linux. screen is optional. |
 | R-7 | execute_prompt timeout for long-running work | Medium | High (PM loses track) | Use `long_running: true` to decouple from SSH session. |
 | R-8 | AWS API rate limits on frequent describe-instances | Low | Low (transient) | Cache state 30s. Idle manager polls every 60s. |
+| R-9 | Server restart resets all in-memory idle timers | Medium | Medium (instance not stopped if it was idle before restart) | `lastUsed` is persisted to registry on every `touchAgent` call. On server startup, IdleManager reloads `lastUsed` from registry for all cloud members, restoring effective idle tracking. |
 
 ---
 
