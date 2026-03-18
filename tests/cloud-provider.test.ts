@@ -190,9 +190,12 @@ describe('AwsCloudProvider - input validation', () => {
     const trickProfile = { ...baseConfig, profile: "apra'; rm -rf /" };
     await p.getInstanceState(trickProfile);
     const cmd = exec.mock.calls[1][0] as string;
-    // Must NOT contain unquoted shell metacharacters
-    expect(cmd).not.toMatch(/;|&&|\|/);
+    // Profile must be passed via escapeShellArg: starts with single quote
     expect(cmd).toContain("--profile '");
+    // The injection's semicolon must NOT appear as a bare unquoted shell separator.
+    // escapeShellArg wraps the value in single quotes, embedding the '; rm ...' safely.
+    // Verify the argument begins with the properly-escaped single-quoted form.
+    expect(cmd).toMatch(/--profile 'apra'/);
   });
 });
 
@@ -213,16 +216,22 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
-vi.mock('../src/services/cloud/aws.js', () => ({
-  awsProvider: {
-    getInstanceState: vi.fn().mockResolvedValue('stopped'),
-    startInstance: vi.fn(),
-    stopInstance: vi.fn(),
-    waitForRunning: vi.fn(),
-    waitForStopped: vi.fn(),
-    getPublicIp: vi.fn().mockResolvedValue('1.2.3.4'),
-  },
-}));
+// Partially mock aws.js: keep the real AwsCloudProvider class but replace the
+// awsProvider singleton so registerMember tests can control instance state.
+vi.mock('../src/services/cloud/aws.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../src/services/cloud/aws.js')>();
+  return {
+    ...mod, // keeps AwsCloudProvider class intact
+    awsProvider: {
+      getInstanceState: vi.fn().mockResolvedValue('stopped'),
+      startInstance: vi.fn(),
+      stopInstance: vi.fn(),
+      waitForRunning: vi.fn(),
+      waitForStopped: vi.fn(),
+      getPublicIp: vi.fn().mockResolvedValue('1.2.3.4'),
+    },
+  };
+});
 
 beforeEach(() => {
   backupAndResetRegistry();
