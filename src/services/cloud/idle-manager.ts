@@ -18,7 +18,7 @@ export class IdleManager {
 
   /**
    * Start the idle manager. Idempotent — safe to call multiple times.
-   * @param idleTimeoutMs How long (ms) a member can be idle before auto-stop. Default: 30 min.
+   * @param idleTimeoutMs Global fallback idle timeout (ms). Per-agent timeout takes priority if set.
    */
   start(idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS): void {
     if (this.interval) return; // already running
@@ -64,11 +64,17 @@ export class IdleManager {
       // Mutex: skip if a stop is already in progress for this instance
       if (this.stopping.has(agent.id)) continue;
 
+      // Determine effective idle timeout: per-agent setting takes priority over global
+      const perAgentMs = agent.cloud!.idleTimeoutMin
+        ? agent.cloud!.idleTimeoutMin * 60_000
+        : 0;
+      const effectiveTimeoutMs = perAgentMs > 0 ? perAgentMs : this.idleTimeoutMs;
+
       // Check idle time
       const lastActive = this.lastActivity.get(agent.id)
         ?? (agent.lastUsed ? new Date(agent.lastUsed).getTime() : 0);
       const idleMs = Date.now() - lastActive;
-      if (idleMs < this.idleTimeoutMs) continue;
+      if (idleMs < effectiveTimeoutMs) continue;
 
       // Only stop running instances
       let state: string;

@@ -15,6 +15,13 @@ export interface CloudConfig {
   sshKeyPath: string;
 }
 
+export interface CloudInstanceDetails {
+  state: InstanceState;
+  publicIp?: string;
+  instanceType?: string;
+  launchTime?: string;
+}
+
 export interface CloudProvider {
   getInstanceState(config: CloudConfig): Promise<InstanceState>;
   startInstance(config: CloudConfig): Promise<void>;
@@ -22,4 +29,5 @@ export interface CloudProvider {
   waitForRunning(config: CloudConfig): Promise<void>;
   waitForStopped(config: CloudConfig): Promise<void>;
   getPublicIp(config: CloudConfig): Promise<string>;
+  getInstanceDetails(config: CloudConfig): Promise<CloudInstanceDetails>;
 }

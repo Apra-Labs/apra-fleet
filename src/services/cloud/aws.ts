@@ -1,6 +1,6 @@
 import { exec, type ExecOptions } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { CloudConfig, CloudProvider, InstanceState } from './types.js';
+import type { CloudConfig, CloudProvider, CloudInstanceDetails, InstanceState } from './types.js';
 import { escapeShellArg } from '../../utils/shell-escape.js';
 
 type ExecResult = { stdout: string; stderr: string };
@@ -110,6 +110,30 @@ export class AwsCloudProvider implements CloudProvider {
       throw new Error(`No public IP address for instance ${config.instanceId}`);
     }
     return ip;
+  }
+
+  async getInstanceDetails(config: CloudConfig): Promise<CloudInstanceDetails> {
+    await this.ensureCli();
+    const base = baseArgs(config);
+    const { stdout } = await this.run(
+      `aws ec2 describe-instances --instance-ids ${config.instanceId} --query 'Reservations[0].Instances[0].{State:State.Name,IP:PublicIpAddress,Type:InstanceType,Launch:LaunchTime}' --output json ${base}`,
+    );
+    let parsed: { State?: string; IP?: string; Type?: string; Launch?: string } = {};
+    try {
+      parsed = JSON.parse(stdout.trim());
+    } catch {
+      throw new Error(`Failed to parse instance details: ${stdout.trim()}`);
+    }
+    const state = parsed.State ?? 'stopped';
+    if (!VALID_STATES.has(state)) {
+      throw new Error(`Unexpected instance state: ${state}`);
+    }
+    return {
+      state: state as InstanceState,
+      publicIp: parsed.IP && parsed.IP !== 'None' ? parsed.IP : undefined,
+      instanceType: parsed.Type ?? undefined,
+      launchTime: parsed.Launch ?? undefined,
+    };
   }
 }
 
