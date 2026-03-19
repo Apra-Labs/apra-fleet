@@ -23,3 +23,9 @@ MCP server (`src/`) managing a fleet of remote/local Claude Code members via SSH
 - **planned.json** (pm's immutable copy) vs **progress.json** (member's living state)
 - **Dev vs deploy**: code committed != code deployed. Pull → install → build → restart.
 - **Verify checkpoints**: member stops, pm reviews, resumes. Never skip.
+
+## Development Gotchas
+- **After `npm run build`**: call `shutdown_server` → user runs `/mcp` → confirm before live testing. The running process serves old code until restarted.
+- **Claude CLI invocations**: `getClaudeCommand(os, args)` in `src/utils/platform.ts` is the single source of truth.
+- **ssh2 streams**: require `stream.end()` after exec to close stdin (prevents `claude -p` from hanging).
+- **Auth validation**: always use `claude -p "hello"` not `claude auth status` (the latter doesn't validate API keys).
