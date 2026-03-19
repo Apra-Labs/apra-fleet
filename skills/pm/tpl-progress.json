@@ -1,4 +1,8 @@
 {
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | completed | blocked"
+  },
   "project": "{{PROJECT_NAME}}",
   "plan_file": "PLAN.md",
   "created": "{{DATE}}",

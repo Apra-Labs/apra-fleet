@@ -1,4 +1,5 @@
 {
+  "_example_granted_entry": { "permission": "Bash(docker:*)", "reason": "integration tests", "date": "2026-03-15" },
   "stacks": [],
   "granted": []
 }
