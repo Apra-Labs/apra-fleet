@@ -4,7 +4,7 @@ After `register_member`, run these 7 steps before dispatching any work.
 
 ## Step 1: Setup SSH Key Auth (remote members only)
 
-Check `member_detail` — if `agentType` is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
+Check `member_detail` — if member type is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
 
 ## Step 2: Disable AI Attribution
 

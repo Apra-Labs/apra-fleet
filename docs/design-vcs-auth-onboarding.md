@@ -2,20 +2,20 @@
 
 ## Overview
 
-This document describes two complementary workstreams that improve how fleet agents authenticate with version control systems (VCS) and how new members are onboarded into the PM workflow.
+This document describes two complementary workstreams that improve how fleet members authenticate with version control systems (VCS) and how new members are onboarded into the PM workflow.
 
-**Workstream 1** adds a unified `provision_vcs_auth` MCP server tool that deploys VCS credentials to any fleet agent, supporting GitHub, Bitbucket, and Azure DevOps. It replaces the existing `provision_git_auth` and `revoke_git_auth` tools.
+**Workstream 1** adds a unified `provision_vcs_auth` MCP server tool that deploys VCS credentials to any fleet member, supporting GitHub, Bitbucket, and Azure DevOps. It replaces the existing `provision_git_auth` and `revoke_git_auth` tools.
 
-**Workstream 2** adds a member onboarding flow as a PM skill that automatically detects the VCS provider, determines required permissions based on the agent's role, and guides credential setup.
+**Workstream 2** adds a member onboarding flow as a PM skill that automatically detects the VCS provider, determines required permissions based on the member's role, and guides credential setup.
 
 ## Motivation
 
-The PM coordinates work across fleet agents. Currently GitHub auth is handled via a GitHub App (`setup_git_app` + `provision_git_auth`), but there is no support for Bitbucket or Azure DevOps. We also lack a member onboarding flow that automatically sets up VCS auth and skills after registration.
+The PM coordinates work across fleet members. Currently GitHub auth is handled via a GitHub App (`setup_git_app` + `provision_git_auth`), but there is no support for Bitbucket or Azure DevOps. We also lack a member onboarding flow that automatically sets up VCS auth and skills after registration.
 
 Key pain points:
-- **No Bitbucket/Azure DevOps support** — agents working on non-GitHub repos must have credentials manually configured
-- **No onboarding automation** — after `register_agent`, the PM must manually remember to set up VCS auth, install skills, and verify connectivity
-- **Role-based scoping is ad hoc** — there is no systematic mapping from agent roles to required VCS permissions
+- **No Bitbucket/Azure DevOps support** — members working on non-GitHub repos must have credentials manually configured
+- **No onboarding automation** — after `register_member`, the PM must manually remember to set up VCS auth, install skills, and verify connectivity
+- **Role-based scoping is ad hoc** — there is no systematic mapping from member roles to required VCS permissions
 
 ## Workstream 1: MCP Server — `provision_vcs_auth` Tool
 
@@ -51,9 +51,9 @@ revoke_vcs_auth(agent_id: string, provider: github | bitbucket | azure-devops)
 { org_url: string, pat: string }  // org_url e.g. https://dev.azure.com/myorg
 ```
 
-### What the Tool Does on the Agent
+### What the Tool Does on the Member
 
-1. **Deploys credentials** to the appropriate location on the agent filesystem
+1. **Deploys credentials** to the appropriate location on the member filesystem
 2. **Configures git credential helper** so `git clone/pull/push` works without interactive prompts
 3. **Tests connectivity** via lightweight API call:
    - GitHub: `gh auth status` or API call to `/user`
@@ -63,7 +63,7 @@ revoke_vcs_auth(agent_id: string, provider: github | bitbucket | azure-devops)
 
 ### Constraints
 
-Each agent supports a single VCS provider at a time. Multi-provider configurations are out of scope for this design.
+Each member supports a single VCS provider at a time. Multi-provider configurations are out of scope for this design.
 
 ## Workstream 2: PM Skill — Member Onboarding Flow
 
@@ -73,11 +73,11 @@ Each agent supports a single VCS provider at a time. Multi-provider configuratio
 
 ### Onboarding Steps
 
-**Step 1: Detect VCS** — run `git remote -v` on agent via `execute_command`
+**Step 1: Detect VCS** — run `git remote -v` on member via `execute_command`
 - 90% case: existing workspace with repos checked out — parse URLs to detect github.com / bitbucket.org / dev.azure.com
 - 10% case: empty work folder — ask user which VCS provider and repo URL
 
-**Step 2: Determine role(s)** — ask user. Roles are ADDITIVE (an agent can have multiple):
+**Step 2: Determine role(s)** — ask user. Roles are ADDITIVE (a member can have multiple):
 - `development` — write code, create branches, push commits
 - `code-review` — read PRs, post review comments
 - `testing` — read repo, read CI/pipeline results
@@ -102,7 +102,7 @@ Each agent supports a single VCS provider at a time. Multi-provider configuratio
 
 **Step 5: Guide token setup if insufficient** — provider-specific instructions:
 - Bitbucket: Go to https://id.atlassian.com/manage-profile/security/api-tokens, create token with required scopes, provide to PM
-- GitHub: `gh auth login` on agent, or provide PAT
+- GitHub: `gh auth login` on member, or provide PAT
 - Azure DevOps: Go to `https://dev.azure.com/{org}/_usersSettings/tokens`, create PAT with required scopes
 
 **Step 6: Deploy credentials** — call `provision_vcs_auth` with the token user provides
@@ -221,36 +221,36 @@ skills/pm/
 
 ### Integration Tests
 
-- **End-to-end GitHub PAT** — deploy PAT to test agent, verify `git ls-remote` works
+- **End-to-end GitHub PAT** — deploy PAT to test member, verify `git ls-remote` works
 - **End-to-end Bitbucket** — deploy Bitbucket credentials, verify API access
 - **End-to-end Azure DevOps** — deploy Azure DevOps PAT, verify API access
-- **Onboarding flow** — register new agent, verify hook fires and PM runs checklist
+- **Onboarding flow** — register new member, verify hook fires and PM runs checklist
 
 ### Manual Testing
 
 - Verify `revoke_vcs_auth` cleanly removes credentials without affecting other providers
-- Test with agents on all three OS platforms (Linux, macOS, Windows)
+- Test with members on all three OS platforms (Linux, macOS, Windows)
 
 ## Recommended Workflow: Two-Context Design Review Loop
 
-When designing new features using this pattern (PM + fleet agent), use the two-context design review loop:
+When designing new features using this pattern (PM + fleet member), use the two-context design review loop:
 
 1. **PM brainstorms with user** — captures intent, constraints, and design decisions in conversation context
-2. **Fleet agent generates artifact** — has codebase context, writes the design doc / code / plan
-3. **PM reviews output** — catches gaps between what was agreed in brainstorm and what the agent produced
-4. **Fleet agent revises** — incorporates corrections with full codebase awareness
+2. **Fleet member generates artifact** — has codebase context, writes the design doc / code / plan
+3. **PM reviews output** — catches gaps between what was agreed in brainstorm and what the member produced
+4. **Fleet member revises** — incorporates corrections with full codebase awareness
 5. Repeat until converged
 
 This works because the two contexts have complementary strengths:
 - **PM context** holds the *what* — user intent, cross-project awareness, strategic decisions
-- **Agent context** holds the *where* — codebase structure, existing patterns, file locations
+- **Member context** holds the *where* — codebase structure, existing patterns, file locations
 
 Neither context alone produces the right output. The review loop bridges them. This should be the default workflow for design docs, architecture decisions, and any artifact that needs both user alignment and codebase grounding.
 
 ## Design Decisions
 
-1. **Credential storage** — single file per agent with templated key names. Keys follow the pattern `{provider}_{field}` (e.g., `bitbucket_workspace`, `bitbucket_email`, `bitbucket_api_token`, `azdevops_org_url`, `azdevops_pat`, `github_pat`). One file, no bloat. Location: `~/.fleet/credentials/{agent_id}.json` on the agent, or the agent's work folder under `.claude/credentials.json`.
+1. **Credential storage** — single file per member with templated key names. Keys follow the pattern `{provider}_{field}` (e.g., `bitbucket_workspace`, `bitbucket_email`, `bitbucket_api_token`, `azdevops_org_url`, `azdevops_pat`, `github_pat`). One file, no bloat. Location: `~/.fleet/credentials/{agent_id}.json` on the member, or the member's work folder under `.claude/credentials.json`.
 
-2. **Token rotation** — lazy approach. No proactive rotation. When an agent operation fails due to expired/invalid token, the PM detects the auth failure and initiates token refresh — ideally without user involvement (e.g., re-mint GitHub App token automatically) but without compromising security (e.g., don't store long-lived tokens that bypass expiry). For Bitbucket/Azure DevOps API tokens that don't auto-expire, no rotation needed unless the user revokes them.
+2. **Token rotation** — lazy approach. No proactive rotation. When a member operation fails due to expired/invalid token, the PM detects the auth failure and initiates token refresh — ideally without user involvement (e.g., re-mint GitHub App token automatically) but without compromising security (e.g., don't store long-lived tokens that bypass expiry). For Bitbucket/Azure DevOps API tokens that don't auto-expire, no rotation needed unless the user revokes them.
 
-3. **Onboarding hook scope** — the PostToolUse hook for member onboarding is a PM-specific concept. It is installed as part of the PM skill installation (via `install.sh`), not as a global fleet MCP feature. All agents registered through a PM session get onboarded. There is no concept of "non-PM agents" — if you're using the PM skill, all your agents go through onboarding.
+3. **Onboarding hook scope** — the PostToolUse hook for member onboarding is a PM-specific concept. It is installed as part of the PM skill installation (via `install.sh`), not as a global fleet MCP feature. All members registered through a PM session get onboarded. There is no concept of "non-PM members" — if you're using the PM skill, all your members go through onboarding.

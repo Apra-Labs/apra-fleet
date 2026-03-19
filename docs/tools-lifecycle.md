@@ -1,17 +1,17 @@
 # Lifecycle Tools
 
-Tools that manage the fleet roster — adding, listing, updating, and removing agents.
+Tools that manage the fleet roster — adding, listing, updating, and removing members.
 
-## register_agent
+## register_member
 
-Registers a new machine as a fleet agent. This is the entry point for every agent — nothing else works until an agent is registered.
+Registers a new machine as a fleet member. This is the entry point for every member — nothing else works until a member is registered.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `friendly_name` | string | yes | Human-readable label (e.g. "web-server") |
-| `agent_type` | `"local"` \| `"remote"` | no | Default: `"remote"`. Use `"local"` for same-machine agents |
+| `agent_type` | `"local"` \| `"remote"` | no | Default: `"remote"`. Use `"local"` for same-machine members |
 | `host` | string | remote only | IP or hostname of the remote machine |
 | `port` | number | no | SSH port, default 22 |
 | `username` | string | remote only | SSH username |
@@ -22,43 +22,43 @@ Registers a new machine as a fleet agent. This is the entry point for every agen
 
 **What it does, step by step:**
 
-1. **Validates required fields** — remote agents must have `host`, `username`, and `auth_type`. Local agents skip all SSH fields.
-2. **Duplicate folder check** — rejects if another agent already uses the same folder on the same device (same host for remote, same machine for local).
-3. **Tests connectivity** — remote agents get an SSH connection test with latency measurement. Local agents always pass (they're on the same machine).
-4. **Detects OS** — remote agents run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local agents read `process.platform` directly.
+1. **Validates required fields** — remote members must have `host`, `username`, and `auth_type`. Local members skip all SSH fields.
+2. **Duplicate folder check** — rejects if another member already uses the same folder on the same device (same host for remote, same machine for local).
+3. **Tests connectivity** — remote members get an SSH connection test with latency measurement. Local members always pass (they're on the same machine).
+4. **Detects OS** — remote members run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local members read `process.platform` directly.
 5. **Checks Claude CLI** — runs `claude --version` to verify Claude Code is installed and capture the version.
-6. **Auth test (remote only)** — runs a quick `claude -p "hello"` to verify Claude can authenticate. Skipped for local agents since they inherit the current session's auth.
+6. **Auth test (remote only)** — runs a quick `claude -p "hello"` to verify Claude can authenticate. Skipped for local members since they inherit the current session's auth.
 7. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
-8. **Persists** — saves the agent to `~/.apra-fleet/data/registry.json` with a generated UUID.
+8. **Persists** — saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID.
 
-**Output:** Agent ID, name, type, OS, folder, auth method, latency, and any warnings (e.g. Claude CLI not found, auth failed).
+**Output:** Member ID, name, type, OS, folder, auth method, latency, and any warnings (e.g. Claude CLI not found, auth failed).
 
 **Failure modes:**
-- SSH connection fails → agent is NOT registered, error returned
-- Duplicate folder → agent is NOT registered
-- Claude CLI missing → agent IS registered, but with a warning
+- SSH connection fails → member is NOT registered, error returned
+- Duplicate folder → member is NOT registered
+- Claude CLI missing → member IS registered, but with a warning
 
-## list_agents
+## list_members
 
-Lists all registered fleet agents with their details.
+Lists all registered fleet members with their details.
 
 **Parameters:** None.
 
 **What it does:**
 
-Reads the registry and formats every agent into a display block showing: ID, type (local/remote), host (remote only), OS, folder, auth type (remote only), session ID, created date, and last used date.
+Reads the registry and formats every member into a display block showing: ID, type (local/remote), host (remote only), OS, folder, auth type (remote only), session ID, created date, and last used date.
 
-**Output:** Formatted list with box-drawing characters. Shows "No agents registered" if the fleet is empty.
+**Output:** Formatted list with box-drawing characters. Shows "No members registered" if the fleet is empty.
 
-## update_agent
+## update_member
 
-Modifies an existing agent's registration. All fields except `agent_id` are optional — only provided fields are changed.
+Modifies an existing member's registration. All fields except `member_id` are optional — only provided fields are changed.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `agent_id` | string | yes | UUID of the agent to update |
+| `member_id` | string | yes | UUID of the member to update |
 | `friendly_name` | string | no | New display name |
 | `host` | string | no | New host (remote only) |
 | `port` | number | no | New SSH port (remote only) |
@@ -70,35 +70,35 @@ Modifies an existing agent's registration. All fields except `agent_id` are opti
 
 **What it does:**
 
-1. Looks up the agent by ID.
-2. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_agent`) — rejects if the new folder is already in use by another agent on the same device. The check excludes the current agent's own ID so "updating to the same folder" doesn't falsely trigger.
+1. Looks up the member by ID.
+2. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_member`) — rejects if the new folder is already in use by another member on the same device. The check excludes the current member's own ID so "updating to the same folder" doesn't falsely trigger.
 3. Encrypts password if provided (AES-256-GCM).
 4. Applies updates and persists to registry.
 
-**Output:** Updated agent details.
+**Output:** Updated member details.
 
 **Note:** This tool does NOT re-test SSH connectivity or re-detect the OS. It's a metadata update only. If you change the host or credentials, subsequent tool calls will use the new values.
 
-## remove_agent
+## remove_member
 
-Unregisters a fleet agent and cleans up its connection.
+Unregisters a fleet member and cleans up its connection.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `agent_id` | string | yes | UUID of the agent to remove |
+| `member_id` | string | yes | UUID of the member to remove |
 
 **What it does:**
 
-1. Looks up the agent by ID.
-2. **Best-effort auth cleanup** — tests connectivity to the agent, and if reachable: removes `~/.claude/.credentials.json` (OAuth credentials file) and removes `ANTHROPIC_API_KEY` from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the agent is offline, a warning is returned but the removal still proceeds.
-3. Calls `strategy.close()` — for remote agents, this closes the pooled SSH connection. For local agents, this is a no-op.
-4. Removes the agent from the registry file.
+1. Looks up the member by ID.
+2. **Best-effort auth cleanup** — tests connectivity to the member, and if reachable: removes `~/.claude/.credentials.json` (OAuth credentials file) and removes `ANTHROPIC_API_KEY` from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
+3. Calls `strategy.close()` — for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
+4. Removes the member from the registry file.
 
-**Output:** Confirmation message with agent name and ID. Includes warnings if the token could not be cleared (e.g. agent was offline).
+**Output:** Confirmation message with member name and ID. Includes warnings if the token could not be cleared (e.g. member was offline).
 
-**Note:** This does NOT delete the working folder on the target machine, nor does it remove any deployed SSH keys from the remote's `authorized_keys` file. Those remain as-is.
+**Note:** This does NOT delete the working folder on the target machine, nor does it remove any deployed SSH keys from the remote member's `authorized_keys` file. Those remain as-is.
 
 ## shutdown_server
 

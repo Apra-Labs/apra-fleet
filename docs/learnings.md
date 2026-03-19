@@ -2,11 +2,11 @@
 
 Operational knowledge gathered from real fleet usage. Will eventually become a skill for guiding users through common scenarios.
 
-## Agent Registration Troubleshooting
+## Member Registration Troubleshooting
 
 ### SSH Connection Refused (ECONNREFUSED)
 
-**Symptom:** `register_agent` fails with `connect ECONNREFUSED <host>:22 — Agent was NOT registered.`
+**Symptom:** `register_member` fails with `connect ECONNREFUSED <host>:22 — Agent was NOT registered.`
 
 **Root cause:** SSH server is not running or not enabled on the target machine.
 
@@ -79,7 +79,7 @@ Set-Service sshd -StartupType Automatic
 Get-Service sshd
 ```
 
-#### Windows — Additional Setup for Remote Agents
+#### Windows — Additional Setup for Remote Members
 
 After installing OpenSSH Server, Windows has some quirks that can block fleet registration:
 
@@ -112,7 +112,7 @@ For non-admin users, `~/.ssh/authorized_keys` works normally.
 
 ### Authentication Failed (All configured authentication methods failed)
 
-**Symptom:** `register_agent` fails with `All configured authentication methods failed — Agent was NOT registered.`
+**Symptom:** `register_member` fails with `All configured authentication methods failed — Agent was NOT registered.`
 
 SSH is reachable but the credentials are wrong. Common causes:
 
@@ -132,16 +132,16 @@ If SSH is enabled but connection still refused, check firewall rules:
 
 ### Prerequisites
 
-- **For OAuth (default):** Run `/login` in your Claude Code session (or `claude auth login` from terminal) first. `provision_auth` copies your credentials to the remote agent.
+- **For OAuth (default):** Run `/login` in your Claude Code session (or `claude auth login` from terminal) first. `provision_auth` copies your credentials to the remote member.
 - **For API key:** Have your Anthropic API key ready. Pass it as the `api_key` parameter to `provision_auth`.
 
-`provision_auth` checks token expiry before deploying. If your access token is expired but a refresh token exists, deployment proceeds — the agent CLI will auto-refresh on first use.
+`provision_auth` checks token expiry before deploying. If your access token is expired but a refresh token exists, deployment proceeds — the member's CLI will auto-refresh on first use.
 
 ### Auth Check Failed Warning During Registration
 
-If `register_agent` succeeds but shows `Claude CLI auth check failed — you may need to run provision_auth`, this is normal for new agents. Run `provision_auth` with the agent's ID to set up authentication.
+If `register_member` succeeds but shows `Claude CLI auth check failed — you may need to run provision_auth`, this is normal for new members. Run `provision_auth` with the member's ID to set up authentication.
 
-## Local Agent on Windows — Pristine Shell Issues
+## Local Member on Windows — Pristine Shell Issues
 
 ### Problem: `claude -p` Hangs Inside a Claude Code Session
 

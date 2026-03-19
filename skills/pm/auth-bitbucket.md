@@ -13,7 +13,7 @@ API tokens (app passwords) tied to a user account. Long-lived, no auto-expire.
 ## Deploy
 
 ```
-provision_vcs_auth(agent_id, provider: 'bitbucket', email: '...', api_token: 'ATBB_...', workspace: '...')
+provision_vcs_auth(member_id, provider: 'bitbucket', email: '...', api_token: 'ATBB_...', workspace: '...')
 ```
 
 ## Scopes

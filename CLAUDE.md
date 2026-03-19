@@ -1,25 +1,25 @@
 # Apra Fleet — MCP Server + PM Skill
 
 ## What This Repo Is
-An MCP server (`src/`) that manages a fleet of remote/local Claude Code agents via SSH. Ships with a pm skill (`skills/pm/`) that orchestrates long-running work across those agents.
-
-## Current Focus: PM Skill Rewrite
-We are rewriting `skills/pm/SKILL.md` using the reviewed materials in `materials/index.md`. That index tracks only files that have been reviewed and confirmed useful — start there.
+MCP server (`src/`) managing a fleet of remote/local Claude Code members via SSH. Ships with a PM skill (`skills/pm/`) that orchestrates multi-step work across members.
 
 ## Key Paths
-- `skills/pm/SKILL.md` — the skill being rewritten (the baseline)
-- `materials/index.md` — reviewed materials driving the rewrite
-- `materials/progress.md` — prioritized improvement list with status tracking (pending → proposed → drafted → done)
-- `materials/change-proposals.md` — concrete proposals (P1, P2, ...) that feed the rewrite
-- `materials/improvements-needed.md` — full analysis of all gaps (B1-B10, K1-K5, A1-A10, etc.)
-- `materials/` — collected reference files (templates, real examples, friction analysis, learnings)
-- `src/` — MCP server source (TypeScript, do not modify during skill work)
-- `docs/` — server documentation
+- `src/` — MCP server source (TypeScript)
+- `skills/pm/` — PM skill (`SKILL.md` + supporting docs + templates)
+- `docs/` — server documentation and design docs
+- `tests/` — unit + integration tests
+- `hooks/` — post-registration hook
+- `scripts/` — statusline, SEA build pipeline
 
-## Fleet MCP Essentials (retain for context)
-- **Fleet operations** always run as background subagents (`run_in_background: true`)
-- **Never two concurrent ops on the same agent** — one agent, one task at a time
-- **3-file pattern**: CLAUDE.md + PLAN.md + progress.json pushed to agent's work_folder
-- **planned.json** (pm's immutable copy) vs **progress.json** (agent's living state)
+## Terminology
+- **member** = registered machine in the fleet
+- **agent** = Claude Code session running on a member (internal code type)
+- See `docs/vocabulary.md` for full definitions
+
+## Fleet MCP Essentials
+- **Fleet operations** run as background subagents (`run_in_background: true`)
+- **Never two concurrent ops on the same member** — one member, one task at a time
+- **3-file pattern**: CLAUDE.md + PLAN.md + progress.json pushed to member's work_folder
+- **planned.json** (pm's immutable copy) vs **progress.json** (member's living state)
 - **Dev vs deploy**: code committed != code deployed. Pull → install → build → restart.
-- **Verify checkpoints**: agent stops, pm reviews, resumes. Never skip.
+- **Verify checkpoints**: member stops, pm reviews, resumes. Never skip.

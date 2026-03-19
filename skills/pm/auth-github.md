@@ -17,8 +17,8 @@ Setup:
 
 Deploy:
 ```
-provision_vcs_auth(agent_id, provider: 'github')
-provision_vcs_auth(agent_id, provider: 'github', git_access: 'push', repos: ['Org/Repo'])
+provision_vcs_auth(member_id, provider: 'github')
+provision_vcs_auth(member_id, provider: 'github', git_access: 'push', repos: ['Org/Repo'])
 ```
 
 Tokens expire after 1 hour. Re-mint via `provision_vcs_auth` when needed.
@@ -36,7 +36,7 @@ Setup:
 
 Deploy:
 ```
-provision_vcs_auth(agent_id, provider: 'github', github_mode: 'pat', token: 'ghp_...')
+provision_vcs_auth(member_id, provider: 'github', github_mode: 'pat', token: 'ghp_...')
 ```
 
 ## Scopes

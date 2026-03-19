@@ -15,7 +15,7 @@ Personal Access Tokens (PATs) with configurable scopes and expiration. Auth: emp
 ## Deploy
 
 ```
-provision_vcs_auth(agent_id, provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: '...')
+provision_vcs_auth(member_id, provider: 'azure-devops', org_url: 'https://dev.azure.com/myorg', pat: '...')
 ```
 
 ## Scopes

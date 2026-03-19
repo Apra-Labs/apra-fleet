@@ -14,17 +14,17 @@ The goal is to figure out what the skill needs *before* writing it, and to ident
 
 A seasoned architect working with Claude Code hits a bottleneck: they can only drive one thread of work at a time. While Claude is implementing feature A, the architect stares at a screen waiting. Feature B, the test suite, the CI pipeline — all sit idle. The architect has the vision, can make fast technical decisions, but is gated on serial execution.
 
-The fleet MCP server solves the infrastructure problem — it can run Claude on multiple machines. But the coordination problem remains: who decides what each agent works on, tracks progress, handles failures, and integrates the results? Doing this manually across 5 agents is a full-time job.
+The fleet MCP server solves the infrastructure problem — it can run Claude on multiple machines. But the coordination problem remains: who decides what each member works on, tracks progress, handles failures, and integrates the results? Doing this manually across 5 members is a full-time job.
 
-**The PM skill makes the architect's single Claude session the coordination hub.** The architect brainstorms and approves the plan. PM fans out work to agents in parallel. While agents grind on implementation, the architect can either observe status or continue brainstorming the next phase. Every agent pushes its own ball forward independently. The architect's engagement is limited to one screen, one Claude session — everything else happens in the background.
+**The PM skill makes the architect's single Claude session the coordination hub.** The architect brainstorms and approves the plan. PM fans out work to members in parallel. While members grind on implementation, the architect can either observe status or continue brainstorming the next phase. Every member pushes its own ball forward independently. The architect's engagement is limited to one screen, one Claude session — everything else happens in the background.
 
 ### 1.2 Communication Model
 
-Hub-and-spoke. Every agent answers only to the PM. No agent-to-agent messaging. The PM is the single source of truth for project state.
+Hub-and-spoke. Every member answers only to the PM. No member-to-member messaging. The PM is the single source of truth for project state.
 
 ### 1.3 Infrastructure
 
-The PM skill is a prompt/workflow layer on top of existing fleet MCP tools (`execute_prompt`, `send_files`, `execute_command`, `list_agents`, `fleet_status`, etc.). Where the existing tools are insufficient, this document identifies **new tooling to build** rather than encoding workarounds in the skill prompt.
+The PM skill is a prompt/workflow layer on top of existing fleet MCP tools (`execute_prompt`, `send_files`, `execute_command`, `list_members`, `fleet_status`, etc.). Where the existing tools are insufficient, this document identifies **new tooling to build** rather than encoding workarounds in the skill prompt.
 
 ### 1.4 Separation of Concerns — The Cardinal Rule
 
@@ -34,8 +34,8 @@ Every participant in the system operates at exactly one level of abstraction. No
 - Task status: done or not done
 - Test results: pass or fail (as a measure of real progress)
 - Dependencies: what blocks what
-- Resources: which agents are idle, which are working
-- Branches: which agent is on which branch
+- Resources: which members are idle, which are working
+- Branches: which member is on which branch
 - Phase progression: where we are in the overall plan
 
 **The PM does NOT know:**
@@ -44,16 +44,16 @@ Every participant in the system operates at exactly one level of abstraction. No
 - Why a test failed (only that it failed)
 - How to fix anything
 
-When something fails — a test, a merge, a build — PM does not diagnose. It assigns a specialist. If integration fails, PM assigns an integrator agent to fix it, even if "fix it" means rolling back. If tests fail, PM assigns a developer agent to fix the failures. PM's only tool for measuring real progress is test results: green means forward, red means backward.
+When something fails — a test, a merge, a build — PM does not diagnose. It assigns a specialist. If integration fails, PM assigns an integrator to fix it, even if "fix it" means rolling back. If tests fail, PM assigns a developer to fix the failures. PM's only tool for measuring real progress is test results: green means forward, red means backward.
 
-**Each agent knows:**
+**Each member knows:**
 - Its assigned specialty (Python development, devops, testing, UX design, etc.)
 - The tasks in its plan.md
 - How to verify its own work
 
-**Each agent does NOT know:**
+**Each member does NOT know:**
 - The overall project plan
-- What other agents are doing
+- What other members are doing
 - Which phase the project is in
 - Who else is on the team
 
@@ -63,10 +63,10 @@ User/Architect ── makes strategic decisions, approves plans
        │
       PM ────────── tracks status, assigns work, measures progress via tests
        │
-    Agents ──────── execute tasks within their specialty, report done/not-done
+  Members ──────── execute tasks within their specialty, report done/not-done
 ```
 
-Each layer communicates only through narrow interfaces: the user talks to PM in natural language, PM talks to agents via plan.md files and prompts, agents talk back via task completion status and test results. No layer leaks into another.
+Each layer communicates only through narrow interfaces: the user talks to PM in natural language, PM talks to members via plan.md files and prompts, members talk back via task completion status and test results. No layer leaks into another.
 
 ---
 
@@ -79,17 +79,17 @@ The user and PM collaborate to define the project scope. PM produces a `project_
 - Role assignments (which type of specialist owns each task)
 - Dependencies between tasks (what blocks what)
 - Quality gate checklist (see 2.3)
-- Available agents from the fleet
+- Available members from the fleet
 
 The user drives this conversation. PM structures and records it. The brainstorming phase ends when the user approves the plan.
 
 ### 2.2 Execution Phase
 
-PM assigns work to agents in parallel where dependencies allow. Each agent receives a `plan.md` containing its specific tasks. Agents work through their plans, marking tasks done. PM monitors progress and loops until all tasks are complete.
+PM assigns work to members in parallel where dependencies allow. Each member receives a `plan.md` containing its specific tasks. Members work through their plans, marking tasks done. PM monitors progress and loops until all tasks are complete.
 
 ### 2.3 Quality Gate — The Automatic Pipeline
 
-This is the key to keeping agents productive without user engagement. When dev tasks complete, PM does NOT stop and wait for the user. Instead it automatically dispatches reviewers — a predictable sequence of specialist evaluations that requires no human decisions.
+This is the key to keeping members productive without user engagement. When dev tasks complete, PM does NOT stop and wait for the user. Instead it automatically dispatches reviewers — a predictable sequence of specialist evaluations that requires no human decisions.
 
 **The do→review pipeline:**
 
@@ -122,7 +122,7 @@ Stage 4: Fix cycle (doers, automatic)
 Stage 5: Report to user — only decisions that need human judgment
 ```
 
-**Why this matters:** In the current manual workflow, an architect pushes work to agents before sleeping. Agents finish dev tasks in 1-2 hours and sit idle for 4-5 hours because no one dispatches the review cycle. The architect wakes up and manually runs the same checklist every morning: "security audit," "DRY check," "run integration tests." PM automates this entire post-dev pipeline, keeping agents productive through the night.
+**Why this matters:** In the current manual workflow, an architect pushes work to members before sleeping. Members finish dev tasks in 1-2 hours and sit idle for 4-5 hours because no one dispatches the review cycle. The architect wakes up and manually runs the same checklist every morning: "security audit," "DRY check," "run integration tests." PM automates this entire post-dev pipeline, keeping members productive through the night.
 
 **The quality gate is configurable per project.** During brainstorming, the architect defines which reviews apply and the exit criteria:
 
@@ -172,8 +172,8 @@ Structure:
 # Project Plan: <project name>
 
 ## Fleet Resources
-| Agent | Role | Branch | Status | Session ID | Current Plan |
-|-------|------|--------|--------|------------|--------------|
+| Member | Role | Branch | Status | Session ID | Current Plan |
+|--------|------|--------|--------|------------|--------------|
 | agent-lin-1 | backend | feature_auth-api | working | sess_abc123 | plan-backend-p1.md |
 | agent-mac-1 | frontend | feature_user-dashboard | idle | — | — |
 
@@ -209,20 +209,20 @@ Structure:
 - SEC-001: SQL injection in search endpoint (found by security, phase 1)
 ```
 
-### 3.2 Agent Plan Files (plan.md)
+### 3.2 Member Plan Files (plan.md)
 
-Each agent receives a `plan.md` via `send_files` (to avoid conflicts — PM is the sole author of new plan.md files). This is a subset of the master plan — only the tasks assigned to that agent. The agent works through it sequentially, marking tasks done and committing the updated plan.md to the branch.
+Each member receives a `plan.md` via `send_files` (to avoid conflicts — PM is the sole author of new plan.md files). This is a subset of the master plan — only the tasks assigned to that member. The member works through it sequentially, marking tasks done and committing the updated plan.md to the branch.
 
-**All three agent artifact types are committed to git on the feature branch:**
-- `plan.md` — PM sends via `send_files`, agent marks tasks [x] and commits. PM reads back (via `execute_command` or `read_remote_file`) to update its own `project_plan.md`.
-- `learnings.md` — agent creates/updates and commits. Persists across checkpoint loops via git.
+**All three member artifact types are committed to git on the feature branch:**
+- `plan.md` — PM sends via `send_files`, member marks tasks [x] and commits. PM reads back (via `execute_command` or `read_remote_file`) to update its own `project_plan.md`.
+- `learnings.md` — member creates/updates and commits. Persists across checkpoint loops via git.
 - `feedback-{type}.md` — reviewer creates and commits. Doer reads on next assignment.
 
-PM's `.claude/project_plan.md` is the master rollup — it lives on the local machine and is never sent to agents. PM updates it by reading the small agent-level `plan.md` files from branches.
+PM's `.claude/project_plan.md` is the master rollup — it lives on the local machine and is never sent to members. PM updates it by reading the small member-level `plan.md` files from branches.
 
 ```markdown
 # Plan: backend — Phase 1
-Agent: agent-lin-1
+Member: agent-lin-1
 Branch: feature_auth-api
 
 ## Onboarding
@@ -249,11 +249,11 @@ Read and analyze these before starting tasks:
 - After each task, commit your changes to the branch.
 ```
 
-**Onboarding is agent-level context channeling, not a PM phase.** In large codebases, letting an agent explore freely wastes context on irrelevant code. The Onboarding section tells the agent exactly what to read and analyze before starting work — convention files, interfaces it implements against, existing patterns it should follow, and its own learnings.md from previous sessions.
+**Onboarding is member-level context channeling, not a PM phase.** In large codebases, letting a member explore freely wastes context on irrelevant code. The Onboarding section tells the member exactly what to read and analyze before starting work — convention files, interfaces it implements against, existing patterns it should follow, and its own learnings.md from previous sessions.
 
-**PM curates Onboarding per role and task group during PLAN mode.** The architect identifies which files matter for each task group (e.g., backend → `api-conventions.md` + `csharp-conventions.md` + the relevant interface files, frontend → `react-conventions.md` + `ux-conventions.md` + the component library). PM includes only the relevant subset — a frontend dev doesn't read API conventions it will never use.
+**PM curates Onboarding per role and task group during PLAN mode.** The architect identifies which files matter for each task group (e.g., backend → `api-conventions.md` + `csharp-conventions.md` + the relevant interface files, frontend → `react-conventions.md` + `ux-conventions.md` + the component library). PM includes only the relevant subset — a frontend member doesn't read API conventions it will never use.
 
-**Status reporting: checkpoint file on disk (decided).** PM does not parse the agent's response for task-level status. It re-sends the same prompt; the agent reads plan.md from disk, skips done tasks, continues. PM only needs to know "all tasks complete" vs "not all complete" from the agent's natural language response. The plan.md file on disk *is* the state.
+**Status reporting: checkpoint file on disk (decided).** PM does not parse the member's response for task-level status. It re-sends the same prompt; the member reads plan.md from disk, skips done tasks, continues. PM only needs to know "all tasks complete" vs "not all complete" from the member's natural language response. The plan.md file on disk *is* the state.
 
 ---
 
@@ -285,31 +285,31 @@ Reviewers read code and produce a `feedback.md` file committed to the doer's bra
 | tester | Run existing test suites, report results | feedback.md with pass/fail results, failure details | Fix failing tests or application code |
 | ci-pipeline | Build, lint, test via CI (GitHub Actions, etc.) | Build/test results (PM interprets as feedback) | Fix anything — it's a machine |
 
-**DevOps is a special case:** DevOps is a doer for CI/CD files (workflow YAMLs, Dockerfiles, build scripts). But when a CI pipeline failure is caused by application code, devops produces a `feedback.md` for the responsible developer agent. DevOps fixes what it owns (infrastructure), and creates feedback for what it doesn't.
+**DevOps is a special case:** DevOps is a doer for CI/CD files (workflow YAMLs, Dockerfiles, build scripts). But when a CI pipeline failure is caused by application code, devops produces a `feedback.md` for the responsible developer. DevOps fixes what it owns (infrastructure), and creates feedback for what it doesn't.
 
 ### 4.3 The Feedback Loop
 
-**Key principle: agents are stateless and fungible. The branch is the continuity, not the agent.**
+**Key principle: members are stateless and fungible. The branch is the continuity, not the member.**
 
-An agent checks out a branch, does its job, pushes, and is immediately free for reassignment. The "doer" who fixes feedback may be a completely different physical agent than the one who wrote the original code. It doesn't matter — everything the next agent needs is in git (code, plan.md, learnings.md, feedback.md).
+A member checks out a branch, does its job, pushes, and is immediately free for reassignment. The "doer" who fixes feedback may be a completely different physical member than the one who wrote the original code. It doesn't matter — everything the next member needs is in git (code, plan.md, learnings.md, feedback.md).
 
 Branch ownership is sequential for doers — at any given time, exactly one doer is modifying code on a branch. Reviewers can run in parallel on the same branch because they are read-only on application code and each writes to its own feedback file.
 
 ```
-1. PM assigns idle agent as doer → agent checks out branch, works plan.md, pushes
-   Agent is now free. PM can reassign it immediately.
+1. PM assigns idle member as doer → member checks out branch, works plan.md, pushes
+   Member is now free. PM can reassign it immediately.
 
-2. PM assigns idle agent as reviewer → agent checks out same branch, reviews code,
+2. PM assigns idle member as reviewer → member checks out same branch, reviews code,
    commits feedback-{reviewer-type}.md, pushes.
-   Agent is now free.
+   Member is now free.
 
-3. PM reads feedback-{reviewer-type}.md (via read_remote_file or execute_command on any agent
+3. PM reads feedback-{reviewer-type}.md (via read_remote_file or execute_command on any member
    that has the branch). If quality goals not met:
 
 4. PM sends updated plan.md (with fix tasks from feedback) to branch via send_files.
-   PM assigns idle agent as doer → agent checks out branch, reads feedback.md
+   PM assigns idle member as doer → member checks out branch, reads feedback.md
    and updated plan.md, fixes issues, pushes.
-   Agent is now free.
+   Member is now free.
 
 5. Loop to step 2 until quality goals met or iteration limit hit.
 ```
@@ -331,7 +331,7 @@ Reviewed: 2026-02-28
 2 HIGH, 0 MEDIUM, 1 LOW
 ```
 
-PM copies HIGH findings verbatim into the doer's plan.md as fix tasks. PM is a passthrough — it does not rephrase or add implementation guidance (it doesn't understand code). The doer agent interprets the finding and decides how to fix it.
+PM copies HIGH findings verbatim into the doer's plan.md as fix tasks. PM is a passthrough — it does not rephrase or add implementation guidance (it doesn't understand code). The doer interprets the finding and decides how to fix it.
 
 ```markdown
 - [ ] [HIGH] SQL injection in `src/routes/search.ts:42` — user input passed directly to query
@@ -376,9 +376,9 @@ Not all roles require the same reasoning depth. PM selects the model tier for ea
 | Standard | sonnet | backend-dev, frontend-dev, test-dev | Feature implementation within a defined plan |
 | Fast | haiku | devops, tester (runner) | Scripting, running commands, reporting results |
 
-PM can escalate a role's model tier when an agent makes zero progress — retry with a higher-tier model before flagging to the user.
+PM can escalate a role's model tier when a member makes zero progress — retry with a higher-tier model before flagging to the user.
 
-**Role assignment:** PM assigns roles to agents dynamically based on available fleet resources and task requirements. The role is embedded in every prompt — agents do not carry implicit role state between sessions. An agent can be a doer in one assignment and a reviewer in the next.
+**Role assignment:** PM assigns roles to members dynamically based on available fleet resources and task requirements. The role is embedded in every prompt — members do not carry implicit role state between sessions. A member can be a doer in one assignment and a reviewer in the next.
 
 ---
 
@@ -386,14 +386,14 @@ PM can escalate a role's model tier when an agent makes zero progress — retry 
 
 This is the core execution mechanism.
 
-### 5.1 Assigning Work to an Agent
+### 5.1 Assigning Work to a Member
 
 ```
 1. PM reads project_plan.md — sees task statuses and test results
 2. PM identifies next parallelizable tasks (dependencies satisfied = predecessor done + tests green)
-3. PM selects an idle agent, assigns it a role
-4. PM generates a plan.md for that agent's tasks
-5. PM sends plan.md to agent via send_files
+3. PM selects an idle member, assigns it a role
+4. PM generates a plan.md for that member's tasks
+5. PM sends plan.md to member via send_files
 6. PM runs execute_prompt via a Task subagent:
      "You are a {role}. Your branch is {branch}.
       Read plan.md in your working directory.
@@ -403,29 +403,29 @@ This is the core execution mechanism.
       When finished or exiting, run verification and report your plan status."
 7. Subagent returns response to PM
 8. PM checks: all tasks done?
-   - Yes → mark agent as idle, update project_plan.md
-   - No  → repeat from step 6 (same prompt, agent reads plan.md, skips done tasks)
+   - Yes → mark member as idle, update project_plan.md
+   - No  → repeat from step 6 (same prompt, member reads plan.md, skips done tasks)
 ```
 
 **PM decision inputs are strictly:**
 - Task checkbox status (done/not-done) — determines what to assign next
 - Test/verification results (pass/fail) — determines if progress is real
 - Dependency graph — determines what can run in parallel
-- Agent availability — determines who gets the work
+- Member availability — determines who gets the work
 
 PM never reads code, never reviews implementations, never debugs. If tests pass, the task is done. If tests fail, PM assigns a fix task to a specialist. Test results are the only objective measure of progress.
 
 ### 5.2 The Checkpoint Pattern
 
-The plan.md on the agent's disk is a checkpoint file. If an agent exits after completing 3 of 10 tasks (timeout, turn limit, error), those 3 tasks remain marked `[x]` in the file. PM re-sends the same prompt. The agent reads plan.md, sees tasks 1-3 are done, picks up at task 4. No special recovery logic needed.
+The plan.md on the member's disk is a checkpoint file. If a member exits after completing 3 of 10 tasks (timeout, turn limit, error), those 3 tasks remain marked `[x]` in the file. PM re-sends the same prompt. The member reads plan.md, sees tasks 1-3 are done, picks up at task 4. No special recovery logic needed.
 
-**Failure mode:** The only true failure is zero progress — the agent completes no tasks across multiple loops. PM detects this by comparing completed task count before and after each loop.
+**Failure mode:** The only true failure is zero progress — the member completes no tasks across multiple loops. PM detects this by comparing completed task count before and after each loop.
 
-**Stall detection: 2 + 1 escalation.** If an agent makes zero progress across 2 consecutive loops at its assigned model tier, PM retries once with the next higher model tier (e.g., sonnet → opus). If still zero progress after the escalation attempt, PM flags to the user. Total: 3 attempts before user escalation.
+**Stall detection: 2 + 1 escalation.** If a member makes zero progress across 2 consecutive loops at its assigned model tier, PM retries once with the next higher model tier (e.g., sonnet → opus). If still zero progress after the escalation attempt, PM flags to the user. Total: 3 attempts before user escalation.
 
 ### 5.3 Parallel Execution
 
-PM uses Task subagents to run multiple `execute_prompt` calls concurrently. Each subagent manages one agent's work loop independently. PM can launch as many parallel subagents as there are idle agents with parallelizable work.
+PM uses Task subagents to run multiple `execute_prompt` calls concurrently. Each subagent manages one member's work loop independently. PM can launch as many parallel subagents as there are idle members with parallelizable work.
 
 ```
 PM spawns subagents in parallel:
@@ -434,18 +434,18 @@ PM spawns subagents in parallel:
   └── Subagent C → execute_prompt(agent-win-1, devops tasks) → loop until done
 ```
 
-**Decided: Option B — Task subagents with `run_in_background`.** PM launches each agent's work loop as a background Task subagent. Each subagent wraps one `execute_prompt` call (or a checkpoint loop of calls) for one agent. The user's PM session stays interactive — they can brainstorm the next phase, check status, or walk away.
+**Decided: Option B — Task subagents with `run_in_background`.** PM launches each member's work loop as a background Task subagent. Each subagent wraps one `execute_prompt` call (or a checkpoint loop of calls) for one member. The user's PM session stays interactive — they can brainstorm the next phase, check status, or walk away.
 
 ### 5.4 Session-ID Persistence and Crash Recovery
 
-PM persists the session-id of every in-use agent to `project_plan.md` (in the Fleet Resources table or a dedicated section). This enables crash recovery:
+PM persists the session-id of every in-use member to `project_plan.md` (in the Fleet Resources table or a dedicated section). This enables crash recovery:
 
 ```
 PM crashes or user closes terminal
   ↓ hours pass
 PM restarts, reads project_plan.md
   ↓
-For each agent with a persisted session-id:
+For each member with a persisted session-id:
   PM sends execute_prompt with --resume <session-id>:
     "Please provide a status report. Summarize the status of your tasks
      in plan.md — which are complete, which are in progress, and which
@@ -456,15 +456,15 @@ PM collects responses, reconstructs current state, updates project_plan.md
 PM resumes normal operation — assigns new work, dispatches reviews, etc.
 ```
 
-**Why this works:** Agent sessions persist independently of PM's session. The agent may have finished all tasks, stalled partway, or hit an error — doesn't matter. The `--resume` prompt asks for a status report, and the agent reads its own plan.md checkpoint to answer accurately. Hours are lost (the agent sat idle waiting for PM), but recovery is guaranteed — no work is lost, no state is corrupted.
+**Why this works:** Member sessions persist independently of PM's session. The member may have finished all tasks, stalled partway, or hit an error — doesn't matter. The `--resume` prompt asks for a status report, and the member reads its own plan.md checkpoint to answer accurately. Hours are lost (the member sat idle waiting for PM), but recovery is guaranteed — no work is lost, no state is corrupted.
 
-**What PM persists per agent:**
-- Agent name (fleet identifier)
+**What PM persists per member:**
+- Member name (fleet identifier)
 - Session-id (for `--resume`)
 - Assigned role and branch
 - Last known task status (for comparison after recovery)
 
-This also solves the overnight/batch mode problem (Gap #21). PM doesn't need to stay alive all night. It persists session-ids, the user closes their terminal, and next morning PM resumes each agent's session to collect results.
+This also solves the overnight/batch mode problem (Gap #21). PM doesn't need to stay alive all night. It persists session-ids, the user closes their terminal, and next morning PM resumes each member's session to collect results.
 
 ---
 
@@ -487,11 +487,11 @@ Examples:
 - `feature_user-dashboard`
 - `feature_ci-pipeline`
 
-Branch names are feature-centric, not agent-centric. This aligns with stateless fungible agents — the branch tracks the *work*, not the *worker*. Any idle agent can be assigned to any feature branch.
+Branch names are feature-centric, not member-centric. This aligns with stateless fungible members — the branch tracks the *work*, not the *worker*. Any idle member can be assigned to any feature branch.
 
 ### 6.3 Repo Bootstrapping
 
-Before an agent can work, it needs the repo cloned (one-time) and its branch set up. PM handles this via `execute_command`:
+Before a member can work, it needs the repo cloned (one-time) and its branch set up. PM handles this via `execute_command`:
 
 ```
 First time only:
@@ -521,7 +521,7 @@ All three have passed their quality gate (reviews accepted, tests pass on branch
 
 1. PM creates PR: feature_auth-api → development
 2. PR has no conflicts → PM merges
-3. PM assigns tester agent to run tests on development
+3. PM assigns tester to run tests on development
    Pass → continue to next PR
    Fail → revert merge, assign fix task to feature_auth-api doer, move to back of queue
 4. PM creates PR: feature_user-dashboard → development
@@ -549,7 +549,7 @@ execute_command: cd <work-folder> && git fetch origin && git rebase origin/devel
 execute_prompt: "Your branch has been rebased. Re-run verification: <commands>. Report any failures."
 ```
 
-If rebase produces conflicts, agent reports them. PM flags conflicting agents to the user for resolution guidance.
+If rebase produces conflicts, the member reports them. PM flags conflicting members to the user for resolution guidance.
 
 ---
 
@@ -560,17 +560,17 @@ If rebase produces conflicts, agent reports them. PM flags conflicting agents to
 Tests run on `development` after each sequential PR merge (see Section 6.4). This is not a separate phase — it's part of integration. Each merge is immediately validated, and failures are attributed to the last-merged PR.
 
 After all PRs for a phase are merged and green, PM runs a final full test suite on `development` as the milestone validation:
-1. PM assigns tester agent to run full test suites against `development`
-2. Tester agent reports failures and issues
+1. PM assigns tester to run full test suites against `development`
+2. Tester reports failures and issues
 3. PM collects results into the Backlog section of project_plan.md
 
 ### 7.2 Bug Fixing
 
-PM creates fix tasks from backlog items, assigns them to available agents on new branches (e.g., `feature_fix-auth-refresh`). These follow the same plan.md checkpoint loop.
+PM creates fix tasks from backlog items, assigns them to available members on new branches (e.g., `feature_fix-auth-refresh`). These follow the same plan.md checkpoint loop.
 
 ### 7.3 Phase Overlap
 
-While testers work on phase N, PM can start assigning phase N+1 development tasks on new branches. This keeps agents productive. Phase N+1 branches are created from `development` as-is — they don't wait for phase N to merge. When phase N merges into `development`, PM triggers a rebase of in-progress N+1 branches (see Section 6.5) so they pick up the new code.
+While testers work on phase N, PM can start assigning phase N+1 development tasks on new branches. This keeps members productive. Phase N+1 branches are created from `development` as-is — they don't wait for phase N to merge. When phase N merges into `development`, PM triggers a rebase of in-progress N+1 branches (see Section 6.5) so they pick up the new code.
 
 ---
 
@@ -584,18 +584,18 @@ The PM skill is invoked as a Claude Code slash command. The user interacts with 
 
 **Interactive (daytime):** Architect brainstorms with PM, reviews status, makes decisions, course-corrects. PM fans out work between conversations. The architect's time is spent on decisions, not waiting.
 
-**Batch (overnight):** Architect approves a plan, kicks off all parallelizable work, and walks away. PM runs all agent loops to completion (or stall), updates project_plan.md with final status. Architect reads the morning report next day — a summary of what completed, what stalled, and what needs decisions.
+**Batch (overnight):** Architect approves a plan, kicks off all parallelizable work, and walks away. PM runs all member loops to completion (or stall), updates project_plan.md with final status. Architect reads the morning report next day — a summary of what completed, what stalled, and what needs decisions.
 
 ```
 Interactive session:
   User: /pm
   PM: [reads project_plan.md, presents current status]
   User: "Start phase 1. Assign backend and devops in parallel."
-  PM: [generates plan files, fans out to agents]
+  PM: [generates plan files, fans out to members]
   User: "Status?"
-  PM: [checks agents, reports progress]
+  PM: [checks members, reports progress]
   User: "Backend is done. Start frontend."
-  PM: [assigns frontend tasks to idle agent]
+  PM: [assigns frontend tasks to idle member]
 
 Batch session:
   User: "Run all phase 1 tasks overnight. I'll check in tomorrow."
@@ -603,7 +603,7 @@ Batch session:
   --- next morning ---
   User: /pm
   PM: [reads project_plan.md]
-  PM: "Phase 1 status: 18/24 tasks done. 3 agents completed their plans.
+  PM: "Phase 1 status: 18/24 tasks done. 3 members completed their plans.
        agent-lin-1 stalled on TASK-012 (zero progress after 3 loops).
        agent-mac-1 tests failing: 2 failures in auth suite.
        Decisions needed: [list]"
@@ -613,7 +613,7 @@ Batch session:
 
 ## 9. Context Slicing — The Economic Foundation
 
-The single biggest cost driver is agents re-reading context they've already seen. This applies to both token cost (API billing) and rate limits (Claude Max). The PM design must treat context as a scarce resource.
+The single biggest cost driver is members re-reading context they've already seen. This applies to both token cost (API billing) and rate limits (Claude Max). The PM design must treat context as a scarce resource.
 
 ### 9.1 The Principle
 
@@ -621,9 +621,9 @@ Every task must be completable with small context: `plan.md` + `learnings.md` + 
 
 This is the architect's primary job during brainstorming — not just decomposing features into tasks, but decomposing them so each task's **context boundary** is small and self-contained.
 
-### 9.2 learnings.md — Durable Agent Knowledge
+### 9.2 learnings.md — Durable Member Knowledge
 
-Each agent maintains a `learnings.md` in its work folder. This file captures timeless, non-transient knowledge about the codebase: project structure, naming conventions, key abstractions, dependency patterns, gotchas.
+Each member maintains a `learnings.md` in its work folder. This file captures timeless, non-transient knowledge about the codebase: project structure, naming conventions, key abstractions, dependency patterns, gotchas.
 
 **What goes in learnings.md:**
 - Project structure and key file locations
@@ -637,33 +637,33 @@ Each agent maintains a `learnings.md` in its work folder. This file captures tim
 - Low-level function signatures (that's what the code is for)
 - Git commit history (that's in git)
 
-The agent reads learnings.md at the start of every session. This means checkpoint loops get cheaper over time — the agent doesn't re-explore the codebase, it reads its own notes. On the first loop, it explores and builds learnings.md. On loops 2-5, it skips exploration and goes straight to work.
+The member reads learnings.md at the start of every session. This means checkpoint loops get cheaper over time — the member doesn't re-explore the codebase, it reads its own notes. On the first loop, it explores and builds learnings.md. On loops 2-5, it skips exploration and goes straight to work.
 
 ### 9.3 Context Slicing Patterns for Plan Tasks
 
 The architect should decompose tasks using these patterns:
 
-**File-scoped tasks:** "Implement the UserRepository class in `src/repositories/user.ts`" — the agent only needs to read that file and its imports.
+**File-scoped tasks:** "Implement the UserRepository class in `src/repositories/user.ts`" — the member only needs to read that file and its imports.
 
-**Interface-bounded tasks:** "Implement the auth API endpoints matching the interface in `src/types/auth.ts`" — the agent reads the interface file and implements against it. Doesn't need to understand the rest of the system.
+**Interface-bounded tasks:** "Implement the auth API endpoints matching the interface in `src/types/auth.ts`" — the member reads the interface file and implements against it. Doesn't need to understand the rest of the system.
 
-**Test-scoped tasks:** "Write tests for `src/services/auth.ts` covering login, register, and refresh flows" — the agent reads the source file and writes tests. Small context.
+**Test-scoped tasks:** "Write tests for `src/services/auth.ts` covering login, register, and refresh flows" — the member reads the source file and writes tests. Small context.
 
-**Anti-pattern:** "Implement the authentication system" — too broad. Agent needs to understand the full project to decide what to build, where to put it, and how it connects. This should be 4-5 smaller tasks.
+**Anti-pattern:** "Implement the authentication system" — too broad. The member needs to understand the full project to decide what to build, where to put it, and how it connects. This should be 4-5 smaller tasks.
 
 ### 9.4 Convention Files and Onboarding
 
 Convention files are permanent project artifacts committed to the repository — they belong to the project, not to PM. The architect creates them during project setup (e.g., `react-conventions.md`, `csharp-conventions.md`, `devops-conventions.md`, `ux-conventions.md` — the set varies per project).
 
-Convention files are one part of the broader **Onboarding section** in each agent's plan.md (see Section 3.2). During PLAN mode, PM maps roles to their relevant convention files, interface definitions, and existing code patterns. When generating plan.md, PM curates the Onboarding section with only the files relevant to that agent's tasks — conventions, interfaces to implement against, existing patterns to follow, and `learnings.md`. The agent reads them from the repo — already on disk, no `send_files` needed. Convention updates propagate naturally via git (rebase/pull picks them up).
+Convention files are one part of the broader **Onboarding section** in each member's plan.md (see Section 3.2). During PLAN mode, PM maps roles to their relevant convention files, interface definitions, and existing code patterns. When generating plan.md, PM curates the Onboarding section with only the files relevant to that member's tasks — conventions, interfaces to implement against, existing patterns to follow, and `learnings.md`. The member reads them from the repo — already on disk, no `send_files` needed. Convention updates propagate naturally via git (rebase/pull picks them up).
 
-The prompt template (Section 10) stays generic — it tells the agent to read plan.md, which carries the role-specific onboarding references.
+The prompt template (Section 10) stays generic — it tells the member to read plan.md, which carries the role-specific onboarding references.
 
 ---
 
-## 10. Agent Prompt Template
+## 10. Member Prompt Template
 
-Standard prompt sent to agents when assigning work:
+Standard prompt sent to members when assigning work:
 
 ```
 You are a {role} working on project "{project_name}".
@@ -722,18 +722,18 @@ PM maintains permission templates per role category. The file uses the standard 
 This section identifies what should be **built into the fleet MCP server** versus left to the skill prompt. The guiding principle: if the skill prompt needs more than a sentence to describe a behavior, it probably belongs in tooling.
 
 ### 11.1 Existing tools that the PM skill will use as-is
-- `list_agents` / `fleet_status` — resource inventory
+- `list_members` / `fleet_status` — resource inventory
 - `execute_prompt` — assign work (with new `model` param)
-- `send_files` — deliver plan.md to agents
+- `send_files` — deliver plan.md to members
 - `execute_command` — git operations (clone, branch, rebase)
-- `agent_detail` — check individual agent state
+- `member_detail` — check individual member state
 
 ### 11.2 Potential new tools or tool enhancements
 
 | Need | Why skill prompt can't handle it | Possible tool |
 |------|----------------------------------|---------------|
-| **Read remote file** | PM may need to read an agent's plan.md or feedback files. For text files, `execute_command` with `cat` suffices. A dedicated `read_remote_file` tool would add binary file support (tar.gz, screenshots) — deferred to backlog. | `execute_command` + `cat` (now). `read_remote_file` for binary files (backlog). |
-| **Agent git status** | PM needs to know branch state (current branch, clean/dirty, ahead/behind) without running execute_prompt. | Could be a specialized `execute_command` usage, or a dedicated `git_status` tool that returns structured data. |
+| **Read remote file** | PM may need to read a member's plan.md or feedback files. For text files, `execute_command` with `cat` suffices. A dedicated `read_remote_file` tool would add binary file support (tar.gz, screenshots) — deferred to backlog. | `execute_command` + `cat` (now). `read_remote_file` for binary files (backlog). |
+| **Member git status** | PM needs to know branch state (current branch, clean/dirty, ahead/behind) without running execute_prompt. | Could be a specialized `execute_command` usage, or a dedicated `git_status` tool that returns structured data. |
 | **Project state helpers** | PM reads/writes project_plan.md frequently. Parsing markdown tables and task lists in natural language is error-prone. | Possibly out of scope — this might be better handled by the skill prompt using standard read/write tools on the master machine. But if parsing reliability becomes a problem, structured state (JSON) with a render-to-markdown tool could help. |
 
 *Note: `execute_prompt_batch` was considered but dropped — parallelism is handled by Task subagents with `run_in_background` (Section 5.3). This keeps the MCP server simple and leverages Claude Code's built-in concurrency.*
@@ -742,7 +742,7 @@ This section identifies what should be **built into the fleet MCP server** versu
 - Brainstorming conversation with the user
 - Task decomposition and dependency analysis (user-driven)
 - Deciding what to assign to whom (scheduling logic)
-- Interpreting agent responses (done/not-done)
+- Interpreting member responses (done/not-done)
 - Presenting status to the user
 
 **Parallelism (decided):** Task subagents with `run_in_background` — see Section 5.3. Session-id persistence for crash recovery — see Section 5.4.
@@ -760,19 +760,19 @@ This section identifies what should be **built into the fleet MCP server** versu
 | 5 | Repo source / git workflow | Clone once, then: (a) branch from development, (b) checkout feature branch, (c) pull rebase. PRs to development. | **Decided: Section 6** |
 | 6 | Who merges branches | PM-initiated sequential PRs to development, test after each merge. Doer resolves conflicts. | **Resolved: Section 6.4** |
 | 7 | Skill invocation style | A: single `/pm` — PM infers intent from natural language + project_plan.md state. | **Decided: A** |
-| 8 | Agent permissions | Role-specific settings.json per assignment. dangerously_skip_permissions is opt-in fallback only. | **Resolved: Section 10** |
+| 8 | Member permissions | Role-specific settings.json per assignment. dangerously_skip_permissions is opt-in fallback only. | **Resolved: Section 10** |
 | 9 | Failure detection | 2 loops zero-progress at assigned tier + 1 escalation attempt. 3 total before user flag. | **Resolved: Section 5.2** |
 | 10 | Conflict resolution on rebase | Doer rebases their own branch on development and resolves. | **Resolved: Section 6.4** |
 | 11 | Model selection granularity | C: role default + escalation on stall (ties into gap #9 stall detection). | **Decided: C — Section 4.5** |
 | 12 | Where does parallelism live | B: Task subagents with run_in_background. Session-id persistence for crash recovery. | **Decided: B — Section 5.3** |
-| 13 | Plan.md immutability | Immutable during agent session. PM replaces between sessions freely. Urgent fixes = new plan.md on next loop. | **Resolved** |
+| 13 | Plan.md immutability | Immutable during member session. PM replaces between sessions freely. Urgent fixes = new plan.md on next loop. | **Resolved** |
 | 14 | Pre-test verification | Quality gate handles this — build+lint before tests exist | **Resolved: Section 2.3** |
-| 15 | Agent workspace lifecycle | New repo = new agent folder. Same repo new project = branch switch + clean PM artifacts (plan.md, learnings.md, feedback-*.md). | **Resolved** |
-| 16 | Git credentials on agents | Same pattern as provision_auth — deploy PM's git token to agents. New MCP tool needed (backlog). | **Resolved: Backlog** |
+| 15 | Member workspace lifecycle | New repo = new member folder. Same repo new project = branch switch + clean PM artifacts (plan.md, learnings.md, feedback-*.md). | **Resolved** |
+| 16 | Git credentials on members | Same pattern as provision_auth — deploy PM's git token to members. New MCP tool needed (backlog). | **Resolved: Backlog** |
 | 17 | Task granularity heuristic | Each task completable with small context (plan.md + learnings.md + target files) | **Resolved: Section 9** |
-| 18 | Shared conventions across agents | Convention files live in the repo (committed). Agent prompts reference them by path. No send_files needed. | **Resolved** |
-| 19 | Shared code propagation | Interface definition is an early phase task — committed to `development` (with mock tests). Agents pick up interfaces via rebase on `development`. | **Resolved** |
-| 20 | Architect correction path | Architect declares intent to PM ("I'm taking agent X on branch Y"), PM records in project_plan.md. Architect works interactively, tells PM when done. Branch enters normal PR merge queue. | **Resolved** |
+| 18 | Shared conventions across members | Convention files live in the repo (committed). Member prompts reference them by path. No send_files needed. | **Resolved** |
+| 19 | Shared code propagation | Interface definition is an early phase task — committed to `development` (with mock tests). Members pick up interfaces via rebase on `development`. | **Resolved** |
+| 20 | Architect correction path | Architect declares intent to PM ("I'm taking member X on branch Y"), PM records in project_plan.md. Architect works interactively, tells PM when done. Branch enters normal PR merge queue. | **Resolved** |
 | 21 | Batch/overnight mode | Session-id persistence + --resume on restart. PM doesn't need to stay alive. | **Resolved: Section 5.4** |
 | 22 | Do→review iteration limit | Configurable per project, default 3 | **Resolved: Section 4.4** |
 | 23 | Quality gate customization | Per-project gate definition during brainstorming | **Resolved: Section 2.3** |

@@ -1,24 +1,24 @@
-# Design: Git Authentication for Fleet Agents
+# Design: Git Authentication for Fleet Members
 
 ## Problem
 
-Fleet agents need git access (clone, push, force-push, issue management) across multiple git hosts (GitHub, Azure DevOps, Bitbucket, GitLab). Today there's no standardized way to provision git credentials to agents, and no way to scope permissions per agent role.
+Fleet members need git access (clone, push, force-push, issue management) across multiple git hosts (GitHub, Azure DevOps, Bitbucket, GitLab). Today there's no standardized way to provision git credentials to members, and no way to scope permissions per member role.
 
 Key requirements:
 - **Multi-host**: Same abstraction across GitHub, Azure DevOps, Bitbucket, GitLab, self-hosted
-- **Scoped permissions**: Read-only agents shouldn't be able to push; dev agents shouldn't force-push to main
-- **Short-lived tokens**: Compromised agent = limited blast radius
-- **Zero user plumbing**: Users declare intent ("this agent needs read access"), fleet handles the rest
-- **Audit trail**: Every token mint logged with agent name, scope, timestamp
+- **Scoped permissions**: Read-only members shouldn't be able to push; dev members shouldn't force-push to main
+- **Short-lived tokens**: Compromised member = limited blast radius
+- **Zero user plumbing**: Users declare intent ("this member needs read access"), fleet handles the rest
+- **Audit trail**: Every token mint logged with member name, scope, timestamp
 
 ## Design
 
 ### User-Facing Config
 
-Agents declare git access in their registration or agent config:
+Members declare git access in their registration or member config:
 
 ```yaml
-agents:
+members:
   code-analyst:
     host: 192.168.1.13
     work_folder: /Users/akhil/git/ApraPipes
@@ -72,7 +72,7 @@ For GitHub-hosted repos, use a **GitHub App** installed on the org.
 │  - administration: write                    │
 └──────────────┬──────────────────────────────┘
                │
-  PM mints scoped tokens per agent at runtime:
+  PM mints scoped tokens per member at runtime:
                │
                ├──→ code-analyst:  { contents: read,  repos: [ApraPipes] }
                ├──→ feature-dev:   { contents: write, repos: [ApraPipes] }
@@ -117,13 +117,13 @@ function mapAccessLevel(level: string): Record<string, string> {
 }
 ```
 
-**Credential deployment to agent:**
+**Credential deployment to member:**
 
 ```typescript
 async function provisionGitAuth(agent: Agent): Promise<void> {
   const token = await mintGitToken(agent);
 
-  // Configure git credential helper on the agent
+  // Configure git credential helper on the member
   await agent.executeCommand(
     `git config --global credential.helper '!f() { echo "password=${token}"; }; f'`
   );
@@ -150,7 +150,7 @@ Use an **Azure AD App Registration** (Service Principal):
 const credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
 const token = await credential.getToken("499b84ac-1321-427f-aa17-267ca6975798/.default");
 
-// Deploy to agent as PAT-style credential
+// Deploy to member as PAT-style credential
 await agent.executeCommand(
   `git config --global credential.helper '!f() { echo "password=${token.token}"; }; f'`
 );
@@ -170,22 +170,22 @@ Use a **Bitbucket OAuth Consumer** or **Repository Access Token**:
 ### Token Lifecycle
 
 ```
-Agent startup / first git operation
+Member startup / first git operation
         │
         ▼
   PM mints scoped token (1hr TTL)
         │
         ▼
-  Deploy credential to agent via execute_command
+  Deploy credential to member via execute_command
         │
         ▼
-  Agent uses git normally (clone/push/etc)
+  Member uses git normally (clone/push/etc)
         │
         ▼
   Token nearing expiry? Auto-refresh before next git operation
         │
         ▼
-  Agent deregistered? Token expires naturally (1hr max)
+  Member deregistered? Token expires naturally (1hr max)
 ```
 
 ### MCP Tool Interface
@@ -196,7 +196,7 @@ New tool: `provision_git_auth`
 // Input
 {
   agent_name: "feature-dev",
-  // Optional overrides (defaults come from agent config):
+  // Optional overrides (defaults come from member config):
   git_host?: "github" | "azure" | "bitbucket" | "gitlab",
   access_level?: "read" | "push" | "admin" | "issues" | "full",
   repos?: string[],
@@ -219,16 +219,16 @@ New tool: `provision_git_auth`
 |---|---|
 | **Least privilege** | Token scoped to declared repos + access level |
 | **Short-lived** | 1hr tokens, auto-refreshed |
-| **Auditable** | Token minting logged with agent, scope, timestamp |
-| **Revocable** | Remove agent = token expires naturally; revoke app installation for emergency |
-| **No secrets on agents** | Agents never see the app private key, only short-lived tokens |
-| **Compromised agent** | Max 1hr window, scoped to declared repos only |
+| **Auditable** | Token minting logged with member, scope, timestamp |
+| **Revocable** | Remove member = token expires naturally; revoke app installation for emergency |
+| **No secrets on members** | Members never see the app private key, only short-lived tokens |
+| **Compromised member** | Max 1hr window, scoped to declared repos only |
 
 ### Comparison with Alternatives
 
 | | SSH Keys | PATs | GitHub App (this design) |
 |---|---|---|---|
-| Per-agent scoping | No | Manual | Automatic |
+| Per-member scoping | No | Manual | Automatic |
 | Token lifetime | Forever | Days-years | 1 hour |
 | Multi-host | Same key everywhere | Different per host | Abstracted |
 | User effort | Generate + register keys | Generate + distribute tokens | Declare `git_access: push` |
@@ -238,8 +238,8 @@ New tool: `provision_git_auth`
 ## Implementation Plan
 
 1. **GitHub App setup** — create app, install on org, store private key in fleet config
-2. **`provision_git_auth` tool** — mints scoped token, deploys credential to agent
-3. **Auto-provisioning** — mint token on agent startup or first git operation
+2. **`provision_git_auth` tool** — mints scoped token, deploys credential to member
+3. **Auto-provisioning** — mint token on member startup or first git operation
 4. **Auto-refresh** — check token expiry before git operations, refresh if needed
 5. **Multi-host backends** — Azure DevOps, Bitbucket, GitLab adapters (same `provision_git_auth` interface)
-6. **Agent config** — add `git_access` and `git_repos` fields to agent registration
+6. **Member config** — add `git_access` and `git_repos` fields to member registration
