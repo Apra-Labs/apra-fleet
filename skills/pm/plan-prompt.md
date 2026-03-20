@@ -61,6 +61,13 @@ Rewrite incorporating critique:
 - VERIFY checkpoint every 2-3 work tasks
 - Every task has clear "done" criteria
 
+### PHASE 5 — BRANCH & COMMIT
+
+1. Read requirements.md for the base branch (default: `main`)
+2. `git fetch origin && git checkout -b <feature-branch> origin/<base-branch>`
+3. Commit the plan files to the feature branch — NEVER commit to the base branch
+4. `git push -u origin <feature-branch>`
+
 Output the final plan in tpl-plan.md format.
 
 ---
