@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import fs from 'node:fs';
 import {
@@ -200,15 +200,19 @@ describe('auth-socket', () => {
 
   describe('TTL expiry', () => {
     it('expires pending auth after TTL', () => {
-      createPendingAuth('expired-member');
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now);
 
-      // Manually backdate the entry by accessing the internal map via a workaround:
-      // We create a new entry, then check that a fresh one replaces it
-      // For a proper TTL test, we'd need to mock Date.now, but we can at least
-      // verify the cleanup logic by checking that getPendingPassword returns null
-      // for an unresolved entry
-      expect(getPendingPassword('expired-member')).toBeNull();
+      createPendingAuth('expired-member');
       expect(hasPendingAuth('expired-member')).toBe(true);
+
+      // Advance past 10-minute TTL
+      vi.spyOn(Date, 'now').mockReturnValue(now + 10 * 60 * 1000 + 1);
+
+      expect(hasPendingAuth('expired-member')).toBe(false);
+      expect(getPendingPassword('expired-member')).toBeNull();
+
+      vi.restoreAllMocks();
     });
   });
 

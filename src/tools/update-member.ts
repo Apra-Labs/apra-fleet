@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { getAgentOrFail } from '../utils/agent-helpers.js';
-import { ensureAuthSocket, createPendingAuth, getPendingPassword, hasPendingAuth, waitForPassword, launchAuthTerminal } from '../services/auth-socket.js';
+import { collectOobPassword } from '../services/auth-socket.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
@@ -59,33 +59,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // Out-of-band password collection when switching to password auth without inline password
   let preEncryptedPassword: string | undefined;
   if (input.auth_type === 'password' && !input.password && existing.agentType === 'remote' && existing.authType !== 'password') {
-    if (hasPendingAuth(existing.friendlyName)) {
-      const encPw = getPendingPassword(existing.friendlyName);
-      if (encPw) {
-        preEncryptedPassword = encPw;
-      } else {
-        try {
-          preEncryptedPassword = await waitForPassword(existing.friendlyName);
-        } catch {
-          return `❌ Password entry timed out for "${existing.friendlyName}". Call update_member again to retry.`;
-        }
-      }
-    } else {
-      await ensureAuthSocket();
-      createPendingAuth(existing.friendlyName);
-      const result = launchAuthTerminal(existing.friendlyName);
-
-      if (result.startsWith('fallback:')) {
-        const manualMsg = result.slice('fallback:'.length);
-        return `🔐 ${manualMsg}\n\nOnce the user has entered the password, call update_member again with the same parameters (without password).`;
-      }
-
-      try {
-        preEncryptedPassword = await waitForPassword(existing.friendlyName);
-      } catch {
-        return `❌ Password entry timed out for "${existing.friendlyName}". Call update_member again to retry.`;
-      }
-    }
+    const oob = await collectOobPassword(existing.friendlyName, 'update_member');
+    if ('fallback' in oob) return oob.fallback;
+    preEncryptedPassword = oob.password;
   }
 
   const updates: Record<string, unknown> = {};

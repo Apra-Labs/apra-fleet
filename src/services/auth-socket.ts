@@ -7,6 +7,7 @@ import { encryptPassword } from '../utils/crypto.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
 
 interface PendingAuth {
   encryptedPassword?: string;
@@ -52,6 +53,11 @@ export async function ensureAuthSocket(): Promise<void> {
       let buffer = '';
       conn.on('data', (chunk) => {
         buffer += chunk.toString();
+        if (buffer.length > MAX_BUFFER_SIZE) {
+          conn.write(JSON.stringify({ type: 'ack', ok: false, error: 'Message too large' }) + '\n');
+          conn.end();
+          return;
+        }
         const newlineIdx = buffer.indexOf('\n');
         if (newlineIdx === -1) return;
 
@@ -168,6 +174,42 @@ export function cleanupAuthSocket(): void {
     try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
   }
   pendingRequests.clear();
+}
+
+/**
+ * Collect a password out-of-band: launch a terminal prompt and block until
+ * the password arrives over the socket, or return a fallback message for
+ * headless environments. Returns `{ password }` on success or `{ fallback }`
+ * with a user-facing message if the terminal couldn't be launched.
+ */
+export async function collectOobPassword(
+  memberName: string,
+  toolName: string,
+): Promise<{ password: string } | { fallback: string }> {
+  if (hasPendingAuth(memberName)) {
+    const encPw = getPendingPassword(memberName);
+    if (encPw) return { password: encPw };
+    try {
+      return { password: await waitForPassword(memberName) };
+    } catch {
+      return { fallback: `❌ Password entry timed out for "${memberName}". Call ${toolName} again to retry.` };
+    }
+  }
+
+  await ensureAuthSocket();
+  createPendingAuth(memberName);
+  const result = launchAuthTerminal(memberName);
+
+  if (result.startsWith('fallback:')) {
+    const manualMsg = result.slice('fallback:'.length);
+    return { fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the password, call ${toolName} again with the same parameters (without password).` };
+  }
+
+  try {
+    return { password: await waitForPassword(memberName) };
+  } catch {
+    return { fallback: `❌ Password entry timed out for "${memberName}". Call ${toolName} again to retry.` };
+  }
 }
 
 /**

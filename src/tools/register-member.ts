@@ -10,7 +10,7 @@ import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
-import { ensureAuthSocket, createPendingAuth, getPendingPassword, hasPendingAuth, waitForPassword, launchAuthTerminal } from '../services/auth-socket.js';
+import { collectOobPassword } from '../services/auth-socket.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -60,36 +60,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // Out-of-band password collection for remote password auth without inline password
   let preEncryptedPassword: string | undefined;
   if (!isLocal && !isCloud && input.auth_type === 'password' && !input.password) {
-    if (hasPendingAuth(input.friendly_name)) {
-      // Previous fallback or retry — check if password already arrived
-      const encPw = getPendingPassword(input.friendly_name);
-      if (encPw) {
-        preEncryptedPassword = encPw;
-      } else {
-        try {
-          preEncryptedPassword = await waitForPassword(input.friendly_name);
-        } catch {
-          return `❌ Password entry timed out for "${input.friendly_name}". Call register_member again to retry.`;
-        }
-      }
-    } else {
-      await ensureAuthSocket();
-      createPendingAuth(input.friendly_name);
-      const result = launchAuthTerminal(input.friendly_name);
-
-      if (result.startsWith('fallback:')) {
-        // Headless — can't block, user needs to see manual instructions
-        const manualMsg = result.slice('fallback:'.length);
-        return `🔐 ${manualMsg}\n\nOnce the user has entered the password, call register_member again with the same parameters (without password).`;
-      }
-
-      // Terminal launched — block until password arrives
-      try {
-        preEncryptedPassword = await waitForPassword(input.friendly_name);
-      } catch {
-        return `❌ Password entry timed out for "${input.friendly_name}". Call register_member again to retry.`;
-      }
-    }
+    const oob = await collectOobPassword(input.friendly_name, 'register_member');
+    if ('fallback' in oob) return oob.fallback;
+    preEncryptedPassword = oob.password;
   }
 
   // --- Duplicate folder check ---

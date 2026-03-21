@@ -228,7 +228,7 @@ Run a localhost HTTP endpoint for password submission. Rejected: opens a network
 ## Verification
 
 1. `npm run build` — zero type errors
-2. `npm test` — 14/14 new tests pass, 272 existing tests pass
+2. `npm test` — 18/18 new tests pass, 272 existing tests pass
 3. Manual test: register with `auth_type=password`, no password → terminal pops up → enter password → retry succeeds
 4. Manual test (headless): `DISPLAY=` → returns manual instructions instead of auto-launching
 5. Manual test (backwards compat): register with password in params → works as before
