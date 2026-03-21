@@ -17,6 +17,7 @@ Usage:
   apra-fleet                  Start MCP server (stdio)
   apra-fleet install          Install: binary + hooks + statusline + register MCP
   apra-fleet install --skill  Same + PM skill to ~/.claude/skills/pm/
+  apra-fleet auth <name>      Provide password for pending registration (auto-launched)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
   process.exit(0);
@@ -27,6 +28,10 @@ if (arg === 'install') {
   import('./cli/install.js')
     .then(m => m.runInstall(process.argv.slice(3)))
     .catch(err => { console.error('Install failed:', err.message); process.exit(1); });
+} else if (arg === 'auth') {
+  import('./cli/auth.js')
+    .then(m => m.runAuth(process.argv.slice(3)))
+    .catch(err => { console.error('Auth failed:', err.message); process.exit(1); });
 } else {
   // Default: start MCP server
   startServer();
@@ -112,6 +117,7 @@ async function startServer() {
 
   idleManager.start();
 
-  process.on('SIGINT', () => { closeAllConnections(); process.exit(0); });
-  process.on('SIGTERM', () => { closeAllConnections(); process.exit(0); });
+  const { cleanupAuthSocket } = await import('./services/auth-socket.js');
+  process.on('SIGINT', () => { cleanupAuthSocket(); closeAllConnections(); process.exit(0); });
+  process.on('SIGTERM', () => { cleanupAuthSocket(); closeAllConnections(); process.exit(0); });
 }
