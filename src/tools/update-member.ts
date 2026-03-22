@@ -58,7 +58,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
 
   // Out-of-band password collection when switching to password auth without inline password
   let preEncryptedPassword: string | undefined;
-  if (input.auth_type === 'password' && !input.password && existing.agentType === 'remote' && existing.authType !== 'password') {
+  if (input.auth_type === 'password' && !input.password && existing.agentType === 'remote') {
     const oob = await collectOobPassword(existing.friendlyName, 'update_member');
     if ('fallback' in oob) return oob.fallback;
     preEncryptedPassword = oob.password;

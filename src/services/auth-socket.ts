@@ -74,6 +74,7 @@ export async function ensureAuthSocket(): Promise<void> {
             }
             // Encrypt immediately, discard plaintext
             pending.encryptedPassword = encryptPassword(msg.password);
+            msg.password = '';
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
             // Resolve any waiting tool handler
             const waiter = passwordWaiters.get(msg.member_name);
