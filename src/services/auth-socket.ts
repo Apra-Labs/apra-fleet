@@ -48,7 +48,7 @@ export async function ensureAuthSocket(): Promise<void> {
     try { fs.unlinkSync(sockPath); } catch { /* not present */ }
   }
 
-  return new Promise((resolve, reject) => {
+  const tryListen = (retriesLeft: number): Promise<void> => new Promise((resolve, reject) => {
     const server = net.createServer((conn) => {
       let buffer = '';
       conn.on('data', (chunk) => {
@@ -92,7 +92,16 @@ export async function ensureAuthSocket(): Promise<void> {
       });
     });
 
-    server.on('error', reject);
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      server.close();
+      // On Windows, named pipes may not be released immediately after close.
+      // Retry a few times with a short delay before giving up.
+      if (err.code === 'EADDRINUSE' && process.platform === 'win32' && retriesLeft > 0) {
+        setTimeout(() => tryListen(retriesLeft - 1).then(resolve, reject), 100);
+      } else {
+        reject(err);
+      }
+    });
     server.listen(sockPath, () => {
       // Set socket file permissions (Unix only)
       if (process.platform !== 'win32') {
@@ -102,6 +111,8 @@ export async function ensureAuthSocket(): Promise<void> {
       resolve();
     });
   });
+
+  return tryListen(5);
 }
 
 export function createPendingAuth(memberName: string): void {
