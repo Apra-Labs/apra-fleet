@@ -3,6 +3,13 @@
  * These are approximate rates — see AWS pricing pages for exact figures.
  */
 
+/** Warn if estimated session cost exceeds this amount in dollars */
+export const COST_WARNING_THRESHOLD = 10;
+/** Warn if hourly rate exceeds this amount in dollars */
+export const RATE_WARNING_THRESHOLD = 5;
+/** Flag sessions running longer than this many hours (may indicate idle detection anomaly) */
+export const UPTIME_WARNING_THRESHOLD_HRS = 12;
+
 const HOURLY_RATES: Record<string, number> = {
   // GPU instances — G4dn family (NVIDIA T4)
   'g4dn.xlarge':   0.526,
@@ -60,6 +67,47 @@ const HOURLY_RATES: Record<string, number> = {
   'c5.18xlarge': 3.060,
   'c5.24xlarge': 4.080,
 };
+
+/**
+ * Returns true if the instance type is in the pricing table.
+ */
+export function isKnownInstanceType(type: string): boolean {
+  return Object.prototype.hasOwnProperty.call(HOURLY_RATES, type);
+}
+
+/**
+ * Returns a cost/rate warning string if thresholds are exceeded, or null if all is well.
+ * - Unknown instance type → warning
+ * - Hourly rate > RATE_WARNING_THRESHOLD → rate warning
+ * - Estimated session cost > COST_WARNING_THRESHOLD → cost warning
+ */
+export function costWarning(instanceType: string | undefined, uptimeHours: number): string | null {
+  if (!instanceType) return null;
+  if (!isKnownInstanceType(instanceType)) {
+    return `Unknown pricing for instance type '${instanceType}'`;
+  }
+  const rate = HOURLY_RATES[instanceType];
+  if (rate > RATE_WARNING_THRESHOLD) {
+    return `Expensive instance: $${rate.toFixed(2)}/hr`;
+  }
+  const cost = rate * uptimeHours;
+  if (cost > COST_WARNING_THRESHOLD) {
+    return `High cost: $${cost.toFixed(2)} this session`;
+  }
+  return null;
+}
+
+/**
+ * Returns an uptime anomaly warning if the session is suspiciously long, or null.
+ * Long sessions may indicate idle detection is not working correctly.
+ */
+export function uptimeWarning(uptimeHours: number): string | null {
+  if (uptimeHours > UPTIME_WARNING_THRESHOLD_HRS) {
+    const h = Math.round(uptimeHours);
+    return `Long session: ${h}h — verify idle detection is working correctly`;
+  }
+  return null;
+}
 
 /**
  * Returns estimated hourly cost as a formatted string (e.g. "$2.42"),

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { getAgentOrFail } from '../utils/agent-helpers.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
-import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
+import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning, uptimeWarning } from '../services/cloud/cost.js';
 import type { Agent } from '../types.js';
 
 export const cloudControlSchema = z.object({
@@ -48,18 +48,37 @@ export async function cloudControl(input: CloudControlInput): Promise<string> {
         const uptimeHrs = uptimeHoursFromLaunch(details.launchTime);
         const uptime = details.launchTime ? formatUptimeDuration(uptimeHrs) : '-';
         const cost = estimateCost(details.instanceType, uptimeHrs);
+        const rate = hourlyRate(details.instanceType);
         const typeStr = details.instanceType ?? 'unknown type';
         const ipStr = details.publicIp ?? 'no public IP';
-        return (
+
+        const warn = costWarning(details.instanceType, uptimeHrs);
+        const uptimeWarn = uptimeWarning(uptimeHrs);
+
+        // Anomaly: running but no recent activity and uptime is long
+        const lastUsedMs = agent.lastUsed ? Date.now() - new Date(agent.lastUsed).getTime() : undefined;
+        const idleAnomalyWarn = (
+          details.state === 'running' &&
+          lastUsedMs !== undefined &&
+          lastUsedMs > 2 * 3_600_000 &&  // >2h since last activity
+          uptimeHrs > 2
+        ) ? '⚠ Instance running but no recent activity — idle manager may not be active' : null;
+
+        let out = (
           `"${agent.friendlyName}" cloud status:\n` +
           `  state:    ${details.state}\n` +
           `  instance: ${agent.cloud.instanceId} (${typeStr})\n` +
           `  region:   ${agent.cloud.region}\n` +
           `  ip:       ${ipStr}\n` +
           `  uptime:   ${uptime}\n` +
+          `  rate:     ${rate}\n` +
           `  est cost: ${cost}\n` +
           `  idle timeout: ${agent.cloud.idleTimeoutMin}min`
         );
+        if (warn) out += `\n  warning:  ${warn}`;
+        if (uptimeWarn) out += `\n  warning:  ⚠ ${uptimeWarn}`;
+        if (idleAnomalyWarn) out += `\n  warning:  ${idleAnomalyWarn}`;
+        return out;
       } catch (err: any) {
         return `Failed to get status for "${agent.friendlyName}": ${err.message}`;
       }

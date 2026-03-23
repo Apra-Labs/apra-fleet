@@ -7,7 +7,7 @@ import { serverVersion } from '../version.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
-import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
+import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning } from '../services/cloud/cost.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -223,9 +223,12 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       const uptimeHrs = uptimeHoursFromLaunch(ci.launchTime);
       const uptime = ci.launchTime ? formatUptimeDuration(uptimeHrs) : '-';
       const cost = estimateCost(ci.instanceType, uptimeHrs);
+      const rate = hourlyRate(ci.instanceType);
+      const warn = costWarning(ci.instanceType, uptimeHrs);
       const gpuStr = ci.gpuUtil !== undefined ? ` GPU:${ci.gpuUtil}%` : '';
       const typeStr = ci.instanceType ? ` ${ci.instanceType}` : '';
-      line += ` | [cloud:${ci.state}${typeStr} ${uptime} ${cost}${gpuStr}]`;
+      const warnStr = warn ? ' ⚠' : '';
+      line += ` | [cloud:${ci.state}${typeStr} ${uptime} ${cost} @${rate}${gpuStr}${warnStr}]`;
     }
     t += line + '\n';
   }
