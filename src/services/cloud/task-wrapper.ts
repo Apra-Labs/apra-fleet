@@ -67,7 +67,11 @@ export function generateTaskWrapper(config: TaskConfig): string {
     '  local exit_code="' + D + '{2:-null}"',
     '  local retries="' + D + '{3:-0}"',
     '  local started',
-    '  started=$(python3 -c "import json; d=json.load(open(\'' + D + 'TASK_DIR/status.json\')); print(d.get(\'started\',\'\'))" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)',
+    // Pure bash: grep/cut to extract started timestamp from our own single-line JSON format.
+    // Safe because write_status uses printf + date -u which never produces escaped quotes.
+    // Fallback to current date if status.json is missing or the field is absent.
+    '  started=$(grep -o \'"started":"[^"]*"\' "' + D + 'TASK_DIR/status.json" 2>/dev/null | head -1 | cut -d\'"\' -f4)',
+    '  [ -z "' + D + 'started" ] && started=$(date -u +%Y-%m-%dT%H:%M:%SZ)',
     '  printf \'{"taskId":"%s","status":"%s","started":"%s","updated":"%s","exitCode":%s,"retries":%s}\\n\' \\',
     '    "' + D + 'TASK_ID" "' + D + 'status" "' + D + 'started" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "' + D + 'exit_code" "' + D + 'retries" \\',
     '    > "' + D + 'TASK_DIR/status.json"',
