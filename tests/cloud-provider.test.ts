@@ -49,6 +49,7 @@ describe('AwsCloudProvider - getInstanceState', () => {
     expect(exec.mock.calls[1][0]).toContain('describe-instances');
     expect(exec.mock.calls[1][0]).toContain(baseConfig.instanceId);
     expect(exec.mock.calls[1][0]).toContain('--output text');
+    expect(exec.mock.calls[1][1]).toEqual({ timeout: 15_000 });
   });
 
   it('returns "stopped" for a stopped instance', async () => {
@@ -92,20 +93,22 @@ describe('AwsCloudProvider - getInstanceState', () => {
 });
 
 describe('AwsCloudProvider - startInstance / stopInstance', () => {
-  it('startInstance calls start-instances with correct args', async () => {
+  it('startInstance calls start-instances with correct args and 15s timeout', async () => {
     const exec = makeExec([awsOk, ok('')]);
     const p = new AwsCloudProvider(exec);
     await p.startInstance(baseConfig);
     expect(exec.mock.calls[1][0]).toContain('start-instances');
     expect(exec.mock.calls[1][0]).toContain(baseConfig.instanceId);
+    expect(exec.mock.calls[1][1]).toEqual({ timeout: 15_000 });
   });
 
-  it('stopInstance calls stop-instances with correct args', async () => {
+  it('stopInstance calls stop-instances with correct args and 15s timeout', async () => {
     const exec = makeExec([awsOk, ok('')]);
     const p = new AwsCloudProvider(exec);
     await p.stopInstance(baseConfig);
     expect(exec.mock.calls[1][0]).toContain('stop-instances');
     expect(exec.mock.calls[1][0]).toContain(baseConfig.instanceId);
+    expect(exec.mock.calls[1][1]).toEqual({ timeout: 15_000 });
   });
 });
 
@@ -132,6 +135,7 @@ describe('AwsCloudProvider - getPublicIp', () => {
     const exec = makeExec([awsOk, ok('54.215.100.200\n')]);
     const p = new AwsCloudProvider(exec);
     expect(await p.getPublicIp(baseConfig)).toBe('54.215.100.200');
+    expect(exec.mock.calls[1][1]).toEqual({ timeout: 15_000 });
   });
 
   it('throws when AWS returns "None" (instance has no public IP)', async () => {
@@ -144,6 +148,19 @@ describe('AwsCloudProvider - getPublicIp', () => {
     const exec = makeExec([awsOk, ok('')]);
     const p = new AwsCloudProvider(exec);
     await expect(p.getPublicIp(baseConfig)).rejects.toThrow('No public IP');
+  });
+});
+
+describe('AwsCloudProvider - getInstanceDetails', () => {
+  it('returns instance details and passes 15s timeout', async () => {
+    const details = JSON.stringify({ State: 'running', IP: '1.2.3.4', Type: 'g5.2xlarge', Launch: '2026-03-23T10:00:00Z' });
+    const exec = makeExec([awsOk, ok(details)]);
+    const p = new AwsCloudProvider(exec);
+    const result = await p.getInstanceDetails(baseConfig);
+    expect(result.state).toBe('running');
+    expect(result.publicIp).toBe('1.2.3.4');
+    expect(result.instanceType).toBe('g5.2xlarge');
+    expect(exec.mock.calls[1][1]).toEqual({ timeout: 15_000 });
   });
 });
 

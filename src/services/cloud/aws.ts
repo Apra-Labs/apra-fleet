@@ -10,6 +10,9 @@ const VALID_STATES = new Set<string>([
   'pending', 'running', 'stopping', 'stopped', 'shutting-down', 'terminated',
 ]);
 
+/** Timeout for non-wait AWS CLI calls. Wait calls use 300_000ms. */
+const AWS_CLI_TIMEOUT_MS = 15_000;
+
 const AWS_CLI_MISSING =
   'AWS CLI not found. Install it: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html';
 
@@ -61,6 +64,7 @@ export class AwsCloudProvider implements CloudProvider {
     const base = baseArgs(config);
     const { stdout } = await this.run(
       `aws ec2 describe-instances --instance-ids ${config.instanceId} --query 'Reservations[0].Instances[0].State.Name' --output text ${base}`,
+      { timeout: AWS_CLI_TIMEOUT_MS },
     );
     const state = stdout.trim();
     if (!VALID_STATES.has(state)) {
@@ -72,13 +76,13 @@ export class AwsCloudProvider implements CloudProvider {
   async startInstance(config: CloudConfig): Promise<void> {
     await this.ensureCli();
     const base = baseArgs(config);
-    await this.run(`aws ec2 start-instances --instance-ids ${config.instanceId} ${base}`);
+    await this.run(`aws ec2 start-instances --instance-ids ${config.instanceId} ${base}`, { timeout: AWS_CLI_TIMEOUT_MS });
   }
 
   async stopInstance(config: CloudConfig): Promise<void> {
     await this.ensureCli();
     const base = baseArgs(config);
-    await this.run(`aws ec2 stop-instances --instance-ids ${config.instanceId} ${base}`);
+    await this.run(`aws ec2 stop-instances --instance-ids ${config.instanceId} ${base}`, { timeout: AWS_CLI_TIMEOUT_MS });
   }
 
   async waitForRunning(config: CloudConfig): Promise<void> {
@@ -104,6 +108,7 @@ export class AwsCloudProvider implements CloudProvider {
     const base = baseArgs(config);
     const { stdout } = await this.run(
       `aws ec2 describe-instances --instance-ids ${config.instanceId} --query 'Reservations[0].Instances[0].PublicIpAddress' --output text ${base}`,
+      { timeout: AWS_CLI_TIMEOUT_MS },
     );
     const ip = stdout.trim();
     if (!ip || ip === 'None') {
@@ -117,6 +122,7 @@ export class AwsCloudProvider implements CloudProvider {
     const base = baseArgs(config);
     const { stdout } = await this.run(
       `aws ec2 describe-instances --instance-ids ${config.instanceId} --query 'Reservations[0].Instances[0].{State:State.Name,IP:PublicIpAddress,Type:InstanceType,Launch:LaunchTime}' --output json ${base}`,
+      { timeout: AWS_CLI_TIMEOUT_MS },
     );
     let parsed: { State?: string; IP?: string; Type?: string; Launch?: string } = {};
     try {
