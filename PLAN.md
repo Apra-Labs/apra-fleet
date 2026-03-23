@@ -1,329 +1,306 @@
-# Cloud Compute Member Management — Implementation Plan
+# PR #1 Fixes — Implementation Plan
 
 **Requirements**: `requirements.md`
 **Progress**: `progress.json`
-**Created**: 2026-03-18
+**Created**: 2026-03-23
+**Branch**: `feature/cloud-compute` (additional commits on same PR)
 
-## Design Decisions
+## Context
 
-### Cloud Member = Remote Member + Cloud Metadata
-A cloud member is a **remote** member with an optional `cloud` config block. `agentType` stays `'remote'` — no new strategy class. RemoteStrategy still handles all SSH. Cloud logic is a lifecycle wrapper that ensures the instance is running and the IP is current before the existing strategy executes.
+All original 19 tasks are COMPLETE. A PR review identified 10 improvement items + 8 test gaps.
+The user reported 6 additional bugs/issues (U1-U6). This plan addresses all must-fix and should-fix items.
 
-```
-  Tool Layer (execute_command, execute_prompt, send_files)
-       |
-       v
-  ensureCloudReady(agent)         <-- NEW: starts instance if stopped, updates IP
-       |
-       v
-  Strategy Layer (RemoteStrategy -> SSH)    <-- UNCHANGED
-```
+## Requirements Coverage
 
-### Type Extension
-```typescript
-// Added to Agent in types.ts
-cloud?: {
-  provider: 'aws';
-  instanceId: string;
-  region: string;          // default 'us-east-1'
-  profile?: string;        // AWS CLI profile
-  idleTimeoutMin: number;  // default 30
-  sshKeyPath: string;      // path to SSH private key on PM machine (F4)
-};
-```
-
-### SSH Key for Cloud Members (F4)
-The SSH key path for cloud members lives in `cloud.sshKeyPath`, **not** in the member's top-level `keyPath` field. During registration, both are populated from the same user-supplied value so RemoteStrategy can use `keyPath` for SSH connections. The canonical source for cloud lifecycle logic (e.g. SSH readiness polling in `ensureCloudReady`) is `cloud.sshKeyPath`.
-
-### AWS via CLI (No SDK)
-All AWS operations use `child_process.exec('aws ec2 ...')` on the PM machine. No new npm dependencies.
-
-### Cloud Provider Interface
-```typescript
-interface CloudProvider {
-  getInstanceState(config): Promise<InstanceState>;
-  startInstance(config): Promise<void>;
-  stopInstance(config): Promise<void>;
-  waitForRunning(config): Promise<void>;
-  waitForStopped(config): Promise<void>;
-  getPublicIp(config): Promise<string>;
-}
-```
-Only AWS implemented now. GCP/Azure slot in later by adding new providers.
+| Requirement | Task(s) | Priority |
+|---|---|---|
+| U5/PR#3: Task ID validation + security audit | T1 | Must-fix |
+| PR#5: AWS CLI timeout (15s) | T2 | Should-fix |
+| U3/PR#6: Remove python3 dependency | T3 | Must-fix |
+| PR#1: Test restart_command retry path | T4 | Must-fix |
+| PR#2: Test F5 auth re-provisioning | T4 | Must-fix |
+| U1: Pricing UX improvements | T5 | Must-fix |
+| U4: Custom workload detection | T6 | Must-fix |
+| PR#4: Extract GPU utilization parser | T6 | Should-fix |
+| U6: Defensive UX for unsupported scenarios | T7 | Must-fix |
+| U2: OS support documentation + handling | T7 | Should-fix |
 
 ---
 
-## Phase 1: Cloud Provider Foundation
+## Phase 1: Security Hardening
 
-### T1 — Cloud types + AWS provider implementation
-**Files**: `src/services/cloud/types.ts` (new), `src/services/cloud/aws.ts` (new)
+### T1 — Task ID validation + input sanitization audit
+
+**Files**: `src/tools/monitor-task.ts`, `src/tools/execute-command.ts`, `tests/security-hardening.test.ts`
+
 **What**:
-- Define `CloudConfig` type and `CloudProvider` interface in `types.ts`
-- Implement `AwsCloudProvider` in `aws.ts`:
-  - `getInstanceState()` via `aws ec2 describe-instances --query '..State.Name'`
-  - `startInstance()` via `aws ec2 start-instances`
-  - `stopInstance()` via `aws ec2 stop-instances`
-  - `waitForRunning()` via `aws ec2 wait instance-running`
-  - `waitForStopped()` via `aws ec2 wait instance-stopped`
-  - `getPublicIp()` via `aws ec2 describe-instances --query '..PublicIpAddress'`
-- Pre-check: validate `aws` CLI is available on first call; cache result
-- All commands use `--profile` and `--region` from config
+1. Add task_id regex validation to `monitorTaskSchema`: `z.string().regex(/^task-[a-z0-9]{4,20}$/)`
+2. Add shared `validateTaskId(id: string)` function (or inline Zod regex — keep it simple)
+3. Audit all `${taskDir}` and `${input.task_id}` interpolations in `monitor-task.ts` — currently 4 shell
+   interpolation sites (lines 30, 34, 36, 42) where unvalidated task_id goes into commands like
+   `cat ${taskDir}/status.json`. With regex validation on the schema, path traversal
+   (`../../../etc/passwd`) and shell injection (`; rm -rf /`) are blocked at the Zod layer
+4. In `execute-command.ts`, the task ID is auto-generated (`task-` + `Date.now().toString(36)`),
+   which always matches the regex. Add a comment noting this. Also validate in the launch path
+   for defense-in-depth
+5. Add tests to `security-hardening.test.ts`:
+   - Valid task IDs pass schema validation
+   - Path traversal attempts rejected (`../../../etc/passwd`)
+   - Shell injection rejected (`; rm -rf /`, `$(whoami)`, `` `id` ``)
+   - Empty string rejected
+   - Overly long task IDs rejected
 
-**Done**: `AwsCloudProvider` passes unit tests with mocked `exec`. Commands are correct for start/stop/status/wait/getIP.
-**Could block**: AWS CLI not installed — handled with clear error message.
+**Done when**:
+- `monitorTaskSchema.parse({ member_id: 'x', task_id: '../../../etc/passwd' })` throws ZodError
+- `monitorTaskSchema.parse({ member_id: 'x', task_id: 'task-abc123' })` succeeds
+- All existing tests pass
+- 5+ new security tests pass for task ID validation
 
-### T2 — Extend Agent type + register_member
-**Files**: `src/types.ts`, `src/tools/register-member.ts`, `src/tools/update-member.ts`
+**Risks**: None — task IDs are auto-generated by execute-command, so adding validation to
+monitor_task's user-facing input only tightens the contract. No behavioral change for valid usage.
+
+### T2 — AWS CLI call timeout
+
+**Files**: `src/services/cloud/aws.ts`, `tests/cloud-provider.test.ts`
+
 **What**:
-- Add `cloud?: CloudConfig` to `Agent` interface in `types.ts`
-- Add flat cloud fields to `registerMemberSchema`:
-  - `cloud_provider: z.enum(['aws']).optional()`
-  - `cloud_instance_id: z.string().optional()` (required if cloud_provider set)
-  - `cloud_region: z.string().default('us-east-1').optional()`
-  - `cloud_profile: z.string().optional()`
-  - `cloud_idle_timeout_min: z.number().default(30).optional()`
-  - `cloud_ssh_key_path: z.string().optional()` (required if cloud_provider set; also sets top-level `keyPath` for RemoteStrategy — see F4 note in Design Decisions)
-- Validation: if `cloud_provider` is set, both `cloud_instance_id` and `cloud_ssh_key_path` are required
-- Build `cloud` object (including `sshKeyPath`) and attach to `tempAgent`; also set top-level `keyPath` and `authType: 'key'` so RemoteStrategy works
-- Skip SSH connectivity test if instance is stopped — validate instance exists via AWS CLI instead
-- Add cloud fields to `updateMemberSchema` too
+1. Add constant: `const AWS_CLI_TIMEOUT_MS = 15_000` (15 seconds)
+2. Add `{ timeout: AWS_CLI_TIMEOUT_MS }` to all `this.run()` calls that don't already have a timeout:
+   - `getInstanceState` (line 63)
+   - `startInstance` (line 75)
+   - `stopInstance` (line 81)
+   - `getPublicIp` (line 106)
+   - `getInstanceDetails` (line 119)
+3. Keep existing 300s timeout on `waitForRunning`/`waitForStopped` — those are intentionally long
+4. Update existing tests: verify timeout option is passed in exec calls
+5. Add test: timeout option present in getInstanceDetails call
 
-**Done**: Can register a cloud member with `cloud_provider: "aws"` + `cloud_instance_id` + `cloud_ssh_key_path`. Registry stores cloud config. Non-cloud registration unchanged. Tests pass.
-**Could block**: Connectivity check assumes instance is running — handle stopped state gracefully.
+**Done when**:
+- All 5 non-wait AWS CLI calls pass `{ timeout: 15_000 }`
+- `waitForRunning`/`waitForStopped` still pass `{ timeout: 300_000 }`
+- Tests verify the timeout values
+- All existing tests pass
 
-### T3 — Unit tests for cloud provider + registration
-**Files**: `tests/cloud-provider.test.ts` (new), extend `tests/registry.test.ts`
-**What**:
-- Test `AwsCloudProvider`: mock exec, verify correct AWS CLI commands for each method
-- Test error handling: instance not found, AWS CLI missing, unexpected states
-- Test register_member with cloud config: valid registration, missing instance_id validation, non-cloud unchanged
+**Risks**: 15s could be tight for slow AWS regions. But it's strictly better than no timeout
+(infinite hang on network issues). Can be tuned later.
 
-**Done**: 15+ new tests pass. Build clean.
-**Could block**: Nothing — pure unit tests.
-
-### VERIFY (V1)
-Build succeeds. All existing + new tests pass. Can register a cloud member in the registry.
+### V1: VERIFY
+Build succeeds. All tests pass. Security tests cover task ID validation. AWS CLI calls have timeouts.
 
 ---
 
-## Phase 2: Auto-Start on Demand
+## Phase 2: Task Wrapper Fix + Test Gaps
 
-### T4 — Cloud lifecycle service (ensureCloudReady)
-**Files**: `src/services/cloud/lifecycle.ts` (new)
+### T3 — Remove python3 dependency from task wrapper
+
+**Files**: `src/services/cloud/task-wrapper.ts`, tests
+
 **What**:
-- `ensureCloudReady(agent: Agent): Promise<Agent>`:
-  1. If `!agent.cloud` — return agent unchanged (not a cloud member)
-  2. Get instance state via `CloudProvider.getInstanceState()`
-  3. If `running` — verify IP matches `agent.host`, update if changed, return
-  4. If `stopped` — start, wait for running, get IP, update member host, wait for SSH
-  5. If `stopping` — wait for stopped, then start (same as stopped flow)
-  6. If `terminated` — return error
-  7. Return updated agent (re-fetched from registry after IP update)
-- SSH readiness: poll with retry (port 22 connect check), max 30 attempts x 2s; uses `cloud.sshKeyPath`
-- Reset idle timer on successful start
-- **After a fresh start (F5)**: re-run `provision_auth` (deploy OAuth credentials) and `provision_vcs_auth` (deploy git tokens) if credentials/tokens are available on the PM machine. Both are best-effort — log warnings on failure but do not abort. This ensures auth is restored after a stopped instance restarts without manual intervention.
+1. In `generateTaskWrapper()`, replace the `python3` call in `update_status()` (line 70):
+   ```bash
+   # BEFORE (python3 dependency):
+   started=$(python3 -c "import json; d=json.load(open('$TASK_DIR/status.json')); print(d.get('started',''))" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
 
-**Done**: `ensureCloudReady` returns a running, SSH-ready agent. IP is updated in registry. Auth re-provisioned after fresh start. Mocked tests cover: already-running, stopped-to-started (auth re-run), stopping-to-waited-to-started, IP changed.
-**Could block**: SSH readiness timing varies — use generous timeout (60s).
+   # AFTER (pure bash — grep + cut):
+   started=$(grep -o '"started":"[^"]*"' "$TASK_DIR/status.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+   [ -z "$started" ] && started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   ```
+   This works because we control the JSON format — it's single-line with known keys, produced by
+   our own `write_status` function using `printf`. No arbitrary JSON to parse.
+2. Add unit test: `generateTaskWrapper()` output contains no `python3` reference
+3. Add unit test: the `update_status` bash function correctly preserves the `started` timestamp
+   (verify the grep/cut pattern extracts the ISO timestamp correctly)
 
-### T5 — Wire auto-start into work tools
-**Files**: `src/tools/execute-command.ts`, `src/tools/execute-prompt.ts`, `src/tools/send-files.ts`
+**Done when**:
+- `generateTaskWrapper()` output contains zero occurrences of `python3`
+- The `update_status` function uses `grep` + `cut` to extract the started timestamp
+- Fallback to `date` if status.json is missing or malformed
+- All existing tests pass + new wrapper tests pass
+
+**Risks**: grep/cut is fragile for arbitrary JSON, but we control the exact format. The fallback
+to `date` handles edge cases (missing file, corrupted JSON). If someone later changes the JSON
+format, the grep pattern would need updating — but that would be caught by the test.
+
+### T4 — Unit tests for restart_command retry + F5 re-provisioning
+
+**Files**: `tests/task-wrapper.test.ts` (new), `tests/cloud-lifecycle-unit.test.ts` (new)
+
 **What**:
-- In each tool, after `getAgentOrFail()` and before `getStrategy()`:
-  ```typescript
-  const readyAgent = await ensureCloudReady(agent);
-  ```
-- 3-line addition per tool. The rest of each tool is unchanged.
-- `touchAgent` is also updated here to call `idleManager.resetTimer(agentId)` after every successful operation — this is the wiring point that T7's idle manager depends on.
-- Add tests: mock cloud provider, verify ensureCloudReady called for cloud members, skipped for non-cloud.
+1. **restart_command retry test (PR#1)** in `task-wrapper.test.ts`:
+   - Call `generateTaskWrapper({ command: 'python train.py', restartCommand: 'python train.py --resume ckpt.pt', ... })`
+   - Verify MAIN_CMD and RESTART_CMD are different base64 strings in the generated script
+   - Verify the first run uses `$MAIN_CMD` (line starting with `bash -c "$MAIN_CMD"`)
+   - Verify the retry loop uses `$RESTART_CMD` (line starting with `bash -c "$RESTART_CMD"`)
+   - Verify when `restartCommand` is omitted, both MAIN_CMD and RESTART_CMD are the same base64
 
-**Done**: `execute_command` on a stopped cloud member auto-starts it, updates IP, executes command. Non-cloud members unaffected.
-**Could block**: Agent object mutation — ensureCloudReady returns fresh agent from registry, not stale reference.
+2. **F5 re-provisioning test (PR#2)** in `cloud-lifecycle-unit.test.ts`:
+   - Mock: `awsProvider` (getInstanceState→'stopped', startInstance, waitForRunning, getPublicIp→'1.2.3.4')
+   - Mock: `net.createConnection` for SSH poll (resolve immediately)
+   - Mock: `provisionAuth` and `provisionVcsAuth`
+   - Call `ensureCloudReady(stoppedCloudAgent)`
+   - Verify call order: startInstance → waitForRunning → getPublicIp → SSH poll → provisionAuth → provisionVcsAuth
+   - Verify provisionAuth is called with `{ member_id: agent.id }`
+   - Verify provisionVcsAuth is called with agent's gitAccess + gitRepos
+   - Verify provisionVcsAuth is NOT called when agent has no gitRepos
+   - Verify re-provision failures are logged but don't throw (best-effort)
 
-### VERIFY (V2)
-Dispatch work to a stopped cloud member — it auto-starts — auth re-provisioned — command executes — member IP updated. Existing non-cloud tools unchanged.
+**Done when**:
+- task-wrapper.test.ts: 4+ tests covering restart_command behavior
+- cloud-lifecycle-unit.test.ts: 4+ tests covering F5 re-provisioning
+- All existing tests still pass
+
+**Risks**: The lifecycle unit test requires mocking multiple modules (aws, registry, net,
+provision-auth, provision-vcs-auth). Complex mock setup but follows the pattern established
+in cloud-integration.test.ts.
+
+### V2: VERIFY
+Build succeeds. All tests pass. No `python3` in wrapper output. Restart_command + F5 re-provision
+have dedicated unit tests.
 
 ---
 
-## Phase 3: Idle Management
+## Phase 3: UX Improvements
 
-### T6 — GPU/process activity check
-**Files**: `src/os/os-commands.ts`, `src/os/linux.ts`, `src/services/cloud/activity.ts` (new)
+### T5 — Pricing UX enhancements
+
+**Files**: `src/services/cloud/cost.ts`, `src/tools/cloud-control.ts`, `src/tools/check-status.ts`, tests
+
 **What**:
-- Add to `OsCommands` interface + `LinuxCommands`:
-  - `gpuProcessCheck()` — `nvidia-smi --query-compute-apps=pid,name,used_gpu_memory --format=csv,noheader 2>/dev/null || echo "no-gpu"`
-  - `gpuUtilization()` — `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null || echo "no-gpu"`
-- Create `checkMemberActivity(agent): Promise<'busy-gpu' | 'busy-process' | 'idle'>`:
-  1. Run `gpuProcessCheck()` via strategy — if GPU processes found, return `'busy-gpu'`
-  2. Run `fleetProcessCheck()` — if Claude busy, return `'busy-process'`
-  3. Check `agent.lastUsed` vs now — if recent (< 5 min), return `'busy-process'`
-  4. Otherwise return `'idle'`
-- Handle `nvidia-smi` not installed: treat as no GPU, skip GPU check
+1. Add to `cost.ts`:
+   - `costWarning(instanceType: string | undefined, uptimeHours: number): string | null`
+     Returns warning string if:
+     - Estimated cost > $10: `"High cost: $XX.XX this session"`
+     - Hourly rate > $5/hr: `"Expensive instance: $X.XX/hr"`
+     - Instance type not in pricing table: `"Unknown pricing for instance type 'X'"`
+     Returns null if no warning.
+   - `isKnownInstanceType(type: string): boolean` — export for use in defensive UX
 
-**Done**: `checkMemberActivity` returns correct status. GPU with active processes returns busy. No GPU falls through to process check. Tests with mocked strategy.
-**Could block**: `nvidia-smi` output varies across driver versions — parse defensively, treat parse errors as "unknown" (don't stop).
+2. Enhance `cloud_control status` output (cloud-control.ts):
+   - Add hourly rate line: `rate: $1.212/hr`
+   - Add cost warning line if applicable: `warning: High cost: $15.50 this session`
+   - Current output has `est cost: $X.XX` — keep it, add rate + warning
 
-### T7 — Idle manager service
-**Depends on**: T5 — `touchAgent` (modified in T5) calls `idleManager.resetTimer(agentId)`, which is the mechanism that feeds activity back into the idle manager.
-**Files**: `src/services/cloud/idle-manager.ts` (new), `src/index.ts` (start on server init)
+3. Enhance `fleet_status` compact output (check-status.ts):
+   - Add hourly rate in cloud info: `[cloud:running g5.2xlarge 7m $0.15 @$1.21/hr]`
+   - Add warning indicator for high cost: `[cloud:running g5.2xlarge 7m $0.15 @$1.21/hr !]`
+
+4. Add unit tests for `costWarning` and `isKnownInstanceType`:
+   - Known instance type, low cost → null
+   - Known instance type, high cost → warning string
+   - Unknown instance type → warning string
+   - Expensive instance type → rate warning
+
+**Done when**:
+- `costWarning('g5.2xlarge', 20)` returns high-cost warning (20h * $1.21 = $24.24)
+- `costWarning('unknown.type', 1)` returns unknown-pricing warning
+- `costWarning('t3.micro', 1)` returns null (low cost, known type)
+- `cloud_control status` output includes rate + warning when applicable
+- `fleet_status` compact shows rate in cloud bracket
+- Tests pass for all new functions
+
+**Risks**: Warning thresholds ($10, $5/hr) are somewhat arbitrary. They can be tuned later or
+made configurable. For now, fixed thresholds that catch the most common overspend scenarios.
+
+### T6 — Custom workload detection + GPU parser extraction
+
+**Files**: `src/services/cloud/types.ts`, `src/services/cloud/activity.ts`, `src/tools/register-member.ts`,
+`src/tools/update-member.ts`, `src/utils/gpu-parser.ts` (new), `src/tools/monitor-task.ts`,
+`src/tools/check-status.ts`, `tests/activity.test.ts`, tests
+
 **What**:
-- `IdleManager` class:
-  - `start()` — begins periodic check (every 60s)
-  - `stop()` — clears interval
-  - `resetTimer(agentId)` — called by tools on every cloud member operation
-  - Periodic check logic:
-    1. For each cloud member with `cloud` config
-    2. Get instance state — skip if not running
-    3. Check `lastUsed` — if within idle timeout, skip
-    4. Run `checkMemberActivity()` — if busy, touch `lastUsed`, skip
-    5. If idle > timeout AND not busy — `stopInstance()`, log to stderr
-  - Timer is `unref()`'d (doesn't prevent Node exit)
-  - Mutex per instance: never run two stop attempts concurrently
-- Wire into `src/index.ts`: start idle manager after server connects; on startup, reload `lastUsed` from registry for all cloud members so in-memory timers reflect persisted state (mitigates R-9)
-- Wire `resetTimer` into `touchAgent` helper so every tool call resets it
+1. **GPU parser extraction (PR#4)**: Create `src/utils/gpu-parser.ts` with:
+   ```typescript
+   export function parseGpuUtilization(stdout: string): number | undefined {
+     const trimmed = stdout.trim();
+     const parsed = parseInt(trimmed, 10);
+     return isNaN(parsed) ? undefined : parsed;
+   }
+   ```
+   Replace inline `parseInt` + `isNaN` checks in `monitor-task.ts` (line 63) and
+   `check-status.ts` (lines 117-119) with this helper.
 
-**Done**: Idle manager stops instances after configured timeout. GPU activity prevents stop. Timer resets on tool calls. Tests with mocked provider + activity check.
-**Could block**: Timer races — mutex/flag prevents concurrent stop on same instance.
+2. **Custom activity command**: Add optional field to `CloudConfig`:
+   ```typescript
+   activityCommand?: string;  // custom shell command: outputs "busy" or "idle"
+   ```
 
-### VERIFY (V3)
-Cloud member left idle > timeout auto-stops. Cloud member with active GPU stays running. Timer resets on every tool call. All tests pass.
+3. In `register_member` and `update_member` schemas: add `cloud_activity_command?: z.string().optional()`
+
+4. In `checkMemberActivity` (activity.ts): after GPU check and before process check, if
+   `agent.cloud?.activityCommand` is set, run it via strategy.execCommand:
+   - If stdout.trim() === 'busy' and exit code 0 → return 'busy-process'
+   - Otherwise continue to existing process check
+   This allows users to detect CPU-intensive tasks, download tasks, or any arbitrary workload.
+
+5. Tests:
+   - `parseGpuUtilization` unit tests (valid number, empty, non-numeric, whitespace)
+   - `checkMemberActivity` with custom activityCommand returning 'busy' → returns 'busy-process'
+   - `checkMemberActivity` with custom activityCommand returning 'idle' → falls through
+   - `checkMemberActivity` with custom activityCommand failing → falls through (defensive)
+
+**Done when**:
+- GPU parsing extracted to shared helper, used by monitor-task + check-status
+- `checkMemberActivity` runs custom `activityCommand` when configured
+- Registration accepts `cloud_activity_command` parameter
+- 6+ new tests pass
+
+**Risks**: Custom activity command runs on the remote member, same trust level as execute_command.
+No additional security concern — the user already has shell access to the member. The command
+should be validated to be non-empty if provided, but no further sanitization needed since it
+runs on the member (not the PM).
+
+### V3: VERIFY
+Build succeeds. All tests pass. Pricing warnings shown in cloud_control + fleet_status.
+Custom activity command works end-to-end. GPU parser extracted.
 
 ---
 
-## Phase 4: Cloud Status & Control
+## Phase 4: Defensive UX + OS Support
 
-### T8 — fleet_status + member_detail cloud enrichment
-**Depends on**: T6 — `gpuUtilization()` is added to `OsCommands` in T6 and used here.
-**Files**: `src/tools/check-status.ts`, `src/tools/member-detail.ts`
+### T7 — Defensive UX for unsupported scenarios + OS support handling
+
+**Files**: `src/tools/register-member.ts`, `src/tools/cloud-control.ts`, `src/tools/execute-command.ts`,
+`docs/cloud-compute.md`, tests
+
 **What**:
-- For cloud members, add to status output:
-  - Instance state: `running` / `stopped` / `stopping` (via `getInstanceState`)
-  - If running: uptime since last start
-  - Estimated cost: lookup table `{ 'g5.2xlarge': 1.212, ... }` x uptime hours
-  - GPU utilization: run `gpuUtilization()` if online
-- Compact format: `[cloud:running 2h $2.42 GPU:45%]` after existing status
-- JSON format: add `cloud` object with all fields
-- For stopped cloud members: show `OFF(cloud)` instead of `OFFLINE` — distinguish instance-stopped from network-unreachable
-- Run AWS state queries in parallel with SSH checks to avoid latency penalty
+1. **OS support warning (U2)**: In `register_member`, when `cloud_provider` is set and OS is not
+   'linux' (or is unset), append a warning to the success message:
+   `"Note: Cloud features (GPU detection, task wrapper, activity monitoring) are designed for Linux. Some features may not work on [os]."`
+   Cloud registration still succeeds — this is a warning, not a block.
 
-**Done**: `fleet_status` shows cloud state, uptime, cost, GPU. `member_detail` shows detailed cloud info. Non-cloud members unchanged. Tests pass.
-**Could block**: AWS describe-instances latency — parallel execution mitigates.
+2. **Missing tools note (U6)**: In `cloud_control status`, if GPU utilization query returns empty
+   or fails, include note: `gpu: (nvidia-smi not found)` instead of silently omitting.
 
-### T9 — cloud_control tool
-**Files**: `src/tools/cloud-control.ts` (new), `src/index.ts` (register)
-**What**:
-- New tool `cloud_control`:
-  - Schema: `member_id`, `action: 'start' | 'stop' | 'status'`
-  - `start`: calls `ensureCloudReady`, returns new IP and confirmation
-  - `stop`: calls `stopInstance` directly, bypasses idle timer, returns confirmation
-  - `status`: returns instance state, IP, uptime, cost — no side effects
-- Validation: reject if member has no cloud config
-- Stop action also pauses idle timer for that member
+3. **Unknown instance type (U6)**: Already covered by T5's `costWarning` for pricing. In
+   `cloud_control status`, surface the warning from `costWarning()` which already flags unknown types.
 
-**Done**: Can manually start/stop cloud members. Stop kills instance immediately. Status shows state without side effects.
-**Could block**: Nothing significant.
+4. **Unsupported long_running on non-linux (U6)**: In `execute-command.ts`, when `long_running: true`
+   and agent OS is not linux, return a warning message:
+   `"Long-running tasks use a bash wrapper script designed for Linux. The member's OS is [os], which may not support this feature."`
+   Still proceed (don't block) — user may have bash available via WSL or similar.
 
-### VERIFY (V4)
-`fleet_status` shows cloud member state + cost. `cloud_control stop` force-stops instance. All tests pass.
+5. **Document OS requirements (U2)**: Add "Supported Platforms" section to `docs/cloud-compute.md`:
+   - Linux: fully supported (GPU detection, task wrapper, idle management)
+   - macOS: partial (no nvidia-smi, task wrapper untested)
+   - Windows: limited (task wrapper not supported, GPU detection not supported)
 
----
+6. Tests:
+   - Register cloud member with os='windows' → success message contains OS warning
+   - Register cloud member with os='linux' → no OS warning
+   - Long-running on non-linux agent → warning in response
 
-## Phase 5: Long-Running Tasks
+**Done when**:
+- Cloud registration with non-linux OS shows warning but succeeds
+- `cloud_control status` notes when GPU tools are unavailable
+- Long-running task on non-linux shows warning
+- `docs/cloud-compute.md` has "Supported Platforms" section
+- Tests cover warning scenarios
 
-### T10 — Task wrapper script + launch mechanism
-**Files**: `src/services/cloud/task-wrapper.ts` (new), extend `src/tools/execute-command.ts` schema
-**What**:
-- `generateTaskWrapper(config)` accepts:
-  - `command: string` — the initial run command (e.g. `python train.py --epochs 100`)
-  - `restart_command?: string` — command to use for retries (e.g. `python train.py --resume checkpoint.pt`). If omitted, retries use `command` (user must ensure idempotency). **ML training tasks should always supply `restart_command` — the initial run and the checkpoint-resume run differ, and retrying the original command restarts training from scratch, discarding all progress.**
-  - `max_retries: number` (default 3)
-  - `task_id: string`
+**Risks**: Low — these are additive warning messages, not behavioral changes. No risk of
+breaking existing functionality.
 
-- Generated bash script behavior:
-  1. Run `command` as the initial execution via nohup
-  2. Redirect stdout/stderr to `~/.fleet-tasks/<task-id>/output.log`
-  3. Write PID to `~/.fleet-tasks/<task-id>/pid`
-  4. Write status to `~/.fleet-tasks/<task-id>/status` (`running | completed:0 | crashed:N`)
-  5. **Background activity loop (F3)**: launch a background subshell that touches the fleet activity marker file every 5 minutes while the child PID is alive. This prevents the idle manager from stopping the instance during multi-hour training. Touching only on retries is insufficient — a healthy 6-hour run with no crashes would exceed the 30-min idle timeout without this loop.
-  6. On crash (non-zero exit): if retries remain, run `restart_command` (or `command` if not supplied) and decrement retry count. Touch activity marker on retry.
-  7. On completion (exit 0): write `completed:0` to status; background loop exits naturally when PID is gone.
-
-- Add `long_running: boolean`, `max_retries: number`, and `restart_command?: string` options to `execute_command` schema
-- When `long_running: true`:
-  1. Generate wrapper script with unique task ID
-  2. Push to member via strategy.transferFiles
-  3. Execute wrapper via nohup (non-blocking)
-  4. Return task ID for later monitoring
-
-**Done**: Can launch a long-running command that survives SSH disconnect. Task ID returned. Script logs to known location. Auto-retries on crash using `restart_command`. Activity marker touched every 5 min — instance stays alive through multi-hour training.
-**Could block**: `screen` not installed — fall back to plain nohup (always available on Linux).
-
-### T11 — monitor_task tool
-**Files**: `src/tools/monitor-task.ts` (new), `src/index.ts` (register)
-**What**:
-- New tool `monitor_task`:
-  - Schema: `member_id`, `task_id`, `auto_stop: boolean` (optional)
-  - Checks (all via strategy.execCommand — cheap, no Claude):
-    1. Read `status` file
-    2. Check if PID alive (`kill -0 $PID`)
-    3. If GPU available: `nvidia-smi` for utilization + memory
-    4. Crash detection: PID dead but GPU memory held = crashed (GPU memory leak)
-    5. Tail last 50 lines of `output.log`
-  - Returns structured JSON: `{ status, pid_alive, gpu_util, gpu_memory, log_tail, retries_remaining }`
-  - If task completed and `auto_stop` is true, trigger instance stop
-
-**Done**: `monitor_task` returns structured status. Detects running, completed, crashed states. GPU memory leak detected. Log tail readable.
-**Could block**: Race between task completion and monitor — status file is authoritative.
-
-### VERIFY (V5)
-Launch long-running task — disconnect — reconnect — monitor shows status. Crashed task auto-retries using `restart_command`. Activity marker touched every 5 min — idle manager does not stop instance during task. Completed task optionally stops instance. All tests pass.
-
----
-
-## Phase 6: Polish & Documentation
-
-### T12 — Integration tests for cloud lifecycle
-**Files**: `tests/cloud-lifecycle.test.ts` (new)
-**What**:
-- End-to-end test with fully mocked AWS CLI + SSH:
-  - Register cloud member — auto-start on execute_command — idle timeout — auto-stop
-  - Long-running task: launch — monitor — complete — auto-stop
-  - IP change handling: instance restarts with new IP — next command works
-  - Error cases: terminated instance, AWS CLI missing, SSH unreachable after start
-
-**Done**: Integration test covers the full lifecycle. All tests pass.
-**Could block**: Test isolation — mock AWS CLI at exec level.
-
-### T13 — Documentation updates
-**Files**: `docs/architecture.md`, `docs/tools-lifecycle.md`, `docs/tools-work.md`, `docs/tools-observability.md`, `README.md`
-**What**:
-- Architecture: add "Cloud Lifecycle" section explaining the wrapper layer
-- tools-lifecycle: document `cloud_control` tool, cloud registration fields, `cloud_ssh_key_path` note
-- tools-work: document `long_running` option, `restart_command` param, `monitor_task` tool
-- tools-observability: document cloud fields in fleet_status/member_detail
-- README: add cloud setup section (AWS CLI prereq, registration example)
-
-**Done**: Docs complete, internally consistent, no stale references.
-**Could block**: Nothing.
-
-### VERIFY (V6)
-All tests pass. Docs complete. Full build clean. Non-cloud functionality verified unchanged.
-
----
-
-## Risk Register
-
-| ID | Risk | Likelihood | Impact | Mitigation |
-|----|------|-----------|--------|------------|
-| R-1 | `nvidia-smi` output varies across driver versions | Medium | High (wrong idle decision) | Parse defensively; treat errors as "unknown" (don't stop). Validated in T6. |
-| R-2 | AWS CLI not installed on PM machine | Low | Critical (all cloud ops fail) | Pre-check in AwsCloudProvider; clear error message. |
-| R-3 | Instance in terminated/pending state | Low | Medium (can't start) | Handle all 5 EC2 states. Error on terminated. Wait on pending. |
-| R-4 | SSH not ready after instance start | Medium | Medium (command fails) | Poll 30 attempts x 2s (60s total). Same pattern as fleet-ec2.sh. |
-| R-5 | Idle timer races with concurrent tool calls | Medium | Medium (premature stop) | Re-check lastUsed + GPU before stopping. Never stop if lastUsed < 5 min. |
-| R-6 | nohup unavailable on member | Very Low | Medium (can't run long tasks) | nohup is POSIX — available on all Linux. screen is optional. |
-| R-7 | execute_prompt timeout for long-running work | Medium | High (PM loses track) | Use `long_running: true` to decouple from SSH session. |
-| R-8 | AWS API rate limits on frequent describe-instances | Low | Low (transient) | Cache state 30s. Idle manager polls every 60s. |
-| R-9 | Server restart resets all in-memory idle timers | Medium | Medium (instance not stopped if it was idle before restart) | `lastUsed` is persisted to registry on every `touchAgent` call. On server startup, IdleManager reloads `lastUsed` from registry for all cloud members, restoring effective idle tracking. |
+### V4: VERIFY
+Full test suite passes. All must-fix and should-fix items addressed. Build clean. Documentation updated.
 
 ---
 
@@ -331,11 +308,9 @@ All tests pass. Docs complete. Full build clean. Non-cloud functionality verifie
 
 | Phase | Tasks | Focus | Key Deliverable |
 |-------|-------|-------|-----------------|
-| 1 | T1-T3 | Foundation | Cloud types, AWS provider, registration |
-| 2 | T4-T5 | Auto-Start | Stopped member auto-starts on tool call |
-| 3 | T6-T7 | Idle Stop | GPU-aware idle detection + auto-stop |
-| 4 | T8-T9 | Status/Control | Cloud info in fleet_status, manual start/stop |
-| 5 | T10-T11 | Long Tasks | nohup wrapper, monitor_task tool |
-| 6 | T12-T13 | Polish | Integration tests, documentation |
+| 1 | T1-T2 | Security | Task ID validation, AWS CLI timeout |
+| 2 | T3-T4 | Fixes | Python3 removal, missing unit tests |
+| 3 | T5-T6 | UX | Pricing warnings, custom workload detection |
+| 4 | T7 | Polish | Defensive warnings, OS docs |
 
-**Total**: 13 work tasks, 6 verify checkpoints
+**Total**: 7 work tasks, 4 verify checkpoints
