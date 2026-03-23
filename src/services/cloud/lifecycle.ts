@@ -40,7 +40,9 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
       log('provision_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
     }
   } catch (e) {
-    log('provision_auth failed for ' + agent.friendlyName + ': ' + (e as Error).message);
+    // Truncate error message to prevent accidental credential leakage in log output
+    const msg = (e as Error).message.slice(0, 50);
+    log('provision_auth failed for ' + agent.friendlyName + ': ' + msg);
   }
 
   // F5: Re-mint GitHub App tokens if agent has git repos configured (best-effort)
@@ -57,7 +59,9 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
         log('provision_vcs_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
       }
     } catch (e) {
-      log('provision_vcs_auth failed for ' + agent.friendlyName + ': ' + (e as Error).message);
+      // Truncate error message to prevent accidental credential leakage in log output
+      const msg = (e as Error).message.slice(0, 50);
+      log('provision_vcs_auth failed for ' + agent.friendlyName + ': ' + msg);
     }
   }
 }

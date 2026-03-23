@@ -8,7 +8,9 @@ import type { Agent } from '../types.js';
 
 export const monitorTaskSchema = z.object({
   member_id: z.string().describe('UUID of the fleet member running the task'),
-  task_id: z.string().describe('Task ID returned by execute_command with long_running=true'),
+  // Regex prevents path traversal (../etc/passwd) and shell injection (; rm -rf /)
+  // Auto-generated IDs ('task-' + Date.now().toString(36)) always match this pattern
+  task_id: z.string().regex(/^task-[a-z0-9]{4,20}$/, 'task_id must match pattern task-[a-z0-9]{4,20}').describe('Task ID returned by execute_command with long_running=true'),
   auto_stop: z.boolean().optional().default(false).describe('Stop cloud instance when task completes'),
 });
 

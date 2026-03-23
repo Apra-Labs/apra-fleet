@@ -27,12 +27,14 @@ export const registerMemberSchema = z.object({
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   // Cloud fields
-  cloud_provider: z.enum(['aws']).optional().describe('Cloud provider (e.g. "aws"). When set, cloud_instance_id and cloud_ssh_key_path are required.'),
-  cloud_instance_id: z.string().optional().describe('EC2 instance ID (e.g. "i-0abc123def456789a"). Required when cloud_provider is set.'),
-  cloud_region: z.string().optional().default('us-east-1').describe('AWS region (default: "us-east-1")'),
+  cloud_provider: z.enum(['aws'], {
+    errorMap: () => ({ message: "Only 'aws' is supported as a cloud provider. GCP and Azure support is planned." }),
+  }).optional().describe('Cloud provider (e.g. "aws"). When set, cloud_instance_id and cloud_ssh_key_path are required.'),
+  cloud_instance_id: z.string().regex(/^i-[0-9a-f]{8,17}$/, 'cloud_instance_id must match pattern i-[0-9a-f]{8,17} (e.g. "i-0abc123def456789a")').optional().describe('EC2 instance ID (e.g. "i-0abc123def456789a"). Required when cloud_provider is set.'),
+  cloud_region: z.string().regex(/^[a-z]{2}-[a-z]+-\d+$/, 'cloud_region must be a valid AWS region (e.g. "us-east-1")').optional().default('us-east-1').describe('AWS region (default: "us-east-1")'),
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
-  cloud_idle_timeout_min: z.number().optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
-  cloud_ssh_key_path: z.string().optional().describe('Path to SSH private key on this machine. Required when cloud_provider is set. Also sets the member key_path for SSH connections (F4).'),
+  cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
+  cloud_ssh_key_path: z.string().min(1, 'cloud_ssh_key_path must not be empty').optional().describe('Path to SSH private key on this machine. Required when cloud_provider is set. Also sets the member key_path for SSH connections (F4).'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
