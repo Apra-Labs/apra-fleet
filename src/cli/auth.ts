@@ -96,7 +96,7 @@ export async function runAuth(args: string[]): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const client = net.connect(sockPath, () => {
       const msg = JSON.stringify({ type: 'auth', member_name: memberName, password }) + '\n';
-      // Clear password from local variable as soon as sent
+      // Best-effort clear — JS strings are immutable; original may persist in V8 heap until GC
       password = '';
       client.write(msg);
     });

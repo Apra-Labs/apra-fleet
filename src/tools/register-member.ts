@@ -59,7 +59,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   // Out-of-band password collection for remote password auth without inline password
   let preEncryptedPassword: string | undefined;
-  if (!isLocal && !isCloud && input.auth_type === 'password' && !input.password) {
+  if (!isLocal && input.auth_type === 'password' && !input.password) {
     const oob = await collectOobPassword(input.friendly_name, 'register_member');
     if ('fallback' in oob) return oob.fallback;
     preEncryptedPassword = oob.password;
@@ -130,8 +130,8 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     host: isLocal ? undefined : (resolvedHost ?? ''),
     port: isLocal ? undefined : input.port,
     username: isLocal ? undefined : input.username,
-    authType: isLocal ? undefined : (isCloud ? 'key' : input.auth_type),
-    encryptedPassword: preEncryptedPassword ?? ((!isLocal && !isCloud && input.password) ? encryptPassword(input.password) : undefined),
+    authType: isLocal ? undefined : (input.auth_type ?? (isCloud ? 'key' : undefined)),
+    encryptedPassword: preEncryptedPassword ?? ((!isLocal && input.password) ? encryptPassword(input.password) : undefined),
     keyPath: isLocal ? undefined : (isCloud ? input.cloud_ssh_key_path : input.key_path),
     workFolder: input.work_folder,
     createdAt: new Date().toISOString(),
@@ -259,3 +259,4 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   return result;
 }
+

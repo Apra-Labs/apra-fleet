@@ -19,6 +19,10 @@ export const updateMemberSchema = z.object({
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
   password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
+  rotate_password: z.boolean().optional().describe(
+    'Trigger secure out-of-band password re-entry for a member already using password auth. '
+    + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'
+  ),
   key_path: z.string().optional().describe('New path to SSH private key'),
   work_folder: z.string().optional().describe('New working directory on target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
@@ -56,9 +60,13 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return `❌ Invalid icon "${input.icon}". Use a named alias (e.g., blue-circle, red-square, green-square) or a valid emoji.`;
   }
 
-  // Out-of-band password collection when switching to password auth without inline password
+  // Out-of-band password collection:
+  // - switchingToPassword: changing from key → password auth without inline password
+  // - rotatingPassword: explicit secure rotation on a member already using password auth
   let preEncryptedPassword: string | undefined;
-  if (input.auth_type === 'password' && !input.password && existing.agentType === 'remote') {
+  const switchingToPassword = input.auth_type === 'password' && existing.authType !== 'password';
+  const rotatingPassword = !!input.rotate_password && existing.authType === 'password';
+  if ((switchingToPassword || rotatingPassword) && !input.password && existing.agentType === 'remote') {
     const oob = await collectOobPassword(existing.friendlyName, 'update_member');
     if ('fallback' in oob) return oob.fallback;
     preEncryptedPassword = oob.password;

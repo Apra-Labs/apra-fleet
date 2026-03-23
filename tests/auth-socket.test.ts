@@ -9,6 +9,7 @@ import {
   hasPendingAuth,
   waitForPassword,
   cleanupAuthSocket,
+  collectOobPassword,
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
@@ -288,4 +289,89 @@ describe('auth-socket', () => {
       await expect(passwordPromise).rejects.toThrow('Auth socket closed');
     });
   });
+
+  describe('collectOobPassword', () => {
+    afterEach(() => {
+      cleanupAuthSocket();
+    });
+
+    it('returns immediately when pending auth already has password', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('oob-ready');
+      await sendPassword(getSocketPath(), 'oob-ready', 'secret');
+
+      const launchFn = vi.fn();
+      const result = await collectOobPassword('oob-ready', 'test_tool', { launchFn });
+
+      expect(launchFn).not.toHaveBeenCalled();
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+    });
+
+    it('waits and resolves when pending without password', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('oob-wait');
+
+      const resultPromise = collectOobPassword('oob-wait', 'test_tool');
+
+      await new Promise(r => setTimeout(r, 50));
+      await sendPassword(getSocketPath(), 'oob-wait', 'delayed-secret');
+
+      const result = await resultPromise;
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+    });
+
+    it('returns fallback on timeout', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('oob-timeout');
+
+      // Use a short waitTimeoutMs so the test doesn't hang for 5 minutes
+      const result = await collectOobPassword('oob-timeout', 'test_tool', { waitTimeoutMs: 100 });
+      expect('fallback' in result).toBe(true);
+      if ('fallback' in result) {
+        expect(result.fallback).toContain('timed out');
+        expect(result.fallback).toContain('test_tool');
+      }
+    });
+
+    it('launches terminal and resolves when password arrives', async () => {
+      const launchFn = vi.fn().mockReturnValue('launched');
+
+      const resultPromise = collectOobPassword('oob-fresh', 'test_tool', { launchFn });
+
+      await new Promise(r => setTimeout(r, 50));
+      await sendPassword(getSocketPath(), 'oob-fresh', 'fresh-secret');
+
+      const result = await resultPromise;
+      expect(launchFn).toHaveBeenCalledWith('oob-fresh');
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+    });
+
+    it('returns fallback when terminal launch fails', async () => {
+      const launchFn = vi.fn().mockReturnValue('fallback:Could not find a terminal emulator');
+
+      const result = await collectOobPassword('oob-noterm', 'test_tool', { launchFn });
+      expect('fallback' in result).toBe(true);
+      if ('fallback' in result) {
+        expect(result.fallback).toContain('Could not find a terminal emulator');
+        expect(result.fallback).toContain('test_tool');
+      }
+    });
+  });
 });
+
+function sendPassword(sockPath: string, memberName: string, password: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const client = net.connect(sockPath, () => {
+      client.write(JSON.stringify({ type: 'auth', member_name: memberName, password }) + '\n');
+    });
+    let buffer = '';
+    client.on('data', (chunk) => {
+      buffer += chunk.toString();
+      if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
+    });
+    client.on('error', reject);
+  });
+}

@@ -54,7 +54,7 @@ tests/auth-socket.test.ts      — 18 unit tests
 ```
 src/index.ts                   — auth CLI dispatch, cleanup on SIGINT/SIGTERM
 src/tools/register-member.ts   — out-of-band flow before connectivity test
-src/tools/update-member.ts     — out-of-band flow when switching to password auth
+src/tools/update-member.ts     — out-of-band flow when switching to password auth; rotate_password schema field
 ```
 
 ### Data Flow
@@ -173,6 +173,50 @@ Binary path resolution:
 | Request expiry | 10-minute TTL on pending auth entries |
 | Single-use | Encrypted password consumed (deleted) on retrieval |
 
+## Password Rotation
+
+### Problem
+
+`update_member` with `auth_type: "password"` on a member already using password auth triggers OOB
+collection even when the caller is just echoing the current auth type (e.g., an LLM updating an
+unrelated field like `work_folder` and mirroring back the existing auth state).
+
+The naive fix — adding a guard `existing.authType !== 'password'` — eliminates the false trigger but
+also eliminates the only secure path for password rotation. Inline passwords passed via the `password`
+parameter enter the AI's context window and persist for the rest of the session, making OOB the only
+safe option for rotating credentials.
+
+### Decision
+
+Add a `rotate_password: boolean` field to the `update_member` schema. OOB collection triggers on two
+distinct predicates:
+
+```typescript
+const switchingToPassword = input.auth_type === 'password' && existing.authType !== 'password';
+const rotatingPassword = !!input.rotate_password && existing.authType === 'password';
+if ((switchingToPassword || rotatingPassword) && !input.password && existing.agentType === 'remote')
+```
+
+The `!input.password` guard ensures an inline password always wins and OOB is never triggered
+unnecessarily.
+
+### OOB Trigger Truth Table
+
+| # | Existing | `auth_type` | `password` | `rotate_password` | OOB | Notes |
+|---|---|---|---|---|---|---|
+| 1 | password | _(none)_ | _(none)_ | _(none)_ | No | No auth change |
+| 2 | password | _(none)_ | provided | _(none)_ | No | Inline pw update |
+| 3a | password | `password` | _(none)_ | _(none)_ | **No** | LLM echo — bug fixed |
+| 3b | password | _(none)_ | _(none)_ | `true` | **Yes** | Secure rotation via OOB |
+| 3c | password | `password` | _(none)_ | `true` | **Yes** | Redundant but honored |
+| 3d | password | _(none)_ | provided | `true` | No | Inline wins over flag |
+| 4 | password | `password` | provided | _(none)_ | No | Inline pw rotation |
+| 5 | password | `key` | _(none)_ | _(none)_ | No | Switching to key |
+| 7 | key | _(none)_ | _(none)_ | _(none)_ | No | No auth change |
+| 9 | key | `password` | _(none)_ | _(none)_ | **Yes** | Switching to password |
+| 10 | key | `password` | provided | _(none)_ | No | Switch with inline pw |
+| 13 | key | _(none)_ | _(none)_ | `true` | No | Not on pw auth, ignored |
+
 ## Backwards Compatibility
 
 - `password` parameter remains optional — direct passing still works for automation/scripts
@@ -195,7 +239,7 @@ Binary path resolution:
 
 ## Test Coverage
 
-18 unit tests in `tests/auth-socket.test.ts`:
+23 unit tests in `tests/auth-socket.test.ts`:
 
 - Pending auth lifecycle: create, check, resolve, expire, cleanup
 - Socket server: accept auth + encrypt, error on unknown member, invalid JSON, invalid message format
@@ -206,6 +250,11 @@ Binary path resolution:
 - `waitForPassword` times out when no password arrives
 - `waitForPassword` resolves immediately if password already arrived
 - `cleanupAuthSocket` rejects pending waiters
+- `collectOobPassword` returns immediately when password already pending
+- `collectOobPassword` waits and resolves when pending without password
+- `collectOobPassword` returns fallback on timeout
+- `collectOobPassword` launches terminal and resolves on fresh call
+- `collectOobPassword` returns fallback when terminal launch fails
 
 ## Alternatives Considered
 

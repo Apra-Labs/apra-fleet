@@ -74,6 +74,7 @@ export async function ensureAuthSocket(): Promise<void> {
             }
             // Encrypt immediately, discard plaintext
             pending.encryptedPassword = encryptPassword(msg.password);
+            // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
             msg.password = '';
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
             // Resolve any waiting tool handler
@@ -193,16 +194,26 @@ export function cleanupAuthSocket(): void {
  * the password arrives over the socket, or return a fallback message for
  * headless environments. Returns `{ password }` on success or `{ fallback }`
  * with a user-facing message if the terminal couldn't be launched.
+ *
+ * The optional `_opts` parameter is for testing only: inject a stub
+ * `launchFn` or short `waitTimeoutMs` without spawning real terminals.
  */
 export async function collectOobPassword(
   memberName: string,
   toolName: string,
+  _opts?: { waitTimeoutMs?: number; launchFn?: (name: string) => string },
 ): Promise<{ password: string } | { fallback: string }> {
+  const launch = _opts?.launchFn ?? launchAuthTerminal;
+  const waitTimeoutMs = _opts?.waitTimeoutMs;
+
+  // Re-entrant: a prior call may have already created a pending auth (e.g., terminal
+  // launched but user hasn't entered password yet, or a fallback was returned and the
+  // caller is retrying). Piggyback on the existing entry rather than spawning a duplicate.
   if (hasPendingAuth(memberName)) {
     const encPw = getPendingPassword(memberName);
     if (encPw) return { password: encPw };
     try {
-      return { password: await waitForPassword(memberName) };
+      return { password: await waitForPassword(memberName, waitTimeoutMs ?? 300_000) };
     } catch {
       return { fallback: `❌ Password entry timed out for "${memberName}". Call ${toolName} again to retry.` };
     }
@@ -210,7 +221,7 @@ export async function collectOobPassword(
 
   await ensureAuthSocket();
   createPendingAuth(memberName);
-  const result = launchAuthTerminal(memberName);
+  const result = launch(memberName);
 
   if (result.startsWith('fallback:')) {
     const manualMsg = result.slice('fallback:'.length);
@@ -218,7 +229,7 @@ export async function collectOobPassword(
   }
 
   try {
-    return { password: await waitForPassword(memberName) };
+    return { password: await waitForPassword(memberName, waitTimeoutMs) };
   } catch {
     return { fallback: `❌ Password entry timed out for "${memberName}". Call ${toolName} again to retry.` };
   }
