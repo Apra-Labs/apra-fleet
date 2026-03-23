@@ -1,8 +1,11 @@
 import { z } from 'zod';
-import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getStrategy } from '../services/strategy.js';
+import { getOsCommands } from '../os/index.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning, uptimeWarning } from '../services/cloud/cost.js';
+import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import type { Agent } from '../types.js';
 
 export const cloudControlSchema = z.object({
@@ -64,6 +67,25 @@ export async function cloudControl(input: CloudControlInput): Promise<string> {
           uptimeHrs > 2
         ) ? '⚠ Instance running but no recent activity — idle manager may not be active' : null;
 
+        // GPU utilization check (only when running and SSH is available)
+        let gpuLine = '';
+        if (details.state === 'running') {
+          try {
+            const strategy = getStrategy(agent);
+            const cmds = getOsCommands(getAgentOS(agent));
+            const gpuResult = await strategy.execCommand(cmds.gpuUtilization(), 10000);
+            const gpuUtil = parseGpuUtilization(gpuResult.stdout);
+            if (gpuUtil !== undefined) {
+              gpuLine = `\n  gpu:      ${gpuUtil}%`;
+            } else {
+              // Empty stdout: nvidia-smi not found (suppressed by 2>/dev/null)
+              gpuLine = '\n  gpu:      n/a (nvidia-smi not found)';
+            }
+          } catch {
+            gpuLine = '\n  gpu:      n/a (check failed)';
+          }
+        }
+
         let out = (
           `"${agent.friendlyName}" cloud status:\n` +
           `  state:    ${details.state}\n` +
@@ -72,8 +94,9 @@ export async function cloudControl(input: CloudControlInput): Promise<string> {
           `  ip:       ${ipStr}\n` +
           `  uptime:   ${uptime}\n` +
           `  rate:     ${rate}\n` +
-          `  est cost: ${cost}\n` +
-          `  idle timeout: ${agent.cloud.idleTimeoutMin}min`
+          `  est cost: ${cost}` +
+          gpuLine +
+          `\n  idle timeout: ${agent.cloud.idleTimeoutMin}min`
         );
         if (warn) out += `\n  warning:  ${warn}`;
         if (uptimeWarn) out += `\n  warning:  ⚠ ${uptimeWarn}`;

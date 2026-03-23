@@ -230,3 +230,23 @@ cloud_control(member_id="<id>", action="status")  # show current state + cost
 - Rates are hard-coded approximations. Actual AWS charges may differ due to spot pricing, savings plans, data transfer, EBS, etc.
 - Instance types not in the table show `?` for cost.
 - The lookup table is in `src/services/cloud/cost.ts` — edit `HOURLY_RATES` to add custom types or update prices.
+
+---
+
+## 10. Supported Platforms
+
+Cloud compute features are designed and tested for **Linux** EC2 instances (Ubuntu, Amazon Linux 2, Debian).
+
+| Feature | Linux | macOS | Windows |
+|---|---|---|---|
+| GPU detection (`nvidia-smi`) | ✅ Full | ❌ Not supported | ❌ Not supported |
+| Long-running task wrapper | ✅ Full | ⚠ Untested | ❌ Not supported |
+| Idle activity monitoring | ✅ Full | ⚠ Partial | ❌ Not supported |
+| Auto-start / auto-stop | ✅ Full | ✅ Full | ✅ Full |
+| SSH connectivity | ✅ Full | ✅ Full | ⚠ Requires OpenSSH |
+
+**Notes:**
+- Registering a cloud member with a non-Linux OS will succeed but show a warning about unsupported features.
+- The task wrapper script (`long_running=true`) uses `bash`, `nohup`, and POSIX shell utilities. It is not compatible with Windows Command Prompt or PowerShell.
+- macOS GPU detection is not supported (`nvidia-smi` is not available on Apple Silicon or macOS in general).
+- Only `aws` is supported as a `cloud_provider`. GCP and Azure support is planned.

@@ -36,6 +36,11 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   // -- Long-running background task path --
   if (input.long_running) {
+    const agentOs = getAgentOS(agent);
+    const longRunningOsWarning = agentOs !== 'linux'
+      ? `Note: Long-running tasks use a bash wrapper script designed for Linux. The member's OS is ${agentOs}, which may not support this feature.\n`
+      : '';
+
     const taskId = 'task-' + Date.now().toString(36);
     const wrapperScript = generateTaskWrapper({
       taskId,
@@ -60,7 +65,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
       await strategy.execCommand(launchCmd, input.timeout_ms);
       touchAgent(agent.id);
       writeStatusline();
-      return `Task launched: task_id=${taskId}\nUse monitor_task to track progress.`;
+      return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.`;
     } catch (err: any) {
       writeStatusline(new Map([[agent.id, 'offline']]));
       return `Failed to launch task on "${agent.friendlyName}": ${err.message}`;

@@ -204,6 +204,12 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
   }
 
+  // OS support warning for cloud members: cloud features are designed for Linux
+  if (isCloud && tempAgent.os !== 'linux') {
+    const osLabel = tempAgent.os ?? 'unknown';
+    warnings.push(`Cloud features (GPU detection, task wrapper, activity monitoring) are designed for Linux. Some features may not work on ${osLabel}.`);
+  }
+
   // Auto-assign icon
   tempAgent.icon = assignIcon(getAllAgents().map(a => a.icon).filter(Boolean) as string[]);
 
