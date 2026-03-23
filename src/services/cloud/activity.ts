@@ -38,6 +38,18 @@ export async function checkMemberActivity(agent: Agent): Promise<ActivityStatus>
     // SSH/strategy error during GPU check — skip, continue to process check
   }
 
+  // Custom activity command — runs between GPU and process checks (U4)
+  // MUST use ACTIVITY_TIMEOUT_MS to prevent hanging the idle manager check loop (Risk R-1)
+  if (agent.cloud?.activityCommand) {
+    try {
+      const actResult = await strategy.execCommand(agent.cloud.activityCommand, ACTIVITY_TIMEOUT_MS);
+      if (actResult.code === 0 && actResult.stdout.trim() === 'busy') return 'busy-process';
+      // Any other result (idle, error, non-zero exit): fall through to process check
+    } catch {
+      // Timeout or SSH error — fall through to process check (safe: don't stop on uncertainty)
+    }
+  }
+
   // Process check
   try {
     const result = await strategy.execCommand(

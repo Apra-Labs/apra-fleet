@@ -4,6 +4,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
+import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import type { Agent } from '../types.js';
 
 export const monitorTaskSchema = z.object({
@@ -60,9 +61,7 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
 
   let gpuUtilization: number | undefined;
   if (agent.cloud && gpuResult.status === 'fulfilled') {
-    const gpuStr = gpuResult.value.stdout.trim();
-    const parsed = parseInt(gpuStr, 10);
-    if (!isNaN(parsed)) gpuUtilization = parsed;
+    gpuUtilization = parseGpuUtilization(gpuResult.value.stdout);
   }
 
   const logTail = logResult.status === 'fulfilled'

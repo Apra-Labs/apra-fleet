@@ -128,3 +128,62 @@ describe('checkMemberActivity', () => {
     expect(result).toBe('idle');
   });
 });
+
+describe('checkMemberActivity - custom activityCommand (U4)', () => {
+  const agentWithCmd: Agent = {
+    ...baseAgent,
+    cloud: {
+      ...baseAgent.cloud!,
+      activityCommand: 'check-workload.sh',
+    } as any,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetStrategy.mockReturnValue({ execCommand: mockExecCommand });
+    mockGpuProcessCheck.mockReturnValue('gpu-check-cmd');
+    mockFleetProcessCheck.mockReturnValue('fleet-check-cmd');
+  });
+
+  it('returns busy-process when activityCommand outputs "busy"', async () => {
+    mockExecCommand.mockResolvedValueOnce(sshResult('', 2));    // gpuProcessCheck: skip
+    mockExecCommand.mockResolvedValueOnce(sshResult('busy'));   // activityCommand: busy
+    const result = await checkMemberActivity(agentWithCmd);
+    expect(result).toBe('busy-process');
+    // Should not reach process check
+    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls through to process check when activityCommand returns "idle"', async () => {
+    mockExecCommand.mockResolvedValueOnce(sshResult('', 2));    // gpuProcessCheck: skip
+    mockExecCommand.mockResolvedValueOnce(sshResult('idle'));   // activityCommand: idle
+    mockExecCommand.mockResolvedValueOnce(sshResult('idle'));   // fleetProcessCheck
+    const result = await checkMemberActivity(agentWithCmd);
+    expect(result).toBe('idle');
+  });
+
+  it('falls through to process check when activityCommand fails (defensive)', async () => {
+    mockExecCommand.mockResolvedValueOnce(sshResult('', 2));              // gpuProcessCheck: skip
+    mockExecCommand.mockRejectedValueOnce(new Error('command timeout')); // activityCommand throws
+    mockExecCommand.mockResolvedValueOnce(sshResult('idle'));             // fleetProcessCheck
+    const result = await checkMemberActivity(agentWithCmd);
+    expect(result).toBe('idle');
+  });
+
+  it('falls through when activityCommand returns non-zero exit', async () => {
+    mockExecCommand.mockResolvedValueOnce(sshResult('', 2));      // gpuProcessCheck: skip
+    mockExecCommand.mockResolvedValueOnce(sshResult('', 1));      // activityCommand: error exit
+    mockExecCommand.mockResolvedValueOnce(sshResult('idle'));      // fleetProcessCheck
+    const result = await checkMemberActivity(agentWithCmd);
+    expect(result).toBe('idle');
+  });
+
+  it('skips activityCommand when agent has no cloud config', async () => {
+    const noCloudAgent: Agent = { ...baseAgent, cloud: undefined };
+    mockExecCommand.mockResolvedValueOnce(sshResult('', 2));    // gpuProcessCheck: skip
+    mockExecCommand.mockResolvedValueOnce(sshResult('idle'));   // fleetProcessCheck (no activity cmd)
+    const result = await checkMemberActivity(noCloudAgent);
+    expect(result).toBe('idle');
+    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+  });
+});

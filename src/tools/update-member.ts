@@ -28,6 +28,7 @@ export const updateMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name'),
   cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
   cloud_ssh_key_path: z.string().optional().describe('Path to SSH private key for cloud lifecycle. Also updates the member key_path.'),
+  cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -69,7 +70,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.git_repos) updates.gitRepos = input.git_repos;
 
   // Cloud field updates: merge into existing cloud config
-  if (input.cloud_ssh_key_path || input.cloud_region || input.cloud_profile !== undefined || input.cloud_idle_timeout_min) {
+  if (input.cloud_ssh_key_path || input.cloud_region || input.cloud_profile !== undefined || input.cloud_idle_timeout_min || input.cloud_activity_command !== undefined) {
     if (existing.cloud) {
       const updatedCloud = { ...existing.cloud };
       if (input.cloud_region) updatedCloud.region = input.cloud_region;
@@ -78,6 +79,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       if (input.cloud_ssh_key_path) {
         updatedCloud.sshKeyPath = input.cloud_ssh_key_path;
         updates.keyPath = input.cloud_ssh_key_path; // keep top-level keyPath in sync (F4)
+      }
+      if (input.cloud_activity_command !== undefined) {
+        updatedCloud.activityCommand = input.cloud_activity_command || undefined;
       }
       updates.cloud = updatedCloud;
     }

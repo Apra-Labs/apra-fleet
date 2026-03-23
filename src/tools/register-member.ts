@@ -35,6 +35,7 @@ export const registerMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_ssh_key_path: z.string().min(1, 'cloud_ssh_key_path must not be empty').optional().describe('Path to SSH private key on this machine. Required when cloud_provider is set. Also sets the member key_path for SSH connections (F4).'),
+  cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -109,6 +110,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     profile: input.cloud_profile,
     idleTimeoutMin: input.cloud_idle_timeout_min ?? 30,
     sshKeyPath: input.cloud_ssh_key_path!,
+    ...(input.cloud_activity_command ? { activityCommand: input.cloud_activity_command } : {}),
   } : undefined;
 
   // --- Build tempAgent ---

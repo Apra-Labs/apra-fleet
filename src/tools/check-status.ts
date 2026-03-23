@@ -8,6 +8,7 @@ import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning } from '../services/cloud/cost.js';
+import { parseGpuUtilization } from '../utils/gpu-parser.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -113,9 +114,8 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
       }
 
       if (gpuResult.status === 'fulfilled' && row.cloudInfo) {
-        const gpuStr = gpuResult.value.stdout.trim();
-        const gpuNum = parseInt(gpuStr, 10);
-        if (!isNaN(gpuNum)) {
+        const gpuNum = parseGpuUtilization(gpuResult.value.stdout);
+        if (gpuNum !== undefined) {
           row.cloudInfo.gpuUtil = gpuNum;
         }
       }
