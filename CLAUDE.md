@@ -1,6 +1,8 @@
 # Apra Fleet — MCP Server + PM Skill
 
 ## What This Repo Is
+<<<<<<< HEAD
+<<<<<<< HEAD
 MCP server (`src/`) managing a fleet of remote/local Claude Code members via SSH. Ships with a PM skill (`skills/pm/`) that orchestrates multi-step work across members.
 
 ## Key Paths
@@ -29,3 +31,20 @@ MCP server (`src/`) managing a fleet of remote/local Claude Code members via SSH
 - **Claude CLI invocations**: `getClaudeCommand(os, args)` in `src/utils/platform.ts` is the single source of truth.
 - **ssh2 streams**: require `stream.end()` after exec to close stdin (prevents `claude -p` from hanging).
 - **Auth validation**: always use `claude -p "hello"` not `claude auth status` (the latter doesn't validate API keys).
+=======
+An MCP server () that manages a fleet of remote/local AI coding agents via SSH. Ships with a PM skill () that orchestrates long-running work across those agents.
+=======
+An MCP server (`src/`) that manages a fleet of remote/local AI coding agents via SSH. Ships with a PM skill (`skills/pm/`) that orchestrates long-running work across those agents.
+>>>>>>> d826595 (chore: clean CLAUDE.md, remove stale PLAN.md, update README with cloud compute)
+
+## Key Paths
+- `src/` — MCP server source (TypeScript)
+- `skills/pm/` — PM skill definition and templates
+- `docs/` — documentation
+- `tests/` — test suite
+
+## Rules
+- Run `npm test` before committing
+- Run `npm run build` before pushing
+- Never commit secrets or credentials
+>>>>>>> a2ac0c9 (chore: move requirements to docs/, reset CLAUDE.md and progress.json to clean state)

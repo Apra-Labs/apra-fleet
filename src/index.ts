@@ -55,7 +55,10 @@ async function startServer() {
   const { updateClaudeSchema, updateClaude } = await import('./tools/update-claude.js');
   const { shutdownServerSchema, shutdownServer } = await import('./tools/shutdown-server.js');
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
+  const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
+  const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
   const { closeAllConnections } = await import('./services/ssh.js');
+  const { idleManager } = await import('./services/cloud/idle-manager.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
@@ -99,9 +102,15 @@ async function startServer() {
   // --- Permissions ---
   server.tool('compose_permissions', 'Compose and deliver member permissions (.claude/settings.local.json). Detects project stack, merges base + stack profiles + project ledger. Use grant param for reactive mid-sprint permission additions.', composePermissionsSchema.shape, async (input) => ({ content: [{ type: 'text', text: await composePermissions(input as any) }] }));
 
+  // --- Cloud Control ---
+  server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. start waits for SSH readiness; stop is immediate.', cloudControlSchema.shape, async (input) => ({ content: [{ type: 'text', text: await cloudControl(input as any) }] }));
+  server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Use task_id returned by execute_command. Set auto_stop=true to stop the cloud instance when the task completes.', monitorTaskSchema.shape, async (input) => ({ content: [{ type: 'text', text: await monitorTask(input as any) }] }));
+
   // --- Start Server ---
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  idleManager.start();
 
   process.on('SIGINT', () => { closeAllConnections(); process.exit(0); });
   process.on('SIGTERM', () => { closeAllConnections(); process.exit(0); });

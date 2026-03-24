@@ -186,6 +186,21 @@ export class LinuxCommands implements OsCommands {
     return cmd;
   }
 
+  // --- GPU activity ---
+
+  gpuProcessCheck(): string {
+    // Exits 2 if nvidia-smi not installed. If installed: outputs "busy" when GPU
+    // compute processes are running, "idle" otherwise.
+    return 'which nvidia-smi >/dev/null 2>&1 || exit 2; '
+      + 'COUNT=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l | tr -d " "); '
+      + '[ "${COUNT:-0}" -gt 0 ] && echo "busy" || echo "idle"';
+  }
+
+  gpuUtilization(): string {
+    // Outputs GPU utilization % (0-100), or empty string if nvidia-smi not available.
+    return 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d " "';
+  }
+
   // --- Resource output parsing ---
 
   parseMemory(stdout: string): string {

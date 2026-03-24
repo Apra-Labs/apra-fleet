@@ -6,10 +6,20 @@ import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
 import { serverVersion } from '../version.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
+import { awsProvider } from '../services/cloud/aws.js';
+import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning } from '../services/cloud/cost.js';
+import { parseGpuUtilization } from '../utils/gpu-parser.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
 });
+
+interface CloudInfo {
+  state: string;
+  instanceType?: string;
+  launchTime?: string;
+  gpuUtil?: number;
+}
 
 interface AgentStatusRow {
   icon: string;
@@ -19,6 +29,7 @@ interface AgentStatusRow {
   busy: string;
   session: string;
   lastActivity: string;
+  cloudInfo?: CloudInfo;
 }
 
 function formatTimeAgo(isoDate?: string): string {
@@ -48,6 +59,72 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
 
   const strategy = getStrategy(agent);
 
+  // For cloud members: fetch instance details in parallel with SSH connection test
+  if (agent.cloud) {
+    const [detailsResult, connResult] = await Promise.allSettled([
+      awsProvider.getInstanceDetails(agent.cloud),
+      Promise.race([
+        strategy.testConnection(),
+        new Promise<{ ok: false; latencyMs: number; error: string }>((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 10000)
+        ),
+      ]),
+    ]);
+
+    // Process cloud details
+    if (detailsResult.status === 'fulfilled') {
+      const details = detailsResult.value;
+      row.cloudInfo = {
+        state: details.state,
+        instanceType: details.instanceType,
+        launchTime: details.launchTime,
+      };
+
+      // If cloud is not running/pending, mark as off and skip SSH entirely
+      if (details.state !== 'running' && details.state !== 'pending') {
+        row.status = 'OFFLINE';
+        row.busy = 'OFF(cloud)';
+        return row;
+      }
+    }
+
+    // Process SSH connection result
+    if (connResult.status === 'fulfilled' && connResult.value.ok) {
+      row.status = 'online';
+
+      const cmds = getOsCommands(getAgentOS(agent));
+
+      // Run fleet process check and GPU utilization in parallel
+      const [busyResult, gpuResult] = await Promise.allSettled([
+        strategy.execCommand(cmds.fleetProcessCheck(agent.workFolder, agent.sessionId), 10000),
+        strategy.execCommand(cmds.gpuUtilization(), 10000),
+      ]);
+
+      if (busyResult.status === 'fulfilled') {
+        const output = busyResult.value.stdout.trim().toLowerCase();
+        if (output.includes('fleet-busy')) {
+          row.busy = 'BUSY';
+        } else if (output.includes('other-busy')) {
+          row.busy = 'idle*';
+        } else {
+          row.busy = 'idle';
+        }
+      } else {
+        row.busy = 'unknown';
+      }
+
+      if (gpuResult.status === 'fulfilled' && row.cloudInfo) {
+        const gpuNum = parseGpuUtilization(gpuResult.value.stdout);
+        if (gpuNum !== undefined) {
+          row.cloudInfo.gpuUtil = gpuNum;
+        }
+      }
+    }
+
+    return row;
+  }
+
+  // Non-cloud members: original logic
   try {
     const conn = await Promise.race([
       strategy.testConnection(),
@@ -59,7 +136,6 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     if (conn.ok) {
       row.status = 'online';
 
-      // Check if a fleet-related Claude process is running in this member's folder
       try {
         const cmds = getOsCommands(getAgentOS(agent));
         const busyCheck = await strategy.execCommand(
@@ -112,6 +188,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     };
   });
 
+  // Count cloud-stopped members as offline for the summary
   const online = rows.filter(r => r.status === 'online').length;
 
   // Update statusline with actual connectivity state from this check
@@ -135,12 +212,25 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   // Compact: 1 summary line + 1 line per member, multiple fields per line
   let t = `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
   t += rows.map(r => {
-    const st = r.status === 'online' ? r.busy : 'OFF';
+    const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
     return `${r.icon} ${r.name}(${st})`;
   }).join(', ');
   t += '\n';
   for (const r of rows) {
-    t += `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}\n`;
+    let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}`;
+    if (r.cloudInfo) {
+      const ci = r.cloudInfo;
+      const uptimeHrs = uptimeHoursFromLaunch(ci.launchTime);
+      const uptime = ci.launchTime ? formatUptimeDuration(uptimeHrs) : '-';
+      const cost = estimateCost(ci.instanceType, uptimeHrs);
+      const rate = hourlyRate(ci.instanceType);
+      const warn = costWarning(ci.instanceType, uptimeHrs);
+      const gpuStr = ci.gpuUtil !== undefined ? ` GPU:${ci.gpuUtil}%` : '';
+      const typeStr = ci.instanceType ? ` ${ci.instanceType}` : '';
+      const warnStr = warn ? ' ⚠' : '';
+      line += ` | [cloud:${ci.state}${typeStr} ${uptime} ${cost} @${rate}${gpuStr}${warnStr}]`;
+    }
+    t += line + '\n';
   }
   return t;
 }

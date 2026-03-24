@@ -4,6 +4,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { classifyPromptError, isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { writeStatusline } from '../services/statusline.js';
+import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import type { Agent, SSHExecResult } from '../types.js';
 
 export const executePromptSchema = z.object({
@@ -54,7 +55,12 @@ const SERVER_RETRY_DELAY_MS = 5000;
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
   const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
-  const agent = agentOrError as Agent;
+  let agent: Agent;
+  try {
+    agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+  } catch (err: any) {
+    return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+  }
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
@@ -100,7 +106,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     }
 
     // Update session ID and last used
-    touchAgent(agent.id, parsed.sessionId);
+    touchAgent(agent.id, parsed.sessionId); // T7: idle manager resets its timer via touchAgent
 
     writeStatusline();
 

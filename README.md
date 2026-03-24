@@ -1,21 +1,21 @@
 # Apra Fleet
 
-Coordinate Claude Code agents across every machine in your network — from a single conversation.
+Coordinate AI coding agents across every machine in your network — from a single conversation.
 
 ## Why
 
-You're working in Claude Code and you want to:
+You're working with an AI coding agent and you want to:
 
 - Run your test suite on Linux while you develop on macOS
 - Have one agent build the frontend, another the backend, and a third running tests — all in parallel
 - Spin up isolated workspaces on the same machine without them stepping on each other
 - Use a beefy cloud VM for compilation while coding from your laptop
 
-Apra Fleet makes all of this a conversation. No dashboards, no orchestration YAML — just tell Claude what you want and it happens.
+Apra Fleet makes all of this a conversation. No dashboards, no orchestration YAML — just tell your agent what you want and it happens.
 
 ## How it works
 
-Apra Fleet is an MCP server that Claude Code connects to. It manages a registry of members (machines with Claude Code installed) and provides tools to register them, send files, execute prompts, and check status. Remote members connect via SSH. Local members run as isolated child processes on the same machine.
+Apra Fleet is an MCP server that agentic coding systems connect to. It manages a registry of members (machines with an AI coding agent installed) and provides tools to register them, send files, execute prompts, and check status. Remote members connect via SSH. Local members run as isolated child processes on the same machine.
 
 ## Quick start
 
@@ -57,7 +57,9 @@ Then just talk to Claude:
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
-| `update_claude` | Update or install Claude Code CLI on members |
+| `cloud_control` | Start, stop, or check status of cloud compute instances |
+| `monitor_task` | Monitor long-running tasks on cloud members |
+| `update_claude` | Update or install AI coding agent CLI on members |
 | `shutdown_server` | Gracefully shut down the MCP server |
 
 ## PM Skill
@@ -74,6 +76,18 @@ Fleet can provision scoped, short-lived tokens to members — so each member get
 
 See `docs/design-git-auth.md` for the full design.
 
+## Cloud Compute
+
+Fleet members can run on cloud instances (AWS EC2) that start and stop automatically based on demand. When you send a prompt to a cloud member, Apra Fleet starts the instance, waits for SSH, re-provisions credentials, and executes the work. When the member goes idle, it stops the instance to save costs.
+
+- **Auto start/stop** — instances start on demand and stop after a configurable idle timeout
+- **GPU-aware idle detection** — monitors GPU utilization via `nvidia-smi` so GPU workloads keep instances alive
+- **Long-running tasks** — a task wrapper script survives SSH disconnects, supports retry with restart commands, and tracks status
+- **Cost tracking** — real-time cost estimates based on instance type and uptime, with warnings for high spend
+- **Custom workload detection** — define a shell command to signal busy/idle for arbitrary workloads (CPU training, downloads, etc.)
+
+See `docs/cloud-compute.md` for setup and configuration details.
+
 ## Development
 
 ```bash
@@ -85,4 +99,4 @@ node dist/index.js install     # Dev-mode install (registers MCP, hooks, statusl
 
 ## License
 
-MIT
+CC BY-SA 3.0

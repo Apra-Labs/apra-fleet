@@ -50,6 +50,10 @@ export interface OsCommands {
   // --- Prompt building ---
   buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string;
 
+  // --- GPU activity ---
+  gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available
+  gpuUtilization(): string;   // outputs GPU utilization 0-100 (integer), or empty if unavailable
+
   // --- Resource output parsing ---
   parseMemory(stdout: string): string;
   parseDisk(stdout: string): string;
