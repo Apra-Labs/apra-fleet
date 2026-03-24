@@ -136,11 +136,12 @@ export class LinuxCommands implements OsCommands {
     const escapedHost = escapeDoubleQuoted(host);
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
-    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > ~/.fleet-git-credential && chmod 600 ~/.fleet-git-credential && chmod +x ~/.fleet-git-credential && git config --global credential.helper ~/.fleet-git-credential`;
+    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > ~/.fleet-git-credential && chmod 600 ~/.fleet-git-credential && chmod +x ~/.fleet-git-credential && git config --global --replace-all "credential.https://${escapedHost}.helper" "" && git config --global --add "credential.https://${escapedHost}.helper" ~/.fleet-git-credential`;
   }
 
-  gitCredentialHelperRemove(): string {
-    return 'rm -f ~/.fleet-git-credential && git config --global --unset credential.helper 2>/dev/null || true';
+  gitCredentialHelperRemove(host: string): string {
+    const escapedHost = escapeDoubleQuoted(host);
+    return `rm -f ~/.fleet-git-credential && git config --global --unset-all "credential.https://${escapedHost}.helper" 2>/dev/null || true`;
   }
 
   // --- SSH key deployment ---

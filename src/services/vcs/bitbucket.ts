@@ -18,7 +18,7 @@ export const bitbucketProvider: VcsProviderService = {
   },
 
   async revoke(_agent, cmds, exec) {
-    await exec(cmds.gitCredentialHelperRemove());
+    await exec(cmds.gitCredentialHelperRemove(HOST));
     return { success: true, message: 'Bitbucket credentials revoked' };
   },
 
