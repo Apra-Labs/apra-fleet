@@ -275,18 +275,28 @@ describe('OsCommands via getOsCommands', () => {
 
   describe('git credential helper', () => {
     for (const [name, cmds] of all) {
-      it(`${name}: gitCredentialHelperWrite includes host, username, and credential.helper config`, () => {
+      it(`${name}: gitCredentialHelperWrite uses host-specific credential config key`, () => {
         const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_testtoken123');
         expect(cmd).toContain('github.com');
         expect(cmd).toContain('x-access-token');
-        expect(cmd).toContain('credential.helper');
+        expect(cmd).toContain('credential.https://github.com.helper');
         expect(cmd).toContain('fleet-git-credential');
       });
 
-      it(`${name}: gitCredentialHelperRemove cleans up helper and git config`, () => {
-        const cmd = cmds.gitCredentialHelperRemove();
+      it(`${name}: gitCredentialHelperWrite writes stack-reset empty entry before helper`, () => {
+        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_testtoken123');
+        const replacePos = cmd.indexOf('--replace-all');
+        const addPos = cmd.indexOf('--add');
+        expect(replacePos).toBeGreaterThan(-1);
+        expect(addPos).toBeGreaterThan(-1);
+        expect(replacePos).toBeLessThan(addPos);
+      });
+
+      it(`${name}: gitCredentialHelperRemove cleans up host-specific git config entry`, () => {
+        const cmd = cmds.gitCredentialHelperRemove('github.com');
         expect(cmd).toContain('fleet-git-credential');
-        expect(cmd).toContain('credential.helper');
+        expect(cmd).toContain('credential.https://github.com.helper');
+        expect(cmd).toContain('--unset-all');
       });
     }
 
@@ -310,11 +320,11 @@ describe('OsCommands via getOsCommands', () => {
     ];
     for (const [name, cmds] of all) {
       for (const [host, user, token] of vcsHosts) {
-        it(`${name}: credential helper embeds ${host} host and credentials`, () => {
+        it(`${name}: credential helper embeds ${host} host-specific config key and credentials`, () => {
           const cmd = cmds.gitCredentialHelperWrite(host, user, token);
           expect(cmd).toContain(host);
           expect(cmd).toContain(token);
-          expect(cmd).toContain('credential.helper');
+          expect(cmd).toContain(`credential.https://${host}.helper`);
         });
       }
     }

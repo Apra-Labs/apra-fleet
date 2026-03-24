@@ -13,7 +13,7 @@ describe('Windows gitCredentialHelperWrite', () => {
     expect(cmd).toContain('github.com');
     expect(cmd).toContain('x-access-token');
     expect(cmd).toContain('ghu_test123');
-    expect(cmd).toContain('credential.helper');
+    expect(cmd).toContain('credential.https://github.com.helper');
     expect(cmd).toContain('fleet-git-credential');
     expect(cmd).toContain('Set-Content');
   });

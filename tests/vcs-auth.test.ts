@@ -105,14 +105,14 @@ describe('GitHub provider', () => {
     expect(result.message).toContain('403 Forbidden');
   });
 
-  it('revoke: calls gitCredentialHelperRemove', async () => {
+  it('revoke: calls gitCredentialHelperRemove with github.com host', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
     const result = await githubProvider.revoke(makeAgent(), cmds, exec);
     expect(result.success).toBe(true);
     expect(execCalls[0]).toContain('fleet-git-credential');
-    expect(execCalls[0]).toContain('credential.helper');
+    expect(execCalls[0]).toContain('credential.https://github.com.helper');
   });
 
   it('testConnectivity: succeeds when git ls-remote works', async () => {
@@ -154,13 +154,13 @@ describe('Bitbucket provider', () => {
     expect(execCalls[0]).toContain('ATBB_secret');
   });
 
-  it('revoke: calls gitCredentialHelperRemove', async () => {
+  it('revoke: calls gitCredentialHelperRemove with bitbucket.org host', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
     const result = await bitbucketProvider.revoke(makeAgent(), cmds, exec);
     expect(result.success).toBe(true);
-    expect(execCalls[0]).toContain('credential.helper');
+    expect(execCalls[0]).toContain('credential.https://bitbucket.org.helper');
   });
 
   it('testConnectivity: succeeds when API responds', async () => {
@@ -201,13 +201,13 @@ describe('Azure DevOps provider', () => {
     expect(result.metadata?.org).toBe('contoso-labs');
   });
 
-  it('revoke: calls gitCredentialHelperRemove', async () => {
+  it('revoke: calls gitCredentialHelperRemove with dev.azure.com host', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
     const result = await azureDevOpsProvider.revoke(makeAgent(), cmds, exec);
     expect(result.success).toBe(true);
-    expect(execCalls[0]).toContain('credential.helper');
+    expect(execCalls[0]).toContain('credential.https://dev.azure.com.helper');
   });
 
   it('testConnectivity: succeeds when curl works', async () => {

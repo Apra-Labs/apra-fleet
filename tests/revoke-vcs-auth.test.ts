@@ -54,7 +54,7 @@ describe('revokeVcsAuth', () => {
 
       const cmd = mockExecCommand.mock.calls[0][0];
       expect(cmd).toContain('fleet-git-credential');
-      expect(cmd).toContain('credential.helper');
+      expect(cmd).toContain('credential.https://');
     });
   }
 
