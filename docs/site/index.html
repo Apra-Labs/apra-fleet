@@ -1,1858 +1,725 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Apra Fleet — Your AI Engineering Organization</title>
-<meta name="description" content="Transforms AI coding agents into a managed engineering team — with a PM that plans, doers that build, and reviewers that verify. On your machines, with your process.">
-<style>
-/* ===== RESET & BASE ===== */
-*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-html { scroll-behavior: smooth; font-size: 16px; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background: #ffffff;
-  color: #555;
-  line-height: 1.6;
-  overflow-x: hidden;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-a { color: #94BA33; text-decoration: none; transition: color 0.2s; }
-a:hover { color: #6d8c26; }
-img { max-width: 100%; display: block; }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apra Fleet — Your AI Engineering Organization</title>
+  <meta name="description" content="Transforms AI coding agents into a managed engineering team — with a PM that plans, doers that build, and reviewers that verify.">
+  <style>
+    :root {
+      --apra-green: #94BA33;
+      --apra-green-dark: #7a9b2a;
+      --apra-green-light: #b5d957;
+      --text-dark: #2c3e50;
+      --text-medium: #555;
+      --text-light: #777;
+      --bg-light: #f8f9fa;
+      --border-light: #e5e5e5;
+    }
 
-/* ===== UTILITY ===== */
-.container { max-width: 1200px; margin: 0 auto; padding: 0 2rem; }
-.section { padding: 7rem 0; position: relative; }
-.section-label {
-  text-transform: uppercase;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 3px;
-  color: #94BA33;
-  margin-bottom: 1rem;
-}
-.section-title {
-  font-size: clamp(2rem, 4vw, 3rem);
-  font-weight: 800;
-  line-height: 1.15;
-  color: #1a1a1a;
-  margin-bottom: 1.5rem;
-}
-.section-subtitle {
-  font-size: 1.15rem;
-  color: #555;
-  max-width: 640px;
-  line-height: 1.7;
-}
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* ===== EXPLICIT TEXT COLORS FOR LIGHT SECTIONS ===== */
-.problem h2, .how-it-works h2, .command-center h2,
-.features h2, .stories h2, .competitive h2, .numbers h2, .users h2 {
-  color: #1a1a1a;
-}
-.problem p, .how-it-works p, .command-center p,
-.features p, .stories p, .competitive p, .numbers p, .users p {
-  color: #555;
-}
-.problem .section-subtitle, .how-it-works .section-subtitle,
-.command-center .section-subtitle, .features .section-subtitle,
-.stories .section-subtitle, .competitive .section-subtitle,
-.numbers .section-subtitle, .users .section-subtitle {
-  color: #666;
-}
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      line-height: 1.6;
+      color: var(--text-dark);
+      background: white;
+    }
 
-/* ===== SECTION DIVIDERS ===== */
-.section + .section::before {
-  content: '';
-  display: block;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.08), transparent);
-  margin: 0 auto;
-  width: 80%;
-}
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
 
-/* ===== GLOW ORBS (hidden in light theme) ===== */
-.glow-orb {
-  display: none;
-}
+    /* Header */
+    .header {
+      background: white;
+      border-bottom: 1px solid var(--border-light);
+      padding: 20px 0;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .header .container { display: flex; justify-content: space-between; align-items: center; }
 
-/* ===== ANIMATIONS ===== */
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(30px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes gradientShift {
-  0%, 100% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-@keyframes typing {
-  from { width: 0; }
-  to { width: 100%; }
-}
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
-}
-@keyframes gridFloat {
-  0%, 100% { transform: translate(0, 0); opacity: 0.03; }
-  50% { transform: translate(-20px, -10px); opacity: 0.05; }
-}
+    .logo { display: flex; align-items: center; gap: 15px; }
+    .logo-icon { width: 50px; height: 50px; }
+    .logo-text { font-size: 24px; font-weight: 700; color: var(--text-dark); margin: 0; }
+    .logo-tagline { font-size: 13px; color: var(--text-light); margin: 0; }
+    .logo-tagline a { color: var(--apra-green); text-decoration: none; font-weight: 600; }
+    .logo-tagline a:hover { text-decoration: underline; }
 
-/* Scenario cycling animation */
-@keyframes scenarioScrollUp {
-  0% { opacity: 0; visibility: hidden; transform: translateY(200px); }
-  2% { opacity: 0; visibility: visible; transform: translateY(200px); }
-  5% { opacity: 1; visibility: visible; transform: translateY(200px); }
-  20% { opacity: 1; visibility: visible; transform: translateY(200px); }
-  22% { opacity: 1; visibility: visible; transform: translateY(0); }
-  40% { opacity: 1; visibility: visible; transform: translateY(0); }
-  42% { opacity: 1; visibility: visible; transform: translateY(-190px); }
-  48% { opacity: 0.5; visibility: visible; transform: translateY(-380px); }
-  50% { opacity: 0; visibility: hidden; transform: translateY(-380px); }
-  100% { opacity: 0; visibility: hidden; transform: translateY(-380px); }
-}
+    .nav { display: flex; align-items: center; gap: 30px; }
+    .nav a { text-decoration: none; color: var(--text-medium); font-weight: 500; font-size: 15px; transition: color 0.2s; }
+    .nav a:hover { color: var(--apra-green); }
 
-/* Smoother scroll reveal — visible by default, enhanced on scroll */
-.reveal {
-  opacity: 1;
-  transform: translateY(0);
-  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.reveal.animate-ready {
-  opacity: 0;
-  transform: translateY(40px);
-}
-.reveal.visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-.reveal-delay-1 { transition-delay: 0.1s; }
-.reveal-delay-2 { transition-delay: 0.2s; }
-.reveal-delay-3 { transition-delay: 0.3s; }
-.reveal-delay-4 { transition-delay: 0.4s; }
-.reveal-delay-5 { transition-delay: 0.5s; }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white !important;
+      padding: 10px 24px;
+      border-radius: 8px;
+      font-weight: 600;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(148, 186, 51, 0.3); }
 
-/* ===== NAV ===== */
-nav {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 1000;
-  padding: 1rem 0;
-  transition: background 0.3s, box-shadow 0.3s, padding 0.3s, border-bottom 0.3s;
-}
-nav.scrolled {
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  box-shadow: 0 1px 12px rgba(0, 0, 0, 0.08);
-  padding: 0.6rem 0;
-}
-nav .container {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.nav-logo {
-  font-size: 1.2rem;
-  font-weight: 800;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  transition: color 0.3s;
-}
-nav.scrolled .nav-logo { color: #1a1a1a; }
-.nav-logo .logo-icon {
-  width: 28px;
-  height: 28px;
-  background: linear-gradient(135deg, #94BA33, #6d8c26);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  font-weight: 900;
-  color: #fff;
-}
-nav.scrolled .nav-logo .logo-icon { background: linear-gradient(135deg, #94BA33, #6d8c26); }
-.nav-links { display: flex; align-items: center; gap: 2rem; }
-.nav-links a {
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: color 0.3s;
-}
-.nav-links a:hover { color: #fff; }
-nav.scrolled .nav-links a { color: #555; }
-nav.scrolled .nav-links a:hover { color: #1a1a1a; }
-.nav-cta {
-  background: linear-gradient(135deg, #94BA33, #6d8c26);
-  color: #fff !important;
-  padding: 0.5rem 1.2rem;
-  border-radius: 8px;
-  font-weight: 700 !important;
-  font-size: 0.85rem !important;
-  transition: transform 0.2s, box-shadow 0.2s !important;
-}
-.nav-cta:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(148, 186, 51, 0.3);
-  color: #fff !important;
-}
-.nav-hamburger {
-  display: none;
-  flex-direction: column;
-  gap: 5px;
-  cursor: pointer;
-  background: none;
-  border: none;
-  padding: 4px;
-}
-.nav-hamburger span {
-  width: 24px;
-  height: 2px;
-  background: #fff;
-  border-radius: 2px;
-  transition: transform 0.3s, opacity 0.3s, background 0.3s;
-}
-nav.scrolled .nav-hamburger span { background: #333; }
+    /* Hero */
+    .hero {
+      background: linear-gradient(135deg, #f8fef0 0%, #ffffff 100%);
+      padding: 80px 0;
+      border-bottom: 1px solid var(--border-light);
+    }
+    .hero .container { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: center; }
+    .hero-title { font-size: 48px; font-weight: 800; line-height: 1.2; margin-bottom: 20px; color: var(--text-dark); }
+    .hero-subtitle { font-size: 20px; color: var(--text-medium); margin-bottom: 30px; line-height: 1.6; }
+    .hero-cta { display: flex; gap: 15px; margin-bottom: 40px; }
 
-/* ===== HERO ===== */
-.hero {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  position: relative;
-  overflow: hidden;
-  padding: 8rem 0 6rem;
-  background: linear-gradient(135deg, #94BA33 0%, #6d8c26 100%);
-}
-.hero::before {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background: radial-gradient(ellipse at 30% 20%, rgba(255, 255, 255, 0.08) 0%, transparent 50%),
-              radial-gradient(ellipse at 70% 80%, rgba(255, 255, 255, 0.05) 0%, transparent 50%);
-  animation: gradientShift 15s ease infinite;
-  background-size: 200% 200%;
-}
-.hero .container { position: relative; z-index: 1; }
-.hero-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  padding: 0.4rem 1rem;
-  border-radius: 100px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #fff;
-  margin-bottom: 2rem;
-  animation: fadeInUp 0.8s ease;
-}
-.hero-badge .dot {
-  width: 6px;
-  height: 6px;
-  background: #fff;
-  border-radius: 50%;
-  animation: pulse 2s ease infinite;
-}
-.hero-logo {
-  font-size: clamp(3rem, 7vw, 5rem);
-  font-weight: 900;
-  color: #fff;
-  line-height: 1.05;
-  margin-bottom: 0.5rem;
-  animation: fadeInUp 0.8s ease 0.1s both;
-}
-.hero-logo .green { color: #fff; }
-.hero-byline {
-  font-size: 1rem;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 500;
-  margin-bottom: 2rem;
-  animation: fadeInUp 0.8s ease 0.2s both;
-}
-.hero-headline {
-  font-size: clamp(1.5rem, 3.5vw, 2.5rem);
-  font-weight: 700;
-  color: #fff;
-  margin-bottom: 1.5rem;
-  animation: fadeInUp 0.8s ease 0.3s both;
-}
-.hero-sub {
-  font-size: 1.2rem;
-  color: rgba(255, 255, 255, 0.85);
-  max-width: 680px;
-  line-height: 1.8;
-  margin-bottom: 3rem;
-  animation: fadeInUp 0.8s ease 0.4s both;
-}
+    .btn-large {
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      padding: 16px 32px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 16px;
+      transition: transform 0.2s, box-shadow 0.2s;
+      display: inline-block;
+    }
+    .btn-large:hover { transform: translateY(-3px); box-shadow: 0 8px 25px rgba(148, 186, 51, 0.4); }
 
-/* Enhanced stats bar */
-.hero-stats {
-  display: flex;
-  gap: 0;
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 16px;
-  padding: 1.5rem 0;
-  margin-bottom: 3rem;
-  animation: fadeInUp 0.8s ease 0.5s both;
-}
-.hero-stat {
-  flex: 1;
-  text-align: center;
-  padding: 0 2rem;
-  border-right: 1px solid rgba(255, 255, 255, 0.25);
-}
-.hero-stat:last-child { border-right: none; }
-.hero-stat .number {
-  font-size: 2.5rem;
-  font-weight: 900;
-  color: #fff;
-}
-.hero-stat .label {
-  font-size: 0.85rem;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 500;
-}
-.hero-actions {
-  display: flex;
-  gap: 1rem;
-  flex-wrap: wrap;
-  animation: fadeInUp 0.8s ease 0.6s both;
-}
+    .btn-secondary-large {
+      background: white;
+      color: var(--apra-green);
+      padding: 16px 32px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 16px;
+      border: 2px solid var(--apra-green);
+      transition: all 0.2s;
+      display: inline-block;
+    }
+    .btn-secondary-large:hover { background: var(--apra-green); color: white; }
 
-/* Enhanced buttons */
-.btn-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: #94BA33;
-  color: #fff;
-  padding: 0.9rem 2rem;
-  border-radius: 10px;
-  font-weight: 700;
-  font-size: 1rem;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  border: none;
-  cursor: pointer;
-  box-shadow: 0 4px 15px rgba(148, 186, 51, 0.25);
-  position: relative;
-  overflow: hidden;
-}
-.btn-primary::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,0.2), transparent);
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-.btn-primary:hover::before { opacity: 1; }
-.btn-primary:hover {
-  transform: translateY(-3px);
-  background: #6d8c26;
-  box-shadow: 0 8px 30px rgba(148, 186, 51, 0.4);
-  color: #fff;
-}
-/* Hero-specific button overrides */
-.hero .btn-primary {
-  background: #fff;
-  color: #6d8c26;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
-}
-.hero .btn-primary:hover {
-  background: #fff;
-  color: #6d8c26;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
-}
-.hero .btn-secondary {
-  background: transparent;
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.5);
-}
-.hero .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: #fff;
-  color: #fff;
-}
-.btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: #fff;
-  color: #94BA33;
-  padding: 0.9rem 2rem;
-  border-radius: 10px;
-  font-weight: 600;
-  font-size: 1rem;
-  border: 2px solid #94BA33;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  cursor: pointer;
-}
-.btn-secondary:hover {
-  background: #f0f4e8;
-  border-color: #6d8c26;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-  transform: translateY(-2px);
-  color: #6d8c26;
-}
+    .hero-stats { display: flex; gap: 40px; }
+    .stat { display: flex; flex-direction: column; }
+    .stat strong { font-size: 32px; color: var(--apra-green); font-weight: 800; }
+    .stat span { font-size: 14px; color: var(--text-light); font-weight: 500; }
 
-/* Grid pattern behind hero — animated */
-.hero-grid {
-  position: absolute;
-  top: 0;
-  right: -10%;
-  width: 60%;
-  height: 100%;
-  opacity: 0.08;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 1) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 1) 1px, transparent 1px);
-  background-size: 60px 60px;
-  animation: gridFloat 20s ease-in-out infinite;
-}
+    .hero-image { display: flex; justify-content: center; align-items: center; }
 
-/* ===== PROBLEM ===== */
-.problem { background: #ffffff; }
-.problem-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
-  margin-top: 3rem;
-}
-.problem-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  padding: 2.5rem 2rem;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-.problem-card:hover {
-  border-color: #94BA33;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  transform: translateY(-8px);
-}
-.problem-icon {
-  width: 48px;
-  height: 48px;
-  background: #f0f4e8;
-  border: 1px solid rgba(148, 186, 51, 0.2);
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.5rem;
-  margin-bottom: 1.5rem;
-  transition: all 0.3s;
-}
-.problem-card:hover .problem-icon {
-  transform: scale(1.1);
-  background: #e8f0d8;
-}
-.problem-card h3 {
-  font-size: 1.15rem;
-  font-weight: 700;
-  color: #1a1a1a !important;
-  margin-bottom: 0.75rem;
-}
-.problem-card p {
-  font-size: 0.95rem;
-  color: #555 !important;
-  line-height: 1.7;
-}
+    /* Browser Window / Terminal */
+    .browser-window {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+      overflow: hidden;
+      width: 100%;
+      max-width: 600px;
+    }
+    .browser-bar {
+      background: #f5f5f5;
+      padding: 12px 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .browser-dots { display: flex; gap: 6px; }
+    .browser-dots span { width: 12px; height: 12px; border-radius: 50%; background: #ddd; }
+    .browser-dots span:nth-child(1) { background: #ff5f57; }
+    .browser-dots span:nth-child(2) { background: #ffbd2e; }
+    .browser-dots span:nth-child(3) { background: #28c840; }
+    .browser-url { flex: 1; background: white; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--text-light); font-family: monospace; }
 
-/* ===== 11PM STORY ===== */
-.story-section {
-  position: relative;
-  padding: 8rem 0;
-  background: #f0f4e8;
-}
-.story-block {
-  max-width: 800px;
-  margin: 0 auto;
-  text-align: center;
-  position: relative;
-}
-.story-time {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
-  font-size: 0.85rem;
-  color: #94BA33;
-  font-weight: 600;
-  letter-spacing: 2px;
-  margin-bottom: 1rem;
-}
-.story-section h2, .story-headline {
-  font-size: clamp(1.8rem, 4vw, 3rem);
-  font-weight: 800;
-  color: #1a1a1a;
-  line-height: 1.3;
-  margin-bottom: 2rem;
-}
-.story-headline .highlight {
-  color: #94BA33;
-  -webkit-text-fill-color: #94BA33;
-}
-.story-divider {
-  width: 60px;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, #94BA33, transparent);
-  margin: 2rem auto;
-}
-.story-punchline {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: #333;
-  font-style: italic;
-}
-.story-glow {
-  display: none;
-}
+    .terminal-demo {
+      background: #1e1e1e;
+      padding: 20px;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 14px;
+      min-height: 200px;
+      position: relative;
+      overflow: hidden;
+      height: 300px;
+    }
+    .terminal-line { color: #d4d4d4; margin-bottom: 10px; }
+    .terminal-line.success { color: #73c991; }
+    .terminal-line .prompt { color: #94BA33; }
 
-/* ===== HOW IT WORKS ===== */
-.how-it-works { background: #ffffff; }
-.agents-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
-  margin-top: 3rem;
-}
-.agent-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 20px;
-  padding: 2.5rem 2rem;
-  text-align: center;
-  position: relative;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-.agent-card:hover {
-  border-color: #94BA33;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  transform: translateY(-8px);
-}
-.agent-icon {
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 1.5rem;
-  background: #f0f4e8;
-  border: 1px solid rgba(148, 186, 51, 0.2);
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.8rem;
-  transition: all 0.3s;
-}
-.agent-card:hover .agent-icon {
-  transform: scale(1.1);
-  background: #e8f0d8;
-}
-.agent-card h3 {
-  font-size: 1.3rem;
-  font-weight: 800;
-  color: #1a1a1a !important;
-  margin-bottom: 0.75rem;
-}
-.agent-card .agent-role {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #94BA33;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  margin-bottom: 1rem;
-}
-.agent-card p {
-  font-size: 0.95rem;
-  color: #555 !important;
-  line-height: 1.7;
-}
-.flow-diagram {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  margin-top: 3rem;
-  flex-wrap: wrap;
-}
-.flow-step {
-  background: #f0f4e8;
-  border: 1px solid rgba(148, 186, 51, 0.3);
-  padding: 0.6rem 1.4rem;
-  border-radius: 100px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: #6d8c26;
-}
-.flow-arrow {
-  color: #ccc;
-  font-size: 1.2rem;
-}
-.flow-emphasis {
-  text-align: center;
-  color: #555 !important;
-  margin-top: 2rem;
-  font-size: 1.1rem;
-  color: #666;
-  font-style: italic;
-}
+    .scenario {
+      position: absolute;
+      width: calc(100% - 40px);
+      opacity: 0;
+      visibility: hidden;
+      animation: scenarioFade 20s ease-in-out infinite;
+    }
+    .scenario-1 { animation-delay: 0s; }
+    .scenario-2 { animation-delay: 5s; }
+    .scenario-3 { animation-delay: 10s; }
+    .scenario-4 { animation-delay: 15s; }
 
-/* ===== COMMAND CENTER ===== */
-.command-center { background: #f8fafc; }
-.terminal {
-  max-width: 750px;
-  margin: 3rem auto 0;
-  background: #1e1e1e;
-  border: 1px solid #333;
-  border-radius: 16px;
-  overflow: hidden;
-  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.15);
-}
-.terminal-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 1rem 1.5rem;
-  background: #2a2a2a;
-  border-bottom: 1px solid #333;
-}
-.terminal-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-}
-.terminal-dot.red { background: #ff5f57; }
-.terminal-dot.yellow { background: #ffbd2e; }
-.terminal-dot.green { background: #28c840; }
-.terminal-title {
-  flex: 1;
-  text-align: center;
-  font-size: 0.8rem;
-  color: #94a3b8;
-  font-weight: 500;
-}
+    @keyframes scenarioFade {
+      0% { opacity: 0; visibility: hidden; transform: translateY(20px); }
+      3% { opacity: 1; visibility: visible; transform: translateY(0); }
+      22% { opacity: 1; visibility: visible; transform: translateY(0); }
+      25% { opacity: 0; visibility: hidden; transform: translateY(-20px); }
+      100% { opacity: 0; visibility: hidden; }
+    }
 
-/* Animated terminal demo */
-.terminal-demo {
-  position: relative;
-  overflow: hidden;
-  height: 380px;
-}
-.scenario {
-  position: absolute;
-  width: 100%;
-  opacity: 0;
-  visibility: hidden;
-  animation: scenarioScrollUp 20s ease-in-out infinite;
-  padding: 2rem;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
-  font-size: 0.85rem;
-  line-height: 2;
-}
-.scenario-1 { animation-delay: 0s; }
-.scenario-2 { animation-delay: 5s; }
-.scenario-3 { animation-delay: 10s; }
-.scenario-4 { animation-delay: 15s; }
-.scenario .scenario-label {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  color: #475569;
-  margin-bottom: 1rem;
-  display: block;
-}
+    .ai-response {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    .scenario-1 .ai-response { animation: responseSlideIn1 20s ease-in-out infinite; }
+    .scenario-2 .ai-response { animation: responseSlideIn2 20s ease-in-out infinite; }
+    .scenario-3 .ai-response { animation: responseSlideIn3 20s ease-in-out infinite; }
+    .scenario-4 .ai-response { animation: responseSlideIn4 20s ease-in-out infinite; }
 
-.terminal-line {
-  display: flex;
-  flex-wrap: wrap;
-}
-.terminal-prompt { color: #94BA33; margin-right: 0.5rem; white-space: nowrap; }
-.terminal-cmd { color: #e2e8f0; margin-right: 1rem; white-space: nowrap; }
-.terminal-result { color: #94a3b8; }
-.terminal-result .success { color: #28c840; }
-.terminal-output {
-  color: #94a3b8;
-  padding-left: 1.5rem;
-  margin-top: 0.25rem;
-}
-.terminal-output .success { color: #28c840; }
-.terminal-output .dim { color: #475569; }
-.terminal-output .highlight { color: #e2e8f0; font-weight: 600; }
-.terminal-output .warn { color: #ffbd2e; }
+    @keyframes responseSlideIn1 {
+      0%, 6% { opacity: 0; transform: translateY(-10px); }
+      8%, 22% { opacity: 1; transform: translateY(0); }
+      25% { opacity: 0; }
+      100% { opacity: 0; }
+    }
+    @keyframes responseSlideIn2 {
+      0%, 31% { opacity: 0; transform: translateY(-10px); }
+      33%, 47% { opacity: 1; transform: translateY(0); }
+      50% { opacity: 0; }
+      100% { opacity: 0; }
+    }
+    @keyframes responseSlideIn3 {
+      0%, 56% { opacity: 0; transform: translateY(-10px); }
+      58%, 72% { opacity: 1; transform: translateY(0); }
+      75% { opacity: 0; }
+      100% { opacity: 0; }
+    }
+    @keyframes responseSlideIn4 {
+      0%, 81% { opacity: 0; transform: translateY(-10px); }
+      83%, 97% { opacity: 1; transform: translateY(0); }
+      100% { opacity: 1; }
+    }
 
-.terminal-tagline {
-  text-align: center;
-  margin-top: 2rem;
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: #1a1a1a !important;
-}
-.terminal-tagline .green { color: #94BA33; }
+    .response-text { color: #94BA33; font-weight: 600; margin: 8px 0 4px 0; font-size: 14px; }
 
-/* ===== FEATURES ===== */
-.features { background: #f8fafc; }
-.features-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1.5rem;
-  margin-top: 3rem;
-}
-.feature-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-top: 3px solid #94BA33;
-  border-radius: 16px;
-  padding: 2rem;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-.feature-card:hover {
-  border-color: #94BA33;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  transform: translateY(-8px);
-}
-.feature-icon {
-  width: 40px;
-  height: 40px;
-  background: #f0f4e8;
-  border: 1px solid rgba(148, 186, 51, 0.2);
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.3rem;
-  margin-bottom: 1rem;
-  transition: all 0.3s;
-}
-.feature-card:hover .feature-icon {
-  transform: scale(1.1);
-  background: #e8f0d8;
-}
-.feature-card h3 {
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: #1a1a1a !important;
-  margin-bottom: 0.5rem;
-}
-.feature-card p {
-  font-size: 0.9rem;
-  color: #555 !important;
-  line-height: 1.7;
-}
-.feature-card code {
-  background: #f0f4e8;
-  color: #6d8c26;
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  font-size: 0.85rem;
-}
+    /* Section Title */
+    .section-title { font-size: 40px; font-weight: 800; text-align: center; margin-bottom: 50px; color: var(--text-dark); }
 
-/* ===== STORIES ===== */
-.stories { background: #ffffff; }
-.stories-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
-  margin-top: 3rem;
-}
-.story-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-left: 4px solid #94BA33;
-  border-radius: 20px;
-  padding: 2.5rem 2rem;
-  position: relative;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-.story-card:hover {
-  border-color: #94BA33;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  transform: translateY(-8px);
-}
-.story-card::before {
-  content: '\201C';
-  font-size: 4rem;
-  color: rgba(148, 186, 51, 0.2);
-  position: absolute;
-  top: 1rem;
-  left: 1.5rem;
-  line-height: 1;
-  font-family: Georgia, serif;
-}
-.story-card-title {
-  font-size: 1.15rem;
-  font-weight: 700;
-  color: #1a1a1a !important;
-  margin-bottom: 1rem;
-  padding-top: 1rem;
-}
-.story-card p {
-  font-size: 0.95rem;
-  color: #555 !important;
-  line-height: 1.7;
-  margin-bottom: 1.5rem;
-}
-.story-card code {
-  background: #f0f4e8;
-  color: #6d8c26;
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  font-size: 0.85rem;
-}
-.story-card .quote {
-  font-size: 1rem;
-  font-weight: 600;
-  color: #6d8c26;
-  font-style: italic;
-  border-left: 2px solid #94BA33;
-  padding-left: 1rem;
-}
+    /* Feature Highlight */
+    .feature-highlight {
+      padding: 80px 0;
+      background: linear-gradient(135deg, #f0f7e6 0%, #ffffff 100%);
+      border-bottom: 1px solid var(--border-light);
+      text-align: center;
+    }
+    .feature-highlight-badge {
+      display: inline-block;
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      padding: 8px 20px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 12px rgba(148, 186, 51, 0.3);
+    }
+    .feature-highlight-title { font-size: 44px; font-weight: 800; margin-bottom: 20px; color: var(--text-dark); }
+    .feature-highlight-subtitle {
+      font-size: 22px;
+      color: var(--text-medium);
+      margin-bottom: 50px;
+      max-width: 800px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.6;
+    }
+    .feature-highlight-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 30px;
+      margin-bottom: 50px;
+      max-width: 1000px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .highlight-card {
+      background: white;
+      border: 2px solid var(--border-light);
+      border-radius: 12px;
+      padding: 30px 25px;
+      transition: all 0.3s ease;
+      text-align: center;
+    }
+    .highlight-card:hover { border-color: var(--apra-green); box-shadow: 0 8px 24px rgba(148, 186, 51, 0.15); transform: translateY(-4px); }
+    .highlight-icon { font-size: 3em; margin-bottom: 15px; }
+    .highlight-card h3 { font-size: 20px; font-weight: 700; margin-bottom: 12px; color: var(--text-dark); }
+    .highlight-card p { color: var(--text-medium); font-size: 15px; line-height: 1.6; margin-bottom: 15px; }
+    .highlight-pattern {
+      background: var(--bg-light);
+      border: 1px solid var(--border-light);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      color: var(--apra-green);
+      font-weight: 600;
+      display: inline-block;
+    }
 
-/* ===== COMPETITIVE ===== */
-.competitive { background: #f8fafc; }
-.comparison-table {
-  margin-top: 3rem;
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  overflow: hidden;
-  border-radius: 16px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-}
-.comparison-table th,
-.comparison-table td {
-  padding: 1.2rem 1.5rem;
-  text-align: left;
-  border-bottom: 1px solid #e5e7eb;
-}
-.comparison-table th {
-  background: linear-gradient(135deg, #94BA33, #6d8c26);
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  color: #fff;
-  font-weight: 600;
-}
-.comparison-table td {
-  font-size: 0.95rem;
-  color: #555 !important;
-  vertical-align: top;
-}
-.comparison-table tr {
-  transition: background 0.2s;
-}
-.comparison-table tbody tr:hover {
-  background: #f8fafc;
-}
-.comparison-table tr:last-child td { border-bottom: none; }
-.comparison-table .category { font-weight: 700; color: #1a1a1a !important; min-width: 180px; }
-.comparison-table .tools { color: #666; font-size: 0.85rem; }
-.comparison-table .missing { color: #ef4444; font-size: 0.85rem; }
-.comparison-table .highlight-row {
-  background: #f0f4e8 !important;
-  border-left: 3px solid #94BA33;
-}
-.comparison-table .highlight-row .category { color: #6d8c26; }
-.comparison-table .complete { color: #94BA33; font-weight: 600; font-size: 0.85rem; }
-.comparison-quote {
-  text-align: center;
-  margin-top: 2.5rem;
-  font-size: 1.1rem;
-  color: #555;
-  font-style: italic;
-}
+    /* Features */
+    .features { padding: 80px 0; background: white; }
+    .features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+    .feature-card {
+      background: var(--bg-light);
+      padding: 30px;
+      border-radius: 12px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .feature-card:hover { transform: translateY(-5px); box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+    .feature-icon { font-size: 48px; margin-bottom: 15px; }
+    .feature-card h3 { font-size: 20px; margin-bottom: 12px; color: var(--text-dark); }
+    .feature-card p { color: var(--text-medium); line-height: 1.6; }
 
-/* ===== OPEN STANDARDS ===== */
-.standards { background: linear-gradient(135deg, #94BA33 0%, #6d8c26 100%); }
-.standards .section-label { color: rgba(255, 255, 255, 0.8); }
-.standards .section-title { color: #fff; }
-.standards .section-subtitle { color: rgba(255, 255, 255, 0.85); }
-.standards-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 2rem;
-  margin-top: 3rem;
-}
-.standard-card {
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 16px;
-  padding: 2rem;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.standard-card:hover {
-  background: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-  transform: translateY(-8px);
-}
-.standard-card h3 {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: #fff;
-  margin-bottom: 0.5rem;
-}
-.standard-card .org {
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 600;
-  margin-bottom: 0.75rem;
-}
-.standard-card p {
-  font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.85);
-  line-height: 1.7;
-}
-.standards-compat {
-  margin-top: 2.5rem;
-  text-align: center;
-}
-.compat-badges {
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-  margin-top: 1rem;
-}
-.compat-badge {
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  padding: 0.5rem 1.2rem;
-  border-radius: 100px;
-  font-size: 0.85rem;
-  color: #fff;
-  font-weight: 500;
-}
+    /* Quick Start / How It Works */
+    .quick-start { padding: 80px 0; background: linear-gradient(135deg, #f8fef0 0%, #ffffff 100%); }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; margin-bottom: 40px; }
+    .step { text-align: center; position: relative; }
+    .step::after { content: '\2192'; position: absolute; right: -20px; top: 15px; font-size: 24px; color: var(--apra-green-light); font-weight: 700; }
+    .step:last-child::after { display: none; }
+    .step-number {
+      width: 50px; height: 50px;
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      font-weight: 700;
+      margin: 0 auto 15px;
+    }
+    .step h3 { font-size: 18px; margin-bottom: 10px; color: var(--text-dark); }
+    .step p { color: var(--text-medium); font-size: 14px; line-height: 1.5; }
+    .quick-start-cta { text-align: center; }
 
-/* ===== PRODUCTION NUMBERS ===== */
-.numbers { background: #ffffff; }
-.numbers-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 2rem;
-  margin-top: 3rem;
-}
-.number-card {
-  text-align: center;
-  padding: 2rem 1rem;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-.number-card:hover {
-  border-color: #94BA33;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  transform: translateY(-8px);
-}
-.number-card .value {
-  font-size: 2.5rem;
-  font-weight: 800;
-  color: #94BA33;
-  line-height: 1;
-  margin-bottom: 0.5rem;
-}
-.number-card .desc {
-  font-size: 0.85rem;
-  color: #555 !important;
-  line-height: 1.5;
-}
-.numbers-quote {
-  text-align: center;
-  margin-top: 3rem;
-  font-size: 1.1rem;
-  color: #555;
-  font-style: italic;
-}
+    /* Competitive / Compare */
+    .providers { padding: 80px 0; background: white; }
+    .provider-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; max-width: 800px; margin: 0 auto; }
+    .provider-card {
+      background: var(--bg-light);
+      padding: 25px;
+      border-radius: 10px;
+      text-align: center;
+      border: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .provider-card:hover { border-color: var(--apra-green); background: white; }
+    .provider-name { font-size: 20px; font-weight: 700; margin-bottom: 5px; color: var(--text-dark); }
+    .provider-desc { font-size: 14px; color: var(--text-light); margin-bottom: 10px; }
+    .provider-tag { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: var(--border-light); color: var(--text-medium); }
+    .provider-tag.best { background: #ffd700; color: #333; }
 
-/* ===== GETTING STARTED ===== */
-.getting-started { background: linear-gradient(135deg, #94BA33 0%, #6d8c26 100%); }
-.getting-started .section-label { color: rgba(255, 255, 255, 0.8); }
-.getting-started .section-title { color: #fff; }
-.getting-started .section-subtitle { color: rgba(255, 255, 255, 0.85); }
-.getting-started .btn-primary {
-  background: #fff;
-  color: #6d8c26;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
-}
-.getting-started .btn-primary:hover {
-  background: #fff;
-  color: #6d8c26;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
-}
-.getting-started .btn-secondary {
-  background: transparent;
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.5);
-}
-.getting-started .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: #fff;
-  color: #fff;
-}
-.steps {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
-  margin-top: 3rem;
-}
-.step {
-  position: relative;
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 16px;
-  padding: 2.5rem 2rem;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.step:hover {
-  background: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-  transform: translateY(-8px);
-}
-.step-number {
-  position: absolute;
-  top: -16px;
-  left: 2rem;
-  width: 32px;
-  height: 32px;
-  background: #fff;
-  color: #6d8c26;
-  font-weight: 800;
-  font-size: 0.85rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-}
-.step h3 {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: #fff;
-  margin-bottom: 0.75rem;
-}
-.step code {
-  display: block;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
-  font-size: 0.8rem;
-  color: #fff;
-  margin-top: 0.5rem;
-  overflow-x: auto;
-}
-.step p {
-  font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.85);
-  line-height: 1.7;
-}
+    /* Stories */
+    .documentation { padding: 80px 0; background: linear-gradient(135deg, #f8fef0 0%, #ffffff 100%); }
+    .docs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+    .doc-card {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      text-decoration: none;
+      border: 2px solid var(--border-light);
+      transition: all 0.2s;
+    }
+    .doc-card:hover { border-color: var(--apra-green); transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
+    .doc-card h3 { font-size: 22px; margin-bottom: 12px; color: var(--text-dark); }
+    .doc-card p { color: var(--text-medium); line-height: 1.6; }
 
-/* ===== FOOTER ===== */
-footer {
-  background: #1a1a1a;
-  border-top: none;
-  padding: 4rem 0 2rem;
-  position: relative;
-}
-footer::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 10%;
-  right: 10%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(148, 186, 51, 0.3), transparent);
-}
-.footer-content {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
-  gap: 3rem;
-  margin-bottom: 3rem;
-}
-.footer-brand h3 {
-  font-size: 1.3rem;
-  font-weight: 800;
-  color: #fff;
-  margin-bottom: 0.75rem;
-}
-.footer-brand p {
-  font-size: 0.9rem;
-  color: #aaa;
-  line-height: 1.7;
-  max-width: 350px;
-}
-.footer-links h4 {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  color: #aaa;
-  margin-bottom: 1rem;
-  font-weight: 600;
-}
-.footer-links a {
-  display: block;
-  color: #aaa;
-  font-size: 0.9rem;
-  padding: 0.3rem 0;
-  transition: color 0.2s;
-}
-.footer-links a:hover { color: #94BA33; }
-.footer-bottom {
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  padding-top: 2rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.8rem;
-  color: #888;
-}
+    /* Production Numbers */
+    .feedback { padding: 80px 0; background: white; }
+    .feedback-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 30px; }
+    .feedback-card {
+      background: var(--bg-light);
+      padding: 40px 30px;
+      border-radius: 12px;
+      text-align: center;
+    }
+    .feedback-card h3 { font-size: 48px; margin-bottom: 10px; color: var(--apra-green); font-weight: 800; }
+    .feedback-card p { color: var(--text-medium); margin-bottom: 0; line-height: 1.6; font-weight: 600; }
+    .production-note { text-align: center; margin-top: 40px; font-size: 18px; color: var(--text-medium); font-style: italic; }
 
-/* ===== SKIP LINK ===== */
-.skip-link {
-  position: absolute;
-  top: -100px;
-  left: 1rem;
-  background: #94BA33;
-  color: #fff;
-  padding: 0.5rem 1rem;
-  border-radius: 0 0 8px 8px;
-  font-weight: 700;
-  font-size: 0.875rem;
-  z-index: 9999;
-  transition: top 0.2s;
-}
-.skip-link:focus { top: 0; color: #fff; }
+    .btn-secondary {
+      background: white;
+      color: var(--apra-green);
+      padding: 12px 24px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      border: 2px solid var(--apra-green);
+      display: inline-block;
+      transition: all 0.2s;
+    }
+    .btn-secondary:hover { background: var(--apra-green); color: white; }
 
-/* ===== LANG BADGES ===== */
-.lang-bar { background: #f0f4e8; padding: 2.5rem 0; }
-.lang-bar-label {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 3px;
-  color: #666;
-  font-weight: 600;
-  text-align: center;
-  margin-bottom: 1.25rem;
-}
-.lang-badges {
-  display: flex;
-  justify-content: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-.lang-badge {
-  background: #fff;
-  border: 1px solid rgba(148, 186, 51, 0.3);
-  padding: 0.4rem 1rem;
-  border-radius: 100px;
-  font-size: 0.85rem;
-  color: #6d8c26;
-  font-weight: 600;
-}
+    /* Footer */
+    .footer { background: var(--text-dark); color: white; padding: 60px 0 30px; }
+    .footer-content { display: grid; grid-template-columns: 2fr 3fr; gap: 60px; margin-bottom: 40px; }
+    .footer-brand h3 { font-size: 24px; margin-bottom: 10px; }
+    .footer-brand p { color: #aaa; margin-bottom: 8px; }
+    .footer-brand a { color: var(--apra-green); text-decoration: none; }
+    .footer-tagline { font-style: italic; margin-top: 15px !important; }
+    .footer-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+    .footer-column h4 { margin-bottom: 15px; color: var(--apra-green); }
+    .footer-column a { display: block; color: #aaa; text-decoration: none; margin-bottom: 10px; transition: color 0.2s; }
+    .footer-column a:hover { color: white; }
+    .footer-bottom { border-top: 1px solid #444; padding-top: 30px; text-align: center; color: #aaa; font-size: 14px; }
+    .footer-bottom p { margin-bottom: 8px; }
+    .footer-bottom a { color: var(--apra-green); text-decoration: none; }
+    .footer-bottom a:hover { text-decoration: underline; }
 
-/* ===== WHO'S USING IT ===== */
-.users { background: #f8fafc; }
-.users-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
-  margin-top: 3rem;
-}
-.user-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  padding: 2rem;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-.user-card:hover {
-  border-color: #94BA33;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  transform: translateY(-8px);
-}
-.user-name {
-  font-size: 1rem;
-  font-weight: 700;
-  color: #1a1a1a !important;
-  margin-bottom: 0.25rem;
-}
-.user-domain {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #94BA33;
-  margin-bottom: 1rem;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-.user-card p {
-  font-size: 0.9rem;
-  color: #555 !important;
-  line-height: 1.7;
-}
+    /* Responsive */
+    @media (max-width: 968px) {
+      .hero .container { grid-template-columns: 1fr; text-align: center; }
+      .hero-cta { justify-content: center; }
+      .hero-stats { justify-content: center; }
+      .features-grid { grid-template-columns: repeat(2, 1fr); }
+      .steps { grid-template-columns: repeat(2, 1fr); }
+      .provider-grid { grid-template-columns: 1fr; }
+      .footer-content { grid-template-columns: 1fr; }
+      .feature-highlight-grid { grid-template-columns: 1fr; max-width: 500px; }
+      .feature-highlight-title { font-size: 36px; }
+      .feature-highlight-subtitle { font-size: 18px; }
+    }
 
-/* ===== RESPONSIVE ===== */
-@media (max-width: 1024px) {
-  .numbers-grid { grid-template-columns: repeat(3, 1fr); }
-}
-@media (max-width: 768px) {
-  .nav-links { display: none; }
-  .nav-links.open {
-    display: flex;
-    flex-direction: column;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: rgba(255, 255, 255, 0.98);
-    backdrop-filter: blur(20px);
-    padding: 1.5rem 2rem;
-    gap: 1rem;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
-  }
-  .nav-hamburger { display: flex; }
-  .hero-stats { flex-direction: column; gap: 0; border-radius: 16px; }
-  .hero-stat { padding: 1rem 2rem; border-right: none; border-bottom: 1px solid rgba(255, 255, 255, 0.25); }
-  .hero-stat:last-child { border-bottom: none; }
-  .problem-cards,
-  .agents-grid,
-  .features-grid,
-  .stories-grid,
-  .standards-grid,
-  .steps { grid-template-columns: 1fr; }
-  .numbers-grid { grid-template-columns: repeat(2, 1fr); }
-  .users-grid { grid-template-columns: 1fr; }
-  .comparison-table { font-size: 0.85rem; display: block; overflow-x: auto; }
-  .comparison-table th, .comparison-table td { padding: 0.8rem 1rem; }
-  .footer-content { grid-template-columns: 1fr; gap: 2rem; }
-  .footer-bottom { flex-direction: column; gap: 0.5rem; text-align: center; }
-  .flow-diagram { gap: 0.5rem; }
-  .section { padding: 5rem 0; }
-  .terminal-demo { height: 340px; }
-}
-@media (max-width: 480px) {
-  .container { padding: 0 1.25rem; }
-  .hero { padding: 6rem 0 4rem; }
-  .hero-logo { font-size: 2.5rem; }
-  .numbers-grid { grid-template-columns: 1fr; }
-  .hero-actions { flex-direction: column; }
-  .btn-primary, .btn-secondary { width: 100%; justify-content: center; }
-  .terminal-demo { height: 300px; }
-}
-</style>
+    @media (max-width: 640px) {
+      .nav { display: none; }
+      .hero-title { font-size: 32px; }
+      .features-grid, .steps, .provider-grid, .docs-grid, .feedback-grid { grid-template-columns: 1fr; }
+      .step::after { display: none; }
+      .footer-links { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
-<a href="#main-content" class="skip-link">Skip to main content</a>
-<span id="main-content"></span>
-
-<!-- NAV -->
-<nav id="nav">
-  <div class="container">
-    <a href="#" class="nav-logo">
-      <span class="logo-icon">AF</span>
-      Apra Fleet
-    </a>
-    <div class="nav-links" id="navLinks">
-      <a href="#problem">Problem</a>
-      <a href="#how-it-works">How It Works</a>
-      <a href="#features">Features</a>
-      <a href="#competitive">Compare</a>
-      <a href="#getting-started">Get Started</a>
-      <a href="https://github.com/Apra-Labs/apra-fleet" class="nav-cta">GitHub</a>
-    </div>
-    <button class="nav-hamburger" id="hamburger" aria-label="Toggle menu" aria-expanded="false">
-      <span></span><span></span><span></span>
-    </button>
-  </div>
-</nav>
-
-<!-- HERO -->
-<section class="hero" id="hero">
-  <div class="hero-grid"></div>
-  <div class="glow-orb glow-orb-1"></div>
-  <div class="container">
-    <div class="hero-badge"><span class="dot"></span> Now in Production</div>
-    <div class="hero-logo" role="img" aria-label="Apra Fleet">Apra <span class="green">Fleet</span></div>
-    <p class="hero-byline">by Apra Labs</p>
-    <h1 class="hero-headline">Your AI Engineering Organization</h1>
-    <p class="hero-sub">Transforms AI coding agents into a managed engineering team &mdash; with a PM that plans, doers that build, and reviewers that verify. On your machines, with your process.</p>
-    <div class="hero-stats">
-      <div class="hero-stat">
-        <div class="number">3</div>
-        <div class="label">Agent Roles</div>
-      </div>
-      <div class="hero-stat">
-        <div class="number">5+</div>
-        <div class="label">Active Projects</div>
-      </div>
-      <div class="hero-stat">
-        <div class="number">100%</div>
-        <div class="label">Your Infrastructure</div>
-      </div>
-    </div>
-    <div class="hero-actions">
-      <a href="#getting-started" class="btn-primary">Get Started &rarr;</a>
-      <a href="https://github.com/Apra-Labs/apra-fleet" class="btn-secondary">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.387.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.387-1.333-1.756-1.333-1.756-1.09-.745.083-.73.083-.73 1.205.085 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12z"/></svg>
-        View on GitHub
-      </a>
-    </div>
-  </div>
-</section>
-
-<!-- PROBLEM -->
-<section class="section problem" id="problem">
-  <div class="glow-orb glow-orb-2"></div>
-  <div class="container" style="position: relative; z-index: 1;">
-    <div class="reveal">
-      <span class="section-label">The Problem</span>
-      <h2 class="section-title">Your Best Engineers Are Doing<br>Their Worst Work</h2>
-      <p class="section-subtitle">Senior engineers spend 70% of their time on zero-judgment tasks. Code reviews that take days. Sprints that slip. The problem isn't talent &mdash; it's that humans don't scale.</p>
-      <p class="section-subtitle" style="margin-top: 1rem; font-style: italic; color: #666;">You built the process. Nobody follows it.</p>
-    </div>
-    <div class="problem-cards">
-      <div class="problem-card reveal reveal-delay-1">
-        <div class="problem-icon">&#9200;</div>
-        <h3>Review Bottlenecks</h3>
-        <p>PRs sit for days waiting for review. Context switches kill momentum. Your fastest engineers become your biggest bottleneck.</p>
-      </div>
-      <div class="problem-card reveal reveal-delay-2">
-        <div class="problem-icon">&#128200;</div>
-        <h3>Sprint Slippage</h3>
-        <p>Estimates are fiction. Scope creep is reality. By mid-sprint, the plan is already a memory and the backlog keeps growing.</p>
-      </div>
-      <div class="problem-card reveal reveal-delay-3">
-        <div class="problem-icon">&#128337;</div>
-        <h3>Talent Misallocation</h3>
-        <p>Your $200k/year architects are writing boilerplate, resolving merge conflicts, and sitting in standups. The math doesn't work.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- 11PM STORY -->
-<section class="story-section" id="story">
-  <div class="story-glow"></div>
-  <div class="container">
-    <div class="story-block reveal">
-      <div class="story-time">11:00 PM</div>
-      <h2 class="story-headline">You paste requirements into the terminal.<br>
-        <span class="highlight">7:00 AM: A reviewed, tested PR is waiting.</span></h2>
-      <div class="story-divider"></div>
-      <p class="story-punchline">This is not a demo. This is a Tuesday.</p>
-    </div>
-  </div>
-</section>
-
-<!-- HOW IT WORKS -->
-<section class="section how-it-works" id="how-it-works">
-  <div class="glow-orb glow-orb-1"></div>
-  <div class="container" style="position: relative; z-index: 1;">
-    <div class="reveal">
-      <span class="section-label">Architecture</span>
-      <h2 class="section-title">Three Roles. One Organization.</h2>
-      <p class="section-subtitle">Fleet doesn't give you one smarter agent. It gives you the structure that makes engineering teams effective.</p>
-    </div>
-    <div class="agents-grid">
-      <div class="agent-card reveal reveal-delay-1">
-        <div class="agent-icon">&#129504;</div>
-        <div class="agent-role">Strategist</div>
-        <h3>PM Agent</h3>
-        <p>Plans work, tracks progress, never writes code. Uses Opus for architecture decisions, Haiku for status checks. Knows when to think big and when to move fast.</p>
-      </div>
-      <div class="agent-card reveal reveal-delay-2">
-        <div class="agent-icon">&#128296;</div>
-        <div class="agent-role">Builder</div>
-        <h3>Doer Agents</h3>
-        <p>Execute on your machines &mdash; Windows, macOS, Linux. Commit, push, hit checkpoints. Follow the plan exactly. No improvisation, no drift.</p>
-      </div>
-      <div class="agent-card reveal reveal-delay-3">
-        <div class="agent-icon">&#128737;</div>
-        <div class="agent-role">Gatekeeper</div>
-        <h3>Reviewer Agents</h3>
-        <p>Independent verification with fresh context every review. No approval means no merge. Quality is structural, not aspirational.</p>
-      </div>
-    </div>
-    <div class="flow-diagram reveal reveal-delay-4">
-      <span class="flow-step">PM Plans</span>
-      <span class="flow-arrow">&rarr;</span>
-      <span class="flow-step">Doer Builds</span>
-      <span class="flow-arrow">&rarr;</span>
-      <span class="flow-step">Reviewer Verifies</span>
-      <span class="flow-arrow">&rarr;</span>
-      <span class="flow-step">PM Deploys</span>
-    </div>
-    <p class="flow-emphasis reveal reveal-delay-5">The doer-reviewer pattern is the architecture &mdash; not a feature.</p>
-  </div>
-</section>
-
-<!-- COMMAND CENTER -->
-<section class="section command-center" id="command-center">
-  <div class="glow-orb glow-orb-2"></div>
-  <div class="container" style="position: relative; z-index: 1;">
-    <div class="reveal">
-      <span class="section-label">Control</span>
-      <h2 class="section-title">The Command Center</h2>
-      <p class="section-subtitle">Everything runs from your terminal. One interface to manage an entire engineering organization.</p>
-    </div>
-    <div class="terminal reveal reveal-delay-1">
-      <div class="terminal-header">
-        <span class="terminal-dot red"></span>
-        <span class="terminal-dot yellow"></span>
-        <span class="terminal-dot green"></span>
-        <span class="terminal-title">apra-fleet &mdash; command center</span>
-      </div>
-      <div class="terminal-demo">
-        <!-- Scenario 1: Fleet Status -->
-        <div class="scenario scenario-1">
-          <span class="scenario-label">Fleet Status</span>
-          <div class="terminal-line">
-            <span class="terminal-prompt">$</span>
-            <span class="terminal-cmd">/pm status fleet</span>
-          </div>
-          <div class="terminal-output">
-            <div><span class="dim">&#9472;&#9472;&#9472;</span> Fleet Overview <span class="dim">&#9472;&#9472;&#9472;</span></div>
-            <div><span class="success">&#9679;</span> dev1 &nbsp;&nbsp;Windows &nbsp;online &nbsp;<span class="success">idle</span></div>
-            <div><span class="success">&#9679;</span> dev2 &nbsp;&nbsp;macOS &nbsp;&nbsp;&nbsp;online &nbsp;<span class="success">idle</span></div>
-            <div><span class="success">&#9679;</span> dev3 &nbsp;&nbsp;Linux &nbsp;&nbsp;&nbsp;online &nbsp;<span class="success">idle</span></div>
-            <div><span class="success">&#9679;</span> gpu-1 &nbsp;EC2 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;online &nbsp;<span class="warn">busy</span></div>
-            <div><span class="success">&#9679;</span> rev-1 &nbsp;macOS &nbsp;&nbsp;&nbsp;online &nbsp;<span class="success">idle</span></div>
-            <div style="margin-top: 0.5rem;"><span class="success">&#10003; 7/7 online</span> &mdash; fleet ready</div>
-          </div>
-        </div>
-
-        <!-- Scenario 2: Plan Issue -->
-        <div class="scenario scenario-2">
-          <span class="scenario-label">Planning</span>
-          <div class="terminal-line">
-            <span class="terminal-prompt">$</span>
-            <span class="terminal-cmd">/pm plan #67</span>
-          </div>
-          <div class="terminal-output">
-            <div><span class="dim">&#9472;&#9472;&#9472;</span> Planning Issue #67 <span class="dim">&#9472;&#9472;&#9472;</span></div>
-            <div><span class="success">&#10003;</span> Requirements analyzed</div>
-            <div><span class="success">&#10003;</span> Architecture review complete</div>
-            <div><span class="success">&#10003;</span> Plan generated &mdash; 3 phases, 8 tasks</div>
-            <div><span class="success">&#10003;</span> Reviewer assigned: rev-1</div>
-            <div><span class="success">&#10003;</span> Plan <span class="highlight">Approved</span></div>
-            <div style="margin-top: 0.5rem;">Ready for execution on dev1</div>
-          </div>
-        </div>
-
-        <!-- Scenario 3: Execute Plan -->
-        <div class="scenario scenario-3">
-          <span class="scenario-label">Execution</span>
-          <div class="terminal-line">
-            <span class="terminal-prompt">$</span>
-            <span class="terminal-cmd">/pm start dev1 plan</span>
-          </div>
-          <div class="terminal-output">
-            <div><span class="dim">&#9472;&#9472;&#9472;</span> Executing on dev1 <span class="dim">&#9472;&#9472;&#9472;</span></div>
-            <div><span class="success">&#10003;</span> Phase 1: Core implementation</div>
-            <div><span class="success">&#10003;</span> VERIFY-1 checkpoint &mdash; <span class="success">passed</span></div>
-            <div><span class="success">&#10003;</span> Phase 2: Integration tests</div>
-            <div><span class="success">&#10003;</span> VERIFY-2 checkpoint &mdash; <span class="success">passed</span></div>
-            <div><span class="success">&#10003;</span> Phase 3: Documentation</div>
-            <div style="margin-top: 0.5rem;"><span class="success">&#10003;</span> All phases complete. PR ready for review.</div>
-          </div>
-        </div>
-
-        <!-- Scenario 4: Deploy -->
-        <div class="scenario scenario-4">
-          <span class="scenario-label">Deployment</span>
-          <div class="terminal-line">
-            <span class="terminal-prompt">$</span>
-            <span class="terminal-cmd">/pm deploy dev1</span>
-          </div>
-          <div class="terminal-output">
-            <div><span class="dim">&#9472;&#9472;&#9472;</span> Deploying from dev1 <span class="dim">&#9472;&#9472;&#9472;</span></div>
-            <div><span class="success">&#10003;</span> Review approved by rev-1</div>
-            <div><span class="success">&#10003;</span> Tests passing &mdash; 47/47</div>
-            <div><span class="success">&#10003;</span> Branch merged to main</div>
-            <div><span class="success">&#10003;</span> Health check: <span class="success">ok</span></div>
-            <div><span class="success">&#10003;</span> Issue #67 closed</div>
-            <div style="margin-top: 0.5rem;"><span class="success">&#10003; Deployed successfully</span></div>
-          </div>
+  <!-- Header -->
+  <header class="header">
+    <div class="container">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#94BA33;stop-opacity:1" />
+              <stop offset="100%" style="stop-color:#7a9b2a;stop-opacity:1" />
+            </linearGradient>
+          </defs>
+          <rect width="128" height="128" rx="26" fill="url(#grad1)"/>
+          <g transform="translate(64, 64)">
+            <path d="M -28 -20 L -35 -20 Q -40 -20 -40 -15 L -40 15 Q -40 20 -35 20 L -28 20"
+                  stroke="white" stroke-width="4.5" fill="none" stroke-linecap="round" opacity="0.95"/>
+            <path d="M 28 -20 L 35 -20 Q 40 -20 40 -15 L 40 15 Q 40 20 35 20 L 28 20"
+                  stroke="white" stroke-width="4.5" fill="none" stroke-linecap="round" opacity="0.95"/>
+            <circle cx="0" cy="0" r="6" fill="#b5d957" opacity="0.9"/>
+            <circle cx="0" cy="0" r="3.5" fill="white"/>
+            <line x1="0" y1="-12" x2="0" y2="-18" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+            <line x1="0" y1="12" x2="0" y2="18" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+            <line x1="-12" y1="0" x2="-18" y2="0" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+            <line x1="12" y1="0" x2="18" y2="0" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+          </g>
+        </svg>
+        <div>
+          <h1 class="logo-text">Apra Fleet</h1>
+          <p class="logo-tagline">by <a href="https://www.apralabs.com" target="_blank">Apra Labs</a></p>
         </div>
       </div>
-    </div>
-    <p class="terminal-tagline reveal reveal-delay-2">50 repos. One terminal. <span class="green">Agents as your minions.</span></p>
-  </div>
-</section>
-
-<!-- FEATURES -->
-<section class="section features" id="features">
-  <div class="container">
-    <div class="reveal">
-      <span class="section-label">Capabilities</span>
-      <h2 class="section-title">Built for Real Engineering</h2>
-      <p class="section-subtitle">Not a prototype. Not a framework. A working system deployed on production infrastructure.</p>
-    </div>
-    <div class="features-grid">
-      <div class="feature-card reveal reveal-delay-1">
-        <div class="feature-icon">&#127760;</div>
-        <h3>Cross-Platform Fleet</h3>
-        <p>Windows, macOS, Linux. Local and remote via SSH. Mix and match hardware across your entire engineering org.</p>
-      </div>
-      <div class="feature-card reveal reveal-delay-2">
-        <div class="feature-icon">&#129504;</div>
-        <h3>Smart Model Routing</h3>
-        <p>Opus for planning, Sonnet for coding, Haiku for status. The right model for the right job &mdash; automatically.</p>
-      </div>
-      <div class="feature-card reveal reveal-delay-3">
-        <div class="feature-icon">&#128268;</div>
-        <h3>Git as Transport</h3>
-        <p>No proprietary sync. Everything flows through git. Doers commit, reviewers commit, PM orchestrates. You own the history.</p>
-      </div>
-      <div class="feature-card reveal reveal-delay-1">
-        <div class="feature-icon">&#128161;</div>
-        <h3>Crash Recovery</h3>
-        <p>PM dies? <code>/pm recover</code> inspects git state and resumes. Your work survives anything because git survives anything.</p>
-      </div>
-      <div class="feature-card reveal reveal-delay-2">
-        <div class="feature-icon">&#9729;&#65039;</div>
-        <h3>Cloud Compute</h3>
-        <p>AWS EC2 auto start/stop. GPU-aware idle detection. Agents that provision their own infrastructure when they need it.</p>
-      </div>
-      <div class="feature-card reveal reveal-delay-3">
-        <div class="feature-icon">&#128274;</div>
-        <h3>Mandatory Review Gates</h3>
-        <p>No reviewer approval means no merge. No exceptions. Quality is structural, enforced at every step of the pipeline.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- STORIES -->
-<section class="section stories" id="stories">
-  <div class="container">
-    <div class="reveal">
-      <span class="section-label">In Practice</span>
-      <h2 class="section-title">Stories from the Fleet</h2>
-    </div>
-    <div class="stories-grid">
-      <div class="story-card reveal reveal-delay-1">
-        <h3 class="story-card-title">The Weekend Rewrite</h3>
-        <p>CTO demands the auth migration by Monday. Fleet ships it overnight &mdash; planned, built, reviewed, and merged before sunrise.</p>
-        <div class="quote">"That's not work-life balance. That's leverage."</div>
-      </div>
-      <div class="story-card reveal reveal-delay-2">
-        <h3 class="story-card-title">The Solo Founder</h3>
-        <p>200-item backlog. Ships 5 features per week writing zero lines of code. Requirements in, tested PRs out.</p>
-        <div class="quote">"You're a founder with an engineering department."</div>
-      </div>
-      <div class="story-card reveal reveal-delay-3">
-        <h3 class="story-card-title">The 3am Recovery</h3>
-        <p>PM crashes mid-sprint. <code>/pm recover</code> inspects git state, reconstructs progress, and resumes execution. Zero work lost.</p>
-        <div class="quote">"Other tools give you speed. Fleet gives you resilience."</div>
-      </div>
-    </div>
-    <p class="numbers-quote reveal" style="margin-top: 3rem; font-size: 1.15rem; color: #333; font-weight: 600;">The engineers who adopt this don't go back. Not because it's faster &mdash; because they stop drowning.</p>
-  </div>
-</section>
-
-<!-- COMPETITIVE POSITIONING -->
-<section class="section competitive" id="competitive">
-  <div class="container">
-    <div class="reveal">
-      <span class="section-label">Landscape</span>
-      <h2 class="section-title">Not Another AI Coding Tool</h2>
-      <p class="section-subtitle">The market is full of tools that help developers type faster. Fleet solves a different problem entirely.</p>
-    </div>
-    <div class="reveal reveal-delay-1">
-      <table class="comparison-table" aria-label="AI coding tool category comparison">
-        <thead>
-          <tr>
-            <th>Category</th>
-            <th>Tools</th>
-            <th>What's Missing</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="category">Better Autocomplete</td>
-            <td class="tools">Cursor, Copilot, Windsurf</td>
-            <td class="missing">Organization, process, scale</td>
-          </tr>
-          <tr>
-            <td class="category">Autonomous Task Runner</td>
-            <td class="tools">Devin, Codex, OpenHands</td>
-            <td class="missing">Your infrastructure, your process</td>
-          </tr>
-          <tr>
-            <td class="category">Multi-Agent Framework</td>
-            <td class="tools">CrewAI, AutoGen, LangGraph, MetaGPT</td>
-            <td class="missing">Working system, git workflows</td>
-          </tr>
-          <tr class="highlight-row">
-            <td class="category">AI-Native Engineering Org</td>
-            <td class="tools">Apra Fleet</td>
-            <td class="complete">Full lifecycle on your infra &#10003;</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="comparison-quote reveal reveal-delay-2">Other tools augment a developer. Fleet replaces the coordination overhead.</p>
-  </div>
-</section>
-
-<!-- OPEN STANDARDS -->
-<section class="section standards" id="standards">
-  <div class="container">
-    <div class="reveal">
-      <span class="section-label">Foundation</span>
-      <h2 class="section-title">Built on Open Standards</h2>
-      <p class="section-subtitle">We didn't invent a proprietary ecosystem. We built on the ones winning.</p>
-    </div>
-    <div class="standards-grid">
-      <div class="standard-card reveal reveal-delay-1">
-        <h3>Model Context Protocol (MCP)</h3>
-        <div class="org">Anthropic &mdash; Open Standard</div>
-        <p>Fleet's entire tool surface is exposed as MCP tools. Any MCP-compatible client can integrate with your fleet.</p>
-      </div>
-      <div class="standard-card reveal reveal-delay-2">
-        <h3>Agent Skills</h3>
-        <div class="org">Linux Foundation AAIF &mdash; agentskills.io</div>
-        <p>The PM skill follows the Agent Skills specification. Portable, composable, and backed by a foundation &mdash; not a startup.</p>
-      </div>
-    </div>
-    <p class="comparison-quote reveal reveal-delay-2" style="margin-top: 2.5rem; color: rgba(255,255,255,0.85);">You're not buying into a vendor. You're buying into an architecture.</p>
-    <div class="standards-compat reveal reveal-delay-3">
-      <p style="color: rgba(255,255,255,0.8); font-size: 0.95rem;">Works with the tools you already use</p>
-      <div class="compat-badges">
-        <span class="compat-badge">Claude Code</span>
-        <span class="compat-badge">GitHub Copilot</span>
-        <span class="compat-badge">OpenAI Codex</span>
-        <span class="compat-badge">Cursor</span>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- PRODUCTION NUMBERS -->
-<section class="section numbers" id="numbers">
-  <div class="container">
-    <div class="reveal">
-      <span class="section-label">Production</span>
-      <h2 class="section-title">Real Numbers. Real Work.</h2>
-    </div>
-    <div class="numbers-grid">
-      <div class="number-card reveal reveal-delay-1">
-        <div class="value">4</div>
-        <div class="desc">Users across<br>3 organizations</div>
-      </div>
-      <div class="number-card reveal reveal-delay-2">
-        <div class="value">5+</div>
-        <div class="desc">Active<br>projects</div>
-      </div>
-      <div class="number-card reveal reveal-delay-3">
-        <div class="value">20+</div>
-        <div class="desc">Sprints<br>completed</div>
-      </div>
-      <div class="number-card reveal reveal-delay-4">
-        <div class="value">100+</div>
-        <div class="desc">Backlog items<br>shipped</div>
-      </div>
-      <div class="number-card reveal reveal-delay-5">
-        <div class="value">7</div>
-        <div class="desc">Fleet members<br>Win/Mac/Linux</div>
-      </div>
-    </div>
-    <p class="numbers-quote reveal">4 engineers across 3 organizations manage 7 fleet members. This runs in production. Every day.</p>
-  </div>
-</section>
-
-<!-- LANGUAGES BADGE BAR -->
-<div class="lang-bar">
-  <div class="container">
-    <div class="reveal" style="text-align: center;">
-      <p class="lang-bar-label">Battle-tested across</p>
-      <div class="lang-badges">
-        <span class="lang-badge">C++</span>
-        <span class="lang-badge">Node.js</span>
-        <span class="lang-badge">C#/.NET</span>
-        <span class="lang-badge">Python</span>
-        <span class="lang-badge">ML Pipelines</span>
-        <span class="lang-badge">Video Processing</span>
-        <span class="lang-badge">Cross-Platform Builds</span>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- WHO'S USING IT -->
-<section class="section users" id="users">
-  <div class="container">
-    <div class="reveal">
-      <span class="section-label">In the Wild</span>
-      <h2 class="section-title">Who's Using It</h2>
-      <p class="section-subtitle">Real engineers. Real domains. Real work shipped overnight.</p>
-    </div>
-    <div class="users-grid">
-      <div class="user-card reveal reveal-delay-1">
-        <div class="user-name">Akhil &middot; Apra Labs</div>
-        <div class="user-domain">C++, Node.js, C#, Python &mdash; Windows / macOS / Linux</div>
-        <p>5+ simultaneous projects. 100+ backlog items shipped. ~20 complete sprints. Production debugging on live BBNVR devices via remote agents. Fleet orchestration across all three platforms from a single terminal.</p>
-      </div>
-      <div class="user-card reveal reveal-delay-2">
-        <div class="user-name">Kashyap</div>
-        <div class="user-domain">Machine Learning &mdash; AWS EC2 GPU Instances</div>
-        <p>Training ML models on cloud VMs via SSH. Fleet agents run on EC2 GPU instances, manage training pipelines, and report results back to a single local terminal. No cloud console required.</p>
-      </div>
-      <div class="user-card reveal reveal-delay-3">
-        <div class="user-name">Yashraj</div>
-        <div class="user-domain">Video Processing &mdash; H.265, WebRTC, C++</div>
-        <p>H.265 codec work, WebRTC streaming, video transcoding pipelines. Agents handling codec-level C++ alongside high-level pipeline orchestration and cross-platform build verification.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- GETTING STARTED -->
-<section class="section getting-started" id="getting-started">
-  <div class="glow-orb glow-orb-1"></div>
-  <div class="container" style="position: relative; z-index: 1;">
-    <div class="reveal">
-      <span class="section-label">Quick Start</span>
-      <h2 class="section-title">Up and Running in Minutes</h2>
-      <p class="section-subtitle">Three steps from zero to a managed engineering fleet.</p>
-    </div>
-    <div class="steps">
-      <div class="step reveal reveal-delay-1">
-        <div class="step-number">1</div>
-        <h3>Install</h3>
-        <p>Install from npm or grab a release from GitHub.</p>
-        <code>Download from GitHub Releases</code>
-      </div>
-      <div class="step reveal reveal-delay-2">
-        <div class="step-number">2</div>
-        <h3>Register Members</h3>
-        <p>Add machines to your fleet &mdash; local or remote via SSH.</p>
-        <code>register_member name=dev1 host=192.168.1.10</code>
-      </div>
-      <div class="step reveal reveal-delay-3">
-        <div class="step-number">3</div>
-        <h3>Start Managing</h3>
-        <p>Plan work, assign agents, and ship code.</p>
-        <code>/pm plan &rarr; /pm start &rarr; /pm deploy</code>
-      </div>
-    </div>
-    <div style="text-align: center; margin-top: 3rem;" class="reveal reveal-delay-4">
-      <a href="https://github.com/Apra-Labs/apra-fleet" class="btn-primary">Get Started &rarr;</a>
-      <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/user-guide.md" class="btn-secondary" style="margin-left: 1rem;">Read the Docs</a>
-    </div>
-  </div>
-</section>
-
-<!-- FOOTER -->
-<footer id="footer">
-  <div class="container">
-    <div class="footer-content">
-      <div class="footer-brand">
-        <h3>Apra Labs</h3>
-        <p>54 people. Bedford NH / Bangalore / Dubai. Over 30 years building software that ships.</p>
-      </div>
-      <div class="footer-links">
-        <h4>Product</h4>
-        <a href="#how-it-works">How It Works</a>
+      <nav class="nav">
+        <a href="#home">Home</a>
+        <a href="#architecture">How It Works</a>
         <a href="#features">Features</a>
-        <a href="#competitive">Compare</a>
-        <a href="#getting-started">Get Started</a>
+        <a href="#compare">Compare</a>
+        <a href="#how-it-works">Get Started</a>
+        <a href="https://github.com/Apra-Labs/apra-fleet" target="_blank" class="btn-primary">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section id="home" class="hero">
+    <div class="container">
+      <div class="hero-content">
+        <h2 class="hero-title">Your AI Engineering Organization</h2>
+        <p class="hero-subtitle">Transforms AI coding agents into a managed engineering team &mdash; with a PM that plans, doers that build, and reviewers that verify. On your machines, with your process.</p>
+        <div class="hero-cta">
+          <a href="#how-it-works" class="btn-large">Get Started</a>
+          <a href="https://github.com/Apra-Labs/apra-fleet" target="_blank" class="btn-secondary-large">View on GitHub</a>
+        </div>
+        <div class="hero-stats">
+          <div class="stat">
+            <strong>3</strong>
+            <span>Agent Roles</span>
+          </div>
+          <div class="stat">
+            <strong>5+</strong>
+            <span>Active Projects</span>
+          </div>
+          <div class="stat">
+            <strong>100%</strong>
+            <span>Your Infrastructure</span>
+          </div>
+        </div>
       </div>
-      <div class="footer-links">
-        <h4>Resources</h4>
-        <a href="https://github.com/Apra-Labs/apra-fleet">GitHub</a>
-        <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/user-guide.md">Documentation</a>
-        <a href="https://github.com/Apra-Labs/apra-fleet/blob/main/LICENSE">License (CC BY-SA 3.0)</a>
+      <div class="hero-image">
+        <div class="browser-window">
+          <div class="browser-bar">
+            <div class="browser-dots">
+              <span></span><span></span><span></span>
+            </div>
+            <div class="browser-url">fleet-pm terminal</div>
+          </div>
+          <div class="terminal-demo">
+            <div class="scenario scenario-1">
+              <div class="terminal-line"><span class="prompt">$</span> /pm status fleet</div>
+              <div class="ai-response">
+                <div class="terminal-line success">fleet-dev1&nbsp;&nbsp;online&nbsp;&nbsp;idle</div>
+                <div class="terminal-line success">fleet-dev2&nbsp;&nbsp;online&nbsp;&nbsp;idle</div>
+                <div class="terminal-line success">fleet-rev1&nbsp;&nbsp;online&nbsp;&nbsp;idle</div>
+                <div class="response-text">7/7 online, all idle</div>
+              </div>
+            </div>
+            <div class="scenario scenario-2">
+              <div class="terminal-line"><span class="prompt">$</span> /pm plan #67</div>
+              <div class="ai-response">
+                <div class="terminal-line">Analyzing requirements...</div>
+                <div class="terminal-line">Generating implementation plan...</div>
+                <div class="terminal-line success">Review: Approved</div>
+                <div class="response-text">Plan ready. 4 phases, 12 tasks.</div>
+              </div>
+            </div>
+            <div class="scenario scenario-3">
+              <div class="terminal-line"><span class="prompt">$</span> /pm start dev1</div>
+              <div class="ai-response">
+                <div class="terminal-line">Executing Phase 1...</div>
+                <div class="terminal-line">Running tests...</div>
+                <div class="terminal-line success">VERIFY-1 checkpoint passed</div>
+                <div class="response-text">Phase 1 complete. Starting Phase 2.</div>
+              </div>
+            </div>
+            <div class="scenario scenario-4">
+              <div class="terminal-line"><span class="prompt">$</span> /pm deploy</div>
+              <div class="ai-response">
+                <div class="terminal-line">Building artifacts...</div>
+                <div class="terminal-line">Running health checks...</div>
+                <div class="terminal-line success">Health check: all services ok</div>
+                <div class="response-text">Deployed successfully.</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="footer-bottom">
-      <span>&copy; 2025 Apra Labs. All rights reserved.</span>
-      <span>Built with conviction, not hype.</span>
+  </section>
+
+  <!-- Fleet Architecture -->
+  <section id="architecture" class="feature-highlight">
+    <div class="container">
+      <div class="feature-highlight-badge">HOW IT WORKS</div>
+      <h2 class="feature-highlight-title">The Fleet Architecture</h2>
+      <p class="feature-highlight-subtitle">
+        Three specialized roles. One unified workflow. Everything through git.
+      </p>
+      <div class="feature-highlight-grid">
+        <div class="highlight-card">
+          <div class="highlight-icon">&#x1F4CB;</div>
+          <h3>PM (Project Manager)</h3>
+          <p>Plans sprints, breaks issues into tasks, assigns work, tracks progress. Uses Opus for deep reasoning.</p>
+          <div class="highlight-pattern">/pm plan, /pm start, /pm status</div>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">&#x1F528;</div>
+          <h3>Doer (Developer)</h3>
+          <p>Executes implementation plans step by step. Writes code, runs tests, commits. Uses Sonnet for speed.</p>
+          <div class="highlight-pattern">git commit, test, verify</div>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">&#x1F50D;</div>
+          <h3>Reviewer (Quality Gate)</h3>
+          <p>Reviews every PR against the plan. Blocks merges that miss requirements. Uses Sonnet for thorough analysis.</p>
+          <div class="highlight-pattern">review, approve, block</div>
+        </div>
+      </div>
     </div>
-  </div>
-</footer>
+  </section>
 
-<script>
-// Scroll reveal — elements are visible by default (CSS), JS adds animation class
-const reveals = document.querySelectorAll('.reveal');
-// First, add animate-ready to hide elements that will be animated
-reveals.forEach(el => el.classList.add('animate-ready'));
-// Then observe them to reveal on scroll
-const observer = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting) {
-      entry.target.classList.add('visible');
-    }
-  });
-}, { threshold: 0.05, rootMargin: '0px 0px -20px 0px' });
-reveals.forEach(el => observer.observe(el));
+  <!-- Features Section -->
+  <section id="features" class="features">
+    <div class="container">
+      <h2 class="section-title">Why Apra Fleet?</h2>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F310;</div>
+          <h3>Cross-Platform Fleet</h3>
+          <p>Windows, macOS, Linux. Local members + remote via SSH. Mix and match your infrastructure.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F9E0;</div>
+          <h3>Smart Model Routing</h3>
+          <p>Opus for planning, Sonnet for coding, Haiku for status checks. The right model for each task.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F500;</div>
+          <h3>Git as Transport</h3>
+          <p>Everything flows through git. No proprietary sync protocol. Standard branches and PRs.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F6E1;&#xFE0F;</div>
+          <h3>Crash Recovery</h3>
+          <p>/pm recover inspects git state and resumes from last checkpoint. Nothing is lost.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x2601;&#xFE0F;</div>
+          <h3>Cloud Compute</h3>
+          <p>AWS EC2 auto start/stop. GPU-aware idle detection. Pay only when building.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x2705;</div>
+          <h3>Mandatory Review Gates</h3>
+          <p>No reviewer approval = no merge. Every change gets verified against the plan.</p>
+        </div>
+      </div>
+    </div>
+  </section>
 
-// Nav scroll effect
-const nav = document.getElementById('nav');
-window.addEventListener('scroll', () => {
-  nav.classList.toggle('scrolled', window.scrollY > 50);
-}, { passive: true });
+  <!-- How It Works -->
+  <section id="how-it-works" class="quick-start">
+    <div class="container">
+      <h2 class="section-title">Get Running in 3 Steps</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h3>Download &amp; Register</h3>
+          <p>Download from GitHub Releases. Register fleet members with <code>/pm register</code>.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h3>Plan</h3>
+          <p>Use <code>/pm plan</code> to generate implementation plans from GitHub issues.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h3>Execute</h3>
+          <p><code>/pm start</code> kicks off the doer-reviewer execution loop. Watch it build.</p>
+        </div>
+      </div>
+      <div class="quick-start-cta">
+        <a href="https://github.com/Apra-Labs/apra-fleet/releases" target="_blank" class="btn-large">Download Latest Release</a>
+      </div>
+    </div>
+  </section>
 
-// Mobile menu
-const hamburger = document.getElementById('hamburger');
-const navLinks = document.getElementById('navLinks');
-hamburger.addEventListener('click', () => {
-  const isOpen = navLinks.classList.toggle('open');
-  hamburger.setAttribute('aria-expanded', isOpen);
-});
-// Close mobile menu on link click
-navLinks.querySelectorAll('a').forEach(link => {
-  link.addEventListener('click', () => navLinks.classList.remove('open'));
-});
+  <!-- How Fleet Compares -->
+  <section id="compare" class="providers">
+    <div class="container">
+      <h2 class="section-title">How Fleet Compares</h2>
+      <div class="provider-grid">
+        <div class="provider-card">
+          <div class="provider-name">Better Autocomplete</div>
+          <div class="provider-desc">Cursor, Copilot</div>
+          <div class="provider-tag">Missing: organization, scale</div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-name">Autonomous Task Runner</div>
+          <div class="provider-desc">Devin, Codex</div>
+          <div class="provider-tag">Missing: your infrastructure</div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-name">Multi-Agent Framework</div>
+          <div class="provider-desc">CrewAI, AutoGen</div>
+          <div class="provider-tag">Missing: working system</div>
+        </div>
+        <div class="provider-card">
+          <div class="provider-name">AI-Native Engineering Org</div>
+          <div class="provider-desc">Apra Fleet</div>
+          <div class="provider-tag best">The complete picture</div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-// Add aria-hidden to decorative emoji icons
-document.querySelectorAll('.problem-icon, .agent-icon, .feature-icon').forEach(el => {
-  el.setAttribute('aria-hidden', 'true');
-});
+  <!-- Real Stories -->
+  <section id="stories" class="documentation">
+    <div class="container">
+      <h2 class="section-title">Real Stories</h2>
+      <div class="docs-grid">
+        <div class="doc-card">
+          <h3>The Weekend Rewrite</h3>
+          <p>CTO demands auth system migration by Monday. Fleet plans, builds, and ships the rewrite overnight. 3 doers, 2 reviewers, zero humans coding.</p>
+        </div>
+        <div class="doc-card">
+          <h3>The Solo Founder</h3>
+          <p>200-item backlog, one person. Ships 5 features per week writing zero code. PM plans each sprint, doers execute, reviewers verify.</p>
+        </div>
+        <div class="doc-card">
+          <h3>The 3am Recovery</h3>
+          <p>Production PM crashes mid-sprint. <code>/pm recover</code> inspects git state, finds last checkpoint, resumes all in-flight work. Nothing lost.</p>
+        </div>
+      </div>
+    </div>
+  </section>
 
-// Smooth scroll for anchor links
-document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-  anchor.addEventListener('click', function(e) {
-    e.preventDefault();
-    const target = document.querySelector(this.getAttribute('href'));
-    if (target) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  });
-});
-</script>
+  <!-- Running in Production -->
+  <section id="production" class="feedback">
+    <div class="container">
+      <h2 class="section-title">Running in Production</h2>
+      <div class="feedback-grid">
+        <div class="feedback-card">
+          <h3>4</h3>
+          <p>Engineers</p>
+        </div>
+        <div class="feedback-card">
+          <h3>3</h3>
+          <p>Organizations</p>
+        </div>
+        <div class="feedback-card">
+          <h3>20+</h3>
+          <p>Sprints</p>
+        </div>
+        <div class="feedback-card">
+          <h3>100+</h3>
+          <p>Items Shipped</p>
+        </div>
+      </div>
+      <p class="production-note">Battle-tested across C++, Node.js, Python, ML Pipelines, and Video Processing projects</p>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-content">
+        <div class="footer-brand">
+          <h3>Apra Fleet</h3>
+          <p>Built by <a href="https://www.apralabs.com" target="_blank">Apra Labs</a></p>
+          <p class="footer-tagline">Your AI engineering organization, on your infrastructure</p>
+        </div>
+        <div class="footer-links">
+          <div class="footer-column">
+            <h4>Product</h4>
+            <a href="#features">Features</a>
+            <a href="#architecture">How It Works</a>
+            <a href="#compare">Compare</a>
+          </div>
+          <div class="footer-column">
+            <h4>Resources</h4>
+            <a href="https://github.com/Apra-Labs/apra-fleet" target="_blank">GitHub</a>
+            <a href="https://github.com/Apra-Labs/apra-fleet#readme" target="_blank">Documentation</a>
+            <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank">License (CC BY-SA 3.0)</a>
+          </div>
+          <div class="footer-column">
+            <h4>Community</h4>
+            <a href="https://github.com/Apra-Labs/apra-fleet/issues" target="_blank">GitHub Issues</a>
+            <a href="https://www.apralabs.com" target="_blank">Apra Labs</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2026 <a href="https://www.apralabs.com" target="_blank">Apra Labs</a>. Licensed under <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank">CC BY-SA 3.0</a>.</p>
+      </div>
+    </div>
+  </footer>
 </body>
 </html>
