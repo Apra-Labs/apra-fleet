@@ -1,0 +1,1404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apra Fleet — Your AI Engineering Organization</title>
+<meta name="description" content="Transforms AI coding agents into a managed engineering team — with a PM that plans, doers that build, and reviewers that verify. On your machines, with your process.">
+<style>
+/* ===== RESET & BASE ===== */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #0a0f1c;
+  color: #e2e8f0;
+  line-height: 1.6;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+a { color: #94BA33; text-decoration: none; transition: color 0.2s; }
+a:hover { color: #b5d94e; }
+img { max-width: 100%; display: block; }
+
+/* ===== UTILITY ===== */
+.container { max-width: 1200px; margin: 0 auto; padding: 0 2rem; }
+.section { padding: 7rem 0; }
+.section-label {
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #94BA33;
+  margin-bottom: 1rem;
+}
+.section-title {
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 800;
+  line-height: 1.15;
+  color: #fff;
+  margin-bottom: 1.5rem;
+}
+.section-subtitle {
+  font-size: 1.15rem;
+  color: #94a3b8;
+  max-width: 640px;
+  line-height: 1.7;
+}
+
+/* ===== ANIMATIONS ===== */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes gradientShift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes typing {
+  from { width: 0; }
+  to { width: 100%; }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+.reveal {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.reveal-delay-1 { transition-delay: 0.1s; }
+.reveal-delay-2 { transition-delay: 0.2s; }
+.reveal-delay-3 { transition-delay: 0.3s; }
+.reveal-delay-4 { transition-delay: 0.4s; }
+.reveal-delay-5 { transition-delay: 0.5s; }
+
+/* ===== NAV ===== */
+nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  padding: 1rem 0;
+  transition: background 0.3s, box-shadow 0.3s, padding 0.3s;
+}
+nav.scrolled {
+  background: rgba(10, 15, 28, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 1px 0 rgba(148, 186, 51, 0.1);
+  padding: 0.6rem 0;
+}
+nav .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.nav-logo {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.nav-logo .logo-icon {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #94BA33, #6d8c26);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 900;
+  color: #0a0f1c;
+}
+.nav-links { display: flex; align-items: center; gap: 2rem; }
+.nav-links a {
+  color: #94a3b8;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+.nav-links a:hover { color: #fff; }
+.nav-cta {
+  background: linear-gradient(135deg, #94BA33, #6d8c26);
+  color: #0a0f1c !important;
+  padding: 0.5rem 1.2rem;
+  border-radius: 8px;
+  font-weight: 700 !important;
+  font-size: 0.85rem !important;
+  transition: transform 0.2s, box-shadow 0.2s !important;
+}
+.nav-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(148, 186, 51, 0.3);
+  color: #0a0f1c !important;
+}
+.nav-hamburger {
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 4px;
+}
+.nav-hamburger span {
+  width: 24px;
+  height: 2px;
+  background: #e2e8f0;
+  border-radius: 2px;
+  transition: transform 0.3s, opacity 0.3s;
+}
+
+/* ===== HERO ===== */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  padding: 8rem 0 6rem;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(ellipse at 30% 20%, rgba(148, 186, 51, 0.08) 0%, transparent 50%),
+              radial-gradient(ellipse at 70% 80%, rgba(109, 140, 38, 0.05) 0%, transparent 50%);
+  animation: gradientShift 15s ease infinite;
+  background-size: 200% 200%;
+}
+.hero .container { position: relative; z-index: 1; }
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(148, 186, 51, 0.1);
+  border: 1px solid rgba(148, 186, 51, 0.2);
+  padding: 0.4rem 1rem;
+  border-radius: 100px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #94BA33;
+  margin-bottom: 2rem;
+  animation: fadeInUp 0.8s ease;
+}
+.hero-badge .dot {
+  width: 6px;
+  height: 6px;
+  background: #94BA33;
+  border-radius: 50%;
+  animation: pulse 2s ease infinite;
+}
+.hero-logo {
+  font-size: clamp(3rem, 7vw, 5rem);
+  font-weight: 900;
+  color: #fff;
+  line-height: 1.05;
+  margin-bottom: 0.5rem;
+  animation: fadeInUp 0.8s ease 0.1s both;
+}
+.hero-logo .green { color: #94BA33; }
+.hero-byline {
+  font-size: 1rem;
+  color: #64748b;
+  font-weight: 500;
+  margin-bottom: 2rem;
+  animation: fadeInUp 0.8s ease 0.2s both;
+}
+.hero-headline {
+  font-size: clamp(1.5rem, 3.5vw, 2.5rem);
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 1.5rem;
+  animation: fadeInUp 0.8s ease 0.3s both;
+}
+.hero-sub {
+  font-size: 1.2rem;
+  color: #94a3b8;
+  max-width: 680px;
+  line-height: 1.8;
+  margin-bottom: 3rem;
+  animation: fadeInUp 0.8s ease 0.4s both;
+}
+.hero-stats {
+  display: flex;
+  gap: 3rem;
+  margin-bottom: 3rem;
+  animation: fadeInUp 0.8s ease 0.5s both;
+}
+.hero-stat .number {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #94BA33;
+}
+.hero-stat .label {
+  font-size: 0.85rem;
+  color: #64748b;
+  font-weight: 500;
+}
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  animation: fadeInUp 0.8s ease 0.6s both;
+}
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, #94BA33, #6d8c26);
+  color: #0a0f1c;
+  padding: 0.9rem 2rem;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 1rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+  border: none;
+  cursor: pointer;
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(148, 186, 51, 0.3);
+  color: #0a0f1c;
+}
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e2e8f0;
+  padding: 0.9rem 2rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.2s;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+/* Grid pattern behind hero */
+.hero-grid {
+  position: absolute;
+  top: 0;
+  right: -10%;
+  width: 60%;
+  height: 100%;
+  opacity: 0.03;
+  background-image:
+    linear-gradient(rgba(148, 186, 51, 1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 186, 51, 1) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+
+/* ===== PROBLEM ===== */
+.problem { background: #0d1220; }
+.problem-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+  margin-top: 3rem;
+}
+.problem-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 2.5rem 2rem;
+  transition: transform 0.3s, border-color 0.3s;
+}
+.problem-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(148, 186, 51, 0.2);
+}
+.problem-icon {
+  width: 48px;
+  height: 48px;
+  background: rgba(148, 186, 51, 0.1);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.problem-card h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 0.75rem;
+}
+.problem-card p {
+  font-size: 0.95rem;
+  color: #94a3b8;
+  line-height: 1.7;
+}
+
+/* ===== 11PM STORY ===== */
+.story-section {
+  position: relative;
+  padding: 8rem 0;
+  background: linear-gradient(180deg, #0a0f1c 0%, #0f1629 50%, #0a0f1c 100%);
+}
+.story-block {
+  max-width: 800px;
+  margin: 0 auto;
+  text-align: center;
+  position: relative;
+}
+.story-time {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  font-size: 0.85rem;
+  color: #94BA33;
+  font-weight: 600;
+  letter-spacing: 2px;
+  margin-bottom: 1rem;
+}
+.story-headline {
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.3;
+  margin-bottom: 2rem;
+}
+.story-headline .highlight {
+  background: linear-gradient(135deg, #94BA33, #b5d94e);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.story-divider {
+  width: 60px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #94BA33, transparent);
+  margin: 2rem auto;
+}
+.story-punchline {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  font-style: italic;
+}
+.story-glow {
+  position: absolute;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(148, 186, 51, 0.08) 0%, transparent 70%);
+  border-radius: 50%;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* ===== HOW IT WORKS ===== */
+.how-it-works { background: #0a0f1c; }
+.agents-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+  margin-top: 3rem;
+}
+.agent-card {
+  background: linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 20px;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  position: relative;
+  transition: transform 0.3s, border-color 0.3s;
+}
+.agent-card:hover {
+  transform: translateY(-6px);
+  border-color: rgba(148, 186, 51, 0.3);
+}
+.agent-icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 1.5rem;
+  background: rgba(148, 186, 51, 0.1);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.8rem;
+}
+.agent-card h3 {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: #fff;
+  margin-bottom: 0.75rem;
+}
+.agent-card .agent-role {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #94BA33;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 1rem;
+}
+.agent-card p {
+  font-size: 0.95rem;
+  color: #94a3b8;
+  line-height: 1.7;
+}
+.flow-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 3rem;
+  flex-wrap: wrap;
+}
+.flow-step {
+  background: rgba(148, 186, 51, 0.1);
+  border: 1px solid rgba(148, 186, 51, 0.2);
+  padding: 0.6rem 1.4rem;
+  border-radius: 100px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #94BA33;
+}
+.flow-arrow {
+  color: #334155;
+  font-size: 1.2rem;
+}
+.flow-emphasis {
+  text-align: center;
+  margin-top: 2rem;
+  font-size: 1.1rem;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* ===== COMMAND CENTER ===== */
+.command-center { background: #0d1220; }
+.terminal {
+  max-width: 750px;
+  margin: 3rem auto 0;
+  background: #0c1017;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.4);
+}
+.terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1rem 1.5rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.terminal-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.terminal-dot.red { background: #ff5f57; }
+.terminal-dot.yellow { background: #ffbd2e; }
+.terminal-dot.green { background: #28c840; }
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  font-size: 0.8rem;
+  color: #64748b;
+  font-weight: 500;
+}
+.terminal-body {
+  padding: 2rem;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 2;
+}
+.terminal-line {
+  display: flex;
+  flex-wrap: wrap;
+}
+.terminal-prompt { color: #94BA33; margin-right: 0.5rem; white-space: nowrap; }
+.terminal-cmd { color: #e2e8f0; margin-right: 1rem; white-space: nowrap; }
+.terminal-result { color: #64748b; }
+.terminal-result .success { color: #28c840; }
+.terminal-tagline {
+  text-align: center;
+  margin-top: 2rem;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #fff;
+}
+.terminal-tagline .green { color: #94BA33; }
+
+/* ===== FEATURES ===== */
+.features { background: #0a0f1c; }
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+  margin-top: 3rem;
+}
+.feature-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 2rem;
+  transition: all 0.3s;
+  position: relative;
+  overflow: hidden;
+}
+.feature-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #94BA33, transparent);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.feature-card:hover::before { opacity: 1; }
+.feature-card:hover {
+  border-color: rgba(148, 186, 51, 0.15);
+  transform: translateY(-3px);
+}
+.feature-icon {
+  font-size: 1.5rem;
+  margin-bottom: 1rem;
+}
+.feature-card h3 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 0.5rem;
+}
+.feature-card p {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  line-height: 1.7;
+}
+
+/* ===== STORIES ===== */
+.stories { background: #0d1220; }
+.stories-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+  margin-top: 3rem;
+}
+.story-card {
+  background: linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 20px;
+  padding: 2.5rem 2rem;
+  position: relative;
+}
+.story-card::before {
+  content: '\201C';
+  font-size: 4rem;
+  color: rgba(148, 186, 51, 0.15);
+  position: absolute;
+  top: 1rem;
+  left: 1.5rem;
+  line-height: 1;
+  font-family: Georgia, serif;
+}
+.story-card-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 1rem;
+  padding-top: 1rem;
+}
+.story-card p {
+  font-size: 0.95rem;
+  color: #94a3b8;
+  line-height: 1.7;
+  margin-bottom: 1.5rem;
+}
+.story-card .quote {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #94BA33;
+  font-style: italic;
+  border-left: 2px solid rgba(148, 186, 51, 0.3);
+  padding-left: 1rem;
+}
+
+/* ===== COMPETITIVE ===== */
+.competitive { background: #0a0f1c; }
+.comparison-table {
+  margin-top: 3rem;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.comparison-table th,
+.comparison-table td {
+  padding: 1.2rem 1.5rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.comparison-table th {
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #94a3b8;
+  font-weight: 600;
+}
+.comparison-table td {
+  font-size: 0.95rem;
+  color: #cbd5e1;
+  vertical-align: top;
+}
+.comparison-table tr:last-child td { border-bottom: none; }
+.comparison-table .category { font-weight: 700; color: #fff; min-width: 180px; }
+.comparison-table .tools { color: #64748b; font-size: 0.85rem; }
+.comparison-table .missing { color: #ef4444; font-size: 0.85rem; }
+.comparison-table .highlight-row {
+  background: rgba(148, 186, 51, 0.05);
+}
+.comparison-table .highlight-row .category { color: #94BA33; }
+.comparison-table .complete { color: #94BA33; font-weight: 600; font-size: 0.85rem; }
+.comparison-quote {
+  text-align: center;
+  margin-top: 2.5rem;
+  font-size: 1.1rem;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* ===== OPEN STANDARDS ===== */
+.standards { background: #0d1220; }
+.standards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 2rem;
+  margin-top: 3rem;
+}
+.standard-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 2rem;
+}
+.standard-card h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 0.5rem;
+}
+.standard-card .org {
+  font-size: 0.8rem;
+  color: #94BA33;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+.standard-card p {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  line-height: 1.7;
+}
+.standards-compat {
+  margin-top: 2.5rem;
+  text-align: center;
+}
+.compat-badges {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+.compat-badge {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.5rem 1.2rem;
+  border-radius: 100px;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  font-weight: 500;
+}
+
+/* ===== PRODUCTION NUMBERS ===== */
+.numbers { background: #0a0f1c; }
+.numbers-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 2rem;
+  margin-top: 3rem;
+}
+.number-card {
+  text-align: center;
+  padding: 2rem 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+}
+.number-card .value {
+  font-size: 2.5rem;
+  font-weight: 800;
+  color: #94BA33;
+  line-height: 1;
+  margin-bottom: 0.5rem;
+}
+.number-card .desc {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+.numbers-quote {
+  text-align: center;
+  margin-top: 3rem;
+  font-size: 1.1rem;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* ===== GETTING STARTED ===== */
+.getting-started { background: #0d1220; }
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+  margin-top: 3rem;
+}
+.step {
+  position: relative;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 2.5rem 2rem;
+}
+.step-number {
+  position: absolute;
+  top: -16px;
+  left: 2rem;
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, #94BA33, #6d8c26);
+  color: #0a0f1c;
+  font-weight: 800;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+.step h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 0.75rem;
+}
+.step code {
+  display: block;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  font-size: 0.8rem;
+  color: #94BA33;
+  margin-top: 0.5rem;
+  overflow-x: auto;
+}
+.step p {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  line-height: 1.7;
+}
+
+/* ===== FOOTER ===== */
+footer {
+  background: #080c18;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  padding: 4rem 0 2rem;
+}
+.footer-content {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 3rem;
+  margin-bottom: 3rem;
+}
+.footer-brand h3 {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: #fff;
+  margin-bottom: 0.75rem;
+}
+.footer-brand p {
+  font-size: 0.9rem;
+  color: #64748b;
+  line-height: 1.7;
+  max-width: 350px;
+}
+.footer-links h4 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #94a3b8;
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+.footer-links a {
+  display: block;
+  color: #64748b;
+  font-size: 0.9rem;
+  padding: 0.3rem 0;
+  transition: color 0.2s;
+}
+.footer-links a:hover { color: #94BA33; }
+.footer-bottom {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  padding-top: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: #475569;
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 1024px) {
+  .numbers-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 768px) {
+  .nav-links { display: none; }
+  .nav-links.open {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: rgba(10, 15, 28, 0.98);
+    backdrop-filter: blur(20px);
+    padding: 1.5rem 2rem;
+    gap: 1rem;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .nav-hamburger { display: flex; }
+  .hero-stats { flex-direction: column; gap: 1.5rem; }
+  .problem-cards,
+  .agents-grid,
+  .features-grid,
+  .stories-grid,
+  .standards-grid,
+  .steps { grid-template-columns: 1fr; }
+  .numbers-grid { grid-template-columns: repeat(2, 1fr); }
+  .comparison-table { font-size: 0.85rem; display: block; overflow-x: auto; }
+  .comparison-table th, .comparison-table td { padding: 0.8rem 1rem; }
+  .footer-content { grid-template-columns: 1fr; gap: 2rem; }
+  .footer-bottom { flex-direction: column; gap: 0.5rem; text-align: center; }
+  .flow-diagram { gap: 0.5rem; }
+  .section { padding: 5rem 0; }
+}
+@media (max-width: 480px) {
+  .container { padding: 0 1.25rem; }
+  .hero { padding: 6rem 0 4rem; }
+  .hero-logo { font-size: 2.5rem; }
+  .numbers-grid { grid-template-columns: 1fr; }
+  .hero-actions { flex-direction: column; }
+  .btn-primary, .btn-secondary { width: 100%; justify-content: center; }
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="container">
+    <a href="#" class="nav-logo">
+      <span class="logo-icon">AF</span>
+      Apra Fleet
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="#problem">Problem</a>
+      <a href="#how-it-works">How It Works</a>
+      <a href="#features">Features</a>
+      <a href="#competitive">Compare</a>
+      <a href="#getting-started">Get Started</a>
+      <a href="https://github.com/AkBo24/apra-fleet" class="nav-cta">GitHub</a>
+    </div>
+    <button class="nav-hamburger" id="hamburger" aria-label="Toggle menu">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero" id="hero">
+  <div class="hero-grid"></div>
+  <div class="container">
+    <div class="hero-badge"><span class="dot"></span> Now in Production</div>
+    <h1 class="hero-logo">Apra <span class="green">Fleet</span></h1>
+    <p class="hero-byline">by Apra Labs</p>
+    <h2 class="hero-headline">Your AI Engineering Organization</h2>
+    <p class="hero-sub">Transforms AI coding agents into a managed engineering team &mdash; with a PM that plans, doers that build, and reviewers that verify. On your machines, with your process.</p>
+    <div class="hero-stats">
+      <div class="hero-stat">
+        <div class="number">3</div>
+        <div class="label">Agent Roles</div>
+      </div>
+      <div class="hero-stat">
+        <div class="number">5+</div>
+        <div class="label">Active Projects</div>
+      </div>
+      <div class="hero-stat">
+        <div class="number">100%</div>
+        <div class="label">Your Infrastructure</div>
+      </div>
+    </div>
+    <div class="hero-actions">
+      <a href="#getting-started" class="btn-primary">Get Started &rarr;</a>
+      <a href="https://github.com/AkBo24/apra-fleet" class="btn-secondary">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.387.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.387-1.333-1.756-1.333-1.756-1.09-.745.083-.73.083-.73 1.205.085 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section class="section problem" id="problem">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">The Problem</span>
+      <h2 class="section-title">Your Best Engineers Are Doing<br>Their Worst Work</h2>
+      <p class="section-subtitle">Senior engineers spend 70% of their time on zero-judgment tasks. Code reviews that take days. Sprints that slip. The problem isn't talent &mdash; it's that humans don't scale.</p>
+    </div>
+    <div class="problem-cards">
+      <div class="problem-card reveal reveal-delay-1">
+        <div class="problem-icon">&#9200;</div>
+        <h3>Review Bottlenecks</h3>
+        <p>PRs sit for days waiting for review. Context switches kill momentum. Your fastest engineers become your biggest bottleneck.</p>
+      </div>
+      <div class="problem-card reveal reveal-delay-2">
+        <div class="problem-icon">&#128200;</div>
+        <h3>Sprint Slippage</h3>
+        <p>Estimates are fiction. Scope creep is reality. By mid-sprint, the plan is already a memory and the backlog keeps growing.</p>
+      </div>
+      <div class="problem-card reveal reveal-delay-3">
+        <div class="problem-icon">&#128337;</div>
+        <h3>Talent Misallocation</h3>
+        <p>Your $200k/year architects are writing boilerplate, resolving merge conflicts, and sitting in standups. The math doesn't work.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 11PM STORY -->
+<section class="story-section" id="story">
+  <div class="story-glow"></div>
+  <div class="container">
+    <div class="story-block reveal">
+      <div class="story-time">11:00 PM</div>
+      <h2 class="story-headline">You paste requirements into the terminal.<br>
+        <span class="highlight">7:00 AM: A reviewed, tested PR is waiting.</span></h2>
+      <div class="story-divider"></div>
+      <p class="story-punchline">This is not a demo. This is a Tuesday.</p>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="section how-it-works" id="how-it-works">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">Architecture</span>
+      <h2 class="section-title">Three Roles. One Organization.</h2>
+      <p class="section-subtitle">Fleet doesn't give you one smarter agent. It gives you the structure that makes engineering teams effective.</p>
+    </div>
+    <div class="agents-grid">
+      <div class="agent-card reveal reveal-delay-1">
+        <div class="agent-icon">&#129504;</div>
+        <div class="agent-role">Strategist</div>
+        <h3>PM Agent</h3>
+        <p>Plans work, tracks progress, never writes code. Uses Opus for architecture decisions, Haiku for status checks. Knows when to think big and when to move fast.</p>
+      </div>
+      <div class="agent-card reveal reveal-delay-2">
+        <div class="agent-icon">&#128296;</div>
+        <div class="agent-role">Builder</div>
+        <h3>Doer Agents</h3>
+        <p>Execute on your machines &mdash; Windows, macOS, Linux. Commit, push, hit checkpoints. Follow the plan exactly. No improvisation, no drift.</p>
+      </div>
+      <div class="agent-card reveal reveal-delay-3">
+        <div class="agent-icon">&#128737;</div>
+        <div class="agent-role">Gatekeeper</div>
+        <h3>Reviewer Agents</h3>
+        <p>Independent verification with fresh context every review. No approval means no merge. Quality is structural, not aspirational.</p>
+      </div>
+    </div>
+    <div class="flow-diagram reveal reveal-delay-4">
+      <span class="flow-step">PM Plans</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-step">Doer Builds</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-step">Reviewer Verifies</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-step">PM Deploys</span>
+    </div>
+    <p class="flow-emphasis reveal reveal-delay-5">The doer-reviewer pattern is the architecture &mdash; not a feature.</p>
+  </div>
+</section>
+
+<!-- COMMAND CENTER -->
+<section class="section command-center" id="command-center">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">Control</span>
+      <h2 class="section-title">The Command Center</h2>
+      <p class="section-subtitle">Everything runs from your terminal. One interface to manage an entire engineering organization.</p>
+    </div>
+    <div class="terminal reveal reveal-delay-1">
+      <div class="terminal-header">
+        <span class="terminal-dot red"></span>
+        <span class="terminal-dot yellow"></span>
+        <span class="terminal-dot green"></span>
+        <span class="terminal-title">apra-fleet &mdash; command center</span>
+      </div>
+      <div class="terminal-body">
+        <div class="terminal-line">
+          <span class="terminal-prompt">$</span>
+          <span class="terminal-cmd">/pm status fleet</span>
+          <span class="terminal-result">&rarr; 7/7 online, all idle</span>
+        </div>
+        <div class="terminal-line">
+          <span class="terminal-prompt">$</span>
+          <span class="terminal-cmd">/pm plan #67</span>
+          <span class="terminal-result">&rarr; Requirements &rarr; Plan &rarr; Review &rarr; <span class="success">Approved</span></span>
+        </div>
+        <div class="terminal-line">
+          <span class="terminal-prompt">$</span>
+          <span class="terminal-cmd">/pm start dev1 plan</span>
+          <span class="terminal-result">&rarr; Executing Phase 1... <span class="success">VERIFY-1 checkpoint &#10003;</span></span>
+        </div>
+        <div class="terminal-line">
+          <span class="terminal-prompt">$</span>
+          <span class="terminal-cmd">/pm deploy dev1</span>
+          <span class="terminal-result">&rarr; Health check: <span class="success">ok &#10003;</span></span>
+        </div>
+      </div>
+    </div>
+    <p class="terminal-tagline reveal reveal-delay-2">50 repos. One terminal. <span class="green">Agents as your minions.</span></p>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="section features" id="features">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">Capabilities</span>
+      <h2 class="section-title">Built for Real Engineering</h2>
+      <p class="section-subtitle">Not a prototype. Not a framework. A working system deployed on production infrastructure.</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon">&#127760;</div>
+        <h3>Cross-Platform Fleet</h3>
+        <p>Windows, macOS, Linux. Local and remote via SSH. Mix and match hardware across your entire engineering org.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon">&#129504;</div>
+        <h3>Smart Model Routing</h3>
+        <p>Opus for planning, Sonnet for coding, Haiku for status. The right model for the right job &mdash; automatically.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-3">
+        <div class="feature-icon">&#128268;</div>
+        <h3>Git as Transport</h3>
+        <p>No proprietary sync. Everything flows through git. Doers commit, reviewers commit, PM orchestrates. You own the history.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon">&#128161;</div>
+        <h3>Crash Recovery</h3>
+        <p>PM dies? <code>/pm recover</code> inspects git state and resumes. Your work survives anything because git survives anything.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon">&#9729;&#65039;</div>
+        <h3>Cloud Compute</h3>
+        <p>AWS EC2 auto start/stop. GPU-aware idle detection. Agents that provision their own infrastructure when they need it.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-3">
+        <div class="feature-icon">&#128274;</div>
+        <h3>Mandatory Review Gates</h3>
+        <p>No reviewer approval means no merge. No exceptions. Quality is structural, enforced at every step of the pipeline.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STORIES -->
+<section class="section stories" id="stories">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">In Practice</span>
+      <h2 class="section-title">Stories from the Fleet</h2>
+    </div>
+    <div class="stories-grid">
+      <div class="story-card reveal reveal-delay-1">
+        <h3 class="story-card-title">The Weekend Rewrite</h3>
+        <p>CTO demands the auth migration by Monday. Fleet ships it overnight &mdash; planned, built, reviewed, and merged before sunrise.</p>
+        <div class="quote">"That's not work-life balance. That's leverage."</div>
+      </div>
+      <div class="story-card reveal reveal-delay-2">
+        <h3 class="story-card-title">The Solo Founder</h3>
+        <p>200-item backlog. Ships 5 features per week writing zero lines of code. Requirements in, tested PRs out.</p>
+        <div class="quote">"You're a founder with an engineering department."</div>
+      </div>
+      <div class="story-card reveal reveal-delay-3">
+        <h3 class="story-card-title">The 3am Recovery</h3>
+        <p>PM crashes mid-sprint. <code>/pm recover</code> inspects git state, reconstructs progress, and resumes execution. Zero work lost.</p>
+        <div class="quote">"Other tools give you speed. Fleet gives you resilience."</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPETITIVE POSITIONING -->
+<section class="section competitive" id="competitive">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">Landscape</span>
+      <h2 class="section-title">Not Another AI Coding Tool</h2>
+      <p class="section-subtitle">The market is full of tools that help developers type faster. Fleet solves a different problem entirely.</p>
+    </div>
+    <div class="reveal reveal-delay-1">
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Tools</th>
+            <th>What's Missing</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="category">Better Autocomplete</td>
+            <td class="tools">Cursor, Copilot, Windsurf</td>
+            <td class="missing">Organization, process, scale</td>
+          </tr>
+          <tr>
+            <td class="category">Autonomous Task Runner</td>
+            <td class="tools">Devin, Codex</td>
+            <td class="missing">Your infrastructure, your process</td>
+          </tr>
+          <tr>
+            <td class="category">Multi-Agent Framework</td>
+            <td class="tools">CrewAI, AutoGen</td>
+            <td class="missing">Working system, git workflows</td>
+          </tr>
+          <tr class="highlight-row">
+            <td class="category">AI-Native Engineering Org</td>
+            <td class="tools">Apra Fleet</td>
+            <td class="complete">The complete picture &#10003;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="comparison-quote reveal reveal-delay-2">Other tools augment a developer. Fleet replaces the coordination overhead.</p>
+  </div>
+</section>
+
+<!-- OPEN STANDARDS -->
+<section class="section standards" id="standards">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">Foundation</span>
+      <h2 class="section-title">Built on Open Standards</h2>
+      <p class="section-subtitle">We didn't invent a proprietary ecosystem. We built on the ones winning.</p>
+    </div>
+    <div class="standards-grid">
+      <div class="standard-card reveal reveal-delay-1">
+        <h3>Model Context Protocol (MCP)</h3>
+        <div class="org">Anthropic &mdash; Open Standard</div>
+        <p>Fleet's entire tool surface is exposed as MCP tools. Any MCP-compatible client can integrate with your fleet.</p>
+      </div>
+      <div class="standard-card reveal reveal-delay-2">
+        <h3>Agent Skills</h3>
+        <div class="org">Linux Foundation AAIF &mdash; agentskills.io</div>
+        <p>The PM skill follows the Agent Skills specification. Portable, composable, and backed by a foundation &mdash; not a startup.</p>
+      </div>
+    </div>
+    <div class="standards-compat reveal reveal-delay-3">
+      <p style="color: #94a3b8; font-size: 0.95rem;">Works with the tools you already use</p>
+      <div class="compat-badges">
+        <span class="compat-badge">Claude Code</span>
+        <span class="compat-badge">GitHub Copilot</span>
+        <span class="compat-badge">OpenAI Codex</span>
+        <span class="compat-badge">Cursor</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRODUCTION NUMBERS -->
+<section class="section numbers" id="numbers">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">Production</span>
+      <h2 class="section-title">Real Numbers. Real Work.</h2>
+    </div>
+    <div class="numbers-grid">
+      <div class="number-card reveal reveal-delay-1">
+        <div class="value">4</div>
+        <div class="desc">Users across<br>3 organizations</div>
+      </div>
+      <div class="number-card reveal reveal-delay-2">
+        <div class="value">5+</div>
+        <div class="desc">Active<br>projects</div>
+      </div>
+      <div class="number-card reveal reveal-delay-3">
+        <div class="value">20+</div>
+        <div class="desc">Sprints<br>completed</div>
+      </div>
+      <div class="number-card reveal reveal-delay-4">
+        <div class="value">100+</div>
+        <div class="desc">Backlog items<br>shipped</div>
+      </div>
+      <div class="number-card reveal reveal-delay-5">
+        <div class="value">7</div>
+        <div class="desc">Fleet members<br>Win/Mac/Linux</div>
+      </div>
+    </div>
+    <p class="numbers-quote reveal">This runs in production. Every day. On real projects.</p>
+  </div>
+</section>
+
+<!-- GETTING STARTED -->
+<section class="section getting-started" id="getting-started">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">Quick Start</span>
+      <h2 class="section-title">Up and Running in Minutes</h2>
+      <p class="section-subtitle">Three steps from zero to a managed engineering fleet.</p>
+    </div>
+    <div class="steps">
+      <div class="step reveal reveal-delay-1">
+        <div class="step-number">1</div>
+        <h3>Install</h3>
+        <p>Install from npm or grab a release from GitHub.</p>
+        <code>npm install -g apra-fleet</code>
+      </div>
+      <div class="step reveal reveal-delay-2">
+        <div class="step-number">2</div>
+        <h3>Register Members</h3>
+        <p>Add machines to your fleet &mdash; local or remote via SSH.</p>
+        <code>register_member name=dev1 host=192.168.1.10</code>
+      </div>
+      <div class="step reveal reveal-delay-3">
+        <div class="step-number">3</div>
+        <h3>Start Managing</h3>
+        <p>Plan work, assign agents, and ship code.</p>
+        <code>/pm plan &rarr; /pm start &rarr; /pm deploy</code>
+      </div>
+    </div>
+    <div style="text-align: center; margin-top: 3rem;" class="reveal reveal-delay-4">
+      <a href="https://github.com/AkBo24/apra-fleet" class="btn-primary">Get Started &rarr;</a>
+      <a href="https://github.com/AkBo24/apra-fleet/blob/main/docs/user-guide.md" class="btn-secondary" style="margin-left: 1rem;">Read the Docs</a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer id="footer">
+  <div class="container">
+    <div class="footer-content">
+      <div class="footer-brand">
+        <h3>Apra Labs</h3>
+        <p>54 people. Bedford NH / Bangalore / Dubai. Over 30 years building software that ships.</p>
+      </div>
+      <div class="footer-links">
+        <h4>Product</h4>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#features">Features</a>
+        <a href="#competitive">Compare</a>
+        <a href="#getting-started">Get Started</a>
+      </div>
+      <div class="footer-links">
+        <h4>Resources</h4>
+        <a href="https://github.com/AkBo24/apra-fleet">GitHub</a>
+        <a href="https://github.com/AkBo24/apra-fleet/blob/main/docs/user-guide.md">Documentation</a>
+        <a href="https://github.com/AkBo24/apra-fleet/blob/main/LICENSE">License (CC BY-SA 3.0)</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; 2025 Apra Labs. All rights reserved.</span>
+      <span>Built with conviction, not hype.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Scroll reveal
+const reveals = document.querySelectorAll('.reveal');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+reveals.forEach(el => observer.observe(el));
+
+// Nav scroll effect
+const nav = document.getElementById('nav');
+window.addEventListener('scroll', () => {
+  nav.classList.toggle('scrolled', window.scrollY > 50);
+}, { passive: true });
+
+// Mobile menu
+const hamburger = document.getElementById('hamburger');
+const navLinks = document.getElementById('navLinks');
+hamburger.addEventListener('click', () => {
+  navLinks.classList.toggle('open');
+});
+// Close mobile menu on link click
+navLinks.querySelectorAll('a').forEach(link => {
+  link.addEventListener('click', () => navLinks.classList.remove('open'));
+});
+
+// Smooth scroll for anchor links
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+  anchor.addEventListener('click', function(e) {
+    e.preventDefault();
+    const target = document.querySelector(this.getAttribute('href'));
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
+</script>
+</body>
+</html>
