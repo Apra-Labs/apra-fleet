@@ -226,7 +226,7 @@ nav .container {
 .hero-logo .green { color: #94BA33; }
 .hero-byline {
   font-size: 1rem;
-  color: #64748b;
+  color: #94a3b8;
   font-weight: 500;
   margin-bottom: 2rem;
   animation: fadeInUp 0.8s ease 0.2s both;
@@ -259,7 +259,7 @@ nav .container {
 }
 .hero-stat .label {
   font-size: 0.85rem;
-  color: #64748b;
+  color: #94a3b8;
   font-weight: 500;
 }
 .hero-actions {
@@ -530,7 +530,7 @@ nav .container {
   flex: 1;
   text-align: center;
   font-size: 0.8rem;
-  color: #64748b;
+  color: #94a3b8;
   font-weight: 500;
 }
 .terminal-body {
@@ -545,7 +545,7 @@ nav .container {
 }
 .terminal-prompt { color: #94BA33; margin-right: 0.5rem; white-space: nowrap; }
 .terminal-cmd { color: #e2e8f0; margin-right: 1rem; white-space: nowrap; }
-.terminal-result { color: #64748b; }
+.terminal-result { color: #94a3b8; }
 .terminal-result .success { color: #28c840; }
 .terminal-tagline {
   text-align: center;
@@ -684,7 +684,7 @@ nav .container {
 }
 .comparison-table tr:last-child td { border-bottom: none; }
 .comparison-table .category { font-weight: 700; color: #fff; min-width: 180px; }
-.comparison-table .tools { color: #64748b; font-size: 0.85rem; }
+.comparison-table .tools { color: #94a3b8; font-size: 0.85rem; }
 .comparison-table .missing { color: #ef4444; font-size: 0.85rem; }
 .comparison-table .highlight-row {
   background: rgba(148, 186, 51, 0.05);
@@ -860,7 +860,7 @@ footer {
 }
 .footer-brand p {
   font-size: 0.9rem;
-  color: #64748b;
+  color: #94a3b8;
   line-height: 1.7;
   max-width: 350px;
 }
@@ -874,7 +874,7 @@ footer {
 }
 .footer-links a {
   display: block;
-  color: #64748b;
+  color: #94a3b8;
   font-size: 0.9rem;
   padding: 0.3rem 0;
   transition: color 0.2s;
@@ -888,6 +888,88 @@ footer {
   justify-content: space-between;
   font-size: 0.8rem;
   color: #475569;
+}
+
+/* ===== SKIP LINK ===== */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 1rem;
+  background: #94BA33;
+  color: #0a0f1c;
+  padding: 0.5rem 1rem;
+  border-radius: 0 0 8px 8px;
+  font-weight: 700;
+  font-size: 0.875rem;
+  z-index: 9999;
+  transition: top 0.2s;
+}
+.skip-link:focus { top: 0; color: #0a0f1c; }
+
+/* ===== LANG BADGES ===== */
+.lang-bar { background: #0a0f1c; padding: 2.5rem 0; }
+.lang-bar-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: #94a3b8;
+  font-weight: 600;
+  text-align: center;
+  margin-bottom: 1.25rem;
+}
+.lang-badges {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.lang-badge {
+  background: rgba(148, 186, 51, 0.08);
+  border: 1px solid rgba(148, 186, 51, 0.2);
+  padding: 0.4rem 1rem;
+  border-radius: 100px;
+  font-size: 0.85rem;
+  color: #94BA33;
+  font-weight: 600;
+}
+
+/* ===== WHO'S USING IT ===== */
+.users { background: #0d1220; }
+.users-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+  margin-top: 3rem;
+}
+.user-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 2rem;
+  transition: transform 0.3s, border-color 0.3s;
+}
+.user-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(148, 186, 51, 0.2);
+}
+.user-name {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 0.25rem;
+}
+.user-domain {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #94BA33;
+  margin-bottom: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.user-card p {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  line-height: 1.7;
 }
 
 /* ===== RESPONSIVE ===== */
@@ -918,6 +1000,7 @@ footer {
   .standards-grid,
   .steps { grid-template-columns: 1fr; }
   .numbers-grid { grid-template-columns: repeat(2, 1fr); }
+  .users-grid { grid-template-columns: 1fr; }
   .comparison-table { font-size: 0.85rem; display: block; overflow-x: auto; }
   .comparison-table th, .comparison-table td { padding: 0.8rem 1rem; }
   .footer-content { grid-template-columns: 1fr; gap: 2rem; }
@@ -936,6 +1019,8 @@ footer {
 </style>
 </head>
 <body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
+<span id="main-content"></span>
 
 <!-- NAV -->
 <nav id="nav">
@@ -952,7 +1037,7 @@ footer {
       <a href="#getting-started">Get Started</a>
       <a href="https://github.com/AkBo24/apra-fleet" class="nav-cta">GitHub</a>
     </div>
-    <button class="nav-hamburger" id="hamburger" aria-label="Toggle menu">
+    <button class="nav-hamburger" id="hamburger" aria-label="Toggle menu" aria-expanded="false">
       <span></span><span></span><span></span>
     </button>
   </div>
@@ -963,9 +1048,9 @@ footer {
   <div class="hero-grid"></div>
   <div class="container">
     <div class="hero-badge"><span class="dot"></span> Now in Production</div>
-    <h1 class="hero-logo">Apra <span class="green">Fleet</span></h1>
+    <div class="hero-logo" role="img" aria-label="Apra Fleet">Apra <span class="green">Fleet</span></div>
     <p class="hero-byline">by Apra Labs</p>
-    <h2 class="hero-headline">Your AI Engineering Organization</h2>
+    <h1 class="hero-headline">Your AI Engineering Organization</h1>
     <p class="hero-sub">Transforms AI coding agents into a managed engineering team &mdash; with a PM that plans, doers that build, and reviewers that verify. On your machines, with your process.</p>
     <div class="hero-stats">
       <div class="hero-stat">
@@ -998,6 +1083,7 @@ footer {
       <span class="section-label">The Problem</span>
       <h2 class="section-title">Your Best Engineers Are Doing<br>Their Worst Work</h2>
       <p class="section-subtitle">Senior engineers spend 70% of their time on zero-judgment tasks. Code reviews that take days. Sprints that slip. The problem isn't talent &mdash; it's that humans don't scale.</p>
+      <p class="section-subtitle" style="margin-top: 1rem; font-style: italic; color: #94a3b8;">You built the process. Nobody follows it.</p>
     </div>
     <div class="problem-cards">
       <div class="problem-card reveal reveal-delay-1">
@@ -1183,6 +1269,7 @@ footer {
         <div class="quote">"Other tools give you speed. Fleet gives you resilience."</div>
       </div>
     </div>
+    <p class="numbers-quote reveal" style="margin-top: 3rem; font-size: 1.15rem; color: #cbd5e1; font-weight: 600;">The engineers who adopt this don't go back. Not because it's faster &mdash; because they stop drowning.</p>
   </div>
 </section>
 
@@ -1195,7 +1282,7 @@ footer {
       <p class="section-subtitle">The market is full of tools that help developers type faster. Fleet solves a different problem entirely.</p>
     </div>
     <div class="reveal reveal-delay-1">
-      <table class="comparison-table">
+      <table class="comparison-table" aria-label="AI coding tool category comparison">
         <thead>
           <tr>
             <th>Category</th>
@@ -1211,18 +1298,18 @@ footer {
           </tr>
           <tr>
             <td class="category">Autonomous Task Runner</td>
-            <td class="tools">Devin, Codex</td>
+            <td class="tools">Devin, Codex, OpenHands</td>
             <td class="missing">Your infrastructure, your process</td>
           </tr>
           <tr>
             <td class="category">Multi-Agent Framework</td>
-            <td class="tools">CrewAI, AutoGen</td>
+            <td class="tools">CrewAI, AutoGen, LangGraph, MetaGPT</td>
             <td class="missing">Working system, git workflows</td>
           </tr>
           <tr class="highlight-row">
             <td class="category">AI-Native Engineering Org</td>
             <td class="tools">Apra Fleet</td>
-            <td class="complete">The complete picture &#10003;</td>
+            <td class="complete">Full lifecycle on your infra &#10003;</td>
           </tr>
         </tbody>
       </table>
@@ -1251,6 +1338,7 @@ footer {
         <p>The PM skill follows the Agent Skills specification. Portable, composable, and backed by a foundation &mdash; not a startup.</p>
       </div>
     </div>
+    <p class="comparison-quote reveal reveal-delay-2" style="margin-top: 2.5rem;">You're not buying into a vendor. You're buying into an architecture.</p>
     <div class="standards-compat reveal reveal-delay-3">
       <p style="color: #94a3b8; font-size: 0.95rem;">Works with the tools you already use</p>
       <div class="compat-badges">
@@ -1292,7 +1380,53 @@ footer {
         <div class="desc">Fleet members<br>Win/Mac/Linux</div>
       </div>
     </div>
-    <p class="numbers-quote reveal">This runs in production. Every day. On real projects.</p>
+    <p class="numbers-quote reveal">4 engineers across 3 organizations manage 7 fleet members. This runs in production. Every day.</p>
+  </div>
+</section>
+
+<!-- LANGUAGES BADGE BAR -->
+<div class="lang-bar">
+  <div class="container">
+    <div class="reveal" style="text-align: center;">
+      <p class="lang-bar-label">Battle-tested across</p>
+      <div class="lang-badges">
+        <span class="lang-badge">C++</span>
+        <span class="lang-badge">Node.js</span>
+        <span class="lang-badge">C#/.NET</span>
+        <span class="lang-badge">Python</span>
+        <span class="lang-badge">ML Pipelines</span>
+        <span class="lang-badge">Video Processing</span>
+        <span class="lang-badge">Cross-Platform Builds</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- WHO'S USING IT -->
+<section class="section users" id="users">
+  <div class="container">
+    <div class="reveal">
+      <span class="section-label">In the Wild</span>
+      <h2 class="section-title">Who's Using It</h2>
+      <p class="section-subtitle">Real engineers. Real domains. Real work shipped overnight.</p>
+    </div>
+    <div class="users-grid">
+      <div class="user-card reveal reveal-delay-1">
+        <div class="user-name">Akhil &middot; Apra Labs</div>
+        <div class="user-domain">C++, Node.js, C#, Python &mdash; Windows / macOS / Linux</div>
+        <p>5+ simultaneous projects. 100+ backlog items shipped. ~20 complete sprints. Production debugging on live BBNVR devices via remote agents. Fleet orchestration across all three platforms from a single terminal.</p>
+      </div>
+      <div class="user-card reveal reveal-delay-2">
+        <div class="user-name">Kashyap</div>
+        <div class="user-domain">Machine Learning &mdash; AWS EC2 GPU Instances</div>
+        <p>Training ML models on cloud VMs via SSH. Fleet agents run on EC2 GPU instances, manage training pipelines, and report results back to a single local terminal. No cloud console required.</p>
+      </div>
+      <div class="user-card reveal reveal-delay-3">
+        <div class="user-name">Yashraj</div>
+        <div class="user-domain">Video Processing &mdash; H.265, WebRTC, C++</div>
+        <p>H.265 codec work, WebRTC streaming, video transcoding pipelines. Agents handling codec-level C++ alongside high-level pipeline orchestration and cross-platform build verification.</p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -1382,11 +1516,17 @@ window.addEventListener('scroll', () => {
 const hamburger = document.getElementById('hamburger');
 const navLinks = document.getElementById('navLinks');
 hamburger.addEventListener('click', () => {
-  navLinks.classList.toggle('open');
+  const isOpen = navLinks.classList.toggle('open');
+  hamburger.setAttribute('aria-expanded', isOpen);
 });
 // Close mobile menu on link click
 navLinks.querySelectorAll('a').forEach(link => {
   link.addEventListener('click', () => navLinks.classList.remove('open'));
+});
+
+// Add aria-hidden to decorative emoji icons
+document.querySelectorAll('.problem-icon, .agent-icon, .feature-icon').forEach(el => {
+  el.setAttribute('aria-hidden', 'true');
 });
 
 // Smooth scroll for anchor links
