@@ -42,9 +42,25 @@ img { max-width: 100%; display: block; }
 }
 .section-subtitle {
   font-size: 1.15rem;
-  color: #666;
+  color: #555;
   max-width: 640px;
   line-height: 1.7;
+}
+
+/* ===== EXPLICIT TEXT COLORS FOR LIGHT SECTIONS ===== */
+.problem h2, .how-it-works h2, .command-center h2,
+.features h2, .stories h2, .competitive h2, .numbers h2, .users h2 {
+  color: #1a1a1a;
+}
+.problem p, .how-it-works p, .command-center p,
+.features p, .stories p, .competitive p, .numbers p, .users p {
+  color: #555;
+}
+.problem .section-subtitle, .how-it-works .section-subtitle,
+.command-center .section-subtitle, .features .section-subtitle,
+.stories .section-subtitle, .competitive .section-subtitle,
+.numbers .section-subtitle, .users .section-subtitle {
+  color: #666;
 }
 
 /* ===== SECTION DIVIDERS ===== */
@@ -110,12 +126,16 @@ img { max-width: 100%; display: block; }
   100% { opacity: 0; visibility: hidden; transform: translateY(-380px); }
 }
 
-/* Smoother scroll reveal */
+/* Smoother scroll reveal — visible by default, enhanced on scroll */
 .reveal {
-  opacity: 0;
-  transform: translateY(40px);
+  opacity: 1;
+  transform: translateY(0);
   transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
               transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal.animate-ready {
+  opacity: 0;
+  transform: translateY(40px);
 }
 .reveal.visible {
   opacity: 1;
@@ -432,7 +452,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   border-radius: 16px;
   padding: 2.5rem 2rem;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 .problem-card:hover {
   border-color: #94BA33;
@@ -459,12 +479,12 @@ nav.scrolled .nav-hamburger span { background: #333; }
 .problem-card h3 {
   font-size: 1.15rem;
   font-weight: 700;
-  color: #1a1a1a;
+  color: #1a1a1a !important;
   margin-bottom: 0.75rem;
 }
 .problem-card p {
   font-size: 0.95rem;
-  color: #666;
+  color: #555 !important;
   line-height: 1.7;
 }
 
@@ -488,7 +508,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   letter-spacing: 2px;
   margin-bottom: 1rem;
 }
-.story-headline {
+.story-section h2, .story-headline {
   font-size: clamp(1.8rem, 4vw, 3rem);
   font-weight: 800;
   color: #1a1a1a;
@@ -531,7 +551,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   text-align: center;
   position: relative;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 .agent-card:hover {
   border-color: #94BA33;
@@ -558,7 +578,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
 .agent-card h3 {
   font-size: 1.3rem;
   font-weight: 800;
-  color: #1a1a1a;
+  color: #1a1a1a !important;
   margin-bottom: 0.75rem;
 }
 .agent-card .agent-role {
@@ -571,7 +591,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
 }
 .agent-card p {
   font-size: 0.95rem;
-  color: #666;
+  color: #555 !important;
   line-height: 1.7;
 }
 .flow-diagram {
@@ -597,6 +617,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
 }
 .flow-emphasis {
   text-align: center;
+  color: #555 !important;
   margin-top: 2rem;
   font-size: 1.1rem;
   color: #666;
@@ -691,7 +712,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   margin-top: 2rem;
   font-size: 1.2rem;
   font-weight: 700;
-  color: #1a1a1a;
+  color: #1a1a1a !important;
 }
 .terminal-tagline .green { color: #94BA33; }
 
@@ -712,7 +733,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 .feature-card:hover {
   border-color: #94BA33;
@@ -739,13 +760,20 @@ nav.scrolled .nav-hamburger span { background: #333; }
 .feature-card h3 {
   font-size: 1.05rem;
   font-weight: 700;
-  color: #1a1a1a;
+  color: #1a1a1a !important;
   margin-bottom: 0.5rem;
 }
 .feature-card p {
   font-size: 0.9rem;
-  color: #666;
+  color: #555 !important;
   line-height: 1.7;
+}
+.feature-card code {
+  background: #f0f4e8;
+  color: #6d8c26;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
 }
 
 /* ===== STORIES ===== */
@@ -764,7 +792,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   padding: 2.5rem 2rem;
   position: relative;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 .story-card:hover {
   border-color: #94BA33;
@@ -784,15 +812,22 @@ nav.scrolled .nav-hamburger span { background: #333; }
 .story-card-title {
   font-size: 1.15rem;
   font-weight: 700;
-  color: #1a1a1a;
+  color: #1a1a1a !important;
   margin-bottom: 1rem;
   padding-top: 1rem;
 }
 .story-card p {
   font-size: 0.95rem;
-  color: #666;
+  color: #555 !important;
   line-height: 1.7;
   margin-bottom: 1.5rem;
+}
+.story-card code {
+  background: #f0f4e8;
+  color: #6d8c26;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
 }
 .story-card .quote {
   font-size: 1rem;
@@ -831,7 +866,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
 }
 .comparison-table td {
   font-size: 0.95rem;
-  color: #555;
+  color: #555 !important;
   vertical-align: top;
 }
 .comparison-table tr {
@@ -841,7 +876,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   background: #f8fafc;
 }
 .comparison-table tr:last-child td { border-bottom: none; }
-.comparison-table .category { font-weight: 700; color: #1a1a1a; min-width: 180px; }
+.comparison-table .category { font-weight: 700; color: #1a1a1a !important; min-width: 180px; }
 .comparison-table .tools { color: #666; font-size: 0.85rem; }
 .comparison-table .missing { color: #ef4444; font-size: 0.85rem; }
 .comparison-table .highlight-row {
@@ -854,7 +889,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   text-align: center;
   margin-top: 2.5rem;
   font-size: 1.1rem;
-  color: #666;
+  color: #555;
   font-style: italic;
 }
 
@@ -934,7 +969,7 @@ nav.scrolled .nav-hamburger span { background: #333; }
   border: 1px solid #e5e7eb;
   border-radius: 16px;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 .number-card:hover {
   border-color: #94BA33;
@@ -950,14 +985,14 @@ nav.scrolled .nav-hamburger span { background: #333; }
 }
 .number-card .desc {
   font-size: 0.85rem;
-  color: #666;
+  color: #555 !important;
   line-height: 1.5;
 }
 .numbers-quote {
   text-align: center;
   margin-top: 3rem;
   font-size: 1.1rem;
-  color: #666;
+  color: #555;
   font-style: italic;
 }
 
@@ -1161,7 +1196,7 @@ footer::before {
   border-radius: 16px;
   padding: 2rem;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 .user-card:hover {
   border-color: #94BA33;
@@ -1171,7 +1206,7 @@ footer::before {
 .user-name {
   font-size: 1rem;
   font-weight: 700;
-  color: #1a1a1a;
+  color: #1a1a1a !important;
   margin-bottom: 0.25rem;
 }
 .user-domain {
@@ -1184,7 +1219,7 @@ footer::before {
 }
 .user-card p {
   font-size: 0.9rem;
-  color: #666;
+  color: #555 !important;
   line-height: 1.7;
 }
 
@@ -1771,8 +1806,11 @@ footer::before {
 </footer>
 
 <script>
-// Scroll reveal — earlier trigger with larger rootMargin
+// Scroll reveal — elements are visible by default (CSS), JS adds animation class
 const reveals = document.querySelectorAll('.reveal');
+// First, add animate-ready to hide elements that will be animated
+reveals.forEach(el => el.classList.add('animate-ready'));
+// Then observe them to reveal on scroll
 const observer = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     if (entry.isIntersecting) {
