@@ -18,16 +18,17 @@ const distDir = join(root, 'dist');
 mkdirSync(distDir, { recursive: true });
 
 // Collect files recursively
-function collectFiles(dir, base) {
+function collectFiles(dir, base, rootBase) {
+  const effectiveRootBase = rootBase ?? base;
   const results = {};
   if (!existsSync(dir)) return results;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const fullPath = join(dir, entry.name);
     const relPath = join(base, entry.name).replace(/\\/g, '/');
     if (entry.isDirectory()) {
-      Object.assign(results, collectFiles(fullPath, relPath));
+      Object.assign(results, collectFiles(fullPath, relPath, effectiveRootBase));
     } else {
-      results[relative(base, relPath).replace(/\\/g, '/')] = relPath;
+      results[relative(effectiveRootBase, relPath).replace(/\\/g, '/')] = relPath;
     }
   }
   return results;

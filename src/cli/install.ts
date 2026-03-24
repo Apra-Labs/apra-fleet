@@ -53,16 +53,17 @@ function findProjectRoot(): string {
 }
 
 // Collect files recursively — used by dev-mode manifest generation
-function collectFilesRec(dir: string, base: string): Record<string, string> {
+function collectFilesRec(dir: string, base: string, rootBase?: string): Record<string, string> {
+  const effectiveRootBase = rootBase ?? base;
   const results: Record<string, string> = {};
   if (!fs.existsSync(dir)) return results;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
     const relPath = path.join(base, entry.name).replace(/\\/g, '/');
     if (entry.isDirectory()) {
-      Object.assign(results, collectFilesRec(fullPath, relPath));
+      Object.assign(results, collectFilesRec(fullPath, relPath, effectiveRootBase));
     } else {
-      results[path.relative(base, relPath).replace(/\\/g, '/')] = relPath;
+      results[path.relative(effectiveRootBase, relPath).replace(/\\/g, '/')] = relPath;
     }
   }
   return results;
