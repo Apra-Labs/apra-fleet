@@ -1,42 +1,14 @@
 {
-  "sprint": "pm-skill-fixes",
-  "branch": "sprint/pm-skill-fixes",
-  "phases": [
-    {
-      "id": "phase-1",
-      "name": "Fix Execution Loop (#29)",
-      "tasks": [
-        { "id": "1.1", "name": "Fix execution loop diagram in SKILL.md", "status": "completed", "type": "work", "notes": "Replaced 'PM reviews → resumes member' with full reviewer dispatch flow in SKILL.md lines 57-65" },
-        { "id": "1.2", "name": "Fix flow section in doer-reviewer.md", "status": "completed", "type": "work", "notes": "Step 3 now explicitly states PM dispatches REVIEWER at every VERIFY checkpoint. Step 5 routes APPROVED vs CHANGES NEEDED." },
-        { "id": "1.3", "name": "VERIFY: Execution loop consistency", "status": "completed", "type": "verify", "notes": "SKILL.md loop and doer-reviewer.md flow are consistent. No 'PM reviews' (self-review) in either file. Committed ea6dcb5." }
-      ]
-    },
-    {
-      "id": "phase-2",
-      "name": "Fix Template References (#28) + Pre-flight",
-      "tasks": [
-        { "id": "2.1", "name": "Fix setup checklist in doer-reviewer.md", "status": "completed", "type": "work", "notes": "Rewrote item 4 to show 3 phases: planning (execute_prompt, no CLAUDE.md), execution (tpl-claude.md), review (tpl-reviewer.md). Added 'must be sent before' notes." },
-        { "id": "2.2", "name": "Add pre-flight checklist", "status": "completed", "type": "work", "notes": "Added Pre-flight Checks section with fleet_status + git status/branch check before dispatch, and git rev-parse HEAD before review dispatch." },
-        { "id": "2.3", "name": "VERIFY: Template and pre-flight accuracy", "status": "completed", "type": "verify", "notes": "No wrong template refs. SKILL.md plan section (line 43) consistent with doer-reviewer.md: plan-prompt.md via execute_prompt. Committed 33da37b." }
-      ]
-    },
-    {
-      "id": "phase-3",
-      "name": "Safeguards (#18) + Reviewer Workflow",
-      "tasks": [
-        { "id": "3.1", "name": "Add safeguards section", "status": "completed", "type": "work", "notes": "Added Safeguards section with 4-row table (max_turns, retry limit, cycle limit, model escalation) and escalation criteria." },
-        { "id": "3.2", "name": "Add reviewer workflow improvements", "status": "completed", "type": "work", "notes": "Added 3 reviewer rules in flow step 3: parallel prep, resume=false, SHA verification." },
-        { "id": "3.3", "name": "VERIFY: Safeguards and reviewer workflow", "status": "completed", "type": "verify", "notes": "All 4 safeguards documented. Reviewer rules present. SKILL.md monitoring (line 69) and troubleshooting.md consistent with safeguard escalation. Committed 5be79d4." }
-      ]
-    },
-    {
-      "id": "phase-4",
-      "name": "Cleanup Command (#2) + Remaining Feedback",
-      "tasks": [
-        { "id": "4.1", "name": "Add /pm cleanup command", "status": "completed", "type": "work", "notes": "Added /pm cleanup <project> to Available Commands with execute_command git rm + rm -f CLAUDE.md sequence for doer and reviewer." },
-        { "id": "4.2", "name": "Incorporate remaining feedback items", "status": "completed", "type": "work", "notes": "Feedback #3: requirements quality in Plan Generation. #10: icons mandatory in pair command. #11: rule 14 read sub-docs. #12: rule 15 verify URLs. #13: strengthened rule 13 gh CLI direct." },
-        { "id": "4.3", "name": "VERIFY: Final consistency check", "status": "completed", "type": "verify", "notes": "All 7 quality gates pass. All 13 feedback items incorporated. Committed 8008220. Pushed to origin." }
-      ]
-    }
+  "project": "fix-windows-vcs-auth",
+  "branch": "fix/windows-vcs-auth",
+  "tasks": [
+    { "id": "T1", "phase": 1, "name": "Fix gitCredentialHelperWrite PowerShell syntax", "status": "completed", "notes": "Replaced here-string with array -join pattern. All 417 tests pass." },
+    { "id": "T2", "phase": 1, "name": "Add unit test for Windows credential helper", "status": "completed", "notes": "7 tests: no here-strings, special chars (', \", $, `), -join pattern, cmd.exe escaping. All pass." },
+    { "id": "V1", "phase": 1, "name": "Verify Phase 1", "type": "verify", "status": "completed", "notes": "All 424 tests pass (3 skipped — platform-specific). Build clean. Phase 1 complete." },
+    { "id": "T3", "phase": 2, "name": "Add VCS credential fields to Agent type", "status": "pending", "notes": "" },
+    { "id": "T4", "phase": 2, "name": "Persist expiry after token deployment", "status": "pending", "notes": "" },
+    { "id": "T5", "phase": 2, "name": "Add expiry warning", "status": "pending", "notes": "" },
+    { "id": "T6", "phase": 2, "name": "Add tests for token expiry persistence", "status": "pending", "notes": "" },
+    { "id": "V2", "phase": 2, "name": "Verify Phase 2", "type": "verify", "status": "pending", "notes": "" }
   ]
 }
