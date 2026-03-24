@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { collectOobPassword } from '../services/auth-socket.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
@@ -17,7 +18,11 @@ export const updateMemberSchema = z.object({
   port: z.number().optional().describe('New SSH port (remote members only)'),
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
-  password: z.string().optional().describe('New SSH password'),
+  password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
+  rotate_password: z.boolean().optional().describe(
+    'Trigger secure out-of-band password re-entry for a member already using password auth. '
+    + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'
+  ),
   key_path: z.string().optional().describe('New path to SSH private key'),
   work_folder: z.string().optional().describe('New working directory on target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
@@ -55,6 +60,18 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return `❌ Invalid icon "${input.icon}". Use a named alias (e.g., blue-circle, red-square, green-square) or a valid emoji.`;
   }
 
+  // Out-of-band password collection:
+  // - switchingToPassword: changing from key → password auth without inline password
+  // - rotatingPassword: explicit secure rotation on a member already using password auth
+  let preEncryptedPassword: string | undefined;
+  const switchingToPassword = input.auth_type === 'password' && existing.authType !== 'password';
+  const rotatingPassword = !!input.rotate_password && existing.authType === 'password';
+  if ((switchingToPassword || rotatingPassword) && !input.password && existing.agentType === 'remote') {
+    const oob = await collectOobPassword(existing.friendlyName, 'update_member');
+    if ('fallback' in oob) return oob.fallback;
+    preEncryptedPassword = oob.password;
+  }
+
   const updates: Record<string, unknown> = {};
 
   if (resolvedIcon) updates.icon = resolvedIcon;
@@ -63,7 +80,11 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.port) updates.port = input.port;
   if (input.username) updates.username = input.username;
   if (input.auth_type) updates.authType = input.auth_type;
-  if (input.password) updates.encryptedPassword = encryptPassword(input.password);
+  if (preEncryptedPassword) {
+    updates.encryptedPassword = preEncryptedPassword;
+  } else if (input.password) {
+    updates.encryptedPassword = encryptPassword(input.password);
+  }
   if (input.key_path) updates.keyPath = input.key_path;
   if (input.work_folder) updates.workFolder = input.work_folder;
   if (input.git_access) updates.gitAccess = input.git_access;

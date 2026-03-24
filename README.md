@@ -36,7 +36,7 @@ See the [User Guide](docs/user-guide.md) for step-by-step install and usage inst
 
 Then just talk to Claude:
 
-> "Register 192.168.1.10 as `build-server`. Username is akhil, password is mypass, work folder `/home/akhil/projects/myapp`."
+> "Register 192.168.1.10 as `build-server`. Username is akhil, use password auth, work folder `/home/akhil/projects/myapp`."
 
 ## Tools
 
@@ -75,6 +75,17 @@ Fleet can provision scoped, short-lived tokens to members — so each member get
 **Access levels:** `read`, `push`, `admin`, `issues`, `full`.
 
 See `docs/design-git-auth.md` for the full design.
+
+## Secure Password Entry
+
+When registering a remote member with password authentication, you don't need to pass the password inline. Apra Fleet opens a separate terminal window for password entry so credentials never appear in chat history or logs.
+
+- Password is encrypted immediately with AES-256-GCM and never stored in plaintext
+- Works on macOS (Terminal.app), Windows (cmd), and Linux (gnome-terminal/xterm)
+- Headless or unsupported environments get a manual command fallback
+- Supports password rotation via `update_member`
+
+See `docs/adr-oob-password.md` for the design rationale.
 
 ## Cloud Compute
 

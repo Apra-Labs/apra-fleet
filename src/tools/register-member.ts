@@ -10,6 +10,7 @@ import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
+import { collectOobPassword } from '../services/auth-socket.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -21,7 +22,7 @@ export const registerMemberSchema = z.object({
   port: z.number().default(22).describe('SSH port (default: 22, remote members only)'),
   username: z.string().optional().describe('SSH username (required for remote members)'),
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
-  password: z.string().optional().describe('SSH password (required if auth_type is "password")'),
+  password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
   key_path: z.string().optional().describe('Path to SSH private key (required if auth_type is "key" for non-cloud members)'),
   work_folder: z.string().describe('Working directory on the target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
@@ -54,6 +55,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
+  }
+
+  // Out-of-band password collection for remote password auth without inline password
+  let preEncryptedPassword: string | undefined;
+  if (!isLocal && input.auth_type === 'password' && !input.password) {
+    const oob = await collectOobPassword(input.friendly_name, 'register_member');
+    if ('fallback' in oob) return oob.fallback;
+    preEncryptedPassword = oob.password;
   }
 
   // --- Duplicate folder check ---
@@ -121,8 +130,8 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     host: isLocal ? undefined : (resolvedHost ?? ''),
     port: isLocal ? undefined : input.port,
     username: isLocal ? undefined : input.username,
-    authType: isLocal ? undefined : (isCloud ? 'key' : input.auth_type),
-    encryptedPassword: (!isLocal && !isCloud && input.password) ? encryptPassword(input.password) : undefined,
+    authType: isLocal ? undefined : (input.auth_type ?? (isCloud ? 'key' : undefined)),
+    encryptedPassword: preEncryptedPassword ?? ((!isLocal && input.password) ? encryptPassword(input.password) : undefined),
     keyPath: isLocal ? undefined : (isCloud ? input.cloud_ssh_key_path : input.key_path),
     workFolder: input.work_folder,
     createdAt: new Date().toISOString(),
@@ -250,3 +259,4 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   return result;
 }
+
