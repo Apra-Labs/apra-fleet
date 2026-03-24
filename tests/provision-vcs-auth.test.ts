@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, FLEET_DIR } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getAgent } from '../src/services/registry.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import type { SSHExecResult } from '../src/types.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
@@ -182,6 +182,39 @@ describe('provisionVcsAuth', () => {
     expect(result).toContain('GitHub App');
     expect(result).toContain('ghs_****');
     expect(result).not.toContain('ghs_minted123');
+  });
+
+  // --- Token expiry persistence ---
+
+  it('github-app: persists vcsProvider and vcsTokenExpiresAt in registry after deploy', async () => {
+    const agent = makeTestAgent({ friendlyName: 'gh-expiry', gitAccess: 'push', gitRepos: ['Org/Repo'] });
+    addAgent(agent);
+    setGitHubAppConfig();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockMint.mockResolvedValue({ token: 'ghs_mint999', expiresAt: '2026-03-24T12:00:00Z' });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({ member_id: agent.id, provider: 'github' });
+
+    const updated = getAgent(agent.id)!;
+    expect(updated.vcsProvider).toBe('github');
+    expect(updated.vcsTokenExpiresAt).toBe('2026-03-24T12:00:00Z');
+  });
+
+  it('bitbucket: persists vcsProvider without expiresAt (no expiry for API tokens)', async () => {
+    const agent = makeTestAgent({ friendlyName: 'bb-expiry' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await provisionVcsAuth({
+      member_id: agent.id, provider: 'bitbucket',
+      email: 'dev@co.com', api_token: 'ATBB_xyz', workspace: 'ws',
+    });
+
+    const updated = getAgent(agent.id)!;
+    expect(updated.vcsProvider).toBe('bitbucket');
+    expect(updated.vcsTokenExpiresAt).toBeUndefined();
   });
 
   it('reports deploy failure from provider', async () => {
