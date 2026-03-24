@@ -137,17 +137,11 @@ export class WindowsCommands implements OsCommands {
   // --- Git credential helper ---
 
   gitCredentialHelperWrite(host: string, username: string, token: string): string {
-    const escapedHost = escapeWindowsArg(host);
-    const escapedUser = escapeWindowsArg(username);
+    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
+    const escapedUser = escapeWindowsArg(username).replace(/'/g, "''");
     const escapedToken = token.replace(/'/g, "''");
     return [
-      `$script = @'`,
-      `@echo off`,
-      `echo protocol=https`,
-      `echo host=${escapedHost}`,
-      `echo username=${escapedUser}`,
-      `echo password=${escapedToken}`,
-      `'@`,
+      `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join "\`r\`n"`,
       `Set-Content -Path "$env:USERPROFILE\\.fleet-git-credential.bat" -Value $script -NoNewline`,
       '$gcFile = "$env:USERPROFILE\\.fleet-git-credential.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "${u}:F"',
       `git config --global credential.helper "$env:USERPROFILE\\.fleet-git-credential.bat"`,
