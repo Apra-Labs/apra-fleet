@@ -24,7 +24,7 @@ img { max-width: 100%; display: block; }
 
 /* ===== UTILITY ===== */
 .container { max-width: 1200px; margin: 0 auto; padding: 0 2rem; }
-.section { padding: 7rem 0; }
+.section { padding: 7rem 0; position: relative; }
 .section-label {
   text-transform: uppercase;
   font-size: 0.8rem;
@@ -45,6 +45,44 @@ img { max-width: 100%; display: block; }
   color: #94a3b8;
   max-width: 640px;
   line-height: 1.7;
+}
+
+/* ===== SECTION DIVIDERS ===== */
+.section + .section::before {
+  content: '';
+  display: block;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(148, 186, 51, 0.15), transparent);
+  margin: 0 auto;
+  width: 80%;
+}
+
+/* ===== SECTION GRADIENTS ===== */
+.section-gradient-1 {
+  background: linear-gradient(180deg, #0a0f1c 0%, #0d1220 50%, #0f1629 100%);
+}
+.section-gradient-2 {
+  background: linear-gradient(180deg, #0f1629 0%, #0d1220 50%, #0a0f1c 100%);
+}
+
+/* ===== GLOW ORBS ===== */
+.glow-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+  opacity: 0.07;
+  z-index: 0;
+}
+.glow-orb-1 {
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, #94BA33, transparent);
+  top: -200px; right: -200px;
+}
+.glow-orb-2 {
+  width: 400px; height: 400px;
+  background: radial-gradient(circle, #6d8c26, transparent);
+  bottom: -100px; left: -100px;
 }
 
 /* ===== ANIMATIONS ===== */
@@ -76,10 +114,31 @@ img { max-width: 100%; display: block; }
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-8px); }
 }
+@keyframes gridFloat {
+  0%, 100% { transform: translate(0, 0); opacity: 0.03; }
+  50% { transform: translate(-20px, -10px); opacity: 0.05; }
+}
+
+/* Scenario cycling animation */
+@keyframes scenarioScrollUp {
+  0% { opacity: 0; visibility: hidden; transform: translateY(200px); }
+  2% { opacity: 0; visibility: visible; transform: translateY(200px); }
+  5% { opacity: 1; visibility: visible; transform: translateY(200px); }
+  20% { opacity: 1; visibility: visible; transform: translateY(200px); }
+  22% { opacity: 1; visibility: visible; transform: translateY(0); }
+  40% { opacity: 1; visibility: visible; transform: translateY(0); }
+  42% { opacity: 1; visibility: visible; transform: translateY(-190px); }
+  48% { opacity: 0.5; visibility: visible; transform: translateY(-380px); }
+  50% { opacity: 0; visibility: hidden; transform: translateY(-380px); }
+  100% { opacity: 0; visibility: hidden; transform: translateY(-380px); }
+}
+
+/* Smoother scroll reveal */
 .reveal {
   opacity: 0;
-  transform: translateY(30px);
-  transition: opacity 0.7s ease, transform 0.7s ease;
+  transform: translateY(40px);
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .reveal.visible {
   opacity: 1;
@@ -99,13 +158,14 @@ nav {
   right: 0;
   z-index: 1000;
   padding: 1rem 0;
-  transition: background 0.3s, box-shadow 0.3s, padding 0.3s;
+  transition: background 0.3s, box-shadow 0.3s, padding 0.3s, border-bottom 0.3s;
 }
 nav.scrolled {
-  background: rgba(10, 15, 28, 0.95);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 1px 0 rgba(148, 186, 51, 0.1);
+  background: rgba(10, 15, 28, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-bottom: 1px solid rgba(148, 186, 51, 0.08);
+  box-shadow: 0 1px 20px rgba(0, 0, 0, 0.3);
   padding: 0.6rem 0;
 }
 nav .container {
@@ -246,16 +306,32 @@ nav .container {
   margin-bottom: 3rem;
   animation: fadeInUp 0.8s ease 0.4s both;
 }
+
+/* Enhanced stats bar */
 .hero-stats {
   display: flex;
-  gap: 3rem;
+  gap: 0;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 1.5rem 0;
   margin-bottom: 3rem;
   animation: fadeInUp 0.8s ease 0.5s both;
 }
+.hero-stat {
+  flex: 1;
+  text-align: center;
+  padding: 0 2rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+.hero-stat:last-child { border-right: none; }
 .hero-stat .number {
-  font-size: 2rem;
-  font-weight: 800;
-  color: #94BA33;
+  font-size: 2.5rem;
+  font-weight: 900;
+  background: linear-gradient(135deg, #94BA33, #b5d94e);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 .hero-stat .label {
   font-size: 0.85rem;
@@ -268,23 +344,37 @@ nav .container {
   flex-wrap: wrap;
   animation: fadeInUp 0.8s ease 0.6s both;
 }
+
+/* Enhanced buttons */
 .btn-primary {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  background: linear-gradient(135deg, #94BA33, #6d8c26);
+  background: linear-gradient(135deg, #94BA33, #7da62b);
   color: #0a0f1c;
   padding: 0.9rem 2rem;
   border-radius: 10px;
   font-weight: 700;
   font-size: 1rem;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border: none;
   cursor: pointer;
+  box-shadow: 0 4px 15px rgba(148, 186, 51, 0.25), 0 0 0 1px rgba(148, 186, 51, 0.2);
+  position: relative;
+  overflow: hidden;
 }
+.btn-primary::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.2), transparent);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.btn-primary:hover::before { opacity: 1; }
 .btn-primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 30px rgba(148, 186, 51, 0.3);
+  transform: translateY(-3px);
+  box-shadow: 0 8px 30px rgba(148, 186, 51, 0.4), 0 0 0 1px rgba(148, 186, 51, 0.3);
   color: #0a0f1c;
 }
 .btn-secondary {
@@ -297,16 +387,20 @@ nav .container {
   border-radius: 10px;
   font-weight: 600;
   font-size: 1rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  transition: all 0.2s;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   cursor: pointer;
 }
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(148, 186, 51, 0.3);
+  background: rgba(148, 186, 51, 0.08);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  transform: translateY(-2px);
   color: #fff;
 }
-/* Grid pattern behind hero */
+
+/* Grid pattern behind hero — animated */
 .hero-grid {
   position: absolute;
   top: 0;
@@ -318,10 +412,11 @@ nav .container {
     linear-gradient(rgba(148, 186, 51, 1) 1px, transparent 1px),
     linear-gradient(90deg, rgba(148, 186, 51, 1) 1px, transparent 1px);
   background-size: 60px 60px;
+  animation: gridFloat 20s ease-in-out infinite;
 }
 
 /* ===== PROBLEM ===== */
-.problem { background: #0d1220; }
+.problem { background: linear-gradient(180deg, #0d1220 0%, #0f1629 100%); }
 .problem-cards {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -329,26 +424,36 @@ nav .container {
   margin-top: 3rem;
 }
 .problem-card {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   padding: 2.5rem 2rem;
-  transition: transform 0.3s, border-color 0.3s;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .problem-card:hover {
-  transform: translateY(-4px);
-  border-color: rgba(148, 186, 51, 0.2);
+  border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .problem-icon {
   width: 48px;
   height: 48px;
-  background: rgba(148, 186, 51, 0.1);
+  background: linear-gradient(135deg, rgba(148, 186, 51, 0.15), rgba(148, 186, 51, 0.05));
+  border: 1px solid rgba(148, 186, 51, 0.1);
+  box-shadow: 0 4px 12px rgba(148, 186, 51, 0.08);
   border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 1.5rem;
   margin-bottom: 1.5rem;
+  transition: all 0.3s;
+}
+.problem-card:hover .problem-icon {
+  transform: scale(1.1);
+  box-shadow: 0 8px 24px rgba(148, 186, 51, 0.15);
 }
 .problem-card h3 {
   font-size: 1.15rem;
@@ -420,7 +525,7 @@ nav .container {
 }
 
 /* ===== HOW IT WORKS ===== */
-.how-it-works { background: #0a0f1c; }
+.how-it-works { background: linear-gradient(180deg, #0a0f1c 0%, #0d1220 50%, #0f1629 100%); }
 .agents-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -428,28 +533,38 @@ nav .container {
   margin-top: 3rem;
 }
 .agent-card {
-  background: linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 20px;
   padding: 2.5rem 2rem;
   text-align: center;
   position: relative;
-  transition: transform 0.3s, border-color 0.3s;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .agent-card:hover {
-  transform: translateY(-6px);
   border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .agent-icon {
   width: 64px;
   height: 64px;
   margin: 0 auto 1.5rem;
-  background: rgba(148, 186, 51, 0.1);
+  background: linear-gradient(135deg, rgba(148, 186, 51, 0.15), rgba(148, 186, 51, 0.05));
+  border: 1px solid rgba(148, 186, 51, 0.1);
+  box-shadow: 0 4px 12px rgba(148, 186, 51, 0.08);
   border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 1.8rem;
+  transition: all 0.3s;
+}
+.agent-card:hover .agent-icon {
+  transform: scale(1.1);
+  box-shadow: 0 8px 24px rgba(148, 186, 51, 0.15);
 }
 .agent-card h3 {
   font-size: 1.3rem;
@@ -500,7 +615,7 @@ nav .container {
 }
 
 /* ===== COMMAND CENTER ===== */
-.command-center { background: #0d1220; }
+.command-center { background: linear-gradient(180deg, #0f1629 0%, #0d1220 50%, #0a0f1c 100%); }
 .terminal {
   max-width: 750px;
   margin: 3rem auto 0;
@@ -533,12 +648,37 @@ nav .container {
   color: #94a3b8;
   font-weight: 500;
 }
-.terminal-body {
+
+/* Animated terminal demo */
+.terminal-demo {
+  position: relative;
+  overflow: hidden;
+  height: 380px;
+}
+.scenario {
+  position: absolute;
+  width: 100%;
+  opacity: 0;
+  visibility: hidden;
+  animation: scenarioScrollUp 20s ease-in-out infinite;
   padding: 2rem;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
   font-size: 0.85rem;
   line-height: 2;
 }
+.scenario-1 { animation-delay: 0s; }
+.scenario-2 { animation-delay: 5s; }
+.scenario-3 { animation-delay: 10s; }
+.scenario-4 { animation-delay: 15s; }
+.scenario .scenario-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #475569;
+  margin-bottom: 1rem;
+  display: block;
+}
+
 .terminal-line {
   display: flex;
   flex-wrap: wrap;
@@ -547,6 +687,16 @@ nav .container {
 .terminal-cmd { color: #e2e8f0; margin-right: 1rem; white-space: nowrap; }
 .terminal-result { color: #94a3b8; }
 .terminal-result .success { color: #28c840; }
+.terminal-output {
+  color: #94a3b8;
+  padding-left: 1.5rem;
+  margin-top: 0.25rem;
+}
+.terminal-output .success { color: #28c840; }
+.terminal-output .dim { color: #475569; }
+.terminal-output .highlight { color: #e2e8f0; font-weight: 600; }
+.terminal-output .warn { color: #ffbd2e; }
+
 .terminal-tagline {
   text-align: center;
   margin-top: 2rem;
@@ -557,7 +707,7 @@ nav .container {
 .terminal-tagline .green { color: #94BA33; }
 
 /* ===== FEATURES ===== */
-.features { background: #0a0f1c; }
+.features { background: linear-gradient(180deg, #0a0f1c 0%, #0d1220 50%, #0f1629 100%); }
 .features-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -565,33 +715,54 @@ nav .container {
   margin-top: 3rem;
 }
 .feature-card {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   padding: 2rem;
-  transition: all 0.3s;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   overflow: hidden;
 }
-.feature-card::before {
+/* Gradient top border on hover */
+.feature-card::after {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, #94BA33, transparent);
+  inset: 0;
+  border-radius: 16px;
+  padding: 1px;
+  background: linear-gradient(180deg, rgba(148, 186, 51, 0.3), transparent 50%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
   opacity: 0;
-  transition: opacity 0.3s;
+  transition: opacity 0.4s;
+  pointer-events: none;
 }
-.feature-card:hover::before { opacity: 1; }
+.feature-card:hover::after { opacity: 1; }
 .feature-card:hover {
-  border-color: rgba(148, 186, 51, 0.15);
-  transform: translateY(-3px);
+  border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .feature-icon {
-  font-size: 1.5rem;
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, rgba(148, 186, 51, 0.15), rgba(148, 186, 51, 0.05));
+  border: 1px solid rgba(148, 186, 51, 0.1);
+  box-shadow: 0 4px 12px rgba(148, 186, 51, 0.08);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
   margin-bottom: 1rem;
+  transition: all 0.3s;
+}
+.feature-card:hover .feature-icon {
+  transform: scale(1.1);
+  box-shadow: 0 8px 24px rgba(148, 186, 51, 0.15);
 }
 .feature-card h3 {
   font-size: 1.05rem;
@@ -606,7 +777,7 @@ nav .container {
 }
 
 /* ===== STORIES ===== */
-.stories { background: #0d1220; }
+.stories { background: linear-gradient(180deg, #0f1629 0%, #0d1220 50%, #0a0f1c 100%); }
 .stories-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -614,11 +785,19 @@ nav .container {
   margin-top: 3rem;
 }
 .story-card {
-  background: linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 20px;
   padding: 2.5rem 2rem;
   position: relative;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.story-card:hover {
+  border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .story-card::before {
   content: '\201C';
@@ -653,7 +832,7 @@ nav .container {
 }
 
 /* ===== COMPETITIVE ===== */
-.competitive { background: #0a0f1c; }
+.competitive { background: linear-gradient(180deg, #0a0f1c 0%, #0d1220 50%, #0f1629 100%); }
 .comparison-table {
   margin-top: 3rem;
   width: 100%;
@@ -682,12 +861,19 @@ nav .container {
   color: #cbd5e1;
   vertical-align: top;
 }
+.comparison-table tr {
+  transition: background 0.2s;
+}
+.comparison-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
 .comparison-table tr:last-child td { border-bottom: none; }
 .comparison-table .category { font-weight: 700; color: #fff; min-width: 180px; }
 .comparison-table .tools { color: #94a3b8; font-size: 0.85rem; }
 .comparison-table .missing { color: #ef4444; font-size: 0.85rem; }
 .comparison-table .highlight-row {
-  background: rgba(148, 186, 51, 0.05);
+  background: rgba(148, 186, 51, 0.08) !important;
+  border-left: 3px solid #94BA33;
 }
 .comparison-table .highlight-row .category { color: #94BA33; }
 .comparison-table .complete { color: #94BA33; font-weight: 600; font-size: 0.85rem; }
@@ -700,7 +886,7 @@ nav .container {
 }
 
 /* ===== OPEN STANDARDS ===== */
-.standards { background: #0d1220; }
+.standards { background: linear-gradient(180deg, #0f1629 0%, #0d1220 50%, #0a0f1c 100%); }
 .standards-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -708,10 +894,18 @@ nav .container {
   margin-top: 3rem;
 }
 .standard-card {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   padding: 2rem;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.standard-card:hover {
+  border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .standard-card h3 {
   font-size: 1.1rem;
@@ -752,7 +946,7 @@ nav .container {
 }
 
 /* ===== PRODUCTION NUMBERS ===== */
-.numbers { background: #0a0f1c; }
+.numbers { background: linear-gradient(180deg, #0a0f1c 0%, #0d1220 50%, #0f1629 100%); }
 .numbers-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -762,14 +956,25 @@ nav .container {
 .number-card {
   text-align: center;
   padding: 2rem 1rem;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.number-card:hover {
+  border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .number-card .value {
   font-size: 2.5rem;
   font-weight: 800;
-  color: #94BA33;
+  background: linear-gradient(135deg, #94BA33, #b5d94e);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
   line-height: 1;
   margin-bottom: 0.5rem;
 }
@@ -787,7 +992,7 @@ nav .container {
 }
 
 /* ===== GETTING STARTED ===== */
-.getting-started { background: #0d1220; }
+.getting-started { background: linear-gradient(180deg, #0f1629 0%, #0d1220 50%, #0a0f1c 100%); }
 .steps {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -796,10 +1001,18 @@ nav .container {
 }
 .step {
   position: relative;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   padding: 2.5rem 2rem;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.step:hover {
+  border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .step-number {
   position: absolute;
@@ -842,9 +1055,19 @@ nav .container {
 
 /* ===== FOOTER ===== */
 footer {
-  background: #080c18;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  background: linear-gradient(180deg, #080c18, #050810);
+  border-top: none;
   padding: 4rem 0 2rem;
+  position: relative;
+}
+footer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(148, 186, 51, 0.3), transparent);
 }
 .footer-content {
   display: grid;
@@ -934,7 +1157,7 @@ footer {
 }
 
 /* ===== WHO'S USING IT ===== */
-.users { background: #0d1220; }
+.users { background: linear-gradient(180deg, #0f1629 0%, #0d1220 50%, #0a0f1c 100%); }
 .users-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -942,15 +1165,18 @@ footer {
   margin-top: 3rem;
 }
 .user-card {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   padding: 2rem;
-  transition: transform 0.3s, border-color 0.3s;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .user-card:hover {
-  transform: translateY(-4px);
-  border-color: rgba(148, 186, 51, 0.2);
+  border-color: rgba(148, 186, 51, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 186, 51, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: translateY(-8px);
 }
 .user-name {
   font-size: 1rem;
@@ -992,7 +1218,9 @@ footer {
     border-bottom: 1px solid rgba(255,255,255,0.06);
   }
   .nav-hamburger { display: flex; }
-  .hero-stats { flex-direction: column; gap: 1.5rem; }
+  .hero-stats { flex-direction: column; gap: 0; border-radius: 16px; }
+  .hero-stat { padding: 1rem 2rem; border-right: none; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+  .hero-stat:last-child { border-bottom: none; }
   .problem-cards,
   .agents-grid,
   .features-grid,
@@ -1007,6 +1235,7 @@ footer {
   .footer-bottom { flex-direction: column; gap: 0.5rem; text-align: center; }
   .flow-diagram { gap: 0.5rem; }
   .section { padding: 5rem 0; }
+  .terminal-demo { height: 340px; }
 }
 @media (max-width: 480px) {
   .container { padding: 0 1.25rem; }
@@ -1015,6 +1244,7 @@ footer {
   .numbers-grid { grid-template-columns: 1fr; }
   .hero-actions { flex-direction: column; }
   .btn-primary, .btn-secondary { width: 100%; justify-content: center; }
+  .terminal-demo { height: 300px; }
 }
 </style>
 </head>
@@ -1046,6 +1276,7 @@ footer {
 <!-- HERO -->
 <section class="hero" id="hero">
   <div class="hero-grid"></div>
+  <div class="glow-orb glow-orb-1"></div>
   <div class="container">
     <div class="hero-badge"><span class="dot"></span> Now in Production</div>
     <div class="hero-logo" role="img" aria-label="Apra Fleet">Apra <span class="green">Fleet</span></div>
@@ -1078,7 +1309,8 @@ footer {
 
 <!-- PROBLEM -->
 <section class="section problem" id="problem">
-  <div class="container">
+  <div class="glow-orb glow-orb-2"></div>
+  <div class="container" style="position: relative; z-index: 1;">
     <div class="reveal">
       <span class="section-label">The Problem</span>
       <h2 class="section-title">Your Best Engineers Are Doing<br>Their Worst Work</h2>
@@ -1121,7 +1353,8 @@ footer {
 
 <!-- HOW IT WORKS -->
 <section class="section how-it-works" id="how-it-works">
-  <div class="container">
+  <div class="glow-orb glow-orb-1"></div>
+  <div class="container" style="position: relative; z-index: 1;">
     <div class="reveal">
       <span class="section-label">Architecture</span>
       <h2 class="section-title">Three Roles. One Organization.</h2>
@@ -1162,7 +1395,8 @@ footer {
 
 <!-- COMMAND CENTER -->
 <section class="section command-center" id="command-center">
-  <div class="container">
+  <div class="glow-orb glow-orb-2"></div>
+  <div class="container" style="position: relative; z-index: 1;">
     <div class="reveal">
       <span class="section-label">Control</span>
       <h2 class="section-title">The Command Center</h2>
@@ -1175,26 +1409,77 @@ footer {
         <span class="terminal-dot green"></span>
         <span class="terminal-title">apra-fleet &mdash; command center</span>
       </div>
-      <div class="terminal-body">
-        <div class="terminal-line">
-          <span class="terminal-prompt">$</span>
-          <span class="terminal-cmd">/pm status fleet</span>
-          <span class="terminal-result">&rarr; 7/7 online, all idle</span>
+      <div class="terminal-demo">
+        <!-- Scenario 1: Fleet Status -->
+        <div class="scenario scenario-1">
+          <span class="scenario-label">Fleet Status</span>
+          <div class="terminal-line">
+            <span class="terminal-prompt">$</span>
+            <span class="terminal-cmd">/pm status fleet</span>
+          </div>
+          <div class="terminal-output">
+            <div><span class="dim">&#9472;&#9472;&#9472;</span> Fleet Overview <span class="dim">&#9472;&#9472;&#9472;</span></div>
+            <div><span class="success">&#9679;</span> dev1 &nbsp;&nbsp;Windows &nbsp;online &nbsp;<span class="success">idle</span></div>
+            <div><span class="success">&#9679;</span> dev2 &nbsp;&nbsp;macOS &nbsp;&nbsp;&nbsp;online &nbsp;<span class="success">idle</span></div>
+            <div><span class="success">&#9679;</span> dev3 &nbsp;&nbsp;Linux &nbsp;&nbsp;&nbsp;online &nbsp;<span class="success">idle</span></div>
+            <div><span class="success">&#9679;</span> gpu-1 &nbsp;EC2 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;online &nbsp;<span class="warn">busy</span></div>
+            <div><span class="success">&#9679;</span> rev-1 &nbsp;macOS &nbsp;&nbsp;&nbsp;online &nbsp;<span class="success">idle</span></div>
+            <div style="margin-top: 0.5rem;"><span class="success">&#10003; 7/7 online</span> &mdash; fleet ready</div>
+          </div>
         </div>
-        <div class="terminal-line">
-          <span class="terminal-prompt">$</span>
-          <span class="terminal-cmd">/pm plan #67</span>
-          <span class="terminal-result">&rarr; Requirements &rarr; Plan &rarr; Review &rarr; <span class="success">Approved</span></span>
+
+        <!-- Scenario 2: Plan Issue -->
+        <div class="scenario scenario-2">
+          <span class="scenario-label">Planning</span>
+          <div class="terminal-line">
+            <span class="terminal-prompt">$</span>
+            <span class="terminal-cmd">/pm plan #67</span>
+          </div>
+          <div class="terminal-output">
+            <div><span class="dim">&#9472;&#9472;&#9472;</span> Planning Issue #67 <span class="dim">&#9472;&#9472;&#9472;</span></div>
+            <div><span class="success">&#10003;</span> Requirements analyzed</div>
+            <div><span class="success">&#10003;</span> Architecture review complete</div>
+            <div><span class="success">&#10003;</span> Plan generated &mdash; 3 phases, 8 tasks</div>
+            <div><span class="success">&#10003;</span> Reviewer assigned: rev-1</div>
+            <div><span class="success">&#10003;</span> Plan <span class="highlight">Approved</span></div>
+            <div style="margin-top: 0.5rem;">Ready for execution on dev1</div>
+          </div>
         </div>
-        <div class="terminal-line">
-          <span class="terminal-prompt">$</span>
-          <span class="terminal-cmd">/pm start dev1 plan</span>
-          <span class="terminal-result">&rarr; Executing Phase 1... <span class="success">VERIFY-1 checkpoint &#10003;</span></span>
+
+        <!-- Scenario 3: Execute Plan -->
+        <div class="scenario scenario-3">
+          <span class="scenario-label">Execution</span>
+          <div class="terminal-line">
+            <span class="terminal-prompt">$</span>
+            <span class="terminal-cmd">/pm start dev1 plan</span>
+          </div>
+          <div class="terminal-output">
+            <div><span class="dim">&#9472;&#9472;&#9472;</span> Executing on dev1 <span class="dim">&#9472;&#9472;&#9472;</span></div>
+            <div><span class="success">&#10003;</span> Phase 1: Core implementation</div>
+            <div><span class="success">&#10003;</span> VERIFY-1 checkpoint &mdash; <span class="success">passed</span></div>
+            <div><span class="success">&#10003;</span> Phase 2: Integration tests</div>
+            <div><span class="success">&#10003;</span> VERIFY-2 checkpoint &mdash; <span class="success">passed</span></div>
+            <div><span class="success">&#10003;</span> Phase 3: Documentation</div>
+            <div style="margin-top: 0.5rem;"><span class="success">&#10003;</span> All phases complete. PR ready for review.</div>
+          </div>
         </div>
-        <div class="terminal-line">
-          <span class="terminal-prompt">$</span>
-          <span class="terminal-cmd">/pm deploy dev1</span>
-          <span class="terminal-result">&rarr; Health check: <span class="success">ok &#10003;</span></span>
+
+        <!-- Scenario 4: Deploy -->
+        <div class="scenario scenario-4">
+          <span class="scenario-label">Deployment</span>
+          <div class="terminal-line">
+            <span class="terminal-prompt">$</span>
+            <span class="terminal-cmd">/pm deploy dev1</span>
+          </div>
+          <div class="terminal-output">
+            <div><span class="dim">&#9472;&#9472;&#9472;</span> Deploying from dev1 <span class="dim">&#9472;&#9472;&#9472;</span></div>
+            <div><span class="success">&#10003;</span> Review approved by rev-1</div>
+            <div><span class="success">&#10003;</span> Tests passing &mdash; 47/47</div>
+            <div><span class="success">&#10003;</span> Branch merged to main</div>
+            <div><span class="success">&#10003;</span> Health check: <span class="success">ok</span></div>
+            <div><span class="success">&#10003;</span> Issue #67 closed</div>
+            <div style="margin-top: 0.5rem;"><span class="success">&#10003; Deployed successfully</span></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1432,7 +1717,8 @@ footer {
 
 <!-- GETTING STARTED -->
 <section class="section getting-started" id="getting-started">
-  <div class="container">
+  <div class="glow-orb glow-orb-1"></div>
+  <div class="container" style="position: relative; z-index: 1;">
     <div class="reveal">
       <span class="section-label">Quick Start</span>
       <h2 class="section-title">Up and Running in Minutes</h2>
@@ -1495,7 +1781,7 @@ footer {
 </footer>
 
 <script>
-// Scroll reveal
+// Scroll reveal — earlier trigger with larger rootMargin
 const reveals = document.querySelectorAll('.reveal');
 const observer = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
@@ -1503,7 +1789,7 @@ const observer = new IntersectionObserver((entries) => {
       entry.target.classList.add('visible');
     }
   });
-}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+}, { threshold: 0.05, rootMargin: '0px 0px -20px 0px' });
 reveals.forEach(el => observer.observe(el));
 
 // Nav scroll effect
