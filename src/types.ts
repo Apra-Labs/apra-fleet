@@ -20,6 +20,8 @@ export interface Agent {
   icon?: string;
   gitAccess?: 'read' | 'push' | 'admin' | 'issues' | 'full';
   gitRepos?: string[];
+  vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
+  vcsTokenExpiresAt?: string;  // ISO 8601
 }
 
 export interface GitHubAppConfig {
