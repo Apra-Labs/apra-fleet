@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { updateAgent } from '../services/registry.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
@@ -89,6 +90,12 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   }
 
   if (!deployResult.success) return `❌ ${deployResult.message}`;
+
+  // Persist VCS provider and token expiry in the agent registry
+  updateAgent(agent.id, {
+    vcsProvider: input.provider,
+    vcsTokenExpiresAt: deployResult.metadata?.expiresAt ?? undefined,
+  });
 
   // Best-effort connectivity test
   let connectivity;
