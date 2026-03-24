@@ -5,10 +5,10 @@
     { "id": "T1", "phase": 1, "name": "Fix gitCredentialHelperWrite PowerShell syntax", "status": "completed", "notes": "Replaced here-string with array -join pattern. All 417 tests pass." },
     { "id": "T2", "phase": 1, "name": "Add unit test for Windows credential helper", "status": "completed", "notes": "7 tests: no here-strings, special chars (', \", $, `), -join pattern, cmd.exe escaping. All pass." },
     { "id": "V1", "phase": 1, "name": "Verify Phase 1", "type": "verify", "status": "completed", "notes": "All 424 tests pass (3 skipped — platform-specific). Build clean. Phase 1 complete." },
-    { "id": "T3", "phase": 2, "name": "Add VCS credential fields to Agent type", "status": "pending", "notes": "" },
-    { "id": "T4", "phase": 2, "name": "Persist expiry after token deployment", "status": "pending", "notes": "" },
-    { "id": "T5", "phase": 2, "name": "Add expiry warning", "status": "pending", "notes": "" },
-    { "id": "T6", "phase": 2, "name": "Add tests for token expiry persistence", "status": "pending", "notes": "" },
-    { "id": "V2", "phase": 2, "name": "Verify Phase 2", "type": "verify", "status": "pending", "notes": "" }
+    { "id": "T3", "phase": 2, "name": "Add VCS credential fields to Agent type", "status": "completed", "notes": "Added vcsProvider and vcsTokenExpiresAt optional fields to Agent interface. Build passes." },
+    { "id": "T4", "phase": 2, "name": "Persist expiry after token deployment", "status": "completed", "notes": "updateAgent called after deploy with vcsProvider + vcsTokenExpiresAt from metadata. All tests pass." },
+    { "id": "T5", "phase": 2, "name": "Add expiry warning", "status": "completed", "notes": "checkVcsTokenExpiry() in agent-helpers + integrated in provision output. 10min threshold. All tests pass." },
+    { "id": "T6", "phase": 2, "name": "Add tests for token expiry persistence", "status": "completed", "notes": "5 tests for checkVcsTokenExpiry, 2 tests for registry persistence. All 431 tests pass." },
+    { "id": "V2", "phase": 2, "name": "Verify Phase 2", "type": "verify", "status": "completed", "notes": "All 431 tests pass (3 skipped — platform-specific). Build clean. Phase 2 complete." }
   ]
 }
