@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">`n    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apra Fleet — Your AI Engineering Organization</title>
+  <meta name="description" content="Transforms AI coding agents into a managed engineering team — with a PM that plans, doers that build, and reviewers that verify.">
+  <style>
+    :root {
+      --apra-green: #94BA33;
+      --apra-green-dark: #7a9b2a;
+      --apra-green-light: #b5d957;
+      --text-dark: #2c3e50;
+      --text-medium: #555;
+      --text-light: #777;
+      --bg-light: #f8f9fa;
+      --border-light: #e5e5e5;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      line-height: 1.6;
+      color: var(--text-dark);
+      background: white;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+
+    /* Header */
+    .header {
+      background: white;
+      border-bottom: 1px solid var(--border-light);
+      padding: 20px 0;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .header .container { display: flex; justify-content: space-between; align-items: center; }
+
+    .logo { display: flex; align-items: center; gap: 15px; }
+    .logo-icon { width: 50px; height: 50px; }
+    .logo-text { font-size: 24px; font-weight: 700; color: var(--text-dark); margin: 0; }
+    .logo-tagline { font-size: 13px; color: var(--text-light); margin: 0; }
+    .logo-tagline a { color: var(--apra-green); text-decoration: none; font-weight: 600; }
+    .logo-tagline a:hover { text-decoration: underline; }
+
+    .nav { display: flex; align-items: center; gap: 30px; }
+    .nav a { text-decoration: none; color: var(--text-medium); font-weight: 500; font-size: 15px; transition: color 0.2s; }
+    .nav a:hover { color: var(--apra-green); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white !important;
+      padding: 10px 24px;
+      border-radius: 8px;
+      font-weight: 600;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(148, 186, 51, 0.3); }
+
+    /* Hero */
+    .hero {
+      background: linear-gradient(135deg, #f8fef0 0%, #ffffff 100%);
+      padding: 80px 0;
+      border-bottom: 1px solid var(--border-light);
+    }
+    .hero .container { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: center; }
+    .hero-title { font-size: 48px; font-weight: 800; line-height: 1.2; margin-bottom: 20px; color: var(--text-dark); }
+    .hero-subtitle { font-size: 20px; color: var(--text-medium); margin-bottom: 30px; line-height: 1.6; }
+    .hero-cta { display: flex; gap: 15px; margin-bottom: 40px; }
+
+    .btn-large {
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      padding: 16px 32px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 16px;
+      transition: transform 0.2s, box-shadow 0.2s;
+      display: inline-block;
+    }
+    .btn-large:hover { transform: translateY(-3px); box-shadow: 0 8px 25px rgba(148, 186, 51, 0.4); }
+
+    .btn-secondary-large {
+      background: white;
+      color: var(--apra-green);
+      padding: 16px 32px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 16px;
+      border: 2px solid var(--apra-green);
+      transition: all 0.2s;
+      display: inline-block;
+    }
+    .btn-secondary-large:hover { background: var(--apra-green); color: white; }
+
+    .hero-stats { display: flex; gap: 40px; }
+    .stat { display: flex; flex-direction: column; }
+    .stat strong { font-size: 32px; color: var(--apra-green); font-weight: 800; }
+    .stat span { font-size: 14px; color: var(--text-light); font-weight: 500; }
+
+    .hero-image { display: flex; justify-content: center; align-items: center; }
+
+    /* CLI Window — mimics real Claude / Gemini CLI */
+    .cli-window {
+      background: #1a1a1a;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+      overflow: hidden;
+      width: 100%;
+      max-width: 600px;
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+      position: relative;
+      height: 360px;
+    }
+
+    .cli-titlebar {
+      padding: 10px 18px;
+      font-size: 12px;
+      border-bottom: 1px solid #2a2a2a;
+      white-space: nowrap;
+      overflow: hidden;
+      letter-spacing: 0.02em;
+    }
+    .claude-bar { background: #242424; color: #7a9b2a; }
+    .claude-bar .cli-name { color: #94BA33; font-weight: bold; }
+    .gemini-bar { background: #1c1f35; color: #6b93d6; }
+    .gemini-bar .cli-name { color: #8ab4f8; font-weight: bold; }
+
+    .cli-content { padding: 18px 22px; }
+
+    .cli-prompt {
+      color: #e0e0e0;
+      margin-bottom: 14px;
+      font-size: 14px;
+    }
+    .prompt-char {
+      color: #94BA33;
+      font-weight: bold;
+      font-size: 15px;
+      margin-right: 8px;
+    }
+    .gemini-prompt .prompt-char { color: #8ab4f8; }
+
+    .cli-output {
+      color: #c0c0c0;
+      margin-bottom: 7px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .cli-output.cli-success { color: #73c991; }
+    .cli-output.cli-muted  { color: #666; }
+    .cli-output.cli-pause  { color: #f9ab00; }
+    .cli-dim { color: #666; }
+
+    .cli-result {
+      color: #94BA33;
+      font-weight: 600;
+      margin-top: 14px;
+      font-size: 13px;
+    }
+    .cli-result.gemini-result { color: #8ab4f8; }
+
+    .scenario {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      opacity: 0;
+      visibility: hidden;
+      animation: scenarioFade 20s ease-in-out infinite;
+    }
+    .scenario-1 { animation-delay: 0s; }
+    .scenario-2 { animation-delay: 5s; }
+    .scenario-3 { animation-delay: 10s; }
+    .scenario-4 { animation-delay: 15s; }
+
+    @keyframes scenarioFade {
+      0%   { opacity: 0; visibility: hidden; transform: translateY(20px); }
+      3%   { opacity: 1; visibility: visible; transform: translateY(0); }
+      22%  { opacity: 1; visibility: visible; transform: translateY(0); }
+      25%  { opacity: 0; visibility: hidden; transform: translateY(-20px); }
+      100% { opacity: 0; visibility: hidden; }
+    }
+
+    .ai-response {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    .scenario-1 .ai-response { animation: responseSlideIn1 20s ease-in-out infinite; }
+    .scenario-2 .ai-response { animation: responseSlideIn2 20s ease-in-out infinite; }
+    .scenario-3 .ai-response { animation: responseSlideIn3 20s ease-in-out infinite; }
+    .scenario-4 .ai-response { animation: responseSlideIn4 20s ease-in-out infinite; }
+
+    @keyframes responseSlideIn1 {
+      0%, 6%   { opacity: 0; transform: translateY(-10px); }
+      8%, 22%  { opacity: 1; transform: translateY(0); }
+      25%      { opacity: 0; }
+      100%     { opacity: 0; }
+    }
+    @keyframes responseSlideIn2 {
+      0%, 31%  { opacity: 0; transform: translateY(-10px); }
+      33%, 47% { opacity: 1; transform: translateY(0); }
+      50%      { opacity: 0; }
+      100%     { opacity: 0; }
+    }
+    @keyframes responseSlideIn3 {
+      0%, 56%  { opacity: 0; transform: translateY(-10px); }
+      58%, 72% { opacity: 1; transform: translateY(0); }
+      75%      { opacity: 0; }
+      100%     { opacity: 0; }
+    }
+    @keyframes responseSlideIn4 {
+      0%, 81%  { opacity: 0; transform: translateY(-10px); }
+      83%, 97% { opacity: 1; transform: translateY(0); }
+      100%     { opacity: 1; }
+    }
+
+    /* Section Title */
+    .section-title { font-size: 40px; font-weight: 800; text-align: center; margin-bottom: 50px; color: var(--text-dark); }
+
+    /* Feature Highlight */
+    .feature-highlight {
+      padding: 80px 0;
+      background: linear-gradient(135deg, #f0f7e6 0%, #ffffff 100%);
+      border-bottom: 1px solid var(--border-light);
+      text-align: center;
+    }
+    .feature-highlight-badge {
+      display: inline-block;
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      padding: 8px 20px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 12px rgba(148, 186, 51, 0.3);
+    }
+    .feature-highlight-title { font-size: 44px; font-weight: 800; margin-bottom: 20px; color: var(--text-dark); }
+    .feature-highlight-subtitle {
+      font-size: 22px;
+      color: var(--text-medium);
+      margin-bottom: 50px;
+      max-width: 800px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.6;
+    }
+    .feature-highlight-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 30px;
+      margin-bottom: 50px;
+      max-width: 1000px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .highlight-card {
+      background: white;
+      border: 2px solid var(--border-light);
+      border-radius: 12px;
+      padding: 30px 25px;
+      transition: all 0.3s ease;
+      text-align: center;
+    }
+    .highlight-card:hover { border-color: var(--apra-green); box-shadow: 0 8px 24px rgba(148, 186, 51, 0.15); transform: translateY(-4px); }
+    .highlight-icon { font-size: 3em; margin-bottom: 15px; }
+    .highlight-card h3 { font-size: 20px; font-weight: 700; margin-bottom: 12px; color: var(--text-dark); }
+    .highlight-card p { color: var(--text-medium); font-size: 15px; line-height: 1.6; margin-bottom: 15px; }
+    .highlight-pattern {
+      background: var(--bg-light);
+      border: 1px solid var(--border-light);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      color: var(--apra-green);
+      font-weight: 600;
+      display: inline-block;
+    }
+
+    /* Features */
+    .features { padding: 80px 0; background: white; }
+    .features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+    .feature-card {
+      background: var(--bg-light);
+      padding: 30px;
+      border-radius: 12px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .feature-card:hover { transform: translateY(-5px); box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+    .feature-icon { font-size: 48px; margin-bottom: 15px; }
+    .feature-card h3 { font-size: 20px; margin-bottom: 12px; color: var(--text-dark); }
+    .feature-card p { color: var(--text-medium); line-height: 1.6; }
+
+    /* Quick Start / How It Works */
+    .quick-start { padding: 80px 0; background: linear-gradient(135deg, #f8fef0 0%, #ffffff 100%); }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; margin-bottom: 40px; }
+    .step { text-align: center; position: relative; }
+    .step::after { content: '\2192'; position: absolute; right: -20px; top: 15px; font-size: 24px; color: var(--apra-green-light); font-weight: 700; }
+    .step:last-child::after { display: none; }
+    .step-number {
+      width: 50px; height: 50px;
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      font-weight: 700;
+      margin: 0 auto 15px;
+    }
+    .step h3 { font-size: 18px; margin-bottom: 10px; color: var(--text-dark); }
+    .step p { color: var(--text-medium); font-size: 14px; line-height: 1.5; }
+    .quick-start-cta { text-align: center; }
+
+    /* Competitive / Compare */
+    .providers { padding: 80px 0; background: white; }
+    .compare-table-wrap { overflow-x: auto; }
+    .compare-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 15px;
+    }
+    .compare-table th {
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      padding: 14px 18px;
+      text-align: left;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .compare-table td {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-light);
+      vertical-align: top;
+      line-height: 1.5;
+    }
+    .compare-table tbody tr:nth-child(even) td { background: var(--bg-light); }
+    .compare-table tbody tr:nth-child(odd) td { background: white; }
+    .compare-table tbody tr:last-child td {
+      background: #f0f7e6;
+      font-weight: 700;
+      color: var(--text-dark);
+      border-bottom: none;
+    }
+    .compare-table tbody tr:last-child td:last-child { color: var(--apra-green-dark); }
+    .compare-table .tools { color: var(--text-medium); font-size: 14px; }
+    .compare-table .missing { color: #c0392b; font-size: 14px; }
+    .compare-table .fleet { color: var(--apra-green-dark); font-weight: 700; }
+
+    /* Stories */
+    .documentation { padding: 80px 0; background: linear-gradient(135deg, #f8fef0 0%, #ffffff 100%); }
+    .docs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+    .doc-card {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      text-decoration: none;
+      border: 2px solid var(--border-light);
+      transition: all 0.2s;
+    }
+    .doc-card:hover { border-color: var(--apra-green); transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
+    .doc-card h3 { font-size: 22px; margin-bottom: 12px; color: var(--text-dark); }
+    .doc-card p { color: var(--text-medium); line-height: 1.6; }
+
+    /* Production Numbers */
+    .feedback { padding: 80px 0; background: white; }
+    .feedback-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 30px; }
+    .feedback-card {
+      background: var(--bg-light);
+      padding: 40px 30px;
+      border-radius: 12px;
+      text-align: center;
+    }
+    .feedback-card h3 { font-size: 48px; margin-bottom: 10px; color: var(--apra-green); font-weight: 800; }
+    .feedback-card p { color: var(--text-medium); margin-bottom: 0; line-height: 1.6; font-weight: 600; }
+    .production-note { text-align: center; margin-top: 40px; font-size: 18px; color: var(--text-medium); font-style: italic; }
+
+    .btn-secondary {
+      background: white;
+      color: var(--apra-green);
+      padding: 12px 24px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      border: 2px solid var(--apra-green);
+      display: inline-block;
+      transition: all 0.2s;
+    }
+    .btn-secondary:hover { background: var(--apra-green); color: white; }
+
+    /* Footer */
+    .footer { background: var(--text-dark); color: white; padding: 60px 0 30px; }
+    .footer-content { display: grid; grid-template-columns: 2fr 3fr; gap: 60px; margin-bottom: 40px; }
+    .footer-brand h3 { font-size: 24px; margin-bottom: 10px; }
+    .footer-brand p { color: #aaa; margin-bottom: 8px; }
+    .footer-brand a { color: var(--apra-green); text-decoration: none; }
+    .footer-tagline { font-style: italic; margin-top: 15px !important; }
+    .footer-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+    .footer-column h4 { margin-bottom: 15px; color: var(--apra-green); }
+    .footer-column a { display: block; color: #aaa; text-decoration: none; margin-bottom: 10px; transition: color 0.2s; }
+    .footer-column a:hover { color: white; }
+    .footer-bottom { border-top: 1px solid #444; padding-top: 30px; text-align: center; color: #aaa; font-size: 14px; }
+    .footer-bottom p { margin-bottom: 8px; }
+    .footer-bottom a { color: var(--apra-green); text-decoration: none; }
+    .footer-bottom a:hover { text-decoration: underline; }
+
+    /* Responsive */
+    @media (max-width: 968px) {
+      .hero .container { grid-template-columns: 1fr; text-align: center; }
+      .hero-cta { justify-content: center; }
+      .hero-stats { justify-content: center; }
+      .features-grid { grid-template-columns: repeat(2, 1fr); }
+      .steps { grid-template-columns: repeat(2, 1fr); }
+      .provider-grid { grid-template-columns: 1fr; }
+      .footer-content { grid-template-columns: 1fr; }
+      .feature-highlight-grid { grid-template-columns: 1fr; max-width: 500px; }
+      .feature-highlight-title { font-size: 36px; }
+      .feature-highlight-subtitle { font-size: 18px; }
+    }
+
+    @media (max-width: 640px) {
+      .nav { display: none; }
+      .hero-title { font-size: 32px; }
+      .features-grid, .steps, .provider-grid, .docs-grid, .feedback-grid { grid-template-columns: 1fr; }
+      .step::after { display: none; }
+      .footer-links { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="container">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#94BA33;stop-opacity:1" />
+              <stop offset="100%" style="stop-color:#7a9b2a;stop-opacity:1" />
+            </linearGradient>
+          </defs>
+          <rect width="128" height="128" rx="26" fill="url(#grad1)"/>
+          <g transform="translate(64, 64)">
+            <path d="M -28 -20 L -35 -20 Q -40 -20 -40 -15 L -40 15 Q -40 20 -35 20 L -28 20"
+                  stroke="white" stroke-width="4.5" fill="none" stroke-linecap="round" opacity="0.95"/>
+            <path d="M 28 -20 L 35 -20 Q 40 -20 40 -15 L 40 15 Q 40 20 35 20 L 28 20"
+                  stroke="white" stroke-width="4.5" fill="none" stroke-linecap="round" opacity="0.95"/>
+            <circle cx="0" cy="0" r="6" fill="#b5d957" opacity="0.9"/>
+            <circle cx="0" cy="0" r="3.5" fill="white"/>
+            <line x1="0" y1="-12" x2="0" y2="-18" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+            <line x1="0" y1="12" x2="0" y2="18" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+            <line x1="-12" y1="0" x2="-18" y2="0" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+            <line x1="12" y1="0" x2="18" y2="0" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+          </g>
+        </svg>
+        <div>
+          <h1 class="logo-text">Apra Fleet</h1>
+          <p class="logo-tagline">by <a href="https://www.apralabs.com" target="_blank">Apra Labs</a></p>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="#home">Home</a>
+        <a href="#architecture">How It Works</a>
+        <a href="#features">Features</a>
+        <a href="#compare">Compare</a>
+        <a href="#how-it-works">Get Started</a>
+        <a href="https://github.com/Apra-Labs/apra-fleet" target="_blank" class="btn-primary">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section id="home" class="hero">
+    <div class="container">
+      <div class="hero-content">
+        <h2 class="hero-title">Your AI Engineering Organization</h2>
+        <p class="hero-subtitle">Transforms AI coding agents into a managed engineering team &mdash; with a PM that plans, doers that build, and reviewers that verify. On your machines, with your process.</p>
+        <div class="hero-cta">
+          <a href="#how-it-works" class="btn-large">Get Started</a>
+          <a href="https://github.com/Apra-Labs/apra-fleet" target="_blank" class="btn-secondary-large">View on GitHub</a>
+        </div>
+        <div class="hero-stats">
+          <div class="stat">
+            <strong>3</strong>
+            <span>Agent Roles</span>
+          </div>
+          <div class="stat">
+            <strong>7</strong>
+            <span>Fleet Members</span>
+          </div>
+          <div class="stat">
+            <strong>100%</strong>
+            <span>Your Infrastructure</span>
+          </div>
+        </div>
+      </div>
+      <div class="hero-image">
+        <div class="cli-window">
+          <!-- Scene 1: Claude — fleet status -->
+          <div class="scenario scenario-1">
+            <div class="cli-titlebar claude-bar">&#x250C;&#x2500; <span class="cli-name">claude</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt"><span class="prompt-char">&gt;</span> /pm status fleet</div>
+              <div class="ai-response">
+                <div class="cli-output">&#x1F535; fleet-dev1 <span class="cli-dim">(idle)</span> &nbsp;&#xB7; local &nbsp;&#xB7; windows</div>
+                <div class="cli-output">&#x1F7E2; fleet-dev2 <span class="cli-dim">(idle)</span> &nbsp;&#xB7; 192.168.1.13 &nbsp;&#xB7; macos</div>
+                <div class="cli-output">&#x1F7E2; fleet-rev1 <span class="cli-dim">(idle)</span> &nbsp;&#xB7; 192.168.1.13 &nbsp;&#xB7; macos</div>
+                <div class="cli-result">Fleet v0.1.2 &nbsp;&#xB7;&nbsp; 7/7 online</div>
+              </div>
+            </div>
+          </div>
+          <!-- Scene 2: Claude — plan -->
+          <div class="scenario scenario-2">
+            <div class="cli-titlebar claude-bar">&#x250C;&#x2500; <span class="cli-name">claude</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt"><span class="prompt-char">&gt;</span> /pm plan #67</div>
+              <div class="ai-response">
+                <div class="cli-output cli-muted">Planning Sprint 6a&hellip;</div>
+                <div class="cli-output cli-success">&#x2713; Requirements written</div>
+                <div class="cli-output cli-success">&#x2713; Plan generated <span class="cli-dim">(7 tasks, 3 phases)</span></div>
+                <div class="cli-output cli-success">&#x2713; Reviewer APPROVED <span class="cli-dim">(12/12 checks)</span></div>
+                <div class="cli-result">Ready for execution.</div>
+              </div>
+            </div>
+          </div>
+          <!-- Scene 3: Gemini — start -->
+          <div class="scenario scenario-3">
+            <div class="cli-titlebar gemini-bar">&#x2728; <span class="cli-name">Gemini</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt gemini-prompt"><span class="prompt-char">&gt;</span> /pm start dev1 plan</div>
+              <div class="ai-response">
+                <div class="cli-output">&#x1F535; fleet-dev1: Executing Phase 1&hellip;</div>
+                <div class="cli-output cli-success">&#x2713; Task 1: Schema + data layer &mdash; committed</div>
+                <div class="cli-output cli-success">&#x2713; Task 2: UI implementation &mdash; committed</div>
+                <div class="cli-output cli-pause">&#x23F8; VERIFY-1: Tests passing <span class="cli-dim">(524/524)</span></div>
+                <div class="cli-result gemini-result">Stopped at checkpoint. Awaiting review.</div>
+              </div>
+            </div>
+          </div>
+          <!-- Scene 4: Gemini — deploy -->
+          <div class="scenario scenario-4">
+            <div class="cli-titlebar gemini-bar">&#x2728; <span class="cli-name">Gemini</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt gemini-prompt"><span class="prompt-char">&gt;</span> /pm deploy dev1</div>
+              <div class="ai-response">
+                <div class="cli-output cli-muted">Deploying to production&hellip;</div>
+                <div class="cli-output cli-success">&#x2713; Health check: ok</div>
+                <div class="cli-output cli-success">&#x2713; Version: 0.2.4</div>
+                <div class="cli-output cli-success">&#x2713; Deployed successfully</div>
+                <div class="cli-result gemini-result">Production: live &#x1F7E2;</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Fleet Architecture -->
+  <section id="architecture" class="feature-highlight">
+    <div class="container">
+      <div class="feature-highlight-badge">HOW IT WORKS</div>
+      <h2 class="feature-highlight-title">The Fleet Architecture</h2>
+      <p class="feature-highlight-subtitle">
+        Three specialized roles. One unified workflow. Everything through git.
+      </p>
+      <div class="feature-highlight-grid">
+        <div class="highlight-card">
+          <div class="highlight-icon">&#x1F4CB;</div>
+          <h3>PM (Project Manager)</h3>
+          <p>Plans sprints, breaks issues into tasks, assigns work, tracks progress. Uses a premium model for deep reasoning.</p>
+          <div class="highlight-pattern">/pm plan, /pm start, /pm status</div>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">&#x1F528;</div>
+          <h3>Doer (Specialist)</h3>
+          <p>Executes implementation plans step by step. Roles include architect, designer, developer, integration test writer, DevOps engineer, and documentation writer.</p>
+          <div class="highlight-pattern">git commit, test, verify</div>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-icon">&#x1F50D;</div>
+          <h3>Reviewer (Quality Gate)</h3>
+          <p>Reviews every PR against the plan. Blocks merges that miss requirements. Thorough analysis at every checkpoint.</p>
+          <div class="highlight-pattern">review, approve, block</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="features">
+    <div class="container">
+      <h2 class="section-title">Why Apra Fleet?</h2>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F310;</div>
+          <h3>Cross-Platform Fleet</h3>
+          <p>Windows, macOS, Linux. Local members + remote via SSH. Mix and match your infrastructure.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F9E0;</div>
+          <h3>Smart Model Routing</h3>
+          <p>Route premium models for planning, mid-tier for coding, fast models for status checks. The right tier for each task.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F500;</div>
+          <h3>Git as Transport</h3>
+          <p>Everything flows through git. No proprietary sync protocol. Standard branches and PRs.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x1F6E1;&#xFE0F;</div>
+          <h3>Crash Recovery</h3>
+          <p>/pm recover inspects git state and resumes from last checkpoint. Nothing is lost.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x2601;&#xFE0F;</div>
+          <h3>Cloud Compute</h3>
+          <p>AWS EC2 auto start/stop. GPU-aware idle detection. Pay only when building.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#x2705;</div>
+          <h3>Mandatory Review Gates</h3>
+          <p>No reviewer approval = no merge. Every change gets verified against the plan.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section id="how-it-works" class="quick-start">
+    <div class="container">
+      <h2 class="section-title">Get Running in 3 Steps</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h3>Download</h3>
+          <p>Available for Windows, Ubuntu, and macOS. Download the latest release from GitHub.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h3>Install &amp; Register</h3>
+          <p>Install the executable, then register fleet members — local machines or remote via SSH.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h3>Start Managing</h3>
+          <p><code>/pm plan</code> to generate a plan, <code>/pm start</code> to build, <code>/pm deploy</code> to ship.</p>
+        </div>
+      </div>
+      <div class="quick-start-cta">
+        <a href="https://github.com/Apra-Labs/apra-fleet/releases" target="_blank" class="btn-large">Download Latest Release</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- How Fleet Compares -->
+  <section id="compare" class="providers">
+    <div class="container">
+      <h2 class="section-title">How Fleet Compares</h2>
+      <div class="compare-table-wrap">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Tools</th>
+              <th>What&rsquo;s Missing</th>
+              <th>Apra Fleet</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Better Autocomplete</strong></td>
+              <td class="tools">Cursor, Copilot, Windsurf, Cline</td>
+              <td class="missing">Organization, process, scale</td>
+              <td class="fleet">Full engineering org</td>
+            </tr>
+            <tr>
+              <td><strong>Autonomous Task Runner</strong></td>
+              <td class="tools">Devin, Codex, OpenHands</td>
+              <td class="missing">Your infrastructure, your process</td>
+              <td class="fleet">Runs on your machines</td>
+            </tr>
+            <tr>
+              <td><strong>Multi-Agent Framework</strong></td>
+              <td class="tools">CrewAI, AutoGen, LangGraph, MetaGPT</td>
+              <td class="missing">Working system, git workflows</td>
+              <td class="fleet">Production-ready system</td>
+            </tr>
+            <tr>
+              <td><strong>AI-Native Engineering Org</strong></td>
+              <td class="tools">Apra Fleet</td>
+              <td>&mdash;</td>
+              <td class="fleet">The complete picture</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Real Stories -->
+  <section id="stories" class="documentation">
+    <div class="container">
+      <h2 class="section-title">Real Stories</h2>
+      <div class="docs-grid">
+        <div class="doc-card">
+          <h3>The Weekend Rewrite</h3>
+          <p>CTO demands auth system migration by Monday. Fleet plans, builds, and ships the rewrite overnight. 3 doers, 2 reviewers, zero humans coding.</p>
+        </div>
+        <div class="doc-card">
+          <h3>The Solo Founder</h3>
+          <p>200-item backlog, one person. Ships 5 features per week writing zero code. PM plans each sprint, doers execute, reviewers verify.</p>
+        </div>
+        <div class="doc-card">
+          <h3>The 3am Recovery</h3>
+          <p>Production PM crashes mid-sprint. <code>/pm recover</code> inspects git state, finds last checkpoint, resumes all in-flight work. Nothing lost.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Running in Production -->
+  <section id="production" class="feedback">
+    <div class="container">
+      <h2 class="section-title">Running in Production</h2>
+      <div class="feedback-grid">
+        <div class="feedback-card">
+          <h3>7</h3>
+          <p>Engineers</p>
+        </div>
+        <div class="feedback-card">
+          <h3>3</h3>
+          <p>Organizations</p>
+        </div>
+        <div class="feedback-card">
+          <h3>20+</h3>
+          <p>Sprints</p>
+        </div>
+        <div class="feedback-card">
+          <h3>200+</h3>
+          <p>Items Shipped</p>
+        </div>
+      </div>
+      <p class="production-note">Battle-tested across C++, Node.js, Python, ML Pipelines, and Video Processing projects</p>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-content">
+        <div class="footer-brand">
+          <h3>Apra Fleet</h3>
+          <p>Built by <a href="https://www.apralabs.com" target="_blank">Apra Labs</a></p>
+          <p class="footer-tagline">Your AI engineering organization, on your infrastructure</p>
+        </div>
+        <div class="footer-links">
+          <div class="footer-column">
+            <h4>Product</h4>
+            <a href="#features">Features</a>
+            <a href="#architecture">How It Works</a>
+            <a href="#compare">Compare</a>
+          </div>
+          <div class="footer-column">
+            <h4>Resources</h4>
+            <a href="https://github.com/Apra-Labs/apra-fleet" target="_blank">GitHub</a>
+            <a href="https://github.com/Apra-Labs/apra-fleet#readme" target="_blank">Documentation</a>
+            <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank">License (Apache 2.0)</a>
+          </div>
+          <div class="footer-column">
+            <h4>Community</h4>
+            <a href="https://github.com/Apra-Labs/apra-fleet/issues" target="_blank">GitHub Issues</a>
+            <a href="https://www.apralabs.com" target="_blank">Apra Labs</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2026 <a href="https://www.apralabs.com" target="_blank">Apra Labs</a>. Licensed under <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank">Apache 2.0</a>.</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
