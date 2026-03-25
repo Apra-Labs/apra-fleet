@@ -301,20 +301,38 @@
 
     /* Competitive / Compare */
     .providers { padding: 80px 0; background: white; }
-    .provider-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; max-width: 800px; margin: 0 auto; }
-    .provider-card {
-      background: var(--bg-light);
-      padding: 25px;
-      border-radius: 10px;
-      text-align: center;
-      border: 2px solid transparent;
-      transition: all 0.2s;
+    .compare-table-wrap { overflow-x: auto; }
+    .compare-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 15px;
     }
-    .provider-card:hover { border-color: var(--apra-green); background: white; }
-    .provider-name { font-size: 20px; font-weight: 700; margin-bottom: 5px; color: var(--text-dark); }
-    .provider-desc { font-size: 14px; color: var(--text-light); margin-bottom: 10px; }
-    .provider-tag { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: var(--border-light); color: var(--text-medium); }
-    .provider-tag.best { background: #ffd700; color: #333; }
+    .compare-table th {
+      background: linear-gradient(135deg, var(--apra-green) 0%, var(--apra-green-dark) 100%);
+      color: white;
+      padding: 14px 18px;
+      text-align: left;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .compare-table td {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-light);
+      vertical-align: top;
+      line-height: 1.5;
+    }
+    .compare-table tbody tr:nth-child(even) td { background: var(--bg-light); }
+    .compare-table tbody tr:nth-child(odd) td { background: white; }
+    .compare-table tbody tr:last-child td {
+      background: #f0f7e6;
+      font-weight: 700;
+      color: var(--text-dark);
+      border-bottom: none;
+    }
+    .compare-table tbody tr:last-child td:last-child { color: var(--apra-green-dark); }
+    .compare-table .tools { color: var(--text-medium); font-size: 14px; }
+    .compare-table .missing { color: #c0392b; font-size: 14px; }
+    .compare-table .fleet { color: var(--apra-green-dark); font-weight: 700; }
 
     /* Stories */
     .documentation { padding: 80px 0; background: linear-gradient(135deg, #f8fef0 0%, #ffffff 100%); }
@@ -454,8 +472,8 @@
             <span>Agent Roles</span>
           </div>
           <div class="stat">
-            <strong>5+</strong>
-            <span>Active Projects</span>
+            <strong>7</strong>
+            <span>Fleet Members</span>
           </div>
           <div class="stat">
             <strong>100%</strong>
@@ -473,6 +491,7 @@
           </div>
           <div class="terminal-demo">
             <div class="scenario scenario-1">
+              <div class="terminal-line" style="color:#7ec8e3;font-size:11px;margin-bottom:6px;">&#x25B6; claude (Claude CLI)</div>
               <div class="terminal-line"><span class="prompt">$</span> /pm status fleet</div>
               <div class="ai-response">
                 <div class="terminal-line success">fleet-dev1&nbsp;&nbsp;online&nbsp;&nbsp;idle</div>
@@ -482,6 +501,7 @@
               </div>
             </div>
             <div class="scenario scenario-2">
+              <div class="terminal-line" style="color:#7ec8e3;font-size:11px;margin-bottom:6px;">&#x25B6; claude (Claude CLI)</div>
               <div class="terminal-line"><span class="prompt">$</span> /pm plan #67</div>
               <div class="ai-response">
                 <div class="terminal-line">Analyzing requirements...</div>
@@ -491,6 +511,7 @@
               </div>
             </div>
             <div class="scenario scenario-3">
+              <div class="terminal-line" style="color:#f9ab00;font-size:11px;margin-bottom:6px;">&#x25B6; gemini (Gemini CLI)</div>
               <div class="terminal-line"><span class="prompt">$</span> /pm start dev1</div>
               <div class="ai-response">
                 <div class="terminal-line">Executing Phase 1...</div>
@@ -500,6 +521,7 @@
               </div>
             </div>
             <div class="scenario scenario-4">
+              <div class="terminal-line" style="color:#f9ab00;font-size:11px;margin-bottom:6px;">&#x25B6; gemini (Gemini CLI)</div>
               <div class="terminal-line"><span class="prompt">$</span> /pm deploy</div>
               <div class="ai-response">
                 <div class="terminal-line">Building artifacts...</div>
@@ -526,19 +548,19 @@
         <div class="highlight-card">
           <div class="highlight-icon">&#x1F4CB;</div>
           <h3>PM (Project Manager)</h3>
-          <p>Plans sprints, breaks issues into tasks, assigns work, tracks progress. Uses Opus for deep reasoning.</p>
+          <p>Plans sprints, breaks issues into tasks, assigns work, tracks progress. Uses a premium model for deep reasoning.</p>
           <div class="highlight-pattern">/pm plan, /pm start, /pm status</div>
         </div>
         <div class="highlight-card">
           <div class="highlight-icon">&#x1F528;</div>
-          <h3>Doer (Developer)</h3>
-          <p>Executes implementation plans step by step. Writes code, runs tests, commits. Uses Sonnet for speed.</p>
+          <h3>Doer (Specialist)</h3>
+          <p>Executes implementation plans step by step. Roles include architect, designer, developer, integration test writer, DevOps engineer, and documentation writer.</p>
           <div class="highlight-pattern">git commit, test, verify</div>
         </div>
         <div class="highlight-card">
           <div class="highlight-icon">&#x1F50D;</div>
           <h3>Reviewer (Quality Gate)</h3>
-          <p>Reviews every PR against the plan. Blocks merges that miss requirements. Uses Sonnet for thorough analysis.</p>
+          <p>Reviews every PR against the plan. Blocks merges that miss requirements. Thorough analysis at every checkpoint.</p>
           <div class="highlight-pattern">review, approve, block</div>
         </div>
       </div>
@@ -558,7 +580,7 @@
         <div class="feature-card">
           <div class="feature-icon">&#x1F9E0;</div>
           <h3>Smart Model Routing</h3>
-          <p>Opus for planning, Sonnet for coding, Haiku for status checks. The right model for each task.</p>
+          <p>Route premium models for planning, mid-tier for coding, fast models for status checks. The right tier for each task.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">&#x1F500;</div>
@@ -591,18 +613,18 @@
       <div class="steps">
         <div class="step">
           <div class="step-number">1</div>
-          <h3>Download &amp; Register</h3>
-          <p>Download from GitHub Releases. Register fleet members with <code>/pm register</code>.</p>
+          <h3>Download</h3>
+          <p>Available for Windows, Ubuntu, and macOS. Download the latest release from GitHub.</p>
         </div>
         <div class="step">
           <div class="step-number">2</div>
-          <h3>Plan</h3>
-          <p>Use <code>/pm plan</code> to generate implementation plans from GitHub issues.</p>
+          <h3>Install &amp; Register</h3>
+          <p>Install the executable, then register fleet members — local machines or remote via SSH.</p>
         </div>
         <div class="step">
           <div class="step-number">3</div>
-          <h3>Execute</h3>
-          <p><code>/pm start</code> kicks off the doer-reviewer execution loop. Watch it build.</p>
+          <h3>Start Managing</h3>
+          <p><code>/pm plan</code> to generate a plan, <code>/pm start</code> to build, <code>/pm deploy</code> to ship.</p>
         </div>
       </div>
       <div class="quick-start-cta">
@@ -615,27 +637,43 @@
   <section id="compare" class="providers">
     <div class="container">
       <h2 class="section-title">How Fleet Compares</h2>
-      <div class="provider-grid">
-        <div class="provider-card">
-          <div class="provider-name">Better Autocomplete</div>
-          <div class="provider-desc">Cursor, Copilot</div>
-          <div class="provider-tag">Missing: organization, scale</div>
-        </div>
-        <div class="provider-card">
-          <div class="provider-name">Autonomous Task Runner</div>
-          <div class="provider-desc">Devin, Codex</div>
-          <div class="provider-tag">Missing: your infrastructure</div>
-        </div>
-        <div class="provider-card">
-          <div class="provider-name">Multi-Agent Framework</div>
-          <div class="provider-desc">CrewAI, AutoGen</div>
-          <div class="provider-tag">Missing: working system</div>
-        </div>
-        <div class="provider-card">
-          <div class="provider-name">AI-Native Engineering Org</div>
-          <div class="provider-desc">Apra Fleet</div>
-          <div class="provider-tag best">The complete picture</div>
-        </div>
+      <div class="compare-table-wrap">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Tools</th>
+              <th>What&rsquo;s Missing</th>
+              <th>Apra Fleet</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Better Autocomplete</strong></td>
+              <td class="tools">Cursor, Copilot, Windsurf, Cline</td>
+              <td class="missing">Organization, process, scale</td>
+              <td class="fleet">Full engineering org</td>
+            </tr>
+            <tr>
+              <td><strong>Autonomous Task Runner</strong></td>
+              <td class="tools">Devin, Codex, OpenHands</td>
+              <td class="missing">Your infrastructure, your process</td>
+              <td class="fleet">Runs on your machines</td>
+            </tr>
+            <tr>
+              <td><strong>Multi-Agent Framework</strong></td>
+              <td class="tools">CrewAI, AutoGen, LangGraph, MetaGPT</td>
+              <td class="missing">Working system, git workflows</td>
+              <td class="fleet">Production-ready system</td>
+            </tr>
+            <tr>
+              <td><strong>AI-Native Engineering Org</strong></td>
+              <td class="tools">Apra Fleet</td>
+              <td>&mdash;</td>
+              <td class="fleet">The complete picture</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -667,7 +705,7 @@
       <h2 class="section-title">Running in Production</h2>
       <div class="feedback-grid">
         <div class="feedback-card">
-          <h3>4</h3>
+          <h3>7</h3>
           <p>Engineers</p>
         </div>
         <div class="feedback-card">
@@ -679,7 +717,7 @@
           <p>Sprints</p>
         </div>
         <div class="feedback-card">
-          <h3>100+</h3>
+          <h3>200+</h3>
           <p>Items Shipped</p>
         </div>
       </div>
@@ -707,7 +745,7 @@
             <h4>Resources</h4>
             <a href="https://github.com/Apra-Labs/apra-fleet" target="_blank">GitHub</a>
             <a href="https://github.com/Apra-Labs/apra-fleet#readme" target="_blank">Documentation</a>
-            <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank">License (CC BY-SA 3.0)</a>
+            <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank">License (Apache 2.0)</a>
           </div>
           <div class="footer-column">
             <h4>Community</h4>
@@ -717,7 +755,7 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <p>&copy; 2026 <a href="https://www.apralabs.com" target="_blank">Apra Labs</a>. Licensed under <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank">CC BY-SA 3.0</a>.</p>
+        <p>&copy; 2026 <a href="https://www.apralabs.com" target="_blank">Apra Labs</a>. Licensed under <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank">Apache 2.0</a>.</p>
       </div>
     </div>
   </footer>
