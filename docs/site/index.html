@@ -106,47 +106,69 @@
 
     .hero-image { display: flex; justify-content: center; align-items: center; }
 
-    /* Browser Window / Terminal */
-    .browser-window {
-      background: white;
+    /* CLI Window — mimics real Claude / Gemini CLI */
+    .cli-window {
+      background: #1a1a1a;
       border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.45);
       overflow: hidden;
       width: 100%;
       max-width: 600px;
-    }
-    .browser-bar {
-      background: #f5f5f5;
-      padding: 12px 15px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      border-bottom: 1px solid #e0e0e0;
-    }
-    .browser-dots { display: flex; gap: 6px; }
-    .browser-dots span { width: 12px; height: 12px; border-radius: 50%; background: #ddd; }
-    .browser-dots span:nth-child(1) { background: #ff5f57; }
-    .browser-dots span:nth-child(2) { background: #ffbd2e; }
-    .browser-dots span:nth-child(3) { background: #28c840; }
-    .browser-url { flex: 1; background: white; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--text-light); font-family: monospace; }
-
-    .terminal-demo {
-      background: #1e1e1e;
-      padding: 20px;
-      font-family: 'Monaco', 'Courier New', monospace;
-      font-size: 14px;
-      min-height: 200px;
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
       position: relative;
-      overflow: hidden;
-      height: 300px;
+      height: 360px;
     }
-    .terminal-line { color: #d4d4d4; margin-bottom: 10px; }
-    .terminal-line.success { color: #73c991; }
-    .terminal-line .prompt { color: #94BA33; }
+
+    .cli-titlebar {
+      padding: 10px 18px;
+      font-size: 12px;
+      border-bottom: 1px solid #2a2a2a;
+      white-space: nowrap;
+      overflow: hidden;
+      letter-spacing: 0.02em;
+    }
+    .claude-bar { background: #242424; color: #7a9b2a; }
+    .claude-bar .cli-name { color: #94BA33; font-weight: bold; }
+    .gemini-bar { background: #1c1f35; color: #6b93d6; }
+    .gemini-bar .cli-name { color: #8ab4f8; font-weight: bold; }
+
+    .cli-content { padding: 18px 22px; }
+
+    .cli-prompt {
+      color: #e0e0e0;
+      margin-bottom: 14px;
+      font-size: 14px;
+    }
+    .prompt-char {
+      color: #94BA33;
+      font-weight: bold;
+      font-size: 15px;
+      margin-right: 8px;
+    }
+    .gemini-prompt .prompt-char { color: #8ab4f8; }
+
+    .cli-output {
+      color: #c0c0c0;
+      margin-bottom: 7px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .cli-output.cli-success { color: #73c991; }
+    .cli-output.cli-muted  { color: #666; }
+    .cli-output.cli-pause  { color: #f9ab00; }
+    .cli-dim { color: #666; }
+
+    .cli-result {
+      color: #94BA33;
+      font-weight: 600;
+      margin-top: 14px;
+      font-size: 13px;
+    }
+    .cli-result.gemini-result { color: #8ab4f8; }
 
     .scenario {
       position: absolute;
-      width: calc(100% - 40px);
+      top: 0; left: 0; right: 0; bottom: 0;
       opacity: 0;
       visibility: hidden;
       animation: scenarioFade 20s ease-in-out infinite;
@@ -157,10 +179,10 @@
     .scenario-4 { animation-delay: 15s; }
 
     @keyframes scenarioFade {
-      0% { opacity: 0; visibility: hidden; transform: translateY(20px); }
-      3% { opacity: 1; visibility: visible; transform: translateY(0); }
-      22% { opacity: 1; visibility: visible; transform: translateY(0); }
-      25% { opacity: 0; visibility: hidden; transform: translateY(-20px); }
+      0%   { opacity: 0; visibility: hidden; transform: translateY(20px); }
+      3%   { opacity: 1; visibility: visible; transform: translateY(0); }
+      22%  { opacity: 1; visibility: visible; transform: translateY(0); }
+      25%  { opacity: 0; visibility: hidden; transform: translateY(-20px); }
       100% { opacity: 0; visibility: hidden; }
     }
 
@@ -174,30 +196,28 @@
     .scenario-4 .ai-response { animation: responseSlideIn4 20s ease-in-out infinite; }
 
     @keyframes responseSlideIn1 {
-      0%, 6% { opacity: 0; transform: translateY(-10px); }
-      8%, 22% { opacity: 1; transform: translateY(0); }
-      25% { opacity: 0; }
-      100% { opacity: 0; }
+      0%, 6%   { opacity: 0; transform: translateY(-10px); }
+      8%, 22%  { opacity: 1; transform: translateY(0); }
+      25%      { opacity: 0; }
+      100%     { opacity: 0; }
     }
     @keyframes responseSlideIn2 {
-      0%, 31% { opacity: 0; transform: translateY(-10px); }
+      0%, 31%  { opacity: 0; transform: translateY(-10px); }
       33%, 47% { opacity: 1; transform: translateY(0); }
-      50% { opacity: 0; }
-      100% { opacity: 0; }
+      50%      { opacity: 0; }
+      100%     { opacity: 0; }
     }
     @keyframes responseSlideIn3 {
-      0%, 56% { opacity: 0; transform: translateY(-10px); }
+      0%, 56%  { opacity: 0; transform: translateY(-10px); }
       58%, 72% { opacity: 1; transform: translateY(0); }
-      75% { opacity: 0; }
-      100% { opacity: 0; }
+      75%      { opacity: 0; }
+      100%     { opacity: 0; }
     }
     @keyframes responseSlideIn4 {
-      0%, 81% { opacity: 0; transform: translateY(-10px); }
+      0%, 81%  { opacity: 0; transform: translateY(-10px); }
       83%, 97% { opacity: 1; transform: translateY(0); }
-      100% { opacity: 1; }
+      100%     { opacity: 1; }
     }
-
-    .response-text { color: #94BA33; font-weight: 600; margin: 8px 0 4px 0; font-size: 14px; }
 
     /* Section Title */
     .section-title { font-size: 40px; font-weight: 800; text-align: center; margin-bottom: 50px; color: var(--text-dark); }
@@ -482,52 +502,59 @@
         </div>
       </div>
       <div class="hero-image">
-        <div class="browser-window">
-          <div class="browser-bar">
-            <div class="browser-dots">
-              <span></span><span></span><span></span>
+        <div class="cli-window">
+          <!-- Scene 1: Claude — fleet status -->
+          <div class="scenario scenario-1">
+            <div class="cli-titlebar claude-bar">&#x250C;&#x2500; <span class="cli-name">claude</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt"><span class="prompt-char">&gt;</span> /pm status fleet</div>
+              <div class="ai-response">
+                <div class="cli-output">&#x1F535; fleet-dev1 <span class="cli-dim">(idle)</span> &nbsp;&#xB7; local &nbsp;&#xB7; windows</div>
+                <div class="cli-output">&#x1F7E2; fleet-dev2 <span class="cli-dim">(idle)</span> &nbsp;&#xB7; 192.168.1.13 &nbsp;&#xB7; macos</div>
+                <div class="cli-output">&#x1F7E2; fleet-rev1 <span class="cli-dim">(idle)</span> &nbsp;&#xB7; 192.168.1.13 &nbsp;&#xB7; macos</div>
+                <div class="cli-result">Fleet v0.1.2 &nbsp;&#xB7;&nbsp; 7/7 online</div>
+              </div>
             </div>
-            <div class="browser-url">fleet-pm terminal</div>
           </div>
-          <div class="terminal-demo">
-            <div class="scenario scenario-1">
-              <div class="terminal-line" style="color:#7ec8e3;font-size:11px;margin-bottom:6px;">&#x25B6; claude (Claude CLI)</div>
-              <div class="terminal-line"><span class="prompt">$</span> /pm status fleet</div>
+          <!-- Scene 2: Claude — plan -->
+          <div class="scenario scenario-2">
+            <div class="cli-titlebar claude-bar">&#x250C;&#x2500; <span class="cli-name">claude</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt"><span class="prompt-char">&gt;</span> /pm plan #67</div>
               <div class="ai-response">
-                <div class="terminal-line success">fleet-dev1&nbsp;&nbsp;online&nbsp;&nbsp;idle</div>
-                <div class="terminal-line success">fleet-dev2&nbsp;&nbsp;online&nbsp;&nbsp;idle</div>
-                <div class="terminal-line success">fleet-rev1&nbsp;&nbsp;online&nbsp;&nbsp;idle</div>
-                <div class="response-text">7/7 online, all idle</div>
+                <div class="cli-output cli-muted">Planning Sprint 6a&hellip;</div>
+                <div class="cli-output cli-success">&#x2713; Requirements written</div>
+                <div class="cli-output cli-success">&#x2713; Plan generated <span class="cli-dim">(7 tasks, 3 phases)</span></div>
+                <div class="cli-output cli-success">&#x2713; Reviewer APPROVED <span class="cli-dim">(12/12 checks)</span></div>
+                <div class="cli-result">Ready for execution.</div>
               </div>
             </div>
-            <div class="scenario scenario-2">
-              <div class="terminal-line" style="color:#7ec8e3;font-size:11px;margin-bottom:6px;">&#x25B6; claude (Claude CLI)</div>
-              <div class="terminal-line"><span class="prompt">$</span> /pm plan #67</div>
+          </div>
+          <!-- Scene 3: Gemini — start -->
+          <div class="scenario scenario-3">
+            <div class="cli-titlebar gemini-bar">&#x2728; <span class="cli-name">Gemini</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt gemini-prompt"><span class="prompt-char">&gt;</span> /pm start dev1 plan</div>
               <div class="ai-response">
-                <div class="terminal-line">Analyzing requirements...</div>
-                <div class="terminal-line">Generating implementation plan...</div>
-                <div class="terminal-line success">Review: Approved</div>
-                <div class="response-text">Plan ready. 4 phases, 12 tasks.</div>
+                <div class="cli-output">&#x1F535; fleet-dev1: Executing Phase 1&hellip;</div>
+                <div class="cli-output cli-success">&#x2713; Task 1: Schema + data layer &mdash; committed</div>
+                <div class="cli-output cli-success">&#x2713; Task 2: UI implementation &mdash; committed</div>
+                <div class="cli-output cli-pause">&#x23F8; VERIFY-1: Tests passing <span class="cli-dim">(524/524)</span></div>
+                <div class="cli-result gemini-result">Stopped at checkpoint. Awaiting review.</div>
               </div>
             </div>
-            <div class="scenario scenario-3">
-              <div class="terminal-line" style="color:#f9ab00;font-size:11px;margin-bottom:6px;">&#x25B6; gemini (Gemini CLI)</div>
-              <div class="terminal-line"><span class="prompt">$</span> /pm start dev1</div>
+          </div>
+          <!-- Scene 4: Gemini — deploy -->
+          <div class="scenario scenario-4">
+            <div class="cli-titlebar gemini-bar">&#x2728; <span class="cli-name">Gemini</span> &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; project: apra-fleet &#x2500;&#x2510;</div>
+            <div class="cli-content">
+              <div class="cli-prompt gemini-prompt"><span class="prompt-char">&gt;</span> /pm deploy dev1</div>
               <div class="ai-response">
-                <div class="terminal-line">Executing Phase 1...</div>
-                <div class="terminal-line">Running tests...</div>
-                <div class="terminal-line success">VERIFY-1 checkpoint passed</div>
-                <div class="response-text">Phase 1 complete. Starting Phase 2.</div>
-              </div>
-            </div>
-            <div class="scenario scenario-4">
-              <div class="terminal-line" style="color:#f9ab00;font-size:11px;margin-bottom:6px;">&#x25B6; gemini (Gemini CLI)</div>
-              <div class="terminal-line"><span class="prompt">$</span> /pm deploy</div>
-              <div class="ai-response">
-                <div class="terminal-line">Building artifacts...</div>
-                <div class="terminal-line">Running health checks...</div>
-                <div class="terminal-line success">Health check: all services ok</div>
-                <div class="response-text">Deployed successfully.</div>
+                <div class="cli-output cli-muted">Deploying to production&hellip;</div>
+                <div class="cli-output cli-success">&#x2713; Health check: ok</div>
+                <div class="cli-output cli-success">&#x2713; Version: 0.2.4</div>
+                <div class="cli-output cli-success">&#x2713; Deployed successfully</div>
+                <div class="cli-result gemini-result">Production: live &#x1F7E2;</div>
               </div>
             </div>
           </div>
