@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-26",
   "total_tasks": 8,
-  "completed": 5,
+  "completed": 6,
   "tasks": [
     {
       "id": 1,
@@ -53,9 +53,9 @@
       "id": 6,
       "step": "Add SECURITY.md",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "91e5a16",
+      "notes": "Created SECURITY.md with supported versions (0.1.x), private disclosure via security@apralabs.com, response timelines, and out-of-scope items."
     },
     {
       "id": 7,
