@@ -27,12 +27,19 @@
     "integration": "tsc && npx tsx tests/integration.test.ts"
   },
   "keywords": [
-    "mcp",
+    "ai-agent",
+    "anthropic",
+    "automation",
+    "claude",
     "claude-code",
+    "devtools",
     "fleet",
-    "ssh",
+    "mcp",
+    "model-context-protocol",
+    "multi-agent",
     "orchestration",
-    "multi-agent"
+    "remote-execution",
+    "ssh"
   ],
   "license": "CC-BY-SA-3.0",
   "dependencies": {
