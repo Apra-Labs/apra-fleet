@@ -7,23 +7,23 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-26",
   "total_tasks": 8,
-  "completed": 1,
+  "completed": 2,
   "tasks": [
     {
       "id": 1,
       "step": "Setup branch feature/open-source from main",
       "type": "work",
       "status": "completed",
-      "commit": "15a7cdf",
+      "commit": "7603689",
       "notes": "Branched from main (15a7cdf) after pull. Branch feature/open-source created."
     },
     {
       "id": 2,
       "step": "Add GitHub issue templates (bug_report.yml, feature_request.yml, config.yml)",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "0844088",
+      "notes": "Created .github/ISSUE_TEMPLATE/bug_report.yml, feature_request.yml, config.yml using GitHub YAML form schema."
     },
     {
       "id": 3,
