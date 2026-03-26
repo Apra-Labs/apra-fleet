@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-26",
   "total_tasks": 8,
-  "completed": 3,
+  "completed": 4,
   "tasks": [
     {
       "id": 1,
@@ -37,9 +37,9 @@
       "id": 4,
       "step": "Add CONTRIBUTING.md",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "7ab0bd5",
+      "notes": "Created CONTRIBUTING.md covering bug reporting, dev setup, tests, branch naming, commit convention, PR process, code style, and license."
     },
     {
       "id": 5,
