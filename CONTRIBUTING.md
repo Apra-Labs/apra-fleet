@@ -4,11 +4,11 @@ Thank you for your interest in contributing! This document explains how to get i
 
 ## Reporting Bugs
 
-Use the [Bug Report](.github/ISSUE_TEMPLATE/bug_report.yml) issue template on GitHub. Include as much detail as possible — reproduction steps, environment info, and error output are especially helpful.
+Use the [Bug Report](https://github.com/Apra-Labs/apra-fleet/issues/new/choose) issue template on GitHub. Include as much detail as possible — reproduction steps, environment info, and error output are especially helpful.
 
 ## Requesting Features
 
-Use the [Feature Request](.github/ISSUE_TEMPLATE/feature_request.yml) issue template. Describe the problem you're trying to solve, your proposed solution, and any alternatives you've considered.
+Use the [Feature Request](https://github.com/Apra-Labs/apra-fleet/issues/new/choose) issue template. Describe the problem you're trying to solve, your proposed solution, and any alternatives you've considered.
 
 ## Development Setup
 
