@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-26",
   "total_tasks": 8,
-  "completed": 4,
+  "completed": 5,
   "tasks": [
     {
       "id": 1,
@@ -45,9 +45,9 @@
       "id": 5,
       "step": "Add CODE_OF_CONDUCT.md (Contributor Covenant v2.1)",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "3e1be1b",
+      "notes": "Created CODE_OF_CONDUCT.md adopting Contributor Covenant v2.1 by reference. Enforcement contact: opensource@apralabs.com."
     },
     {
       "id": 6,
