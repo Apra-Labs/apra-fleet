@@ -33,12 +33,34 @@ Verify reviewer is at the correct commit before starting review:
    - Dev side: `git push origin <branch>` — verify push succeeded
    - Rev side: `git fetch origin && git checkout <branch> && git reset --hard origin/<branch>`
 3. **PM dispatches REVIEWER at every VERIFY checkpoint** — PM never self-reviews. PM sends context docs to reviewer via `send_files`: `<project>/requirements.md`, `<project>/design.md`, and relevant `<project>/*plan.md`. Then dispatches reviewer with `resume=false` (fresh session).
+
+   **Reviewer workflow rules:**
+   - **Prep reviewer in parallel while doer works** — send requirements, set up branch, start a context-reading session on reviewer. Use session resume to send updated docs at handoff. Eliminates dead time.
+   - **Always use `resume=false` for review dispatches** — never resume a stale review session. Each review must start fresh.
+   - **Verify SHA before dispatching review** — `execute_command → git rev-parse HEAD` on reviewer must match doer's pushed HEAD (see Pre-flight Checks above).
+
 4. Reviewer reads deliverables + diff, conducts cumulative review (all phases up to current, not just the latest) per its CLAUDE.md. Commits findings to feedback.md, pushes, and outputs verdict: APPROVED or CHANGES NEEDED
 5. PM reads verdict:
    - **APPROVED** → merge → cleanup → next phase
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
 6. **Post-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md; git commit -m "cleanup: remove fleet control files"`. These are transport files — git history preserves the content.
 7. Loop until all phases APPROVED
+
+## Safeguards
+
+The PM must enforce these limits to prevent infinite loops and runaway sessions:
+
+| Safeguard | Trigger | PM Action | Limit |
+|-----------|---------|-----------|-------|
+| max_turns budget | Every `execute_prompt` dispatch | Session ends naturally at turn limit | Set per dispatch in `execute_prompt` |
+| PM retry limit | Same dispatch fails (error, no output) | Retry up to 3×, then pause sprint + flag user | 3 retries per dispatch |
+| Doer-reviewer cycle limit | Reviewer returns CHANGES NEEDED | Re-dispatch doer with feedback; if 3 cycles don't resolve all HIGH items, pause sprint + flag user | 3 cycles per phase |
+| Model escalation | Zero progress after session resets | Reset session and resume; after 2 resets with zero progress: escalate model (haiku→sonnet→opus). Still zero after opus? Flag user | 2 resets per model tier |
+
+**When to escalate to user:**
+- After 3 retries on the same dispatch with no progress
+- After 3 doer-reviewer cycles with unresolved HIGH items
+- After opus model still shows zero progress after 2 resets
 
 ## Git as transport
 
