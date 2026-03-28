@@ -5,11 +5,26 @@
 1. Record pair in `<project>/status.md`. Multiple pairs per project is normal.
 2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color. This is not optional.
 3. Compose and deliver permissions per permissions.md for each member's role.
-4. Send role-specific CLAUDE.md via `send_files`:
-   - Doer: plan-prompt.md (planning) or tpl-claude.md (execution)
-   - Reviewer: tpl-reviewer-plan.md (planning) or tpl-reviewer.md (execution)
+4. Configure role-specific CLAUDE.md — three distinct phases:
+   - **Planning:** Dispatch `plan-prompt.md` content via `execute_prompt` — no CLAUDE.md needed for planning
+   - **Execution:** Send `tpl-claude.md` as CLAUDE.md to doer via `send_files` — **must be sent before execution starts** (persists across session resumes)
+   - **Review:** Send `tpl-reviewer.md` as CLAUDE.md to reviewer via `send_files` — **must be sent before review dispatch** (persists across session resumes). Use `tpl-reviewer-plan.md` for plan review.
 
 **Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's CLAUDE.md + permissions, same member reviews with fresh context. Track current role and session ID in status.md.
+
+## Pre-flight Checks
+
+### Before any dispatch
+Verify member is on the correct branch with a clean working tree:
+1. `fleet_status` — confirm member is idle
+2. `execute_command → git status && git branch --show-current` — confirm clean tree and correct branch
+
+Do not dispatch to a member on the wrong branch or with uncommitted changes.
+
+### Before review dispatch
+Verify reviewer is at the correct commit before starting review:
+1. `execute_command → git rev-parse HEAD` on reviewer — must match doer's pushed HEAD SHA
+2. If SHA doesn't match: run `git fetch origin && git reset --hard origin/<branch>` on reviewer, then re-verify
 
 ## Flow
 
