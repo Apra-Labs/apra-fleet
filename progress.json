@@ -1,0 +1,42 @@
+{
+  "sprint": "pm-skill-fixes",
+  "branch": "sprint/pm-skill-fixes",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Fix Execution Loop (#29)",
+      "tasks": [
+        { "id": "1.1", "name": "Fix execution loop diagram in SKILL.md", "status": "pending", "type": "work", "notes": "" },
+        { "id": "1.2", "name": "Fix flow section in doer-reviewer.md", "status": "pending", "type": "work", "notes": "" },
+        { "id": "1.3", "name": "VERIFY: Execution loop consistency", "status": "pending", "type": "verify", "notes": "" }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Fix Template References (#28) + Pre-flight",
+      "tasks": [
+        { "id": "2.1", "name": "Fix setup checklist in doer-reviewer.md", "status": "pending", "type": "work", "notes": "" },
+        { "id": "2.2", "name": "Add pre-flight checklist", "status": "pending", "type": "work", "notes": "" },
+        { "id": "2.3", "name": "VERIFY: Template and pre-flight accuracy", "status": "pending", "type": "verify", "notes": "" }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "Safeguards (#18) + Reviewer Workflow",
+      "tasks": [
+        { "id": "3.1", "name": "Add safeguards section", "status": "pending", "type": "work", "notes": "" },
+        { "id": "3.2", "name": "Add reviewer workflow improvements", "status": "pending", "type": "work", "notes": "" },
+        { "id": "3.3", "name": "VERIFY: Safeguards and reviewer workflow", "status": "pending", "type": "verify", "notes": "" }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "name": "Cleanup Command (#2) + Remaining Feedback",
+      "tasks": [
+        { "id": "4.1", "name": "Add /pm cleanup command", "status": "pending", "type": "work", "notes": "" },
+        { "id": "4.2", "name": "Incorporate remaining feedback items", "status": "pending", "type": "work", "notes": "" },
+        { "id": "4.3", "name": "VERIFY: Final consistency check", "status": "pending", "type": "verify", "notes": "" }
+      ]
+    }
+  ]
+}
