@@ -55,10 +55,12 @@ Member's progress.json is the living state. Always query it for current status.
 
 ### Execution Loop
 ```
-PM sends task harness → kicks off member with execute_prompt
-  → member reads progress.json → executes next pending task → commits → updates progress.json
+PM sends task harness → kicks off doer with execute_prompt
+  → doer reads progress.json → executes next pending task → commits → updates progress.json
   → hits verify checkpoint → STOPS → PM reads progress.json
-  → PM reviews → resumes member → repeat
+  → PM dispatches REVIEWER → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
+  → APPROVED: PM resumes doer → repeat
+  → CHANGES NEEDED: PM sends feedback to doer → doer fixes → PM re-dispatches REVIEWER → repeat
   → all tasks done → PM reports to user
 ```
 
