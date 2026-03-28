@@ -41,9 +41,9 @@ Verify reviewer is at the correct commit before starting review:
 
 4. Reviewer reads deliverables + diff, conducts cumulative review (all phases up to current, not just the latest) per its CLAUDE.md. Commits findings to feedback.md, pushes, and outputs verdict: APPROVED or CHANGES NEEDED
 5. PM reads verdict:
-   - **APPROVED** → merge → cleanup → next phase
+   - **APPROVED** → cleanup → merge → next phase
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
-6. **Post-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md; git commit -m "cleanup: remove fleet control files"`. These are transport files — git history preserves the content.
+6. **Pre-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md; git commit -m "cleanup: remove fleet control files" && git push`. These are transport files — git history preserves the content. Run cleanup and push before merging the PR.
 7. Loop until all phases APPROVED
 
 ## Safeguards
