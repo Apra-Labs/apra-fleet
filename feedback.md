@@ -44,6 +44,20 @@ The Linux version properly escapes shell metacharacters via `escapeDoubleQuoted(
 
 The PR title is "Fix Windows VCS auth: PowerShell syntax + token expiry tracking" but it also deletes `docs/site/` files. This should ideally be a separate commit or PR for cleaner git history and easier reverts.
 
+### LOW: Escaping inconsistency between write and remove for Windows credential helper
+
+**Files**: `src/os/windows.ts:140` vs `src/os/windows.ts:153`
+
+`gitCredentialHelperWrite` passes the host through `escapeWindowsArg()` (which adds `^` before cmd.exe metacharacters), then uses the escaped value in the git config key. `gitCredentialHelperRemove` only does `host.replace(/'/g, "''")` (PowerShell single-quote escaping) — no `escapeWindowsArg`. So if a host contained cmd.exe metacharacters (e.g. `&`), the write would store `credential.https://host^&inject.helper` but remove would try to unset `credential.https://host&inject.helper` — a mismatch.
+
+**Practical risk**: None — VCS hosts are `github.com`, `bitbucket.org`, `dev.azure.com`. But the asymmetry is a code smell.
+
+### LOW: Single credential helper file shared across VCS providers (pre-existing)
+
+All three VCS providers write to the same file (`~/.fleet-git-credential.bat` on Windows, `~/.fleet-git-credential` on Linux/macOS). The host-specific git config keys correctly route each host to the credential helper, but they all point to the same file. Provisioning a second provider overwrites the file and breaks the first.
+
+**Note**: This is a **pre-existing** architectural limitation, not introduced by this PR. The host-specific config keys are still the right improvement for preventing `gh auth setup-git` conflicts.
+
 ### LOW: Redundant `?? undefined`
 
 **File**: `src/tools/provision-vcs-auth.ts:97`
@@ -68,6 +82,8 @@ The `?? undefined` is redundant since optional chaining already returns `undefin
 
 Tests verify real behavior (command output content, registry state after operations), not just mock interactions.
 
+**Note**: Tests could not be executed during this review pass due to sandbox PATH restrictions. Assessment is based on code inspection of test files.
+
 ---
 
 ## Security Assessment
@@ -82,6 +98,6 @@ Tests verify real behavior (command output content, registry state after operati
 
 ## Final Verdict
 
-The PR delivers exactly what it claims: a correct fix for PowerShell here-string syntax over SSH, a robust host-specific credential config approach that prevents `gh` CLI conflicts, and clean token expiry tracking. Test coverage is thorough. The one medium issue (batch metachar escaping) is low practical risk for real VCS tokens but worth noting for completeness.
+The PR delivers exactly what it claims: a correct fix for PowerShell here-string syntax over SSH, a robust host-specific credential config approach that prevents `gh` CLI conflicts, and clean token expiry tracking. Test coverage is thorough. The medium issue (batch metachar escaping) and low issues (write/remove escaping asymmetry, shared credential file) are all low practical risk for real VCS token formats and hosts, but worth noting for completeness.
 
 **APPROVED**
