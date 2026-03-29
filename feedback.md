@@ -1,131 +1,87 @@
-# Cumulative Review — PM Skill Fixes (All 4 Phases)
+# PR #14 Review: Fix Windows VCS auth — PowerShell syntax + token expiry tracking
 
-> Reviewer: fleet-rev (PM session)
-> Date: 2026-03-27
-> Reviewed commit: e762153
-> Branch: sprint/pm-skill-fixes
-> Diff: `git diff main..sprint/pm-skill-fixes -- skills/pm/`
+## Summary of Changes
+
+**10 commits, 17 files changed** (+207, -863 lines — net deletion largely from docs site removal)
+
+### 1. Windows PowerShell credential helper fix (core fix)
+- `src/os/windows.ts` `gitCredentialHelperWrite`: replaced PowerShell here-string (`@'...'@`) with array `-join` approach
+- Here-strings break over SSH because the multiline delimiters don't survive remote command execution
+- The new approach builds a `.bat` script from a PowerShell array joined with `` `r`n `` — single statement, no line-boundary issues
+
+### 2. Host-specific git credential config key
+- Changed from global `credential.helper` to host-scoped `credential.https://<host>.helper`
+- Applied to **all three OS implementations** (linux, macos, windows) and all three VCS providers
+- Uses `--replace-all` to reset the host-specific stack, then `--add` to set the fleet helper
+- **Why this matters**: the global `credential.helper` key gets overwritten by `gh auth setup-git` and other tools; host-scoped keys take priority and coexist safely
+
+### 3. Token expiry tracking
+- Added `vcsProvider` and `vcsTokenExpiresAt` (ISO 8601) fields to `Agent` type
+- `provisionVcsAuth` persists these in the registry after successful deploy
+- New `checkVcsTokenExpiry()` helper warns when tokens are expired or expiring within 10 minutes
+- Expiry warning is appended to the provision output message
+
+### 4. Unrelated: docs site deletion
+- Deleted `docs/site/icons/icon.svg` and `docs/site/index.html` (~826 lines)
 
 ---
 
-## Issue Verification
+## Issues Found
 
-### #29 — Execution loop fix ✅
+### MEDIUM: Batch metacharacter risk in Windows `.bat` credential helper
 
-**SKILL.md lines 62-70:** Old "PM reviews → resumes member" replaced with:
+**File**: `src/os/windows.ts:144`
+
+The token is escaped for PowerShell single-quoted strings (`'` → `''`) but is written into a `.bat` file that `cmd.exe` executes. Batch metacharacters (`&`, `|`, `>`, `<`, `^`, `%`) in the token value would break the batch script or cause unexpected behavior.
+
+The Linux version properly escapes shell metacharacters via `escapeDoubleQuoted()`. The Windows version has no equivalent batch-level escaping.
+
+**Practical risk**: LOW — GitHub tokens (`ghp_`, `ghs_`), Bitbucket app passwords, and Azure DevOps PATs are alphanumeric/base64 and won't contain these characters. But it's a correctness gap.
+
+**Recommendation**: Consider wrapping the token value with `^` escaping for batch metacharacters, or document that this is a known limitation for exotic token formats.
+
+### LOW: Docs deletion is unrelated to PR scope
+
+The PR title is "Fix Windows VCS auth: PowerShell syntax + token expiry tracking" but it also deletes `docs/site/` files. This should ideally be a separate commit or PR for cleaner git history and easier reverts.
+
+### LOW: Redundant `?? undefined`
+
+**File**: `src/tools/provision-vcs-auth.ts:97`
+```ts
+vcsTokenExpiresAt: deployResult.metadata?.expiresAt ?? undefined,
 ```
-PM dispatches REVIEWER → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
-→ APPROVED: PM resumes doer → repeat
-→ CHANGES NEEDED: PM sends feedback to doer → doer fixes → PM re-dispatches REVIEWER → repeat
-```
-
-**doer-reviewer.md line 35:** "PM dispatches REVIEWER at every VERIFY checkpoint — PM never self-reviews."
-
-**doer-reviewer.md line 45:** CHANGES NEEDED path explicitly re-dispatches REVIEWER.
-
-**Consistency:** SKILL.md loop and doer-reviewer.md flow are semantically identical. Both use "doer" instead of the old generic "member". Both branch on APPROVED/CHANGES NEEDED. No trace of "PM reviews" (self-review) in either file.
-
-### #28 — Template references ✅
-
-**doer-reviewer.md lines 8-11:** Three distinct phases correctly documented:
-- Planning: `plan-prompt.md` via `execute_prompt` — no CLAUDE.md ✅
-- Execution: `tpl-claude.md` as CLAUDE.md — "must be sent before execution starts" ✅
-- Review: `tpl-reviewer.md` as CLAUDE.md — "must be sent before review dispatch". `tpl-reviewer-plan.md` for plan review ✅
-
-**SKILL.md line 46:** Plan Generation says "dispatch plan-prompt.md via execute_prompt" — consistent with doer-reviewer.md.
-
-No wrong template names anywhere in either file.
-
-### #18 — Safeguards ✅
-
-**doer-reviewer.md lines 49-63:** Full Safeguards section with 4-row table:
-
-| Safeguard | Limit |
-|-----------|-------|
-| max_turns budget | Set per dispatch |
-| PM retry limit | 3 retries per dispatch |
-| Doer-reviewer cycle limit | 3 cycles per phase |
-| Model escalation | 2 resets per model tier |
-
-Escalation criteria documented (3 conditions). Each safeguard has trigger, action, and limit.
-
-**SKILL.md line 74:** Monitoring section mentions "Zero progress after 2 resets? Escalate model" — consistent with safeguards table.
-
-**troubleshooting.md line 9:** "Stuck after reset → escalate model" — consistent.
-
-### #2 — Cleanup command ✅
-
-**SKILL.md line 20:** `/pm cleanup <project>` documented with full command: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md; git commit -m "cleanup: remove fleet control files" && git push`. Run on both doer and reviewer after merge.
-
-**doer-reviewer.md line 46:** Post-merge cleanup step in flow (step 6) is consistent.
+The `?? undefined` is redundant since optional chaining already returns `undefined`. Harmless but noisy.
 
 ---
 
-## Operational Feedback — All 13 Items
+## Test Coverage Assessment
 
-| # | Requirement | Where Addressed | Status |
-|---|------------|-----------------|--------|
-| 1 | Pre-flight: verify member state | doer-reviewer.md lines 17-22: fleet_status + git status + branch check | ✅ |
-| 2 | Pre-flight: verify reviewer SHA | doer-reviewer.md lines 24-27: git rev-parse HEAD + remediation | ✅ |
-| 3 | Full issue details in requirements | SKILL.md line 48: "Requirements must include full GitHub issue details" | ✅ |
-| 4 | plan-prompt.md in execute_prompt | doer-reviewer.md line 9: "Dispatch plan-prompt.md content via execute_prompt — no CLAUDE.md needed" | ✅ |
-| 5 | Prep reviewer in parallel | doer-reviewer.md line 38: parallel prep with context-reading session | ✅ |
-| 6 | Fresh session per review | doer-reviewer.md line 39: "Always use resume=false for review dispatches" | ✅ |
-| 7 | SHA verification before review | doer-reviewer.md line 40 + Pre-flight lines 24-27 | ✅ |
-| 8 | Dispatch reviewer at every VERIFY | doer-reviewer.md line 35 + SKILL.md line 66 | ✅ |
-| 9 | CLAUDE.md sent before execution | doer-reviewer.md lines 10-11: "must be sent before execution starts" / "before review dispatch" | ✅ |
-| 10 | Member icons mandatory | SKILL.md line 17: "this is mandatory, not optional" | ✅ |
-| 11 | Read sub-documents | SKILL.md rule 14: "steps in sub-docs are mandatory, not advisory" | ✅ |
-| 12 | Verify URLs/repos | SKILL.md rule 15: "members hallucinate these" | ✅ |
-| 13 | PM runs gh CLI directly | SKILL.md rule 13: "PM runs gh CLI commands directly via Bash — never delegate to fleet members" | ✅ |
+**Excellent**. All new behavior has dedicated tests:
 
-**All 13 items verified.**
+| Area | Tests | Quality |
+|------|-------|---------|
+| Windows credential helper (no here-string) | 6 tests in `windows-credential-helper.test.ts` | Covers: no here-string syntax, single quotes, double quotes, dollar signs, backticks, `-join` usage, cmd metachar escaping |
+| Token expiry logic | 5 tests in `agent-helpers.test.ts` | Covers: no expiry, not near expiry, 5-min warning, expired, singular "minute" |
+| Registry persistence | 2 tests in `provision-vcs-auth.test.ts` | Covers: github-app persists both fields, bitbucket persists provider without expiresAt |
+| Host-specific credential key | Cross-platform tests in `platform.test.ts` | Covers all 3 OSes × 3 VCS hosts, verifies `credential.https://<host>.helper` format |
+| Revoke uses host-specific key | Updated in `revoke-vcs-auth.test.ts` | Verifies `credential.https://` in unset command |
+
+Tests verify real behavior (command output content, registry state after operations), not just mock interactions.
 
 ---
 
-## Cross-file Consistency
+## Security Assessment
 
-| Check | Result |
-|-------|--------|
-| SKILL.md execution loop matches doer-reviewer.md flow | ✅ Semantically identical |
-| Template names consistent between files | ✅ No mismatches |
-| Safeguards table consistent with SKILL.md monitoring | ✅ Same escalation path |
-| Safeguards consistent with troubleshooting.md | ✅ Same escalation path |
-| Cleanup command consistent with flow step 6 | ⚠️ Minor nit — see below |
-| Single-member pair paragraph preserved | ✅ doer-reviewer.md line 13 |
-| Recovery section untouched | ✅ No regressions |
-
-### Nit: Cleanup command vs flow step 6
-
-**SKILL.md line 20** (`/pm cleanup`): includes `&& git push`, runs on "both doer and reviewer".
-**doer-reviewer.md line 46** (flow step 6): no `git push`, only mentions doer.
-
-These serve overlapping purposes. The SKILL.md version is more complete. Not a blocker — step 6 is the inline flow instruction while `/pm cleanup` is the standalone command, and the PM will follow the standalone command when cleaning up. But if someone only reads the flow steps, they'd miss the push and the reviewer cleanup.
+- **Token masking**: Tokens are masked in output (`token.substring(0, 4) + '****'`) — correct
+- **File permissions**: `.bat` credential helper file is ACL'd to current user only via `icacls /inheritance:r /grant:r "${u}:F"` — correct
+- **Input escaping**: Host and username go through `escapeWindowsArg` (cmd.exe metachar escaping). Token gets PowerShell single-quote escaping. No injection vectors found for expected token formats
+- **No secrets in code**: All tokens are passed at runtime, never hardcoded
+- **The `.bat` file stores the token in plaintext** on disk — this is inherent to git credential helpers and matches the Linux approach (`~/.fleet-git-credential` shell script). The file permission lockdown mitigates this
 
 ---
 
-## Nothing Broken
+## Final Verdict
 
-- No deletions of working functionality
-- All existing sections (Recovery, Model Selection, Member Icons, Design Review, Git as transport, Permissions, PM responsibilities) untouched
-- Only additions and targeted rewrites of buggy content
-- Core Rules expanded from 13 to 15 (added rules 14-15 for feedback items 11-12) — no existing rules modified beyond rule 13
+The PR delivers exactly what it claims: a correct fix for PowerShell here-string syntax over SSH, a robust host-specific credential config approach that prevents `gh` CLI conflicts, and clean token expiry tracking. Test coverage is thorough. The one medium issue (batch metachar escaping) is low practical risk for real VCS tokens but worth noting for completeness.
 
----
-
-## Quality Gates
-
-- [x] All PM skill files internally consistent
-- [x] Execution loop in SKILL.md matches doer-reviewer.md
-- [x] No wrong template references
-- [x] Safeguard documentation complete with triggers, actions, limits, escalation
-- [x] All 13 feedback items incorporated
-- [x] No regressions
-
----
-
-## Verdict
-
-All 4 issues resolved. All 13 feedback items incorporated. Files are consistent. One cosmetic nit (cleanup step missing push in doer-reviewer.md flow) — not blocking since the standalone `/pm cleanup` command is authoritative.
-
-APPROVED
+**APPROVED**
