@@ -152,7 +152,7 @@ export class WindowsCommands implements OsCommands {
   }
 
   gitCredentialHelperRemove(host: string): string {
-    const escapedHost = host.replace(/'/g, "''");
+    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
     return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.https://${escapedHost}.helper' 2>$null`;
   }
 
