@@ -94,7 +94,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   // Persist VCS provider and token expiry in the agent registry
   updateAgent(agent.id, {
     vcsProvider: input.provider,
-    vcsTokenExpiresAt: deployResult.metadata?.expiresAt ?? undefined,
+    vcsTokenExpiresAt: deployResult.metadata?.expiresAt,
   });
 
   // Best-effort connectivity test
