@@ -36,6 +36,14 @@ export function escapeWindowsArg(s: string): string {
 }
 
 /**
+ * Escape batch (cmd.exe) metacharacters for safe use in .bat file content.
+ * Escapes: & | > < ^ % by prefixing each with ^.
+ */
+export function escapeBatchMetachars(s: string): string {
+  return s.replace(/([&|><^%])/g, '^$1');
+}
+
+/**
  * Escape regex metacharacters for use in `grep -E` patterns.
  */
 export function escapeGrepPattern(s: string): string {

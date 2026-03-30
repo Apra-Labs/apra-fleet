@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOrFail, getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
+import { updateAgent } from '../services/registry.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
@@ -90,6 +91,12 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
 
   if (!deployResult.success) return `❌ ${deployResult.message}`;
 
+  // Persist VCS provider and token expiry in the agent registry
+  updateAgent(agent.id, {
+    vcsProvider: input.provider,
+    vcsTokenExpiresAt: deployResult.metadata?.expiresAt,
+  });
+
   // Best-effort connectivity test
   let connectivity;
   try {
@@ -104,7 +111,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     ? Object.entries(deployResult.metadata).map(([k, v]) => `  ${k}: ${v}`).join('\n')
     : '';
 
+  // Check if the just-deployed token is already near expiry
+  const expiryWarning = deployResult.metadata?.expiresAt
+    ? checkVcsTokenExpiry({ ...agent, vcsTokenExpiresAt: deployResult.metadata.expiresAt })
+    : null;
+
   return `✅ ${deployResult.message} on "${agent.friendlyName}"\n`
     + (meta ? meta + '\n' : '')
-    + `  Verification: ${connectivity.success ? connectivity.message : `⚠️ ${connectivity.message}`}`;
+    + `  Verification: ${connectivity.success ? connectivity.message : `⚠️ ${connectivity.message}`}`
+    + (expiryWarning ? `\n  ${expiryWarning}` : '');
 }

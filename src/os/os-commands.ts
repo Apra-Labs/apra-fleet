@@ -36,7 +36,7 @@ export interface OsCommands {
 
   // --- Git credential helper ---
   gitCredentialHelperWrite(host: string, username: string, token: string): string;
-  gitCredentialHelperRemove(): string;
+  gitCredentialHelperRemove(host: string): string;
 
   // --- SSH key deployment ---
   deploySSHPublicKey(publicKeyLine: string): string[];

@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
+import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
 const CLAUDE_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
@@ -137,25 +138,22 @@ export class WindowsCommands implements OsCommands {
   // --- Git credential helper ---
 
   gitCredentialHelperWrite(host: string, username: string, token: string): string {
-    const escapedHost = escapeWindowsArg(host);
-    const escapedUser = escapeWindowsArg(username);
-    const escapedToken = token.replace(/'/g, "''");
+    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
+    const escapedUser = escapeWindowsArg(username).replace(/'/g, "''");
+    const batchToken = escapeBatchMetachars(token);
+    const escapedToken = batchToken.replace(/'/g, "''");
     return [
-      `$script = @'`,
-      `@echo off`,
-      `echo protocol=https`,
-      `echo host=${escapedHost}`,
-      `echo username=${escapedUser}`,
-      `echo password=${escapedToken}`,
-      `'@`,
+      `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join "\`r\`n"`,
       `Set-Content -Path "$env:USERPROFILE\\.fleet-git-credential.bat" -Value $script -NoNewline`,
       '$gcFile = "$env:USERPROFILE\\.fleet-git-credential.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "${u}:F"',
-      `git config --global credential.helper "$env:USERPROFILE\\.fleet-git-credential.bat"`,
+      `git config --global --replace-all 'credential.https://${escapedHost}.helper' ''`,
+      `git config --global --add 'credential.https://${escapedHost}.helper' "$env:USERPROFILE\\.fleet-git-credential.bat"`,
     ].join('; ');
   }
 
-  gitCredentialHelperRemove(): string {
-    return 'Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset credential.helper 2>$null';
+  gitCredentialHelperRemove(host: string): string {
+    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
+    return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.https://${escapedHost}.helper' 2>$null`;
   }
 
   // --- SSH key deployment ---
