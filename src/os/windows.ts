@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
+import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
 const CLAUDE_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
@@ -139,7 +140,8 @@ export class WindowsCommands implements OsCommands {
   gitCredentialHelperWrite(host: string, username: string, token: string): string {
     const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
     const escapedUser = escapeWindowsArg(username).replace(/'/g, "''");
-    const escapedToken = token.replace(/'/g, "''");
+    const batchToken = escapeBatchMetachars(token);
+    const escapedToken = batchToken.replace(/'/g, "''");
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join "\`r\`n"`,
       `Set-Content -Path "$env:USERPROFILE\\.fleet-git-credential.bat" -Value $script -NoNewline`,

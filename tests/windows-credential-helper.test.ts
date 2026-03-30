@@ -53,4 +53,12 @@ describe('Windows gitCredentialHelperWrite', () => {
     // & should be escaped as ^& for cmd.exe safety
     expect(cmd).toContain('host^&inject');
   });
+
+  it('escapes batch metacharacters in token for .bat safety', () => {
+    const cmd = windows.gitCredentialHelperWrite('github.com', 'x-access-token', 'tok&en|pipe>out<in^caret%pct');
+    // Each batch metacharacter should be prefixed with ^
+    expect(cmd).toContain('tok^&en^|pipe^>out^<in^^caret^%pct');
+    // Original unescaped token must not appear
+    expect(cmd).not.toContain('tok&en|pipe>out<in^caret%pct');
+  });
 });
