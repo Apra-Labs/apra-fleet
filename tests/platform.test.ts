@@ -197,6 +197,12 @@ describe('OsCommands via getOsCommands', () => {
         const cmd = cmds.apiKeyCheck();
         expect(cmd).toContain('ANTHROPIC_API_KEY');
       });
+
+      it(`${name}: apiKeyCheck accepts a provider-specific env var name`, () => {
+        const cmd = cmds.apiKeyCheck('GEMINI_API_KEY');
+        expect(cmd).toContain('GEMINI_API_KEY');
+        expect(cmd).not.toContain('ANTHROPIC_API_KEY');
+      });
     }
   });
 

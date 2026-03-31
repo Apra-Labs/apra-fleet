@@ -116,7 +116,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   } catch { /* ignore */ }
 
   try {
-    const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(), 10000);
+    const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
     if (apiKeyResult.stdout.trim().length > 5) {
       authMethods.push('API key (env)');
     }
@@ -141,7 +141,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     if (output.includes('fleet-busy')) {
       session.status = 'busy';
     } else if (output.includes('other-busy')) {
-      session.status = 'idle (unrelated Claude processes running)';
+      session.status = `idle (unrelated ${provider.name} processes running)`;
     } else {
       session.status = 'idle';
     }

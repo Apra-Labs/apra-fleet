@@ -30,7 +30,7 @@ export interface OsCommands {
   credentialFileCheck(): string;
   credentialFileWrite(json: string): string;
   credentialFileRemove(): string;
-  apiKeyCheck(): string;
+  apiKeyCheck(envVarName?: string): string;
   setEnv(name: string, value: string): string[];
   unsetEnv(name: string): string[];
   envPrefix(name: string, value: string): string;

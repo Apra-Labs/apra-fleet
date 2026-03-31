@@ -115,8 +115,9 @@ export class LinuxCommands implements OsCommands {
     return 'rm -f ~/.claude/.credentials.json';
   }
 
-  apiKeyCheck(): string {
-    return 'bash -l -c \'echo "${ANTHROPIC_API_KEY:0:10}"\'';
+  apiKeyCheck(envVarName?: string): string {
+    const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+    return `bash -l -c 'echo "\${${varName}:0:10}"'`;
   }
 
   setEnv(name: string, value: string): string[] {

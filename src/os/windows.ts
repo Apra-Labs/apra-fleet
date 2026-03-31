@@ -133,8 +133,9 @@ export class WindowsCommands implements OsCommands {
     return 'Remove-Item "$env:USERPROFILE\\.claude\\.credentials.json" -Force -ErrorAction SilentlyContinue';
   }
 
-  apiKeyCheck(): string {
-    return 'if ($env:ANTHROPIC_API_KEY) { $env:ANTHROPIC_API_KEY.Substring(0,10) } else { echo "" }';
+  apiKeyCheck(envVarName?: string): string {
+    const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+    return `if ($env:${varName}) { $env:${varName}.Substring(0,10) } else { echo "" }`;
   }
 
   setEnv(name: string, value: string): string[] {

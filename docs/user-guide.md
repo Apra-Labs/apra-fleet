@@ -2,7 +2,7 @@
 
 ## What is Apra Fleet?
 
-Apra Fleet lets you control Claude Code on multiple machines from a single conversation. Register your machines once, then tell Claude to run prompts, execute commands, or send files to any of them — local or remote.
+Apra Fleet lets you control AI coding agents on multiple machines from a single conversation. Register your machines once, then tell Claude to run prompts, execute commands, or send files to any of them — local or remote. Members can run different LLM backends (Claude, Gemini, Codex, Copilot) and be mixed freely within a single fleet.
 
 ## Install
 
@@ -64,9 +64,21 @@ You need SSH access to the remote machine. Tell Claude:
 
 > "Register 192.168.1.10 as `build-server`. Username is akhil, password is mypass, work folder `/home/akhil/projects/myapp`."
 
-Fleet will test connectivity, detect the OS, and check if Claude Code is installed. If Claude Code isn't installed, you can say:
+Fleet will test connectivity, detect the OS, and check if the LLM CLI is installed. If it isn't installed, you can say:
 
 > "Install Claude Code on build-server."
+
+### Registering with a non-Claude provider
+
+Specify the `llm_provider` when registering:
+
+> "Register `gemini-worker` at 192.168.1.11 as a Gemini member. Work folder `/home/user/work`, username user, password pass."
+
+Or tell Claude directly:
+
+> "Register a Codex member called `codex-dev` locally, work folder `C:\Users\me\codex-project`."
+
+Supported values: `claude` (default), `gemini`, `codex`, `copilot`.
 
 ### SSH key auth
 
@@ -82,7 +94,7 @@ This generates a key pair, deploys it, verifies it works, then removes the passw
 
 > "On build-server, run the test suite and fix any failures."
 
-Claude sends the prompt to the member's Claude Code instance, which has full access to the code in its work folder.
+The prompt is sent to the member's LLM CLI instance, which has full access to the code in its work folder. The correct CLI is selected automatically based on the member's provider.
 
 ### Run a command on a member
 
@@ -101,6 +113,51 @@ Uploads files via SFTP to the member's work folder.
 > "Show me fleet status."
 
 Shows all members, their status (online/offline), and last activity.
+
+## Multi-Provider Fleets
+
+### Provisioning auth for non-Claude members
+
+Non-Claude members require an API key — OAuth credential copy is Claude-only.
+
+| Provider | What to say |
+|----------|-------------|
+| Gemini | "Provision auth for gemini-worker with API key GEMINI_API_KEY_VALUE" |
+| Codex | "Provision auth for codex-dev with API key OPENAI_API_KEY_VALUE" |
+| Copilot | "Provision auth for copilot-member with API key COPILOT_GITHUB_TOKEN_VALUE" |
+
+Fleet automatically uses the correct env var name per provider.
+
+### Installing CLIs on members
+
+> "Install the Gemini CLI on gemini-worker."
+
+> "Update all members' CLIs."
+
+`update_agent_cli` uses the correct install/update command per provider. You can also use the legacy name `update_claude` — it still works as an alias.
+
+### Provider capabilities and limits
+
+- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_ms` to bound execution.
+- Fine-grained permission control (`compose_permissions`) is Claude-only. Other providers use all-or-nothing skip-permissions flags.
+- Codex output uses NDJSON internally — fleet handles this transparently.
+- Gemini responses may silently truncate at ~8K tokens. Split large tasks into smaller units.
+- Copilot requires a paid GitHub Copilot subscription (Pro/Business/Enterprise).
+
+See `docs/provider-matrix.md` for the full comparison table.
+
+### Mix-and-match example
+
+A fleet can have members on different providers for different purposes:
+
+```
+dev1     — Claude (Sonnet)   — main implementation work
+dev2     — Gemini            — tasks needing 1M context or Google Search
+review1  — Claude (Opus)     — code review
+codex1   — Codex             — structured extraction tasks
+```
+
+All members use the same fleet tools — the PM dispatches to whichever member fits the task.
 
 ## Git authentication
 

@@ -31,18 +31,28 @@ Uploads local files to a member's working directory.
 
 ## execute_prompt
 
-Runs a Claude prompt on a member. This is the primary tool for doing actual work across the fleet.
+Runs an LLM prompt on a member. This is the primary tool for doing actual work across the fleet. The tool respects each member's `llm_provider` setting — the correct CLI is invoked automatically.
 
 **Parameters:**
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `member_id` | string | yes | UUID of the target member |
-| `prompt` | string | yes | The prompt text to send to Claude |
+| `prompt` | string | yes | The prompt text to send to the LLM agent |
 | `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
-| `timeout_ms` | number | no | Default: 300000 (5 minutes). Max time to wait for Claude's response |
-| `dangerously_skip_permissions` | boolean | no | Default: `false`. Runs Claude with `--dangerously-skip-permissions` so it can execute tools without interactive approval |
-| `model` | string | no | Model to use (e.g. `opus`, `sonnet`, `haiku`, or full model ID like `claude-sonnet-4-6`). Applies to both new and resumed sessions |
+| `timeout_ms` | number | no | Default: 300000 (5 minutes). Max time to wait for the agent's response |
+| `dangerously_skip_permissions` | boolean | no | Default: `false`. Passes the provider's skip-permissions flag so the agent can execute tools without interactive approval |
+| `model` | string | no | Model to use. For Claude: `opus`, `sonnet`, `haiku` or full ID. For other providers, pass the provider-specific model name. |
+
+**Provider-specific behavior:**
+
+| Aspect | Claude | Gemini | Codex | Copilot |
+|--------|--------|--------|-------|---------|
+| CLI invocation | `claude -p "..."` | `gemini -p "..."` | `codex exec "..."` | `copilot -p "..."` |
+| JSON output | Single JSON object | Single JSON object | NDJSON (parsed automatically) | Single JSON object |
+| `max_turns` | `--max-turns N` (default 50) | Not available (ignored) | Not available (ignored) | Not available (ignored) |
+| Skip permissions | `--dangerously-skip-permissions` | `--yolo` | `--sandbox danger-full-access --ask-for-approval never` | `--allow-all-tools` |
+| Session resume | `--resume <session_id>` | `-r` (most recent) | positional `resume` | `--continue` |
 
 **When to use `dangerously_skip_permissions`:**
 
@@ -51,31 +61,30 @@ This flag is intended for specific unattended workflows where no human is presen
 - Running build/test scripts that require shell access
 - Automated CI/CD-style tasks dispatched across the fleet
 
-Do NOT enable this for open-ended prompts on members with access to sensitive data or production systems. The remote Claude will execute any tool call — file edits, shell commands, network requests — without confirmation.
+Do NOT enable this for open-ended prompts on members with access to sensitive data or production systems. The remote agent will execute any tool call — file edits, shell commands, network requests — without confirmation.
 
 **What it does:**
 
-1. Looks up the member by ID.
-2. **Base64-encodes the prompt** — this avoids shell escaping issues when the prompt contains quotes, newlines, or special characters. The encoding is decoded on the target side before being passed to Claude.
-3. **Builds the Claude command** — OS-specific:
-   - Unix: `cd "{folder}" && claude -p "$(echo '{b64}' | base64 -d)" --output-format json --max-turns 50`
-   - Windows: Uses PowerShell to decode base64, then pipes to Claude via `for /f`
-4. **Appends `--resume {sessionId}`** if `resume=true` and the member has a stored session ID.
-5. **Executes via strategy** — `strategy.execCommand(claudeCmd, timeout_ms)`.
-6. **Parses JSON output** — extracts `session_id` and `result` from Claude's JSON response.
-7. **Handles stale sessions** — if the command fails and a resume was attempted, retries without `--resume` (starts a fresh session).
-8. **Updates registry** — stores the new `sessionId` and `lastUsed` timestamp.
+1. Looks up the member by ID and resolves its LLM provider (`getProvider(agent.llmProvider)`).
+2. **Base64-encodes the prompt** — this avoids shell escaping issues when the prompt contains quotes, newlines, or special characters. The encoding is decoded on the target side before being passed to the CLI.
+3. **Builds the provider command** — via `provider.buildPromptCommand()`, which produces the correct CLI call for the member's provider and OS. Max-turns flag is only appended for Claude (the only provider that supports it).
+4. **Appends the resume flag** if `resume=true` and the member has a stored session. Each provider uses its own resume flag.
+5. **Executes via strategy** — `strategy.execCommand(cmd, timeout_ms)`.
+6. **Parses the response** — via `provider.parseResponse()`. Handles Codex NDJSON transparently; extracts text and session info from all providers.
+7. **Handles stale sessions** — if the command fails and a resume was attempted, retries without resume (starts a fresh session).
+8. **Updates registry** — stores the new `sessionId` (Claude only) and `lastUsed` timestamp.
 
-**Output:** Claude's response text, plus the session ID if one was returned.
+**Output:** The agent's response text, plus the session ID if one was returned.
 
 **Error handling:**
-- If the prompt fails due to an authentication issue, returns actionable guidance (run `/login` + `provision_auth`) instead of raw error output.
-- Automatically retries once with a 5-second backoff on transient server errors (HTTP 500/502/503/529).
+- If the prompt fails due to an authentication issue, returns actionable guidance (`provision_auth`) instead of raw error output.
+- Automatically retries once with a 5-second backoff on transient server errors.
 
 **Session behavior:**
-- First prompt on a member: no session exists, Claude starts fresh.
-- Subsequent prompts with `resume=true`: Claude continues the conversation with full context of prior exchanges.
-- If a session becomes stale (e.g. expired server-side), the tool automatically retries without resume — the user sees the response, not an error.
+- First prompt on a member: no session exists, agent starts fresh.
+- Subsequent prompts with `resume=true`: agent continues the conversation with full context of prior exchanges.
+- Claude stores a server-side session ID. Gemini, Codex, and Copilot resume the most recent local session via a generic flag.
+- If a session becomes stale, the tool automatically retries without resume — the user sees the response, not an error.
 - Use `reset_session` to explicitly start fresh.
 
 ## execute_command

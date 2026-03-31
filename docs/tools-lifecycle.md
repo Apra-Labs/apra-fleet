@@ -19,6 +19,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 | `password` | string | conditional | Required when `auth_type` is `"password"` |
 | `key_path` | string | conditional | Required when `auth_type` is `"key"` |
 | `work_folder` | string | yes | Working directory on the target machine |
+| `llm_provider` | `"claude"` \| `"gemini"` \| `"codex"` \| `"copilot"` | no | Default: `"claude"`. LLM backend for this member |
 
 **What it does, step by step:**
 
@@ -26,12 +27,12 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 2. **Duplicate folder check** — rejects if another member already uses the same folder on the same device (same host for remote, same machine for local).
 3. **Tests connectivity** — remote members get an SSH connection test with latency measurement. Local members always pass (they're on the same machine).
 4. **Detects OS** — remote members run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local members read `process.platform` directly.
-5. **Checks Claude CLI** — runs `claude --version` to verify Claude Code is installed and capture the version.
-6. **Auth test (remote only)** — runs a quick `claude -p "hello"` to verify Claude can authenticate. Skipped for local members since they inherit the current session's auth.
+5. **Checks provider CLI** — runs `<provider> --version` (e.g. `claude --version`, `gemini --version`) to verify the LLM CLI is installed and capture the version.
+6. **Auth test (remote only)** — for Claude members, runs a quick `claude -p "hello"` to verify authentication. For non-Claude providers, the version check from step 5 serves as the CLI availability check; auth is verified separately via `provision_auth`. Skipped for local members since they inherit the current session's auth.
 7. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
-8. **Persists** — saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID.
+8. **Persists** — saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID, including the `llmProvider` field.
 
-**Output:** Member ID, name, type, OS, folder, auth method, latency, and any warnings (e.g. Claude CLI not found, auth failed).
+**Output:** Member ID, name, type, OS, folder, auth method, provider, latency, and any warnings (e.g. CLI not found, auth failed).
 
 **Failure modes:**
 - SSH connection fails → member is NOT registered, error returned
@@ -46,7 +47,7 @@ Lists all registered fleet members with their details.
 
 **What it does:**
 
-Reads the registry and formats every member into a display block showing: ID, type (local/remote), host (remote only), OS, folder, auth type (remote only), session ID, created date, and last used date.
+Reads the registry and formats every member into a display block showing: ID, type (local/remote), host (remote only), OS, LLM provider, folder, auth type (remote only), session ID, created date, and last used date.
 
 **Output:** Formatted list with box-drawing characters. Shows "No members registered" if the fleet is empty.
 
@@ -67,6 +68,7 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `password` | string | no | New password (encrypted before storage) |
 | `key_path` | string | no | New private key path |
 | `work_folder` | string | no | New working directory |
+| `llm_provider` | `"claude"` \| `"gemini"` \| `"codex"` \| `"copilot"` | no | Switch LLM backend |
 
 **What it does:**
 
@@ -92,7 +94,7 @@ Unregisters a fleet member and cleans up its connection.
 **What it does:**
 
 1. Looks up the member by ID.
-2. **Best-effort auth cleanup** — tests connectivity to the member, and if reachable: removes `~/.claude/.credentials.json` (OAuth credentials file) and removes `ANTHROPIC_API_KEY` from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
+2. **Best-effort auth cleanup** — tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `GEMINI_API_KEY` for Gemini) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
 3. Calls `strategy.close()` — for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
 4. Removes the member from the registry file.
 
