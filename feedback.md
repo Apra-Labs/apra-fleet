@@ -543,3 +543,176 @@ Independent re-verification of the cumulative Phase 1+2+3 review above. This rev
 Phases 1, 2, and 3 are complete. All PLAN.md done criteria are met. No regressions across any phase. The 6 non-blocking findings are cosmetic/UX issues suitable for Phase 4 cleanup or a future pass. Ready for Phase 4 (Documentation + Security Audit).
 
 > **Action required:** `npm run build` and `npm test` must be independently verified. Neither this review nor any prior review was able to execute them due to shell permission constraints.
+
+---
+
+# Code Review — Phase 4: Documentation + Security Audit (Cumulative)
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Commits reviewed:** `63e7711..9c6c217` (24 commits — all Phases 1–4)
+**Reviewer:** Claude Opus 4.6 (automated review per CLAUDE.md)
+
+---
+
+## Scope
+
+Phase 4 (tasks 21–22 in progress.json): Documentation updates (provider-matrix.md, architecture.md, tools-lifecycle.md, tools-work.md, tools-infrastructure.md, user-guide.md, vocabulary.md), security audit, and code fixes for prior review findings (`apiKeyCheck` parameterization, provider name in status string). This is a cumulative review — all 4 phases checked.
+
+## Verdict Summary
+
+**CHANGES NEEDED** — One security inconsistency found: `apiKeyCheck()` does not validate the `envVarName` parameter before shell interpolation, while `setEnv()`/`unsetEnv()` in the same files do. Simple fix required. All other Phase 4 work is correct and complete.
+
+---
+
+## Task-by-Task Verification
+
+| Task | Description | Status | Notes |
+|------|-------------|--------|-------|
+| 21 | Documentation + security audit | PARTIAL | Docs: all 7 files updated correctly. Code fixes: `apiKeyCheck` parameterized, `provider.name` used in status string. **Security audit missed the `apiKeyCheck` validation gap** (see Finding #1). |
+| 22 | VERIFY 4 | BLOCKED | Self-reported: 533 tests pass. Cannot independently verify — shell permission constraints. |
+
+## Phase 4 Code Changes
+
+### `apiKeyCheck` Parameterization (Addresses prior review finding #1 from Phase 3)
+
+| File | Change | Verdict |
+|------|--------|---------|
+| `src/os/os-commands.ts:33` | `apiKeyCheck(envVarName?: string)` — optional param added | PASS |
+| `src/os/linux.ts:118-121` | Uses `envVarName ?? 'ANTHROPIC_API_KEY'`, interpolates into `bash -l -c 'echo "${...}"'` | **FAIL** — no validation (see Finding #1) |
+| `src/os/windows.ts:136-139` | Uses `envVarName ?? 'ANTHROPIC_API_KEY'`, interpolates into PowerShell `$env:${varName}` | **FAIL** — no validation (see Finding #1) |
+| `src/tools/member-detail.ts:119` | Now passes `provider.authEnvVar` to `apiKeyCheck()` | PASS — correct delegation |
+| `tests/platform.test.ts:201-205` | New test: `apiKeyCheck('GEMINI_API_KEY')` verifies custom env var name | PASS |
+
+### Status String Fix (Addresses prior review finding #4 from Phase 3)
+
+| File | Change | Verdict |
+|------|--------|---------|
+| `src/tools/member-detail.ts:144` | `idle (unrelated ${provider.name} processes running)` — uses provider name | PASS |
+
+## Phase 4 Documentation Changes
+
+| File | Change | Verdict |
+|------|--------|---------|
+| `docs/provider-matrix.md` (NEW) | Strategic comparison, model tiers, unique capabilities, critical gaps, auth env var reference, instruction file names | PASS — comprehensive, matches design doc |
+| `docs/architecture.md` | Added "Provider Abstraction" section with diagram, provider files list, mix-and-match fleet example, key differences | PASS — accurate and well-structured |
+| `docs/tools-lifecycle.md` | `llm_provider` param in register/update, provider-aware CLI check in registration, provider-aware cleanup in remove | PASS |
+| `docs/tools-work.md` | Provider behavior table for execute_prompt, NDJSON note, session resume differences | PASS |
+| `docs/tools-infrastructure.md` | Multi-provider provision_auth (Flow A Claude-only, Flow B all providers), `update_agent_cli` replaces `update_claude`, install commands per provider/OS | PASS |
+| `docs/user-guide.md` | Multi-provider registration, auth provisioning, CLI installation, capabilities/limits, mix-and-match example | PASS |
+| `docs/vocabulary.md` | "provider" / "LLM backend" terminology added | PASS |
+
+All documentation is consistent with the codebase. No stale references to Claude-only behavior. Cross-references between docs are correct (e.g., user-guide → provider-matrix.md).
+
+---
+
+## Findings
+
+### Finding #1: `apiKeyCheck()` Missing Env Var Name Validation (BLOCKING)
+
+**Severity: Medium — Security inconsistency**
+
+`apiKeyCheck()` in `linux.ts:118-121` and `windows.ts:136-139` interpolates `envVarName` directly into shell commands without validation:
+
+```typescript
+// linux.ts
+apiKeyCheck(envVarName?: string): string {
+  const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+  return `bash -l -c 'echo "\${${varName}:0:10}"'`;  // No validation
+}
+```
+
+Meanwhile, `setEnv()` and `unsetEnv()` in the **same files** validate with:
+```typescript
+if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+```
+
+**Current risk is low** — all callers pass hardcoded `provider.authEnvVar` constants (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`). But:
+1. The function signature is public and accepts arbitrary strings
+2. It's an inconsistency with sibling methods that DO validate
+3. The Phase 4 security audit (task 21) specifically covered "env var handling" and "Review all new provider code for injection risks" — this should have been caught
+
+**Required fix:** Add the same validation to both `linux.ts` and `windows.ts`:
+```typescript
+apiKeyCheck(envVarName?: string): string {
+  const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);
+  // ... rest unchanged
+}
+```
+
+### Prior Findings Status
+
+| Finding | From Phase | Status in Phase 4 |
+|---------|-----------|-------------------|
+| `credentialFileCheck`/`apiKeyCheck` hardcode Claude paths | Phase 3 #1 | **FIXED** — `apiKeyCheck` now parameterized. `credentialFileCheck` still Claude-only (acceptable — OAuth credentials are Claude-specific). |
+| `CLAUDE_PATH` variable naming | Phase 2 #1 | Open — cosmetic, non-blocking |
+| `result.claude = cli` JSON key | Phase 3 #3 | Open — backwards compat, non-blocking |
+| "unrelated Claude processes" string | Phase 3 #4 | **FIXED** — now uses `provider.name` |
+| Gemini redundant `toLowerCase` | Phase 1 #1 | Open — cosmetic, non-blocking |
+| ClaudeProvider hardcoded model versions | Phase 1 #2 | Open — non-blocking |
+| `provision-auth.ts:140` apiKeyCheck hardcodes ANTHROPIC_API_KEY | Phase 3 #6 | Open — not addressed in Phase 4. Low severity (cosmetic/UX). |
+
+## Phase 1 Regression Check
+
+| Check | Status |
+|-------|--------|
+| Provider files (`src/providers/*.ts`) unchanged since Phase 3 | PASS |
+| `src/types.ts` unchanged since Phase 1 | PASS |
+| Provider factory unchanged | PASS |
+| `tests/providers.test.ts` unchanged | PASS |
+
+## Phase 2 Regression Check
+
+| Check | Status |
+|-------|--------|
+| OsCommands interface — all generic methods present | PASS |
+| Linux/macOS/Windows generic methods unchanged (except `apiKeyCheck` param addition) | PASS |
+| `tests/platform.test.ts` — existing tests intact, 2 new tests added for `apiKeyCheck` | PASS |
+
+## Phase 3 Regression Check
+
+| Check | Status |
+|-------|--------|
+| `execute-prompt.ts` unchanged since Phase 3 | PASS |
+| `provision-auth.ts` unchanged since Phase 3 | PASS |
+| `update-agent-cli.ts` unchanged since Phase 3 | PASS |
+| `register-member.ts` unchanged since Phase 3 | PASS |
+| `remove-member.ts` unchanged since Phase 3 | PASS |
+| `check-status.ts` unchanged since Phase 3 | PASS |
+| `list-members.ts` unchanged since Phase 3 | PASS |
+| `update-member.ts` unchanged since Phase 3 | PASS |
+| `index.ts` unchanged since Phase 3 | PASS |
+| `tests/tool-provider.test.ts` unchanged since Phase 3 | PASS |
+| `member-detail.ts` — 2 changes in Phase 4 (apiKeyCheck param, provider.name) — both correct | PASS |
+
+## Requirements Alignment
+
+| Requirement | Status |
+|-------------|--------|
+| Backwards compatibility | PASS — all defaults remain Claude |
+| Mix-and-match | PASS — documented in user guide and architecture |
+| Provider abstraction | PASS — architecture docs explain the pattern clearly |
+| Security | **PARTIAL** — audit missed `apiKeyCheck` validation gap |
+| Testing | PASS — 533 tests reported (self-reported, not independently verified) |
+| Documentation | PASS — all docs updated per requirements.md §Documentation |
+
+## Build & Tests
+
+**NOTE:** `npm run build` and `npm test` could not be executed during this review due to shell permission constraints. Self-reported: "npm run build: clean. npm test: 533 passed, 3 skipped, 34 test files." Test count increased by 3 from Phase 3 (530→533) — matches the 2 new `apiKeyCheck` tests in `platform.test.ts` plus likely 1 additional test. This must be independently verified.
+
+---
+
+## Verdict
+
+**CHANGES NEEDED**
+
+Phase 4 documentation is complete and high-quality. Prior review findings (#1 `apiKeyCheck` hardcoding, #4 "unrelated Claude processes" string) were addressed. However, the security audit (task 21) missed a validation gap: `apiKeyCheck()` interpolates `envVarName` into shell commands without the same regex validation that `setEnv()`/`unsetEnv()` apply. This is a 2-line fix per OS file.
+
+**Required before approval:**
+1. Add `if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error(...)` to `apiKeyCheck()` in both `src/os/linux.ts` and `src/os/windows.ts`
+2. `npm run build` and `npm test` must pass (self-reported or independently verified)
+
+Once the validation is added and tests pass, Phase 4 and the full sprint are ready for PR.
+
+> **Action required:** Fix the `apiKeyCheck` validation gap, then re-run `npm run build` and `npm test`.
