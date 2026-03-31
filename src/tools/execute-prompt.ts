@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { getProvider } from '../providers/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
-import { classifyPromptError, isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
+import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import type { Agent, SSHExecResult } from '../types.js';
+import type { ProviderAdapter } from '../providers/index.js';
 
 export const executePromptSchema = z.object({
   member_id: z.string().describe('The UUID of the target member (worker)'),
@@ -19,35 +21,12 @@ export const executePromptSchema = z.object({
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
 
-interface ParsedResponse {
-  text: string;
-  sessionId?: string;
-  totalTokens?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-}
-
-function parseResponse(result: SSHExecResult): ParsedResponse {
-  try {
-    const json = JSON.parse(result.stdout);
-    return {
-      text: json.result ?? result.stdout,
-      sessionId: json.session_id,
-      totalTokens: json.totalTokens,
-      inputTokens: json.inputTokens,
-      outputTokens: json.outputTokens,
-    };
-  } catch {
-    return { text: result.stdout };
-  }
-}
-
-function buildFailureMessage(agentName: string, result: SSHExecResult): string {
+function buildFailureMessage(agentName: string, result: SSHExecResult, provider: ProviderAdapter): string {
   const output = result.stderr || result.stdout;
-  const category = classifyPromptError(output);
+  const category = provider.classifyError(output);
   return category === 'auth'
     ? authErrorAdvice(agentName)
-    : `❌ Claude prompt failed on "${agentName}":\n${output}`;
+    : `❌ Prompt failed on "${agentName}":\n${output}`;
 }
 
 const SERVER_RETRY_DELAY_MS = 5000;
@@ -64,18 +43,19 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
+  const provider = getProvider(agent.llmProvider);
 
   // Base64-encode the prompt to avoid shell escaping issues
   const b64Prompt = Buffer.from(input.prompt).toString('base64');
 
-  const claudeCmd = cmds.buildPromptCommand(
-    agent.workFolder,
+  const claudeCmd = cmds.buildAgentPromptCommand(provider, {
+    folder: agent.workFolder,
     b64Prompt,
-    input.resume && agent.sessionId ? agent.sessionId : undefined,
-    input.dangerously_skip_permissions,
-    input.model,
-    input.max_turns,
-  );
+    sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
+    dangerouslySkipPermissions: input.dangerously_skip_permissions,
+    model: input.model,
+    maxTurns: input.max_turns,
+  });
 
   const timeoutMs = input.timeout_ms ?? 300000;
 
@@ -84,25 +64,25 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   try {
     let result = await strategy.execCommand(claudeCmd, timeoutMs);
-    let parsed = parseResponse(result);
+    let parsed = provider.parseResponse(result);
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model, input.max_turns);
+      const retryCmd = cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
       result = await strategy.execCommand(retryCmd, timeoutMs);
-      parsed = parseResponse(result);
+      parsed = provider.parseResponse(result);
     }
 
     // Server/overloaded error retry — single attempt after delay
-    if (result.code !== 0 && isRetryable(classifyPromptError(result.stderr || result.stdout))) {
+    if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = cmds.buildPromptCommand(agent.workFolder, b64Prompt, undefined, input.dangerously_skip_permissions, input.model, input.max_turns);
+      const retryCmd = cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
       result = await strategy.execCommand(retryCmd, timeoutMs);
-      parsed = parseResponse(result);
+      parsed = provider.parseResponse(result);
     }
 
     if (result.code !== 0) {
-      return buildFailureMessage(agent.friendlyName, result);
+      return buildFailureMessage(agent.friendlyName, result, provider);
     }
 
     // Update session ID and last used
@@ -110,11 +90,8 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     writeStatusline();
 
-    let output = `📋 Response from ${agent.friendlyName}:\n\n${parsed.text}`;
-    const meta: string[] = [];
-    if (parsed.sessionId) meta.push(`session: ${parsed.sessionId}`);
-    if (parsed.totalTokens) meta.push(`tokens: ${parsed.inputTokens ?? '?'} in / ${parsed.outputTokens ?? '?'} out / ${parsed.totalTokens} total`);
-    if (meta.length) output += `\n\n---\n${meta.join(' | ')}`;
+    let output = `📋 Response from ${agent.friendlyName}:\n\n${parsed.result}`;
+    if (parsed.sessionId) output += `\n\n---\nsession: ${parsed.sessionId}`;
     return output;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
