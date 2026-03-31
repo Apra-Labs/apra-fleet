@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 22,
-  "completed": 14,
+  "completed": 17,
   "tasks": [
     {
       "id": 1,
@@ -133,25 +133,25 @@
       "id": 16,
       "step": "Update execute-prompt.ts",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "e2bfc03",
+      "notes": "Route execute-prompt through provider.parseResponse + classifyError; remove local parseResponse; use provider.classifyError()"
     },
     {
       "id": 17,
       "step": "Update provision-auth.ts",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "7d2e4db",
+      "notes": "provisionApiKey uses provider.authEnvVar; OAuth copy gated behind provider.supportsOAuthCopy(); provider resolved from agent.llmProvider"
     },
     {
       "id": 18,
       "step": "Rename update-claude.ts to update-agent-cli.ts + update remaining tools",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "70d103d",
+      "notes": "update-agent-cli.ts new file; update-claude.ts re-exports as alias; register-member/remove-member/check-status/member-detail/list-members/update-member all provider-aware; fleetProcessCheck accepts processName param; index.ts registers update_agent_cli + update_claude alias"
     },
     {
       "id": 19,
