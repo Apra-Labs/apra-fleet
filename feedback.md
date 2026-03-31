@@ -716,3 +716,149 @@ Phase 4 documentation is complete and high-quality. Prior review findings (#1 `a
 Once the validation is added and tests pass, Phase 4 and the full sprint are ready for PR.
 
 > **Action required:** Fix the `apiKeyCheck` validation gap, then re-run `npm run build` and `npm test`.
+
+---
+
+# Code Review — Phase 4 Re-review (Cumulative Phases 1–4)
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Commits reviewed:** `63e7711..927d456` (25 commits — all Phases 1–4 plus prior review commit)
+**Reviewer:** Claude Opus 4.6 (automated review per CLAUDE.md)
+
+---
+
+## Scope
+
+Re-review of all 4 phases after the prior Phase 4 review returned CHANGES NEEDED. The prior review identified one blocking issue: `apiKeyCheck()` missing env var name validation. This re-review checks whether that was addressed and performs a fresh cumulative check.
+
+## Verdict Summary
+
+**CHANGES NEEDED** — Two issues remain:
+
+1. **BLOCKING (carry-over):** `apiKeyCheck()` env var name validation gap — not fixed since prior review
+2. **BLOCKING (new):** `provision-auth.ts:140` calls `apiKeyCheck()` without passing the provider's env var name — API key verification always checks `ANTHROPIC_API_KEY` regardless of provider
+
+---
+
+## Findings
+
+### Finding #1: `apiKeyCheck()` Still Missing Env Var Validation (BLOCKING — carry-over)
+
+**Status: NOT FIXED since prior review (commit 927d456)**
+
+`linux.ts:118-121` and `windows.ts:136-139` still interpolate `envVarName` into shell commands without the regex validation that `setEnv()`/`unsetEnv()` apply in the same files.
+
+**Required fix (unchanged from prior review):**
+```typescript
+apiKeyCheck(envVarName?: string): string {
+  const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);
+  // ... rest unchanged
+}
+```
+
+Apply to both `src/os/linux.ts` and `src/os/windows.ts`.
+
+### Finding #2: `provision-auth.ts:140` Checks Wrong Env Var for Non-Claude Providers (BLOCKING)
+
+**Severity: Functional bug — affects non-Claude API key provisioning**
+
+In `provisionApiKey()`, the env var name is correctly resolved at line 122:
+```typescript
+const envVarName = provider.authEnvVar;  // e.g. 'GEMINI_API_KEY'
+```
+
+But the verification at line 140 ignores it:
+```typescript
+const verifyResult = await strategy.execCommand(cmds.apiKeyCheck(), 10000);  // defaults to ANTHROPIC_API_KEY!
+```
+
+This means: when provisioning a Gemini API key, the verification step checks whether `ANTHROPIC_API_KEY` is visible in the new shell, not `GEMINI_API_KEY`. The verification will always fail for non-Claude providers, reporting the key wasn't persisted even though it was.
+
+**Required fix:**
+```typescript
+const verifyResult = await strategy.execCommand(cmds.apiKeyCheck(envVarName), 10000);
+```
+
+This was flagged as non-blocking in the prior review (Phase 3 #6, "Open — not addressed in Phase 4. Low severity (cosmetic/UX)"), but on closer inspection it's a functional bug, not cosmetic — it causes incorrect verification results.
+
+---
+
+## Phase 1 Regression Check
+
+| Check | Status |
+|-------|--------|
+| Provider files (`src/providers/*.ts`) unchanged since Phase 3 | PASS |
+| `src/types.ts` unchanged since Phase 1 | PASS |
+| Provider factory unchanged | PASS |
+| Provider unit tests unchanged | PASS |
+
+## Phase 2 Regression Check
+
+| Check | Status |
+|-------|--------|
+| OsCommands interface intact | PASS |
+| Linux/macOS/Windows generic methods intact | PASS |
+| Platform tests intact + 2 new `apiKeyCheck` tests | PASS |
+
+## Phase 3 Regression Check
+
+| Check | Status |
+|-------|--------|
+| `execute-prompt.ts` unchanged | PASS |
+| `provision-auth.ts` unchanged since Phase 3 — **bug still present** | **Finding #2** |
+| `update-agent-cli.ts` unchanged | PASS |
+| All other tool files unchanged | PASS |
+| `tests/tool-provider.test.ts` unchanged | PASS |
+
+## Phase 4 Documentation Check
+
+| File | Verdict |
+|------|---------|
+| `docs/provider-matrix.md` (NEW) | PASS — complete, matches design doc |
+| `docs/architecture.md` | PASS — Provider Abstraction section added correctly |
+| `docs/tools-lifecycle.md` | PASS — `llm_provider` param documented |
+| `docs/tools-work.md` | PASS — provider behavior table accurate |
+| `docs/tools-infrastructure.md` | PASS — multi-provider auth flows documented |
+| `docs/user-guide.md` | PASS — setup guide, mix-and-match example |
+| `docs/vocabulary.md` | PASS — provider terminology added |
+
+## Phase 4 Code Changes Check
+
+| File | Verdict |
+|------|---------|
+| `src/os/os-commands.ts:33` — `apiKeyCheck(envVarName?)` | PASS — interface change correct |
+| `src/os/linux.ts:118-121` — parameterized but no validation | **Finding #1** |
+| `src/os/windows.ts:136-139` — parameterized but no validation | **Finding #1** |
+| `src/tools/member-detail.ts:119` — passes `provider.authEnvVar` | PASS |
+| `src/tools/member-detail.ts:144` — uses `provider.name` | PASS |
+| `tests/platform.test.ts` — new `apiKeyCheck` with custom env var test | PASS |
+
+## Build & Tests
+
+**NOTE:** `npm run build` and `npm test` could not be executed during this review due to shell permission constraints. Self-reported by doer: "npm run build: clean. npm test: 533 passed, 3 skipped, 34 test files." Must be independently verified after fixes are applied.
+
+## Requirements Alignment
+
+| Requirement | Status |
+|-------------|--------|
+| Backwards compatibility | PASS — all defaults remain Claude |
+| Mix-and-match | PASS — implemented and documented |
+| Provider abstraction | PASS — no provider conditionals scattered in tools |
+| Security | **PARTIAL** — `apiKeyCheck` validation gap remains |
+| Testing | PASS (self-reported — needs verification) |
+| Documentation | PASS — all docs updated per requirements |
+
+---
+
+## Verdict
+
+**CHANGES NEEDED**
+
+Two fixes required before approval:
+
+1. **`apiKeyCheck()` validation** — Add `if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error(...)` to both `linux.ts:119` and `windows.ts:137`
+2. **`provision-auth.ts:140`** — Change `cmds.apiKeyCheck()` to `cmds.apiKeyCheck(envVarName)` to check the correct provider env var
+
+Both are 1-line fixes. After applying, run `npm run build` and `npm test` to confirm no regressions.
