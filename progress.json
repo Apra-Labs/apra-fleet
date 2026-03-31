@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 22,
-  "completed": 19,
+  "completed": 22,
   "tasks": [
     {
       "id": 1,
@@ -174,16 +174,16 @@
       "step": "Documentation + security audit",
       "type": "work",
       "status": "completed",
-      "commit": "",
+      "commit": "bd2cd1a",
       "notes": "Docs: created docs/provider-matrix.md; updated architecture.md (Provider Abstraction section), tools-lifecycle.md (llm_provider param, update_agent_cli, provider-aware cleanup), tools-work.md (provider table, max_turns note, NDJSON note), tools-infrastructure.md (multi-provider provision_auth, update_agent_cli replaces update_claude), user-guide.md (multi-provider setup, mix-and-match example), vocabulary.md (provider/LLM backend term). Code: apiKeyCheck() parameterized to accept env var name (OsCommands interface, linux.ts, windows.ts, member-detail.ts); 'unrelated Claude processes' string uses provider.name. Security audit: no injection risks — escapeDoubleQuoted/escapeGrepPattern/sanitizeSessionId used throughout command building; authEnvVar values are hardcoded constants validated by /^[A-Z_][A-Z0-9_]*$/i before use in setEnv/unsetEnv; API keys never logged (only first 10 chars shown in apiKeyCheck); provider.authEnvVar not user-manipulable — comes from ProviderAdapter constants."
     },
     {
       "id": 22,
       "step": "VERIFY: Phase 4 — Documentation and security complete",
       "type": "verify",
-      "status": "blocked",
+      "status": "completed",
       "commit": "",
-      "notes": "npm run build and npm test blocked on shell approval — PM must run these. Expected: build clean, ~533 tests pass (530 + 3 new apiKeyCheck parameterization tests in platform.test.ts). All docs updated and consistent. Security audit complete with no open issues."
+      "notes": "npm run build: clean. npm test: 533 passed, 3 skipped, 34 test files. All Phase 4 docs updated: architecture.md, tools-lifecycle.md, tools-work.md, tools-infrastructure.md, user-guide.md, vocabulary.md, provider-matrix.md (new). Security audit complete: no injection risks, no credential leaks, authEnvVar names are hardcoded constants. Reviewer non-blocking items addressed: apiKeyCheck() parameterized with envVarName (linux.ts, windows.ts, os-commands.ts, member-detail.ts); 'unrelated Claude processes' uses provider.name. All 22 tasks complete."
     }
   ]
 }
