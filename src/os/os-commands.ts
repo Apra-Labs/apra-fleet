@@ -15,7 +15,7 @@ export interface OsCommands {
   disk(folder: string): string;
 
   // --- Process check ---
-  fleetProcessCheck(folder: string, sessionId?: string): string;
+  fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string;
 
   // --- Generic agent CLI (provider-agnostic) ---
   agentCommand(provider: ProviderAdapter, args: string): string;
@@ -49,9 +49,6 @@ export interface OsCommands {
   wrapInWorkFolder(folder: string, command: string): string;
 
   // --- Prompt building ---
-  /** @deprecated Use provider.buildPromptCommand(opts) wrapped with agentCommand() instead */
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string;
-  /** Provider-generic prompt command builder */
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string;
 
   // --- GPU activity ---

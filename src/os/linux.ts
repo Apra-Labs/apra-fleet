@@ -47,15 +47,18 @@ export class LinuxCommands implements OsCommands {
 
   // --- Process check ---
 
-  fleetProcessCheck(folder: string, sessionId?: string): string {
+  fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    const pname = processName ?? 'claude';
+    // Use bracket trick to avoid pgrep matching its own grep process
+    const bracketName = `[${pname[0]}]${pname.slice(1)}`;
     const folderPattern = escapeGrepPattern(folder);
     const fleetMatch = sessionId
       ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`
       : `grep "${folderPattern}"`;
 
-    return `CLAUDE_PIDS=$(pgrep -f "[c]laude" 2>/dev/null); `
-      + `if [ -z "$CLAUDE_PIDS" ]; then echo "idle"; `
-      + `else CMDLINES=$(ps -o args= -p $CLAUDE_PIDS 2>/dev/null); `
+    return `AGENT_PIDS=$(pgrep -f "${bracketName}" 2>/dev/null); `
+      + `if [ -z "$AGENT_PIDS" ]; then echo "idle"; `
+      + `else CMDLINES=$(ps -o args= -p $AGENT_PIDS 2>/dev/null); `
       + `if echo "$CMDLINES" | ${fleetMatch} > /dev/null 2>&1; then echo "fleet-busy"; `
       + `else echo "other-busy"; fi; fi`;
   }
@@ -176,24 +179,6 @@ export class LinuxCommands implements OsCommands {
 
   wrapInWorkFolder(folder: string, command: string): string {
     return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
-  }
-
-  // --- Prompt building ---
-
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string {
-    const escapedFolder = escapeDoubleQuoted(folder);
-    const turns = maxTurns ?? 50;
-    let cmd = `cd "${escapedFolder}" && ${CLAUDE_PATH}claude -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns ${turns}`;
-    if (sessionId) {
-      cmd += ` --resume "${sanitizeSessionId(sessionId)}"`;
-    }
-    if (dangerouslySkipPermissions) {
-      cmd += ' --dangerously-skip-permissions';
-    }
-    if (model) {
-      cmd += ` --model "${escapeDoubleQuoted(model)}"`;
-    }
-    return cmd;
   }
 
   // --- GPU activity ---

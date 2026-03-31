@@ -98,7 +98,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   }
 
   // -- Agent CLI --
-  const provider = getProvider('claude');
+  const provider = getProvider(agent.llmProvider);
   const cli: Record<string, unknown> = {};
   try {
     const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
@@ -123,7 +123,8 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   } catch { /* ignore */ }
 
   cli.auth = authMethods.length > 0 ? authMethods : 'none';
-  result.claude = cli;
+  result.llmProvider = agent.llmProvider ?? 'claude';
+  result.claude = cli;  // kept for backwards compatibility
 
   // -- Session --
   const session: Record<string, unknown> = {
@@ -133,7 +134,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   try {
     const busyCheck = await strategy.execCommand(
-      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId),
+      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
       10000,
     );
     const output = busyCheck.stdout.trim().toLowerCase();
@@ -213,7 +214,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
-  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | claude=${cli.version}\n`;
+  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}\n`;
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}\n`;
 

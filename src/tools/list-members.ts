@@ -26,6 +26,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         username: a.username ?? undefined,
         os: a.os ?? 'unknown',
         folder: a.workFolder,
+        llmProvider: a.llmProvider ?? 'claude',
         auth: a.agentType === 'local' ? undefined : a.authType,
         session: a.sessionId ?? null,
         created: a.createdAt,
@@ -39,7 +40,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
   for (const a of agents) {
     const icon = a.icon ?? DEFAULT_ICON;
     const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
-    t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'}`;
+    t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'} | provider=${a.llmProvider ?? 'claude'}`;
     if (a.agentType !== 'local') t += ` | user=${a.username} | auth=${a.authType}`;
     t += '\n';
   }

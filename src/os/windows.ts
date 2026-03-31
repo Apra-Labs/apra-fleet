@@ -60,11 +60,12 @@ export class WindowsCommands implements OsCommands {
 
   // --- Process check ---
 
-  fleetProcessCheck(folder: string, sessionId?: string): string {
+  fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    const pname = processName ?? 'claude';
     const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
     const sessionFilter = sessionId ? ` -or $_.CommandLine -match '${escapeWindowsArg(sanitizeSessionId(sessionId))}'` : '';
     return [
-      `$procs = Get-Process claude -ErrorAction SilentlyContinue`,
+      `$procs = Get-Process ${pname} -ErrorAction SilentlyContinue`,
       `if (-not $procs) { echo 'idle' }`,
       `elseif ($procs | Where-Object { $_.CommandLine -match '${escapedFolder}'${sessionFilter} }) { echo 'fleet-busy' }`,
       `else { echo 'other-busy' }`,
@@ -199,20 +200,6 @@ export class WindowsCommands implements OsCommands {
 
   wrapInWorkFolder(folder: string, command: string): string {
     return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
-  }
-
-  // --- Prompt building ---
-
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string {
-    const escapedFolder = escapeWindowsArg(folder);
-    const turns = maxTurns ?? 50;
-    let resume = '';
-    if (sessionId) {
-      resume = ` --resume "${sanitizeSessionId(sessionId)}"`;
-    }
-    const skipPerms = dangerouslySkipPermissions ? ' --dangerously-skip-permissions' : '';
-    const modelFlag = model ? ` --model "${escapeWindowsArg(model)}"` : '';
-    return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns ${turns}${resume}${skipPerms}${modelFlag}`;
   }
 
   // --- GPU activity ---

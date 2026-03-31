@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { removeAgent as removeFromRegistry } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { getProvider } from '../providers/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -29,12 +30,15 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
       const conn = await strategy.testConnection();
       if (conn.ok) {
         const cmds = getOsCommands(getAgentOS(agent));
+        const provider = getProvider(agent.llmProvider);
 
-        // Remove credentials file
-        await strategy.execCommand(cmds.credentialFileRemove(), 10000).catch(() => {});
+        // Remove credentials file (only for providers that use one, e.g. Claude OAuth)
+        if (provider.supportsOAuthCopy()) {
+          await strategy.execCommand(cmds.credentialFileRemove(), 10000).catch(() => {});
+        }
 
-        // Remove ANTHROPIC_API_KEY from shell profiles
-        for (const cmd of cmds.unsetEnv('ANTHROPIC_API_KEY')) {
+        // Remove the provider's API key env var from shell profiles
+        for (const cmd of cmds.unsetEnv(provider.authEnvVar)) {
           await strategy.execCommand(cmd, 10000).catch(() => {});
         }
       } else {
