@@ -1,6 +1,8 @@
 import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from '../utils/shell-escape.js';
+import type { ProviderAdapter, PromptOptions } from '../providers/provider.js';
 
 export { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId };
+export type { ProviderAdapter, PromptOptions };
 
 /**
  * Platform-specific command builders.
@@ -15,7 +17,13 @@ export interface OsCommands {
   // --- Process check ---
   fleetProcessCheck(folder: string, sessionId?: string): string;
 
-  // --- Claude CLI ---
+  // --- Generic agent CLI (provider-agnostic) ---
+  agentCommand(provider: ProviderAdapter, args: string): string;
+  agentVersion(provider: ProviderAdapter): string;
+  installAgent(provider: ProviderAdapter): string;
+  updateAgent(provider: ProviderAdapter): string;
+
+  // --- Claude CLI (kept for backwards compat — deprecated, use agent* methods) ---
   claudeCommand(args: string): string;
   claudeVersion(): string;
   claudeCheck(): string;
@@ -48,7 +56,10 @@ export interface OsCommands {
   wrapInWorkFolder(folder: string, command: string): string;
 
   // --- Prompt building ---
+  /** @deprecated Use provider.buildPromptCommand(opts) wrapped with agentCommand() instead */
   buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string;
+  /** Provider-generic prompt command builder */
+  buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string;
 
   // --- GPU activity ---
   gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available

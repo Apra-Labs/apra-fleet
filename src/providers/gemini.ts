@@ -108,4 +108,12 @@ export class GeminiProvider implements ProviderAdapter {
   supportsApiKey(): boolean {
     return true;
   }
+
+  jsonOutputFlag(): string {
+    return '--output-format json';
+  }
+
+  headlessInvocation(promptExpr: string): string {
+    return `-p ${promptExpr}`;
+  }
 }

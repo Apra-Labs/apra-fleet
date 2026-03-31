@@ -1,8 +1,13 @@
 import { LinuxCommands } from './linux.js';
 import { escapeDoubleQuoted } from './os-commands.js';
+import type { ProviderAdapter } from './os-commands.js';
 
 export class MacOSCommands extends LinuxCommands {
   protected override loginShell(): string { return 'zsh'; }
+
+  override installAgent(provider: ProviderAdapter): string {
+    return provider.installCommand('macos');
+  }
 
   override cpuLoad(): string {
     return 'sysctl -n vm.loadavg';

@@ -57,4 +57,11 @@ export interface ProviderAdapter {
   // Auth capabilities
   supportsOAuthCopy(): boolean;
   supportsApiKey(): boolean;
+
+  // Windows / PowerShell prompt building helpers
+  /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
+  jsonOutputFlag(): string;
+  /** Args for headless invocation with an already-decoded prompt expression (e.g. "$p" on Windows).
+   *  Returns e.g. "-p $p" for Claude/Gemini/Copilot or "exec $p" for Codex. */
+  headlessInvocation(promptExpr: string): string;
 }

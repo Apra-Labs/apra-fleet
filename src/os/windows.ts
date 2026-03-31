@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import type { OsCommands } from './os-commands.js';
+import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
@@ -71,7 +71,46 @@ export class WindowsCommands implements OsCommands {
     ].join('; ');
   }
 
-  // --- Claude CLI ---
+  // --- Generic agent CLI ---
+
+  agentCommand(provider: ProviderAdapter, args: string): string {
+    return `${CLAUDE_PATH}${provider.cliCommand(args)}`;
+  }
+
+  agentVersion(provider: ProviderAdapter): string {
+    return `${CLAUDE_PATH}${provider.versionCommand()}`;
+  }
+
+  installAgent(provider: ProviderAdapter): string {
+    return provider.installCommand('windows');
+  }
+
+  updateAgent(provider: ProviderAdapter): string {
+    return `${CLAUDE_PATH}${provider.updateCommand()}`;
+  }
+
+  buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
+    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
+    const escapedFolder = escapeWindowsArg(folder);
+    const decode = `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}'))`;
+    let cmd = `Set-Location "${escapedFolder}"; $p=${decode}; ${CLAUDE_PATH}${provider.cliCommand(`${provider.headlessInvocation('$p')} ${provider.jsonOutputFlag()}`)}`;
+    if (provider.supportsMaxTurns()) {
+      cmd += ` --max-turns ${maxTurns ?? 50}`;
+    }
+    if (sessionId && provider.supportsResume()) {
+      const rf = provider.resumeFlag(sessionId);
+      if (rf) cmd += ` ${rf}`;
+    }
+    if (dangerouslySkipPermissions) {
+      cmd += ` ${provider.skipPermissionsFlag()}`;
+    }
+    if (model) {
+      cmd += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
+    }
+    return cmd;
+  }
+
+  // --- Claude CLI (deprecated — use agent* methods) ---
 
   claudeCommand(args: string): string {
     return `${CLAUDE_PATH}claude ${args}`;

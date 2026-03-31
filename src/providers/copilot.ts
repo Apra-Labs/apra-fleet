@@ -114,4 +114,12 @@ export class CopilotProvider implements ProviderAdapter {
   supportsApiKey(): boolean {
     return true;
   }
+
+  jsonOutputFlag(): string {
+    return '--format json';
+  }
+
+  headlessInvocation(promptExpr: string): string {
+    return `-p ${promptExpr}`;
+  }
 }

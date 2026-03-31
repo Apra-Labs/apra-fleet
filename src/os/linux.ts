@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import type { OsCommands } from './os-commands.js';
+import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
@@ -60,7 +60,38 @@ export class LinuxCommands implements OsCommands {
       + `else echo "other-busy"; fi; fi`;
   }
 
-  // --- Claude CLI ---
+  // --- Generic agent CLI ---
+
+  agentCommand(provider: ProviderAdapter, args: string): string {
+    return `${CLAUDE_PATH}${provider.cliCommand(args)}`;
+  }
+
+  agentVersion(provider: ProviderAdapter): string {
+    return `${CLAUDE_PATH}${provider.versionCommand()}`;
+  }
+
+  installAgent(provider: ProviderAdapter): string {
+    return provider.installCommand('linux');
+  }
+
+  updateAgent(provider: ProviderAdapter): string {
+    return `${CLAUDE_PATH}${provider.updateCommand()}`;
+  }
+
+  buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
+    const { folder } = opts;
+    const escapedFolder = escapeDoubleQuoted(folder);
+    const providerCmd = provider.buildPromptCommand(opts);
+    // Provider command starts with `cd "folder" && <cli> ...`
+    // Inject PATH prepend after the cd so the binary is findable
+    const cdPrefix = `cd "${escapedFolder}" && `;
+    if (providerCmd.startsWith(cdPrefix)) {
+      return `${cdPrefix}${CLAUDE_PATH}${providerCmd.slice(cdPrefix.length)}`;
+    }
+    return `${CLAUDE_PATH}${providerCmd}`;
+  }
+
+  // --- Claude CLI (deprecated — use agent* methods) ---
 
   claudeCommand(args: string): string {
     return `${CLAUDE_PATH}claude ${args}`;

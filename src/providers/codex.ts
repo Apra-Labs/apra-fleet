@@ -126,4 +126,12 @@ export class CodexProvider implements ProviderAdapter {
   supportsApiKey(): boolean {
     return true;
   }
+
+  jsonOutputFlag(): string {
+    return '--json';
+  }
+
+  headlessInvocation(promptExpr: string): string {
+    return `exec ${promptExpr}`;
+  }
 }

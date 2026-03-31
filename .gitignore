@@ -9,3 +9,4 @@ fleet.config.json
 ~/.claude-fleet/
 materials/*
 .claude/settings.local.json
+CLAUDE.md
