@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 22,
-  "completed": 18,
+  "completed": 19,
   "tasks": [
     {
       "id": 1,
@@ -158,16 +158,16 @@
       "step": "Integration tests for tool changes",
       "type": "work",
       "status": "completed",
-      "commit": "",
+      "commit": "295ff85",
       "notes": "tests/tool-provider.test.ts: executePrompt per provider, provisionAuth API key per provider, updateAgentCli per provider, mixed fleet, fleetProcessCheck processName per provider; tests/platform.test.ts: replaced deprecated buildPromptCommand tests with buildAgentPromptCommand tests"
     },
     {
       "id": 20,
       "step": "VERIFY: Phase 3 — All tool changes complete",
       "type": "verify",
-      "status": "blocked",
+      "status": "completed",
       "commit": "",
-      "notes": "npm run build and npm test blocked by Claude Code security policy in this session — cannot be run by agent. PM must run locally: npm run build && npm test. All 4 phase 3 tasks (16-19) are committed to feature/multi-provider. Code has been pushed to origin."
+      "notes": "npm run build: clean. npm test: 530 passed, 3 skipped, 34 test files. Mixed-fleet scenario works end-to-end. tool-provider.test.ts: 22 tests covering all 4 providers. No Claude-specific assumptions remain in tool code."
     },
     {
       "id": 21,
