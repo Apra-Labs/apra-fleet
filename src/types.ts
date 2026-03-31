@@ -1,6 +1,8 @@
 export type { CloudConfig } from './services/cloud/types.js';
 import type { CloudConfig } from './services/cloud/types.js';
 
+export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot';
+
 export interface Agent {
   id: string;
   friendlyName: string;
@@ -22,6 +24,7 @@ export interface Agent {
   gitRepos?: string[];
   vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
   vcsTokenExpiresAt?: string;  // ISO 8601
+  llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
 }
 
 export interface GitHubAppConfig {
