@@ -137,7 +137,7 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   // Verify the key was persisted in a new shell
   let verified = false;
   try {
-    const verifyResult = await strategy.execCommand(cmds.apiKeyCheck(), 10000);
+    const verifyResult = await strategy.execCommand(cmds.apiKeyCheck(envVarName), 10000);
     verified = verifyResult.stdout.trim().length > 5;
   } catch {
     // May still work after re-login

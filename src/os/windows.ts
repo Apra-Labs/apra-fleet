@@ -135,6 +135,7 @@ export class WindowsCommands implements OsCommands {
 
   apiKeyCheck(envVarName?: string): string {
     const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);
     return `if ($env:${varName}) { $env:${varName}.Substring(0,10) } else { echo "" }`;
   }
 

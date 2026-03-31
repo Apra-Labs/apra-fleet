@@ -117,6 +117,7 @@ export class LinuxCommands implements OsCommands {
 
   apiKeyCheck(envVarName?: string): string {
     const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);
     return `bash -l -c 'echo "\${${varName}:0:10}"'`;
   }
 
