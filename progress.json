@@ -7,29 +7,183 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 22,
-  "completed": 8,
+  "completed": 14,
   "tasks": [
-    { "id": 1, "step": "Add LlmProvider type and Agent field", "type": "work", "status": "completed", "commit": "d0f6395", "notes": "Added LlmProvider type and llmProvider field to Agent in src/types.ts" },
-    { "id": 2, "step": "Create ProviderAdapter interface", "type": "work", "status": "completed", "commit": "65c7ea5", "notes": "Created src/providers/provider.ts with ProviderAdapter, PromptOptions, ParsedResponse" },
-    { "id": 3, "step": "Implement ClaudeProvider", "type": "work", "status": "completed", "commit": "088a380", "notes": "Created src/providers/claude.ts with full ClaudeProvider implementation" },
-    { "id": 4, "step": "Implement GeminiProvider", "type": "work", "status": "completed", "commit": "da937f2", "notes": "Created src/providers/gemini.ts with full GeminiProvider implementation" },
-    { "id": 5, "step": "Implement CodexProvider", "type": "work", "status": "completed", "commit": "63850f6", "notes": "Created src/providers/codex.ts with NDJSON response parser" },
-    { "id": 6, "step": "Implement CopilotProvider", "type": "work", "status": "completed", "commit": "329daac", "notes": "Created src/providers/copilot.ts with all ProviderAdapter methods" },
-    { "id": 7, "step": "Create provider factory", "type": "work", "status": "completed", "commit": "7b2c501", "notes": "Created src/providers/index.ts with getProvider() singleton factory" },
-    { "id": 8, "step": "Unit tests for provider layer", "type": "work", "status": "completed", "commit": "d944fa6", "notes": "tests/providers.test.ts: 518 total tests pass (all providers, factory, backwards compat)" },
-    { "id": 9, "step": "VERIFY: Phase 1 — Provider abstraction layer complete", "type": "verify", "status": "completed", "commit": "", "notes": "npm run build: clean. npm test: 518 passed, 3 skipped, 33 test files. All 7 provider files exist in src/providers/. No tool files changed." },
-    { "id": 10, "step": "Generalize OsCommands interface", "type": "work", "status": "completed", "commit": "7207d91", "notes": "Added agentCommand/agentVersion/installAgent/updateAgent/buildAgentPromptCommand to OsCommands interface; added jsonOutputFlag()/headlessInvocation() to ProviderAdapter" },
-    { "id": 11, "step": "Implement generic methods in linux.ts", "type": "work", "status": "completed", "commit": "7207d91", "notes": "Implemented all 5 generic agent methods in LinuxCommands; buildAgentPromptCommand injects PATH after cd prefix" },
-    { "id": 12, "step": "Implement generic methods in macos.ts", "type": "work", "status": "completed", "commit": "7207d91", "notes": "MacOSCommands overrides installAgent to use provider.installCommand('macos'); inherits rest from LinuxCommands" },
-    { "id": 13, "step": "Implement generic methods in windows.ts", "type": "work", "status": "completed", "commit": "7207d91", "notes": "Implemented all 5 generic agent methods in WindowsCommands with PowerShell syntax for buildAgentPromptCommand" },
-    { "id": 14, "step": "Remove deprecated Claude-specific methods", "type": "work", "status": "pending", "commit": "", "notes": "" },
-    { "id": 15, "step": "VERIFY: Phase 2 — OsCommands refactoring complete", "type": "verify", "status": "pending", "commit": "", "notes": "" },
-    { "id": 16, "step": "Update execute-prompt.ts", "type": "work", "status": "pending", "commit": "", "notes": "" },
-    { "id": 17, "step": "Update provision-auth.ts", "type": "work", "status": "pending", "commit": "", "notes": "" },
-    { "id": 18, "step": "Rename update-claude.ts to update-agent-cli.ts + update remaining tools", "type": "work", "status": "pending", "commit": "", "notes": "" },
-    { "id": 19, "step": "Integration tests for tool changes", "type": "work", "status": "pending", "commit": "", "notes": "" },
-    { "id": 20, "step": "VERIFY: Phase 3 — All tool changes complete", "type": "verify", "status": "pending", "commit": "", "notes": "" },
-    { "id": 21, "step": "Documentation + security audit", "type": "work", "status": "pending", "commit": "", "notes": "" },
-    { "id": 22, "step": "VERIFY: Phase 4 — Documentation and security complete", "type": "verify", "status": "pending", "commit": "", "notes": "" }
+    {
+      "id": 1,
+      "step": "Add LlmProvider type and Agent field",
+      "type": "work",
+      "status": "completed",
+      "commit": "d0f6395",
+      "notes": "Added LlmProvider type and llmProvider field to Agent in src/types.ts"
+    },
+    {
+      "id": 2,
+      "step": "Create ProviderAdapter interface",
+      "type": "work",
+      "status": "completed",
+      "commit": "65c7ea5",
+      "notes": "Created src/providers/provider.ts with ProviderAdapter, PromptOptions, ParsedResponse"
+    },
+    {
+      "id": 3,
+      "step": "Implement ClaudeProvider",
+      "type": "work",
+      "status": "completed",
+      "commit": "088a380",
+      "notes": "Created src/providers/claude.ts with full ClaudeProvider implementation"
+    },
+    {
+      "id": 4,
+      "step": "Implement GeminiProvider",
+      "type": "work",
+      "status": "completed",
+      "commit": "da937f2",
+      "notes": "Created src/providers/gemini.ts with full GeminiProvider implementation"
+    },
+    {
+      "id": 5,
+      "step": "Implement CodexProvider",
+      "type": "work",
+      "status": "completed",
+      "commit": "63850f6",
+      "notes": "Created src/providers/codex.ts with NDJSON response parser"
+    },
+    {
+      "id": 6,
+      "step": "Implement CopilotProvider",
+      "type": "work",
+      "status": "completed",
+      "commit": "329daac",
+      "notes": "Created src/providers/copilot.ts with all ProviderAdapter methods"
+    },
+    {
+      "id": 7,
+      "step": "Create provider factory",
+      "type": "work",
+      "status": "completed",
+      "commit": "7b2c501",
+      "notes": "Created src/providers/index.ts with getProvider() singleton factory"
+    },
+    {
+      "id": 8,
+      "step": "Unit tests for provider layer",
+      "type": "work",
+      "status": "completed",
+      "commit": "d944fa6",
+      "notes": "tests/providers.test.ts: 518 total tests pass (all providers, factory, backwards compat)"
+    },
+    {
+      "id": 9,
+      "step": "VERIFY: Phase 1 — Provider abstraction layer complete",
+      "type": "verify",
+      "status": "completed",
+      "commit": "",
+      "notes": "npm run build: clean. npm test: 518 passed, 3 skipped, 33 test files. All 7 provider files exist in src/providers/. No tool files changed."
+    },
+    {
+      "id": 10,
+      "step": "Generalize OsCommands interface",
+      "type": "work",
+      "status": "completed",
+      "commit": "7207d91",
+      "notes": "Added agentCommand/agentVersion/installAgent/updateAgent/buildAgentPromptCommand to OsCommands interface; added jsonOutputFlag()/headlessInvocation() to ProviderAdapter"
+    },
+    {
+      "id": 11,
+      "step": "Implement generic methods in linux.ts",
+      "type": "work",
+      "status": "completed",
+      "commit": "7207d91",
+      "notes": "Implemented all 5 generic agent methods in LinuxCommands; buildAgentPromptCommand injects PATH after cd prefix"
+    },
+    {
+      "id": 12,
+      "step": "Implement generic methods in macos.ts",
+      "type": "work",
+      "status": "completed",
+      "commit": "7207d91",
+      "notes": "MacOSCommands overrides installAgent to use provider.installCommand('macos'); inherits rest from LinuxCommands"
+    },
+    {
+      "id": 13,
+      "step": "Implement generic methods in windows.ts",
+      "type": "work",
+      "status": "completed",
+      "commit": "7207d91",
+      "notes": "Implemented all 5 generic agent methods in WindowsCommands with PowerShell syntax for buildAgentPromptCommand"
+    },
+    {
+      "id": 14,
+      "step": "Remove deprecated Claude-specific methods",
+      "type": "work",
+      "status": "completed",
+      "commit": "4d36760",
+      "notes": "Removed deprecated Claude-specific methods from OsCommands. Updated call sites in provision-auth, update-claude, register-member, member-detail. 535 tests pass (17 new)."
+    },
+    {
+      "id": 15,
+      "step": "VERIFY: Phase 2 — OsCommands refactoring complete",
+      "type": "verify",
+      "status": "completed",
+      "commit": "",
+      "notes": "npm run build: clean. npm test: 535 passed, 3 skipped, 33 test files. OsCommands interface is fully provider-generic."
+    },
+    {
+      "id": 16,
+      "step": "Update execute-prompt.ts",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 17,
+      "step": "Update provision-auth.ts",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 18,
+      "step": "Rename update-claude.ts to update-agent-cli.ts + update remaining tools",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 19,
+      "step": "Integration tests for tool changes",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 20,
+      "step": "VERIFY: Phase 3 — All tool changes complete",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 21,
+      "step": "Documentation + security audit",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 22,
+      "step": "VERIFY: Phase 4 — Documentation and security complete",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    }
   ]
 }
