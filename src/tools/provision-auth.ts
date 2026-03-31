@@ -9,11 +9,12 @@ import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
 import type { Agent } from '../types.js';
+import type { ProviderAdapter } from '../providers/index.js';
 
 export const provisionAuthSchema = z.object({
   member_id: z.string().describe('The UUID of the target member (worker)'),
   api_key: z.string().optional().describe(
-    'Anthropic API key override. If provided, deploys this key as ANTHROPIC_API_KEY instead of running OAuth login. Use for pay-per-use billing without a Claude subscription.'
+    'API key for the member\'s LLM provider (e.g. ANTHROPIC_API_KEY for Claude, GEMINI_API_KEY for Gemini, OPENAI_API_KEY for Codex, COPILOT_GITHUB_TOKEN for Copilot). If provided, deploys this key instead of running OAuth login.'
   ),
 });
 
@@ -23,8 +24,9 @@ export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
  * Real auth check via `claude -p "hello"` — makes an actual API call.
  * This is the only reliable validation for both OAuth and API key auth,
  * since `claude auth status` doesn't actually validate API keys.
+ * Claude-only: other providers use a version check for verification.
  */
-async function verifyWithPrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
+async function verifyWithClaudePrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
   const cmds = getOsCommands(getAgentOS(agent));
   const provider = getProvider('claude');
   const strategy = getStrategy(agent);
@@ -39,8 +41,25 @@ async function verifyWithPrompt(agent: Agent, envPrefix?: string): Promise<boole
   }
 }
 
+/**
+ * Version-based CLI check with optional env prefix.
+ * Used to verify non-Claude providers after API key provisioning.
+ */
+async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPrefix?: string): Promise<boolean> {
+  const cmds = getOsCommands(getAgentOS(agent));
+  const strategy = getStrategy(agent);
+  const prefix = envPrefix ? `${envPrefix} ` : '';
+  const cmd = `${prefix}${cmds.agentVersion(provider)}`;
+  try {
+    const result = await strategy.execCommand(cmd, 30000);
+    return result.code === 0;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Flow A — Copy master's OAuth credentials (default)
+// Flow A — Copy master's OAuth credentials (Claude only)
 // ---------------------------------------------------------------------------
 
 function readMasterCredentials(): string | null {
@@ -79,7 +98,7 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
     return `❌ Failed to write credentials on "${agent.friendlyName}": ${err.message}`;
   }
 
-  const authWorks = await verifyWithPrompt(agent);
+  const authWorks = await verifyWithClaudePrompt(agent);
   touchAgent(agent.id);
 
   const statusNote = credentialStatusNote(credStatus);
@@ -94,13 +113,14 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Flow B — API Key Override
+// Flow B — API Key Override (all providers)
 // ---------------------------------------------------------------------------
 
-async function provisionApiKey(agent: Agent, apiKey: string): Promise<string> {
+async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderAdapter): Promise<string> {
   const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
-  const commands = cmds.setEnv('ANTHROPIC_API_KEY', apiKey);
+  const envVarName = provider.authEnvVar;
+  const commands = cmds.setEnv(envVarName, apiKey);
 
   const errors: string[] = [];
   for (const cmd of commands) {
@@ -123,9 +143,11 @@ async function provisionApiKey(agent: Agent, apiKey: string): Promise<string> {
     // May still work after re-login
   }
 
-  // Verify with a real API call
-  const envPrefix = cmds.envPrefix('ANTHROPIC_API_KEY', apiKey);
-  const authWorks = await verifyWithPrompt(agent, envPrefix);
+  // Verify with a real CLI call
+  const envPrefix = cmds.envPrefix(envVarName, apiKey);
+  const authWorks = provider.name === 'claude'
+    ? await verifyWithClaudePrompt(agent, envPrefix)
+    : await verifyWithVersion(agent, provider, envPrefix);
 
   touchAgent(agent.id);
 
@@ -139,9 +161,9 @@ async function provisionApiKey(agent: Agent, apiKey: string): Promise<string> {
     }
   }
 
-  result += `\n  Environment: ANTHROPIC_API_KEY set in shell profiles\n`;
+  result += `\n  Environment: ${envVarName} set in shell profiles\n`;
   result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}\n`;
-  result += `  Auth test: ${authWorks ? 'Claude CLI authenticated successfully' : 'Could not verify — may need to re-login'}\n`;
+  result += `  Auth test: ${authWorks ? `${provider.name} CLI authenticated successfully` : 'Could not verify — may need to re-login'}\n`;
 
   return result;
 }
@@ -165,8 +187,17 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
   }
 
+  const provider = getProvider(agent.llmProvider);
+
   if (input.api_key) {
-    return provisionApiKey(agent, input.api_key);
+    return provisionApiKey(agent, input.api_key, provider);
   }
+
+  // OAuth copy flow — Claude only
+  if (!provider.supportsOAuthCopy()) {
+    return `❌ OAuth credential copy is not supported for ${provider.name}.\n`
+      + `  Use the api_key parameter to provision a ${provider.authEnvVar} instead.`;
+  }
+
   return provisionMasterToken(agent);
 }
