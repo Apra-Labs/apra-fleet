@@ -108,14 +108,11 @@ describe('OsCommands via getOsCommands', () => {
       const opts = { folder: '/tmp/work', b64Prompt: 'aGVsbG8=' };
 
       for (const [name, cmds] of all) {
-        it(`${name}: claude provider produces same output as buildPromptCommand`, () => {
-          const legacy = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
+        it(`${name}: claude provider buildAgentPromptCommand includes base64 prompt and flags`, () => {
           const generic = cmds.buildAgentPromptCommand(claudeProvider, opts);
           expect(generic).toContain('aGVsbG8=');
           expect(generic).toContain('--output-format json');
           expect(generic).toContain('--max-turns 50');
-          // Must match the legacy output exactly for backwards compat
-          expect(generic).toBe(legacy);
         });
 
         it(`${name}: gemini provider uses gemini binary`, () => {
@@ -227,63 +224,6 @@ describe('OsCommands via getOsCommands', () => {
       expect(() => linux.fleetProcessCheck('/home/user', 'sess;whoami')).toThrow('Invalid session ID');
       expect(() => windows.fleetProcessCheck('C:\\work', 'sess$(cmd)')).toThrow('Invalid session ID');
     });
-  });
-
-  describe('prompt building', () => {
-    for (const [name, cmds] of all) {
-      it(`${name}: builds a prompt command with folder and base64`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).toContain('aGVsbG8=');
-        expect(cmd).toContain('--output-format json');
-      });
-
-      it(`${name}: includes session resume when provided`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', 'abc-123-def');
-        expect(cmd).toContain('--resume');
-        expect(cmd).toContain('abc-123-def');
-      });
-
-      it(`${name}: includes --dangerously-skip-permissions when flag is true`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, true);
-        expect(cmd).toContain('--dangerously-skip-permissions');
-      });
-
-      it(`${name}: omits --dangerously-skip-permissions by default`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).not.toContain('--dangerously-skip-permissions');
-      });
-
-      it(`${name}: includes --model when provided`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, false, 'sonnet');
-        expect(cmd).toContain('--model');
-        expect(cmd).toContain('sonnet');
-      });
-
-      it(`${name}: omits --model when not provided`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).not.toContain('--model');
-      });
-
-      it(`${name}: uses default max-turns 50 when not specified`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).toContain('--max-turns 50');
-      });
-
-      it(`${name}: uses custom max-turns when specified`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, false, undefined, 10);
-        expect(cmd).toContain('--max-turns 10');
-        expect(cmd).not.toContain('--max-turns 50');
-      });
-
-      it(`${name}: combines --model with --resume and --dangerously-skip-permissions`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', 'sess-123', true, 'claude-opus-4-6');
-        expect(cmd).toContain('--resume');
-        expect(cmd).toContain('sess-123');
-        expect(cmd).toContain('--dangerously-skip-permissions');
-        expect(cmd).toContain('--model');
-        expect(cmd).toContain('claude-opus-4-6');
-      });
-    }
   });
 
   describe('resource output parsing', () => {

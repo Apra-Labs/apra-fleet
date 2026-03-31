@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 22,
-  "completed": 17,
+  "completed": 18,
   "tasks": [
     {
       "id": 1,
@@ -157,9 +157,9 @@
       "id": 19,
       "step": "Integration tests for tool changes",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": ""
+      "notes": "tests/tool-provider.test.ts: executePrompt per provider, provisionAuth API key per provider, updateAgentCli per provider, mixed fleet, fleetProcessCheck processName per provider; tests/platform.test.ts: replaced deprecated buildPromptCommand tests with buildAgentPromptCommand tests"
     },
     {
       "id": 20,
