@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { getProvider } from '../providers/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
@@ -25,10 +26,11 @@ export type ProvisionAuthInput = z.infer<typeof provisionAuthSchema>;
  */
 async function verifyWithPrompt(agent: Agent, envPrefix?: string): Promise<boolean> {
   const cmds = getOsCommands(getAgentOS(agent));
+  const provider = getProvider('claude');
   const strategy = getStrategy(agent);
   const escapedFolder = escapeDoubleQuoted(agent.workFolder);
   const prefix = envPrefix ? `${envPrefix} ` : '';
-  const cmd = `cd "${escapedFolder}" && ${prefix}${cmds.claudeCommand('-p "hello" --output-format json --max-turns 1')}`;
+  const cmd = `cd "${escapedFolder}" && ${prefix}${cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1')}`;
   try {
     const result = await strategy.execCommand(cmd, 60000);
     return result.code === 0;

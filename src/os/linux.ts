@@ -91,28 +91,6 @@ export class LinuxCommands implements OsCommands {
     return `${CLAUDE_PATH}${providerCmd}`;
   }
 
-  // --- Claude CLI (deprecated — use agent* methods) ---
-
-  claudeCommand(args: string): string {
-    return `${CLAUDE_PATH}claude ${args}`;
-  }
-
-  claudeVersion(): string {
-    return this.claudeCommand('--version 2>&1');
-  }
-
-  claudeCheck(): string {
-    return 'which claude 2>/dev/null';
-  }
-
-  installClaude(): string {
-    return 'curl -fsSL https://claude.ai/install.sh | bash';
-  }
-
-  updateClaude(): string {
-    return this.claudeCommand('update');
-  }
-
   // --- Filesystem ---
 
   mkdir(folder: string): string {
@@ -205,7 +183,7 @@ export class LinuxCommands implements OsCommands {
   buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string {
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
-    let cmd = `cd "${escapedFolder}" && ${this.claudeCommand(`-p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns ${turns}`)}`;
+    let cmd = `cd "${escapedFolder}" && ${CLAUDE_PATH}claude -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns ${turns}`;
     if (sessionId) {
       cmd += ` --resume "${sanitizeSessionId(sessionId)}"`;
     }

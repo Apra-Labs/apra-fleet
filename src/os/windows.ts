@@ -110,28 +110,6 @@ export class WindowsCommands implements OsCommands {
     return cmd;
   }
 
-  // --- Claude CLI (deprecated — use agent* methods) ---
-
-  claudeCommand(args: string): string {
-    return `${CLAUDE_PATH}claude ${args}`;
-  }
-
-  claudeVersion(): string {
-    return this.claudeCommand('--version 2>&1');
-  }
-
-  claudeCheck(): string {
-    return 'Get-Command claude -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source';
-  }
-
-  installClaude(): string {
-    return 'irm https://claude.ai/install.ps1 | iex';
-  }
-
-  updateClaude(): string {
-    return this.claudeCommand('update');
-  }
-
   // --- Filesystem ---
 
   mkdir(folder: string): string {

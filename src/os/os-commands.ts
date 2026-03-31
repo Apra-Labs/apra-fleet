@@ -23,13 +23,6 @@ export interface OsCommands {
   installAgent(provider: ProviderAdapter): string;
   updateAgent(provider: ProviderAdapter): string;
 
-  // --- Claude CLI (kept for backwards compat — deprecated, use agent* methods) ---
-  claudeCommand(args: string): string;
-  claudeVersion(): string;
-  claudeCheck(): string;
-  installClaude(): string;
-  updateClaude(): string;
-
   // --- Filesystem ---
   mkdir(folder: string): string;
 

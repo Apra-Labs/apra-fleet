@@ -5,6 +5,7 @@ import type { CloudConfig } from '../services/cloud/types.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
+import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
@@ -183,8 +184,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     tempAgent.os = detectedOS;
 
     const cmds = getOsCommands(detectedOS);
+    const provider = getProvider('claude');
 
-    const versionCheck = strategy.execCommand(cmds.claudeVersion(), 15000)
+    const versionCheck = strategy.execCommand(cmds.agentVersion(provider), 15000)
       .then(r => {
         r.code === 0
           ? (claudeVersion = r.stdout.trim())
@@ -193,7 +195,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       .catch(() => { warnings.push('Could not verify Claude CLI availability'); });
 
     const authCheck = !isLocal
-      ? strategy.execCommand(cmds.claudeCommand('-p "hello" --output-format json --max-turns 1'), 60000)
+      ? strategy.execCommand(cmds.agentCommand(provider, '-p "hello" --output-format json --max-turns 1'), 60000)
           .then(r => { r.code !== 0 && warnings.push('Claude CLI auth check failed — you may need to run provision_auth'); })
           .catch(() => { warnings.push('Claude CLI auth check timed out or failed — run provision_auth to set up authentication'); })
       : Promise.resolve();

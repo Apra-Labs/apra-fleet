@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { getProvider } from '../providers/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 import { DEFAULT_ICON } from '../services/icons.js';
@@ -96,10 +97,11 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     }
   }
 
-  // -- Claude CLI --
+  // -- Agent CLI --
+  const provider = getProvider('claude');
   const cli: Record<string, unknown> = {};
   try {
-    const versionResult = await strategy.execCommand(cmds.claudeVersion(), 10000);
+    const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
     cli.version = versionResult.stdout.trim();
   } catch {
     cli.version = 'unknown';
