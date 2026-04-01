@@ -65,20 +65,26 @@ function readPassword(prompt: string): Promise<string> {
 }
 
 export async function runAuth(args: string[]): Promise<void> {
-  const memberName = args[0];
+  const isApiKey = args.includes('--api-key');
+  const memberName = args.find(a => !a.startsWith('--'));
 
   if (!memberName) {
-    console.error('Usage: apra-fleet auth <member-name>');
-    console.error('  Provides an SSH password for a pending fleet registration.');
+    console.error('Usage: apra-fleet auth [--api-key] <member-name>');
+    console.error('  Provides an SSH password or API key for a pending fleet operation.');
     process.exit(1);
   }
 
-  console.error(`\napra-fleet — Enter SSH password\n`);
-  console.error(`  Member: ${memberName}\n`);
+  if (isApiKey) {
+    console.error(`\napra-fleet — Enter API key\n`);
+    console.error(`  Member: ${memberName}\n`);
+  } else {
+    console.error(`\napra-fleet — Enter SSH password\n`);
+    console.error(`  Member: ${memberName}\n`);
+  }
 
   let password: string;
   try {
-    password = await readPassword('  Password: ');
+    password = await readPassword(isApiKey ? '  API key: ' : '  Password: ');
   } catch {
     console.error('Cancelled.');
     process.exit(1);
@@ -86,7 +92,7 @@ export async function runAuth(args: string[]): Promise<void> {
   }
 
   if (!password) {
-    console.error('  ✗ Empty password. Aborting.');
+    console.error(isApiKey ? '  ✗ Empty API key. Aborting.' : '  ✗ Empty password. Aborting.');
     process.exit(1);
   }
 
@@ -111,7 +117,7 @@ export async function runAuth(args: string[]): Promise<void> {
       try {
         const resp = JSON.parse(line);
         if (resp.ok) {
-          console.error('\n  ✓ Password received. You can close this window.\n');
+          console.error(isApiKey ? '\n  ✓ API key received. You can close this window.\n' : '\n  ✓ Password received. You can close this window.\n');
           resolve();
         } else {
           console.error(`\n  ✗ Error: ${resp.error}\n`);

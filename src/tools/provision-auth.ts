@@ -8,8 +8,9 @@ import { getProvider } from '../providers/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
-import { encryptPassword } from '../utils/crypto.js';
+import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
+import { collectOobApiKey } from '../services/auth-socket.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -200,10 +201,11 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     return provisionApiKey(agent, input.api_key, provider);
   }
 
-  // OAuth copy flow — Claude only
+  // Non-Claude providers: collect API key via OOB terminal prompt
   if (!provider.supportsOAuthCopy()) {
-    return `❌ OAuth credential copy is not supported for ${provider.name}.\n`
-      + `  Use the api_key parameter to provision a ${provider.authEnvVar} instead.`;
+    const oob = await collectOobApiKey(agent.friendlyName, 'provision_auth');
+    if ('fallback' in oob) return oob.fallback;
+    return provisionApiKey(agent, decryptPassword(oob.password), provider);
   }
 
   return provisionMasterToken(agent);
