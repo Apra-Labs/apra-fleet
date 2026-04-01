@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 51,
-  "completed": 22,
+  "completed": 24,
   "tasks": [
     {
       "id": 1,
@@ -189,17 +189,17 @@
       "id": 23,
       "step": "Add modelTiers() to ProviderAdapter interface",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "4c725fd",
+      "notes": "Added modelTiers(): Record<'cheap'|'standard'|'premium', string> to ProviderAdapter interface in src/providers/provider.ts"
     },
     {
       "id": 24,
       "step": "Implement modelTiers() in all providers",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "4c725fd",
+      "notes": "Implemented modelTiers() in ClaudeProvider, GeminiProvider, CodexProvider, CopilotProvider; added 4 unit tests in providers.test.ts. Claude: haiku/sonnet/opus; Gemini: flash/pro/pro; Codex: mini/gpt-5.4/gpt-5.4; Copilot: haiku/sonnet/opus (4-5 versions)."
     },
     {
       "id": 25,

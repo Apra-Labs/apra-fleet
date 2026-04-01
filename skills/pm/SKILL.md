@@ -71,7 +71,7 @@ PM sends task harness → kicks off doer with execute_prompt
 
 ### Monitoring
 - Check progress: `execute_command → cat progress.json` (cheap, fast). Check git: `git log --oneline -10`
-- Max-turns without completing? Reset session and resume. Zero progress after 2 resets? Escalate model (haiku→sonnet→opus). Still zero? Flag to user
+- Max-turns without completing? Reset session and resume. Zero progress after 2 resets? Escalate model (cheap→standard→premium). Still zero? Flag to user
 - Members may blow past verify checkpoints if context gets large — dispatch a review immediately when caught
 - Long-running branches: check drift with `git log <branch>..origin/main --oneline`. If main moved, instruct rebase + retest
 - Something failing? See troubleshooting.md
@@ -98,7 +98,7 @@ User picks, PM executes.
 
 ## Model Selection
 
-haiku for execution (commands, status, tests, deploys). sonnet for construction (code, config, devops). opus for planning, review, design, and architecture. User override always wins. When in doubt, prefer cheaper.
+Use model tiers: `cheap` for execution (commands, status, tests, deploys), `standard` for construction (code, config, devops), `premium` for planning, review, design, and architecture. The server resolves tiers to provider-specific models via `modelTiers()`. User override always wins. When in doubt, prefer cheaper.
 
 ## Member Icons
 
