@@ -25,6 +25,7 @@ export interface Agent {
   vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
   vcsTokenExpiresAt?: string;  // ISO 8601
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
+  encryptedEnvVars?: Record<string, string>;  // envVarName -> encrypted value
 }
 
 export interface GitHubAppConfig {
