@@ -153,8 +153,9 @@ describe('OsCommands via getOsCommands', () => {
       expect(linuxCmds[0]).toContain('.bashrc');
 
       const macosCmds = macos.setEnv('MY_VAR', 'value');
-      expect(macosCmds.length).toBe(4);
+      expect(macosCmds.length).toBe(5);
       expect(macosCmds.some(c => c.includes('.zshrc'))).toBe(true);
+      expect(macosCmds.some(c => c.includes('.zshenv'))).toBe(true);
 
       const winCmds = windows.setEnv('MY_VAR', 'value');
       expect(winCmds.length).toBe(1);
@@ -168,8 +169,9 @@ describe('OsCommands via getOsCommands', () => {
       expect(linuxCmds[2]).toContain('unset MY_VAR');
 
       const macosCmds = macos.unsetEnv('MY_VAR');
-      expect(macosCmds.length).toBe(4);
-      expect(macosCmds[3]).toContain('unset MY_VAR');
+      expect(macosCmds.length).toBe(5);
+      expect(macosCmds.some(c => c.includes('.zshenv'))).toBe(true);
+      expect(macosCmds[4]).toContain('unset MY_VAR');
 
       const winCmds = windows.unsetEnv('MY_VAR');
       expect(winCmds[0]).toContain('SetEnvironmentVariable');
