@@ -1250,3 +1250,77 @@ Summary now correctly states: "29 (24 implementation + 5 verify checkpoints)" an
 **APPROVED**
 
 All 6 prior findings addressed — both blocking issues resolved, all non-blocking issues resolved or mitigated. The 12-point checklist passes on all points. Phase 5 is ready for implementation. One cosmetic model name discrepancy noted as non-blocking.
+
+---
+
+# Code Review — Phase 5A: Model Tier Abstraction (Cumulative Review)
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Commits reviewed:** `4c725fd..d4012a6` (Phase 5A: tasks 23–28), cumulative Phases 1–4
+**Reviewer:** Claude (automated review per CLAUDE.md)
+
+---
+
+## Scope
+
+Phase 5A (tasks 23–28): Add `modelTiers()` to `ProviderAdapter` interface, implement in all 4 providers, replace hardcoded `haiku/sonnet/opus` model names with `cheap/standard/premium` tier names in PM skill docs (SKILL.md, doer-reviewer.md, troubleshooting.md).
+
+## Task-by-Task Verification
+
+| Task | Description | Status | Notes |
+|------|-------------|--------|-------|
+| 23 | Add `modelTiers()` to ProviderAdapter interface | PASS | `src/providers/provider.ts:51` — `modelTiers(): Record<'cheap' \| 'standard' \| 'premium', string>` |
+| 24 | Implement `modelTiers()` in all providers | PASS | All 4 providers implement; 4 unit tests added in `tests/providers.test.ts` |
+| 25 | Replace model names in SKILL.md | PASS | Lines 74, 101 updated. Zero haiku/sonnet/opus matches |
+| 26 | Replace model names in doer-reviewer.md | PASS | Lines 58, 63 updated. Zero haiku/sonnet/opus matches |
+| 27 | Replace model names in troubleshooting.md | PASS | Line 9 updated. Zero haiku/sonnet/opus matches |
+| 28 | VERIFY 5A | PASS | Self-reported: 537 tests pass, build clean |
+
+## Verification Checks
+
+| Check | Result |
+|-------|--------|
+| `grep -ri 'haiku\|sonnet\|opus' skills/pm/` | **PASS** — zero matches |
+| `modelTiers()` in all 4 providers | **PASS** — Claude, Gemini, Codex, Copilot all implement |
+| Unit tests for `modelTiers()` | **PASS** — 4 tests added (one per provider) |
+| Skill docs internally consistent with tier language | **PASS** — all escalation paths use cheap→standard→premium |
+| `npm run build` / `npm test` | **NOT INDEPENDENTLY VERIFIED** — shell permission constraints prevented execution. Self-reported: 537 tests pass, build clean. |
+
+## Findings
+
+### Finding 1: `modelTiers()` vs `modelForTier()` overlap (NON-BLOCKING)
+
+Both methods exist on the `ProviderAdapter` interface (`provider.ts:51-52`) and return overlapping data, but with **inconsistent tier naming**:
+
+- `modelTiers()` uses: `cheap` / `standard` / `premium`
+- `modelForTier()` uses: `cheap` / `mid` / `premium`
+
+The "standard" tier in `modelTiers()` maps to the same model as "mid" in `modelForTier()`. Having two methods that return the same information with different names for the middle tier creates a maintenance risk — if a model is updated in one but not the other, they'll silently diverge.
+
+**Recommendation:** In a future phase, deprecate `modelForTier()` in favor of `modelTiers()` with a simple lookup. The tier naming should be unified on `cheap/standard/premium` as the canonical set.
+
+### Finding 2: Gemini `modelTiers()` deviates from PLAN.md spec (NON-BLOCKING)
+
+PLAN.md task 5A.2 specifies Gemini cheap as `gemini-2.0-flash-lite`, but the implementation uses `gemini-2.5-flash`. This is **internally consistent** — the pre-existing `modelForTier()` from Phase 1 already uses `gemini-2.5-flash`, and the Phase 5 plan review noted this discrepancy as non-blocking with the mitigation that the implementer should consult the design doc. The implementer chose consistency with `modelForTier()`, which is the right call.
+
+### Finding 3: SKILL.md still references `tpl-claude.md` (NOT A REGRESSION)
+
+SKILL.md line 54 and doer-reviewer.md line 11 still reference `tpl-claude.md`. This is **expected** — the rename to `tpl-doer.md` is a Phase 5B task (task 29). Not a Phase 5A regression.
+
+## Phase 1–4 Regression Check
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1 (Provider abstraction) | **No regression** | Phase 5A only adds a new method; no existing methods modified |
+| Phase 2 (OsCommands refactoring) | **No regression** | No changes to `src/os/` files |
+| Phase 3 (Tool changes) | **No regression** | No changes to `src/tools/` files |
+| Phase 4 (Docs + security) | **No regression** | No changes to `docs/` files. Phase 5A changes are in `skills/pm/` and `src/providers/` only |
+
+Phase 5A changes are purely additive (one new interface method + implementations + doc text replacements). Risk of regression is minimal.
+
+## Verdict
+
+**APPROVED**
+
+Phase 5A meets all "done" criteria. `modelTiers()` is correctly implemented in all 4 providers with unit tests. Skill docs consistently use tier language with zero hardcoded model names. No Phase 1–4 regressions detected. Two non-blocking findings noted for future cleanup (modelTiers/modelForTier overlap, Gemini model name plan deviation). Build and tests were not independently executed — recommend user verification before proceeding to Phase 5B.
