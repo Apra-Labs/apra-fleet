@@ -198,3 +198,263 @@
 - All docs updated and consistent
 - Security audit complete with no open issues
 - Ready for PR
+
+---
+
+## Phase 5: PM Skill Provider Independence
+
+### Goal
+Make the PM skill (`skills/pm/`) fully provider-independent so that a Gemini (or Codex/Copilot) member can be registered, onboarded, assigned work, reviewed, and deployed through the same PM workflows that work for Claude members today. All existing Claude workflows must remain identical (backwards compatible).
+
+### Key Design Decisions
+1. **Model tiers:** Abstract tiers (`cheap`/`standard`/`premium`) replace Claude model names. Add `modelTiers()` to `ProviderAdapter`. PM uses tiers; server resolves to provider-specific models.
+2. **Permission abstraction:** `compose_permissions` becomes provider-aware — accepts role + provider, produces provider-native permission config:
+   - Claude → `.claude/settings.local.json` (JSON allow/deny lists)
+   - Gemini → `.gemini/settings.json` + `.gemini/policies/*.toml` (TOML policy rules)
+   - Codex → `.codex/config.toml` (TOML approval mode + OS-level sandbox config)
+   - Copilot → `.github/copilot/settings.local.json` (JSON per-tool allow/deny)
+3. **Template rename:** `tpl-claude.md` → `tpl-doer.md` (content is already mostly generic).
+4. **Onboarding:** Provider-aware — detect member's `llmProvider`, adapt steps.
+5. **Skill text:** No hardcoded Claude model names in skill markdown — use tier names.
+
+---
+
+### Phase 5A: Model Tier Abstraction
+
+#### Task 5A.1: Add modelTiers() to ProviderAdapter interface (S)
+- **File:** `src/providers/provider.ts`
+- Add `modelTiers(): Record<'cheap' | 'standard' | 'premium', string>` to `ProviderAdapter`
+- Returns a mapping from abstract tier to provider-specific model name
+- **Done:** Interface updated, compiles
+
+#### Task 5A.2: Implement modelTiers() in all providers (M)
+- **Files:** `src/providers/claude.ts`, `gemini.ts`, `codex.ts`, `copilot.ts`
+- Claude: `{ cheap: 'haiku', standard: 'sonnet', premium: 'opus' }`
+- Gemini: `{ cheap: 'gemini-2.0-flash-lite', standard: 'gemini-2.5-flash', premium: 'gemini-2.5-pro' }`
+- Codex: `{ cheap: 'o4-mini', standard: 'o3', premium: 'o3' }`
+- Copilot: `{ cheap: 'gpt-4.1-mini', standard: 'gpt-4.1', premium: 'o3' }`
+- Consult `docs/multi-provider-plan.md` for current model names
+- **Done:** All 4 providers implement `modelTiers()`, unit tests verify mappings
+
+#### Task 5A.3: Replace model names in SKILL.md (S)
+- **File:** `skills/pm/SKILL.md`
+- Replace `haiku→sonnet→opus` escalation with `cheap→standard→premium`
+- Replace model-specific guidance ("haiku for execution... sonnet for construction... opus for planning") with tier-based language
+- **Done:** No occurrences of `haiku`, `sonnet`, or `opus` as model selectors in SKILL.md
+
+#### Task 5A.4: Replace model names in doer-reviewer.md (S)
+- **File:** `skills/pm/doer-reviewer.md`
+- Replace `haiku→sonnet→opus` with `cheap→standard→premium`
+- Replace any `opus` references with `premium tier`
+- **Done:** No occurrences of `haiku`, `sonnet`, or `opus` in doer-reviewer.md
+
+#### Task 5A.5: Replace model names in troubleshooting.md (S)
+- **File:** `skills/pm/troubleshooting.md`
+- Replace `haiku→sonnet→opus` with `cheap→standard→premium`
+- **Done:** No occurrences of `haiku`, `sonnet`, or `opus` in troubleshooting.md
+
+#### VERIFY 5A: Model tier abstraction complete
+- `npm run build` — compiles cleanly
+- `npm test` — all tests pass
+- `grep -ri "haiku\|sonnet\|opus" skills/pm/` returns zero matches
+- `modelTiers()` implemented and tested for all 4 providers
+
+---
+
+### Phase 5B: Template Rename + Instruction File Parameterization
+
+#### Task 5B.1: Rename tpl-claude.md → tpl-doer.md (S)
+- `git mv skills/pm/tpl-claude.md skills/pm/tpl-doer.md`
+- Content is already mostly generic — no content changes needed
+- **Done:** `tpl-claude.md` no longer exists; `tpl-doer.md` has identical content
+
+#### Task 5B.2: Update all references to tpl-claude.md (S)
+- **Files:** `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`, any other files referencing `tpl-claude.md`
+- Replace all `tpl-claude.md` with `tpl-doer.md`
+- **Done:** `grep -ri "tpl-claude" skills/pm/` returns zero matches
+
+#### Task 5B.3: Parameterize instruction file name in skill docs (M)
+- **Files:** `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`, `skills/pm/tpl-doer.md`, `skills/pm/tpl-reviewer.md`
+- Where docs say "CLAUDE.md" for member instruction files, parameterize:
+  - "Send `tpl-doer.md` as the member's instruction file (CLAUDE.md for Claude, GEMINI.md for Gemini, AGENTS.md for Codex, COPILOT.md for Copilot)"
+  - "The instruction file is NEVER committed — it is role-specific"
+  - Add guidance: "Use `member_detail` → `llmProvider` to determine the provider's `instructionFileName`"
+- **Important:** Do NOT change references to the PM's own CLAUDE.md — PM runs on Claude
+- **Done:** All member-facing instruction file references are parameterized; PM's own CLAUDE.md references unchanged
+
+#### VERIFY 5B: Template rename and parameterization complete
+- `tpl-claude.md` does not exist
+- All references point to `tpl-doer.md`
+- No hardcoded `CLAUDE.md` for member instruction files (PM's own are fine)
+- `npm run build` + `npm test` pass
+
+---
+
+### Phase 5C: Provider-Native Permission Abstraction
+
+#### Task 5C.1: Add permission config methods to ProviderAdapter (M)
+- **File:** `src/providers/provider.ts`
+- Add to `ProviderAdapter`:
+  - `permissionConfigPaths(): string[]` — returns the file path(s) for this provider's permission config (relative to repo root)
+  - `composePermissionConfig(role: 'doer' | 'reviewer', grants?: string[]): Record<string, unknown> | string` — returns the permission config content for the given role. Returns object for JSON providers, string for TOML providers.
+- **Done:** Interface updated, compiles
+
+#### Task 5C.2: Implement permission config in ClaudeProvider (M)
+- **File:** `src/providers/claude.ts`
+- `permissionConfigPaths()`: `['.claude/settings.local.json']`
+- `composePermissionConfig()`: produces JSON with allow/deny lists per role (extract logic from existing `compose_permissions` tool)
+- **Done:** Claude permission composition produces identical output to current behavior
+
+#### Task 5C.3: Implement permission config in GeminiProvider (M)
+- **File:** `src/providers/gemini.ts`
+- `permissionConfigPaths()`: `['.gemini/settings.json', '.gemini/policies/fleet.toml']`
+- `composePermissionConfig()`: produces Gemini-native config — settings.json for mode selection (yolo for doer, default for reviewer) + TOML policy file for tool-level rules
+- **Done:** Gemini permission config encodes equivalent guardrails to Claude's, in Gemini-native format
+
+#### Task 5C.4: Implement permission config in CodexProvider (M)
+- **File:** `src/providers/codex.ts`
+- `permissionConfigPaths()`: `['.codex/config.toml']`
+- `composePermissionConfig()`: produces TOML with `approval_mode` (full-auto for doer, suggest for reviewer) and sandbox settings
+- **Done:** Codex permission config matches role intent
+
+#### Task 5C.5: Implement permission config in CopilotProvider (S)
+- **File:** `src/providers/copilot.ts`
+- `permissionConfigPaths()`: `['.github/copilot/settings.local.json']`
+- `composePermissionConfig()`: produces JSON with per-tool allow/deny flags
+- **Done:** Copilot permission config matches role intent
+
+#### Task 5C.6: Refactor compose_permissions to use ProviderAdapter (L)
+- **File:** `src/tools/compose-permissions.ts`
+- Refactor to:
+  1. Look up `agent.llmProvider` from registry
+  2. Get provider via `getProvider(agent.llmProvider)`
+  3. Call `provider.composePermissionConfig(role, grants)` to get config content
+  4. Call `provider.permissionConfigPaths()` to get target file path(s)
+  5. Deliver config file(s) to member via `send_files`
+- Reactive grant path: merge grants into existing config using provider method
+- Backwards compat: no `llmProvider` = Claude
+- **Done:** `compose_permissions` works for all 4 providers; Claude behavior unchanged
+
+#### Task 5C.7: Update permissions.md for provider-native configs (S)
+- **File:** `skills/pm/permissions.md`
+- Add "Provider Permission Mechanisms" section with table:
+  | Provider | Config Path(s) | Format | Mechanism |
+  | Claude | `.claude/settings.local.json` | JSON | Per-tool allow/deny lists |
+  | Gemini | `.gemini/settings.json` + `.gemini/policies/*.toml` | JSON+TOML | Mode selection + policy rules |
+  | Codex | `.codex/config.toml` | TOML | Approval mode + OS sandbox |
+  | Copilot | `.github/copilot/settings.local.json` | JSON | Per-tool allow/deny flags |
+- Update "Before every sprint" and "Mid-sprint denial" sections for provider awareness
+- **Done:** permissions.md documents all provider permission mechanisms
+
+#### Task 5C.8: Update SKILL.md rule 8 for provider-native permissions (S)
+- **File:** `skills/pm/SKILL.md`
+- Rule 8: "Before every sprint, compose and deliver member permissions per permissions.md. `compose_permissions` produces the correct provider-native config — Claude gets `settings.local.json`, Gemini gets TOML policies, etc. Mid-sprint denial? Evaluate, grant, re-deliver via `compose_permissions`."
+- **Done:** Rule 8 reflects provider-native permission model
+
+#### Task 5C.9: Update troubleshooting.md permission entry (S)
+- **File:** `skills/pm/troubleshooting.md`
+- "Permission denied" row: "Run `compose_permissions` for the member — it produces provider-native permission config. For Claude: check `settings.local.json`. For Gemini: check `.gemini/policies/`. For Codex: check `config.toml` approval mode."
+- **Done:** Troubleshooting reflects provider-native approach
+
+#### Task 5C.10: Write tests for provider-aware compose_permissions (M)
+- **File:** `tests/compose-permissions.test.ts` (or extend existing)
+- Test: Claude member → `settings.local.json` composed (existing behavior preserved)
+- Test: Gemini member → `.gemini/settings.json` + `.gemini/policies/fleet.toml` composed
+- Test: Codex member → `.codex/config.toml` composed
+- Test: Copilot member → `.github/copilot/settings.local.json` composed
+- Test: Reactive grant for Claude → config updated
+- Test: Reactive grant for Gemini → TOML policy updated
+- Test: Member with no `llmProvider` → treated as Claude
+- **Done:** All test cases pass
+
+#### VERIFY 5C: Permission abstraction complete
+- `npm run build` + `npm test` — all pass
+- `compose_permissions` produces correct provider-native config for all 4 providers
+- Skill docs consistent with implementation
+- Claude behavior unchanged from Phase 4
+
+---
+
+### Phase 5D: Onboarding Provider Awareness
+
+#### Task 5D.1: Update onboarding.md with provider branching (M)
+- **File:** `skills/pm/onboarding.md`
+- **Step 1.5 (new — Verify CLI Installation):** "Run `execute_command` with provider's `versionCommand()`. If not installed, run `installCommand()`. Use `member_detail` to determine `llmProvider` and `os`."
+- **Step 2 (Disable AI Attribution):** Add provider branching:
+  - Claude: existing behavior (`.claude/settings.json` attribution config)
+  - Gemini/Codex/Copilot: skip with note "does not support attribution config" (or configure if supported)
+- **Step 7 (Member Status File):** Add `LLM Provider: <provider>` to member profile template
+- **Done:** Onboarding has clear provider branching; Gemini member can be fully onboarded
+
+#### Task 5D.2: Update doer-reviewer.md for provider-aware config delivery (S)
+- **File:** `skills/pm/doer-reviewer.md`
+- Setup Checklist item 3: "Compose and deliver permissions per permissions.md — `compose_permissions` handles provider-native format automatically."
+- Permissions section: "Compose and deliver permissions per permissions.md. Recompose when switching roles. Each provider gets its native permission config."
+- **Done:** doer-reviewer.md has no provider-specific assumptions
+
+#### VERIFY 5D: Onboarding provider awareness complete
+- All skill docs internally consistent
+- Walkthrough of onboarding for hypothetical Gemini member succeeds on paper
+- `npm run build` + `npm test` pass
+
+---
+
+### Phase 5E: Integration, Cleanup, and Walkthrough
+
+#### Task 5E.1: Audit all skill docs for remaining Claude assumptions (S)
+- **Files:** All files in `skills/pm/`
+- `grep -ri "claude" skills/pm/` — review every hit
+- Categorize: (a) PM's own CLAUDE.md (keep), (b) member-facing Claude assumption (fix), (c) qualified provider example (keep)
+- Fix all category (b) items
+- **Done:** Every "Claude" or "CLAUDE.md" mention is either PM's own config or qualified as one provider among others
+
+#### Task 5E.2: Add Provider Awareness section to SKILL.md (S)
+- **File:** `skills/pm/SKILL.md`
+- Add new "## Provider Awareness" section documenting:
+  - Instruction file: lookup via `member_detail` → `llmProvider` → provider's `instructionFileName`
+  - Permissions: `compose_permissions` produces provider-native config automatically
+  - Model tiers: `cheap`/`standard`/`premium` — server resolves via `modelTiers()`
+  - CLI differences: handled by `ProviderAdapter` — PM never constructs CLI commands
+  - Attribution: Claude-only; skip for other providers
+  - PM itself always runs on Claude
+- **Done:** Single authoritative section documents all provider-aware PM behavior
+
+#### Task 5E.3: Update skill-matrix.md with provider note (S)
+- **File:** `skills/pm/skill-matrix.md`
+- Add note: "Skills are independent of the member's LLM provider. A Gemini member needs the same project skills as a Claude member."
+- **Done:** skill-matrix.md clarifies skills are provider-agnostic
+
+#### Task 5E.4: Walkthrough test — Gemini member lifecycle (M)
+- Trace complete lifecycle for a Gemini member, verify each step:
+  1. `register_member` with `llmProvider: 'gemini'` → provider stored ✓
+  2. Onboarding steps 1–7 → each step has Gemini branch ✓
+  3. PM composes permissions → Gemini-native TOML policy delivered ✓
+  4. PM sends `tpl-doer.md` as `GEMINI.md` → `execute_prompt` uses Gemini CLI ✓
+  5. Doer executes → verify checkpoint → PM dispatches reviewer ✓
+  6. Review cycle → merge → deploy ✓
+- Document gaps as follow-up issues
+- **Done:** Each step maps to concrete implementation; gaps filed
+
+#### VERIFY 5E: Full Phase 5 complete
+- `npm run build` — clean compilation
+- `npm test` — all tests pass
+- `grep -ri "haiku\|sonnet\|opus" skills/pm/` — zero matches
+- `grep -ri "tpl-claude" skills/pm/` — zero matches
+- Every `settings.local.json` reference in skill docs is qualified by provider
+- Provider Awareness section in SKILL.md is comprehensive and consistent
+- Gemini member lifecycle walkthrough passes
+
+---
+
+### Phase 5 Summary
+
+| Sub-phase | Tasks | Focus |
+|-----------|-------|-------|
+| 5A | 5A.1–5A.5 + verify | Model tier abstraction (`modelTiers()` + skill doc updates) |
+| 5B | 5B.1–5B.3 + verify | Template rename + instruction file parameterization |
+| 5C | 5C.1–5C.10 + verify | Provider-native permission abstraction (`compose_permissions`) |
+| 5D | 5D.1–5D.2 + verify | Onboarding provider awareness |
+| 5E | 5E.1–5E.4 + verify | Integration, cleanup, Gemini lifecycle walkthrough |
+
+**Total tasks:** 25 (20 implementation + 5 verify checkpoints)
+**Complexity breakdown:** 12S + 9M + 1L
