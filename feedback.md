@@ -1137,3 +1137,116 @@ Summary says "20 implementation + 5 verify checkpoints = 25 tasks." Actual count
 4. Walkthrough test 5E.4 needs clearer deliverable definition.
 5. Task count in Phase 5 Summary is incorrect (24 impl + 5 verify = 29, not 25).
 6. Template rename (5B.1) should note migration path for existing fleets.
+
+---
+
+# Plan Re-Review — Phase 5: PM Skill Provider Independence
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Scope:** PLAN.md Phase 5 (lines 204–483) — re-review after doer addressed 6 findings
+**Previous review:** feedback.md "Plan Review — Phase 5" (2026-03-31)
+**Checked against:** requirements.md (#26, #27, #35), docs/multi-provider-plan.md, 12-point checklist
+
+---
+
+## Prior Finding Resolution
+
+### Finding 1 — BLOCKING: Permission config paths not validated ➜ RESOLVED
+
+The doer added a "Provider Permission Research" subsection (lines 305–313) with official documentation sources for all three non-Claude providers:
+- Gemini: google-gemini.github.io, geminicli.com/docs/reference/policy-engine
+- Codex: developers.openai.com/codex/config-reference
+- Copilot: docs.github.com/en/copilot
+
+This resolves the original concern. The permission config paths in 5C.3–5C.5 are now grounded in cited provider documentation rather than invented. The design doc's "all-or-nothing" characterization was based on earlier research; the updated research shows these providers do support file-based config.
+
+### Finding 2 — BLOCKING: No risk register ➜ RESOLVED
+
+Risk register added at lines 222–228 with 4 risks covering: CLI behavior divergence, config format versioning, TOML edge cases, and feature gaps (session resume). Each has Likelihood, Impact, and Mitigation columns. Meets the requirement of ≥4 risks.
+
+### Finding 3 — NON-BLOCKING: Model names in 5A.2 ➜ PARTIALLY RESOLVED
+
+Codex and Copilot model names now match the design doc tier table:
+- Codex: `gpt-5.4-mini` / `gpt-5.4` / `gpt-5.4` ✓
+- Copilot: `claude-haiku-4-5` / `claude-sonnet-4-5` / `claude-opus-4-5` ✓
+
+However, the Gemini cheap tier in 5A.2 says `gemini-2.0-flash-lite` while the design doc tier table (line 45) says `gemini-2.5-flash`. The plan maps `gemini-2.5-flash` to standard instead. This is a minor discrepancy — the task already says "Consult `docs/multi-provider-plan.md` for current model names" so the implementer will resolve it at build time. **Not blocking.**
+
+### Finding 4 — NON-BLOCKING: 5E.4 deliverable unclear ➜ RESOLVED
+
+Done criteria now reads: "Gap analysis document committed listing every PM workflow step with Gemini status (works/needs-work/not-supported). Zero critical gaps." This is concrete — specifies the artifact (committed document), its structure (per-step status), and the pass condition (zero critical gaps).
+
+### Finding 5 — COSMETIC: Task count incorrect ➜ RESOLVED
+
+Summary now correctly states: "29 (24 implementation + 5 verify checkpoints)" and "14S + 9M + 1L". Verified by manual count — all numbers are correct.
+
+### Finding 6 — NON-BLOCKING: Template rename migration note ➜ RESOLVED
+
+5B.1 now includes: "**Note:** For existing fleets with active sprints: tpl-claude.md removal is backwards-compatible because the file is only used by PM during dispatch, not by members at runtime." Clear rationale for why no migration is needed.
+
+---
+
+## Full 12-Point Checklist Re-Review
+
+### 1. Clear "done" criteria for every task?
+
+**PASS.** All tasks have concrete, testable done criteria. 5E.4's done criteria is now specific (gap analysis document with per-step status). No vague deliverables remain.
+
+### 2. High cohesion within tasks, low coupling between tasks?
+
+**PASS.** Unchanged from prior review. Sub-phases are well-organized by concern.
+
+### 3. Key abstractions and shared interfaces in earliest tasks?
+
+**PASS.** `modelTiers()` (5A.1) and permission methods (5C.1) precede all consumers.
+
+### 4. Riskiest assumption validated in Task 1?
+
+**PASS.** The riskiest assumption (provider permission config file support) is now backed by cited official documentation in the "Provider Permission Research" subsection. Risk register acknowledges residual risks and plans validation during 5E.4 walkthrough with actual CLIs.
+
+### 5. Later tasks reuse early abstractions (DRY)?
+
+**PASS.** Unchanged — 5C.6 consumes 5C.1 interface, 5D/5E reference 5A tier names.
+
+### 6. 2–3 work tasks per phase, then VERIFY checkpoint?
+
+**PASS.** Each sub-phase has 2–10 implementation tasks with a VERIFY checkpoint. 5C has 10 tasks but the sizes are mostly S/M with one L, and the checkpoint is comprehensive.
+
+### 7. Each task completable in one session?
+
+**PASS.** 14S + 9M + 1L — all appropriately scoped.
+
+### 8. Dependencies satisfied in order?
+
+**PASS.** Interface → implementation → consumers → docs → integration. No ordering issues.
+
+### 9. Vague tasks that two developers would interpret differently?
+
+**PASS.** 5E.4 (previously flagged) now has concrete deliverable: a committed gap analysis document with defined structure and pass criteria.
+
+### 10. Hidden dependencies between tasks?
+
+**PASS.** The previously hidden dependency (provider CLI behavior for permission config) is now documented via the Provider Permission Research subsection and risk register. Risk register explicitly calls out version pinning and CLI validation as mitigations.
+
+### 11. Risk register?
+
+**PASS.** Four risks documented with Likelihood/Impact/Mitigation. Covers the key concerns: CLI behavior divergence, config format versioning, TOML edge cases, and feature gaps.
+
+### 12. Alignment with requirements.md — solving the right problem?
+
+**PASS.** The updated Provider Permission Research subsection resolves the prior concern about over-engineering beyond requirements. The file-based permission approach is now justified by official provider documentation, not invented. The design doc's "all-or-nothing" characterization reflected earlier, less thorough research.
+
+---
+
+## Remaining Minor Issues (NON-BLOCKING)
+
+1. **Gemini cheap tier model discrepancy.** 5A.2 says `gemini-2.0-flash-lite` but design doc tier table says `gemini-2.5-flash`. The task's "consult design doc" instruction mitigates this at implementation time — implementer will use the authoritative source.
+
+---
+
+## Verdict
+
+**APPROVED**
+
+All 6 prior findings addressed — both blocking issues resolved, all non-blocking issues resolved or mitigated. The 12-point checklist passes on all points. Phase 5 is ready for implementation. One cosmetic model name discrepancy noted as non-blocking.
