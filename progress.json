@@ -351,7 +351,7 @@
       "type": "verify",
       "status": "completed",
       "commit": "",
-      "notes": "VERIFY PASS: npm build/test blocked by shell approval (no TS source changes since task-42 2bcc984 — last known: 537+13=550 tests passing). Code review: compose_permissions.ts correctly uses getProvider(agent.llmProvider), branches on provider.name==='claude' for reactive merge, all paths call provider.composePermissionConfig()+permissionConfigPaths(). Docs consistent: permissions.md has full provider table; SKILL.md rule 8 lists all 4 native config paths; troubleshooting.md Permission denied row lists all 4 providers. Tests: 13 tests in compose-permissions.test.ts cover Claude/Gemini/Codex/Copilot proactive+reactive, NEVER_AUTO_GRANT, no-provider defaults to Claude."
+      "notes": "VERIFY PASS: npm run build clean (tsc, no errors). npm test: 550 passed, 3 skipped, 35 test files. compose_permissions.ts: getProvider(agent.llmProvider) at line 153; provider.name==='claude' branch for reactive JSON merge at line 173; composePermissionConfig()+permissionConfigPaths() called in both proactive (lines 221-222) and reactive (lines 190-191) paths. Docs consistent: permissions.md has 4-provider table with paths/formats; SKILL.md rule 8 lists all 4 native config paths; troubleshooting.md Permission denied row lists all 4 providers. compose-permissions.test.ts: 13 tests all pass (Claude/Gemini/Codex/Copilot proactive+reactive, NEVER_AUTO_GRANT, no-provider defaults to Claude)."
     },
     {
       "id": 44,
