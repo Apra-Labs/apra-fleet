@@ -57,6 +57,7 @@ Additionally:
 - API keys stored in member config must be encrypted (like existing `encryptedPassword`)
 - API keys must not appear in command output / logs
 - `remove_member` must clean up stored keys
+- **OOB key entry**: When `provision_auth` is called without `api_key`, use the same out-of-band terminal prompt mechanism used for SSH passwords — a separate terminal window opens for the user to paste the key. This prevents the key from appearing in conversation context, MCP tool call logs, or Claude's memory. The `api_key` parameter should still be supported for automation/scripting, but the OOB prompt should be the default path for interactive use.
 
 ## Test plan
 - Unit tests for `setEnv` / `unsetEnv` on all 3 platforms
