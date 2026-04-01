@@ -1,4 +1,15 @@
 {
   "stacks": [],
-  "granted": []
+  "granted": [
+    {
+      "permission": "Bash(npm:*)",
+      "reason": "Mid-sprint: npm run build and npm test needed for VERIFY 5C",
+      "date": "2026-04-01"
+    },
+    {
+      "permission": "Bash(npx:*)",
+      "reason": "Mid-sprint: npm run build and npm test needed for VERIFY 5C",
+      "date": "2026-04-01"
+    }
+  ]
 }

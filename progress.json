@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 51,
-  "completed": 43,
+  "completed": 51,
   "tasks": [
     {
       "id": 1,
@@ -357,65 +357,65 @@
       "id": 44,
       "step": "Update onboarding.md with provider branching",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "a0a2e10",
+      "notes": "Added Step 1.5 (Verify CLI Installation) with per-provider version commands; gated Step 2 (AI Attribution) as Claude-only with skip note for other providers; added LLM Provider field to member profile template in Step 7."
     },
     {
       "id": 45,
       "step": "Update doer-reviewer.md for provider-aware config delivery",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "a0a2e10",
+      "notes": "Permissions section: removed Claude-specific settings.local.json reference; replaced with compose_permissions provider-neutral language. Setup Checklist item 3 was already provider-neutral."
     },
     {
       "id": 46,
       "step": "VERIFY 5D: Onboarding provider awareness complete",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "a0a2e10",
+      "notes": "VERIFY PASS: npm run build clean. npm test: 550 passed, 3 skipped, 35 test files. onboarding.md has Step 1.5 (CLI install check), provider-branched Step 2 (Claude-only attribution), LLM Provider in Step 7 template. doer-reviewer.md Permissions section is provider-neutral. Gemini member can be onboarded: Step 1.5 confirms gemini CLI installed, Step 2 skipped, all other steps apply."
     },
     {
       "id": 47,
       "step": "Audit all skill docs for remaining Claude assumptions",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "8d318fb",
+      "notes": "grep -ri 'claude' skills/pm/ — 17 hits categorized: (a) PM's own CLAUDE.md refs (init.md line 5, SKILL.md rule 2) — kept; (b) member-facing Claude assumption: SKILL.md line 83 'remote claude -p processes' → fixed to 'agent CLI processes'; (c) qualified provider examples (CLAUDE.md/GEMINI.md/AGENTS.md/COPILOT.md lists, permissions table, onboarding provider branch) — kept."
     },
     {
       "id": 48,
       "step": "Add Provider Awareness section to SKILL.md",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "8d318fb",
+      "notes": "Added Provider Awareness section to SKILL.md with table covering: instruction file lookup, permissions (compose_permissions auto), model tiers (cheap/standard/premium), CLI differences (ProviderAdapter), attribution (Claude-only), PM itself (always Claude)."
     },
     {
       "id": 49,
       "step": "Update skill-matrix.md with provider note",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "8d318fb",
+      "notes": "Added rule 5: skills are independent of LLM provider; generalized rule 3 from 'Claude lacks' to 'LLMs lack' native API knowledge."
     },
     {
       "id": 50,
       "step": "Walkthrough test - Gemini member lifecycle",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "8d318fb",
+      "notes": "Created docs/gemini-lifecycle-walkthrough.md: traces all 8 lifecycle stages (registration, onboarding, permissions, dispatch, resume, doer-reviewer, auth, deploy) with status per step. 2 low-severity gaps: max_turns not enforced (Gemini CLI lacks flag) and session resume is flag-based with no UUID. Zero critical gaps."
     },
     {
       "id": 51,
       "step": "VERIFY 5E: Full Phase 5 complete",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "8d318fb",
+      "notes": "VERIFY PASS: npm run build clean. npm test: 550 passed, 3 skipped, 35 test files. grep haiku|sonnet|opus skills/pm/: zero matches. grep tpl-claude skills/pm/: 2 matches — both tpl-claude-pm.md (PM's own template, intentionally kept per VERIFY 5B). settings.local.json references all qualified by provider (Claude/Copilot columns in tables). Provider Awareness section in SKILL.md added. Gemini lifecycle walkthrough committed at docs/gemini-lifecycle-walkthrough.md — zero critical gaps."
     }
   ]
 }
