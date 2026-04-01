@@ -1,79 +1,70 @@
 # Plan Review Findings — Issue #40: provision_auth env var visibility
 
 **Reviewer:** Claude Opus 4.6
-**Date:** 2026-04-01
+**Date:** 2026-04-01 (re-review)
 **Plan:** PLAN.md
 **Requirements:** requirements.md
 
 ---
 
-## Checklist
+## Re-review: Prior Findings Resolution
 
-### 1. Does every task have clear "done" criteria?
-**PASS** — Every task has a "Done:" section with specific, testable outcomes (e.g., "returns 5 commands (was 4)", "command string includes auth env export prefix").
+### Finding 1: Task 8 ambiguity ("verify and maybe add" language)
+**RESOLVED** — Former Task 8 is now Task 9. It states a clear decision: "registry deletion is sufficient" with three concrete reasons (encrypted at rest, atomic file overwrite, JS strings are immutable/GC'd). No ambiguity remains.
 
-### 2. High cohesion within each task, low coupling between tasks?
-**PASS** — Each task touches 1-2 files with a single concern. Tasks communicate only through the `Agent` type and `buildAuthEnvPrefix()` helper.
+### Finding 2: Risk register missing
+**RESOLVED** — Dedicated "Risk Register" section added with 5 risks (shell escaping, concurrent provision_auth, encrypted value size, long-running tasks, OOB terminal failure). Each has impact and mitigation columns. Covers all risks identified in the prior review.
 
-### 3. Are key abstractions and shared interfaces in the earliest tasks?
-**PASS** — Task 1 introduces both the `encryptedEnvVars` type field and the `buildAuthEnvPrefix()` helper that Tasks 2, 4, and 5 depend on.
+### Finding 3: Requirements discrepancies undocumented
+**RESOLVED** — "Requirements Deviation Notes" table added with 6 entries covering every deviation (Windows setEnv, CLAUDE_PATH targets, revoke_vcs_auth, integration tests, Windows escaping, long-running tasks). Each has rationale. Plan is now self-documenting.
 
-### 4. Is the riskiest assumption validated in Task 1?
-**PASS** — The riskiest assumption is that inline env var injection works across platforms. Task 1 builds and unit-tests the helper in isolation before integration in Phase 2.
-
-### 5. Later tasks reuse early abstractions (DRY)?
-**PASS** — Tasks 4 and 5 both import and reuse `buildAuthEnvPrefix()` from Task 1. No duplication.
-
-### 6. 2-3 work tasks per phase, then a VERIFY checkpoint?
-**PASS** — Phase 1: 3 tasks + VERIFY, Phase 2: 2 tasks + VERIFY, Phase 3: 3 tasks + VERIFY, Phase 4: 2 tasks + VERIFY.
-
-### 7. Each task completable in one session?
-**PASS** — All tasks are small (1-2 files, clear scope). None require multi-session effort.
-
-### 8. Dependencies satisfied in order?
-**PASS** — Type + helper (T1) → storage (T2) → injection (T4/T5) → rename/fix (T6/T7) → cleanup (T8) → tests (T9/T10). Correct dependency ordering.
-
-### 9. Any vague tasks that two developers would interpret differently?
-**FAIL** — Task 8 is vague: "Verify that `remove_member` flow naturally cleans up `encryptedEnvVars` via registry deletion. If stored keys need explicit zeroing before delete, add that." Two developers would disagree on whether explicit zeroing is needed. The task should state a clear decision: either (a) registry deletion is sufficient and no code changes are needed, or (b) add explicit zeroing of the encrypted values before deletion. Currently it reads as "investigate and decide" which is design work, not implementation.
-
-### 10. Any hidden dependencies between tasks?
-**PASS** — No hidden dependencies detected. Task 3 (macOS .zshenv) is independent of the injection path. Task 7 (Gemini fix) is independent of env var work.
-
-### 11. Does the plan include a risk register?
-**FAIL** — No dedicated risk register section. Task 4 has an inline risk note ("Must ensure prefix is applied to ALL command builds") but there is no consolidated register covering:
-- **Encrypted value size limits** — `agents.json` grows with each stored key. No limit mentioned.
-- **Shell escaping edge cases** — API keys with special characters (quotes, backslashes, dollar signs) in inline export could break commands.
-- **Race condition** — Two concurrent `provision_auth` calls could clobber `encryptedEnvVars` since `updateAgent()` does a read-merge-write.
-- **Long-running tasks** — Explicitly deferred but `execute_command`'s nohup wrapper script does NOT get env vars injected, which could silently break long-running Gemini commands.
-
-### 12. Does the plan align with requirements.md intent?
-**FAIL** — The plan solves the right problem (inline injection), but has these discrepancies with requirements:
-
-| Requirement | Plan | Issue |
-|------------|------|-------|
-| Fix `setEnv()` on Windows to use PowerShell | Omitted entirely | **Not a bug:** Windows `setEnv()` already uses `[Environment]::SetEnvironmentVariable()`. Requirements are incorrect here. Plan should note this explicitly rather than silently omitting. |
-| Rename `CLAUDE_PATH` across `linux.ts` and `macos.ts` | Plan targets `linux.ts` and `windows.ts` | **Plan is correct:** `CLAUDE_PATH` exists in `linux.ts` and `windows.ts`, not `macos.ts`. Requirements have a typo. Plan should call this out. |
-| Update `revoke_vcs_auth` to clean up stored env vars | Plan says "No changes needed to `revoke_vcs_auth`" | **Reasonable** but should explain why (VCS auth tokens are separate from LLM API keys). |
-| Plan Task 6 says `CLAUDE_PATH` is "not exported" | `linux.ts` line 6: `const CLAUDE_PATH` | Verified correct — it is indeed a local `const`. |
+### New requirement: OOB API key entry
+**ADDRESSED** — Task 6 added, covering CLI changes (`--api-key` flag), socket service (`collectOobApiKey()`), and provision-auth integration. Matches requirements.md security consideration ("use the same out-of-band terminal prompt mechanism used for SSH passwords"). Headless fallback documented. VERIFY 2 includes OOB-specific checkpoints.
 
 ---
 
-## Additional Findings
+## Full Checklist
 
-1. **Windows escaping gap:** `buildAuthEnvPrefix()` mentions single-quote escaping for Windows, but the existing `windows.ts:envPrefix()` method (line 153) already implements this pattern (`value.replace(/'/g, "''")`). The plan should reference this existing method or explain why it builds its own escaping.
+### 1. Does every task have clear "done" criteria?
+**PASS** — All 11 tasks have "Done:" sections with specific, testable outcomes.
 
-2. **Out-of-scope justification:** The plan defers long-running task env var injection as "out of scope." Requirements don't explicitly allow this deferral. Since the nohup wrapper script in `execute_command` (lines 38-73) generates a bash script written to disk, env vars would need to be written into the script — a different mechanism than inline prefix. The deferral is reasonable but should be captured as a known limitation with a follow-up issue.
+### 2. High cohesion within each task, low coupling between tasks?
+**PASS** — Each task has a single concern. Task 6 (OOB key entry) touches 3 files but they form one cohesive feature (CLI + socket + tool integration).
 
-3. **Integration tests missing:** Requirements specify integration tests (`provision_auth` → `execute_prompt` on Gemini member, Gemini session resume). The plan's Phase 4 only includes unit tests. This is a gap — either add integration test tasks or explicitly defer with justification.
+### 3. Are key abstractions and shared interfaces in the earliest tasks?
+**PASS** — Task 1 introduces `encryptedEnvVars` type field and `buildAuthEnvPrefix()` helper, used by Tasks 4, 5, and 10.
+
+### 4. Is the riskiest assumption validated in Task 1?
+**PASS** — Inline env var injection is built and unit-tested in isolation before integration.
+
+### 5. Later tasks reuse early abstractions (DRY)?
+**PASS** — Tasks 4, 5 reuse `buildAuthEnvPrefix()`. Task 6 reuses existing `collectOobPassword()` mechanics and socket infrastructure.
+
+### 6. 2-3 work tasks per phase, then a VERIFY checkpoint?
+**PASS** — Phase 1: 3+V, Phase 2: 3+V, Phase 3: 3+V, Phase 4: 2+V.
+
+### 7. Each task completable in one session?
+**PASS** — All tasks are focused (1-3 files). Task 6 is the largest but has clear subtask breakdown.
+
+### 8. Dependencies satisfied in order?
+**PASS** — Type+helper (T1) -> storage (T2) -> injection (T4/T5) -> OOB entry (T6) -> rename/fix (T7/T8) -> verify cleanup (T9) -> tests (T10/T11).
+
+### 9. Any vague tasks that two developers would interpret differently?
+**PASS** — Previously failed on Task 8 ambiguity. Now resolved — Task 9 states the decision clearly.
+
+### 10. Any hidden dependencies between tasks?
+**PASS** — Task 6 depends on Task 2 (needs `provisionApiKey()` to already accept keys), which is satisfied by phase ordering.
+
+### 11. Does the plan include a risk register?
+**PASS** — Five risks with impact and mitigation. Includes all risks from prior review plus OOB terminal failure.
+
+### 12. Does the plan align with requirements.md intent?
+**PASS** — All requirements addressed. Deviations documented with rationale. OOB key entry added per security considerations. Out-of-scope items match requirements.
 
 ---
 
 ## Verdict
 
-**CHANGES NEEDED**
+**APPROVED**
 
-Three items must be addressed before implementation:
-
-1. **Task 8 ambiguity** — Resolve the "verify and maybe add" language. State the decision clearly.
-2. **Risk register** — Add a consolidated risk section covering escaping edge cases, concurrent provision_auth, and long-running task limitation.
-3. **Requirements discrepancies** — Add explicit notes in the plan for each deviation from requirements (Windows setEnv already correct, CLAUDE_PATH file targets, revoke_vcs_auth exclusion, integration test deferral) so the plan is self-documenting and doesn't leave reviewers guessing.
+All three items from the prior review are resolved. The new OOB key entry requirement is fully addressed in Task 6. The plan is ready for implementation.
