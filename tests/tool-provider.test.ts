@@ -31,6 +31,11 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
+const mockCollectOobApiKey = vi.fn<() => Promise<{ password: string } | { fallback: string }>>();
+vi.mock('../src/services/auth-socket.js', () => ({
+  collectOobApiKey: (...args: unknown[]) => mockCollectOobApiKey(...(args as [])),
+}));
+
 // ---------------------------------------------------------------------------
 // execute-prompt: each provider parses its own response format
 // ---------------------------------------------------------------------------
@@ -174,16 +179,15 @@ describe('provisionAuth — API key per provider', () => {
     });
   }
 
-  it('rejects OAuth flow for non-Claude providers', async () => {
+  it('uses OOB API key entry for non-Claude providers without api_key', async () => {
     const agent = makeTestAgent({ friendlyName: 'gemini-oauth', llmProvider: 'gemini' });
     addAgent(agent);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockCollectOobApiKey.mockResolvedValue({ fallback: '🔐 Could not open terminal. Run manually.' });
 
     const result = await provisionAuth({ member_id: agent.id });
-    expect(result).toContain('not supported');
-    expect(result).toContain('gemini');
-    expect(result).toContain('GEMINI_API_KEY');
-    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith('gemini-oauth', 'provision_auth');
+    expect(result).toContain('Could not open terminal');
   });
 });
 
