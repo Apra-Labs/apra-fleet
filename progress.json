@@ -269,81 +269,81 @@
       "id": 33,
       "step": "Add permission config methods to ProviderAdapter",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "f2e0512",
+      "notes": "Added permissionConfigPaths(): string[] and composePermissionConfig(role, allow?): Array<Record|string> to ProviderAdapter interface"
     },
     {
       "id": 34,
       "step": "Implement permission config in ClaudeProvider",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "f2e0512",
+      "notes": "Claude: permissionConfigPaths=[.claude/settings.local.json], composePermissionConfig returns [{permissions:{allow}}]"
     },
     {
       "id": 35,
       "step": "Implement permission config in GeminiProvider",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "f2e0512",
+      "notes": "Gemini: 2 paths [.gemini/settings.json, .gemini/policies/fleet.toml], returns [JSON mode obj, TOML string with policy rules + optional tool list]"
     },
     {
       "id": 36,
       "step": "Implement permission config in CodexProvider",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "f2e0512",
+      "notes": "Codex: path [.codex/config.toml], returns TOML with approval_mode (full-auto/suggest) + sandbox enabled/network flags"
     },
     {
       "id": 37,
       "step": "Implement permission config in CopilotProvider",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "f2e0512",
+      "notes": "Copilot: path [.github/copilot/settings.local.json], returns JSON with allow-all-tools for doer, restrictive allow/deny for reviewer"
     },
     {
       "id": 38,
       "step": "Refactor compose_permissions to use ProviderAdapter",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "efa8960",
+      "notes": "deliverConfigFile() helper for any path/format; proactive+reactive modes use provider.composePermissionConfig()+permissionConfigPaths(); Claude reactive reads existing JSON; others pass grants to provider; agent.os??'linux' for optional field"
     },
     {
       "id": 39,
       "step": "Update permissions.md for provider-native configs",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "4654195",
+      "notes": "Added Provider Permission Mechanisms table with paths/formats for all 4 providers; updated Before every sprint and Mid-sprint denial sections"
     },
     {
       "id": 40,
       "step": "Update SKILL.md rule 8 for provider-native permissions",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "4654195",
+      "notes": "Rule 8 now says compose_permissions produces provider-native config automatically, lists each provider's config file"
     },
     {
       "id": 41,
       "step": "Update troubleshooting.md permission entry",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "4654195",
+      "notes": "Permission denied row: run compose_permissions, lists all 4 provider config paths"
     },
     {
       "id": 42,
       "step": "Write tests for provider-aware compose_permissions",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "2bcc984",
+      "notes": "tests/compose-permissions.test.ts: 13 tests. Claude/Gemini/Codex/Copilot proactive + reactive grant + NEVER_AUTO_GRANT + no-provider defaults to Claude. All pass."
     },
     {
       "id": 43,
