@@ -55,6 +55,15 @@ export interface ProviderAdapter {
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 
+  // Permission configuration
+  /** Returns the config file path(s) for this provider's permission config (relative to repo root).
+   *  Parallel to the array returned by composePermissionConfig(). */
+  permissionConfigPaths(): string[];
+  /** Returns provider-native permission config for the given role.
+   *  Each element corresponds to the path at the same index in permissionConfigPaths().
+   *  JSON providers return Record<string, unknown>; TOML providers return a string. */
+  composePermissionConfig(role: 'doer' | 'reviewer', allow?: string[]): Array<Record<string, unknown> | string>;
+
   // Auth capabilities
   supportsOAuthCopy(): boolean;
   supportsApiKey(): boolean;

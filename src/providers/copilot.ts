@@ -115,6 +115,29 @@ export class CopilotProvider implements ProviderAdapter {
     return 'unknown';
   }
 
+  permissionConfigPaths(): string[] {
+    return ['.github/copilot/settings.local.json'];
+  }
+
+  composePermissionConfig(role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
+    if (role === 'doer') {
+      const config: Record<string, unknown> = { 'allow-all-tools': true };
+      if (allow.length > 0) config.tools = { allow };
+      return [config];
+    }
+    // reviewer: read + feedback only
+    const reviewerAllow = allow.length > 0
+      ? allow
+      : ['read_file', 'list_files', 'search_files', 'run_tests'];
+    return [{
+      'allow-all-tools': false,
+      tools: {
+        allow: reviewerAllow,
+        deny: ['write_file', 'edit_file', 'run_command'],
+      },
+    }];
+  }
+
   supportsOAuthCopy(): boolean {
     return false;
   }

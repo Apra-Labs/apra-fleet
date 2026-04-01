@@ -127,6 +127,25 @@ export class CodexProvider implements ProviderAdapter {
     return 'unknown';
   }
 
+  permissionConfigPaths(): string[] {
+    return ['.codex/config.toml'];
+  }
+
+  composePermissionConfig(role: 'doer' | 'reviewer', _allow: string[] = []): Array<Record<string, unknown> | string> {
+    const approvalMode = role === 'doer' ? 'full-auto' : 'suggest';
+    const networkAccess = role === 'doer';
+    const toml = [
+      `[agent]`,
+      `approval_mode = "${approvalMode}"`,
+      ``,
+      `[sandbox]`,
+      `enabled = true`,
+      `network = ${networkAccess}`,
+      ``,
+    ].join('\n');
+    return [toml];
+  }
+
   supportsOAuthCopy(): boolean {
     return false;
   }

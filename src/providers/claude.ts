@@ -108,6 +108,14 @@ export class ClaudeProvider implements ProviderAdapter {
     return classifyPromptError(output);
   }
 
+  permissionConfigPaths(): string[] {
+    return ['.claude/settings.local.json'];
+  }
+
+  composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
+    return [{ permissions: { allow } }];
+  }
+
   supportsOAuthCopy(): boolean {
     return true;
   }

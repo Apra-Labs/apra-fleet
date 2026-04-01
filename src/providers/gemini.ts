@@ -109,6 +109,25 @@ export class GeminiProvider implements ProviderAdapter {
     return 'unknown';
   }
 
+  permissionConfigPaths(): string[] {
+    return ['.gemini/settings.json', '.gemini/policies/fleet.toml'];
+  }
+
+  composePermissionConfig(role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
+    // settings.json: mode selection
+    const mode = role === 'doer' ? 'auto_edit' : 'default';
+    const settings: Record<string, unknown> = { mode };
+
+    // fleet.toml: policy rules
+    let toml = `[policy]\nmode = "${mode}"\ndescription = "Fleet ${role} permissions"\n`;
+    if (allow.length > 0) {
+      const toolList = allow.map(p => `  "${p}"`).join(',\n');
+      toml += `\n[policy.tools]\nallow = [\n${toolList}\n]\n`;
+    }
+
+    return [settings, toml];
+  }
+
   supportsOAuthCopy(): boolean {
     return false;
   }
