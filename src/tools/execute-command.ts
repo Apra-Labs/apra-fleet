@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
@@ -73,7 +74,8 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   }
 
   // -- Regular (synchronous) command path --
-  const wrapped = cmds.wrapInWorkFolder(folder, input.command);
+  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+  const wrapped = authPrefix + cmds.wrapInWorkFolder(folder, input.command);
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
