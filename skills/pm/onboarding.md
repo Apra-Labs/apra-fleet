@@ -6,9 +6,22 @@ After `register_member`, run these 7 steps before dispatching any work.
 
 Check `member_detail` — if member type is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
 
+## Step 1.5: Verify CLI Installation
+
+Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` with the provider's version command to confirm the agent CLI is installed:
+
+- **Claude:** `claude --version`
+- **Gemini:** `gemini --version`
+- **Codex:** `codex --version`
+- **Copilot:** `copilot --version`
+
+If the CLI is not installed or the command fails, run the provider's install command (`installAgent` via `execute_command`) before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
+
 ## Step 2: Disable AI Attribution
 
-Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
+**Claude only.** Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
+
+Gemini, Codex, and Copilot do not support attribution config — skip this step for those providers.
 
 ## Step 3: Detect VCS Provider
 
@@ -38,6 +51,7 @@ Add to the member's status file:
 
 ```
 ## Member Profile
+- LLM Provider: Gemini
 - VCS: Bitbucket (kumaakh/apra-lic-mgr)
 - Roles: development, code-review
 - Auth: Bitbucket API token (verified)

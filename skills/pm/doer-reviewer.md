@@ -71,7 +71,7 @@ The PM must enforce these limits to prevent infinite loops and runaway sessions:
 
 ## Permissions
 
-Compose and deliver `settings.local.json` per permissions.md. Recompose when switching roles (doer↔reviewer).
+Compose and deliver permissions per permissions.md. Recompose when switching roles (doer↔reviewer). Each provider gets its native permission config — `compose_permissions` handles the format automatically.
 
 ## PM responsibilities
 
