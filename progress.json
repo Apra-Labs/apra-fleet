@@ -3,7 +3,7 @@
   "branch": "feature/multi-provider",
   "tasks": [
     { "id": "1", "title": "Add encryptedEnvVars to Agent type + buildAuthEnvPrefix() helper", "phase": 1, "status": "completed", "notes": "Added encryptedEnvVars?: Record<string, string> to Agent interface. Created src/utils/auth-env.ts with buildAuthEnvPrefix() supporting linux, macos (double-quoted), and windows (PowerShell single-quoted) escaping." },
-    { "id": "2", "title": "Update provisionApiKey() to store encrypted API key", "phase": 1, "status": "pending" },
+    { "id": "2", "title": "Update provisionApiKey() to store encrypted API key", "phase": 1, "status": "completed", "notes": "Added encryptPassword + updateAgent imports. After setEnv loop, stores encrypted key in agent.encryptedEnvVars via updateAgent(). Updated success message to mention 'stored in member config'." },
     { "id": "3", "title": "Fix macOS setEnv/unsetEnv for .zshenv", "phase": 1, "status": "pending" },
     { "id": "V1", "title": "VERIFY 1", "phase": 1, "type": "verify", "status": "pending" },
     { "id": "4", "title": "Inject auth env vars in execute_prompt", "phase": 2, "status": "pending" },
