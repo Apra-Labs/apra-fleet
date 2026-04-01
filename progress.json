@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 51,
-  "completed": 25,
+  "completed": 26,
   "tasks": [
     {
       "id": 1,
@@ -213,9 +213,9 @@
       "id": 26,
       "step": "Replace model names in doer-reviewer.md",
       "type": "work",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "9a87604",
+      "notes": "Replaced haiku/sonnet/opus with cheap/standard/premium in doer-reviewer.md. Safeguards table and escalation section updated. Zero haiku|sonnet|opus matches confirmed."
     },
     {
       "id": 27,
