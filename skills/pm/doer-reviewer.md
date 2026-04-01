@@ -55,12 +55,12 @@ The PM must enforce these limits to prevent infinite loops and runaway sessions:
 | max_turns budget | Every `execute_prompt` dispatch | Session ends naturally at turn limit | Set per dispatch in `execute_prompt` |
 | PM retry limit | Same dispatch fails (error, no output) | Retry up to 3×, then pause sprint + flag user | 3 retries per dispatch |
 | Doer-reviewer cycle limit | Reviewer returns CHANGES NEEDED | Re-dispatch doer with feedback; if 3 cycles don't resolve all HIGH items, pause sprint + flag user | 3 cycles per phase |
-| Model escalation | Zero progress after session resets | Reset session and resume; after 2 resets with zero progress: escalate model (haiku→sonnet→opus). Still zero after opus? Flag user | 2 resets per model tier |
+| Model escalation | Zero progress after session resets | Reset session and resume; after 2 resets with zero progress: escalate model (cheap→standard→premium). Still zero after premium? Flag user | 2 resets per model tier |
 
 **When to escalate to user:**
 - After 3 retries on the same dispatch with no progress
 - After 3 doer-reviewer cycles with unresolved HIGH items
-- After opus model still shows zero progress after 2 resets
+- After premium model still shows zero progress after 2 resets
 
 ## Git as transport
 
