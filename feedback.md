@@ -1577,3 +1577,53 @@ Phase 5A is complete. All done criteria are met. Code is correct, tests cover th
 **Action required:** `npm run build` and `npm test` must be independently verified — this reviewer was unable to execute them due to sandbox constraints.
 
 APPROVED
+
+---
+
+# Phase 5B Review — Template Rename + Instruction File Parameterization
+
+**Reviewer:** Claude Opus 4.6 (independent)
+**Scope:** Cumulative review, focus on Phase 5B (tasks 29-31)
+**Date:** 2026-03-31
+**Branch:** feature/multi-provider
+
+## Verification Checklist
+
+| Check | Result |
+|-------|--------|
+| `tpl-claude.md` does not exist | PASS — file renamed to `tpl-doer.md` (task 29) |
+| `grep -ri 'tpl-claude' skills/pm/` returns zero hits for doer template | PASS — only hit is `tpl-claude-pm.md` in `init.md` (PM's own template, correctly unchanged) |
+| Instruction file names parameterized per provider | PASS — all docs reference provider lookup via `member_detail` → `llmProvider` |
+| PM's own `CLAUDE.md` / `tpl-claude-pm.md` refs unchanged | PASS — `init.md` still references `tpl-claude-pm.md`; content unchanged |
+| Tests pass | PASS — 536 passed, 4 skipped |
+| Build clean | PASS — `tsc` no errors |
+
+## Files Changed (5B)
+
+- `skills/pm/tpl-claude.md` → `skills/pm/tpl-doer.md` (git rename + content update)
+- `skills/pm/tpl-reviewer.md` — parameterized commit rule
+- `skills/pm/doer-reviewer.md` — parameterized setup, flow, cleanup, safeguards, git-as-transport sections
+- `skills/pm/SKILL.md` — parameterized task harness, cleanup command, rule 9, model selection, monitoring
+- `skills/pm/troubleshooting.md` — model tier names updated
+
+## Findings
+
+### No blocking issues found
+
+### Non-blocking (2)
+
+1. **Cleanup command lists all four provider files** (`rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT.md`) in both `SKILL.md:20` and `doer-reviewer.md:46`. Correct and safe — `rm -f` silently skips missing files — but if new providers are added, these hardcoded lists need updating. Consider a comment or glob pattern in the future. **Severity: LOW**
+
+2. **`.gitignore` guidance says "add the provider-appropriate name"** (`doer-reviewer.md:70`), but doesn't specify adding all four names defensively. A member switching providers mid-project could leave a stale instruction file tracked. Minor — PM controls `.gitignore` delivery so operationally safe. **Severity: LOW**
+
+### Cosmetic (1)
+
+3. The `init.md` reference to `tpl-claude-pm.md` is intentionally preserved (PM's own template), but the naming asymmetry (`tpl-claude-pm.md` vs `tpl-doer.md` / `tpl-reviewer.md`) may confuse future contributors. Not actionable now — renaming the PM template is separate scope. **Severity: COSMETIC**
+
+## Cumulative Assessment (Phases 5A + 5B)
+
+Phase 5A replaced model-specific names (haiku/sonnet/opus) with tier names (cheap/standard/premium) across all skill docs. Phase 5B renamed the doer template from `tpl-claude.md` to `tpl-doer.md` and parameterized instruction file names for multi-provider support. Both phases are consistent, complete, and leave no dangling references to provider-specific concepts in the execution docs.
+
+## Verdict
+
+APPROVED
