@@ -1627,3 +1627,73 @@ Phase 5A replaced model-specific names (haiku/sonnet/opus) with tier names (chea
 ## Verdict
 
 APPROVED
+
+---
+
+# Code Review — Phase 5C: Provider-Native Permission Abstraction
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Commits reviewed:** `2dab0eb..8ca367d` (tasks 33–42)
+**Reviewer:** Claude (cumulative review per CLAUDE.md)
+
+---
+
+## Scope
+
+Phase 5C (tasks 33–42): Add `permissionConfigPaths()` and `composePermissionConfig()` to `ProviderAdapter`, implement in all 4 providers (Claude, Gemini, Codex, Copilot), refactor `compose_permissions` tool to use the provider abstraction, update `permissions.md`, SKILL.md rule 8, `troubleshooting.md`, and add tests.
+
+## Task-by-Task Verification
+
+| Task | Description | Status | Notes |
+|------|-------------|--------|-------|
+| 33–37 | Add `permissionConfigPaths`/`composePermissionConfig` to all providers | PASS | Interface at `provider.ts:59-65`, implementations in all 4 providers. Parallel-array contract documented in JSDoc. |
+| 38 | Refactor `compose_permissions` to use `ProviderAdapter` | PASS | `compose-permissions.ts:148-229` — both proactive and reactive modes delegate to provider. Claude-specific merge preserved (lines 173-184). |
+| 39–41 | Update skill docs (`permissions.md`, `SKILL.md` rule 8, `troubleshooting.md`) | PASS | All three docs updated with provider-native paths. Rule 8 explicitly names all 4 providers. |
+| 42 | Write tests for provider-aware `compose_permissions` | PASS | 13 test cases covering all 4 providers (proactive + reactive), NEVER_AUTO_GRANT blocking, and no-llmProvider default. |
+
+## Architecture Assessment
+
+The parallel-array design (`permissionConfigPaths()[i]` ↔ `composePermissionConfig()[i]`) is clean and supports Gemini's dual-file requirement naturally. The mixed return type (`Record<string, unknown> | string`) lets `deliverConfigFile` handle JSON→stringify and TOML pass-through transparently (`compose-permissions.ts:138-140`). The factory singleton pattern in `providers/index.ts` is efficient.
+
+Claude backward compatibility is fully preserved: `getProvider(undefined)` defaults to Claude, and the reactive grant merge logic (`compose-permissions.ts:173-184`) reads and extends existing `settings.local.json` only for Claude.
+
+## Findings
+
+### 1. `permissions.md` missing `chmod 777` in "Never auto-granted" list
+
+**Location:** `skills/pm/permissions.md:36`
+**Severity:** NON-BLOCKING
+
+The code (`compose-permissions.ts:47`) blocks `Bash(chmod 777:*)` in `NEVER_AUTO_GRANT`, but `permissions.md:36` only lists 6 tools: `sudo, su, env, printenv, nc, nmap`. The doc should include `chmod 777` for completeness.
+
+### 2. Codex silently discards `allow` parameter
+
+**Location:** `codex.ts:134` — `_allow` is unused
+**Severity:** NON-BLOCKING (by design)
+
+Codex's config model only supports approval modes (`full-auto`/`suggest`) + sandbox settings, not per-tool allowlists. The `_allow` parameter is correctly prefixed with `_` to signal intentional non-use. This is an inherent provider limitation, not a bug. The test correctly validates only approval mode output.
+
+### 3. No defensive length check on paths/configs arrays
+
+**Location:** `compose-permissions.ts:192-194, 224-225`
+**Severity:** COSMETIC
+
+The loop iterates `paths.length` but doesn't assert `configs.length === paths.length`. Since both arrays originate from the same provider class, a mismatch is a developer error rather than a runtime risk. Current providers all return correctly paired arrays.
+
+### 4. Test gap: no Codex/Copilot reactive grant tests
+
+**Location:** `tests/compose-permissions.test.ts`
+**Severity:** COSMETIC
+
+Claude and Gemini have explicit reactive grant tests. Codex has none (acceptable — it can't express grants). Copilot's reviewer default allowlist (`copilot.ts:129-131`) is not tested in reactive mode. Low risk since proactive tests cover the same code paths.
+
+## Cumulative Assessment (Phases 5A + 5B + 5C)
+
+Phase 5A replaced model-specific names with tier names. Phase 5B renamed `tpl-claude.md` → `tpl-doer.md` and parameterized instruction file names. Phase 5C completes the permission abstraction layer — `compose_permissions` now produces provider-native configs for all 4 providers without any Claude-specific assumptions in the tool handler (except the documented merge behavior for Claude reactive grants). Skill docs are consistent: `permissions.md`, `troubleshooting.md`, and SKILL.md rule 8 all reference provider-native paths. The 13 new tests validate the full matrix.
+
+**Note:** `npm test` and `npm run build` could not be executed in this review session due to shell permission restrictions. Test pass count (550) is based on prior verification commits (`8ca367d`). Recommend confirming both before merge.
+
+## Verdict
+
+**APPROVED** — 1 non-blocking doc gap (finding #1), 1 non-blocking design note (finding #2), 2 cosmetic items. No blocking issues. Phase 5C implementation is sound, well-tested, and consistent with the overall multi-provider architecture.
