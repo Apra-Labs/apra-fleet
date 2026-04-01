@@ -992,3 +992,148 @@ No unrelated changes. Minimal, surgical fix.
 Both blocking issues from the prior review are resolved correctly. The fix commit is minimal and surgical. All Phase 1–3 regression checks pass. The 4 remaining open findings are cosmetic/non-blocking and appropriate for follow-up work.
 
 The `feature/multi-provider` branch is ready for PR to `main`.
+
+---
+
+# Plan Review — Phase 5: PM Skill Provider Independence
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Scope:** PLAN.md Phase 5 (lines 204–461) — plan review, not code review
+**Checked against:** requirements.md (#26, #27, #35), docs/multi-provider-plan.md, 12-point checklist
+
+---
+
+## 12-Point Checklist
+
+### 1. Clear "done" criteria for every task?
+
+**PASS.** Every task has a concrete "Done:" line — grep-verifiable conditions (e.g., `grep -ri "haiku" skills/pm/` returns zero), compile checks, or test assertions. Done criteria are objective and testable.
+
+### 2. High cohesion within tasks, low coupling between tasks?
+
+**PASS.** Sub-phases are well-organized by concern: 5A = model tiers, 5B = template rename, 5C = permissions, 5D = onboarding, 5E = integration. Each sub-phase is internally cohesive.
+
+### 3. Key abstractions and shared interfaces in earliest tasks?
+
+**PASS.** 5A.1 adds `modelTiers()` to `ProviderAdapter` before any consumers. 5C.1 adds permission methods to the interface before implementations. Correct ordering.
+
+### 4. Riskiest assumption validated in Task 1?
+
+**FAIL — BLOCKING.** The riskiest assumption in Phase 5 is that Gemini, Codex, and Copilot support file-based permission configuration. This assumption underpins all of Phase 5C (10 tasks, the largest sub-phase). **It is never validated — it is assumed as fact.**
+
+The design doc (section 2.4) explicitly contradicts this:
+
+> | Gemini | `--yolo` flag (no fine-grained file-based config) | Pass `dangerously_skip_permissions=true` |
+> | Codex | `--sandbox` + `--ask-for-approval` flags | Pass `dangerously_skip_permissions=true` |
+> | Copilot | `--allow-all-tools` flag + per-location permissions | Pass `dangerously_skip_permissions=true` |
+>
+> **Key difference:** Claude's `compose_permissions` delivers fine-grained per-tool permissions. Other providers are all-or-nothing.
+
+And the provider research confirms:
+- **Gemini:** "No fine-grained `settings.local.json` equivalent" (line 107). Yet 5C.3 invents `.gemini/settings.json` + `.gemini/policies/*.toml`.
+- **Codex:** Research documents CLI flags (`--sandbox`, `--ask-for-approval`) with no mention of a `.codex/config.toml` file. Yet 5C.4 invents one.
+- **Copilot:** Research mentions "per-location permission storage" but no documented file path or format. Yet 5C.5 invents `.github/copilot/settings.local.json`.
+
+Phase 5C designs an elaborate permission abstraction (10 tasks including an L-sized refactor) based on config file paths and formats **that may not exist in these providers**. This is the highest-risk item in the phase and should be validated first — ideally by testing whether these providers actually read the claimed config files.
+
+**Recommendation:** Add a Task 5C.0 spike: "For each non-Claude provider, verify whether the claimed permission config file path is actually read by the CLI. Test with a minimal config. If a provider does not support file-based config, fall back to the design doc's approach (pass `dangerously_skip_permissions=true` via `execute_prompt`)." Then restructure 5C based on findings.
+
+### 5. Later tasks reuse early abstractions (DRY)?
+
+**PASS.** 5C.6 consumes the interface from 5C.1. 5D and 5E reference tier names from 5A. `compose_permissions` refactor (5C.6) uses both `composePermissionConfig()` and `permissionConfigPaths()` from the interface.
+
+### 6. 2–3 work tasks per phase, then VERIFY checkpoint?
+
+**PASS.** Each sub-phase (5A–5E) ends with a VERIFY checkpoint. Sub-phases have 2–5 implementation tasks each, which is reasonable given the sizes are mostly S/M.
+
+### 7. Each task completable in one session?
+
+**PASS.** 12S + 9M + 1L — all appropriately scoped. The single L task (5C.6) is the `compose_permissions` refactor which is a focused, well-defined change.
+
+### 8. Dependencies satisfied in order?
+
+**PASS.** Interface methods (5A.1, 5C.1) precede implementations. Template rename (5B.1) precedes reference updates (5B.2). Skill doc updates follow implementation tasks. Phase 5 as a whole depends on Phases 1–4 which are complete.
+
+### 9. Vague tasks that two developers would interpret differently?
+
+**FAIL — NON-BLOCKING.** Task 5E.4 ("Walkthrough test — Gemini member lifecycle") is a paper exercise ("verify each step... on paper"). Two developers would produce very different artifacts. Should specify: is this a checklist document? A test file? Manual CLI testing? The Done criteria says "Each step maps to concrete implementation; gaps filed" — but doesn't define what "maps to" means.
+
+**Recommendation:** Clarify whether 5E.4 produces (a) a documented checklist committed to the repo, (b) an automated integration test, or (c) manual CLI verification with results logged.
+
+### 10. Hidden dependencies between tasks?
+
+**FAIL — BLOCKING (same root cause as #4).** Phase 5C has a hidden dependency on provider CLI behavior that is not documented as a dependency or validated in the plan. Specifically:
+
+- 5C.3 depends on Gemini CLI reading `.gemini/settings.json` and `.gemini/policies/*.toml`
+- 5C.4 depends on Codex CLI reading `.codex/config.toml`
+- 5C.5 depends on Copilot CLI reading `.github/copilot/settings.local.json`
+
+None of these are listed as assumptions or dependencies. If any provider does NOT read these files, the corresponding task and its tests are wasted work, and 5C.6 needs redesign.
+
+### 11. Risk register?
+
+**FAIL — BLOCKING.** Phase 5 has no risk register. The following risks should be documented:
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|------|-----------|--------|------------|
+| R1 | Non-Claude providers don't support file-based permission config | High | High — 5C redesign | Spike in 5C.0 to verify |
+| R2 | Model names in tier mappings are stale by implementation time | Medium | Low — easy to update | Note to verify against provider docs at implementation time |
+| R3 | Copilot model availability depends on subscription tier + org policy | Medium | Medium — tier mapping may not work for all users | Document limitation; fall back gracefully |
+| R4 | `tpl-claude.md` rename breaks existing fleets mid-migration | Low | Medium — backwards compat | Add migration note or symlink |
+| R5 | PM skill docs become too abstract after removing Claude specifics | Low | Low — readability | Review in 5E.1 audit |
+
+### 12. Alignment with requirements.md — solving the right problem?
+
+**PARTIAL PASS.** Phase 5 addresses the PM Skill sections of all three requirements:
+
+- ✅ #26 (Gemini): model selection, templates, doer-reviewer, troubleshooting
+- ✅ #27 (Codex): model selection, templates
+- ✅ #35 (Copilot): model selection, templates, permission variants
+- ✅ Cross-cutting: backwards compatibility addressed throughout
+
+**However:** The requirements say "Model selection logic needs [provider] equivalents" — Phase 5A addresses this correctly with tier abstraction. Requirements also note "CLAUDE.md templates reference Claude-specific behavior" — 5B addresses this. But requirements do NOT ask for elaborate file-based permission systems for non-Claude providers. The design doc explicitly chose the simpler "all-or-nothing + CLI flags" approach. Phase 5C over-engineers beyond what requirements and design doc call for.
+
+---
+
+## Additional Findings
+
+### F1: Model name mismatches with provider research (NON-BLOCKING)
+
+Task 5A.2 specifies model tier mappings that don't match the provider research in the design doc:
+
+- **Codex plan:** `o4-mini` / `o3` / `o3` — **Research says:** `gpt-5.4-mini` / `gpt-5.4` / `gpt-5.3-Codex`
+- **Copilot plan:** `gpt-4.1-mini` / `gpt-4.1` / `o3` — **Research says:** Claude Haiku 4.5 / Claude Sonnet 4.5 / Claude Opus 4.5 (or GPT-5.1 variants)
+
+The plan says "Consult `docs/multi-provider-plan.md` for current model names" — but the mappings written in the plan itself are inconsistent with that doc. This will cause confusion at implementation time.
+
+**Recommendation:** Either update the mappings in the plan to match the design doc research, or remove the specific model names from the plan and rely solely on the "consult design doc" instruction.
+
+### F2: Template rename migration gap (NON-BLOCKING)
+
+Task 5B.1 renames `tpl-claude.md` → `tpl-doer.md` but doesn't address what happens to fleets that have already been set up with references to `tpl-claude.md` in their workflows or PM conversation history. A note about backwards compatibility for the rename would be prudent.
+
+### F3: Complexity count discrepancy (COSMETIC)
+
+Summary says "20 implementation + 5 verify checkpoints = 25 tasks." Actual count: 5A has 5 tasks, 5B has 3, 5C has 10, 5D has 2, 5E has 4 = **24 implementation tasks** + 5 verify = **29 total**. The summary is wrong.
+
+---
+
+## Verdict
+
+**CHANGES NEEDED**
+
+### Blocking issues (must fix before implementation):
+
+1. **Phase 5C permission abstraction contradicts design doc.** The design doc (section 2.4) explicitly documents that non-Claude providers are "all-or-nothing" for permissions and recommends CLI flags via `dangerously_skip_permissions`. Phase 5C invents file-based permission systems (`.gemini/policies/*.toml`, `.codex/config.toml`, `.github/copilot/settings.local.json`) that are not confirmed to exist by the provider research. Either:
+   - (a) Add a 5C.0 validation spike to confirm whether these config files work, then restructure based on findings, OR
+   - (b) Align 5C with the design doc: Claude keeps `compose_permissions`, non-Claude providers use `dangerously_skip_permissions=true` (all-or-nothing), and `compose_permissions` becomes a no-op or skip for non-Claude members. This dramatically simplifies 5C.
+
+2. **No risk register.** Phase 5 introduces significant assumptions about provider behavior. Add a risk register per the template in finding #11 above.
+
+### Non-blocking issues (fix or acknowledge):
+
+3. Model name mismatches in 5A.2 — update or defer to design doc lookup.
+4. Walkthrough test 5E.4 needs clearer deliverable definition.
+5. Task count in Phase 5 Summary is incorrect (24 impl + 5 verify = 29, not 25).
+6. Template rename (5B.1) should note migration path for existing fleets.
