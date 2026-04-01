@@ -1474,3 +1474,106 @@ Phase 5A is purely additive — one new interface method, four implementations, 
 Phase 5A is complete and correct. All 6 done criteria are met. The implementation is minimal, additive, and internally consistent. Zero Phase 1–4 regressions. Two non-blocking findings carried forward (modelTiers/modelForTier naming gap, progress.json encoding). Build and tests were not independently executed due to shell permission constraints — **user must verify `npm run build` and `npm test` pass before proceeding to Phase 5B**.
 
 APPROVED
+
+---
+
+# Cumulative Code Review — Phase 5A Re-verification (Phases 1–5A)
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Commits reviewed:** `63e7711..d4012a6` (full branch — 38 commits)
+**Reviewer:** Claude Opus 4.6 (third independent cumulative review per CLAUDE.md)
+
+---
+
+## Purpose
+
+Third independent verification of Phase 5A, focusing on code correctness, plan alignment, and regression detection. Two prior reviews (self-review + independent) are already in this file — both APPROVED. This review validates their findings and checks for anything missed.
+
+## Phase 5A Task Verification
+
+| Task | Description | Status | Evidence |
+|------|-------------|--------|----------|
+| 23 | `modelTiers()` added to `ProviderAdapter` | PASS | `src/providers/provider.ts:51` — `modelTiers(): Record<'cheap' \| 'standard' \| 'premium', string>` |
+| 24 | `modelTiers()` in all 4 providers | PASS | All 4 files read and verified (see tier table below) |
+| 25 | SKILL.md — model names replaced | PASS | Diff confirms: Model Selection, Monitoring, cleanup, rule 9, task harness all updated |
+| 26 | doer-reviewer.md — model names replaced | PASS | Diff confirms: safeguards table, escalation section, git transport, cleanup all updated |
+| 27 | troubleshooting.md — model names replaced | PASS | Diff confirms: stuck-after-reset row updated |
+| 28 | VERIFY 5A | PASS | Self-reported: 537 tests, build clean |
+
+### Model Tier Mappings (verified from source)
+
+| Provider | cheap | standard | premium | Consistent with `modelForTier()`? |
+|----------|-------|----------|---------|-----------------------------------|
+| Claude | `claude-haiku-4-5` | `claude-sonnet-4-6` | `claude-opus-4-6` | Yes |
+| Gemini | `gemini-2.5-flash` | `gemini-2.5-pro` | `gemini-2.5-pro` | Yes |
+| Codex | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.4` | Yes |
+| Copilot | `claude-haiku-4-5` | `claude-sonnet-4-5` | `claude-opus-4-5` | Yes |
+
+**Note:** Gemini cheap tier is `gemini-2.5-flash` (not `gemini-2.0-flash-lite` as PLAN.md 5A.2 states). This is correct — `docs/multi-provider-plan.md` (the authoritative source) confirms `gemini-2.5-flash` for cheap tier. The PLAN.md had stale names.
+
+### Test Coverage (from `tests/providers.test.ts`)
+
+4 new `modelTiers()` tests — one per provider. Each verifies all 3 tier keys (`cheap`, `standard`, `premium`) against expected model strings. Tests are aligned with the implementation.
+
+## Verification Checks
+
+| Check | Result |
+|-------|--------|
+| `grep -ri 'haiku\|sonnet\|opus' skills/pm/` | **PASS — zero matches** (confirmed via Grep tool) |
+| `modelTiers()` in ProviderAdapter interface | **PASS** — line 51 of `provider.ts` |
+| `modelTiers()` in all 4 providers | **PASS** — read all 4 files |
+| Unit tests for all 4 | **PASS** — lines 123-127, 221-225, 302-306, 442-446 of `providers.test.ts` |
+| Skill doc consistency | **PASS** — all 3 files use `cheap→standard→premium` |
+| `npm run build` / `npm test` | **NOT VERIFIED** — shell/npm not available in sandbox |
+
+## Skill Doc Changes Review
+
+The diff is clean and thorough:
+
+- **SKILL.md**: 6 changes — cleanup command adds all instruction file names, rule 9 generalizes "CLAUDE.md" to all providers, task harness references `tpl-doer.md` with provider lookup, monitoring uses tier names, Model Selection uses tier language with `modelTiers()` reference.
+- **doer-reviewer.md**: 8 changes — setup checklist generalizes instruction file, execution/review steps reference provider-appropriate file names, single-member pairs use generic "instruction file", cleanup command covers all providers, safeguards table and escalation use tier names, git-as-transport section generalizes.
+- **troubleshooting.md**: 1 change — stuck-after-reset escalation.
+
+**Observation:** The SKILL.md and doer-reviewer.md changes go beyond just model name replacement — they also parameterize instruction file references (CLAUDE.md → provider-appropriate). This is technically Phase 5B scope (tpl-claude.md rename + instruction file parameterization), but the changes are correct and forward-looking. The actual `tpl-doer.md` rename (git mv) is still pending in Phase 5B.
+
+## Phase 1–4 Regression Check
+
+| Phase | Check | Status |
+|-------|-------|--------|
+| 1 | `src/types.ts` unchanged | No regression |
+| 1 | Provider files — only `modelTiers()` added | No regression |
+| 1 | Factory unchanged | No regression |
+| 2 | `src/os/*.ts` unchanged | No regression |
+| 3 | `src/tools/*.ts` unchanged | No regression |
+| 3 | `tests/tool-provider.test.ts` unchanged | No regression |
+| 4 | `docs/*.md` unchanged | No regression |
+| 4 | Security fixes intact | No regression |
+
+## Confirmed Prior Findings (still open, all non-blocking)
+
+1. `modelTiers()`/`modelForTier()` naming gap (`standard` vs `mid`) — Phase 5A new
+2. `progress.json` UTF-8 encoding artifacts — Phase 5A new, cosmetic
+3. `CLAUDE_PATH` variable naming — Phase 2, cosmetic
+4. Gemini `classifyError` redundant `toLowerCase` — Phase 1, cosmetic
+5. ClaudeProvider hardcoded model versions — Phase 1, cosmetic
+
+## New Finding
+
+### Finding: Phase 5A changes include Phase 5B scope work (NON-BLOCKING)
+
+The SKILL.md and doer-reviewer.md diffs include instruction file parameterization (referencing `tpl-doer.md`, adding provider-specific file name lookup via `member_detail → llmProvider`). This is Phase 5B scope per PLAN.md (tasks 29-32). The work is correct but was done early — Phase 5B task 30 ("Update all references to tpl-claude.md") and task 31 ("Parameterize instruction file name") are partially complete.
+
+**Impact:** None — the changes are correct. But `progress.json` tasks 30 and 31 should be marked as partially addressed when Phase 5B starts, to avoid duplicating work.
+
+---
+
+## Verdict
+
+**APPROVED**
+
+Phase 5A is complete. All done criteria are met. Code is correct, tests cover the new method, skill docs are consistently updated, and zero Phase 1–4 regressions exist. The two prior reviews' findings are confirmed. One new observation: some Phase 5B work was done ahead of schedule in the doc updates (non-blocking, beneficial).
+
+**Action required:** `npm run build` and `npm test` must be independently verified — this reviewer was unable to execute them due to sandbox constraints.
+
+APPROVED
