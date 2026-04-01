@@ -8,6 +8,8 @@ import { getProvider } from '../providers/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
+import { encryptPassword } from '../utils/crypto.js';
+import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -134,6 +136,11 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
     }
   }
 
+  // Store encrypted API key in the agent's registry entry
+  updateAgent(agent.id, {
+    encryptedEnvVars: { ...agent.encryptedEnvVars, [envVarName]: encryptPassword(apiKey) },
+  });
+
   // Verify the key was persisted in a new shell
   let verified = false;
   try {
@@ -161,7 +168,7 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
     }
   }
 
-  result += `\n  Environment: ${envVarName} set in shell profiles\n`;
+  result += `\n  Environment: ${envVarName} set in shell profiles and stored in member config\n`;
   result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}\n`;
   result += `  Auth test: ${authWorks ? `${provider.name} CLI authenticated successfully` : 'Could not verify — may need to re-login'}\n`;
 
