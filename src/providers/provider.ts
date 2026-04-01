@@ -48,6 +48,7 @@ export interface ProviderAdapter {
   resumeFlag(sessionId?: string): string;
 
   // Model tier mapping
+  modelTiers(): Record<'cheap' | 'standard' | 'premium', string>;
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string;
   modelFlag(model: string): string;
 

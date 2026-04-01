@@ -120,6 +120,13 @@ describe('ClaudeProvider', () => {
     expect(p.modelForTier('premium')).toBe('claude-opus-4-6');
   });
 
+  it('modelTiers() returns cheap/standard/premium mapping', () => {
+    const tiers = p.modelTiers();
+    expect(tiers.cheap).toBe('claude-haiku-4-5');
+    expect(tiers.standard).toBe('claude-sonnet-4-6');
+    expect(tiers.premium).toBe('claude-opus-4-6');
+  });
+
   it('modelFlag wraps model in --model flag', () => {
     expect(p.modelFlag('claude-haiku-4-5')).toBe('--model "claude-haiku-4-5"');
   });
@@ -211,6 +218,13 @@ describe('GeminiProvider', () => {
     expect(p.modelForTier('premium')).toBe('gemini-2.5-pro');
   });
 
+  it('modelTiers() returns cheap/standard/premium mapping', () => {
+    const tiers = p.modelTiers();
+    expect(tiers.cheap).toBe('gemini-2.5-flash');
+    expect(tiers.standard).toBe('gemini-2.5-pro');
+    expect(tiers.premium).toBe('gemini-2.5-pro');
+  });
+
   it('classifies auth errors', () => {
     expect(p.classifyError('unauthorized')).toBe('auth');
     expect(p.classifyError('invalid api key')).toBe('auth');
@@ -283,6 +297,13 @@ describe('CodexProvider', () => {
     expect(p.modelForTier('cheap')).toBe('gpt-5.4-mini');
     expect(p.modelForTier('mid')).toBe('gpt-5.4');
     expect(p.modelForTier('premium')).toBe('gpt-5.4');
+  });
+
+  it('modelTiers() returns cheap/standard/premium mapping', () => {
+    const tiers = p.modelTiers();
+    expect(tiers.cheap).toBe('gpt-5.4-mini');
+    expect(tiers.standard).toBe('gpt-5.4');
+    expect(tiers.premium).toBe('gpt-5.4');
   });
 
   it('parses NDJSON response — extracts last assistant message', () => {
@@ -416,6 +437,13 @@ describe('CopilotProvider', () => {
     expect(p.modelForTier('cheap')).toBe('claude-haiku-4-5');
     expect(p.modelForTier('mid')).toBe('claude-sonnet-4-5');
     expect(p.modelForTier('premium')).toBe('claude-opus-4-5');
+  });
+
+  it('modelTiers() returns cheap/standard/premium mapping', () => {
+    const tiers = p.modelTiers();
+    expect(tiers.cheap).toBe('claude-haiku-4-5');
+    expect(tiers.standard).toBe('claude-sonnet-4-5');
+    expect(tiers.premium).toBe('claude-opus-4-5');
   });
 
   it('classifies auth errors', () => {

@@ -97,6 +97,14 @@ export class CodexProvider implements ProviderAdapter {
     return 'resume';
   }
 
+  modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
+    return {
+      cheap: 'gpt-5.4-mini',
+      standard: 'gpt-5.4',
+      premium: 'gpt-5.4',
+    };
+  }
+
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
     if (tier === 'cheap') return 'gpt-5.4-mini';
     return 'gpt-5.4';

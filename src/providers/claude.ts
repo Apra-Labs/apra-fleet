@@ -86,6 +86,14 @@ export class ClaudeProvider implements ProviderAdapter {
     return '';
   }
 
+  modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
+    return {
+      cheap: 'claude-haiku-4-5',
+      standard: 'claude-sonnet-4-6',
+      premium: 'claude-opus-4-6',
+    };
+  }
+
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
     if (tier === 'cheap') return 'claude-haiku-4-5';
     if (tier === 'mid') return 'claude-sonnet-4-6';
