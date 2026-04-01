@@ -1762,3 +1762,38 @@ All 51 tasks complete. 550 tests pass. Zero Claude-specific assumptions remain i
 ## Verdict
 
 **APPROVED** — 2 low-severity findings (both documented in Gemini walkthrough with mitigations), 1 cosmetic. No blocking issues. The feature/multi-provider branch is ready for merge.
+
+---
+
+# Final Pre-Merge Verification — All 5 Phases
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Reviewer:** Independent cumulative re-verification
+
+## Automated Checks
+
+| Check | Result |
+|-------|--------|
+| `progress.json` — 51/51 tasks completed | PASS |
+| `grep -i 'haiku\|sonnet\|opus' skills/pm/` — zero matches | PASS |
+| `grep -i 'tpl-claude' skills/pm/` — only PM-own refs (`tpl-claude-pm.md`) | PASS |
+| `grep 'claude -p\|claude --print' skills/pm/` — zero matches | PASS |
+| `settings.local.json` refs — all in provider comparison tables | PASS |
+| Provider Awareness section in SKILL.md (6-row table, lines 111–122) | PASS |
+| Gemini lifecycle walkthrough — 8 stages, zero critical gaps | PASS |
+| `skill-matrix.md` rule 5 — LLM provider independence | PASS |
+| `onboarding.md` Step 1.5 + Step 2 gating | PASS |
+| `doer-reviewer.md` provider-neutral permissions + cleanup | PASS |
+| Build + test (per verify commit `d47f645`) | PASS (550 passed, 3 skipped) |
+
+## Regression Check
+
+No regressions found. All prior phase review findings accounted for:
+- Non-blocking doc gap (Phase 5C finding #1) — carried forward, low priority
+- 2 low-severity Gemini gaps (`max_turns`, session resume) — documented with mitigations
+- 1 cosmetic TOML quoting item — theoretical only
+
+## Verdict
+
+**APPROVED** — Feature branch is ready for merge. All 51 tasks verified complete. No blocking issues. No regressions.
