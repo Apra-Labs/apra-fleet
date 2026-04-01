@@ -80,7 +80,7 @@ PM sends task harness → kicks off doer with execute_prompt
 
 `/pm recover <project>` — after PM restart, inspect state and present options to user.
 
-**Important:** When PM dies, remote `claude -p` processes are killed (SSH channel close → SIGHUP). Partial work may be uncommitted.
+**Important:** When PM dies, remote agent CLI processes are killed (SSH channel close → SIGHUP). Partial work may be uncommitted.
 
 For each member in the project:
 1. `execute_command → cat progress.json` — what tasks are completed/pending/blocked?
@@ -107,3 +107,16 @@ Icons are auto-assigned by the server and returned in `register_member` / `list_
 ## Design Review
 
 For design work: PM holds user intent, member holds codebase context. Iterate PM↔member until converged. Prefix all results with `🔵 member-name:` for scannability.
+
+## Provider Awareness
+
+PM manages members running different LLM providers (Claude, Gemini, Codex, Copilot). All provider differences are handled by the fleet server — PM never constructs CLI commands or reads raw config formats.
+
+| Concern | How PM handles it |
+|---------|-------------------|
+| **Instruction file name** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT.md (Copilot) |
+| **Permissions** | `compose_permissions` produces provider-native config automatically — PM just calls it with role + member |
+| **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to provider-specific models via `modelTiers()` |
+| **CLI commands** | Handled by `ProviderAdapter` — PM never constructs provider CLI strings directly |
+| **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
+| **PM itself** | PM always runs on Claude — PM's own CLAUDE.md and tpl-claude-pm.md are Claude-specific |
