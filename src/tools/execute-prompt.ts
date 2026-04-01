@@ -4,6 +4,7 @@ import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
+import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import type { Agent, SSHExecResult } from '../types.js';
@@ -48,7 +49,9 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   // Base64-encode the prompt to avoid shell escaping issues
   const b64Prompt = Buffer.from(input.prompt).toString('base64');
 
-  const claudeCmd = cmds.buildAgentPromptCommand(provider, {
+  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
+
+  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
     folder: agent.workFolder,
     b64Prompt,
     sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
@@ -68,7 +71,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
@@ -76,7 +79,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
