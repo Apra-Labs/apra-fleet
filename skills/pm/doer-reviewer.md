@@ -7,7 +7,7 @@
 3. Compose and deliver permissions per permissions.md for each member's role.
 4. Configure role-specific CLAUDE.md — three distinct phases:
    - **Planning:** Dispatch `plan-prompt.md` content via `execute_prompt` — no CLAUDE.md needed for planning
-   - **Execution:** Send `tpl-claude.md` as CLAUDE.md to doer via `send_files` — **must be sent before execution starts** (persists across session resumes)
+   - **Execution:** Send `tpl-doer.md` as the member's instruction file to doer via `send_files` — **must be sent before execution starts** (persists across session resumes). File name depends on provider: CLAUDE.md for Claude, GEMINI.md for Gemini, AGENTS.md for Codex, COPILOT.md for Copilot. Use `member_detail` → `llmProvider` to determine the correct name.
    - **Review:** Send `tpl-reviewer.md` as CLAUDE.md to reviewer via `send_files` — **must be sent before review dispatch** (persists across session resumes). Use `tpl-reviewer-plan.md` for plan review.
 
 **Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's CLAUDE.md + permissions, same member reviews with fresh context. Track current role and session ID in status.md.

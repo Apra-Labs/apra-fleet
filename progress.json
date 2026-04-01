@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 51,
-  "completed": 29,
+  "completed": 30,
   "tasks": [
     {
       "id": 1,
@@ -245,9 +245,9 @@
       "id": 30,
       "step": "Update all references to tpl-claude.md",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": ""
+      "notes": "Updated doer-reviewer.md line 10 and SKILL.md line 55 to reference tpl-doer.md. init.md line 5 references tpl-claude-pm.md (PM's own template, intentionally kept). grep -ri 'tpl-claude' returns 1 match: init.md referencing tpl-claude-pm.md which is PM-own config, not member instruction file."
     },
     {
       "id": 31,

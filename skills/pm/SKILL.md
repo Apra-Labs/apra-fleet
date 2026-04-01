@@ -52,7 +52,7 @@ Write requirements.md in `<project>/`, send it to the doer via `send_files`, the
 ### Task Harness
 Generate and send three files to the member's work_folder root via `send_files`:
 
-1. CLAUDE.md — execution model (from tpl-claude.md), add to .gitignore
+1. Member instruction file — execution model (from tpl-doer.md), add to .gitignore. File name depends on provider: CLAUDE.md for Claude, GEMINI.md for Gemini, AGENTS.md for Codex, COPILOT.md for Copilot. Use `member_detail` → `llmProvider` to determine the correct name.
 2. PLAN.md — implementation plan with phases and tasks
 3. progress.json — task tracker (generated from PLAN.md per tpl-progress.json)
 
