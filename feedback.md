@@ -63,8 +63,77 @@
 
 ---
 
+## Phase 1 Code Review (Tasks 1-3)
+
+**Commits reviewed:** d47403c → 8f35f1a (5 commits)
+**Test results:** 35/35 test files pass, 549 tests passed, 4 skipped
+
+### Task 1: Add `encryptedEnvVars` to Agent type + `buildAuthEnvPrefix()` helper
+
+**Files:** `src/types.ts`, `src/utils/auth-env.ts` (new)
+
+**Findings:**
+- `encryptedEnvVars?: Record<string, string>` added to `Agent` interface at `src/types.ts:28` — correct type, optional field, backwards compatible
+- `buildAuthEnvPrefix()` in `src/utils/auth-env.ts`:
+  - Correctly handles undefined/empty `encryptedEnvVars` (returns empty string)
+  - Linux/macOS path uses `escapeDoubleQuoted()` from `shell-escape.ts` — reuses existing battle-tested escaping
+  - Windows path uses PowerShell single-quote escaping (`value.replace(/'/g, "''")`) — matches `windows.ts:envPrefix()` pattern as specified in plan
+  - Correct join separators: `' && '` for Linux/macOS, `'; '` for Windows
+  - Trailing separator included so prefix can be prepended directly to commands
+
+**Verdict:** Matches plan specification exactly. No issues.
+
+### Task 2: Update `provisionApiKey()` to store encrypted API key in registry
+
+**File:** `src/tools/provision-auth.ts`
+
+**Findings:**
+- `encryptPassword` and `updateAgent` imports added correctly
+- Storage call at line 140: `updateAgent(agent.id, { encryptedEnvVars: { ...agent.encryptedEnvVars, [envVarName]: encryptPassword(apiKey) } })`
+  - Correctly merges with existing env vars via spread operator (won't clobber other keys)
+  - Uses `encryptPassword()` for at-rest encryption — consistent with `encryptedPassword` field pattern
+- Placement is correct: after the `setEnv` loop (shell profile writes), before verification
+- Success message updated to mention "stored in member config"
+
+**Verdict:** Matches plan specification exactly. No issues.
+
+### Task 3: Fix macOS `setEnv()`/`unsetEnv()` for `.zshenv`
+
+**File:** `src/os/macos.ts`
+
+**Findings:**
+- `setEnv()`: `.zshenv` write added between `.zshrc` and `.profile` — now returns 5 commands (was 4)
+- `unsetEnv()`: `.zshenv` cleanup added between `.zshrc` and `.profile` — now returns 5 commands (was 4)
+- Correct format: uses same `escapeDoubleQuoted()` escaping as other profiles
+- `.zshenv` is the correct file — it's the only file sourced in non-interactive zsh sessions on macOS
+- Tests updated in `tests/platform.test.ts`: command count assertions updated from 4→5, `.zshenv` presence asserted
+
+**Verdict:** Matches plan specification exactly. No issues.
+
+### VERIFY 1 Checklist
+
+- [x] `Agent` type has `encryptedEnvVars` field — `src/types.ts:28`
+- [x] `buildAuthEnvPrefix()` returns correct strings for linux, macos, windows — `src/utils/auth-env.ts`
+- [x] `provisionApiKey()` stores encrypted key via `updateAgent()` — `src/tools/provision-auth.ts:140-142`
+- [x] macOS `setEnv()`/`unsetEnv()` include `.zshenv` — `src/os/macos.ts:26,37`
+- [x] All existing tests pass — 35/35 files, 549/549 tests
+
+### Regression Check
+No regressions. All changes are additive:
+- New optional field on `Agent` type (backwards compatible)
+- New utility file `auth-env.ts` (not yet consumed — that's Phase 2)
+- `.zshenv` added to macOS commands (additive profile write)
+- `provisionApiKey()` adds registry storage after existing shell profile writes
+
+### Security Review
+- API keys encrypted before storage using existing `encryptPassword()` — no plaintext at rest
+- Shell escaping uses `escapeDoubleQuoted()` for Linux/macOS and PowerShell single-quote escape for Windows — correct for each platform
+- No secrets in logs or command output
+
+---
+
 ## Verdict
 
 **APPROVED**
 
-All three items from the prior review are resolved. The new OOB key entry requirement is fully addressed in Task 6. The plan is ready for implementation.
+Phase 1 (Tasks 1-3) is complete and correct. All code matches PLAN.md specifications. All 549 tests pass. No regressions, no security issues. Ready for Phase 2.
