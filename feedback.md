@@ -1324,3 +1324,153 @@ Phase 5A changes are purely additive (one new interface method + implementations
 **APPROVED**
 
 Phase 5A meets all "done" criteria. `modelTiers()` is correctly implemented in all 4 providers with unit tests. Skill docs consistently use tier language with zero hardcoded model names. No Phase 1–4 regressions detected. Two non-blocking findings noted for future cleanup (modelTiers/modelForTier overlap, Gemini model name plan deviation). Build and tests were not independently executed — recommend user verification before proceeding to Phase 5B.
+
+---
+
+# Independent Code Review — Phase 5A: Model Tier Abstraction (Cumulative Phases 1–5A)
+
+**Date:** 2026-03-31
+**Branch:** `feature/multi-provider`
+**Commits reviewed:** `88c226d..d4012a6` (5 commits for Phase 5A), cumulative `63e7711..d4012a6` for Phases 1–4
+**Reviewer:** Claude Opus 4.6 (independent review per CLAUDE.md — separate from self-review above)
+
+---
+
+## Scope
+
+Independent verification of Phase 5A (tasks 23–28) code changes. This review re-examines the diff, cross-references against PLAN.md and requirements.md, verifies grep conditions, and checks for Phase 1–4 regressions. This is distinct from the self-review above.
+
+## Phase 5A Diff Analysis
+
+The diff (`88c226d..d4012a6`) touches 10 files, +306/-13 lines. The bulk (+248 lines) is `progress.json` task additions for Phase 5 tasks 23–51. Actual code/doc changes are minimal and surgical:
+
+| File | Change | Lines |
+|------|--------|-------|
+| `src/providers/provider.ts:51` | Added `modelTiers()` to interface | +1 |
+| `src/providers/claude.ts:89-95` | `modelTiers()` implementation | +8 |
+| `src/providers/gemini.ts:81-87` | `modelTiers()` implementation | +8 |
+| `src/providers/codex.ts:100-106` | `modelTiers()` implementation | +8 |
+| `src/providers/copilot.ts:87-93` | `modelTiers()` implementation | +8 |
+| `tests/providers.test.ts` | 4 new test cases (one per provider) | +28 |
+| `skills/pm/SKILL.md:74,101` | `haiku→sonnet→opus` → `cheap→standard→premium` | +2/-2 |
+| `skills/pm/doer-reviewer.md:58,63` | `haiku→sonnet→opus` → `cheap→standard→premium` | +2/-2 |
+| `skills/pm/troubleshooting.md:9` | `haiku→sonnet→opus` → `cheap→standard→premium` | +1/-1 |
+
+**No tool files, OS files, or doc files from Phases 1–4 were touched.** Phase 5A is purely additive.
+
+## Task-by-Task Verification
+
+### Task 23: Add `modelTiers()` to ProviderAdapter interface — PASS
+
+`src/providers/provider.ts:51`: `modelTiers(): Record<'cheap' | 'standard' | 'premium', string>`
+
+Correctly placed adjacent to existing `modelForTier()` at line 52. Return type enforces all three tier keys.
+
+### Task 24: Implement `modelTiers()` in all 4 providers — PASS
+
+| Provider | cheap | standard | premium | Matches `modelForTier()`? |
+|----------|-------|----------|---------|--------------------------|
+| Claude | `claude-haiku-4-5` | `claude-sonnet-4-6` | `claude-opus-4-6` | Yes (cheap→cheap, standard→mid, premium→premium) |
+| Gemini | `gemini-2.5-flash` | `gemini-2.5-pro` | `gemini-2.5-pro` | Yes |
+| Codex | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.4` | Yes |
+| Copilot | `claude-haiku-4-5` | `claude-sonnet-4-5` | `claude-opus-4-5` | Yes |
+
+All implementations are internally consistent with their respective `modelForTier()` methods. Unit tests verify all mappings.
+
+### Task 25: Replace model names in SKILL.md — PASS
+
+- Line 74: monitoring escalation `cheap→standard→premium` ✓
+- Line 101: Model Selection section uses tier language with `modelTiers()` reference ✓
+- The SKILL.md Model Selection text is well-worded: "The server resolves tiers to provider-specific models via `modelTiers()`" — correctly explains the indirection.
+
+### Task 26: Replace model names in doer-reviewer.md — PASS
+
+- Line 58: safeguards table escalation `cheap→standard→premium` ✓
+- Line 63: "After premium model still shows zero progress" ✓
+
+### Task 27: Replace model names in troubleshooting.md — PASS
+
+- Line 9: "Escalate model (cheap→standard→premium)" ✓
+
+### Task 28: VERIFY 5A — PASS (self-reported)
+
+Self-reported: 537 tests pass, build clean. Test count trajectory: 533 (Phase 4) → 537 (+4 new `modelTiers()` tests). The +4 matches the 4 test cases added in `tests/providers.test.ts`.
+
+## Verification Checks
+
+| Check | Result | Method |
+|-------|--------|--------|
+| `grep -ri 'haiku\|sonnet\|opus' skills/pm/` | **PASS — zero matches** | Direct grep execution |
+| `modelTiers()` in all 4 providers | **PASS** | Read all 4 provider files |
+| Unit tests for `modelTiers()` | **PASS** | Read diff: 4 test cases, correct assertions |
+| Skill docs internally consistent | **PASS** | All 3 files use `cheap→standard→premium` consistently |
+| No Phase 1–4 files modified | **PASS** | Diff shows no changes to `src/tools/`, `src/os/`, `docs/` |
+| `npm run build` / `npm test` | **NOT VERIFIED** | Shell permission constraints (consistent with all prior reviews) |
+
+## Findings
+
+### Finding 1: `modelTiers()` / `modelForTier()` naming inconsistency (NON-BLOCKING — carry forward)
+
+Confirmed from self-review. `modelTiers()` uses `cheap/standard/premium`, `modelForTier()` uses `cheap/mid/premium`. The middle tier is named differently across methods. Values are identical but the naming gap creates maintenance risk.
+
+**Recommendation:** When `modelTiers()` consumers are added in later phases, deprecate `modelForTier()` and unify on `cheap/standard/premium`. This is the right time to plan for it since Phase 5 is actively changing tier references.
+
+### Finding 2: Gemini cheap tier deviates from PLAN.md (NON-BLOCKING — acknowledged)
+
+PLAN.md 5A.2 says Gemini cheap = `gemini-2.0-flash-lite`. Implementation uses `gemini-2.5-flash`. The implementer chose consistency with the pre-existing `modelForTier()` method from Phase 1. This is the correct call — internal consistency trumps plan text, especially since the plan itself says "Consult `docs/multi-provider-plan.md` for current model names." Already noted in the plan re-review.
+
+### Finding 3: `progress.json` encoding issue (COSMETIC)
+
+The Phase 5A commit introduced UTF-8 encoding artifacts in `progress.json` for em-dash characters: `\u00e2\u20ac\u201d` appears in task step text (e.g., "VERIFY: Phase 1 — ..." became "VERIFY: Phase 1 â€" ..."). This is a double-encoding issue — the em-dash (—, U+2014) was mojibake'd. Pre-existing in earlier tasks, but Phase 5A's `progress.json` update propagated it to all task descriptions.
+
+**Impact: None** — `progress.json` is consumed programmatically and the `step` field is display-only. But if human-readability matters, a future cleanup pass should fix the encoding.
+
+## Phase 1–4 Regression Check
+
+| Phase | Check | Status |
+|-------|-------|--------|
+| Phase 1 | Provider files: only `modelTiers()` added, no existing methods changed | **No regression** |
+| Phase 1 | `src/types.ts` unchanged | **No regression** |
+| Phase 1 | Provider factory unchanged | **No regression** |
+| Phase 2 | `src/os/*.ts` files unchanged | **No regression** |
+| Phase 2 | `OsCommands` interface unchanged | **No regression** |
+| Phase 3 | All `src/tools/*.ts` files unchanged | **No regression** |
+| Phase 3 | `tests/tool-provider.test.ts` unchanged | **No regression** |
+| Phase 4 | All `docs/*.md` files unchanged | **No regression** |
+| Phase 4 | Security fixes (`apiKeyCheck` validation) intact | **No regression** |
+
+Phase 5A is purely additive — one new interface method, four implementations, four tests, three doc text replacements. Zero risk of regression.
+
+## Prior Findings Status (All Phases)
+
+| Finding | From Phase | Status |
+|---------|-----------|--------|
+| `apiKeyCheck` env var validation | Phase 4 | FIXED (commit 828cc44) |
+| `provision-auth.ts:140` wrong env var | Phase 4 | FIXED (commit 828cc44) |
+| `CLAUDE_PATH` variable naming | Phase 2 | Open — cosmetic |
+| `result.claude = cli` JSON key | Phase 3 | Open — backwards compat |
+| Gemini redundant `toLowerCase` | Phase 1 | Open — cosmetic |
+| ClaudeProvider hardcoded model versions | Phase 1 | Open — cosmetic |
+| `modelTiers()`/`modelForTier()` naming gap | **Phase 5A** | **NEW** — non-blocking |
+| `progress.json` encoding artifacts | **Phase 5A** | **NEW** — cosmetic |
+
+## Requirements Alignment
+
+| Requirement | Status |
+|-------------|--------|
+| Backwards compatibility | PASS — `modelTiers()` is a new method; no existing behavior changed |
+| Mix-and-match providers | PASS — each provider returns its own tier mappings |
+| Provider abstraction | PASS — tier names are abstract (`cheap/standard/premium`), resolved per provider |
+| Security | PASS — no new security surface; `modelTiers()` returns hardcoded constants |
+| Testing | PASS — 4 new unit tests (self-reported total: 537) |
+| PM Skill docs provider-independent | PASS — zero `haiku/sonnet/opus` in `skills/pm/` |
+
+---
+
+## Verdict
+
+**APPROVED**
+
+Phase 5A is complete and correct. All 6 done criteria are met. The implementation is minimal, additive, and internally consistent. Zero Phase 1–4 regressions. Two non-blocking findings carried forward (modelTiers/modelForTier naming gap, progress.json encoding). Build and tests were not independently executed due to shell permission constraints — **user must verify `npm run build` and `npm test` pass before proceeding to Phase 5B**.
+
+APPROVED
