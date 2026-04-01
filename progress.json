@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 51,
-  "completed": 28,
+  "completed": 29,
   "tasks": [
     {
       "id": 1,
@@ -237,9 +237,9 @@
       "id": 29,
       "step": "Rename tpl-claude.md to tpl-doer.md",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": ""
+      "notes": "git mv skills/pm/tpl-claude.md skills/pm/tpl-doer.md. Content unchanged."
     },
     {
       "id": 30,
