@@ -6,7 +6,7 @@
   "project": "apra-fleet",
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
-  "total_tasks": 22,
+  "total_tasks": 51,
   "completed": 22,
   "tasks": [
     {
@@ -75,7 +75,7 @@
     },
     {
       "id": 9,
-      "step": "VERIFY: Phase 1 — Provider abstraction layer complete",
+      "step": "VERIFY: Phase 1 \u00e2\u20ac\u201d Provider abstraction layer complete",
       "type": "verify",
       "status": "completed",
       "commit": "",
@@ -123,7 +123,7 @@
     },
     {
       "id": 15,
-      "step": "VERIFY: Phase 2 — OsCommands refactoring complete",
+      "step": "VERIFY: Phase 2 \u00e2\u20ac\u201d OsCommands refactoring complete",
       "type": "verify",
       "status": "completed",
       "commit": "",
@@ -163,7 +163,7 @@
     },
     {
       "id": 20,
-      "step": "VERIFY: Phase 3 — All tool changes complete",
+      "step": "VERIFY: Phase 3 \u00e2\u20ac\u201d All tool changes complete",
       "type": "verify",
       "status": "completed",
       "commit": "",
@@ -175,15 +175,247 @@
       "type": "work",
       "status": "completed",
       "commit": "bd2cd1a",
-      "notes": "Docs: created docs/provider-matrix.md; updated architecture.md (Provider Abstraction section), tools-lifecycle.md (llm_provider param, update_agent_cli, provider-aware cleanup), tools-work.md (provider table, max_turns note, NDJSON note), tools-infrastructure.md (multi-provider provision_auth, update_agent_cli replaces update_claude), user-guide.md (multi-provider setup, mix-and-match example), vocabulary.md (provider/LLM backend term). Code: apiKeyCheck() parameterized to accept env var name (OsCommands interface, linux.ts, windows.ts, member-detail.ts); 'unrelated Claude processes' string uses provider.name. Security audit: no injection risks — escapeDoubleQuoted/escapeGrepPattern/sanitizeSessionId used throughout command building; authEnvVar values are hardcoded constants validated by /^[A-Z_][A-Z0-9_]*$/i before use in setEnv/unsetEnv; API keys never logged (only first 10 chars shown in apiKeyCheck); provider.authEnvVar not user-manipulable — comes from ProviderAdapter constants."
+      "notes": "Docs: created docs/provider-matrix.md; updated architecture.md (Provider Abstraction section), tools-lifecycle.md (llm_provider param, update_agent_cli, provider-aware cleanup), tools-work.md (provider table, max_turns note, NDJSON note), tools-infrastructure.md (multi-provider provision_auth, update_agent_cli replaces update_claude), user-guide.md (multi-provider setup, mix-and-match example), vocabulary.md (provider/LLM backend term). Code: apiKeyCheck() parameterized to accept env var name (OsCommands interface, linux.ts, windows.ts, member-detail.ts); 'unrelated Claude processes' string uses provider.name. Security audit: no injection risks \u00e2\u20ac\u201d escapeDoubleQuoted/escapeGrepPattern/sanitizeSessionId used throughout command building; authEnvVar values are hardcoded constants validated by /^[A-Z_][A-Z0-9_]*$/i before use in setEnv/unsetEnv; API keys never logged (only first 10 chars shown in apiKeyCheck); provider.authEnvVar not user-manipulable \u00e2\u20ac\u201d comes from ProviderAdapter constants."
     },
     {
       "id": 22,
-      "step": "VERIFY: Phase 4 — Documentation and security complete",
+      "step": "VERIFY: Phase 4 \u00e2\u20ac\u201d Documentation and security complete",
       "type": "verify",
       "status": "completed",
       "commit": "",
       "notes": "npm run build: clean. npm test: 533 passed, 3 skipped, 34 test files. All Phase 4 docs updated: architecture.md, tools-lifecycle.md, tools-work.md, tools-infrastructure.md, user-guide.md, vocabulary.md, provider-matrix.md (new). Security audit complete: no injection risks, no credential leaks, authEnvVar names are hardcoded constants. Reviewer non-blocking items addressed: apiKeyCheck() parameterized with envVarName (linux.ts, windows.ts, os-commands.ts, member-detail.ts); 'unrelated Claude processes' uses provider.name. All 22 tasks complete."
+    },
+    {
+      "id": 23,
+      "step": "Add modelTiers() to ProviderAdapter interface",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 24,
+      "step": "Implement modelTiers() in all providers",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 25,
+      "step": "Replace model names in SKILL.md",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 26,
+      "step": "Replace model names in doer-reviewer.md",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 27,
+      "step": "Replace model names in troubleshooting.md",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 28,
+      "step": "VERIFY 5A: Model tier abstraction complete",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 29,
+      "step": "Rename tpl-claude.md to tpl-doer.md",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 30,
+      "step": "Update all references to tpl-claude.md",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 31,
+      "step": "Parameterize instruction file name in skill docs",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 32,
+      "step": "VERIFY 5B: Template rename and parameterization complete",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 33,
+      "step": "Add permission config methods to ProviderAdapter",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 34,
+      "step": "Implement permission config in ClaudeProvider",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 35,
+      "step": "Implement permission config in GeminiProvider",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 36,
+      "step": "Implement permission config in CodexProvider",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 37,
+      "step": "Implement permission config in CopilotProvider",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 38,
+      "step": "Refactor compose_permissions to use ProviderAdapter",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 39,
+      "step": "Update permissions.md for provider-native configs",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 40,
+      "step": "Update SKILL.md rule 8 for provider-native permissions",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 41,
+      "step": "Update troubleshooting.md permission entry",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 42,
+      "step": "Write tests for provider-aware compose_permissions",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 43,
+      "step": "VERIFY 5C: Permission abstraction complete",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 44,
+      "step": "Update onboarding.md with provider branching",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 45,
+      "step": "Update doer-reviewer.md for provider-aware config delivery",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 46,
+      "step": "VERIFY 5D: Onboarding provider awareness complete",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 47,
+      "step": "Audit all skill docs for remaining Claude assumptions",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 48,
+      "step": "Add Provider Awareness section to SKILL.md",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 49,
+      "step": "Update skill-matrix.md with provider note",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 50,
+      "step": "Walkthrough test - Gemini member lifecycle",
+      "type": "work",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 51,
+      "step": "VERIFY 5E: Full Phase 5 complete",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
     }
   ]
 }
