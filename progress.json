@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-03-30",
   "total_tasks": 51,
-  "completed": 30,
+  "completed": 31,
   "tasks": [
     {
       "id": 1,
@@ -253,9 +253,9 @@
       "id": 31,
       "step": "Parameterize instruction file name in skill docs",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": ""
+      "notes": "Parameterized CLAUDE.md references for member instruction files in SKILL.md, doer-reviewer.md, tpl-doer.md, tpl-reviewer.md. All member instruction file references now include all provider variants (CLAUDE.md/GEMINI.md/AGENTS.md/COPILOT.md). PM's own CLAUDE.md references in SKILL.md rule 2 and init.md remain unchanged."
     },
     {
       "id": 32,

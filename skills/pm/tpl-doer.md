@@ -33,5 +33,5 @@ Tasks with type "verify" are checkpoints. When you reach one:
 - NEVER skip tasks — execute in order
 - Read PLAN.md before starting each task
 - Commit and push PLAN.md, progress.json, and all project docs (design.md, feedback-*.md) at every turn — reviewers depend on them
-- NEVER commit CLAUDE.md — it is role-specific and not shared
+- NEVER commit this instruction file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) — it is role-specific and not shared
 - NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
