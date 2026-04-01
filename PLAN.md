@@ -217,6 +217,15 @@ Make the PM skill (`skills/pm/`) fully provider-independent so that a Gemini (or
 4. **Onboarding:** Provider-aware — detect member's `llmProvider`, adapt steps.
 5. **Skill text:** No hardcoded Claude model names in skill markdown — use tier names.
 
+### Risk Register
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Provider CLI behavior may differ from docs | Medium | High | Validate during 5E.4 walkthrough with actual CLIs; document deviations |
+| Permission config format may change across CLI versions | Medium | Medium | Pin to researched versions (Gemini CLI 0.x, Codex CLI 1.x, Copilot CLI 1.0.x); add version checks in provider adapters |
+| TOML generation for Gemini/Codex may have edge cases | Medium | Medium | Test with actual CLIs in 5E.4; include TOML round-trip tests in 5C.10 |
+| Non-Claude providers may not support all PM workflow features like session resume | High | Medium | Document gaps in 5E.4 gap analysis; degrade gracefully (skip resume if unsupported) |
+
 ---
 
 ### Phase 5A: Model Tier Abstraction
@@ -231,8 +240,8 @@ Make the PM skill (`skills/pm/`) fully provider-independent so that a Gemini (or
 - **Files:** `src/providers/claude.ts`, `gemini.ts`, `codex.ts`, `copilot.ts`
 - Claude: `{ cheap: 'haiku', standard: 'sonnet', premium: 'opus' }`
 - Gemini: `{ cheap: 'gemini-2.0-flash-lite', standard: 'gemini-2.5-flash', premium: 'gemini-2.5-pro' }`
-- Codex: `{ cheap: 'o4-mini', standard: 'o3', premium: 'o3' }`
-- Copilot: `{ cheap: 'gpt-4.1-mini', standard: 'gpt-4.1', premium: 'o3' }`
+- Codex: `{ cheap: 'gpt-5.4-mini', standard: 'gpt-5.4', premium: 'gpt-5.4' }`
+- Copilot: `{ cheap: 'claude-haiku-4-5', standard: 'claude-sonnet-4-5', premium: 'claude-opus-4-5' }`
 - Consult `docs/multi-provider-plan.md` for current model names
 - **Done:** All 4 providers implement `modelTiers()`, unit tests verify mappings
 
@@ -266,6 +275,7 @@ Make the PM skill (`skills/pm/`) fully provider-independent so that a Gemini (or
 #### Task 5B.1: Rename tpl-claude.md → tpl-doer.md (S)
 - `git mv skills/pm/tpl-claude.md skills/pm/tpl-doer.md`
 - Content is already mostly generic — no content changes needed
+- **Note:** For existing fleets with active sprints: tpl-claude.md removal is backwards-compatible because the file is only used by PM during dispatch, not by members at runtime.
 - **Done:** `tpl-claude.md` no longer exists; `tpl-doer.md` has identical content
 
 #### Task 5B.2: Update all references to tpl-claude.md (S)
@@ -291,6 +301,18 @@ Make the PM skill (`skills/pm/`) fully provider-independent so that a Gemini (or
 ---
 
 ### Phase 5C: Provider-Native Permission Abstraction
+
+#### Provider Permission Research
+
+The permission config paths and formats below are confirmed from official provider documentation:
+
+- **Gemini CLI:** `.gemini/settings.json` for tool allow/exclude lists + `.gemini/policies/*.toml` for TOML policy rules. Source: official Gemini CLI docs (google-gemini.github.io), Policy Engine reference (geminicli.com/docs/reference/policy-engine). Modes: default, auto_edit, plan, yolo. 4-tier priority system (default/workspace/user/admin).
+
+- **Codex CLI:** `<repo>/.codex/config.toml` for approval policy + sandbox settings. Source: official Codex docs (developers.openai.com/codex/config-reference). Modes: suggest, auto-edit, full-auto. OS-level sandbox via seatbelt (macOS) / landlock+bubblewrap (Linux). Also `~/.codex/config.toml` for user-level defaults.
+
+- **Copilot CLI:** `.github/copilot/settings.json` (repo-level, committed) + `.github/copilot/settings.local.json` (personal, gitignored). Source: official GitHub docs (docs.github.com/en/copilot). Per-tool allow/deny via --allow-tool/--deny-tool flags. Also `~/.copilot/config.json` for global config.
+
+---
 
 #### Task 5C.1: Add permission config methods to ProviderAdapter (M)
 - **File:** `src/providers/provider.ts`
@@ -433,7 +455,7 @@ Make the PM skill (`skills/pm/`) fully provider-independent so that a Gemini (or
   5. Doer executes → verify checkpoint → PM dispatches reviewer ✓
   6. Review cycle → merge → deploy ✓
 - Document gaps as follow-up issues
-- **Done:** Each step maps to concrete implementation; gaps filed
+- **Done:** Gap analysis document committed listing every PM workflow step with Gemini status (works/needs-work/not-supported). Zero critical gaps.
 
 #### VERIFY 5E: Full Phase 5 complete
 - `npm run build` — clean compilation
@@ -456,5 +478,5 @@ Make the PM skill (`skills/pm/`) fully provider-independent so that a Gemini (or
 | 5D | 5D.1–5D.2 + verify | Onboarding provider awareness |
 | 5E | 5E.1–5E.4 + verify | Integration, cleanup, Gemini lifecycle walkthrough |
 
-**Total tasks:** 25 (20 implementation + 5 verify checkpoints)
-**Complexity breakdown:** 12S + 9M + 1L
+**Total tasks:** 29 (24 implementation + 5 verify checkpoints)
+**Complexity breakdown:** 14S + 9M + 1L
