@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../services/strategy.js';
 import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { getProvider } from '../providers/index.js';
 import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
@@ -120,11 +121,36 @@ function compose(profilesDir: string, role: string, stacks: string[], ledger: Le
   return [...perms];
 }
 
+/** Deliver a single config file to the member.
+ *  Creates parent directory and writes the content (JSON object or TOML string). */
+async function deliverConfigFile(
+  strategy: Awaited<ReturnType<typeof getStrategy>>,
+  agentOs: string,
+  filePath: string,
+  content: Record<string, unknown> | string,
+): Promise<void> {
+  const dir = filePath.split('/').slice(0, -1).join('/');
+  const mkdirCmd = agentOs === 'windows'
+    ? `New-Item -ItemType Directory -Force "${dir.replace(/\//g, '\\')}"`
+    : `mkdir -p ${dir}`;
+  await strategy.execCommand(mkdirCmd, 5000);
+
+  const contentStr = typeof content === 'string'
+    ? content
+    : JSON.stringify(content, null, 2);
+
+  const writeCmd = agentOs === 'windows'
+    ? `Set-Content -Path "${filePath.replace(/\//g, '\\')}" -Value '${contentStr.replace(/'/g, "''")}' -Encoding UTF8`
+    : `cat > ${filePath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
+  await strategy.execCommand(writeCmd, 5000);
+}
+
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
   const agentOrError = getAgentOrFail(input.member_id);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
+  const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
   const profilesDir = findProfilesDir();
   const ledger = input.project_folder ? loadLedger(input.project_folder) : { stacks: [], granted: [] };
@@ -142,24 +168,30 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       for (const co of CO_OCCURRENCE[p] ?? []) expanded.add(co);
     }
 
-    // Read current settings.local.json from member
-    const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
-    let current: any;
-    try {
-      current = JSON.parse(readResult.stdout.trim());
-    } catch {
-      current = { permissions: { allow: [] } };
-    }
-    const allow = new Set<string>(current?.permissions?.allow ?? []);
-    for (const p of expanded) allow.add(p);
-    current.permissions = { allow: [...allow] };
+    let allow: string[];
 
-    // Deliver
-    const json = JSON.stringify(current, null, 2);
-    const writeCmd = agent.os === 'windows'
-      ? `Set-Content -Path ".claude\\settings.local.json" -Value '${json.replace(/'/g, "''")}' -Encoding UTF8`
-      : `cat > .claude/settings.local.json << 'FLEET_PERMS_EOF'\n${json}\nFLEET_PERMS_EOF`;
-    await strategy.execCommand(writeCmd, 5000);
+    if (provider.name === 'claude') {
+      // Claude: read existing allow list and merge
+      const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
+      let current: any;
+      try {
+        current = JSON.parse(readResult.stdout.trim());
+      } catch {
+        current = { permissions: { allow: [] } };
+      }
+      const existingAllow = new Set<string>(current?.permissions?.allow ?? []);
+      for (const p of expanded) existingAllow.add(p);
+      allow = [...existingAllow];
+    } else {
+      // Non-Claude: pass grants directly; provider incorporates into role-based config
+      allow = [...expanded];
+    }
+
+    const configs = provider.composePermissionConfig(input.role, allow);
+    const paths = provider.permissionConfigPaths();
+    for (let i = 0; i < paths.length; i++) {
+      await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+    }
 
     // Update ledger
     if (input.project_folder) {
@@ -173,7 +205,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       saveLedger(input.project_folder, ledger);
     }
 
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}":\n  ${[...expanded].join('\n  ')}`;
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}`;
   }
 
   // Proactive compose mode
@@ -185,16 +217,13 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     saveLedger(input.project_folder, ledger);
   }
 
-  const perms = compose(profilesDir, input.role, stacks, ledger);
-  const settings = { permissions: { allow: perms } };
+  const allow = compose(profilesDir, input.role, stacks, ledger);
+  const configs = provider.composePermissionConfig(input.role, allow);
+  const paths = provider.permissionConfigPaths();
 
-  // Deliver via echo — avoids temp file + rename dance
-  const json = JSON.stringify(settings, null, 2);
-  await strategy.execCommand('mkdir -p .claude 2>/dev/null || mkdir .claude 2>nul', 5000);
-  const writeCmd = agent.os === 'windows'
-    ? `Set-Content -Path ".claude\\settings.local.json" -Value '${json.replace(/'/g, "''")}' -Encoding UTF8`
-    : `cat > .claude/settings.local.json << 'FLEET_PERMS_EOF'\n${json}\nFLEET_PERMS_EOF`;
-  await strategy.execCommand(writeCmd, 5000);
+  for (let i = 0; i < paths.length; i++) {
+    await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+  }
 
-  return `✅ Permissions composed for "${agent.friendlyName}" (${input.role}):\n  Stacks: ${stacks.join(', ') || 'none detected'}\n  Permissions: ${perms.length} entries\n  Ledger grants: ${ledger.granted.length}`;
+  return `✅ Permissions composed for "${agent.friendlyName}" (${input.role}, ${provider.name}):\n  Stacks: ${stacks.join(', ') || 'none detected'}\n  Config: ${paths.join(', ')}\n  Ledger grants: ${ledger.granted.length}`;
 }
