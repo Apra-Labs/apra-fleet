@@ -5,7 +5,7 @@
     { "id": "1", "title": "Add encryptedEnvVars to Agent type + buildAuthEnvPrefix() helper", "phase": 1, "status": "completed", "notes": "Added encryptedEnvVars?: Record<string, string> to Agent interface. Created src/utils/auth-env.ts with buildAuthEnvPrefix() supporting linux, macos (double-quoted), and windows (PowerShell single-quoted) escaping." },
     { "id": "2", "title": "Update provisionApiKey() to store encrypted API key", "phase": 1, "status": "completed", "notes": "Added encryptPassword + updateAgent imports. After setEnv loop, stores encrypted key in agent.encryptedEnvVars via updateAgent(). Updated success message to mention 'stored in member config'." },
     { "id": "3", "title": "Fix macOS setEnv/unsetEnv for .zshenv", "phase": 1, "status": "completed", "notes": "Added .zshenv to setEnv() (now 5 commands) and unsetEnv() (now 5 commands). .zshenv is sourced in non-interactive zsh sessions on macOS." },
-    { "id": "V1", "title": "VERIFY 1", "phase": 1, "type": "verify", "status": "pending" },
+    { "id": "V1", "title": "VERIFY 1", "phase": 1, "type": "verify", "status": "completed", "notes": "All Phase 1 changes verified. platform.test.ts updated for new macOS command counts. 34/35 test files pass. auth-socket.test.ts has 15 pre-existing EADDRINUSE failures on Windows (named pipe held by another process) — not caused by Phase 1 changes." },
     { "id": "4", "title": "Inject auth env vars in execute_prompt", "phase": 2, "status": "pending" },
     { "id": "5", "title": "Inject auth env vars in execute_command", "phase": 2, "status": "pending" },
     { "id": "6", "title": "Add OOB API key entry to provision_auth", "phase": 2, "status": "pending" },
