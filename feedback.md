@@ -132,8 +132,102 @@ No regressions. All changes are additive:
 
 ---
 
-## Verdict
+## Phase 2 Code Review (Tasks 4-6)
+
+**Commits reviewed:** 2430a9c → 958de8c (5 commits)
+**Test results:** 35/35 test files pass, 549 tests passed, 4 skipped
+
+### Phase 1 Regression Check
+
+No regressions in Phase 1 code:
+- `src/types.ts:28` — `encryptedEnvVars` field intact
+- `src/utils/auth-env.ts` — `buildAuthEnvPrefix()` unchanged, now consumed by Tasks 4 and 5
+- `src/os/macos.ts` — `.zshenv` in `setEnv()`/`unsetEnv()` intact
+- `src/tools/provision-auth.ts` — `provisionApiKey()` still stores encrypted key via `updateAgent()`
+
+### Task 4: Inject auth env vars in `execute_prompt`
+
+**File:** `src/tools/execute-prompt.ts`
+
+**Findings:**
+- `buildAuthEnvPrefix` imported at line 7, computed once at line 52 — correct (avoids redundant decryption)
+- Prefix prepended to all 3 command builds:
+  - Initial command: line 54 (`authPrefix + cmds.buildAgentPromptCommand(...)`)
+  - Stale session retry: line 74 (`authPrefix + cmds.buildAgentPromptCommand(...)`)
+  - Server error retry: line 82 (`authPrefix + cmds.buildAgentPromptCommand(...)`)
+- `getAgentOS(agent)` called once for authPrefix — matches existing usage pattern in the file
+- Prefix is empty string when no env vars stored, so no-op for agents without provisioned keys
+
+**Verdict:** Matches plan. All retry paths covered. No issues.
+
+### Task 5: Inject auth env vars in `execute_command`
+
+**File:** `src/tools/execute-command.ts`
+
+**Findings:**
+- `buildAuthEnvPrefix` imported at line 5, computed at line 77
+- Prefix prepended to regular (synchronous) path only: line 78 (`authPrefix + cmds.wrapInWorkFolder(...)`)
+- Long-running nohup path (lines 39-73) correctly excluded — per risk register, injecting secrets into a wrapper script written to disk is a different security model (out of scope for #40)
+- Placement is correct: prefix goes before `wrapInWorkFolder`, which handles `cd` into work folder
+
+**Verdict:** Matches plan. Long-running exclusion is intentional and documented. No issues.
+
+### Task 6: Add OOB API key entry to `provision_auth`
+
+**Files:** `src/cli/auth.ts`, `src/services/auth-socket.ts`, `src/tools/provision-auth.ts`
+
+**Findings:**
+
+**CLI (`src/cli/auth.ts`):**
+- `--api-key` flag detection at line 68: `args.includes('--api-key')` — simple and correct
+- `memberName` parsing at line 69: `args.find(a => !a.startsWith('--'))` — skips flags correctly
+- Conditional prompt text (lines 77-83), input label (line 87), empty check (line 95), success message (line 120) — all switch correctly based on `isApiKey`
+- Socket message still uses `password` field name (line 104) — correct, it's an opaque secret on the wire, no protocol change needed
+- Usage string updated to show `[--api-key]` optional flag
+
+**Socket service (`src/services/auth-socket.ts`):**
+- `collectOobApiKey()` at lines 243-275 — mirrors `collectOobPassword()` structure exactly
+- Passes `['--api-key']` to `launchAuthTerminal()` at line 263
+- Same pending auth, timeout, and fallback handling as password flow
+- `getAuthCommand()` extended with optional `extraArgs` parameter (line 281) — forwards to spawn args
+- `launchAuthTerminal()` extended with optional `extraArgs` parameter (line 313) — passes to `getAuthCommand()`
+- Fallback message uses "API key" phrasing and instructs user to retry without `api_key` param
+
+**Provision-auth (`src/tools/provision-auth.ts`):**
+- `decryptPassword` import added (line 11) — needed to decrypt OOB-collected key
+- `collectOobApiKey` imported from auth-socket (line 13)
+- Lines 205-208: Non-Claude providers without `api_key` now call `collectOobApiKey()` instead of returning an error
+- `decryptPassword(oob.password)` at line 208 — correct: OOB socket handler encrypts the key, `provisionApiKey()` needs plaintext to call `setEnv()` and `encryptPassword()`
+- `provisionApiKey()` call with explicit `api_key` param (line 200-201) still takes priority — automation path preserved
+
+**Test (`tests/tool-provider.test.ts`):**
+- `collectOobApiKey` properly mocked (lines 34-37)
+- Test at line 182 verifies: OOB function called with correct args, fallback message returned
+- Replaced the old "rejects OAuth flow" test — the behavior changed from error to OOB prompt
+
+**Verdict:** Matches plan. Clean separation of concerns (CLI/socket/tool). No issues.
+
+### VERIFY 2 Checklist
+
+- [x] `execute_prompt` command string includes auth env export prefix — line 54
+- [x] `execute_command` command string includes auth env export prefix — line 78
+- [x] All retry paths in `execute_prompt` include the prefix — lines 54, 74, 82
+- [x] `provision_auth` without `api_key` for non-Claude providers calls OOB — lines 205-208
+- [x] `provision_auth` with `api_key` still works (no OOB prompt) — lines 200-201
+- [x] Headless fallback returns useful message — line 267
+- [x] All existing tests pass — 35/35 files, 549/549 tests, 4 skipped
+
+### Security Review
+
+- Auth env prefix built from encrypted-at-rest values, decrypted only at command build time — no plaintext persisted
+- `decryptPassword(oob.password)` in provision-auth: decrypted key is passed to `provisionApiKey()` which encrypts it again for storage — plaintext only lives in function scope
+- OOB terminal prompt prevents API keys from appearing in conversation context, MCP logs, or tool call history
+- No new secrets in logs or command output
+
+---
+
+## Cumulative Verdict (Phases 1+2)
 
 **APPROVED**
 
-Phase 1 (Tasks 1-3) is complete and correct. All code matches PLAN.md specifications. All 549 tests pass. No regressions, no security issues. Ready for Phase 2.
+Phases 1 and 2 (Tasks 1-6) are complete and correct. All code matches PLAN.md specifications. All 549 tests pass across 35 test files. No regressions in Phase 1. No security issues. Ready for Phase 3.
