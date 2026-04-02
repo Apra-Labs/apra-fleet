@@ -3,15 +3,54 @@ import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
+import type { LlmProvider } from '../types.js';
 
 const home = os.homedir();
 const FLEET_BASE = path.join(home, '.apra-fleet');
 const BIN_DIR = path.join(FLEET_BASE, 'bin');
 const HOOKS_DIR = path.join(FLEET_BASE, 'hooks');
 const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
-const CLAUDE_DIR = path.join(home, '.claude');
-const SETTINGS_FILE = path.join(CLAUDE_DIR, 'settings.json');
-const SKILLS_DIR = path.join(CLAUDE_DIR, 'skills', 'pm');
+
+interface ProviderInstallConfig {
+  configDir: string;
+  settingsFile: string;
+  skillsDir: string;
+  name: string;
+}
+
+function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
+  switch (provider) {
+    case 'gemini':
+      return {
+        configDir: path.join(home, '.gemini'),
+        settingsFile: path.join(home, '.gemini', 'settings.json'),
+        skillsDir: path.join(home, '.gemini', 'skills', 'pm'),
+        name: 'Gemini',
+      };
+    case 'codex':
+      return {
+        configDir: path.join(home, '.codex'),
+        settingsFile: path.join(home, '.codex', 'config.toml'),
+        skillsDir: path.join(home, '.codex', 'skills', 'pm'),
+        name: 'Codex',
+      };
+    case 'copilot':
+      return {
+        configDir: path.join(home, '.copilot'),
+        settingsFile: path.join(home, '.copilot', 'settings.json'),
+        skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
+        name: 'Copilot',
+      };
+    case 'claude':
+    default:
+      return {
+        configDir: path.join(home, '.claude'),
+        settingsFile: path.join(home, '.claude', 'settings.json'),
+        skillsDir: path.join(home, '.claude', 'skills', 'pm'),
+        name: 'Claude',
+      };
+  }
+}
 
 // Detect SEA mode
 function isSea(): boolean {
@@ -126,12 +165,15 @@ function writeAssetFile(destPath: string, content: string): void {
   fs.writeFileSync(destPath, content);
 }
 
-function mergeHooksConfig(hooksConfig: any): void {
-  fs.mkdirSync(CLAUDE_DIR, { recursive: true });
+function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any): void {
+  // Currently only Claude supports hooks in settings.json
+  if (paths.name !== 'Claude') return;
+
+  fs.mkdirSync(paths.configDir, { recursive: true });
 
   let settings: any = {};
-  if (fs.existsSync(SETTINGS_FILE)) {
-    settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+  if (fs.existsSync(paths.settingsFile)) {
+    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
   }
   settings.hooks = settings.hooks || {};
   settings.hooks.PostToolUse = settings.hooks.PostToolUse || [];
@@ -147,19 +189,22 @@ function mergeHooksConfig(hooksConfig: any): void {
     }
   }
 
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
+  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
 }
 
-function mergePermissions(): void {
+function mergePermissions(paths: ProviderInstallConfig): void {
+  // Currently only Claude supports global permissions in settings.json
+  if (paths.name !== 'Claude') return;
+
   let settings: any = {};
-  if (fs.existsSync(SETTINGS_FILE)) {
-    settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+  if (fs.existsSync(paths.settingsFile)) {
+    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
   }
 
   const requiredPerms = [
     'mcp__apra-fleet__*',
     'Agent(*)',
-    'Read(~/.claude/skills/pm/**)',
+    `Read(${paths.skillsDir}/**)`,
   ];
 
   settings.permissions = settings.permissions || {};
@@ -171,15 +216,17 @@ function mergePermissions(): void {
     }
   }
 
-  fs.mkdirSync(CLAUDE_DIR, { recursive: true });
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
 }
 
-function configureStatusline(scriptPath: string): void {
-  // settings.json should already exist from mergeHooksConfig, but be defensive
+function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): void {
+  // Currently only Claude supports statusLine in settings.json
+  if (paths.name !== 'Claude') return;
+
   let settings: any = {};
-  if (fs.existsSync(SETTINGS_FILE)) {
-    settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+  if (fs.existsSync(paths.settingsFile)) {
+    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
   }
   // Windows: Claude Code can't execute .sh directly — prefix with bash
   const command = process.platform === 'win32' ? `bash "${scriptPath}"` : scriptPath;
@@ -187,8 +234,66 @@ function configureStatusline(scriptPath: string): void {
     type: 'command',
     command,
   };
-  fs.mkdirSync(CLAUDE_DIR, { recursive: true });
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+}
+
+function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+  fs.mkdirSync(paths.configDir, { recursive: true });
+
+  let settings: any = {};
+  if (fs.existsSync(paths.settingsFile)) {
+    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
+  }
+  settings.mcpServers = settings.mcpServers || {};
+  settings.mcpServers['apra-fleet'] = {
+    ...mcpConfig,
+    trust: true,
+  };
+
+  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+}
+
+function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+  fs.mkdirSync(paths.configDir, { recursive: true });
+
+  let settings: any = {};
+  if (fs.existsSync(paths.settingsFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
+    } catch { /* malformed or empty */ }
+  }
+  settings.mcpServers = settings.mcpServers || {};
+  settings.mcpServers['apra-fleet'] = mcpConfig;
+
+  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+}
+
+function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+  fs.mkdirSync(paths.configDir, { recursive: true });
+
+  let content = '';
+  if (fs.existsSync(paths.settingsFile)) {
+    content = fs.readFileSync(paths.settingsFile, 'utf-8');
+  }
+
+  // Simple TOML-like injection for MCP server
+  const serverBlock = [
+    '',
+    '[mcp_servers.apra-fleet]',
+    `command = "${mcpConfig.command.replace(/\\/g, '/')}"`,
+    `args = [${mcpConfig.args.map((a: string) => `"${a.replace(/\\/g, '/')}"`).join(', ')}]`,
+    '',
+  ].join('\n');
+
+  if (content.includes('[mcp_servers.apra-fleet]')) {
+    // Replace existing block (crude but effective for this use case)
+    content = content.replace(/\[mcp_servers\.apra-fleet\][\s\S]*?(?=\n\[|$)/, serverBlock.trim());
+  } else {
+    content += serverBlock;
+  }
+
+  fs.writeFileSync(paths.settingsFile, content.trim() + '\n');
 }
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
@@ -198,20 +303,40 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
 }
 
 export async function runInstall(args: string[]): Promise<void> {
+  // Parse --llm flag
+  let llm: LlmProvider = 'claude';
+  const llmArg = args.find(a => a.startsWith('--llm='));
+  if (llmArg) {
+    llm = llmArg.split('=')[1] as LlmProvider;
+  } else {
+    const idx = args.indexOf('--llm');
+    if (idx >= 0 && idx < args.length - 1) {
+      llm = args[idx + 1] as LlmProvider;
+    }
+  }
+
+  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot'];
+  if (!supported.includes(llm)) {
+    console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
+    process.exit(1);
+  }
+
+  const paths = getProviderInstallConfig(llm);
   const installSkill = args.includes('--skill');
   const totalSteps = installSkill ? 6 : 5;
 
-  console.log(`\nInstalling Apra Fleet ${serverVersion}...\n`);
+  console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
 
   // --- Step 1: Copy binary ---
+  let binaryPath = '';
   if (isSea()) {
     console.log(`  [1/${totalSteps}] Installing binary...`);
     fs.mkdirSync(BIN_DIR, { recursive: true });
     const binaryName = process.platform === 'win32' ? 'apra-fleet.exe' : 'apra-fleet';
-    const destBinary = path.join(BIN_DIR, binaryName);
-    fs.copyFileSync(process.execPath, destBinary);
+    binaryPath = path.join(BIN_DIR, binaryName);
+    fs.copyFileSync(process.execPath, binaryPath);
     if (process.platform !== 'win32') {
-      fs.chmodSync(destBinary, 0o755);
+      fs.chmodSync(binaryPath, 0o755);
     }
   } else {
     console.log(`  [1/${totalSteps}] Dev mode — skipping binary copy`);
@@ -242,59 +367,67 @@ export async function runInstall(args: string[]): Promise<void> {
   }
 
   // --- Step 4: Configure hooks + statusline in settings.json ---
-  console.log(`  [4/${totalSteps}] Configuring Claude settings...`);
+  console.log(`  [4/${totalSteps}] Configuring ${paths.name} settings...`);
   const installedHooksConfig = JSON.parse(
     fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
   );
-  mergeHooksConfig(installedHooksConfig);
-  mergePermissions();
+  mergeHooksConfig(paths, installedHooksConfig);
+  mergePermissions(paths);
 
   const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
-  configureStatusline(statuslineScript);
+  configureStatusline(paths, statuslineScript);
 
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
-  try {
-    run('claude mcp remove apra-fleet', { stdio: 'ignore' });
-  } catch { /* not registered */ }
 
-  if (isSea()) {
-    const binaryName = process.platform === 'win32' ? 'apra-fleet.exe' : 'apra-fleet';
-    const binaryPath = path.join(BIN_DIR, binaryName);
-    run(`claude mcp add --scope user apra-fleet -- "${binaryPath}"`);
-  } else {
-    // Dev mode: use node + dist/index.js
-    const root = findProjectRoot();
-    const indexJs = path.join(root, 'dist', 'index.js');
-    run(`claude mcp add --scope user apra-fleet -- node "${indexJs}"`);
+  const mcpConfig = isSea() 
+    ? { command: binaryPath, args: [] }
+    : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
+
+  if (llm === 'claude') {
+    try {
+      run('claude mcp remove apra-fleet', { stdio: 'ignore' });
+    } catch { /* not registered */ }
+    
+    const cmd = mcpConfig.command === 'node' 
+      ? `claude mcp add --scope user apra-fleet -- node "${mcpConfig.args[0]}"`
+      : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
+    run(cmd);
+  } else if (llm === 'gemini') {
+    mergeGeminiConfig(paths, mcpConfig);
+  } else if (llm === 'codex') {
+    mergeCodexConfig(paths, mcpConfig);
+  } else if (llm === 'copilot') {
+    mergeCopilotConfig(paths, mcpConfig);
   }
 
   // --- Step 6: Install PM skill (optional) ---
   if (installSkill) {
     console.log(`  [6/${totalSteps}] Installing PM skill...`);
     if (isSea()) {
-      fs.mkdirSync(SKILLS_DIR, { recursive: true });
+      fs.mkdirSync(paths.skillsDir, { recursive: true });
       for (const [name, assetKey] of Object.entries(manifest.skills)) {
         const content = extractAsset(assetKey);
-        writeAssetFile(path.join(SKILLS_DIR, name), content);
+        writeAssetFile(path.join(paths.skillsDir, name), content);
       }
     } else {
       // Dev mode: copy from project skills/pm/
       const pmSrc = path.join(findProjectRoot(), 'skills', 'pm');
-      copyDirSync(pmSrc, SKILLS_DIR);
+      copyDirSync(pmSrc, paths.skillsDir);
     }
   } else {
     console.log(`  Skipping PM skill (use --skill to install)`);
   }
 
   // --- Done ---
+  const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   console.log(`
-Apra Fleet ${serverVersion} installed successfully.
+Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${SETTINGS_FILE}${installSkill ? `\n  PM Skill:    ${SKILLS_DIR}` : ''}
+  Settings:    ${paths.settingsFile}${installSkill ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
 
-Run /mcp in Claude Code to load the server.
+${instructions}
 `);
 }
