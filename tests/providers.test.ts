@@ -203,6 +203,26 @@ describe('GeminiProvider', () => {
     expect(resp.isError).toBe(false);
   });
 
+  it('parses response with non-zero exit code — sessionId is undefined', () => {
+    const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'error output' }), 1));
+    expect(resp.isError).toBe(true);
+    expect(resp.sessionId).toBeUndefined();
+  });
+
+  it('parses non-JSON response with zero exit code — sessionId is gemini-latest', () => {
+    const resp = p.parseResponse(makeResult('raw text output'));
+    expect(resp.result).toBe('raw text output');
+    expect(resp.sessionId).toBe('gemini-latest');
+    expect(resp.isError).toBe(false);
+  });
+
+  it('parses non-JSON response with non-zero exit code — sessionId is undefined', () => {
+    const resp = p.parseResponse(makeResult('error text', 1));
+    expect(resp.result).toBe('error text');
+    expect(resp.sessionId).toBeUndefined();
+    expect(resp.isError).toBe(true);
+  });
+
   it('does not support maxTurns', () => {
     expect(p.supportsMaxTurns()).toBe(false);
   });
