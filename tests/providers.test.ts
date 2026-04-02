@@ -4,6 +4,7 @@ import { GeminiProvider } from '../src/providers/gemini.js';
 import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
 import { getProvider } from '../src/providers/index.js';
+import { buildResumeFlag } from '../src/providers/provider.js';
 import type { SSHExecResult } from '../src/types.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -181,9 +182,9 @@ describe('GeminiProvider', () => {
     expect(cmd).not.toContain('--yolo');
   });
 
-  it('builds prompt command with session resume (passes actual ID)', () => {
+  it('builds prompt command with session resume (sanitized + quoted)', () => {
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id' });
-    expect(cmd).toContain('--resume any-id');
+    expect(cmd).toContain('--resume "any-id"');
   });
 
   it('builds prompt command with skip permissions', () => {
@@ -210,6 +211,11 @@ describe('GeminiProvider', () => {
     expect(resp.isError).toBe(false);
   });
 
+  it('parses response with is_error flag as error', () => {
+    const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'error output', is_error: true })));
+    expect(resp.isError).toBe(true);
+  });
+
   it('parses response with non-zero exit code — sessionId is undefined', () => {
     const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'error output' }), 1));
     expect(resp.isError).toBe(true);
@@ -234,9 +240,9 @@ describe('GeminiProvider', () => {
     expect(p.supportsMaxTurns()).toBe(false);
   });
 
-  it('resumeFlag uses actual session ID when provided', () => {
+  it('resumeFlag uses actual session ID when provided (sanitized + quoted)', () => {
     expect(p.resumeFlag()).toBe('--resume latest');
-    expect(p.resumeFlag('gem-sess-42')).toBe('--resume gem-sess-42');
+    expect(p.resumeFlag('gem-sess-42')).toBe('--resume "gem-sess-42"');
   });
 
   it('maps model tiers', () => {
@@ -527,6 +533,27 @@ describe('getProvider factory', () => {
   it('returns singleton instances (same object reference)', () => {
     expect(getProvider('claude')).toBe(getProvider('claude'));
     expect(getProvider('gemini')).toBe(getProvider('gemini'));
+  });
+});
+
+// ─── buildResumeFlag shared helper ───────────────────────────────────────────
+
+describe('buildResumeFlag', () => {
+  it('returns empty string when no sessionId and no fallback', () => {
+    expect(buildResumeFlag(undefined)).toBe('');
+  });
+
+  it('returns fallback when no sessionId', () => {
+    expect(buildResumeFlag(undefined, '--resume latest')).toBe('--resume latest');
+  });
+
+  it('sanitizes and quotes session ID', () => {
+    expect(buildResumeFlag('sess-abc-123')).toBe('--resume "sess-abc-123"');
+  });
+
+  it('rejects malicious session IDs', () => {
+    expect(() => buildResumeFlag('$(whoami)')).toThrow('Invalid session ID');
+    expect(() => buildResumeFlag('id;rm -rf /')).toThrow('Invalid session ID');
   });
 });
 

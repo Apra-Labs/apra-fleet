@@ -1,4 +1,5 @@
 import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import { buildResumeFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -30,8 +31,9 @@ export class GeminiProvider implements ProviderAdapter {
     const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let cmd = `cd "${escapedFolder}" && gemini -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json`;
-    if (sessionId) {
-      cmd += ` --resume ${sessionId}`;
+    const rf = buildResumeFlag(sessionId);
+    if (rf) {
+      cmd += ` ${rf}`;
     }
     if (dangerouslySkipPermissions) {
       cmd += ' --yolo';
@@ -53,7 +55,7 @@ export class GeminiProvider implements ProviderAdapter {
       return {
         result: parsed.response ?? parsed.result ?? raw,
         sessionId: result.code === 0 ? (parsed.session_id ?? undefined) : undefined,
-        isError: result.code !== 0,
+        isError: parsed.is_error === true || result.code !== 0,
         raw,
       };
     } catch {
@@ -75,7 +77,7 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   resumeFlag(sessionId?: string): string {
-    return sessionId ? `--resume ${sessionId}` : '--resume latest';
+    return buildResumeFlag(sessionId, '--resume latest');
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {

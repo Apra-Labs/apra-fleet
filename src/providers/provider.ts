@@ -1,8 +1,22 @@
 import type { LlmProvider } from '../types.js';
 import type { SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
+import { sanitizeSessionId } from '../os/os-commands.js';
 
 export type { LlmProvider };
+
+/**
+ * Build a `--resume <id>` flag with session ID sanitization and quoting.
+ * Shared by providers that pass session IDs on the command line (Claude, Gemini).
+ * @param sessionId - The raw session ID (will be sanitized)
+ * @param fallback  - Value to return when sessionId is absent (default: '')
+ */
+export function buildResumeFlag(sessionId: string | undefined, fallback = ''): string {
+  if (sessionId) {
+    return `--resume "${sanitizeSessionId(sessionId)}"`;
+  }
+  return fallback;
+}
 
 export interface PromptOptions {
   folder: string;

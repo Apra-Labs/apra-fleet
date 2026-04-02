@@ -1,8 +1,9 @@
 import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import { buildResumeFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
-import { escapeDoubleQuoted, sanitizeSessionId } from '../os/os-commands.js';
+import { escapeDoubleQuoted } from '../os/os-commands.js';
 
 export class ClaudeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'claude';
@@ -35,8 +36,9 @@ export class ClaudeProvider implements ProviderAdapter {
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
     let cmd = `cd "${escapedFolder}" && claude -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns ${turns}`;
-    if (sessionId) {
-      cmd += ` --resume "${sanitizeSessionId(sessionId)}"`;
+    const rf = buildResumeFlag(sessionId);
+    if (rf) {
+      cmd += ` ${rf}`;
     }
     if (dangerouslySkipPermissions) {
       cmd += ' --dangerously-skip-permissions';
@@ -80,10 +82,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   resumeFlag(sessionId?: string): string {
-    if (sessionId) {
-      return `--resume "${sanitizeSessionId(sessionId)}"`;
-    }
-    return '';
+    return buildResumeFlag(sessionId);
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
