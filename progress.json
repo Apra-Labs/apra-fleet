@@ -1,21 +1,94 @@
 {
-  "issue": "#40",
-  "branch": "feature/multi-provider",
+  "issue": "#43",
+  "branch": "feature/multi-provider-installer",
   "tasks": [
-    { "id": "1", "title": "Add encryptedEnvVars to Agent type + buildAuthEnvPrefix() helper", "phase": 1, "status": "completed", "notes": "Added encryptedEnvVars?: Record<string, string> to Agent interface. Created src/utils/auth-env.ts with buildAuthEnvPrefix() supporting linux, macos (double-quoted), and windows (PowerShell single-quoted) escaping." },
-    { "id": "2", "title": "Update provisionApiKey() to store encrypted API key", "phase": 1, "status": "completed", "notes": "Added encryptPassword + updateAgent imports. After setEnv loop, stores encrypted key in agent.encryptedEnvVars via updateAgent(). Updated success message to mention 'stored in member config'." },
-    { "id": "3", "title": "Fix macOS setEnv/unsetEnv for .zshenv", "phase": 1, "status": "completed", "notes": "Added .zshenv to setEnv() (now 5 commands) and unsetEnv() (now 5 commands). .zshenv is sourced in non-interactive zsh sessions on macOS." },
-    { "id": "V1", "title": "VERIFY 1", "phase": 1, "type": "verify", "status": "completed", "notes": "All Phase 1 changes verified. platform.test.ts updated for new macOS command counts. 34/35 test files pass. auth-socket.test.ts has 15 pre-existing EADDRINUSE failures on Windows (named pipe held by another process) — not caused by Phase 1 changes." },
-    { "id": "4", "title": "Inject auth env vars in execute_prompt", "phase": 2, "status": "completed", "notes": "Imported buildAuthEnvPrefix. Prepended authPrefix to all 3 command builds (initial + stale session retry + server error retry). Clean compile." },
-    { "id": "5", "title": "Inject auth env vars in execute_command", "phase": 2, "status": "completed", "notes": "Imported buildAuthEnvPrefix. Prepended authPrefix to the regular (synchronous) command path only. Long-running nohup path is out of scope per risk register." },
-    { "id": "6", "title": "Add OOB API key entry to provision_auth", "phase": 2, "status": "completed", "notes": "CLI: --api-key flag changes prompt/success text. auth-socket: added collectOobApiKey() with --api-key terminal launch. provision-auth: non-Claude providers without api_key param now use OOB terminal prompt instead of error." },
-    { "id": "V2", "title": "VERIFY 2", "phase": 2, "type": "verify", "status": "completed", "notes": "All Phase 2 changes verified. 34/35 test files pass (535 passed, 3 skipped). auth-socket.test.ts has 15 pre-existing EADDRINUSE failures on Windows (named pipe held by another process) — same as V1, not caused by Phase 2 changes. tool-provider.test.ts updated for OOB API key flow." },
-    { "id": "7", "title": "Rename CLAUDE_PATH to CLI_PATH", "phase": 3, "status": "completed", "notes": "Renamed CLAUDE_PATH to CLI_PATH in linux.ts (6 refs) and windows.ts (5 refs). No functional change, clean compile." },
-    { "id": "8", "title": "Fix Gemini session resume", "phase": 3, "status": "completed", "notes": "parseResponse() returns 'gemini-latest' sentinel on success. resumeFlag() returns '--resume latest'. buildPromptCommand() updated to match." },
-    { "id": "9", "title": "Verify remove_member cleanup of stored env vars", "phase": 3, "status": "completed", "notes": "Verified: unsetEnv() cleans shell profiles (line 41), removeAgent() deletes entire record including encryptedEnvVars (registry.ts:120-127). No code changes needed." },
-    { "id": "V3", "title": "VERIFY 3", "phase": 3, "type": "verify", "status": "completed", "notes": "All Phase 3 changes verified. 34/35 test files pass (535 passed, 3 skipped). auth-socket.test.ts has 15 pre-existing EADDRINUSE failures on Windows — same as V1/V2, not caused by Phase 3 changes. Provider tests updated for Gemini resume changes." },
-    { "id": "10", "title": "Tests: platform fixes + auth env prefix helper", "phase": 4, "status": "completed", "notes": "Created tests/auth-env.test.ts with 9 tests: undefined/empty env vars, linux/macos/windows export format, multiple vars, special char escaping (double-quote + PowerShell single-quote). Platform tests already updated in Phase 1 for macOS .zshenv counts." },
-    { "id": "11", "title": "Tests: Gemini fixes + injection verification", "phase": 4, "status": "completed", "notes": "Added 4 collectOobApiKey tests (--api-key flag, pre-entered key, timeout, terminal failure). Added 3 Gemini parseResponse error-case tests per reviewer suggestion (non-zero exit -> sessionId undefined, non-JSON with zero/non-zero exit). CLI_PATH rename verified via existing buildAgentPromptCommand tests." },
-    { "id": "V4", "title": "VERIFY 4 (Final)", "phase": 4, "type": "verify", "status": "completed", "notes": "35/36 test files pass, 547 passed, 3 skipped. auth-socket.test.ts has 19 EADDRINUSE failures on Windows (pre-existing named pipe issue, same as V1/V2/V3). No TypeScript errors. 12 new tests added in Phase 4 (9 auth-env + 3 Gemini parseResponse error cases). All Phase 1-3 code unchanged and verified." }
+    {
+      "id": "1",
+      "title": "Add --llm parameter to install command",
+      "phase": 1,
+      "status": "pending"
+    },
+    {
+      "id": "2",
+      "title": "Map Gemini and Codex paths (config and skills)",
+      "phase": 1,
+      "status": "pending"
+    },
+    {
+      "id": "3",
+      "title": "Refactor install.ts to use ProviderInstallConfig",
+      "phase": 1,
+      "status": "pending"
+    },
+    {
+      "id": "V1",
+      "title": "VERIFY 1",
+      "phase": 1,
+      "type": "verify",
+      "status": "pending"
+    },
+    {
+      "id": "4",
+      "title": "Update mergeHooksConfig for provider-specific settings",
+      "phase": 2,
+      "status": "pending"
+    },
+    {
+      "id": "5",
+      "title": "Update mergePermissions for provider-specific formats",
+      "phase": 2,
+      "status": "pending"
+    },
+    {
+      "id": "6",
+      "title": "Configure Statusline for different providers",
+      "phase": 2,
+      "status": "pending"
+    },
+    {
+      "id": "V2",
+      "title": "VERIFY 2",
+      "phase": 2,
+      "type": "verify",
+      "status": "pending"
+    },
+    {
+      "id": "7",
+      "title": "Update MCP registration to use provider CLI",
+      "phase": 3,
+      "status": "pending"
+    },
+    {
+      "id": "8",
+      "title": "Make SKILL.md provider-neutral",
+      "phase": 3,
+      "status": "pending"
+    },
+    {
+      "id": "V3",
+      "title": "VERIFY 3",
+      "phase": 3,
+      "type": "verify",
+      "status": "pending"
+    },
+    {
+      "id": "9",
+      "title": "Add integration/unit tests for installer paths",
+      "phase": 4,
+      "status": "pending"
+    },
+    {
+      "id": "10",
+      "title": "Final verification of all providers",
+      "phase": 4,
+      "status": "pending"
+    },
+    {
+      "id": "V4",
+      "title": "VERIFY 4 (Final)",
+      "phase": 4,
+      "type": "verify",
+      "status": "pending"
+    }
   ]
 }

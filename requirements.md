@@ -1,66 +1,50 @@
-# Requirements: Fix provision_auth env var visibility for non-Claude providers
+# Requirements: Multi-Provider Installer Support (Issue #43)
 
-**Issue:** Apra-Labs/apra-fleet#40
-**Base branch:** feature/multi-provider
-**Sprint:** PM skill fixes + multi-provider testing
+## Problem Statement
+The `apra-fleet.exe install --skill` command is currently hardcoded for the Claude provider. It installs the MCP server configuration into `~/.claude/settings.json` and copies the Project Manager (PM) skill to `~/.claude/skills/pm/`.
 
-## Problem
+To support the full fleet ecosystem, the installer must be updated to support other providers like Gemini and Codex, allowing the PM (and other skills) to run on the user's preferred LLM.
 
-`provision_auth` with `api_key` parameter fails to make the key visible to subsequent `execute_prompt` / `execute_command` calls on all three platforms (macOS, Windows, Linux). The env var is written to shell profiles that are never sourced in non-interactive SSH sessions.
+## User Story
+As a Fleet Administrator, I want to install the PM skill for Gemini so that I can use my AI Ultra subscription to orchestrate my fleet members.
 
-Confirmed broken during integration testing with Gemini CLI on macOS, Windows, and Linux.
+## Functional Requirements
 
-## Root Cause
+### 1. New CLI Parameter: `--llm`
+- Add an optional `--llm` parameter to the `install` command.
+- **Supported Values:** `claude` (default), `gemini`, `codex`.
+- **Validation:** If an unsupported provider is passed, the installer should exit with a clear error message listing supported providers.
 
-### macOS (`src/os/macos.ts:20-29`)
-`setEnv()` writes to `.bashrc`, `.zshrc`, `.profile` — but **not `.zshenv`**. macOS defaults to zsh. SSH non-interactive sessions only source `~/.zshenv`.
+### 2. Provider-Specific Path Mapping
+The installer must map the following configuration and skill directories based on the `--llm` value:
 
-### Windows (`src/os/windows.ts`)
-`setEnv()` writes bash-style `export VAR=val >> ~/.bashrc` commands — but Windows OpenSSH server runs **PowerShell**, not bash. These profiles are never read.
+| Provider | MCP Server Config Path | Skill Directory Path |
+| :--- | :--- | :--- |
+| **Claude** | `~/.claude/settings.json` | `~/.claude/skills/pm/` |
+| **Gemini** | `~/.gemini/settings.json` | `~/.gemini/skills/pm/` |
+| **Codex** | `~/.codex/config.toml` | *TBD (Investigate)* |
 
-### Linux (`src/os/linux.ts`)
-`setEnv()` writes to `.bashrc` and `.profile` — but non-interactive SSH sessions on many Linux systems (e.g. Ubuntu) do not source any user dotfiles. Confirmed: env vars set in `.bashrc` and `.profile` are not visible in SSH command execution.
+### 3. MCP Server Configuration (Trust/Permissions)
+The installer must ensure the MCP server is correctly registered and trusted:
+- **Claude:** Use the standard `settings.json` format.
+- **Gemini:** Add `"trust": true` to the `mcpServers` entry in `~/.gemini/settings.json`.
+- **Codex:** Update `config.toml` with the correct server entry.
 
-## Design Direction
+### 4. Skill Content Updates
+- Update `skills/pm/SKILL.md` (Line 122) to remove the hardcoded reference: "PM always runs on Claude". It should be changed to a provider-neutral statement (e.g., "PM runs on the configured fleet provider").
 
-**Recommended approach:** Rather than relying on shell profiles alone, fleet should:
+### 5. Shared Components (No Changes Required)
+The following components should remain unchanged regardless of the `--llm` provider:
+- Binary installation to `~/.apra-fleet/bin/`.
+- Hooks, scripts, and data directories.
+- The MCP server binary path and `stdio` protocol.
 
-1. **Store provisioned env vars in fleet's member config** (encrypted, alongside existing auth data in `agents.json`)
-2. **Inject them into every command** built by `buildAgentPromptCommand()` and `execute_command`, similar to how `CLAUDE_PATH` already injects `export PATH="$HOME/.local/bin:$PATH" &&`
+## Success Criteria
+1. Running `apra-fleet.exe install --skill --llm gemini` successfully installs the PM skill and MCP config into the `~/.gemini/` directory.
+2. The `SKILL.md` file no longer contains provider-specific hardcoding for the PM role.
+3. The installer remains backwards compatible (defaulting to Claude).
 
-This makes auth work reliably regardless of which dotfiles the SSH session sources.
-
-Additionally:
-- Still write to shell profiles as a fallback (for interactive use, debugging)
-- Fix the platform-specific profile issues (`.zshenv` on macOS, PowerShell on Windows)
-- Rename `CLAUDE_PATH` to `CLI_PATH` or similar — it's no longer Claude-specific
-
-## Scope
-
-### In scope
-- Store API key in member config (encrypted) when `provision_auth` is called with `api_key`
-- Inject auth env var into `buildAgentPromptCommand()` on all platforms
-- Inject auth env var into `execute_command` on all platforms
-- Fix `setEnv()` on macOS to also write `.zshenv`
-- Fix `setEnv()` on Windows to use `[System.Environment]::SetEnvironmentVariable()` and PowerShell `$PROFILE`
-- Fix `unsetEnv()` to match the new `setEnv()` on all platforms
-- Update `revoke_vcs_auth` / `remove_member` to clean up stored env vars
-- Rename `CLAUDE_PATH` to `CLI_PATH` (or similar provider-neutral name) across linux.ts and macos.ts
-- Fix Gemini session resume: `parseResponse` returns `sessionId: undefined` — should return a sentinel (e.g. `"gemini-latest"`) to signal an active session exists. `resumeFlag()` should return `--resume latest` instead of bare `--resume`. Gemini CLI does not use session IDs — it uses `--resume latest` to resume the most recent session in the project folder.
-- Tests for all changed code paths
-
-### Out of scope
-- Gemini CLI Node 22 requirement (doc-only, not a code fix)
-- Gemini settings.json auth (doesn't work, env var is the only way)
-
-## Security considerations
-- API keys stored in member config must be encrypted (like existing `encryptedPassword`)
-- API keys must not appear in command output / logs
-- `remove_member` must clean up stored keys
-- **OOB key entry**: When `provision_auth` is called without `api_key`, use the same out-of-band terminal prompt mechanism used for SSH passwords — a separate terminal window opens for the user to paste the key. This prevents the key from appearing in conversation context, MCP tool call logs, or Claude's memory. The `api_key` parameter should still be supported for automation/scripting, but the OOB prompt should be the default path for interactive use.
-
-## Test plan
-- Unit tests for `setEnv` / `unsetEnv` on all 3 platforms
-- Unit test for env var injection in `buildAgentPromptCommand`
-- Integration test: `provision_auth` → `execute_prompt` on Gemini member (use `gemini-2.5-flash-lite` model to stay within free tier)
-- Integration test: Gemini session resume — fresh prompt, then resume with `--resume latest`, verify context carries over
+## Technical Context
+- **Primary Source File:** `src/cli/install.ts`
+- **Related Files:** `skills/pm/SKILL.md`, `src/services/registry.ts`
+- **Testing:** New integration tests must verify installation paths for both Claude and Gemini.
