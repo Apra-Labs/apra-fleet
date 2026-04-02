@@ -15,7 +15,7 @@
     { "id": "9", "title": "Verify remove_member cleanup of stored env vars", "phase": 3, "status": "completed", "notes": "Verified: unsetEnv() cleans shell profiles (line 41), removeAgent() deletes entire record including encryptedEnvVars (registry.ts:120-127). No code changes needed." },
     { "id": "V3", "title": "VERIFY 3", "phase": 3, "type": "verify", "status": "completed", "notes": "All Phase 3 changes verified. 34/35 test files pass (535 passed, 3 skipped). auth-socket.test.ts has 15 pre-existing EADDRINUSE failures on Windows — same as V1/V2, not caused by Phase 3 changes. Provider tests updated for Gemini resume changes." },
     { "id": "10", "title": "Tests: platform fixes + auth env prefix helper", "phase": 4, "status": "completed", "notes": "Created tests/auth-env.test.ts with 9 tests: undefined/empty env vars, linux/macos/windows export format, multiple vars, special char escaping (double-quote + PowerShell single-quote). Platform tests already updated in Phase 1 for macOS .zshenv counts." },
-    { "id": "11", "title": "Tests: Gemini fixes + injection verification", "phase": 4, "status": "pending" },
+    { "id": "11", "title": "Tests: Gemini fixes + injection verification", "phase": 4, "status": "completed", "notes": "Added 4 collectOobApiKey tests (--api-key flag, pre-entered key, timeout, terminal failure). Added 3 Gemini parseResponse error-case tests per reviewer suggestion (non-zero exit -> sessionId undefined, non-JSON with zero/non-zero exit). CLI_PATH rename verified via existing buildAgentPromptCommand tests." },
     { "id": "V4", "title": "VERIFY 4 (Final)", "phase": 4, "type": "verify", "status": "pending" }
   ]
 }
