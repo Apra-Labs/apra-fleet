@@ -181,9 +181,9 @@ describe('GeminiProvider', () => {
     expect(cmd).not.toContain('--yolo');
   });
 
-  it('builds prompt command with session resume (flag only, no ID)', () => {
+  it('builds prompt command with session resume (--resume latest)', () => {
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id' });
-    expect(cmd).toContain('--resume');
+    expect(cmd).toContain('--resume latest');
   });
 
   it('builds prompt command with skip permissions', () => {
@@ -199,7 +199,7 @@ describe('GeminiProvider', () => {
   it('parses successful JSON response', () => {
     const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'gemini result' })));
     expect(resp.result).toBe('gemini result');
-    expect(resp.sessionId).toBeUndefined();
+    expect(resp.sessionId).toBe('gemini-latest');
     expect(resp.isError).toBe(false);
   });
 
@@ -207,9 +207,9 @@ describe('GeminiProvider', () => {
     expect(p.supportsMaxTurns()).toBe(false);
   });
 
-  it('resumeFlag always returns --resume', () => {
-    expect(p.resumeFlag()).toBe('--resume');
-    expect(p.resumeFlag('any-id')).toBe('--resume');
+  it('resumeFlag always returns --resume latest', () => {
+    expect(p.resumeFlag()).toBe('--resume latest');
+    expect(p.resumeFlag('any-id')).toBe('--resume latest');
   });
 
   it('maps model tiers', () => {
