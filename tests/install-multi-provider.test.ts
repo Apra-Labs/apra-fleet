@@ -22,17 +22,26 @@ describe('runInstall multi-provider', () => {
     vi.clearAllMocks();
     vi.mocked(os.homedir).mockReturnValue(mockHome);
     
-    // Mock fs.existsSync to return true for version.json to find project root
+    const fileState = new Map<string, string>();
+
     vi.mocked(fs.existsSync).mockImplementation((p: any) => {
-      if (p.toString().includes('version.json')) return true;
-      if (p.toString().includes('hooks-config.json')) return true;
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (fileState.has(ps)) return true;
       return false;
     });
 
     vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
-      if (p.toString().includes('version.json')) return JSON.stringify({ version: '0.1.0' });
-      if (p.toString().includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+      const ps = p.toString();
+      if (fileState.has(ps)) return fileState.get(ps)!;
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
       return '';
+    });
+
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
     });
 
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
