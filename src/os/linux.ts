@@ -3,7 +3,7 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLAUDE_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
+const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
 
 export class LinuxCommands implements OsCommands {
   private cachedEnv: Record<string, string> | null = null;
@@ -66,11 +66,11 @@ export class LinuxCommands implements OsCommands {
   // --- Generic agent CLI ---
 
   agentCommand(provider: ProviderAdapter, args: string): string {
-    return `${CLAUDE_PATH}${provider.cliCommand(args)}`;
+    return `${CLI_PATH}${provider.cliCommand(args)}`;
   }
 
   agentVersion(provider: ProviderAdapter): string {
-    return `${CLAUDE_PATH}${provider.versionCommand()}`;
+    return `${CLI_PATH}${provider.versionCommand()}`;
   }
 
   installAgent(provider: ProviderAdapter): string {
@@ -78,7 +78,7 @@ export class LinuxCommands implements OsCommands {
   }
 
   updateAgent(provider: ProviderAdapter): string {
-    return `${CLAUDE_PATH}${provider.updateCommand()}`;
+    return `${CLI_PATH}${provider.updateCommand()}`;
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
@@ -89,9 +89,9 @@ export class LinuxCommands implements OsCommands {
     // Inject PATH prepend after the cd so the binary is findable
     const cdPrefix = `cd "${escapedFolder}" && `;
     if (providerCmd.startsWith(cdPrefix)) {
-      return `${cdPrefix}${CLAUDE_PATH}${providerCmd.slice(cdPrefix.length)}`;
+      return `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
     }
-    return `${CLAUDE_PATH}${providerCmd}`;
+    return `${CLI_PATH}${providerCmd}`;
   }
 
   // --- Filesystem ---

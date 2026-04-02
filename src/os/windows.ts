@@ -3,7 +3,7 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
-const CLAUDE_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
 // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
 const MEMINFO_CMD = [
@@ -75,11 +75,11 @@ export class WindowsCommands implements OsCommands {
   // --- Generic agent CLI ---
 
   agentCommand(provider: ProviderAdapter, args: string): string {
-    return `${CLAUDE_PATH}${provider.cliCommand(args)}`;
+    return `${CLI_PATH}${provider.cliCommand(args)}`;
   }
 
   agentVersion(provider: ProviderAdapter): string {
-    return `${CLAUDE_PATH}${provider.versionCommand()}`;
+    return `${CLI_PATH}${provider.versionCommand()}`;
   }
 
   installAgent(provider: ProviderAdapter): string {
@@ -87,14 +87,14 @@ export class WindowsCommands implements OsCommands {
   }
 
   updateAgent(provider: ProviderAdapter): string {
-    return `${CLAUDE_PATH}${provider.updateCommand()}`;
+    return `${CLI_PATH}${provider.updateCommand()}`;
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
     const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     const decode = `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}'))`;
-    let cmd = `Set-Location "${escapedFolder}"; $p=${decode}; ${CLAUDE_PATH}${provider.cliCommand(`${provider.headlessInvocation('$p')} ${provider.jsonOutputFlag()}`)}`;
+    let cmd = `Set-Location "${escapedFolder}"; $p=${decode}; ${CLI_PATH}${provider.cliCommand(`${provider.headlessInvocation('$p')} ${provider.jsonOutputFlag()}`)}`;
     if (provider.supportsMaxTurns()) {
       cmd += ` --max-turns ${maxTurns ?? 50}`;
     }
