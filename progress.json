@@ -15,8 +15,8 @@
     { "id": "9", "title": "Make SKILL.md provider-neutral", "phase": 3, "status": "completed" },
     { "id": "10", "title": "Ensure Step 6 skill install uses provider directory", "phase": 3, "status": "completed", "notes": "Code shipped in Phase 2 commits alongside smol-toml work" },
     { "id": "V3", "title": "VERIFY 3", "phase": 3, "type": "verify", "status": "completed" },
-    { "id": "11", "title": "Add integration/unit tests for installer paths", "phase": 4, "status": "pending" },
-    { "id": "12", "title": "Final verification of all providers", "phase": 4, "status": "pending" },
-    { "id": "V4", "title": "VERIFY 4 (Final)", "phase": 4, "type": "verify", "status": "pending" }
+    { "id": "11", "title": "Add integration/unit tests for installer paths", "phase": 4, "status": "completed", "notes": "Expanded install-multi-provider.test.ts with 9 new tests: equals-form arg parsing, mkdirSync per provider, Claude --scope user, Gemini trust:true, Codex TOML section, Codex skill dir, provider-specific permissions, both error forms" },
+    { "id": "12", "title": "Final verification of all providers", "phase": 4, "status": "completed", "notes": "37 test files / 587 tests all pass (0 failures, 3 skipped). TypeScript compiles cleanly (tsc --noEmit exits 0). No regressions." },
+    { "id": "V4", "title": "VERIFY 4 (Final)", "phase": 4, "type": "verify", "status": "completed", "notes": "Full suite: 587 passed / 3 skipped / 0 failed. tsc --noEmit: clean. All 4 providers (claude, gemini, codex, copilot) covered end-to-end in tests." }
   ]
 }
