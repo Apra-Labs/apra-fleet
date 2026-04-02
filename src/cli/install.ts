@@ -215,7 +215,7 @@ function mergePermissions(paths: ProviderInstallConfig): void {
   const requiredPerms = [
     'mcp__apra-fleet__*',
     'Agent(*)',
-    `Read(${paths.skillsDir}/**)`,
+    `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
   ];
 
   settings.permissions = settings.permissions || {};
@@ -347,7 +347,6 @@ export async function runInstall(args: string[]): Promise<void> {
     fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
   );
   mergeHooksConfig(paths, installedHooksConfig);
-  mergePermissions(paths);
 
   const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
   configureStatusline(paths, statuslineScript);
@@ -393,6 +392,9 @@ export async function runInstall(args: string[]): Promise<void> {
   } else {
     console.log(`  Skipping PM skill (use --skill to install)`);
   }
+
+  // Finalize permissions
+  mergePermissions(paths);
 
   // --- Done ---
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
