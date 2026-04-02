@@ -6,44 +6,44 @@
       "id": "1",
       "title": "Define ProviderInstallConfig and implement mappings",
       "phase": 1,
-      "status": "pending"
+      "status": "completed"
     },
     {
       "id": "2",
       "title": "Update install.ts for --llm parsing and path resolution",
       "phase": 1,
-      "status": "pending"
+      "status": "completed"
     },
     {
       "id": "V1",
       "title": "VERIFY 1",
       "phase": 1,
       "type": "verify",
-      "status": "pending"
+      "status": "completed"
     },
     {
       "id": "3",
       "title": "Add smol-toml and update merge functions for JSON/TOML",
       "phase": 2,
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "id": "4",
       "title": "Update mergeHooksConfig and mergePermissions for provider formats",
       "phase": 2,
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "id": "5",
       "title": "Ensure mergePermissions uses provider-specific skill paths",
       "phase": 2,
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "id": "6",
       "title": "Configure Statusline for different providers",
       "phase": 2,
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "id": "V2",

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
+import { parse, stringify } from 'smol-toml';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
 
@@ -16,6 +17,30 @@ interface ProviderInstallConfig {
   settingsFile: string;
   skillsDir: string;
   name: string;
+}
+
+function readConfig(paths: ProviderInstallConfig): any {
+  if (!fs.existsSync(paths.settingsFile)) return {};
+  const content = fs.readFileSync(paths.settingsFile, 'utf-8');
+  if (paths.settingsFile.endsWith('.toml')) {
+    return parse(content);
+  }
+  try {
+    return JSON.parse(content);
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(paths: ProviderInstallConfig, config: any): void {
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  let content = '';
+  if (paths.settingsFile.endsWith('.toml')) {
+    content = stringify(config);
+  } else {
+    content = JSON.stringify(config, null, 2) + '\n';
+  }
+  fs.writeFileSync(paths.settingsFile, content);
 }
 
 function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
@@ -166,20 +191,12 @@ function writeAssetFile(destPath: string, content: string): void {
 }
 
 function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any): void {
-  // Currently only Claude supports hooks in settings.json
-  if (paths.name !== 'Claude') return;
-
-  fs.mkdirSync(paths.configDir, { recursive: true });
-
-  let settings: any = {};
-  if (fs.existsSync(paths.settingsFile)) {
-    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
-  }
+  const settings = readConfig(paths);
   settings.hooks = settings.hooks || {};
   settings.hooks.PostToolUse = settings.hooks.PostToolUse || [];
 
   for (const newHook of hooksConfig.hooks.PostToolUse || []) {
-    const idx = settings.hooks.PostToolUse.findIndex(
+    const idx = (settings.hooks.PostToolUse as any[]).findIndex(
       (h: any) => h.matcher === newHook.matcher
     );
     if (idx >= 0) {
@@ -189,17 +206,11 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any): void 
     }
   }
 
-  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  writeConfig(paths, settings);
 }
 
 function mergePermissions(paths: ProviderInstallConfig): void {
-  // Currently only Claude supports global permissions in settings.json
-  if (paths.name !== 'Claude') return;
-
-  let settings: any = {};
-  if (fs.existsSync(paths.settingsFile)) {
-    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
-  }
+  const settings = readConfig(paths);
 
   const requiredPerms = [
     'mcp__apra-fleet__*',
@@ -216,84 +227,48 @@ function mergePermissions(paths: ProviderInstallConfig): void {
     }
   }
 
-  fs.mkdirSync(paths.configDir, { recursive: true });
-  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  writeConfig(paths, settings);
 }
 
 function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): void {
-  // Currently only Claude supports statusLine in settings.json
-  if (paths.name !== 'Claude') return;
-
-  let settings: any = {};
-  if (fs.existsSync(paths.settingsFile)) {
-    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
-  }
+  const settings = readConfig(paths);
   // Windows: Claude Code can't execute .sh directly — prefix with bash
   const command = process.platform === 'win32' ? `bash "${scriptPath}"` : scriptPath;
   settings.statusLine = {
     type: 'command',
     command,
   };
-  fs.mkdirSync(paths.configDir, { recursive: true });
-  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  writeConfig(paths, settings);
 }
 
 function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
-  fs.mkdirSync(paths.configDir, { recursive: true });
-
-  let settings: any = {};
-  if (fs.existsSync(paths.settingsFile)) {
-    settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
-  }
+  const settings = readConfig(paths);
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = {
     ...mcpConfig,
     trust: true,
   };
 
-  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  writeConfig(paths, settings);
 }
 
 function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
-  fs.mkdirSync(paths.configDir, { recursive: true });
-
-  let settings: any = {};
-  if (fs.existsSync(paths.settingsFile)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(paths.settingsFile, 'utf-8'));
-    } catch { /* malformed or empty */ }
-  }
+  const settings = readConfig(paths);
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = mcpConfig;
 
-  fs.writeFileSync(paths.settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  writeConfig(paths, settings);
 }
 
 function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
-  fs.mkdirSync(paths.configDir, { recursive: true });
+  const settings = readConfig(paths);
+  settings.mcp_servers = settings.mcp_servers || {};
+  settings.mcp_servers['apra-fleet'] = {
+    command: mcpConfig.command.replace(/\\/g, '/'),
+    args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
+  };
 
-  let content = '';
-  if (fs.existsSync(paths.settingsFile)) {
-    content = fs.readFileSync(paths.settingsFile, 'utf-8');
-  }
-
-  // Simple TOML-like injection for MCP server
-  const serverBlock = [
-    '',
-    '[mcp_servers.apra-fleet]',
-    `command = "${mcpConfig.command.replace(/\\/g, '/')}"`,
-    `args = [${mcpConfig.args.map((a: string) => `"${a.replace(/\\/g, '/')}"`).join(', ')}]`,
-    '',
-  ].join('\n');
-
-  if (content.includes('[mcp_servers.apra-fleet]')) {
-    // Replace existing block (crude but effective for this use case)
-    content = content.replace(/\[mcp_servers\.apra-fleet\][\s\S]*?(?=\n\[|$)/, serverBlock.trim());
-  } else {
-    content += serverBlock;
-  }
-
-  fs.writeFileSync(paths.settingsFile, content.trim() + '\n');
+  writeConfig(paths, settings);
 }
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
