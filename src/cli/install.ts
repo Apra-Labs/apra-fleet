@@ -300,6 +300,10 @@ export async function runInstall(args: string[]): Promise<void> {
   const installSkill = args.includes('--skill');
   const totalSteps = installSkill ? 6 : 5;
 
+  if (llm === 'gemini' && installSkill) {
+    console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
+  }
+
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
 
   // --- Step 1: Copy binary ---

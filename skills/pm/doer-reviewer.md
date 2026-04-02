@@ -12,6 +12,8 @@
 
 **Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's instruction file + permissions, same member reviews with fresh context. Track current role and session ID in status.md.
 
+**Reviewer tier check:** When assigning a reviewer, check the member's model tier via `member_detail`. If the reviewer is not running an Opus-tier model, warn the user: "Reviewer {name} is running {model} — Opus is recommended for reviews to catch subtle issues." User's choice is final — if they proceed, PM respects it.
+
 ## Pre-flight Checks
 
 ### Before any dispatch
@@ -29,6 +31,11 @@ Verify reviewer is at the correct commit before starting review:
 ## Flow
 
 1. Doer works, commits and pushes deliverables at every turn → STOPS at every VERIFY checkpoint
+
+   **Doer session rules:**
+   - **Start of each new phase:** use `resume=false` — fresh context per phase keeps token usage small and avoids cross-phase confusion from stale context
+   - **Within a phase:** resume is allowed — tasks within a phase are cohesive and benefit from shared context
+
 2. **PM handles git transport via `execute_command`** — never delegate to prompts:
    - Dev side: `git push origin <branch>` — verify push succeeded
    - Rev side: `git fetch origin && git checkout <branch> && git reset --hard origin/<branch>`

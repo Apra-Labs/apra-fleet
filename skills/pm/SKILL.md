@@ -60,14 +60,18 @@ Member's progress.json is the living state. Always query it for current status.
 
 ### Execution Loop
 ```
-PM sends task harness → kicks off doer with execute_prompt
+PM sends task harness → kicks off doer with execute_prompt (resume=false — fresh session per phase)
   → doer reads progress.json → executes next pending task → commits → updates progress.json
   → hits verify checkpoint → STOPS → PM reads progress.json
   → PM dispatches REVIEWER → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
-  → APPROVED: PM resumes doer → repeat
+  → APPROVED: PM resumes doer (resume=true within a phase) → repeat
   → CHANGES NEEDED: PM sends feedback to doer → doer fixes → PM re-dispatches REVIEWER → repeat
   → all tasks done → PM reports to user
 ```
+
+**Doer session rules:** Use `resume=false` at the start of each new phase — fresh context per phase keeps token usage small and avoids stale cross-phase confusion. Within a phase, `resume=true` is correct — tasks share context productively.
+
+**Reviewer assignment:** Before dispatching a reviewer, check the member's model tier via `member_detail`. If not Opus-tier, warn: "Reviewer {name} is running {model} — Opus is recommended for reviews to catch subtle issues." User's choice is final.
 
 ### Monitoring
 - Check progress: `execute_command → cat progress.json` (cheap, fast). Check git: `git log --oneline -10`
@@ -120,3 +124,4 @@ PM manages members running different LLM providers (Claude, Gemini, Codex, Copil
 | **CLI commands** | Handled by `ProviderAdapter` — PM never constructs provider CLI strings directly |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
 | **PM itself** | PM runs on the configured fleet provider — its instructions and templates are adapted per provider |
+| **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members |

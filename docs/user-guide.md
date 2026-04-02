@@ -147,6 +147,16 @@ Fleet automatically uses the correct env var name per provider.
 
 See `docs/provider-matrix.md` for the full comparison table.
 
+### Provider Recommendations
+
+These are recommendations, not restrictions — your choice is final.
+
+| Role | Recommended | Notes |
+|------|-------------|-------|
+| **Orchestrator (PM)** | Claude (Opus or Sonnet) | Gemini lacks background agents — every `execute_prompt` blocks, serializing all fleet operations. This negates the core value of parallel dispatch. |
+| **Doer** | Any provider | Claude Sonnet, Gemini Flash, Codex, Copilot — mix freely. Multiple members of any provider are supported. |
+| **Reviewer** | Opus-tier models | Highest review quality; catches subtle issues that smaller models miss. |
+
 ### Mix-and-match example
 
 A fleet can have members on different providers for different purposes:
