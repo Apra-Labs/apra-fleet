@@ -8,7 +8,8 @@ Apra Fleet lets you control AI coding agents on multiple machines from a single 
 
 ### 1. Download the binary
 
-Go to [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases) and download the binary for your platform:
+Apra Labs members: Go to [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases) and download the binary for your platform:
+If you were invited to a shared drive, lookinside the installers folder
 
 - `apra-fleet-linux-x64` — Linux (x86_64)
 - `apra-fleet-darwin-arm64` — macOS (Apple Silicon)
