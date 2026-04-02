@@ -12,7 +12,7 @@
 
 **Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's instruction file + permissions, same member reviews with fresh context. Track current role and session ID in status.md.
 
-**Reviewer tier check:** When assigning a reviewer, check the member's model tier via `member_detail`. If the reviewer is not running an Opus-tier model, warn the user: "Reviewer {name} is running {model} — Opus is recommended for reviews to catch subtle issues." User's choice is final — if they proceed, PM respects it.
+**Reviewer tier check:** Reviews benefit from the highest reasoning tier available. If any Claude member exists in the fleet, dispatch reviews with model=opus (Claude members can run any tier). For non-Claude providers, use the highest tier via modelTiers(). If no premium option exists, use what is available — no warning needed. User's choice is final.
 
 ## Pre-flight Checks
 
