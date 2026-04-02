@@ -1,100 +1,21 @@
 {
   "issue": "#43",
-  "branch": "feature/multi-provider-installer",
+  "branch": "feature/multi-provider",
   "tasks": [
-    {
-      "id": "1",
-      "title": "Define ProviderInstallConfig and implement mappings",
-      "phase": 1,
-      "status": "completed"
-    },
-    {
-      "id": "2",
-      "title": "Update install.ts for --llm parsing and path resolution",
-      "phase": 1,
-      "status": "completed"
-    },
-    {
-      "id": "V1",
-      "title": "VERIFY 1",
-      "phase": 1,
-      "type": "verify",
-      "status": "completed"
-    },
-    {
-      "id": "3",
-      "title": "Add smol-toml and update merge functions for JSON/TOML",
-      "phase": 2,
-      "status": "in-progress"
-    },
-    {
-      "id": "4",
-      "title": "Update mergeHooksConfig and mergePermissions for provider formats",
-      "phase": 2,
-      "status": "in-progress"
-    },
-    {
-      "id": "5",
-      "title": "Ensure mergePermissions uses provider-specific skill paths",
-      "phase": 2,
-      "status": "in-progress"
-    },
-    {
-      "id": "6",
-      "title": "Configure Statusline for different providers",
-      "phase": 2,
-      "status": "in-progress"
-    },
-    {
-      "id": "V2",
-      "title": "VERIFY 2",
-      "phase": 2,
-      "type": "verify",
-      "status": "pending"
-    },
-    {
-      "id": "7",
-      "title": "Research and document MCP registration for Gemini/Codex",
-      "phase": 3,
-      "status": "pending"
-    },
-    {
-      "id": "8",
-      "title": "Update MCP registration logic with provider-specific commands",
-      "phase": 3,
-      "status": "pending"
-    },
-    {
-      "id": "9",
-      "title": "Make SKILL.md provider-neutral",
-      "phase": 3,
-      "status": "pending"
-    },
-    {
-      "id": "V3",
-      "title": "VERIFY 3",
-      "phase": 3,
-      "type": "verify",
-      "status": "pending"
-    },
-    {
-      "id": "10",
-      "title": "Add integration/unit tests for installer paths",
-      "phase": 4,
-      "status": "pending"
-    },
-    {
-      "id": "11",
-      "title": "Final verification of all providers",
-      "phase": 4,
-      "status": "pending"
-    },
-    {
-      "id": "V4",
-      "title": "VERIFY 4 (Final)",
-      "phase": 4,
-      "type": "verify",
-      "status": "pending"
-    }
+    { "id": "1", "title": "Define ProviderInstallConfig and implement mappings", "phase": 1, "status": "completed" },
+    { "id": "2", "title": "Update install.ts for --llm parsing and path resolution", "phase": 1, "status": "completed" },
+    { "id": "V1", "title": "VERIFY 1", "phase": 1, "type": "verify", "status": "completed" },
+    { "id": "3", "title": "Add smol-toml and update merge functions for JSON/TOML", "phase": 2, "status": "completed" },
+    { "id": "4", "title": "Update mergeHooksConfig and mergePermissions for provider formats", "phase": 2, "status": "completed" },
+    { "id": "5", "title": "Ensure mergePermissions uses provider-specific skill paths", "phase": 2, "status": "completed" },
+    { "id": "6", "title": "Configure Statusline for different providers", "phase": 2, "status": "completed" },
+    { "id": "V2", "title": "VERIFY 2", "phase": 2, "type": "verify", "status": "completed" },
+    { "id": "7", "title": "Research and document MCP registration for Gemini/Codex", "phase": 3, "status": "pending" },
+    { "id": "8", "title": "Update MCP registration logic with provider-specific commands", "phase": 3, "status": "in-progress" },
+    { "id": "9", "title": "Make SKILL.md provider-neutral", "phase": 3, "status": "pending" },
+    { "id": "V3", "title": "VERIFY 3", "phase": 3, "type": "verify", "status": "pending" },
+    { "id": "10", "title": "Add integration/unit tests for installer paths", "phase": 4, "status": "pending" },
+    { "id": "11", "title": "Final verification of all providers", "phase": 4, "status": "pending" },
+    { "id": "V4", "title": "VERIFY 4 (Final)", "phase": 4, "type": "verify", "status": "pending" }
   ]
 }
