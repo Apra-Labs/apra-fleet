@@ -150,10 +150,182 @@ describe('runInstall multi-provider', () => {
 
   it('errors on unsupported provider', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
-    
+
     await expect(runInstall(['--llm=unsupported'])).rejects.toThrow('exit');
-    
+
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
+  });
+
+  it('errors on unsupported provider via space form (--llm badprovider)', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--llm', 'badprovider'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
+  });
+
+  it('accepts --llm=gemini (equals form) and writes to ~/.gemini/', async () => {
+    await runInstall(['--llm=gemini']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining(geminiSettings),
+      expect.any(String)
+    );
+  });
+
+  it('accepts --llm=codex (equals form) and writes to ~/.codex/config.toml', async () => {
+    await runInstall(['--llm=codex']);
+
+    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining(codexConfig),
+      expect.any(String)
+    );
+  });
+
+  it('creates configDir for each provider via mkdirSync', async () => {
+    for (const [llm, dir] of [
+      ['claude', path.join(mockHome, '.claude')],
+      ['gemini', path.join(mockHome, '.gemini')],
+      ['codex', path.join(mockHome, '.codex')],
+      ['copilot', path.join(mockHome, '.copilot')],
+    ] as [string, string][]) {
+      vi.clearAllMocks();
+      vi.mocked(os.homedir).mockReturnValue(mockHome);
+
+      const fileState = new Map<string, string>();
+      vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+        const ps = p.toString();
+        if (ps.includes('version.json')) return true;
+        if (ps.includes('hooks-config.json')) return true;
+        if (fileState.has(ps)) return true;
+        return false;
+      });
+      vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+        const ps = p.toString();
+        if (fileState.has(ps)) return fileState.get(ps)!;
+        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+        if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+        return '';
+      });
+      vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+        fileState.set(p.toString(), content.toString());
+      });
+      vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+
+      await runInstall(['--llm', llm]);
+
+      expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+        expect.stringContaining(dir),
+        expect.objectContaining({ recursive: true })
+      );
+    }
+  });
+
+  it('Claude MCP registration uses --scope user flag', async () => {
+    await runInstall([]);
+
+    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    const addCall = calls.find(c => c.includes('claude mcp add'));
+    expect(addCall).toBeDefined();
+    expect(addCall).toContain('--scope user');
+  });
+
+  it('Gemini MCP registration embeds mcpServers.apra-fleet with trust:true', async () => {
+    await runInstall(['--llm', 'gemini']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(geminiSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers?.['apra-fleet']).toBeDefined();
+    expect(parsed.mcpServers['apra-fleet'].trust).toBe(true);
+  });
+
+  it('Codex MCP registration writes [mcp_servers.apra-fleet] TOML section', async () => {
+    await runInstall(['--llm', 'codex']);
+
+    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(codexConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    expect(lastWrite).toContain('[mcp_servers.apra-fleet]');
+    expect(lastWrite).toMatch(/command\s*=/);
+  });
+
+  it('installs skills to Codex directory when --skill --llm codex is passed', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('skills') && ps.includes('pm')) {
+        return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+      }
+      return [];
+    });
+
+    await runInstall(['--skill', '--llm', 'codex']);
+
+    const codexSkillsDir = path.join(mockHome, '.codex', 'skills', 'pm');
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(codexSkillsDir),
+      expect.any(Object)
+    );
+
+    expect(vi.mocked(fs.copyFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining('SKILL.md'),
+      expect.stringContaining(codexSkillsDir)
+    );
+  });
+
+  it('permissions include provider-specific skill path', async () => {
+    for (const [llm, skillsDir] of [
+      ['gemini', path.join(mockHome, '.gemini', 'skills', 'pm')],
+      ['codex', path.join(mockHome, '.codex', 'skills', 'pm')],
+    ] as [string, string][]) {
+      vi.clearAllMocks();
+      vi.mocked(os.homedir).mockReturnValue(mockHome);
+
+      const fileState = new Map<string, string>();
+      vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+        const ps = p.toString();
+        if (ps.includes('version.json')) return true;
+        if (ps.includes('hooks-config.json')) return true;
+        if (fileState.has(ps)) return true;
+        return false;
+      });
+      vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+        const ps = p.toString();
+        if (fileState.has(ps)) return fileState.get(ps)!;
+        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+        if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+        return '';
+      });
+      vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+        fileState.set(p.toString(), content.toString());
+      });
+      vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+
+      await runInstall(['--llm', llm]);
+
+      // Find the last write to the settings/config file for this provider
+      const allWrites = vi.mocked(fs.writeFileSync).mock.calls;
+      const settingsWrites = allWrites.filter(c => {
+        const p = c[0].toString();
+        return p.includes(`.${llm}`);
+      });
+      expect(settingsWrites.length).toBeGreaterThan(0);
+
+      // The permissions write is the last one
+      const lastContent = settingsWrites.at(-1)![1].toString();
+      const normalizedSkillsDir = skillsDir.replace(/\\/g, '/');
+      expect(lastContent).toContain(`Read(${normalizedSkillsDir}`);
+    }
   });
 });
