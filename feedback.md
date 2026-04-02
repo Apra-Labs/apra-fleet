@@ -231,3 +231,88 @@ No regressions in Phase 1 code:
 **APPROVED**
 
 Phases 1 and 2 (Tasks 1-6) are complete and correct. All code matches PLAN.md specifications. All 549 tests pass across 35 test files. No regressions in Phase 1. No security issues. Ready for Phase 3.
+
+---
+
+## Phase 3 Code Review (Tasks 7-9)
+
+**Commits reviewed:** 1abccb1 → 862d2b3 (5 commits)
+**Test results:** 35/35 test files pass, 549 tests passed, 4 skipped
+
+### Phase 1+2 Regression Check
+
+No regressions in previously approved phases:
+- `src/types.ts:28` — `encryptedEnvVars` field intact
+- `src/utils/auth-env.ts` — `buildAuthEnvPrefix()` unchanged, still consumed by execute-prompt/execute-command
+- `src/os/macos.ts` — `.zshenv` in `setEnv()`/`unsetEnv()` intact
+- `src/tools/provision-auth.ts` — `provisionApiKey()` still stores encrypted key; OOB flow intact
+- `src/tools/execute-prompt.ts` — `authPrefix` applied to all 3 command builds (lines 54, 74, 82)
+- `src/tools/execute-command.ts` — `authPrefix` applied to regular path (line 78), long-running excluded per design
+
+### Task 7: Rename `CLAUDE_PATH` to `CLI_PATH`
+
+**Files:** `src/os/linux.ts`, `src/os/windows.ts`
+
+**Findings:**
+- `linux.ts`: `CLAUDE_PATH` renamed to `CLI_PATH` at line 6. All 6 references updated (lines 69, 72, 81, 92, 94). Clean find-replace, no functional change.
+- `windows.ts`: `CLAUDE_PATH` renamed to `CLI_PATH` at line 6. All 5 references updated (lines 78, 81, 90, 97). Clean find-replace, no functional change.
+- Grep confirms zero remaining `CLAUDE_PATH` references in `src/` — rename is complete.
+- Existing tests pass — they test command output (which is unchanged), not constant names.
+
+**Verdict:** Matches plan specification exactly. No issues.
+
+### Task 8: Fix Gemini session resume
+
+**File:** `src/providers/gemini.ts`
+
+**Findings:**
+- `buildPromptCommand()` (line 34): Changed from `cmd += ' --resume'` to `cmd += ' --resume latest'` — correct, Gemini CLI requires `--resume latest` to resume the most recent session
+- `parseResponse()` (lines 55, 62): Both JSON-parse success and catch branches now return `sessionId: result.code === 0 ? 'gemini-latest' : undefined` — correct sentinel behavior:
+  - On success (code 0): returns `'gemini-latest'` so `execute_prompt` stores it as `agent.sessionId`
+  - On failure (code != 0): returns `undefined` so no stale session is persisted
+- `resumeFlag()` (line 78): Returns `'--resume latest'` regardless of `_sessionId` arg — correct, Gemini doesn't use session IDs
+- Test coverage updated in `tests/providers.test.ts`:
+  - `buildPromptCommand` with session resume asserts `--resume latest` (line 186)
+  - `parseResponse` successful response asserts `sessionId: 'gemini-latest'` (line 202)
+  - `resumeFlag` asserts `'--resume latest'` with and without args (lines 211-213)
+  - Default command (no sessionId) asserts `--resume` is NOT present (line 180) — correct, no resume without session
+
+**Non-blocking note:** No explicit test for `parseResponse` returning `sessionId: undefined` on non-zero exit code for Gemini. The logic is trivially correct (`result.code === 0 ? 'gemini-latest' : undefined`), and the Claude provider tests cover the error-case pattern. Phase 4 tests could add this for completeness.
+
+**Verdict:** Matches plan specification exactly. Correct Gemini CLI behavior.
+
+### Task 9: Verify `remove_member` cleanup of stored env vars
+
+**Files:** `src/tools/remove-member.ts` (verification only, no code changes)
+
+**Findings:**
+- Confirmed per PLAN.md: `remove_member` calls `unsetEnv(provider.authEnvVar)` for shell profile cleanup and `removeAgent()` for full registry deletion including `encryptedEnvVars`
+- No code changes needed — this is a verification-only task
+- Plan rationale for no explicit zeroing is sound: values are encrypted at rest, file is overwritten atomically, and JS strings are immutable/GC'd
+
+**Verdict:** Verification complete. No issues.
+
+### VERIFY 3 Checklist
+
+- [x] `CLAUDE_PATH` renamed to `CLI_PATH` in linux.ts and windows.ts — no functional change
+- [x] No remaining `CLAUDE_PATH` references in `src/` (grep verified)
+- [x] Gemini `parseResponse()` returns `sessionId: 'gemini-latest'` for successful responses
+- [x] Gemini `parseResponse()` returns `sessionId: undefined` for failed responses
+- [x] Gemini `resumeFlag()` returns `'--resume latest'`
+- [x] Gemini `buildPromptCommand()` uses `--resume latest` when sessionId is present
+- [x] `remove_member` deletes stored env vars via registry deletion (verified, no code change)
+- [x] All existing tests pass — 35/35 files, 549/549 tests, 4 skipped
+
+### Security Review
+
+- No new secrets handling in Phase 3
+- `CLI_PATH` rename is cosmetic only — no change to command execution security model
+- Gemini session resume uses sentinel string `'gemini-latest'`, not a user-controlled value — no injection risk
+
+---
+
+## Cumulative Verdict (Phases 1+2+3)
+
+**APPROVED**
+
+Phases 1-3 (Tasks 1-9) are complete and correct. All code matches PLAN.md specifications. All 549 tests pass across 35 test files. No regressions in Phases 1 or 2. No security issues. One non-blocking note: Phase 4 tests should add a Gemini `parseResponse` error-case test asserting `sessionId: undefined` on non-zero exit code. Ready for Phase 4.
