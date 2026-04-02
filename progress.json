@@ -13,7 +13,7 @@
     { "id": "7", "title": "Rename CLAUDE_PATH to CLI_PATH", "phase": 3, "status": "completed", "notes": "Renamed CLAUDE_PATH to CLI_PATH in linux.ts (6 refs) and windows.ts (5 refs). No functional change, clean compile." },
     { "id": "8", "title": "Fix Gemini session resume", "phase": 3, "status": "completed", "notes": "parseResponse() returns 'gemini-latest' sentinel on success. resumeFlag() returns '--resume latest'. buildPromptCommand() updated to match." },
     { "id": "9", "title": "Verify remove_member cleanup of stored env vars", "phase": 3, "status": "completed", "notes": "Verified: unsetEnv() cleans shell profiles (line 41), removeAgent() deletes entire record including encryptedEnvVars (registry.ts:120-127). No code changes needed." },
-    { "id": "V3", "title": "VERIFY 3", "phase": 3, "type": "verify", "status": "pending" },
+    { "id": "V3", "title": "VERIFY 3", "phase": 3, "type": "verify", "status": "completed", "notes": "All Phase 3 changes verified. 34/35 test files pass (535 passed, 3 skipped). auth-socket.test.ts has 15 pre-existing EADDRINUSE failures on Windows — same as V1/V2, not caused by Phase 3 changes. Provider tests updated for Gemini resume changes." },
     { "id": "10", "title": "Tests: platform fixes + auth env prefix helper", "phase": 4, "status": "pending" },
     { "id": "11", "title": "Tests: Gemini fixes + injection verification", "phase": 4, "status": "pending" },
     { "id": "V4", "title": "VERIFY 4 (Final)", "phase": 4, "type": "verify", "status": "pending" }
