@@ -31,7 +31,7 @@ export class GeminiProvider implements ProviderAdapter {
     const escapedFolder = escapeDoubleQuoted(folder);
     let cmd = `cd "${escapedFolder}" && gemini -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json`;
     if (sessionId) {
-      cmd += ' --resume latest';
+      cmd += ` --resume ${sessionId}`;
     }
     if (dangerouslySkipPermissions) {
       cmd += ' --yolo';
@@ -52,14 +52,14 @@ export class GeminiProvider implements ProviderAdapter {
       const parsed = JSON.parse(raw);
       return {
         result: parsed.response ?? parsed.result ?? raw,
-        sessionId: result.code === 0 ? 'gemini-latest' : undefined,
+        sessionId: result.code === 0 ? (parsed.session_id ?? undefined) : undefined,
         isError: result.code !== 0,
         raw,
       };
     } catch {
       return {
         result: raw,
-        sessionId: result.code === 0 ? 'gemini-latest' : undefined,
+        sessionId: undefined,
         isError: result.code !== 0,
         raw,
       };
@@ -74,8 +74,8 @@ export class GeminiProvider implements ProviderAdapter {
     return false;
   }
 
-  resumeFlag(_sessionId?: string): string {
-    return '--resume latest';
+  resumeFlag(sessionId?: string): string {
+    return sessionId ? `--resume ${sessionId}` : '--resume latest';
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {

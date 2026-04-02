@@ -181,9 +181,9 @@ describe('GeminiProvider', () => {
     expect(cmd).not.toContain('--yolo');
   });
 
-  it('builds prompt command with session resume (--resume latest)', () => {
+  it('builds prompt command with session resume (passes actual ID)', () => {
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id' });
-    expect(cmd).toContain('--resume latest');
+    expect(cmd).toContain('--resume any-id');
   });
 
   it('builds prompt command with skip permissions', () => {
@@ -196,10 +196,17 @@ describe('GeminiProvider', () => {
     expect(cmd).toContain('--model "gemini-2.5-flash"');
   });
 
-  it('parses successful JSON response', () => {
+  it('parses successful JSON response with session_id', () => {
+    const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'gemini result', session_id: 'gem-sess-42' })));
+    expect(resp.result).toBe('gemini result');
+    expect(resp.sessionId).toBe('gem-sess-42');
+    expect(resp.isError).toBe(false);
+  });
+
+  it('parses successful JSON response without session_id', () => {
     const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'gemini result' })));
     expect(resp.result).toBe('gemini result');
-    expect(resp.sessionId).toBe('gemini-latest');
+    expect(resp.sessionId).toBeUndefined();
     expect(resp.isError).toBe(false);
   });
 
@@ -209,10 +216,10 @@ describe('GeminiProvider', () => {
     expect(resp.sessionId).toBeUndefined();
   });
 
-  it('parses non-JSON response with zero exit code — sessionId is gemini-latest', () => {
+  it('parses non-JSON response with zero exit code — sessionId is undefined', () => {
     const resp = p.parseResponse(makeResult('raw text output'));
     expect(resp.result).toBe('raw text output');
-    expect(resp.sessionId).toBe('gemini-latest');
+    expect(resp.sessionId).toBeUndefined();
     expect(resp.isError).toBe(false);
   });
 
@@ -227,9 +234,9 @@ describe('GeminiProvider', () => {
     expect(p.supportsMaxTurns()).toBe(false);
   });
 
-  it('resumeFlag always returns --resume latest', () => {
+  it('resumeFlag uses actual session ID when provided', () => {
     expect(p.resumeFlag()).toBe('--resume latest');
-    expect(p.resumeFlag('any-id')).toBe('--resume latest');
+    expect(p.resumeFlag('gem-sess-42')).toBe('--resume gem-sess-42');
   });
 
   it('maps model tiers', () => {
