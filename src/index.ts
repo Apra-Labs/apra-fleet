@@ -57,7 +57,7 @@ async function startServer() {
   const { revokeVcsAuthSchema, revokeVcsAuth } = await import('./tools/revoke-vcs-auth.js');
   const { fleetStatusSchema, fleetStatus } = await import('./tools/check-status.js');
   const { memberDetailSchema, memberDetail } = await import('./tools/member-detail.js');
-  const { updateAgentCliSchema, updateAgentCli, updateClaudeSchema, updateClaude } = await import('./tools/update-agent-cli.js');
+  const { updateAgentCliSchema, updateAgentCli } = await import('./tools/update-agent-cli.js');
   const { shutdownServerSchema, shutdownServer } = await import('./tools/shutdown-server.js');
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
@@ -101,9 +101,7 @@ async function startServer() {
   server.tool('member_detail', 'Deep-dive status for one member. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.', memberDetailSchema.shape, async (input) => ({ content: [{ type: 'text', text: await memberDetail(input as any) }] }));
 
   // --- Maintenance ---
-  server.tool('update_agent_cli', "Update or install the LLM agent CLI on members. Respects each member's llm_provider setting. Set install_if_missing=true to install on members that don't have it.", updateAgentCliSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateAgentCli(input as any) }] }));
-  // Backwards-compatibility alias
-  server.tool('update_claude', "Alias for update_agent_cli. Update or install Claude Code CLI on members. Set install_if_missing=true to install on members that don't have it.", updateClaudeSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateClaude(input as any) }] }));
+  server.tool('update_llm_cli', "Update or install the LLM CLI on members. Respects each member's llm_provider setting. Set install_if_missing=true to install on members that don't have it.", updateAgentCliSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateAgentCli(input as any) }] }));
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, async () => ({ content: [{ type: 'text', text: await shutdownServer() }] }));
 
   // --- Permissions ---

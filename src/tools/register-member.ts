@@ -38,7 +38,7 @@ export const registerMemberSchema = z.object({
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_ssh_key_path: z.string().min(1, 'cloud_ssh_key_path must not be empty').optional().describe('Path to SSH private key on this machine. Required when cloud_provider is set. Also sets the member key_path for SSH connections (F4).'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_auth, and update_agent_cli.'),
+  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_auth, and update_llm_cli.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;

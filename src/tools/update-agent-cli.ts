@@ -131,8 +131,3 @@ export async function updateAgentCli(input: UpdateAgentCliInput): Promise<string
 
   return report;
 }
-
-// Backwards-compatibility aliases
-export const updateClaudeSchema = updateAgentCliSchema;
-export const updateClaude = updateAgentCli;
-export type UpdateClaudeInput = UpdateAgentCliInput;
