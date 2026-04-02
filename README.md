@@ -59,7 +59,7 @@ Then just talk to Claude:
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
 | `cloud_control` | Start, stop, or check status of cloud compute instances |
 | `monitor_task` | Monitor long-running tasks on cloud members |
-| `update_claude` | Update or install AI coding agent CLI on members |
+| `update_llm_cli` | Update or install AI coding agent CLI on members |
 | `shutdown_server` | Gracefully shut down the MCP server |
 
 ## PM Skill

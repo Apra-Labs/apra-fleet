@@ -99,9 +99,9 @@ Generates an RSA-4096 key pair and migrates a remote member from password-based 
 
 **Failure handling:** If any step fails (key deployment, test login), the member remains on password auth. The error message indicates what went wrong, and the password-based connection still works.
 
-## update_agent_cli
+## update_llm_cli
 
-Updates or installs the LLM CLI on one or all fleet members. Respects each member's `llm_provider` — uses the correct install and update commands per provider. The legacy name `update_claude` is kept as a backwards-compatible alias.
+Updates or installs the LLM CLI on one or all fleet members. Respects each member's `llm_provider` — uses the correct install and update commands per provider.
 
 **Parameters:**
 

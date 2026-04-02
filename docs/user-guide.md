@@ -134,7 +134,7 @@ Fleet automatically uses the correct env var name per provider.
 
 > "Update all members' CLIs."
 
-`update_agent_cli` uses the correct install/update command per provider. You can also use the legacy name `update_claude` — it still works as an alias.
+`update_llm_cli` uses the correct install/update command per provider.
 
 ### Provider capabilities and limits
 

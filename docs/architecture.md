@@ -167,7 +167,7 @@ Manage the fleet roster and server lifecycle. Registration validates connectivit
 **[Work](tools-work.md)** — `send_files`, `execute_prompt`, `execute_command`, `reset_session`
 The core workflow. Push files to a member, run prompts against it, run shell commands directly, manage conversation sessions.
 
-**[Infrastructure](tools-infrastructure.md)** — `provision_auth`, `setup_ssh_key`, `update_agent_cli` (alias: `update_claude`)
+**[Infrastructure](tools-infrastructure.md)** — `provision_auth`, `setup_ssh_key`, `update_llm_cli`
 One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key for any provider), migrate from password to key auth, update the LLM CLI on members.
 
 **[Observability](tools-observability.md)** — `fleet_status`, `member_detail`
