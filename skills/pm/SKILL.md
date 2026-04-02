@@ -119,4 +119,4 @@ PM manages members running different LLM providers (Claude, Gemini, Codex, Copil
 | **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to provider-specific models via `modelTiers()` |
 | **CLI commands** | Handled by `ProviderAdapter` — PM never constructs provider CLI strings directly |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
-| **PM itself** | PM always runs on Claude — PM's own CLAUDE.md and tpl-claude-pm.md are Claude-specific |
+| **PM itself** | PM runs on the configured fleet provider — its instructions and templates are adapted per provider |

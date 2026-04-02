@@ -3,20 +3,20 @@
 Refactor the installer to support Gemini and Codex providers in addition to Claude. This includes adding a --llm parameter to the install command, mapping provider-specific configuration and skill paths, and ensuring the Project Manager (PM) skill is provider-neutral.
 
 ## Phase 1: CLI & Path Refactoring
-- [ ] Define `ProviderInstallConfig` interface and implement mapping for Gemini and Codex.
-- [ ] Update `src/cli/install.ts` to parse `--llm <provider>` and resolve paths dynamically.
-- [ ] **VERIFY 1:** CLI argument --llm is correctly parsed and paths are dynamically resolved for all three providers.
+- [x] Define `ProviderInstallConfig` interface and implement mapping for Gemini and Codex.
+- [x] Update `src/cli/install.ts` to parse `--llm <provider>` and resolve paths dynamically.
+- [x] **VERIFY 1:** CLI argument --llm is correctly parsed and paths are dynamically resolved for all three providers.
 
 ## Phase 2: Provider-specific Settings Support
 - [ ] Introduce `smol-toml` library and update merge functions to handle both JSON and TOML formats.
-- [ ] Update `mergeHooksConfig` and `mergePermissions` to support provider-specific formats (JSON for Claude/Gemini, TOML for Codex).
+- [x] Update `mergeHooksConfig` and `mergePermissions` to support provider-specific formats (JSON for Claude/Gemini, TOML for Codex).
 - [ ] Ensure `mergePermissions` uses provider-specific skill paths (e.g., `~/.gemini/skills/pm` instead of hardcoded `~/.claude/`).
-- [ ] Update `configureStatusline` to use the correct provider's settings file.
+- [x] Update `configureStatusline` to use the correct provider's settings file.
 - [ ] **VERIFY 2:** Hooks, permissions, and statusline are correctly merged into both settings.json (Claude/Gemini) and config.toml (Codex).
 
 ## Phase 3: Skill Neutrality & MCP Registration
 - [ ] Research and document exact MCP registration commands for Gemini (`gemini mcp add`) and Codex (likely manual TOML entry).
-- [ ] Update MCP registration logic to use the provider's specific command or configuration update method.
+- [x] Update MCP registration logic to use the provider's specific command or configuration update method.
 - [ ] Review `skills/pm/SKILL.md` and related templates for provider neutrality.
 - [ ] Ensure `installSkill` logic uses the correct provider's skills directory.
 - [ ] **VERIFY 3:** Skill is installed to the correct provider-specific directory and the MCP server is registered correctly for each CLI.
