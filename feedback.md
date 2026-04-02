@@ -316,3 +316,103 @@ No regressions in previously approved phases:
 **APPROVED**
 
 Phases 1-3 (Tasks 1-9) are complete and correct. All code matches PLAN.md specifications. All 549 tests pass across 35 test files. No regressions in Phases 1 or 2. No security issues. One non-blocking note: Phase 4 tests should add a Gemini `parseResponse` error-case test asserting `sessionId: undefined` on non-zero exit code. Ready for Phase 4.
+
+---
+
+## Phase 4 Code Review (Tasks 10-11) — Final Cumulative
+
+**Commits reviewed:** d2be2e6 → 4139623 (4 commits)
+**Test results:** 36/36 test files pass, 565 tests passed, 4 skipped
+**TypeScript:** No errors (`npx tsc --noEmit` clean)
+
+### Phase 1+2+3 Regression Check
+
+No regressions in any previously approved phase:
+- `src/types.ts:28` — `encryptedEnvVars` field intact
+- `src/utils/auth-env.ts` — `buildAuthEnvPrefix()` unchanged
+- `src/os/macos.ts:26,37` — `.zshenv` in `setEnv()`/`unsetEnv()` intact
+- `src/tools/provision-auth.ts` — `provisionApiKey()` stores encrypted key; OOB flow intact; `decryptPassword(oob.password)` still correct
+- `src/tools/execute-prompt.ts:54,74,82` — `authPrefix` applied to all 3 command builds
+- `src/tools/execute-command.ts:77-78` — `authPrefix` applied to regular path, long-running excluded
+- `src/os/linux.ts:6`, `src/os/windows.ts:6` — `CLI_PATH` rename complete, zero `CLAUDE_PATH` references remain
+- `src/providers/gemini.ts:34,55,62,78` — `gemini-latest` sentinel and `--resume latest` intact
+- `src/cli/auth.ts` — `--api-key` flag handling intact
+- `src/services/auth-socket.ts` — `collectOobApiKey()` intact
+
+### Task 10: Tests for platform fixes + auth env prefix helper
+
+**File:** `tests/auth-env.test.ts` (new, 93 lines)
+
+**Findings:**
+- 9 test cases covering all `buildAuthEnvPrefix()` paths:
+  - Undefined `encryptedEnvVars` → empty string (linux, macos, windows)
+  - Empty `encryptedEnvVars` → empty string (linux, windows)
+  - Linux export format with double-quoted value
+  - macOS export format matches linux (same code path)
+  - Windows PowerShell `$env:` format with single-quoted value
+  - Multiple env vars with correct join separators (`&&` / `;`)
+  - Special character escaping: double-quote, dollar sign, backslash (linux)
+  - PowerShell single-quote escaping (windows)
+- Uses `encryptPassword()` in the helper to create realistic encrypted test data — tests the full decrypt→escape→format pipeline
+- Test structure is clean: helper function `makeAgent()` for minimal agent construction
+
+**Verdict:** Comprehensive coverage. All plan-specified test cases present. Adversarial key values tested as specified in risk register.
+
+### Task 11: Tests for OOB API key + Gemini fixes
+
+**File:** `tests/auth-socket.test.ts` (4 new tests added to existing file)
+
+**Findings — collectOobApiKey tests:**
+- "launches terminal with --api-key flag" — verifies `launchFn` called with `['--api-key']`, result contains encrypted password
+- "returns encrypted key when pending auth already has password" — tests pre-entered key path, verifies `launchFn` not called
+- "returns fallback on timeout" — tests with 100ms timeout, verifies fallback message contains 'timed out' and tool name
+- "returns fallback when terminal launch fails" — tests headless fallback, verifies error message propagation
+- Proper cleanup with `afterEach(() => cleanupAuthSocket())`
+
+**File:** `tests/providers.test.ts` (3 new Gemini parseResponse error-case tests)
+
+**Findings — Phase 3 suggestion addressed:**
+- "parses response with non-zero exit code — sessionId is undefined" — `makeResult(JSON.stringify({...}), 1)` → `isError: true`, `sessionId: undefined`
+- "parses non-JSON response with zero exit code — sessionId is gemini-latest" — raw text + code 0 → `sessionId: 'gemini-latest'`
+- "parses non-JSON response with non-zero exit code — sessionId is undefined" — raw text + code 1 → `sessionId: undefined`, `isError: true`
+- These 3 tests directly address the Phase 3 non-blocking note about missing Gemini error-case coverage
+
+**Verdict:** All Phase 3 suggestions implemented. Test quality is strong — covers success, error, and edge cases.
+
+### VERIFY 4 Checklist (Final)
+
+- [x] All new tests pass — 12 new tests (9 auth-env + 3 Gemini error-case)
+- [x] `collectOobApiKey` tests pass — 4 tests covering launch, pre-entered, timeout, headless
+- [x] All existing tests pass — 36/36 files, 565/565 tests, 4 skipped
+- [x] No TypeScript errors — `npx tsc --noEmit` clean
+- [x] No regressions in Phases 1, 2, or 3
+
+### Test Quality Assessment
+
+- **Coverage gaps:** None identified. All public APIs and error paths from Tasks 1-9 have corresponding tests.
+- **Redundancy:** No overlapping/redundant tests. Each test case covers a distinct code path.
+- **auth-env.test.ts** tests the full pipeline (encrypt → decrypt → escape → format), not just format strings — this is the right approach since it catches integration issues between crypto and shell escaping.
+- **Gemini error-case tests** fill the gap identified in Phase 3 review — the ternary `result.code === 0 ? 'gemini-latest' : undefined` is now explicitly tested for both branches in both JSON and non-JSON paths.
+
+### Security Review
+
+- No new secrets handling in Phase 4 (test-only changes)
+- Test API keys are plaintext literals in test files (`test-key-123`, etc.) — appropriate for unit tests, no real credentials
+- `encryptPassword()` used in test helper to create realistic encrypted values — demonstrates the encrypt/decrypt cycle works
+
+---
+
+## Final Cumulative Verdict (Phases 1+2+3+4, Tasks 1-11)
+
+**APPROVED**
+
+All 11 tasks and 4 verify checkpoints are complete. 36/36 test files pass (565 tests, 4 skipped). No TypeScript errors. No regressions across any phase. All Phase 3 review suggestions addressed. Code matches PLAN.md specifications and satisfies requirements.md intent.
+
+Summary of changes delivered:
+1. **Env var persistence + injection** — API keys stored encrypted in registry, injected inline into every `execute_prompt` and `execute_command` call (Tasks 1-2, 4-5)
+2. **macOS .zshenv fix** — non-interactive SSH sessions now source auth env vars (Task 3)
+3. **OOB API key entry** — secure out-of-band terminal prompt for non-Claude providers (Task 6)
+4. **Provider-neutral rename** — `CLAUDE_PATH` → `CLI_PATH` (Task 7)
+5. **Gemini session resume** — `gemini-latest` sentinel + `--resume latest` (Task 8)
+6. **Cleanup verification** — `remove_member` confirmed to delete stored env vars (Task 9)
+7. **Test coverage** — 16 new tests covering all new code paths (Tasks 10-11)
