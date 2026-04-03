@@ -105,16 +105,16 @@
 #### Task 12: Document token update workflow in PM skill
 - **Change:** Add a step in the post-dispatch section of doer-reviewer.md instructing the PM to:
   1. After each `execute_prompt` response, extract token counts from the `Tokens: input=N output=M` line (regex: `Tokens: input=(\d+) output=(\d+)`)
-  2. Call `execute_command` on the doer member: `node scripts/update-tokens.js --task-id <current-task-id> --role <doer|reviewer> --input <N> --output <M>`
-  3. The PM must call this after every dispatch — doer dispatches use `--role doer`, reviewer dispatches use `--role reviewer`. Reviewer tokens accumulate across review cycles (the script handles this).
+  2. Call the `update_task_tokens` MCP tool with arguments: `task_id=<current-task-id>`, `role=<doer|reviewer>`, `input=<N>`, `output=<M>`
+  3. The PM must call this after every dispatch — doer dispatches use `role=doer`, reviewer dispatches use `role=reviewer`. Reviewer tokens accumulate across review cycles (the tool handles this).
 - **Files:** `skills/pm/doer-reviewer.md`
 - **Done when:** doer-reviewer.md contains the exact post-dispatch workflow above; the PM has no ambiguity about how to update tokens
 
 #### VERIFY: Phase 4
-- Run `node scripts/update-tokens.js --task-id 1 --role doer --input 1000 --output 500` on a sample progress.json — confirm tokens are accumulated
-- Run it again with `--role reviewer --input 200 --output 100` — confirm reviewer tokens are added separately
-- Run it a third time with `--role reviewer --input 300 --output 150` — confirm accumulation (not overwrite): reviewer should show input=500, output=250
-- Report: script works, docs are clear, progress.json updated correctly
+- Call `update_task_tokens` with `task_id=1`, `role=doer`, `input=1000`, `output=500` on a sample progress.json — confirm tokens are accumulated
+- Call it again with `role=reviewer`, `input=200`, `output=100` — confirm reviewer tokens are added separately
+- Call it a third time with `role=reviewer`, `input=300`, `output=150` — confirm accumulation (not overwrite): reviewer should show input=500, output=250
+- Report: MCP tool works, docs are clear, progress.json updated correctly
 
 ---
 
@@ -164,9 +164,9 @@
 |------|--------|------------|
 | Non-Claude CLIs ignore `defaultModel` in settings | High | Task 1 verifies upfront; fallback is `--model` flag injection in execute_prompt. Claude already confirmed working. |
 | Token format varies across provider/CLI versions | Medium | Make extraction resilient; return `undefined` rather than throw on missing field |
-| Existing progress.json files lack token/tier fields | Low | Fields are optional; `scripts/update-tokens.js` initializes missing fields to zeros before accumulating |
+| Existing progress.json files lack token/tier fields | Low | Fields are optional; `src/tools/update-task-tokens.ts` initializes missing fields to zeros before accumulating |
 | Non-Claude providers don't emit token counts | Medium | Document limitation; return `undefined`, not an error |
-| LLM instruction reliability for token parsing | Medium | PM must parse a simple regex (`Tokens: input=(\d+) output=(\d+)`), but LLMs can skip steps. Mitigation: use a committed script (`scripts/update-tokens.js`) instead of ad-hoc commands; VERIFY Phase 4 validates accumulation correctness |
+| LLM instruction reliability for token parsing | Medium | PM must parse a simple regex (`Tokens: input=(\d+) output=(\d+)`), but LLMs can skip steps. Mitigation: use the `update_task_tokens` MCP tool instead of ad-hoc commands; VERIFY Phase 4 validates accumulation correctness |
 | apra-focus reference gap for token extraction | Low | Requirements.md says to refer to apra-focus codebase for token usage patterns. Task 8 (Claude extraction) should cross-reference `apra-focus` implementation before finalizing the parsing approach |
 
 ## Notes
