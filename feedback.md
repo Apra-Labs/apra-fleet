@@ -1,8 +1,104 @@
-# Plan Review Findings — Issue #40: provision_auth env var visibility
+# Code Review — Issues #44, #45, #46, #47 (commits bf4f9c4, da9476d)
 
 **Reviewer:** Claude Opus 4.6
-**Date:** 2026-04-01 (re-review)
-**Plan:** PLAN.md
+**Date:** 2026-04-02
+**Branch:** feature/multi-provider (after previously-approved 139839f)
+**Test results:** 37/37 files, 586 passed, 4 skipped. TypeScript: clean (`tsc --noEmit` exit 0).
+
+---
+
+## Issue #44: Fresh session per phase rule
+
+**Files:** `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`
+
+**Findings:**
+- SKILL.md execution loop (line 63): updated to show `resume=false` at phase start, `resume=true` within phase. Standalone "Doer session rules" paragraph at line 72 elaborates clearly.
+- doer-reviewer.md (lines 35-37): "Doer session rules" section added with identical semantics — `resume=false` at new phase, resume allowed within a phase.
+- Both files are consistent and the rule is unambiguous.
+
+**Verdict:** PASS — no issues.
+
+---
+
+## Issue #45: Provider Recommendations in user-guide.md
+
+**File:** `docs/user-guide.md`
+
+**Findings:**
+- Lines 150-158: Provider Recommendations table added.
+- Opens with "These are recommendations, not restrictions — your choice is final." — appropriately non-prescriptive.
+- Orchestrator recommendation for Claude is justified with a concrete technical reason (Gemini lacks background agents, serializes fleet operations).
+- Doer row says "Any provider" — fully neutral.
+- Reviewer row: see #47 finding below.
+
+**Verdict:** PASS on #45's own requirement (no hard-sell). The Reviewer cell wording is a #47 concern addressed below.
+
+---
+
+## Issue #46 Part A: Non-blocking Gemini + --skill warning
+
+**File:** `src/cli/install.ts`
+
+**Findings:**
+- Lines 303-305: `console.warn()` fires when `llm === 'gemini' && installSkill`. Non-blocking — does not exit or throw.
+- Message content: states the limitation (no background agents, sequential operations), suggests Claude as alternative, references docs.
+- Test output confirms the warning appears on `--skill --llm gemini` runs and does not appear on non-Gemini installs.
+
+**Verdict:** PASS — no issues.
+
+## Issue #46 Part B: Timeout guidance for Gemini
+
+**File:** `skills/pm/SKILL.md`
+
+**Findings:**
+- Line 127: New row in Provider Awareness table — "Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members."
+- Clear, actionable, placed in the correct reference table.
+
+**Verdict:** PASS — no issues.
+
+---
+
+## Issue #47: Provider-agnostic reviewer tier
+
+**Files:** `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`, `docs/user-guide.md`
+
+**Findings:**
+
+**SKILL.md (line 74) — PASS:** Reviewer assignment uses conditional logic: "If any Claude member exists, dispatch reviews with `model: "opus"` (Claude members can run any tier). For non-Claude providers, use the highest tier via `modelTiers()`. If no premium option exists, use what is available. User's choice is final." This is provider-agnostic strategy with a Claude-specific optimization — correct.
+
+**doer-reviewer.md (line 15) — PASS:** Same conditional logic, consistent with SKILL.md. Adds "no warning needed" for non-premium fallback — good UX.
+
+**user-guide.md (line 158) — BLOCKING:** The Reviewer row in the Provider Recommendations table says:
+
+> | **Reviewer** | Opus-tier models | Highest review quality; ... |
+
+"Opus-tier" uses Claude model branding as a generic tier name. This contradicts #47's requirement: *"Must NOT hardcode 'use Opus' as blanket advice."* The skill docs correctly use "highest reasoning tier" and `modelTiers()` — the user guide should align. Recommend changing to:
+
+> | **Reviewer** | Highest-tier models | Best review quality; catches subtle issues that smaller models miss. Use `premium` tier — the server resolves to the best model per provider. |
+
+---
+
+## Regression Check (Previously Approved Phases)
+
+Spot-checked all previously approved code (Phases 1-4 of #40, Phases 1-4 of #43, Phase 5A-5E):
+- No regressions detected. All prior code paths intact.
+- Changes in this review are additive (doc updates + one `console.warn` guard).
+
+---
+
+## Summary
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| #44 | PASS | Fresh session rule in SKILL.md + doer-reviewer.md |
+| #45 | PASS | Recommendations table is non-prescriptive |
+| #46A | PASS | Non-blocking Gemini warning in install.ts |
+| #46B | PASS | Timeout multiplier in SKILL.md |
+| #47 | **BLOCKING** | user-guide.md:158 uses "Opus-tier" — must use provider-neutral tier language |
+
+---
+
+**CHANGES NEEDED**
 **Requirements:** requirements.md
 
 ---
