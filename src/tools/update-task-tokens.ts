@@ -30,6 +30,8 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
     member_id: input.member_id,
     command: `cat ${escapeShellArg(input.progress_json)}`,
     timeout_ms: 30000,
+    long_running: false,
+    max_retries: 3,
   });
 
   if (!catResult.startsWith('Exit code: 0')) {
@@ -88,6 +90,8 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
     member_id: input.member_id,
     command: `git add ${escapeShellArg(input.progress_json)} && git commit -m "chore: update token counts for task ${escapeShellArg(input.task_id)}"`,
     timeout_ms: 30000,
+    long_running: false,
+    max_retries: 3,
   });
 
   const committed = commitResult.includes('Exit code: 0');
