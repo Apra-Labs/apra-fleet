@@ -102,6 +102,23 @@ describe('ClaudeProvider', () => {
     expect(resp.sessionId).toBeUndefined();
   });
 
+  it('extracts usage tokens when present in JSON response', () => {
+    const payload = JSON.stringify({ result: 'done', session_id: 'sid-1', usage: { input_tokens: 123, output_tokens: 456 } });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 123, output_tokens: 456 });
+  });
+
+  it('returns undefined usage when usage field is absent', () => {
+    const payload = JSON.stringify({ result: 'done', session_id: 'sid-1' });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toBeUndefined();
+  });
+
+  it('returns undefined usage when JSON parse fails', () => {
+    const resp = p.parseResponse(makeResult('not json at all'));
+    expect(resp.usage).toBeUndefined();
+  });
+
   it('supports resume and maxTurns', () => {
     expect(p.supportsResume()).toBe(true);
     expect(p.supportsMaxTurns()).toBe(true);
