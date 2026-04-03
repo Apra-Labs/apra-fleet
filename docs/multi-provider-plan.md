@@ -42,8 +42,8 @@ Before writing code, document the CLI equivalents for every Claude concept we de
 
 | Tier | Purpose | Claude | Gemini | OpenAI Codex | Copilot |
 |------|---------|--------|--------|--------------|---------|
-| **Cheap** | Execution, status, tests, deploys | `haiku` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
-| **Mid** | Construction, code, config | `sonnet` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
+| **Cheap** | Execution, status, tests, deploys | `cheap` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
+| **Mid** | Construction, code, config | `standard` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
 | **Premium** | Planning, review, architecture | `premium` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
 
 **Note:** Gemini and Codex currently lack a distinct premium tier beyond their best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
@@ -294,7 +294,7 @@ No schema version bump. `llmProvider` is optional, defaults to `'claude'`. Exist
 ```
 cheap → standard → premium
 
-Claude:  haiku → sonnet → (best available)
+Claude:  cheap → standard → (best available)
 Gemini:  gemini-2.5-flash → gemini-2.5-pro → gemini-2.5-pro
 Codex:   gpt-5.4-mini → gpt-5.4 → gpt-5.4
 Copilot: claude-haiku-4-5 → claude-sonnet-4-5 → claude-sonnet-4-5

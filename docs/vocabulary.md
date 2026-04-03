@@ -44,7 +44,7 @@ For generic references ("list all ___", "register a new ___"), use:
 ```
 PM (orchestrator)
   |
-  +-- dev1       (apra-focus, local, claude/sonnet)
+  +-- dev1       (apra-focus, local, claude/standard)
   +-- dev2       (apra-focus-dev2, remote, gemini/pro)
   +-- review1    (apra-focus-review, remote, claude/premium)
   +-- review2    (apra-focus-review2, remote, copilot)
