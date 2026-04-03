@@ -71,7 +71,7 @@ PM sends task harness → kicks off doer with execute_prompt (resume=false — f
 
 **Doer session rules:** Use `resume=false` at the start of each new phase — fresh context per phase keeps token usage small and avoids stale cross-phase confusion. Within a phase, `resume=true` is correct — tasks share context productively.
 
-**Reviewer assignment:** Reviews benefit from the highest reasoning tier. If any Claude member exists in the fleet, dispatch reviews with `model: "opus"` (Claude members can run any tier). For non-Claude providers, use the highest tier via `modelTiers()`. If no premium option exists, use what is available. User's choice is final.
+**Reviewer assignment:** Reviews benefit from the highest reasoning tier. Dispatch reviews with `model: "premium"` — the PM maps this to the best available model for each provider. If no premium option exists, use what is available. User's choice is final. Doers use `model: "standard"` by default unless the task tier specifies otherwise.
 
 ### Monitoring
 - Check progress: `execute_command → cat progress.json` (cheap, fast). Check git: `git log --oneline -10`

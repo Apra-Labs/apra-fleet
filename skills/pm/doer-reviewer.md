@@ -12,7 +12,7 @@
 
 **Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's instruction file + permissions, same member reviews with fresh context. Track current role and session ID in status.md.
 
-**Reviewer tier check:** Reviews benefit from the highest reasoning tier available. If any Claude member exists in the fleet, dispatch reviews with model=opus (Claude members can run any tier). For non-Claude providers, use the highest tier via modelTiers(). If no premium option exists, use what is available — no warning needed. User's choice is final.
+**Reviewer tier check:** Reviews benefit from the highest reasoning tier available. Dispatch reviews with `model=premium` — the PM maps this to the best available model for each provider. If no premium option exists, use what is available — no warning needed. User's choice is final. Doers use `model=standard` by default unless the task tier specifies otherwise.
 
 ## Pre-flight Checks
 
