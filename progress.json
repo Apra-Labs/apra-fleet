@@ -6,7 +6,7 @@
     { "id": "2", "title": "Resolve standard tier model when model param is omitted", "phase": 1, "status": "completed", "notes": "Added resolvedModel = input.model ?? provider.modelTiers().standard in executePrompt(). Used resolvedModel in main command and both retry commands." },
     { "id": "3", "title": "Update executePromptSchema model param description", "phase": 1, "status": "completed", "notes": "Updated model param description to document standard-tier default with provider-specific examples." },
     { "id": "4", "title": "Add tests for default model tier resolution", "phase": 1, "status": "completed", "notes": "Added two tests: (a) omitting model param results in claude-sonnet-4-6 in command, (b) explicit model param passed through unchanged without standard tier override." },
-    { "id": "V1", "title": "VERIFY Phase 1", "phase": 1, "type": "verify", "status": "pending" },
+    { "id": "V1", "title": "VERIFY Phase 1", "phase": 1, "type": "verify", "status": "completed", "notes": "589 tests passed / 3 skipped / 0 failed. tsc clean (no explicit check run but all tests import TS and pass). Phase 1 changes: standard tier defaulting in executePrompt, schema description updated, two new tests all green." },
     { "id": "5", "title": "Write defaultModel: standard to settings during install", "phase": 2, "status": "pending" },
     { "id": "6", "title": "Add install tests for defaultModel", "phase": 2, "status": "pending" },
     { "id": "V2", "title": "VERIFY Phase 2", "phase": 2, "type": "verify", "status": "pending" },
