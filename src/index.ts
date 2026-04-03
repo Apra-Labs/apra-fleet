@@ -62,6 +62,7 @@ async function startServer() {
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
+  const { updateTaskTokensSchema, updateTaskTokens } = await import('./tools/update-task-tokens.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
@@ -110,6 +111,7 @@ async function startServer() {
   // --- Cloud Control ---
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. start waits for SSH readiness; stop is immediate.', cloudControlSchema.shape, async (input) => ({ content: [{ type: 'text', text: await cloudControl(input as any) }] }));
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Use task_id returned by execute_command. Set auto_stop=true to stop the cloud instance when the task completes.', monitorTaskSchema.shape, async (input) => ({ content: [{ type: 'text', text: await monitorTask(input as any) }] }));
+  server.tool('update_task_tokens', 'Accumulate token counts (input + output) for a task entry in a member\'s progress.json. Reads current values from the member, adds the new counts, pushes the updated file back, and commits on the member. Always accumulates — never overwrites.', updateTaskTokensSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateTaskTokens(input as any) }] }));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
