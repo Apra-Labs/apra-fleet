@@ -8,18 +8,24 @@
 
 ### Phase 1: Default Model Tier in execute_prompt
 
-#### Task 1: Resolve standard tier model when model param is omitted
+#### Task 1: Verify defaultModel settings support for non-Claude providers
+- **Change:** Verify that Gemini CLI and Codex CLI honor a `defaultModel` (or equivalent) setting in their config files. For each provider: write the standard-tier model name to the provider's settings path, invoke the CLI with a trivial prompt, and confirm the model used matches. Document findings in a table in this task's notes.
+- **Files:** None (investigation only)
+- **Done when:** A table exists documenting: (a) which config key each provider uses for default model, (b) whether setting it actually changes the model used. Claude is already confirmed (`model: sonnet` in `~/.claude/settings.json` works). If a provider ignores the setting, note that Phase 2 must use `--model` flag injection for that provider.
+- **Blockers:** Requires Gemini CLI and Codex CLI to be installed for testing
+
+#### Task 2: Resolve standard tier model when model param is omitted
 - **Change:** In `executePrompt()`, when `model` is undefined, call `provider.modelTiers().standard` and pass the resolved model name as `--model` to the CLI invocation
 - **Files:** `src/tools/execute-prompt.ts`
 - **Done when:** Unit test confirms that omitting `model` param results in the command including `--model claude-sonnet-4-5` (Claude), `--model gemini-2.5-pro` (Gemini), `--model gpt-5.4` (Codex); all existing tests pass
 - **Blockers:** None — `modelTiers()` already exists on all providers
 
-#### Task 2: Update executePromptSchema model param description
+#### Task 3: Update executePromptSchema model param description
 - **Change:** Update the `model` parameter description in the schema to document that omitting it defaults to the standard tier (e.g. "sonnet for Claude, equivalent for other providers")
 - **Files:** `src/tools/execute-prompt.ts`
 - **Done when:** Schema description reflects standard-tier default; no test changes needed
 
-#### Task 3: Add tests for default model tier resolution
+#### Task 4: Add tests for default model tier resolution
 - **Change:** Add test cases to the execute_prompt test file verifying: (a) no `model` param → standard tier flag in command, (b) explicit `model` param → passed through unchanged
 - **Files:** `tests/execute-prompt.test.ts`
 - **Done when:** New tests pass; `npm test` green
@@ -33,13 +39,13 @@
 
 ### Phase 2: Installer Default Model
 
-#### Task 4: Write `defaultModel: standard` to settings during install
-- **Change:** In `installSettings()` (or equivalent), after merging provider config, add `defaultModel` field set to the standard tier model name for that provider
+#### Task 5: Write `defaultModel: standard` to settings during install
+- **Change:** In `installSettings()` (or equivalent), after merging provider config, add `defaultModel` field set to the standard tier model name for that provider. For providers where Task 1 found that the config setting is ignored, instead inject `--model <standard>` into the CLI invocation flags.
 - **Files:** `src/cli/install.ts`
 - **Done when:** After `apra-fleet install`, the provider's settings file contains a `defaultModel` entry set to the standard model (e.g. `claude-sonnet-4-5` for Claude); existing install test passes with updated assertion
-- **Blockers:** Need to verify that each CLI (Claude Code, Gemini CLI, Codex CLI) honours a `defaultModel` setting; if not, fall back to injecting `--model` everywhere
+- **Blockers:** Task 1 findings determine the approach per provider
 
-#### Task 5: Add install tests for defaultModel
+#### Task 6: Add install tests for defaultModel
 - **Change:** Assert that each provider's post-install settings include the correct `defaultModel` value
 - **Files:** `tests/install-multi-provider.test.ts` (or existing install test file)
 - **Done when:** Tests for claude, gemini, codex providers all pass
@@ -53,18 +59,18 @@
 
 ### Phase 3: Token Extraction in execute_prompt
 
-#### Task 6: Add `usage` field to ParsedResponse interface
+#### Task 7: Add `usage` field to ParsedResponse interface
 - **Change:** Add `usage?: { input_tokens: number; output_tokens: number }` to the `ParsedResponse` type/interface; update all providers' `parseResponse()` to return this field (undefined if not available)
 - **Files:** `src/providers/provider.ts`, `src/providers/claude.ts`, `src/providers/gemini.ts`, `src/providers/codex.ts`, `src/providers/copilot.ts`
 - **Done when:** TypeScript compiles; all provider `parseResponse()` implementations satisfy the updated interface
 - **Blockers:** None — optional field, backward-compatible
 
-#### Task 7: Extract Claude token counts from JSON response
+#### Task 8: Extract Claude token counts from JSON response
 - **Change:** In `claude.ts` `parseResponse()`, extract `parsed.usage.input_tokens` and `parsed.usage.output_tokens` from the response JSON when present and populate `usage` in the returned `ParsedResponse`
 - **Files:** `src/providers/claude.ts`
 - **Done when:** Unit test with a mock Claude response containing a `usage` object confirms tokens are returned; test with mock missing `usage` confirms graceful undefined
 
-#### Task 8: Surface token counts in execute_prompt output
+#### Task 9: Surface token counts in execute_prompt output
 - **Change:** In `executePrompt()`, after parsing the response, if `parsed.usage` is defined, append a line `\nTokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}` to the returned text
 - **Files:** `src/tools/execute-prompt.ts`
 - **Done when:** Integration test with a mocked Claude response confirms token line appears; missing usage results in no extra line
@@ -78,35 +84,58 @@
 
 ### Phase 4: Progress.json Phase-wise Token Accumulation
 
-#### Task 9: Add token fields to tpl-progress.json schema
-- **Change:** Add a `tokens` object to each phase entry in the template: `{ doer: { input: 0, output: 0 }, reviewer: { input: 0, output: 0 } }`; tokens are cumulative across review cycles
+#### Task 10: Add token and tier fields to tpl-progress.json schema
+- **Change:** Extend the task entry schema in `tpl-progress.json` with two new fields:
+  - `tokens`: `{ "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }` — cumulative across review cycles
+  - `tier`: `"standard"` — model tier for this task's doer dispatch (one of `cheap`, `standard`, `premium`). Reviewer tier is always `premium` and not stored per-task.
 - **Files:** `skills/pm/tpl-progress.json`
-- **Done when:** Template file validates as valid JSON; new fields present under each phase
+- **Done when:** Template file validates as valid JSON; new `tokens` and `tier` fields present in the task entry schema
 
-#### Task 10: Document token update workflow in PM skill
-- **Change:** Add a step in the dispatch and post-dispatch sections instructing the PM to: (a) read token counts from the execute_prompt response, (b) use `execute_command` to update the corresponding phase's `tokens.doer` or `tokens.reviewer` in `progress.json`, accumulating (not overwriting) reviewer counts across cycles
-- **Files:** `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`
-- **Done when:** Both docs clearly describe the PM's responsibility to extract and persist token counts after each dispatch
+#### Task 11: Create `scripts/update-tokens.js` for atomic token accumulation
+- **Change:** Create a committed Node.js script that the PM calls via `execute_command` after each `execute_prompt` dispatch. The script:
+  1. Reads `progress.json` from the project directory
+  2. Parses CLI args: `--task-id <N> --role <doer|reviewer> --input <N> --output <N>`
+  3. Locates `tasks[id === task-id]` in the JSON
+  4. Accumulates: `tasks[i].tokens[role].input += input`, `tasks[i].tokens[role].output += output`
+  5. Writes the updated JSON back atomically (write to temp file, then rename)
+  6. Runs `git add progress.json && git commit -m "chore: update token counts for task <id>"`
+- **Files:** `scripts/update-tokens.js`
+- **Done when:** Script runs successfully: `node scripts/update-tokens.js --task-id 1 --role doer --input 500 --output 200` updates progress.json and creates a commit. Script handles missing `tokens` field gracefully (initializes to zeros before accumulating).
+
+#### Task 12: Document token update workflow in PM skill
+- **Change:** Add a step in the post-dispatch section of doer-reviewer.md instructing the PM to:
+  1. After each `execute_prompt` response, extract token counts from the `Tokens: input=N output=M` line (regex: `Tokens: input=(\d+) output=(\d+)`)
+  2. Call `execute_command` on the doer member: `node scripts/update-tokens.js --task-id <current-task-id> --role <doer|reviewer> --input <N> --output <M>`
+  3. The PM must call this after every dispatch — doer dispatches use `--role doer`, reviewer dispatches use `--role reviewer`. Reviewer tokens accumulate across review cycles (the script handles this).
+- **Files:** `skills/pm/doer-reviewer.md`
+- **Done when:** doer-reviewer.md contains the exact post-dispatch workflow above; the PM has no ambiguity about how to update tokens
 
 #### VERIFY: Phase 4
-- Manual verification: run the PM through a planning session and confirm progress.json is updated with token counts
-- Report: fields populated, accumulation correct across review cycles
+- Run `node scripts/update-tokens.js --task-id 1 --role doer --input 1000 --output 500` on a sample progress.json — confirm tokens are accumulated
+- Run it again with `--role reviewer --input 200 --output 100` — confirm reviewer tokens are added separately
+- Run it a third time with `--role reviewer --input 300 --output 150` — confirm accumulation (not overwrite): reviewer should show input=500, output=250
+- Report: script works, docs are clear, progress.json updated correctly
 
 ---
 
 ### Phase 5: Skill & Docs — Remove Opus/Premium Orchestration References
 
-#### Task 11: Replace opus-specific references with standard/premium tier language
+#### Task 13: Replace opus-specific references with standard/premium tier language
 - **Change:** Replace all occurrences of `model: "opus"` / `model=opus` with `model: "premium"` in doer/reviewer dispatch templates; update surrounding prose to clarify that reviewers use premium tier (best available per provider), doers use standard by default
 - **Files:** `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`
 - **Done when:** No provider-specific model name appears in skill docs; `grep -r "opus" skills/` returns zero results
 
-#### Task 12: Update planning prompt with model tier assignment step
-- **Change:** Add a step to the planning prompt instructing the planner to assign a model tier (cheap / standard / premium) to each task based on complexity; this tier goes into the task definition and is used by the PM when dispatching
-- **Files:** `skills/pm/plan-prompt.md` (or equivalent planning template)
-- **Done when:** Planning prompt includes explicit model-tier assignment guidance; planner output includes tier per task
+#### Task 14: Update planning prompt with model tier assignment step
+- **Change:** Add a step to the planning prompt (PHASE 1 — DRAFT section) instructing the planner to:
+  1. Assign a model tier (`cheap`, `standard`, or `premium`) to each task based on complexity
+  2. The tier is written into each task's entry in PLAN.md (e.g. `- **Tier:** standard`)
+  3. When the PM creates progress.json from the plan, it copies each task's tier into `tasks[i].tier`
+  4. During dispatch, the PM reads `tasks[i].tier` and passes `model: <tier>` to `execute_prompt` for doer dispatches
+  5. **Constraint:** Reviewer dispatches always use `premium` regardless of the task's tier — this is not configurable by the planner
+- **Files:** `skills/pm/plan-prompt.md`
+- **Done when:** Planning prompt includes explicit tier assignment guidance; constraint that reviewers always use premium is documented; the flow from PLAN.md → progress.json → dispatch is unambiguous
 
-#### Task 13: Update user-facing docs to remove Opus branding
+#### Task 15: Update user-facing docs to remove Opus branding
 - **Change:** Replace "Opus" references with "premium tier" in user guide model recommendation table and any other user-facing docs
 - **Files:** `docs/user-guide.md`
 - **Done when:** `grep -ri "opus" docs/` returns zero results
@@ -122,10 +151,12 @@
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Claude CLI ignores `defaultModel` in settings.json | High | Verify in docs; if unsupported, inject `--model` flag in execute_prompt instead |
+| Non-Claude CLIs ignore `defaultModel` in settings | High | Task 1 verifies upfront; fallback is `--model` flag injection in execute_prompt. Claude already confirmed working. |
 | Token format varies across provider/CLI versions | Medium | Make extraction resilient; return `undefined` rather than throw on missing field |
-| Existing progress.json files lack token fields | Low | Fields are optional; PM handles missing gracefully, initialises on first write |
+| Existing progress.json files lack token/tier fields | Low | Fields are optional; `scripts/update-tokens.js` initializes missing fields to zeros before accumulating |
 | Non-Claude providers don't emit token counts | Medium | Document limitation; return `undefined`, not an error |
+| LLM instruction reliability for token parsing | Medium | PM must parse a simple regex (`Tokens: input=(\d+) output=(\d+)`), but LLMs can skip steps. Mitigation: use a committed script (`scripts/update-tokens.js`) instead of ad-hoc commands; VERIFY Phase 4 validates accumulation correctness |
+| apra-focus reference gap for token extraction | Low | Requirements.md says to refer to apra-focus codebase for token usage patterns. Task 8 (Claude extraction) should cross-reference `apra-focus` implementation before finalizing the parsing approach |
 
 ## Notes
 - Each task should result in a git commit
