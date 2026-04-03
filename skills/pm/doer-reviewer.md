@@ -53,6 +53,22 @@ Verify reviewer is at the correct commit before starting review:
 6. **Pre-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT.md; git commit -m "cleanup: remove fleet control files" && git push`. These are transport files — git history preserves the content. Run cleanup and push before merging the PR.
 7. Loop until all phases APPROVED
 
+## Post-dispatch Token Tracking
+
+After every `execute_prompt` response (doer or reviewer), extract the token counts and record them in progress.json:
+
+1. **Parse the token line** from the response using the regex `Tokens: input=(\d+) output=(\d+)`. The line appears at the end of the output when the Claude provider returns usage data.
+2. **Call `update_task_tokens`** with:
+   - `member_id` — the member that owns progress.json
+   - `progress_json` — absolute path to progress.json on that member (e.g. `/home/user/project/progress.json`)
+   - `task_id` — the current task ID (e.g. `"3"`)
+   - `role` — `"doer"` for doer dispatches, `"reviewer"` for reviewer dispatches
+   - `input_tokens` — captured from regex group 1
+   - `output_tokens` — captured from regex group 2
+3. The tool accumulates tokens across calls — reviewer tokens from multiple review cycles are summed automatically. Never call it with zeroes unless that is the actual count.
+
+**Call this after every dispatch — no exceptions.** If the token line is absent (non-Claude provider or older CLI), skip the call for that dispatch only.
+
 ## Safeguards
 
 The PM must enforce these limits to prevent infinite loops and runaway sessions:
