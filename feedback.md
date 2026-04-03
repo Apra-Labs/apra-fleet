@@ -68,13 +68,11 @@
 
 **doer-reviewer.md (line 15) — PASS:** Same conditional logic, consistent with SKILL.md. Adds "no warning needed" for non-premium fallback — good UX.
 
-**user-guide.md (line 158) — BLOCKING:** The Reviewer row in the Provider Recommendations table says:
+**user-guide.md (line 158) — RESOLVED (13af9d1):** Previously used "Opus-tier models" as a generic tier name. Now reads:
 
-> | **Reviewer** | Opus-tier models | Highest review quality; ... |
+> | **Reviewer** | Highest-tier models (use premium tier) | Highest review quality; catches subtle issues that smaller models miss. |
 
-"Opus-tier" uses Claude model branding as a generic tier name. This contradicts #47's requirement: *"Must NOT hardcode 'use Opus' as blanket advice."* The skill docs correctly use "highest reasoning tier" and `modelTiers()` — the user guide should align. Recommend changing to:
-
-> | **Reviewer** | Highest-tier models | Best review quality; catches subtle issues that smaller models miss. Use `premium` tier — the server resolves to the best model per provider. |
+Provider-neutral. Remaining "Opus" mentions (lines 156, 167) are in explicitly Claude-specific contexts (Orchestrator recommendation and mix-and-match example) — acceptable.
 
 ---
 
@@ -94,11 +92,11 @@ Spot-checked all previously approved code (Phases 1-4 of #40, Phases 1-4 of #43,
 | #45 | PASS | Recommendations table is non-prescriptive |
 | #46A | PASS | Non-blocking Gemini warning in install.ts |
 | #46B | PASS | Timeout multiplier in SKILL.md |
-| #47 | **BLOCKING** | user-guide.md:158 uses "Opus-tier" — must use provider-neutral tier language |
+| #47 | PASS | Fixed in 13af9d1 — now reads "Highest-tier models (use premium tier)" |
 
 ---
 
-**CHANGES NEEDED**
+**APPROVED**
 **Requirements:** requirements.md
 
 ---
