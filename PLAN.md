@@ -91,16 +91,16 @@
 - **Files:** `skills/pm/tpl-progress.json`
 - **Done when:** Template file validates as valid JSON; new `tokens` and `tier` fields present in the task entry schema
 
-#### Task 11: Create `scripts/update-tokens.js` for atomic token accumulation
-- **Change:** Create a committed Node.js script that the PM calls via `execute_command` after each `execute_prompt` dispatch. The script:
-  1. Reads `progress.json` from the project directory
-  2. Parses CLI args: `--task-id <N> --role <doer|reviewer> --input <N> --output <N>`
-  3. Locates `tasks[id === task-id]` in the JSON
-  4. Accumulates: `tasks[i].tokens[role].input += input`, `tasks[i].tokens[role].output += output`
-  5. Writes the updated JSON back atomically (write to temp file, then rename)
-  6. Runs `git add progress.json && git commit -m "chore: update token counts for task <id>"`
-- **Files:** `scripts/update-tokens.js`
-- **Done when:** Script runs successfully: `node scripts/update-tokens.js --task-id 1 --role doer --input 500 --output 200` updates progress.json and creates a commit. Script handles missing `tokens` field gracefully (initializes to zeros before accumulating).
+#### Task 11: Create src/tools/update-task-tokens.ts MCP tool
+- **Change:** Add a new fleet-mcp tool update_task_tokens in src/tools/update-task-tokens.ts that runs on the PM side (no member-side Node.js required). The tool:
+  1. Accepts params: member_id, progress_json (explicit full path on the member — PM passes it, tool does not guess), task_id, role (doer or reviewer), input_tokens, output_tokens
+  2. Calls execute_command → cat <progress_json> to read the current contents from the member
+  3. Parses and updates the JSON on the PM side (MCP server always has Node.js): accumulates tasks[i].tokens[role].input += input_tokens and output — never overwrites, always adds
+  4. Initializes missing tokens field to { doer: {input:0,output:0}, reviewer: {input:0,output:0} } if absent
+  5. Calls send_files to push the updated progress.json back to the member
+  6. Calls execute_command → git add <progress_json> && git commit -m chore: update token counts for task <task_id> on the member
+- **Files:** src/tools/update-task-tokens.ts
+- **Done when:** Tool is callable via MCP; integration test confirms: (a) tokens accumulate correctly across multiple calls, (b) missing tokens field is initialized, (c) git commit is created on the member after each update; all existing tests pass
 
 #### Task 12: Document token update workflow in PM skill
 - **Change:** Add a step in the post-dispatch section of doer-reviewer.md instructing the PM to:
@@ -139,6 +139,17 @@
 - **Change:** Replace "Opus" references with "premium tier" in user guide model recommendation table and any other user-facing docs
 - **Files:** `docs/user-guide.md`
 - **Done when:** `grep -ri "opus" docs/` returns zero results
+
+#### Task 16: Document resume=true rule for follow-up dispatches in PM skill
+- **Change:** Update `skills/pm/SKILL.md` and `skills/pm/doer-reviewer.md` to document the resume rule:
+  - Initial plan generation: `resume=false`
+  - Plan revisions (any feedback iteration): `resume=true` — member already has plan context; resuming saves re-reading files
+  - Initial review dispatch: `resume=false` — reviewer needs fresh, unbiased context
+  - Re-review after CHANGES NEEDED + doer fixes: `resume=true` — reviewer already read the plan; saves significant tokens
+  - Role switch (doer to reviewer): always `resume=false`
+  Present this as a token-saving best practice in both files.
+- **Files:** `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`
+- **Done when:** Both files contain the resume rule table or equivalent; `grep -n resume skills/pm/SKILL.md` and `grep -n resume skills/pm/doer-reviewer.md` show the new guidance
 
 #### VERIFY: Phase 5
 - Run `grep -ri "opus" skills/ docs/` — expect zero matches
