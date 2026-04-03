@@ -129,7 +129,7 @@ Stage 5: Report to user — only decisions that need human judgment
 ```markdown
 ## Quality Gate
 Reviews:
-- [ ] Security review (security-reviewer, opus)
+- [ ] Security review (security-reviewer, premium)
 - [ ] Code quality review (code-reviewer, sonnet)
 - [ ] Run test suites (tester, haiku)
 - [ ] CI pipeline (devops triggers, haiku)
@@ -186,7 +186,7 @@ Structure:
   - depends on: TASK-002
 
 ### Stage 2: Review (auto-dispatched when stage 1 completes)
-- [ ] Security review of backend branch (security-reviewer, opus) → feedback-security.md
+- [ ] Security review of backend branch (security-reviewer, premium) → feedback-security.md
 - [ ] Code quality review of backend branch (code-reviewer, sonnet) → feedback-code-review.md
 - [ ] Code quality review of frontend branch (code-reviewer, sonnet) → feedback-code-review.md
 - [ ] Run test suites (tester, haiku) → feedback-tester.md
@@ -372,7 +372,7 @@ Not all roles require the same reasoning depth. PM selects the model tier for ea
 
 | Tier | Model | Roles | Rationale |
 |------|-------|-------|-----------|
-| Deep | opus | interface-designer, code-reviewer, security-reviewer, integrator | Architectural reasoning, cross-cutting analysis, conflict resolution |
+| Deep | premium | interface-designer, code-reviewer, security-reviewer, integrator | Architectural reasoning, cross-cutting analysis, conflict resolution |
 | Standard | sonnet | backend-dev, frontend-dev, test-dev | Feature implementation within a defined plan |
 | Fast | haiku | devops, tester (runner) | Scripting, running commands, reporting results |
 
@@ -421,7 +421,7 @@ The plan.md on the member's disk is a checkpoint file. If a member exits after c
 
 **Failure mode:** The only true failure is zero progress — the member completes no tasks across multiple loops. PM detects this by comparing completed task count before and after each loop.
 
-**Stall detection: 2 + 1 escalation.** If a member makes zero progress across 2 consecutive loops at its assigned model tier, PM retries once with the next higher model tier (e.g., sonnet → opus). If still zero progress after the escalation attempt, PM flags to the user. Total: 3 attempts before user escalation.
+**Stall detection: 2 + 1 escalation.** If a member makes zero progress across 2 consecutive loops at its assigned model tier, PM retries once with the next higher model tier (e.g., standard → premium). If still zero progress after the escalation attempt, PM flags to the user. Total: 3 attempts before user escalation.
 
 ### 5.3 Parallel Execution
 

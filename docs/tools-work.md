@@ -42,7 +42,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 | `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
 | `timeout_ms` | number | no | Default: 300000 (5 minutes). Max time to wait for the agent's response |
 | `dangerously_skip_permissions` | boolean | no | Default: `false`. Passes the provider's skip-permissions flag so the agent can execute tools without interactive approval |
-| `model` | string | no | Model to use. For Claude: `opus`, `sonnet`, `haiku` or full ID. For other providers, pass the provider-specific model name. |
+| `model` | string | no | Model to use. Pass a tier name (`premium`, `standard`, `cheap`) or a provider-specific model ID. Defaults to `standard` tier when omitted. |
 
 **Provider-specific behavior:**
 

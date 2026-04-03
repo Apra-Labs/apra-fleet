@@ -14,7 +14,7 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 | **Headless prompt** | `claude -p "..."` | `gemini -p "..."` | `codex exec "..."` | `copilot -p "..."` |
 | **Session resume** | `--resume <session_id>` | `-r` / `--resume` (loads most recent) | `codex exec resume` (positional) | `--continue` / `--resume` |
 | **JSON output** | `--output-format json` | `--output-format json` (also `stream-json`) | `--json` (NDJSON — one event per state change) | `--format json` |
-| **Model selection** | `--model opus/sonnet/haiku` | `--model <name>` or `GEMINI_MODEL` env var | `--model` / `-m` | `--model <name>` or `/model` interactive |
+| **Model selection** | `--model <name>` (e.g. premium/standard/cheap tier) | `--model <name>` or `GEMINI_MODEL` env var | `--model` / `-m` | `--model <name>` or `/model` interactive |
 | **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) |
 | **Skip permissions** | `--dangerously-skip-permissions` | `--yolo` / `-y` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` |
 | **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
@@ -28,7 +28,7 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 | **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` |
 | **Session storage** | Server-side (session_id in JSON output) | Local: `~/.gemini/tmp/<hash>/chats/` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) |
 | **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, web search, MCP tools | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents |
-| **Context window** | 200K (Sonnet) / 1M (Opus 4.6) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
+| **Context window** | 200K (standard) / 1M (premium) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
 
 ---
 
@@ -40,7 +40,7 @@ Used by the PM for model escalation (`cheap → mid → premium`).
 |------|---------|--------|--------|--------------|---------|
 | **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
 | **mid** | Construction, code, config | `sonnet` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
-| **premium** | Planning, review, architecture | `opus` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-opus-4-5` |
+| **premium** | Planning, review, architecture | `premium` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
 
 **Note:** Gemini and Codex currently lack a distinct premium tier beyond their best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
 
@@ -52,7 +52,7 @@ Features available in non-Claude providers that Claude lacks natively.
 
 | Feature | Available In | Not In Claude | Impact on Fleet |
 |---------|-------------|--------------|-----------------|
-| **1M token native context** | Gemini | Claude caps at 200K (Sonnet), 1M only on Opus 4.6 | Gemini members can ingest larger codebases in single pass |
+| **1M token native context** | Gemini | Claude caps at 200K (standard tier), 1M on premium tier | Gemini members can ingest larger codebases in single pass |
 | **Built-in Google Search** | Gemini | Claude needs external MCP tool | Gemini agents can web-search natively — useful for researching APIs, docs |
 | **Output schema enforcement** | Codex (`--output-schema <file>`) | Claude | Codex can guarantee response conforms to a JSON Schema — enables structured extraction |
 | **Multi-model marketplace** | Copilot (Claude + GPT models) | Claude | Copilot users choose between Claude and GPT families without switching CLI |

@@ -46,7 +46,7 @@ PM (orchestrator)
   |
   +-- dev1       (apra-focus, local, claude/sonnet)
   +-- dev2       (apra-focus-dev2, remote, gemini/pro)
-  +-- review1    (apra-focus-review, remote, claude/opus)
+  +-- review1    (apra-focus-review, remote, claude/premium)
   +-- review2    (apra-focus-review2, remote, copilot)
 ```
 

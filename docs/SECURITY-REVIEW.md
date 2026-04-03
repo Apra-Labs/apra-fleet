@@ -1,7 +1,7 @@
 # Security Review — apra-fleet
 
 **Date:** 2026-02-25
-**Reviewer:** Claude Opus 4.6 (automated deep review)
+**Reviewer:** Claude (premium tier, automated deep review)
 **Scope:** Full codebase — all source, tests, config, docs, and dependencies
 **Commit:** `3138710` (main branch)
 **Remediation update:** 2026-02-26 — 6 of 14 findings addressed (see RESOLVED tags below)
