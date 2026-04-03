@@ -57,6 +57,7 @@ export class GeminiProvider implements ProviderAdapter {
         sessionId: result.code === 0 ? (parsed.session_id ?? undefined) : undefined,
         isError: parsed.is_error === true || result.code !== 0,
         raw,
+        usage: undefined,
       };
     } catch {
       return {
@@ -64,6 +65,7 @@ export class GeminiProvider implements ProviderAdapter {
         sessionId: undefined,
         isError: result.code !== 0,
         raw,
+        usage: undefined,
       };
     }
   }

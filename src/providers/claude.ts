@@ -62,6 +62,7 @@ export class ClaudeProvider implements ProviderAdapter {
         sessionId: parsed.session_id,
         isError: parsed.is_error === true || result.code !== 0,
         raw,
+        usage: undefined,
       };
     } catch {
       return {
@@ -69,6 +70,7 @@ export class ClaudeProvider implements ProviderAdapter {
         sessionId: undefined,
         isError: result.code !== 0,
         raw,
+        usage: undefined,
       };
     }
   }

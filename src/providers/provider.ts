@@ -32,6 +32,7 @@ export interface ParsedResponse {
   sessionId?: string;
   isError: boolean;
   raw: string;
+  usage?: { input_tokens: number; output_tokens: number };
 }
 
 export interface ProviderAdapter {
