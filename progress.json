@@ -3,7 +3,7 @@
   "branch": "improve/token-usage",
   "tasks": [
     { "id": "1", "title": "Verify defaultModel settings support for non-Claude providers", "phase": 1, "status": "completed", "notes": "Code analysis findings — CLI testing not possible on PM machine (no Gemini/Codex CLIs). | Provider | Config key | Honors it? | Notes | |---------|------------|-----------|-------| | Claude | model in ~/.claude/settings.json | Yes | Confirmed per PLAN.md | | Gemini | None found | Not verifiable | No defaultModel config key in Gemini provider code; buildPromptCommand already supports --model flag | | Codex | None found | Not verifiable | No defaultModel config key in Codex provider code; buildPromptCommand already supports --model flag | CONCLUSION: Task 2 should inject --model <standard> via existing model param in buildPromptCommand for all providers." },
-    { "id": "2", "title": "Resolve standard tier model when model param is omitted", "phase": 1, "status": "pending" },
+    { "id": "2", "title": "Resolve standard tier model when model param is omitted", "phase": 1, "status": "completed", "notes": "Added resolvedModel = input.model ?? provider.modelTiers().standard in executePrompt(). Used resolvedModel in main command and both retry commands." },
     { "id": "3", "title": "Update executePromptSchema model param description", "phase": 1, "status": "pending" },
     { "id": "4", "title": "Add tests for default model tier resolution", "phase": 1, "status": "pending" },
     { "id": "V1", "title": "VERIFY Phase 1", "phase": 1, "type": "verify", "status": "pending" },

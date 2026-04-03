@@ -51,12 +51,14 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
 
+  const resolvedModel = input.model ?? provider.modelTiers().standard;
+
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
     folder: agent.workFolder,
     b64Prompt,
     sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
-    model: input.model,
+    model: resolvedModel,
     maxTurns: input.max_turns,
   });
 
@@ -71,7 +73,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: resolvedModel, maxTurns: input.max_turns });
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
@@ -79,7 +81,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: input.model, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: resolvedModel, maxTurns: input.max_turns });
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
