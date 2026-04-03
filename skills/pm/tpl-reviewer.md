@@ -15,7 +15,7 @@ Reviews are CUMULATIVE — review all phases up to and including the current one
 3. Read PLAN.md, requirements.md, and any design docs in the work folder — verify code aligns with requirements intent, not just plan mechanics
 4. `git diff` the relevant commits against the base branch
 5. Check each completed task against its "done" criteria in PLAN.md
-6. Run `npm run build && npm test` (all unit, integration, e2e tests) — build must pass first; if either fails, CHANGES NEEDED
+6. Run the project build step first, then run ALL tests (unit, integration, e2e). Both must pass — if either fails, CHANGES NEEDED.
 7. Verify CI passes for the latest push — if CI is red, CHANGES NEEDED regardless of code quality
 8. Check for regressions in previously approved phases
 

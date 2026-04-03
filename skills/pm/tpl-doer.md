@@ -16,7 +16,7 @@ On each invocation:
 
 ## Verify Checkpoints
 Tasks with type "verify" are checkpoints. When you reach one:
-1. Run `npm run build && npm test` — build must pass before tests run
+1. Run the project build step (e.g. `npm run build`, `tsc`, `cargo build`) first, then run the full test suite. Both must pass.
 2. Confirm all prior tasks in the group work correctly
 3. Update progress.json with test results and issues found
 4. `git push origin <branch>` — code must be on origin before PM reviews
