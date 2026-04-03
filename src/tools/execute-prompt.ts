@@ -17,7 +17,7 @@ export const executePromptSchema = z.object({
   timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   dangerously_skip_permissions: z.boolean().default(false).describe('Run Claude with --dangerously-skip-permissions so it can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
-  model: z.string().optional().describe('Model to use (e.g. "opus", "sonnet", "haiku", or full model ID). Applies to both new and resumed sessions.'),
+  model: z.string().optional().describe('Model to use (e.g. "opus", "sonnet", "haiku", or full model ID). If omitted, defaults to the standard tier for the member\'s provider (e.g. claude-sonnet-4-6 for Claude, gemini-2.5-pro for Gemini, gpt-5.4 for Codex). Applies to both new and resumed sessions.'),
 });
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
