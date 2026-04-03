@@ -252,6 +252,19 @@ function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   writeConfig(paths, settings);
 }
 
+const PROVIDER_STANDARD_MODELS: Record<string, string> = {
+  claude: 'claude-sonnet-4-6',
+  gemini: 'gemini-2.5-pro',
+  codex: 'gpt-5.4',
+  copilot: 'claude-sonnet-4-5',
+};
+
+function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
+  const settings = readConfig(paths);
+  settings.defaultModel = standardModel;
+  writeConfig(paths, settings);
+}
+
 function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcpServers = settings.mcpServers || {};
@@ -354,6 +367,10 @@ export async function runInstall(args: string[]): Promise<void> {
 
   const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
   configureStatusline(paths, statuslineScript);
+
+  // Write defaultModel to provider settings so native CLI invocations default to standard tier
+  const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
+  writeDefaultModel(paths, standardModel);
 
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
