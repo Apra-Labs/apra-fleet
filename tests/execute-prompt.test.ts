@@ -148,6 +148,36 @@ describe('executePrompt', () => {
     expect(mockExecCommand.mock.calls[0][0]).toContain('opus');
   });
 
+  it('defaults to standard tier model when model param is omitted', async () => {
+    const agent = makeTestAgent({ friendlyName: 'default-model-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-d' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    // Default provider is Claude; standard tier is claude-sonnet-4-6
+    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-sonnet-4-6');
+  });
+
+  it('uses explicit model param unchanged when provided', async () => {
+    const agent = makeTestAgent({ friendlyName: 'explicit-model-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-e' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'claude-opus-4-6' });
+    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-opus-4-6');
+    expect(mockExecCommand.mock.calls[0][0]).not.toContain('claude-sonnet-4-6');
+  });
+
   it('returns raw error for unknown error without retry', async () => {
     const agent = makeTestAgent({ friendlyName: 'unknown-err' });
     addAgent(agent);
