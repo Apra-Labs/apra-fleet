@@ -69,6 +69,20 @@ After every `execute_prompt` response (doer or reviewer), extract the token coun
 
 **Call this after every dispatch — no exceptions.** If the token line is absent (non-Claude provider or older CLI), skip the call for that dispatch only.
 
+## Resume Rule (token-saving best practice)
+
+Setting `resume` correctly avoids re-reading large context files on every dispatch.
+
+| Dispatch | resume | Reason |
+|----------|--------|--------|
+| Initial plan generation | `false` | Member has no prior context |
+| Plan revision (any feedback iteration) | `true` | Member already has plan context; resuming saves re-reading files |
+| Initial review dispatch | `false` | Reviewer needs fresh, unbiased context |
+| Re-review after CHANGES NEEDED + doer fixes | `true` | Reviewer already read the plan; saves significant tokens |
+| Role switch (doer → reviewer, or reviewer → doer) | `false` | New role requires different instruction file; must start clean |
+
+**Note:** A role switch always requires `reset_session` + `send_files` for the new instruction file before dispatch. Never resume across a role switch.
+
 ## Safeguards
 
 The PM must enforce these limits to prevent infinite loops and runaway sessions:
