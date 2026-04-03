@@ -328,4 +328,60 @@ describe('runInstall multi-provider', () => {
       expect(lastContent).toContain(`Read(${normalizedSkillsDir}`);
     }
   });
+
+  it('writes defaultModel for Claude (claude-sonnet-4-6) to settings.json', async () => {
+    await runInstall([]);
+
+    const claudeSettings = path.join(mockHome, '.claude', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(claudeSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    // Find the write that contains defaultModel
+    const defaultModelWrite = writes.find(c => c[1].toString().includes('"defaultModel"'));
+    expect(defaultModelWrite).toBeDefined();
+    const parsed = JSON.parse(defaultModelWrite![1].toString());
+    expect(parsed.defaultModel).toBe('claude-sonnet-4-6');
+  });
+
+  it('writes defaultModel for Gemini (gemini-2.5-pro) to settings.json', async () => {
+    await runInstall(['--llm', 'gemini']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(geminiSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const defaultModelWrite = writes.find(c => c[1].toString().includes('"defaultModel"'));
+    expect(defaultModelWrite).toBeDefined();
+    const parsed = JSON.parse(defaultModelWrite![1].toString());
+    expect(parsed.defaultModel).toBe('gemini-2.5-pro');
+  });
+
+  it('writes defaultModel for Codex (gpt-5.4) to config.toml', async () => {
+    await runInstall(['--llm', 'codex']);
+
+    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(codexConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const defaultModelWrite = writes.find(c => c[1].toString().includes('defaultModel'));
+    expect(defaultModelWrite).toBeDefined();
+    expect(defaultModelWrite![1].toString()).toContain('gpt-5.4');
+  });
+
+  it('writes defaultModel for Copilot (claude-sonnet-4-5) to settings.json', async () => {
+    await runInstall(['--llm', 'copilot']);
+
+    const copilotSettings = path.join(mockHome, '.copilot', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(copilotSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const defaultModelWrite = writes.find(c => c[1].toString().includes('"defaultModel"'));
+    expect(defaultModelWrite).toBeDefined();
+    const parsed = JSON.parse(defaultModelWrite![1].toString());
+    expect(parsed.defaultModel).toBe('claude-sonnet-4-5');
+  });
 });
