@@ -201,7 +201,7 @@ export function cleanupAuthSocket(): void {
 export async function collectOobPassword(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: (name: string) => string },
+  _opts?: { waitTimeoutMs?: number; launchFn?: (name: string, extraArgs?: string[]) => string },
 ): Promise<{ password: string } | { fallback: string }> {
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
@@ -236,21 +236,61 @@ export async function collectOobPassword(
 }
 
 /**
+ * Collect an API key out-of-band: same mechanism as collectOobPassword but
+ * launches the terminal with the `--api-key` flag so the prompt reads
+ * "Enter API key" instead of "Enter SSH password".
+ */
+export async function collectOobApiKey(
+  memberName: string,
+  toolName: string,
+  _opts?: { waitTimeoutMs?: number; launchFn?: (name: string, extraArgs?: string[]) => string },
+): Promise<{ password: string } | { fallback: string }> {
+  const launch = _opts?.launchFn ?? launchAuthTerminal;
+  const waitTimeoutMs = _opts?.waitTimeoutMs;
+
+  if (hasPendingAuth(memberName)) {
+    const encPw = getPendingPassword(memberName);
+    if (encPw) return { password: encPw };
+    try {
+      return { password: await waitForPassword(memberName, waitTimeoutMs ?? 300_000) };
+    } catch {
+      return { fallback: `❌ API key entry timed out for "${memberName}". Call ${toolName} again to retry.` };
+    }
+  }
+
+  await ensureAuthSocket();
+  createPendingAuth(memberName);
+  const result = launch(memberName, ['--api-key']);
+
+  if (result.startsWith('fallback:')) {
+    const manualMsg = result.slice('fallback:'.length);
+    return { fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the API key, call ${toolName} again with the same parameters (without api_key).` };
+  }
+
+  try {
+    return { password: await waitForPassword(memberName, waitTimeoutMs) };
+  } catch {
+    return { fallback: `❌ API key entry timed out for "${memberName}". Call ${toolName} again to retry.` };
+  }
+}
+
+/**
  * Resolve the command to invoke this binary's `auth` subcommand.
  * Returns [command, ...args] suitable for spawn().
  */
-function getAuthCommand(memberName: string): { cmd: string; args: string[] } {
+function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
+  const extra = extraArgs ?? [];
   // SEA binary: process.execPath is the binary itself
   try {
     const sea = require('node:sea');
     if (sea.isSea()) {
-      return { cmd: process.execPath, args: ['auth', memberName] };
+      return { cmd: process.execPath, args: ['auth', ...extra, memberName] };
     }
   } catch { /* not SEA */ }
 
   // Dev mode: node <path-to-index.js> auth <name>
   const indexJs = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'index.js');
-  return { cmd: process.argv[0], args: [indexJs, 'auth', memberName] };
+  return { cmd: process.argv[0], args: [indexJs, 'auth', ...extra, memberName] };
 }
 
 /**
@@ -270,8 +310,8 @@ function findLinuxTerminal(): string | null {
  * Launch a new terminal window running `apra-fleet auth <memberName>`.
  * Returns a user-facing message describing what happened.
  */
-export function launchAuthTerminal(memberName: string): string {
-  const { cmd, args } = getAuthCommand(memberName);
+export function launchAuthTerminal(memberName: string, extraArgs?: string[]): string {
+  const { cmd, args } = getAuthCommand(memberName, extraArgs);
   const fullArgs = [cmd, ...args];
 
   try {

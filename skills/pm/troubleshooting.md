@@ -5,6 +5,6 @@
 | Empty response | Check auth token expiry → re-provision via `provision_vcs_auth` |
 | Timeout | Increase to 300s (build/test) or 600s (multi-step execution) |
 | Blew past checkpoint | Check `progress.json` via `execute_command`, dispatch review immediately |
-| Permission denied | Evaluate and grant in `.claude/settings.local.json` via `send_files` |
-| Stuck after reset | Escalate model (haiku→sonnet→opus). Still stuck? Flag to user |
+| Permission denied | Run `compose_permissions` for the member — it produces provider-native config. Claude: check `.claude/settings.local.json`. Gemini: check `.gemini/policies/`. Codex: check `.codex/config.toml` approval mode. Copilot: check `.github/copilot/settings.local.json`. |
+| Stuck after reset | Escalate model (cheap→standard→premium). Still stuck? Flag to user |
 | Auth error (401/403) | GitHub App: re-mint via `provision_vcs_auth`. Bitbucket/Azure DevOps: ask user for fresh token, provision, retry. See auth-*.md |

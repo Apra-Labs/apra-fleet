@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { detectOS } from '../src/utils/platform.js';
 import { getOsCommands } from '../src/os/index.js';
 import type { OsCommands } from '../src/os/index.js';
+import { getProvider } from '../src/providers/index.js';
 
 describe('detectOS', () => {
   it('detects OS from uname and ver output', () => {
@@ -61,21 +62,80 @@ describe('OsCommands via getOsCommands', () => {
     });
   });
 
-  describe('claude CLI commands', () => {
+  describe('generic agent CLI commands', () => {
+    const claudeProvider = getProvider('claude');
+    const geminiProvider = getProvider('gemini');
+
     for (const [name, cmds] of all) {
-      it(`${name}: claudeVersion includes --version`, () => {
-        expect(cmds.claudeVersion()).toContain('--version');
+      it(`${name}: agentVersion includes --version for claude provider`, () => {
+        expect(cmds.agentVersion(claudeProvider)).toContain('--version');
+        expect(cmds.agentVersion(claudeProvider)).toContain('claude');
       });
 
-      it(`${name}: claudeCommand prepends PATH`, () => {
-        const cmd = cmds.claudeCommand('-p "hello"');
+      it(`${name}: agentVersion includes --version for gemini provider`, () => {
+        expect(cmds.agentVersion(geminiProvider)).toContain('--version');
+        expect(cmds.agentVersion(geminiProvider)).toContain('gemini');
+      });
+
+      it(`${name}: agentCommand prepends PATH for claude`, () => {
+        const cmd = cmds.agentCommand(claudeProvider, '-p "hello"');
         expect(cmd).toContain('claude -p "hello"');
       });
 
-      it(`${name}: installClaude returns an install command`, () => {
-        expect(cmds.installClaude().length).toBeGreaterThan(10);
+      it(`${name}: installAgent returns an install command`, () => {
+        expect(cmds.installAgent(claudeProvider).length).toBeGreaterThan(10);
+      });
+
+      it(`${name}: installAgent uses macos install for gemini on macos`, () => {
+        // macOS uses provider.installCommand('macos')
+        const isWindows = name === 'windows';
+        const isLinux = name === 'linux';
+        const cmd = cmds.installAgent(geminiProvider);
+        expect(cmd).toContain('gemini-cli');
+        if (!isWindows && !isLinux) {
+          // macOS: same npm command
+          expect(cmd).toContain('npm');
+        }
+      });
+
+      it(`${name}: updateAgent returns an update command`, () => {
+        const cmd = cmds.updateAgent(claudeProvider);
+        expect(cmd).toContain('claude update');
       });
     }
+
+    describe('buildAgentPromptCommand', () => {
+      const opts = { folder: '/tmp/work', b64Prompt: 'aGVsbG8=' };
+
+      for (const [name, cmds] of all) {
+        it(`${name}: claude provider buildAgentPromptCommand includes base64 prompt and flags`, () => {
+          const generic = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(generic).toContain('aGVsbG8=');
+          expect(generic).toContain('--output-format json');
+          expect(generic).toContain('--max-turns 50');
+        });
+
+        it(`${name}: gemini provider uses gemini binary`, () => {
+          const cmd = cmds.buildAgentPromptCommand(geminiProvider, opts);
+          expect(cmd).toContain('gemini');
+          expect(cmd).toContain('aGVsbG8=');
+          expect(cmd).toContain('--output-format json');
+          expect(cmd).not.toContain('--max-turns'); // gemini doesn't support max-turns
+        });
+      }
+
+      it('windows: gemini prompt command uses PowerShell syntax', () => {
+        const cmd = windows.buildAgentPromptCommand(geminiProvider, opts);
+        expect(cmd).toContain('Set-Location');
+        expect(cmd).toContain('FromBase64String');
+        expect(cmd).toContain('gemini');
+      });
+
+      it('windows: claude prompt command includes max-turns', () => {
+        const cmd = windows.buildAgentPromptCommand(claudeProvider, opts);
+        expect(cmd).toContain('--max-turns 50');
+      });
+    });
   });
 
   describe('filesystem commands', () => {
@@ -93,8 +153,9 @@ describe('OsCommands via getOsCommands', () => {
       expect(linuxCmds[0]).toContain('.bashrc');
 
       const macosCmds = macos.setEnv('MY_VAR', 'value');
-      expect(macosCmds.length).toBe(4);
+      expect(macosCmds.length).toBe(5);
       expect(macosCmds.some(c => c.includes('.zshrc'))).toBe(true);
+      expect(macosCmds.some(c => c.includes('.zshenv'))).toBe(true);
 
       const winCmds = windows.setEnv('MY_VAR', 'value');
       expect(winCmds.length).toBe(1);
@@ -108,8 +169,9 @@ describe('OsCommands via getOsCommands', () => {
       expect(linuxCmds[2]).toContain('unset MY_VAR');
 
       const macosCmds = macos.unsetEnv('MY_VAR');
-      expect(macosCmds.length).toBe(4);
-      expect(macosCmds[3]).toContain('unset MY_VAR');
+      expect(macosCmds.length).toBe(5);
+      expect(macosCmds.some(c => c.includes('.zshenv'))).toBe(true);
+      expect(macosCmds[4]).toContain('unset MY_VAR');
 
       const winCmds = windows.unsetEnv('MY_VAR');
       expect(winCmds[0]).toContain('SetEnvironmentVariable');
@@ -136,6 +198,12 @@ describe('OsCommands via getOsCommands', () => {
       it(`${name}: apiKeyCheck returns a check command`, () => {
         const cmd = cmds.apiKeyCheck();
         expect(cmd).toContain('ANTHROPIC_API_KEY');
+      });
+
+      it(`${name}: apiKeyCheck accepts a provider-specific env var name`, () => {
+        const cmd = cmds.apiKeyCheck('GEMINI_API_KEY');
+        expect(cmd).toContain('GEMINI_API_KEY');
+        expect(cmd).not.toContain('ANTHROPIC_API_KEY');
       });
     }
   });
@@ -164,63 +232,6 @@ describe('OsCommands via getOsCommands', () => {
       expect(() => linux.fleetProcessCheck('/home/user', 'sess;whoami')).toThrow('Invalid session ID');
       expect(() => windows.fleetProcessCheck('C:\\work', 'sess$(cmd)')).toThrow('Invalid session ID');
     });
-  });
-
-  describe('prompt building', () => {
-    for (const [name, cmds] of all) {
-      it(`${name}: builds a prompt command with folder and base64`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).toContain('aGVsbG8=');
-        expect(cmd).toContain('--output-format json');
-      });
-
-      it(`${name}: includes session resume when provided`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', 'abc-123-def');
-        expect(cmd).toContain('--resume');
-        expect(cmd).toContain('abc-123-def');
-      });
-
-      it(`${name}: includes --dangerously-skip-permissions when flag is true`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, true);
-        expect(cmd).toContain('--dangerously-skip-permissions');
-      });
-
-      it(`${name}: omits --dangerously-skip-permissions by default`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).not.toContain('--dangerously-skip-permissions');
-      });
-
-      it(`${name}: includes --model when provided`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, false, 'sonnet');
-        expect(cmd).toContain('--model');
-        expect(cmd).toContain('sonnet');
-      });
-
-      it(`${name}: omits --model when not provided`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).not.toContain('--model');
-      });
-
-      it(`${name}: uses default max-turns 50 when not specified`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=');
-        expect(cmd).toContain('--max-turns 50');
-      });
-
-      it(`${name}: uses custom max-turns when specified`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', undefined, false, undefined, 10);
-        expect(cmd).toContain('--max-turns 10');
-        expect(cmd).not.toContain('--max-turns 50');
-      });
-
-      it(`${name}: combines --model with --resume and --dangerously-skip-permissions`, () => {
-        const cmd = cmds.buildPromptCommand('/tmp/work', 'aGVsbG8=', 'sess-123', true, 'claude-opus-4-6');
-        expect(cmd).toContain('--resume');
-        expect(cmd).toContain('sess-123');
-        expect(cmd).toContain('--dangerously-skip-permissions');
-        expect(cmd).toContain('--model');
-        expect(cmd).toContain('claude-opus-4-6');
-      });
-    }
   });
 
   describe('resource output parsing', () => {

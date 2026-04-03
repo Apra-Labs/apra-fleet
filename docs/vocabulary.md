@@ -29,6 +29,7 @@ For generic references ("list all ___", "register a new ___"), use:
 | **session** | A conversation thread on a member. Context persists within it. |
 | **fleet** | The collection of all registered members. |
 | **PM** | The Project Manager — the master Claude instance that orchestrates everything. |
+| **provider** (or **LLM backend**) | The LLM CLI a member uses: `claude`, `gemini`, `codex`, or `copilot`. Each member has exactly one provider, set at registration and changeable via `update_member`. |
 
 ## Rules
 
@@ -36,16 +37,19 @@ For generic references ("list all ___", "register a new ___"), use:
 2. **"Subagent" is always "subagent"** — never just "agent" when referring to a background Claude process
 3. **"Agent" is banned in PM conversation** — too ambiguous. Use the name or "member/worker" for fleet members, "subagent" for Claude processes.
 4. **API keeps `agent_id`** — backwards compat in code. User-facing language evolves separately.
+5. **Provider is a property of a member**, not a conversation topic. Say "dev2 uses Gemini" not "dev2 is a Gemini agent". The member identity (the name) is what matters; the provider is just how it executes prompts.
 
 ## Example Fleet
 
 ```
 PM (orchestrator)
   |
-  +-- dev1       (apra-focus, local, sonnet)
-  +-- dev2       (apra-focus-dev2, remote, sonnet)
-  +-- review1    (apra-focus-review, remote, opus)
-  +-- review2    (apra-focus-review2, remote, opus)
+  +-- dev1       (apra-focus, local, claude/sonnet)
+  +-- dev2       (apra-focus-dev2, remote, gemini/pro)
+  +-- review1    (apra-focus-review, remote, claude/opus)
+  +-- review2    (apra-focus-review2, remote, copilot)
 ```
 
 PM spawns **subagents** to interact with **members**. A subagent is ephemeral (dies after task). A member is persistent (registered, has sessions, has state).
+
+Members with different **providers** are interchangeable from the PM's perspective — same tools, same dispatch pattern, different CLI underneath.

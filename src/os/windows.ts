@@ -1,9 +1,9 @@
 import { execSync } from 'node:child_process';
-import type { OsCommands } from './os-commands.js';
+import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
-const CLAUDE_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
 // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
 const MEMINFO_CMD = [
@@ -60,37 +60,55 @@ export class WindowsCommands implements OsCommands {
 
   // --- Process check ---
 
-  fleetProcessCheck(folder: string, sessionId?: string): string {
+  fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    const pname = processName ?? 'claude';
     const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
     const sessionFilter = sessionId ? ` -or $_.CommandLine -match '${escapeWindowsArg(sanitizeSessionId(sessionId))}'` : '';
     return [
-      `$procs = Get-Process claude -ErrorAction SilentlyContinue`,
+      `$procs = Get-Process ${pname} -ErrorAction SilentlyContinue`,
       `if (-not $procs) { echo 'idle' }`,
       `elseif ($procs | Where-Object { $_.CommandLine -match '${escapedFolder}'${sessionFilter} }) { echo 'fleet-busy' }`,
       `else { echo 'other-busy' }`,
     ].join('; ');
   }
 
-  // --- Claude CLI ---
+  // --- Generic agent CLI ---
 
-  claudeCommand(args: string): string {
-    return `${CLAUDE_PATH}claude ${args}`;
+  agentCommand(provider: ProviderAdapter, args: string): string {
+    return `${CLI_PATH}${provider.cliCommand(args)}`;
   }
 
-  claudeVersion(): string {
-    return this.claudeCommand('--version 2>&1');
+  agentVersion(provider: ProviderAdapter): string {
+    return `${CLI_PATH}${provider.versionCommand()}`;
   }
 
-  claudeCheck(): string {
-    return 'Get-Command claude -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source';
+  installAgent(provider: ProviderAdapter): string {
+    return provider.installCommand('windows');
   }
 
-  installClaude(): string {
-    return 'irm https://claude.ai/install.ps1 | iex';
+  updateAgent(provider: ProviderAdapter): string {
+    return `${CLI_PATH}${provider.updateCommand()}`;
   }
 
-  updateClaude(): string {
-    return this.claudeCommand('update');
+  buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
+    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
+    const escapedFolder = escapeWindowsArg(folder);
+    const decode = `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}'))`;
+    let cmd = `Set-Location "${escapedFolder}"; $p=${decode}; ${CLI_PATH}${provider.cliCommand(`${provider.headlessInvocation('$p')} ${provider.jsonOutputFlag()}`)}`;
+    if (provider.supportsMaxTurns()) {
+      cmd += ` --max-turns ${maxTurns ?? 50}`;
+    }
+    if (sessionId && provider.supportsResume()) {
+      const rf = provider.resumeFlag(sessionId);
+      if (rf) cmd += ` ${rf}`;
+    }
+    if (dangerouslySkipPermissions) {
+      cmd += ` ${provider.skipPermissionsFlag()}`;
+    }
+    if (model) {
+      cmd += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
+    }
+    return cmd;
   }
 
   // --- Filesystem ---
@@ -115,8 +133,10 @@ export class WindowsCommands implements OsCommands {
     return 'Remove-Item "$env:USERPROFILE\\.claude\\.credentials.json" -Force -ErrorAction SilentlyContinue';
   }
 
-  apiKeyCheck(): string {
-    return 'if ($env:ANTHROPIC_API_KEY) { $env:ANTHROPIC_API_KEY.Substring(0,10) } else { echo "" }';
+  apiKeyCheck(envVarName?: string): string {
+    const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);
+    return `if ($env:${varName}) { $env:${varName}.Substring(0,10) } else { echo "" }`;
   }
 
   setEnv(name: string, value: string): string[] {
@@ -182,20 +202,6 @@ export class WindowsCommands implements OsCommands {
 
   wrapInWorkFolder(folder: string, command: string): string {
     return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
-  }
-
-  // --- Prompt building ---
-
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string {
-    const escapedFolder = escapeWindowsArg(folder);
-    const turns = maxTurns ?? 50;
-    let resume = '';
-    if (sessionId) {
-      resume = ` --resume "${sanitizeSessionId(sessionId)}"`;
-    }
-    const skipPerms = dangerouslySkipPermissions ? ' --dangerously-skip-permissions' : '';
-    const modelFlag = model ? ` --model "${escapeWindowsArg(model)}"` : '';
-    return `Set-Location "${escapedFolder}"; $p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}')); ${CLAUDE_PATH}claude -p $p --output-format json --max-turns ${turns}${resume}${skipPerms}${modelFlag}`;
   }
 
   // --- GPU activity ---

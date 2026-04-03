@@ -10,6 +10,7 @@ import {
   waitForPassword,
   cleanupAuthSocket,
   collectOobPassword,
+  collectOobApiKey,
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
@@ -357,6 +358,61 @@ describe('auth-socket', () => {
       if ('fallback' in result) {
         expect(result.fallback).toContain('Could not find a terminal emulator');
         expect(result.fallback).toContain('test_tool');
+      }
+    });
+  });
+  describe('collectOobApiKey', () => {
+    afterEach(() => {
+      cleanupAuthSocket();
+    });
+
+    it('launches terminal with --api-key flag', async () => {
+      const launchFn = vi.fn().mockReturnValue('launched');
+
+      const resultPromise = collectOobApiKey('api-member', 'provision_auth', { launchFn });
+
+      await new Promise(r => setTimeout(r, 50));
+      await sendPassword(getSocketPath(), 'api-member', 'my-api-key');
+
+      const result = await resultPromise;
+      expect(launchFn).toHaveBeenCalledWith('api-member', ['--api-key']);
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+    });
+
+    it('returns encrypted key when pending auth already has password', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('api-ready');
+      await sendPassword(getSocketPath(), 'api-ready', 'pre-entered-key');
+
+      const launchFn = vi.fn();
+      const result = await collectOobApiKey('api-ready', 'provision_auth', { launchFn });
+
+      expect(launchFn).not.toHaveBeenCalled();
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+    });
+
+    it('returns fallback on timeout', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('api-timeout');
+
+      const result = await collectOobApiKey('api-timeout', 'provision_auth', { waitTimeoutMs: 100 });
+      expect('fallback' in result).toBe(true);
+      if ('fallback' in result) {
+        expect(result.fallback).toContain('timed out');
+        expect(result.fallback).toContain('provision_auth');
+      }
+    });
+
+    it('returns fallback when terminal launch fails', async () => {
+      const launchFn = vi.fn().mockReturnValue('fallback:Could not find a terminal emulator');
+
+      const result = await collectOobApiKey('api-noterm', 'provision_auth', { launchFn });
+      expect('fallback' in result).toBe(true);
+      if ('fallback' in result) {
+        expect(result.fallback).toContain('Could not find a terminal emulator');
+        expect(result.fallback).toContain('provision_auth');
       }
     });
   });

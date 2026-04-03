@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { getProvider } from '../providers/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 import { DEFAULT_ICON } from '../services/icons.js';
@@ -96,10 +97,11 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     }
   }
 
-  // -- Claude CLI --
+  // -- Agent CLI --
+  const provider = getProvider(agent.llmProvider);
   const cli: Record<string, unknown> = {};
   try {
-    const versionResult = await strategy.execCommand(cmds.claudeVersion(), 10000);
+    const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
     cli.version = versionResult.stdout.trim();
   } catch {
     cli.version = 'unknown';
@@ -114,14 +116,15 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   } catch { /* ignore */ }
 
   try {
-    const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(), 10000);
+    const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
     if (apiKeyResult.stdout.trim().length > 5) {
       authMethods.push('API key (env)');
     }
   } catch { /* ignore */ }
 
   cli.auth = authMethods.length > 0 ? authMethods : 'none';
-  result.claude = cli;
+  result.llmProvider = agent.llmProvider ?? 'claude';
+  result.claude = cli;  // kept for backwards compatibility
 
   // -- Session --
   const session: Record<string, unknown> = {
@@ -131,14 +134,14 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   try {
     const busyCheck = await strategy.execCommand(
-      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId),
+      cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
       10000,
     );
     const output = busyCheck.stdout.trim().toLowerCase();
     if (output.includes('fleet-busy')) {
       session.status = 'busy';
     } else if (output.includes('other-busy')) {
-      session.status = 'idle (unrelated Claude processes running)';
+      session.status = `idle (unrelated ${provider.name} processes running)`;
     } else {
       session.status = 'idle';
     }
@@ -211,7 +214,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
-  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | claude=${cli.version}\n`;
+  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}\n`;
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}\n`;
 

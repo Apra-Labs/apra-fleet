@@ -1,6 +1,8 @@
 import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from '../utils/shell-escape.js';
+import type { ProviderAdapter, PromptOptions } from '../providers/provider.js';
 
 export { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId };
+export type { ProviderAdapter, PromptOptions };
 
 /**
  * Platform-specific command builders.
@@ -13,14 +15,13 @@ export interface OsCommands {
   disk(folder: string): string;
 
   // --- Process check ---
-  fleetProcessCheck(folder: string, sessionId?: string): string;
+  fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string;
 
-  // --- Claude CLI ---
-  claudeCommand(args: string): string;
-  claudeVersion(): string;
-  claudeCheck(): string;
-  installClaude(): string;
-  updateClaude(): string;
+  // --- Generic agent CLI (provider-agnostic) ---
+  agentCommand(provider: ProviderAdapter, args: string): string;
+  agentVersion(provider: ProviderAdapter): string;
+  installAgent(provider: ProviderAdapter): string;
+  updateAgent(provider: ProviderAdapter): string;
 
   // --- Filesystem ---
   mkdir(folder: string): string;
@@ -29,7 +30,7 @@ export interface OsCommands {
   credentialFileCheck(): string;
   credentialFileWrite(json: string): string;
   credentialFileRemove(): string;
-  apiKeyCheck(): string;
+  apiKeyCheck(envVarName?: string): string;
   setEnv(name: string, value: string): string[];
   unsetEnv(name: string): string[];
   envPrefix(name: string, value: string): string;
@@ -48,7 +49,7 @@ export interface OsCommands {
   wrapInWorkFolder(folder: string, command: string): string;
 
   // --- Prompt building ---
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string;
+  buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string;
 
   // --- GPU activity ---
   gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available

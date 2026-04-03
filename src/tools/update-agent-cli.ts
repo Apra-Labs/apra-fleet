@@ -2,15 +2,16 @@ import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { getProvider } from '../providers/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
-export const updateClaudeSchema = z.object({
+export const updateAgentCliSchema = z.object({
   member_id: z.string().optional().describe('The UUID of the member to update. Omit to update ALL online members.'),
-  install_if_missing: z.boolean().default(false).describe('Install Claude Code on the member if not already installed (default: false)'),
+  install_if_missing: z.boolean().default(false).describe('Install the LLM agent CLI on the member if not already installed (default: false)'),
 });
 
-export type UpdateClaudeInput = z.infer<typeof updateClaudeSchema>;
+export type UpdateAgentCliInput = z.infer<typeof updateAgentCliSchema>;
 
 interface UpdateResult {
   name: string;
@@ -23,6 +24,7 @@ interface UpdateResult {
 
 async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promise<UpdateResult> {
   const cmds = getOsCommands(getAgentOS(agent));
+  const provider = getProvider(agent.llmProvider);
   const strategy = getStrategy(agent);
   const result: UpdateResult = {
     name: agent.friendlyName,
@@ -33,31 +35,31 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
 
   try {
     // Get current version
-    const vBefore = await strategy.execCommand(cmds.claudeVersion(), 15000);
-    const claudeFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
-    result.oldVersion = claudeFound ? vBefore.stdout.trim() : 'not installed';
+    const vBefore = await strategy.execCommand(cmds.agentVersion(provider), 15000);
+    const cliFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
+    result.oldVersion = cliFound ? vBefore.stdout.trim() : 'not installed';
 
-    if (!claudeFound && !installIfMissing) {
-      result.error = 'Claude CLI not found — use install_if_missing: true to install';
+    if (!cliFound && !installIfMissing) {
+      result.error = `${provider.name} CLI not found — use install_if_missing: true to install`;
       return result;
     }
 
-    if (!claudeFound && installIfMissing) {
-      const installResult = await strategy.execCommand(cmds.installClaude(), 180000);
+    if (!cliFound && installIfMissing) {
+      const installResult = await strategy.execCommand(cmds.installAgent(provider), 180000);
       if (installResult.code !== 0) {
         result.error = installResult.stderr || 'Install command failed';
         return result;
       }
       result.installed = true;
     } else {
-      const updateResult = await strategy.execCommand(cmds.updateClaude(), 120000);
+      const updateResult = await strategy.execCommand(cmds.updateAgent(provider), 120000);
       if (updateResult.code !== 0) {
         result.error = updateResult.stderr || 'Update command failed';
       }
     }
 
     // Get new version
-    const vAfter = await strategy.execCommand(cmds.claudeVersion(), 15000);
+    const vAfter = await strategy.execCommand(cmds.agentVersion(provider), 15000);
     result.newVersion = vAfter.stdout.trim() || 'unknown';
     result.success = true;
 
@@ -71,7 +73,7 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
   return result;
 }
 
-export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
+export async function updateAgentCli(input: UpdateAgentCliInput): Promise<string> {
   let agents: Agent[];
 
   if (input.member_id) {
@@ -106,7 +108,7 @@ export async function updateClaude(input: UpdateClaudeInput): Promise<string> {
   // Update all selected members in parallel
   const results = await Promise.allSettled(agents.map(a => updateSingleAgent(a, input.install_if_missing)));
 
-  let report = `Claude CLI Update Report\n${'='.repeat(40)}\n\n`;
+  let report = `Agent CLI Update Report\n${'='.repeat(40)}\n\n`;
 
   for (const r of results) {
     if (r.status === 'fulfilled') {

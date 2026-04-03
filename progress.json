@@ -1,0 +1,22 @@
+{
+  "issue": "#43",
+  "branch": "feature/multi-provider",
+  "tasks": [
+    { "id": "1", "title": "Define ProviderInstallConfig and implement mappings", "phase": 1, "status": "completed" },
+    { "id": "2", "title": "Update install.ts for --llm parsing and path resolution", "phase": 1, "status": "completed" },
+    { "id": "V1", "title": "VERIFY 1", "phase": 1, "type": "verify", "status": "completed" },
+    { "id": "3", "title": "Add smol-toml and update merge functions for JSON/TOML", "phase": 2, "status": "completed" },
+    { "id": "4", "title": "Update mergeHooksConfig and mergePermissions for provider formats", "phase": 2, "status": "completed" },
+    { "id": "5", "title": "Ensure mergePermissions uses provider-specific skill paths", "phase": 2, "status": "completed" },
+    { "id": "6", "title": "Configure Statusline for different providers", "phase": 2, "status": "completed" },
+    { "id": "V2", "title": "VERIFY 2", "phase": 2, "type": "verify", "status": "completed" },
+    { "id": "7", "title": "Research and document MCP registration for Gemini/Codex", "phase": 3, "status": "completed", "notes": "Code shipped in Phase 2 commits alongside smol-toml work" },
+    { "id": "8", "title": "Update MCP registration logic with provider-specific commands", "phase": 3, "status": "completed", "notes": "Code shipped in Phase 2 commits alongside smol-toml work" },
+    { "id": "9", "title": "Make SKILL.md provider-neutral", "phase": 3, "status": "completed" },
+    { "id": "10", "title": "Ensure Step 6 skill install uses provider directory", "phase": 3, "status": "completed", "notes": "Code shipped in Phase 2 commits alongside smol-toml work" },
+    { "id": "V3", "title": "VERIFY 3", "phase": 3, "type": "verify", "status": "completed" },
+    { "id": "11", "title": "Add integration/unit tests for installer paths", "phase": 4, "status": "completed", "notes": "Expanded install-multi-provider.test.ts with 9 new tests: equals-form arg parsing, mkdirSync per provider, Claude --scope user, Gemini trust:true, Codex TOML section, Codex skill dir, provider-specific permissions, both error forms" },
+    { "id": "12", "title": "Final verification of all providers", "phase": 4, "status": "completed", "notes": "37 test files / 587 tests all pass (0 failures, 3 skipped). TypeScript compiles cleanly (tsc --noEmit exits 0). No regressions." },
+    { "id": "V4", "title": "VERIFY 4 (Final)", "phase": 4, "type": "verify", "status": "completed", "notes": "Full suite: 587 passed / 3 skipped / 0 failed. tsc --noEmit: clean. All 4 providers (claude, gemini, codex, copilot) covered end-to-end in tests." }
+  ]
+}

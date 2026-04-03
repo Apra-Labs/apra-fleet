@@ -35,4 +35,4 @@ Commit findings to feedback.md. Output verdict as final line: APPROVED or CHANGE
 
 ## Rules
 - NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
-- NEVER commit CLAUDE.md — it is role-specific and not shared
+- NEVER commit this instruction file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) — it is role-specific and not shared

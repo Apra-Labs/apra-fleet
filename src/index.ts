@@ -57,7 +57,7 @@ async function startServer() {
   const { revokeVcsAuthSchema, revokeVcsAuth } = await import('./tools/revoke-vcs-auth.js');
   const { fleetStatusSchema, fleetStatus } = await import('./tools/check-status.js');
   const { memberDetailSchema, memberDetail } = await import('./tools/member-detail.js');
-  const { updateClaudeSchema, updateClaude } = await import('./tools/update-claude.js');
+  const { updateAgentCliSchema, updateAgentCli } = await import('./tools/update-agent-cli.js');
   const { shutdownServerSchema, shutdownServer } = await import('./tools/shutdown-server.js');
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
@@ -74,7 +74,7 @@ async function startServer() {
   });
 
   // --- Core Member Management ---
-  server.tool('register_member', 'Register a machine as a fleet member (worker). Use member_type "local" for same-machine members (no SSH needed) or "remote" (default) for SSH-based remote members. Tests connectivity, detects OS, checks Claude CLI.', registerMemberSchema.shape, async (input) => ({ content: [{ type: 'text', text: await registerMember(input as any) }] }));
+  server.tool('register_member', 'Register a machine as a fleet member (worker). Use member_type "local" for same-machine members (no SSH needed) or "remote" (default) for SSH-based remote members. Supports llm_provider to select Claude, Gemini, Codex, or Copilot.', registerMemberSchema.shape, async (input) => ({ content: [{ type: 'text', text: await registerMember(input as any) }] }));
   server.tool('list_members', 'List all registered fleet members. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.', listMembersSchema.shape, async (input) => ({ content: [{ type: 'text', text: await listMembers(input as any) }] }));
   server.tool('remove_member', 'Unregister a fleet member by its ID.', removeMemberSchema.shape, async (input) => ({ content: [{ type: 'text', text: await removeMember(input as any) }] }));
   server.tool('update_member', "Update a member's registration (rename, change host, folder, auth, etc.).", updateMemberSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateMember(input as any) }] }));
@@ -83,14 +83,14 @@ async function startServer() {
   server.tool('send_files', "Upload local files to a remote member (worker) via SFTP. Files are placed in the member's remote folder.", sendFilesSchema.shape, async (input) => ({ content: [{ type: 'text', text: await sendFiles(input as any) }] }));
 
   // --- Prompt Execution ---
-  server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a Claude prompt on a remote member. Supports session resume for conversational context.', executePromptSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executePrompt(input as any) }] }));
+  server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run an LLM prompt on a remote member. Supports session resume for conversational context. Respects each member\'s llm_provider setting.', executePromptSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executePrompt(input as any) }] }));
   server.tool('execute_command', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command directly on a member without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.', executeCommandSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executeCommand(input as any) }] }));
 
   // --- Session Management ---
   server.tool('reset_session', 'Clear stored session ID so the next prompt starts a fresh Claude session. Omit member_id to reset all members.', resetSessionSchema.shape, async (input) => ({ content: [{ type: 'text', text: await resetSession(input as any) }] }));
 
   // --- Authentication & SSH ---
-  server.tool('provision_auth', "Authenticate a fleet member (worker). Default: copies this machine's OAuth credentials to the member. Override: pass api_key to deploy an Anthropic API key instead.", provisionAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionAuth(input as any) }] }));
+  server.tool('provision_auth', "Authenticate a fleet member (worker). For Claude members: copies OAuth credentials (default) or pass api_key for ANTHROPIC_API_KEY. For other providers: pass api_key for the provider's auth env var (GEMINI_API_KEY, OPENAI_API_KEY, COPILOT_GITHUB_TOKEN).", provisionAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionAuth(input as any) }] }));
   server.tool('setup_ssh_key', 'Generate an SSH key pair and migrate a member from password to key-based authentication.', setupSSHKeySchema.shape, async (input) => ({ content: [{ type: 'text', text: await setupSSHKey(input as any) }] }));
   server.tool('setup_git_app', "One-time setup: register a GitHub App for git token minting. Requires a GitHub App ID, private key (.pem) file path, and installation ID. The app must already be created at github.com/organizations/{org}/settings/apps.", setupGitAppSchema.shape, async (input) => ({ content: [{ type: 'text', text: await setupGitApp(input as any) }] }));
   server.tool('provision_vcs_auth', 'Deploy VCS credentials to a member (worker). Supports GitHub (App or PAT), Bitbucket (API token), and Azure DevOps (PAT). Configures git credential helper and tests connectivity.', provisionVcsAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionVcsAuth(input as any) }] }));
@@ -101,7 +101,7 @@ async function startServer() {
   server.tool('member_detail', 'Deep-dive status for one member. Default compact format fits in a few lines. Use format="json" when the user needs detailed data rendered as a markdown table.', memberDetailSchema.shape, async (input) => ({ content: [{ type: 'text', text: await memberDetail(input as any) }] }));
 
   // --- Maintenance ---
-  server.tool('update_claude', "Update or install Claude Code CLI on members. Set install_if_missing=true to install on members that don't have it.", updateClaudeSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateClaude(input as any) }] }));
+  server.tool('update_llm_cli', "Update or install the LLM CLI on members. Respects each member's llm_provider setting. Set install_if_missing=true to install on members that don't have it.", updateAgentCliSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateAgentCli(input as any) }] }));
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, async () => ({ content: [{ type: 'text', text: await shutdownServer() }] }));
 
   // --- Permissions ---

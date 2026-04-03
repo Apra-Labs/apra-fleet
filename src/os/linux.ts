@@ -1,9 +1,9 @@
 import { execSync } from 'node:child_process';
-import type { OsCommands } from './os-commands.js';
+import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLAUDE_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
+const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
 
 export class LinuxCommands implements OsCommands {
   private cachedEnv: Record<string, string> | null = null;
@@ -47,39 +47,51 @@ export class LinuxCommands implements OsCommands {
 
   // --- Process check ---
 
-  fleetProcessCheck(folder: string, sessionId?: string): string {
+  fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    const pname = processName ?? 'claude';
+    // Use bracket trick to avoid pgrep matching its own grep process
+    const bracketName = `[${pname[0]}]${pname.slice(1)}`;
     const folderPattern = escapeGrepPattern(folder);
     const fleetMatch = sessionId
       ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`
       : `grep "${folderPattern}"`;
 
-    return `CLAUDE_PIDS=$(pgrep -f "[c]laude" 2>/dev/null); `
-      + `if [ -z "$CLAUDE_PIDS" ]; then echo "idle"; `
-      + `else CMDLINES=$(ps -o args= -p $CLAUDE_PIDS 2>/dev/null); `
+    return `AGENT_PIDS=$(pgrep -f "${bracketName}" 2>/dev/null); `
+      + `if [ -z "$AGENT_PIDS" ]; then echo "idle"; `
+      + `else CMDLINES=$(ps -o args= -p $AGENT_PIDS 2>/dev/null); `
       + `if echo "$CMDLINES" | ${fleetMatch} > /dev/null 2>&1; then echo "fleet-busy"; `
       + `else echo "other-busy"; fi; fi`;
   }
 
-  // --- Claude CLI ---
+  // --- Generic agent CLI ---
 
-  claudeCommand(args: string): string {
-    return `${CLAUDE_PATH}claude ${args}`;
+  agentCommand(provider: ProviderAdapter, args: string): string {
+    return `${CLI_PATH}${provider.cliCommand(args)}`;
   }
 
-  claudeVersion(): string {
-    return this.claudeCommand('--version 2>&1');
+  agentVersion(provider: ProviderAdapter): string {
+    return `${CLI_PATH}${provider.versionCommand()}`;
   }
 
-  claudeCheck(): string {
-    return 'which claude 2>/dev/null';
+  installAgent(provider: ProviderAdapter): string {
+    return provider.installCommand('linux');
   }
 
-  installClaude(): string {
-    return 'curl -fsSL https://claude.ai/install.sh | bash';
+  updateAgent(provider: ProviderAdapter): string {
+    return `${CLI_PATH}${provider.updateCommand()}`;
   }
 
-  updateClaude(): string {
-    return this.claudeCommand('update');
+  buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
+    const { folder } = opts;
+    const escapedFolder = escapeDoubleQuoted(folder);
+    const providerCmd = provider.buildPromptCommand(opts);
+    // Provider command starts with `cd "folder" && <cli> ...`
+    // Inject PATH prepend after the cd so the binary is findable
+    const cdPrefix = `cd "${escapedFolder}" && `;
+    if (providerCmd.startsWith(cdPrefix)) {
+      return `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
+    }
+    return `${CLI_PATH}${providerCmd}`;
   }
 
   // --- Filesystem ---
@@ -103,8 +115,10 @@ export class LinuxCommands implements OsCommands {
     return 'rm -f ~/.claude/.credentials.json';
   }
 
-  apiKeyCheck(): string {
-    return 'bash -l -c \'echo "${ANTHROPIC_API_KEY:0:10}"\'';
+  apiKeyCheck(envVarName?: string): string {
+    const varName = envVarName ?? 'ANTHROPIC_API_KEY';
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(varName)) throw new Error('Invalid env var name: ' + varName);
+    return `bash -l -c 'echo "\${${varName}:0:10}"'`;
   }
 
   setEnv(name: string, value: string): string[] {
@@ -167,24 +181,6 @@ export class LinuxCommands implements OsCommands {
 
   wrapInWorkFolder(folder: string, command: string): string {
     return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
-  }
-
-  // --- Prompt building ---
-
-  buildPromptCommand(folder: string, b64Prompt: string, sessionId?: string, dangerouslySkipPermissions?: boolean, model?: string, maxTurns?: number): string {
-    const escapedFolder = escapeDoubleQuoted(folder);
-    const turns = maxTurns ?? 50;
-    let cmd = `cd "${escapedFolder}" && ${this.claudeCommand(`-p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns ${turns}`)}`;
-    if (sessionId) {
-      cmd += ` --resume "${sanitizeSessionId(sessionId)}"`;
-    }
-    if (dangerouslySkipPermissions) {
-      cmd += ' --dangerously-skip-permissions';
-    }
-    if (model) {
-      cmd += ` --model "${escapeDoubleQuoted(model)}"`;
-    }
-    return cmd;
   }
 
   // --- GPU activity ---
