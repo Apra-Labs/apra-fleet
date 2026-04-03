@@ -27,6 +27,14 @@ Rules:
 - 2-3 work tasks per phase, then a VERIFY checkpoint
 - Each task completable in one session, results in one commit
 - Tasks ordered so dependencies are satisfied
+- **Model tier assignment:** Assign a tier (`cheap`, `standard`, or `premium`) to every work task based on complexity:
+  - `cheap` — mechanical changes with no ambiguity (rename, move, simple config edit)
+  - `standard` — typical implementation work (new function, test suite, moderate refactor)
+  - `premium` — high-ambiguity design tasks, architectural decisions, or tasks requiring deep multi-file reasoning
+  - Write the tier into the task entry in PLAN.md (e.g. `- **Tier:** standard`)
+  - When the PM creates progress.json from the plan, it copies each task's tier into `tasks[i].tier`
+  - During dispatch, the PM reads `tasks[i].tier` and passes `model: <tier>` to `execute_prompt` for doer dispatches
+  - **Constraint:** Reviewer dispatches always use `model: premium` regardless of the task tier — this is not configurable by the planner
 
 ### PHASE 2 — FRONT-LOAD FOUNDATIONS
 
