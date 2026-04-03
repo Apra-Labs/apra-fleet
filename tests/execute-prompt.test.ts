@@ -178,6 +178,32 @@ describe('executePrompt', () => {
     expect(mockExecCommand.mock.calls[0][0]).not.toContain('claude-sonnet-4-6');
   });
 
+  it('appends token line when usage is present in response', async () => {
+    const agent = makeTestAgent({ friendlyName: 'token-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-t', usage: { input_tokens: 100, output_tokens: 200 } }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    expect(result).toContain('Tokens: input=100 output=200');
+  });
+
+  it('does not append token line when usage is absent', async () => {
+    const agent = makeTestAgent({ friendlyName: 'no-token-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-nt' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    expect(result).not.toContain('Tokens:');
+  });
+
   it('returns raw error for unknown error without retry', async () => {
     const agent = makeTestAgent({ friendlyName: 'unknown-err' });
     addAgent(agent);

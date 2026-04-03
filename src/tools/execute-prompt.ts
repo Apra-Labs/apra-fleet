@@ -96,6 +96,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     writeStatusline();
 
     let output = `📋 Response from ${agent.friendlyName}:\n\n${parsed.result}`;
+    if (parsed.usage) output += `\nTokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}`;
     if (parsed.sessionId) output += `\n\n---\nsession: ${parsed.sessionId}`;
     return output;
   } catch (err: any) {
