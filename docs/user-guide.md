@@ -153,8 +153,8 @@ These are recommendations, not restrictions — your choice is final.
 
 | Role | Recommended | Notes |
 |------|-------------|-------|
-| **Orchestrator (PM)** | Claude (premium or standard tier) | Gemini lacks background agents — every `execute_prompt` blocks, serializing all fleet operations. This negates the core value of parallel dispatch. |
-| **Doer** | Any provider | Claude (standard tier), Gemini Flash, Codex, Copilot — mix freely. Multiple members of any provider are supported. |
+| **Orchestrator (PM)** | Claude (Opus or Sonnet) | Gemini lacks background agents — every `execute_prompt` blocks, serializing all fleet operations. This negates the core value of parallel dispatch. |
+| **Doer** | Any provider | Claude Sonnet, Gemini Flash, Codex, Copilot — mix freely. Multiple members of any provider are supported. |
 | **Reviewer** | Highest-tier models (use premium tier) | Highest review quality; catches subtle issues that smaller models miss. |
 
 ### Mix-and-match example

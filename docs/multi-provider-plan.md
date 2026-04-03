@@ -4,7 +4,7 @@
 
 ## Context
 
-Apra Fleet is currently Claude-only: every member runs Claude Code CLI, auth provisions `ANTHROPIC_API_KEY` or Claude OAuth, session semantics assume `claude -p` / `--resume` / `--output-format json`, and the PM skill hardcodes Claude model tiers (cheap/standard/premium). Issues #26, #27, and #35 request support for Gemini CLI, OpenAI Codex CLI, and GitHub Copilot CLI respectively — with mix-and-match capability within a single fleet.
+Apra Fleet is currently Claude-only: every member runs Claude Code CLI, auth provisions `ANTHROPIC_API_KEY` or Claude OAuth, session semantics assume `claude -p` / `--resume` / `--output-format json`, and the PM skill hardcodes Claude model tiers (haiku/sonnet/opus). Issues #26, #27, and #35 request support for Gemini CLI, OpenAI Codex CLI, and GitHub Copilot CLI respectively — with mix-and-match capability within a single fleet.
 
 This plan covers: (1) research and gap analysis across all four providers, (2) a provider abstraction layer in the MCP server, (3) PM skill generalization, and (4) documentation updates.
 
@@ -42,9 +42,9 @@ Before writing code, document the CLI equivalents for every Claude concept we de
 
 | Tier | Purpose | Claude | Gemini | OpenAI Codex | Copilot |
 |------|---------|--------|--------|--------------|---------|
-| **Cheap** | Execution, status, tests, deploys | `cheap` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
-| **Mid** | Construction, code, config | `standard` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
-| **Premium** | Planning, review, architecture | `premium` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
+| **Cheap** | Execution, status, tests, deploys | `haiku` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
+| **Mid** | Construction, code, config | `sonnet` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
+| **Premium** | Planning, review, architecture | `opus` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
 
 **Note:** Gemini and Codex currently lack a distinct premium tier beyond their best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
 
@@ -52,7 +52,7 @@ Before writing code, document the CLI equivalents for every Claude concept we de
 
 | Feature | Available In | Not In Claude | Impact on Fleet |
 |---------|-------------|--------------|-----------------|
-| **1M token native context** | Gemini | Claude caps at 200K (standard), 1M only on premium tier | Gemini members can ingest larger codebases in single pass |
+| **1M token native context** | Gemini | Claude caps at 200K (Sonnet), 1M only on Opus 4.6 | Gemini members can ingest larger codebases in single pass |
 | **Built-in Google Search** | Gemini | Claude needs external MCP tool | Gemini agents can web-search natively — useful for researching APIs, docs |
 | **Output schema enforcement** | Codex (`--output-schema <file>`) | Claude | Codex can guarantee response conforms to a JSON Schema — enables structured extraction |
 | **Multi-model marketplace** | Copilot (Claude + GPT models) | Claude | Copilot users choose between Claude and GPT families without switching CLI |
@@ -288,13 +288,13 @@ No schema version bump. `llmProvider` is optional, defaults to `'claude'`. Exist
 
 ### 2.1 Model Escalation
 
-**Current (SKILL.md):** `cheap → standard → premium` tier-based
+**Current (SKILL.md):** `haiku → sonnet → opus` hardcoded
 
 **New:** Tier-based with provider mapping:
 ```
 cheap → standard → premium
 
-Claude:  cheap → standard → (best available)
+Claude:  haiku → sonnet → opus
 Gemini:  gemini-2.5-flash → gemini-2.5-pro → gemini-2.5-pro
 Codex:   gpt-5.4-mini → gpt-5.4 → gpt-5.4
 Copilot: claude-haiku-4-5 → claude-sonnet-4-5 → claude-sonnet-4-5
