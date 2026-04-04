@@ -87,12 +87,13 @@ export class GeminiProvider implements ProviderAdapter {
     return {
       cheap: 'gemini-2.5-flash',
       standard: 'gemini-2.5-pro',
-      premium: 'gemini-2.5-pro',
+      premium: 'gemini-3-pro-preview',
     };
   }
 
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
     if (tier === 'cheap') return 'gemini-2.5-flash';
+    if (tier === 'premium') return 'gemini-3-pro-preview';
     return 'gemini-2.5-pro';
   }
 
