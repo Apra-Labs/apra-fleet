@@ -12,8 +12,8 @@
           "name": "Delete reset_session tool",
           "type": "code",
           "tier": "cheap",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Deleted src/tools/reset-session.ts, removed import and registration from index.ts. Build passes."
         },
         {
           "id": "1.2",
