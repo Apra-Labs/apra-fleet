@@ -29,6 +29,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
   }
 
   // Path security: verify destination_path stays within work_folder
+  let resolvedPath: string | undefined;
   if (input.destination_path) {
     if (agent.agentType === 'local') {
       const resolved = path.resolve(agent.workFolder, input.destination_path);
@@ -36,12 +37,15 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
       if (resolved !== workFolderNorm && !resolved.startsWith(workFolderNorm + path.sep)) {
         return 'destination_path resolves outside member work_folder — write blocked';
       }
+      resolvedPath = resolved;
     } else {
       const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
+      const normalizedWorkFolder = workFolderPosix.replace(/\/$/, '');
       const resolved = path.posix.resolve(workFolderPosix, input.destination_path.replace(/\\/g, '/'));
-      if (resolved !== workFolderPosix && !resolved.startsWith(workFolderPosix + '/')) {
+      if (resolved !== normalizedWorkFolder && !resolved.startsWith(normalizedWorkFolder + '/')) {
         return 'destination_path resolves outside member work_folder — write blocked';
       }
+      resolvedPath = resolved;
     }
   }
 
@@ -70,9 +74,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
       }
     }
 
-    const dest = input.destination_path
-      ? `${agent.workFolder}/${input.destination_path}`
-      : agent.workFolder;
+    const dest = resolvedPath ?? agent.workFolder;
     output += `\nDestination: ${dest}`;
 
     return output;

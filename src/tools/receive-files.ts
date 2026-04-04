@@ -14,6 +14,7 @@ export const receiveFilesSchema = z.object({
     'Absolute paths must remain within work_folder — paths outside it are rejected. ' +
     'Always batch multiple files into a single call.'
   ),
+  // No boundary restriction — caller controls their own local filesystem
   local_destination: z.string().describe(
     'Local directory to write the downloaded files into.'
   ),
@@ -33,6 +34,7 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
 
   // Path security: verify each remote_path stays within work_folder
   const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
+  const normalizedWorkFolder = workFolderPosix.replace(/\/$/, '');
   for (const remotePath of input.remote_paths) {
     if (agent.agentType === 'local') {
       const resolved = path.resolve(agent.workFolder, remotePath);
@@ -42,7 +44,7 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
       }
     } else {
       const resolved = path.posix.resolve(workFolderPosix, remotePath.replace(/\\/g, '/'));
-      if (resolved !== workFolderPosix && !resolved.startsWith(workFolderPosix + '/')) {
+      if (resolved !== normalizedWorkFolder && !resolved.startsWith(normalizedWorkFolder + '/')) {
         return `remote_path "${remotePath}" resolves outside member work_folder — read blocked`;
       }
     }
