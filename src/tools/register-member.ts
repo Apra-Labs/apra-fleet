@@ -24,19 +24,18 @@ export const registerMemberSchema = z.object({
   username: z.string().optional().describe('SSH username (required for remote members)'),
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
   password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
-  key_path: z.string().optional().describe('Path to SSH private key (required if auth_type is "key" for non-cloud members)'),
+  key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
   work_folder: z.string().describe('Working directory on the target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   // Cloud fields
   cloud_provider: z.enum(['aws'], {
     errorMap: () => ({ message: "Only 'aws' is supported as a cloud provider. GCP and Azure support is planned." }),
-  }).optional().describe('Cloud provider (e.g. "aws"). When set, cloud_instance_id and cloud_ssh_key_path are required.'),
+  }).optional().describe('Cloud provider (e.g. "aws"). When set, cloud_instance_id and key_path are required.'),
   cloud_instance_id: z.string().regex(/^i-[0-9a-f]{8,17}$/, 'cloud_instance_id must match pattern i-[0-9a-f]{8,17} (e.g. "i-0abc123def456789a")').optional().describe('EC2 instance ID (e.g. "i-0abc123def456789a"). Required when cloud_provider is set.'),
   cloud_region: z.string().regex(/^[a-z]{2}-[a-z]+-\d+$/, 'cloud_region must be a valid AWS region (e.g. "us-east-1")').optional().default('us-east-1').describe('AWS region (default: "us-east-1")'),
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
-  cloud_ssh_key_path: z.string().min(1, 'cloud_ssh_key_path must not be empty').optional().describe('Path to SSH private key on this machine. Required when cloud_provider is set. Also sets the member key_path for SSH connections (F4).'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
   llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_auth, and update_llm_cli.'),
 });
@@ -51,7 +50,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // --- Validate required fields ---
   if (isCloud) {
     if (!input.cloud_instance_id) return '❌ "cloud_instance_id" is required when cloud_provider is set. Member was NOT registered.';
-    if (!input.cloud_ssh_key_path) return '❌ "cloud_ssh_key_path" is required when cloud_provider is set. Member was NOT registered.';
+    if (!input.key_path) return '❌ "key_path" is required when cloud_provider is set. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for cloud members. Member was NOT registered.';
   } else if (!isLocal) {
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
@@ -84,7 +83,6 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       region: input.cloud_region ?? 'us-east-1',
       profile: input.cloud_profile,
       idleTimeoutMin: input.cloud_idle_timeout_min ?? 30,
-      sshKeyPath: input.cloud_ssh_key_path!,
     };
 
     try {
@@ -120,7 +118,6 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     region: input.cloud_region ?? 'us-east-1',
     profile: input.cloud_profile,
     idleTimeoutMin: input.cloud_idle_timeout_min ?? 30,
-    sshKeyPath: input.cloud_ssh_key_path!,
     ...(input.cloud_activity_command ? { activityCommand: input.cloud_activity_command } : {}),
   } : undefined;
 
@@ -134,7 +131,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     username: isLocal ? undefined : input.username,
     authType: isLocal ? undefined : (input.auth_type ?? (isCloud ? 'key' : undefined)),
     encryptedPassword: preEncryptedPassword ?? ((!isLocal && input.password) ? encryptPassword(input.password) : undefined),
-    keyPath: isLocal ? undefined : (isCloud ? input.cloud_ssh_key_path : input.key_path),
+    keyPath: isLocal ? undefined : input.key_path,
     workFolder: input.work_folder,
     createdAt: new Date().toISOString(),
     gitAccess: input.git_access,
