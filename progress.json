@@ -1,0 +1,95 @@
+{
+  "sprint": "MCP API & Usability Sprint (Issues #50–53)",
+  "branch": "improve/token-usage",
+  "total_tasks": 11,
+  "tasks": [
+    {
+      "id": "task-1",
+      "phase": 6,
+      "issue": "#50",
+      "description": "Update MCP server name string: 'apra-fleet ${serverVersion}' → 'apra fleet server ${serverVersion}'",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-2",
+      "phase": 7,
+      "issue": "#51",
+      "description": "Modify getAgentOrFail to accept name fallback via findAgentByName",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-3",
+      "phase": 7,
+      "issue": "#51",
+      "description": "Update member_detail schema description to mention UUID or friendly name",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-4",
+      "phase": 7,
+      "issue": "#51",
+      "description": "Add tests for name lookup in getAgentOrFail",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-5",
+      "phase": 8,
+      "issue": "#52",
+      "description": "Add lastBranch?: string to Agent interface in types.ts",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-6",
+      "phase": 8,
+      "issue": "#52",
+      "description": "Add gitCurrentBranch(folder: string): string to OsCommands interface",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-7",
+      "phase": 8,
+      "issue": "#52",
+      "description": "Implement gitCurrentBranch for linux.ts, macos.ts, windows.ts",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-8",
+      "phase": 8,
+      "issue": "#52",
+      "description": "Fetch and display branch in member_detail",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-9",
+      "phase": 8,
+      "issue": "#52",
+      "description": "Display cached branch in fleet_status",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-10",
+      "phase": 8,
+      "issue": "#52",
+      "description": "Add tests for branch handling in member_detail and fleet_status",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-11",
+      "phase": 9,
+      "issue": "#53",
+      "description": "Update execute_prompt model description to lead with tier names",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}

@@ -70,7 +70,7 @@ async function startServer() {
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
 
   const server = new McpServer({
-    name: `apra-fleet ${serverVersion}`,
+    name: `apra fleet server ${serverVersion}`,
     version: versionNum,
   });
 
