@@ -9,11 +9,12 @@ import { getAgentOS } from '../utils/agent-helpers.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
-import { uploadFiles } from './file-transfer.js';
+import { uploadFiles, downloadFiles } from './file-transfer.js';
 
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number): Promise<SSHExecResult>;
-  transferFiles(localPaths: string[], remoteSubfolder?: string): Promise<TransferResult>;
+  transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult>;
+  receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
 }
@@ -25,8 +26,12 @@ class RemoteStrategy implements AgentStrategy {
     return sshExecCommand(this.agent, command, timeoutMs);
   }
 
-  async transferFiles(localPaths: string[], remoteSubfolder?: string): Promise<TransferResult> {
-    return uploadFiles(this.agent, localPaths, remoteSubfolder);
+  async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
+    return uploadFiles(this.agent, localPaths, destinationPath);
+  }
+
+  async receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult> {
+    return downloadFiles(this.agent, remotePaths, localDestination);
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -71,11 +76,10 @@ class LocalStrategy implements AgentStrategy {
     });
   }
 
-  async transferFiles(localPaths: string[], remoteSubfolder?: string): Promise<TransferResult> {
-    let destBase = this.agent.workFolder;
-    if (remoteSubfolder) {
-      destBase = path.join(destBase, remoteSubfolder);
-    }
+  async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
+    const destBase = destinationPath
+      ? path.resolve(this.agent.workFolder, destinationPath)
+      : this.agent.workFolder;
 
     // Ensure destination exists
     fs.mkdirSync(destBase, { recursive: true });
@@ -88,6 +92,27 @@ class LocalStrategy implements AgentStrategy {
       const destPath = path.join(destBase, fileName);
       try {
         fs.copyFileSync(localPath, destPath);
+        success.push(fileName);
+      } catch (err: any) {
+        failed.push({ path: fileName, error: err.message });
+      }
+    }
+
+    return { success, failed };
+  }
+
+  async receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult> {
+    fs.mkdirSync(localDestination, { recursive: true });
+
+    const success: string[] = [];
+    const failed: { path: string; error: string }[] = [];
+
+    for (const remotePath of remotePaths) {
+      const srcPath = path.resolve(this.agent.workFolder, remotePath);
+      const fileName = path.basename(srcPath);
+      const destPath = path.join(localDestination, fileName);
+      try {
+        fs.copyFileSync(srcPath, destPath);
         success.push(fileName);
       } catch (err: any) {
         failed.push({ path: fileName, error: err.message });

@@ -82,7 +82,7 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
   const sendResult = await sendFiles({
     member_id: memberId,
     local_paths: [tmpFile],
-    remote_subfolder: path.dirname(input.progress_json).replace(/^\//, '') || undefined,
+    destination_path: path.dirname(input.progress_json).replace(/^\//, '') || undefined,
   });
 
   fs.rmSync(tmpDir, { recursive: true, force: true });

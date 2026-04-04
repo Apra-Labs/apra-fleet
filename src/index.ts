@@ -80,7 +80,7 @@ async function startServer() {
   server.tool('update_member', "Update a member's registration (rename, change host, folder, auth, etc.).", updateMemberSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateMember(input as any) }] }));
 
   // --- File Operations ---
-  server.tool('send_files', "Upload local files to a remote member (worker) via SFTP. Files are placed in the member's remote folder.", sendFilesSchema.shape, async (input) => ({ content: [{ type: 'text', text: await sendFiles(input as any) }] }));
+  server.tool('send_files', 'Transfer local files to a member. Always batch multiple files into a single call — never invoke repeatedly for individual files. destination_path accepts a relative (from work_folder) or absolute path; paths outside work_folder are rejected.', sendFilesSchema.shape, async (input) => ({ content: [{ type: 'text', text: await sendFiles(input as any) }] }));
 
   // --- Prompt Execution ---
   server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run an LLM prompt on a remote member. Supports session resume for conversational context. Respects each member\'s llm_provider setting.', executePromptSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executePrompt(input as any) }] }));
