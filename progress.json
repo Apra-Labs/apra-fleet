@@ -88,8 +88,8 @@
       "phase": 9,
       "issue": "#53",
       "description": "Update execute_prompt model description to lead with tier names",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Updated model description in src/tools/execute-prompt.ts:20 — leads with tier names, removes stale provider-specific examples"
     }
   ]
 }
