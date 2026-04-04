@@ -78,8 +78,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
       }
     }
 
-    const dest = resolvedPath ?? agent.workFolder;
-    output += `\nDestination: ${dest}`;
+    output += `\nDestination: ${resolvedPath ?? agent.workFolder}`;
 
     return output;
   } catch (err: any) {
