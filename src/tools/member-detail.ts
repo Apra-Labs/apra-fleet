@@ -3,6 +3,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -194,6 +195,20 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   result.resources = resources;
 
+  let branch: string | undefined;
+  try {
+    const branchResult = await strategy.execCommand(cmds.gitCurrentBranch(agent.workFolder), 10000);
+    const branchName = branchResult.stdout.trim();
+    if (branchName) {
+      branch = branchName;
+      updateAgent(agent.id, { lastBranch: branch });
+    }
+  } catch { /* not a git repo — ignore */ }
+
+  if (branch) {
+    result.branch = branch;
+  }
+
   if (cloudSection) {
     result.cloud = cloudSection;
   }
@@ -216,7 +231,8 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const userStr = agent.username ? ` | user=${agent.username}` : '';
   let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}\n`;
-  t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}\n`;
+  const branchStr = branch ? ` | branch=${branch}` : '';
+  t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}${branchStr}\n`;
 
   if (cloudSection) {
     const cs = cloudSection as Record<string, unknown>;

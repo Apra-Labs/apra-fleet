@@ -183,6 +183,12 @@ export class LinuxCommands implements OsCommands {
     return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
   }
 
+  // --- Git ---
+
+  gitCurrentBranch(folder: string): string {
+    return `git -C "${escapeDoubleQuoted(folder)}" branch --show-current 2>/dev/null || true`;
+  }
+
   // --- GPU activity ---
 
   gpuProcessCheck(): string {

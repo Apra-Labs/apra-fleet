@@ -28,6 +28,51 @@ function setupDefaultMock() {
   });
 }
 
+describe('memberDetail branch display', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('includes branch in json output when workFolder is a git repo', async () => {
+    const agent = makeTestAgent({ friendlyName: 'branch-agent' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 3 });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('.credentials.json')) return { stdout: 'missing', stderr: '', code: 0 };
+      if (cmd.includes('ANTHROPIC_API_KEY')) return { stdout: '', stderr: '', code: 0 };
+      if (cmd.includes('--version')) return { stdout: '1.0.42', stderr: '', code: 0 };
+      if (cmd.includes('pgrep') || cmd.includes('wmic process')) return { stdout: 'idle', stderr: '', code: 0 };
+      if (cmd.includes('branch --show-current')) return { stdout: 'main\n', stderr: '', code: 0 };
+      return { stdout: 'N/A', stderr: '', code: 0 };
+    });
+
+    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    expect(result.branch).toBe('main');
+  });
+
+  it('omits branch from output when not a git repo', async () => {
+    const agent = makeTestAgent({ friendlyName: 'no-git-agent' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 3 });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('.credentials.json')) return { stdout: 'missing', stderr: '', code: 0 };
+      if (cmd.includes('ANTHROPIC_API_KEY')) return { stdout: '', stderr: '', code: 0 };
+      if (cmd.includes('--version')) return { stdout: '1.0.42', stderr: '', code: 0 };
+      if (cmd.includes('pgrep') || cmd.includes('wmic process')) return { stdout: 'idle', stderr: '', code: 0 };
+      if (cmd.includes('branch --show-current')) return { stdout: '', stderr: '', code: 0 };
+      return { stdout: 'N/A', stderr: '', code: 0 };
+    });
+
+    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    expect(result.branch).toBeUndefined();
+  });
+});
+
 describe('memberDetail auth detection', () => {
   beforeEach(() => {
     backupAndResetRegistry();
