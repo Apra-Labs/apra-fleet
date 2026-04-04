@@ -10,7 +10,7 @@
    - **Execution:** Send `tpl-doer.md` as the member's instruction file to doer via `send_files` — **must be sent before execution starts** (persists across session resumes). File name depends on provider: CLAUDE.md for Claude, GEMINI.md for Gemini, AGENTS.md for Codex, COPILOT.md for Copilot. Use `member_detail` → `llmProvider` to determine the correct name.
    - **Review:** Send `tpl-reviewer.md` as the reviewer's instruction file via `send_files` — **must be sent before review dispatch** (persists across session resumes). Use provider-appropriate file name (same lookup as above). Use `tpl-reviewer-plan.md` for plan review.
 
-**Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's instruction file + permissions, same member reviews with fresh context. Track current role and session ID in status.md.
+
 
 **Reviewer tier check:** Reviews benefit from the highest reasoning tier available. Dispatch reviews with `model=premium` — the PM maps this to the best available model for each provider. If no premium option exists, use what is available — no warning needed. User's choice is final. Doers use `model=standard` by default unless the task tier specifies otherwise.
 
@@ -81,7 +81,7 @@ Setting `resume` correctly avoids re-reading large context files on every dispat
 | Re-review after CHANGES NEEDED + doer fixes | `true` | Reviewer already read the plan; saves significant tokens |
 | Role switch (doer → reviewer, or reviewer → doer) | `false` | New role requires different instruction file; must start clean |
 
-**Note:** A role switch always requires `reset_session` + `send_files` for the new instruction file before dispatch. Never resume across a role switch.
+**Note:** A role switch always requires sending the new instruction file before dispatch. Never resume across a role switch.
 
 ## Safeguards
 

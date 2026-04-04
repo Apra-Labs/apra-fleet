@@ -78,7 +78,7 @@ register_member(
   cloud_instance_id  = "i-0abc123def456789a",
   cloud_region       = "us-east-1",
   cloud_profile      = "apra",               # optional AWS CLI profile
-  cloud_ssh_key_path = "/home/you/.ssh/gpu-trainer.pem",
+  key_path = "/home/you/.ssh/gpu-trainer.pem",
   cloud_idle_timeout_min = 30,               # auto-stop after 30min idle
 )
 ```
@@ -91,7 +91,7 @@ register_member(
 | `cloud_instance_id` | yes | EC2 instance ID, e.g. `i-0abc…` |
 | `cloud_region` | no | Default: `us-east-1` |
 | `cloud_profile` | no | AWS CLI named profile |
-| `cloud_ssh_key_path` | yes | Path to SSH private key on this machine; also sets the SSH `key_path` for the member |
+| `key_path` | yes | Path to SSH private key on this machine; also sets the SSH `key_path` for the member |
 | `cloud_idle_timeout_min` | no | Default: 30. Per-agent idle timeout in minutes. |
 
 The instance does **not** need to be running at registration time. The server will start it on first use.

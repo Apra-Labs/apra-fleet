@@ -12,7 +12,7 @@ Uploads local files to a member's working directory.
 |------|------|----------|-------------|
 | `member_id` | string | yes | UUID of the target member |
 | `local_paths` | string[] | yes | Array of absolute local file paths to upload |
-| `remote_subfolder` | string | no | Optional subfolder within the member's working directory |
+| `destination_path` | string | no | Optional subfolder within the member's working directory |
 
 **What it does:**
 
@@ -26,7 +26,7 @@ Uploads local files to a member's working directory.
 
 **Behavior details:**
 - Files are placed flat in the destination — only the basename is used, not the full source path structure.
-- If `remote_subfolder` is provided, files go to `{workFolder}/{remote_subfolder}/`.
+- If `destination_path` is provided, files go to `{workFolder}/{destination_path}/`.
 - Each file is transferred independently — one failure doesn't stop the others.
 
 ## execute_prompt
@@ -85,7 +85,6 @@ Do NOT enable this for open-ended prompts on members with access to sensitive da
 - Subsequent prompts with `resume=true`: agent continues the conversation with full context of prior exchanges.
 - Claude stores a server-side session ID. Gemini, Codex, and Copilot resume the most recent local session via a generic flag.
 - If a session becomes stale, the tool automatically retries without resume — the user sees the response, not an error.
-- Use `reset_session` to explicitly start fresh.
 
 ## execute_command
 
@@ -122,27 +121,3 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 | Ask Claude to analyze code, write code, or reason about a task | `execute_prompt` |
 | Tasks requiring multi-step reasoning or tool use | `execute_prompt` |
 
-## reset_session
-
-Clears stored session IDs so the next prompt starts a fresh Claude conversation.
-
-**Parameters:**
-
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `member_id` | string | no | UUID of a specific member. Omit to reset ALL members |
-
-**What it does:**
-
-1. If `member_id` is provided: clears that member's `sessionId` field in the registry.
-2. If omitted: iterates all members and clears every `sessionId`.
-3. Persists the changes.
-
-**Output:** Confirmation with the count of sessions reset.
-
-**When to use:**
-- The conversation has gone off-track and you want Claude to start with a clean slate.
-- You're switching to a different task on the same member.
-- Debugging — you want to ensure no prior context influences the response.
-
-**Note:** This does NOT kill any running Claude process on the member. It only clears the stored session ID so the next `execute_prompt` won't pass `--resume`.
