@@ -20,23 +20,23 @@
           "name": "Create resolveMember utility",
           "type": "code",
           "tier": "cheap",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Created src/utils/resolve-member.ts with resolveMember() and memberIdentifier exports. Build passes."
         },
         {
           "id": "1.3",
           "name": "Apply memberIdentifier to all 15 affected tools",
           "type": "code",
           "tier": "standard",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "All 15 tools updated: remove_member, update_member, send_files, execute_prompt, execute_command, provision_auth, setup_ssh_key, provision_vcs_auth, revoke_vcs_auth, member_detail, update_llm_cli, compose_permissions, cloud_control, monitor_task, update_task_tokens. No direct getAgentOrFail calls remain in tool files."
         },
         {
           "id": "1.4",
           "name": "VERIFY Phase 1",
           "type": "verify",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "BUILD: pass. TESTS: 39 files, 613 passed, 3 skipped. reset_session: not found in src/. getAgentOrFail in tools/: not found. Pushed to origin."
         }
       ]
     },
