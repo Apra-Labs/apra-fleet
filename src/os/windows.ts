@@ -91,10 +91,10 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
+    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
     const escapedFolder = escapeWindowsArg(folder);
-    const decode = `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Prompt}'))`;
-    let cmd = `Set-Location "${escapedFolder}"; $p=${decode}; ${CLI_PATH}${provider.cliCommand(`${provider.headlessInvocation('$p')} ${provider.jsonOutputFlag()}`)}`;
+    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let cmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}${provider.cliCommand(`${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`)}`;
     if (provider.supportsMaxTurns()) {
       cmd += ` --max-turns ${maxTurns ?? 50}`;
     }

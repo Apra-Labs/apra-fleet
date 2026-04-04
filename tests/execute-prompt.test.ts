@@ -39,17 +39,17 @@ describe('executePrompt', () => {
     const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     expect(result).toContain('Hello world');
     expect(result).toContain('sess-123');
-    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+    // 3 calls: writePromptFile + main command + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 
   it('returns auth advice on auth error without retry', async () => {
     const agent = makeTestAgent({ friendlyName: 'auth-fail' });
     addAgent(agent);
-    mockExecCommand.mockResolvedValue({
-      stdout: '',
-      stderr: 'Not logged in',
-      code: 1,
-    });
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })          // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'Not logged in', code: 1 }) // main
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });         // deletePromptFile
 
     const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(0);
@@ -57,34 +57,40 @@ describe('executePrompt', () => {
 
     expect(result).toContain('/login');
     expect(result).toContain('provision_auth');
-    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+    // 3 calls: writePromptFile + main command + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 
   it('retries on server error after 5s delay and returns recovered result', async () => {
     const agent = makeTestAgent({ friendlyName: 'retry-ok' });
     addAgent(agent);
     mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
       .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 Internal Server Error', code: 1 })
       .mockResolvedValueOnce({
         stdout: JSON.stringify({ result: 'recovered', session_id: 'sess-r' }),
         stderr: '',
         code: 0,
-      });
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
 
     const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
     expect(result).toContain('recovered');
-    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+    // 4 calls: writePromptFile + main (500) + retry (recovered) + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
 
   it('returns error after server error retry also fails', async () => {
     const agent = makeTestAgent({ friendlyName: 'retry-fail' });
     addAgent(agent);
     mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
       .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 Internal Server Error', code: 1 })
-      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 Internal Server Error', code: 1 });
+      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 Internal Server Error', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
 
     const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(5000);
@@ -92,46 +98,53 @@ describe('executePrompt', () => {
 
     expect(result).toContain('500');
     expect(result).toContain('failed');
-    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+    // 4 calls: writePromptFile + main (500) + retry (500) + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
 
   it('compounds stale-session retry with server-error retry (3 calls)', async () => {
     const agent = makeTestAgent({ friendlyName: 'compound', sessionId: 'old-sess' });
     addAgent(agent);
     mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })                    // writePromptFile
       .mockResolvedValueOnce({ stdout: '', stderr: 'session not found', code: 1 })   // stale session
-      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 error', code: 1 })       // retry → 500
+      .mockResolvedValueOnce({ stdout: '', stderr: 'HTTP 500 error', code: 1 })       // stale retry → 500
       .mockResolvedValueOnce({                                                          // server retry → ok
         stdout: JSON.stringify({ result: 'finally', session_id: 'sess-new' }),
         stderr: '',
         code: 0,
-      });
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });                   // deletePromptFile
 
     const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: true, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
     expect(result).toContain('finally');
-    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+    // 5 calls: writePromptFile + main (stale) + stale-retry (500) + server-retry (ok) + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
   });
 
   it('retries stale session without session ID', async () => {
     const agent = makeTestAgent({ friendlyName: 'stale', sessionId: 'old-sess' });
     addAgent(agent);
     mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })           // writePromptFile
       .mockResolvedValueOnce({ stdout: '', stderr: 'session error', code: 1 })
       .mockResolvedValueOnce({
         stdout: JSON.stringify({ result: 'fresh', session_id: 'sess-new' }),
         stderr: '',
         code: 0,
-      });
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });          // deletePromptFile
 
     const promise = executePrompt({ member_id: agent.id, prompt: 'hi', resume: true, timeout_ms: 5000 });
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
     expect(result).toContain('fresh');
-    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+    // 4 calls: writePromptFile + main (stale) + stale-retry (fresh) + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
 
   it('passes model parameter to the generated command', async () => {
@@ -144,8 +157,9 @@ describe('executePrompt', () => {
     });
 
     await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'opus' });
-    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[0][0]).toContain('opus');
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('opus');
   });
 
   it('defaults to standard tier model when model param is omitted', async () => {
@@ -159,8 +173,9 @@ describe('executePrompt', () => {
 
     await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     // Default provider is Claude; standard tier is claude-sonnet-4-6
-    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-sonnet-4-6');
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-sonnet-4-6');
   });
 
   it('uses explicit model param unchanged when provided', async () => {
@@ -173,9 +188,10 @@ describe('executePrompt', () => {
     });
 
     await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'claude-opus-4-6' });
-    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-opus-4-6');
-    expect(mockExecCommand.mock.calls[0][0]).not.toContain('claude-sonnet-4-6');
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-opus-4-6');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('claude-sonnet-4-6');
   });
 
   it('resolves tier name "standard" to claude-sonnet-4-6', async () => {
@@ -188,9 +204,10 @@ describe('executePrompt', () => {
     });
 
     await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'standard' });
-    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-sonnet-4-6');
-    expect(mockExecCommand.mock.calls[0][0]).not.toContain('standard');
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-sonnet-4-6');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('standard');
   });
 
   it('resolves tier name "cheap" to claude-haiku-4-5', async () => {
@@ -203,9 +220,10 @@ describe('executePrompt', () => {
     });
 
     await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'cheap' });
-    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-haiku-4-5');
-    expect(mockExecCommand.mock.calls[0][0]).not.toContain('cheap');
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-haiku-4-5');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('cheap');
   });
 
   it('resolves tier name "premium" to claude-opus-4-6', async () => {
@@ -218,9 +236,10 @@ describe('executePrompt', () => {
     });
 
     await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'premium' });
-    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-opus-4-6');
-    expect(mockExecCommand.mock.calls[0][0]).not.toContain('premium');
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-opus-4-6');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('premium');
   });
 
   it('appends token line when usage is present in response', async () => {
@@ -264,6 +283,7 @@ describe('executePrompt', () => {
 
     expect(result).toContain('something unexpected happened');
     expect(result).toContain('failed');
-    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+    // 3 calls: writePromptFile + main command + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });

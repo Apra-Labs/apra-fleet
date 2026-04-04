@@ -28,9 +28,10 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let cmd = `cd "${escapedFolder}" && gemini -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json`;
+    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json`;
     const rf = buildResumeFlag(sessionId);
     if (rf) {
       cmd += ` ${rf}`;
@@ -144,7 +145,7 @@ export class GeminiProvider implements ProviderAdapter {
     return '--output-format json';
   }
 
-  headlessInvocation(promptExpr: string): string {
-    return `-p ${promptExpr}`;
+  headlessInvocation(promptLiteral: string): string {
+    return `-p "${promptLiteral}"`;
   }
 }

@@ -150,7 +150,8 @@ describe('execute-prompt: ensureCloudReady wiring', () => {
 
     await executePrompt({ member_id: agent.id, prompt: 'hello', timeout_ms: 10000 });
 
-    expect(mockExecCommand).toHaveBeenCalledOnce();
+    // 3 calls: writePromptFile + main prompt command + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 
   it('propagates ensureCloudReady error as failure message', async () => {

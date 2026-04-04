@@ -105,12 +105,12 @@ describe('OsCommands via getOsCommands', () => {
     }
 
     describe('buildAgentPromptCommand', () => {
-      const opts = { folder: '/tmp/work', b64Prompt: 'aGVsbG8=' };
+      const opts = { folder: '/tmp/work', promptFile: '.fleet-task.md' };
 
       for (const [name, cmds] of all) {
-        it(`${name}: claude provider buildAgentPromptCommand includes base64 prompt and flags`, () => {
+        it(`${name}: claude provider buildAgentPromptCommand includes prompt file reference and flags`, () => {
           const generic = cmds.buildAgentPromptCommand(claudeProvider, opts);
-          expect(generic).toContain('aGVsbG8=');
+          expect(generic).toContain('.fleet-task.md');
           expect(generic).toContain('--output-format json');
           expect(generic).toContain('--max-turns 50');
         });
@@ -118,7 +118,7 @@ describe('OsCommands via getOsCommands', () => {
         it(`${name}: gemini provider uses gemini binary`, () => {
           const cmd = cmds.buildAgentPromptCommand(geminiProvider, opts);
           expect(cmd).toContain('gemini');
-          expect(cmd).toContain('aGVsbG8=');
+          expect(cmd).toContain('.fleet-task.md');
           expect(cmd).toContain('--output-format json');
           expect(cmd).not.toContain('--max-turns'); // gemini doesn't support max-turns
         });
@@ -127,7 +127,7 @@ describe('OsCommands via getOsCommands', () => {
       it('windows: gemini prompt command uses PowerShell syntax', () => {
         const cmd = windows.buildAgentPromptCommand(geminiProvider, opts);
         expect(cmd).toContain('Set-Location');
-        expect(cmd).toContain('FromBase64String');
+        expect(cmd).toContain('.fleet-task.md');
         expect(cmd).toContain('gemini');
       });
 

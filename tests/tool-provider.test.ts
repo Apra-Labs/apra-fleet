@@ -65,7 +65,8 @@ describe('executePrompt — provider routing', () => {
     expect(result).toContain('claude response');
     expect(result).toContain('sess-c');
 
-    const cmd = mockExecCommand.mock.calls[0][0] as string;
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    const cmd = mockExecCommand.mock.calls[1][0] as string;
     expect(cmd).toContain('claude');
     expect(cmd).toContain('--output-format json');
   });
@@ -82,7 +83,8 @@ describe('executePrompt — provider routing', () => {
     const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     expect(result).toContain('gemini response');
 
-    const cmd = mockExecCommand.mock.calls[0][0] as string;
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    const cmd = mockExecCommand.mock.calls[1][0] as string;
     expect(cmd).toContain('gemini');
   });
 
@@ -100,7 +102,8 @@ describe('executePrompt — provider routing', () => {
     const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     expect(result).toBeDefined();
 
-    const cmd = mockExecCommand.mock.calls[0][0] as string;
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    const cmd = mockExecCommand.mock.calls[1][0] as string;
     expect(cmd).toContain('codex');
   });
 
@@ -116,7 +119,8 @@ describe('executePrompt — provider routing', () => {
     const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     expect(result).toBeDefined();
 
-    const cmd = mockExecCommand.mock.calls[0][0] as string;
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    const cmd = mockExecCommand.mock.calls[1][0] as string;
     expect(cmd).toContain('copilot');
   });
 
@@ -133,14 +137,16 @@ describe('executePrompt — provider routing', () => {
     });
 
     await executePrompt({ member_id: claudeAgent.id, prompt: 'hello', resume: false, timeout_ms: 5000 });
-    const claudeCmd = mockExecCommand.mock.calls[0][0] as string;
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    const claudeCmd = mockExecCommand.mock.calls[1][0] as string;
     expect(claudeCmd).toContain('claude');
     expect(claudeCmd).not.toContain('gemini');
 
     mockExecCommand.mockClear();
 
     await executePrompt({ member_id: geminiAgent.id, prompt: 'hello', resume: false, timeout_ms: 5000 });
-    const geminiCmd = mockExecCommand.mock.calls[0][0] as string;
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    const geminiCmd = mockExecCommand.mock.calls[1][0] as string;
     expect(geminiCmd).toContain('gemini');
     expect(geminiCmd).not.toContain('claude -p');
   });

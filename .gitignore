@@ -1,6 +1,7 @@
 node_modules/
 dist/
 data/
+.fleet-task.md
 *.js.map
 *.tsbuildinfo
 .env

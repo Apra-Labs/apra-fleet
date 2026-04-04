@@ -15,6 +15,8 @@ export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult>;
+  /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
+  deleteFiles(relativePaths: string[]): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
 }
@@ -32,6 +34,24 @@ class RemoteStrategy implements AgentStrategy {
 
   async receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult> {
     return downloadFiles(this.agent, remotePaths, localDestination);
+  }
+
+  async deleteFiles(relativePaths: string[]): Promise<void> {
+    if (relativePaths.length === 0) return;
+    const agentOs = getAgentOS(this.agent);
+    const folder = this.agent.workFolder;
+    try {
+      if (agentOs === 'windows') {
+        const files = relativePaths.map(p => `"${p.replace(/"/g, '')}"`).join(', ');
+        const psScript = `Set-Location "${folder.replace(/"/g, '')}"; Remove-Item ${files} -Force -ErrorAction SilentlyContinue`;
+        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+        await this.execCommand(`powershell -EncodedCommand ${encoded}`, 10000);
+      } else {
+        const escapedFolder = folder.replace(/"/g, '\\"');
+        const files = relativePaths.map(p => `"${p.replace(/"/g, '\\"')}"`).join(' ');
+        await this.execCommand(`cd "${escapedFolder}" && rm -f ${files}`, 10000);
+      }
+    } catch { /* ignore — best-effort cleanup */ }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -120,6 +140,12 @@ class LocalStrategy implements AgentStrategy {
     }
 
     return { success, failed };
+  }
+
+  async deleteFiles(relativePaths: string[]): Promise<void> {
+    for (const rel of relativePaths) {
+      try { fs.unlinkSync(path.resolve(this.agent.workFolder, rel)); } catch { /* ignore */ }
+    }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {

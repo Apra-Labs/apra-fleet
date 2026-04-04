@@ -32,10 +32,11 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
+    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
-    let cmd = `cd "${escapedFolder}" && claude -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json --max-turns ${turns}`;
+    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
     const rf = buildResumeFlag(sessionId);
     if (rf) {
       cmd += ` ${rf}`;
@@ -133,7 +134,7 @@ export class ClaudeProvider implements ProviderAdapter {
     return '--output-format json';
   }
 
-  headlessInvocation(promptExpr: string): string {
-    return `-p ${promptExpr}`;
+  headlessInvocation(promptLiteral: string): string {
+    return `-p "${promptLiteral}"`;
   }
 }

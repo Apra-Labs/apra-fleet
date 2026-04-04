@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -8,7 +11,9 @@ import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
+import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import type { Agent, SSHExecResult } from '../types.js';
+import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
 export const executePromptSchema = z.object({
@@ -32,6 +37,42 @@ function buildFailureMessage(agentName: string, result: SSHExecResult, provider:
 }
 
 const SERVER_RETRY_DELAY_MS = 5000;
+const PROMPT_FILE = '.fleet-task.md';
+
+async function writePromptFile(agent: Agent, strategy: AgentStrategy, content: string): Promise<void> {
+  if (agent.agentType === 'local') {
+    fs.writeFileSync(path.join(agent.workFolder, PROMPT_FILE), content, 'utf-8');
+    return;
+  }
+  const agentOs = getAgentOS(agent);
+  if (agentOs === 'windows') {
+    const escapedFolder = escapeWindowsArg(agent.workFolder);
+    const psScript = `Set-Location "${escapedFolder}"; Set-Content -Path "${PROMPT_FILE}" -Value '${content.replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);
+  } else {
+    const b64 = Buffer.from(content).toString('base64');
+    const escapedFolder = escapeDoubleQuoted(agent.workFolder);
+    await strategy.execCommand(`cd "${escapedFolder}" && echo '${b64}' | base64 -d > ${PROMPT_FILE}`);
+  }
+}
+
+async function deletePromptFile(agent: Agent, strategy: AgentStrategy): Promise<void> {
+  if (agent.agentType === 'local') {
+    try { fs.unlinkSync(path.join(agent.workFolder, PROMPT_FILE)); } catch { /* ignore */ }
+    return;
+  }
+  const agentOs = getAgentOS(agent);
+  if (agentOs === 'windows') {
+    const escapedFolder = escapeWindowsArg(agent.workFolder);
+    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${PROMPT_FILE}" -Force -ErrorAction SilentlyContinue`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
+  } else {
+    const escapedFolder = escapeDoubleQuoted(agent.workFolder);
+    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${PROMPT_FILE}`).catch(() => { /* ignore */ });
+  }
+}
 
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
@@ -47,9 +88,6 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   const cmds = getOsCommands(getAgentOS(agent));
   const provider = getProvider(agent.llmProvider);
 
-  // Base64-encode the prompt to avoid shell escaping issues
-  const b64Prompt = Buffer.from(input.prompt).toString('base64');
-
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
 
   const tiers = provider.modelTiers();
@@ -57,16 +95,23 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     ? (tiers[input.model as keyof typeof tiers] ?? input.model)
     : tiers.standard;
 
-  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
+  const promptOpts = {
     folder: agent.workFolder,
-    b64Prompt,
-    sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
+    promptFile: PROMPT_FILE,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
     model: resolvedModel,
     maxTurns: input.max_turns,
+  };
+
+  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
+    ...promptOpts,
+    sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
   });
 
   const timeoutMs = input.timeout_ms ?? 300000;
+
+  // Write the prompt to .fleet-task.md before execution
+  await writePromptFile(agent, strategy, input.prompt);
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -77,7 +122,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: resolvedModel, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
@@ -85,7 +130,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: resolvedModel, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
@@ -106,5 +151,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
+  } finally {
+    await deletePromptFile(agent, strategy);
   }
 }
