@@ -8,8 +8,7 @@ import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const updateMemberSchema = z.object({
-  member_id: z.string().optional().describe('UUID of the member to update. Takes precedence over member_name if both provided.'),
-  member_name: z.string().optional().describe('Friendly name of the member. Use when UUID is not known. Ignored if member_id is also provided.'),
+  ...memberIdentifier,
   friendly_name: z.string()
     .min(1).max(64)
     .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')

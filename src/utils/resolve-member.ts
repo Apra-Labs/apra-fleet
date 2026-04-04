@@ -17,7 +17,7 @@ export function resolveMember(member_id?: string, member_name?: string): Agent |
 /**
  * Shared zod fragment for member identification.
  * Spread into tool schemas: z.object({ ...memberIdentifier, ...otherFields })
- * Add .refine(d => d.member_id || d.member_name, { message: 'Provide either member_id or member_name' })
+ * Mutual-exclusivity validation is handled inside resolveMember(), which returns an error string if neither field is provided.
  */
 export const memberIdentifier = {
   member_id: z.string().optional().describe(
