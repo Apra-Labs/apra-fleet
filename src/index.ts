@@ -106,7 +106,7 @@ async function startServer() {
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, async () => ({ content: [{ type: 'text', text: await shutdownServer() }] }));
 
   // --- Permissions ---
-  server.tool('compose_permissions', 'Compose and deliver member permissions (.claude/settings.local.json). Detects project stack, merges base + stack profiles + project ledger. Use grant param for reactive mid-sprint permission additions.', composePermissionsSchema.shape, async (input) => ({ content: [{ type: 'text', text: await composePermissions(input as any) }] }));
+  server.tool('compose_permissions', 'Compose and deliver member permissions to a member. Detects project stack, merges base + stack profiles + project ledger. Use grant param for reactive mid-sprint permission additions.', composePermissionsSchema.shape, async (input) => ({ content: [{ type: 'text', text: await composePermissions(input as any) }] }));
 
   // --- Cloud Control ---
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. start waits for SSH readiness; stop is immediate.', cloudControlSchema.shape, async (input) => ({ content: [{ type: 'text', text: await cloudControl(input as any) }] }));
