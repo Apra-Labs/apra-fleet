@@ -8,8 +8,8 @@
       "phase": 6,
       "issue": "#50",
       "description": "Update MCP server name string: 'apra-fleet ${serverVersion}' → 'apra fleet server ${serverVersion}'",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Changed 'apra-fleet' to 'apra fleet server' in src/index.ts:73"
     },
     {
       "id": "task-2",

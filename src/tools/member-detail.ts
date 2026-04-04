@@ -10,7 +10,7 @@ import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
 
 export const memberDetailSchema = z.object({
-  member_id: z.string().describe('The UUID of the member (worker) to inspect'),
+  member_id: z.string().describe('UUID or friendly name of the member (worker) to inspect'),
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
 });
 

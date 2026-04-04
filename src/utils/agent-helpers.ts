@@ -3,14 +3,14 @@
  */
 import type { Agent } from '../types.js';
 import type { RemoteOS } from './platform.js';
-import { getAgent, updateAgent } from '../services/registry.js';
+import { getAgent, findAgentByName, updateAgent } from '../services/registry.js';
 
 /**
  * Look up an agent by ID or return a formatted error string.
  * Eliminates the repeated pattern of getAgent() + "not found" check in every tool.
  */
 export function getAgentOrFail(id: string): Agent | string {
-  const agent = getAgent(id);
+  const agent = getAgent(id) ?? findAgentByName(id);
   if (!agent) {
     return `Member "${id}" not found.`;
   }
