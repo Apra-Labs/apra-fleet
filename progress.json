@@ -86,15 +86,15 @@
           "name": "Remove cloud_ssh_key_path parameter",
           "type": "code",
           "tier": "standard",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Removed cloud_ssh_key_path from register_member and update_member schemas. Removed sshKeyPath from CloudConfig (aws.ts never used it). Cloud members now use key_path for both SSH and lifecycle. Updated 7 test files. Build and tests pass."
         },
         {
           "id": "3.2",
           "name": "VERIFY Phase 3",
           "type": "verify",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "BUILD: pass. TESTS: 39 files, 611 passed, 3 skipped. grep cloud_ssh_key_path|sshKeyPath in src/: clean. Pushed to origin."
         }
       ]
     }
