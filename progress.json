@@ -49,31 +49,31 @@
           "name": "send_files: rename remote_subfolder to destination_path + path security",
           "type": "code",
           "tier": "standard",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Renamed remote_subfolder→destination_path in schema+handler. Added work_folder boundary check (posix for remote, path.resolve for local). Updated strategy interface, file-transfer.ts, sftp.ts. Fixed update-task-tokens.ts usage."
         },
         {
           "id": "2.2",
           "name": "Implement receive_files tool",
           "type": "code",
           "tier": "standard",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Created src/tools/receive-files.ts with memberIdentifier, remote_paths[], local_destination. Added receiveFiles() to AgentStrategy interface, LocalStrategy (fs.copyFile), RemoteStrategy (sftp.fastGet via downloadViaSFTP). Added downloadFiles to file-transfer.ts and downloadViaSFTP to sftp.ts. Registered in index.ts after send_files."
         },
         {
           "id": "2.3",
           "name": "Fix execute_prompt and execute_command descriptions",
           "type": "code",
           "tier": "cheap",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "execute_prompt: removed 'remote' from 'Run an LLM prompt on a remote member'. execute_command: removed 'spinning up' → 'without an LLM session'."
         },
         {
           "id": "2.4",
           "name": "VERIFY Phase 2",
           "type": "verify",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "BUILD: pass. TESTS: 39 files, 611 passed, 3 skipped. receive_files registered in index.ts. remote_subfolder: not found in src/. Pushed to origin."
         }
       ]
     },
