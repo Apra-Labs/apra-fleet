@@ -1,7 +1,7 @@
 {
   "sprint": "MCP API & Usability Sprint (Issues #50–53)",
   "branch": "improve/token-usage",
-  "total_tasks": 11,
+  "total_tasks": 12,
   "tasks": [
     {
       "id": "task-1",
@@ -90,6 +90,14 @@
       "description": "Update execute_prompt model description to lead with tier names",
       "status": "completed",
       "notes": "Updated model description in src/tools/execute-prompt.ts:20 — leads with tier names, removes stale provider-specific examples"
+    },
+    {
+      "id": "T-schema-neutral",
+      "phase": 9,
+      "issue": "#53",
+      "description": "Remove provider-specific model ID pass-through: resolve tier names (cheap/standard/premium) to actual model IDs via modelTiers() before invoking CLI, so no raw tier string reaches the CLI",
+      "status": "completed",
+      "notes": "Implemented in src/tools/execute-prompt.ts — tiers[input.model] lookup before falling back to raw string. Tests added for cheap/standard/premium tier resolution. Commit: 4f233dd"
     }
   ]
 }
