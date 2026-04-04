@@ -49,7 +49,6 @@ async function startServer() {
   const { sendFilesSchema, sendFiles } = await import('./tools/send-files.js');
   const { executePromptSchema, executePrompt } = await import('./tools/execute-prompt.js');
   const { executeCommandSchema, executeCommand } = await import('./tools/execute-command.js');
-  const { resetSessionSchema, resetSession } = await import('./tools/reset-session.js');
   const { provisionAuthSchema, provisionAuth } = await import('./tools/provision-auth.js');
   const { setupSSHKeySchema, setupSSHKey } = await import('./tools/setup-ssh-key.js');
   const { setupGitAppSchema, setupGitApp } = await import('./tools/setup-git-app.js');
@@ -86,9 +85,6 @@ async function startServer() {
   // --- Prompt Execution ---
   server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run an LLM prompt on a remote member. Supports session resume for conversational context. Respects each member\'s llm_provider setting.', executePromptSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executePrompt(input as any) }] }));
   server.tool('execute_command', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command directly on a member without spinning up an LLM session. Use for quick tasks like installing packages, checking versions, or running scripts.', executeCommandSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executeCommand(input as any) }] }));
-
-  // --- Session Management ---
-  server.tool('reset_session', 'Clear stored session ID so the next prompt starts a fresh LLM session. Omit member_id to reset all members.', resetSessionSchema.shape, async (input) => ({ content: [{ type: 'text', text: await resetSession(input as any) }] }));
 
   // --- Authentication & SSH ---
   server.tool('provision_auth', "Authenticate a fleet member (worker). For Claude members: copies OAuth credentials (default) or pass api_key for ANTHROPIC_API_KEY. For other providers: pass api_key for the provider's auth env var (GEMINI_API_KEY, OPENAI_API_KEY, COPILOT_GITHUB_TOKEN).", provisionAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionAuth(input as any) }] }));
