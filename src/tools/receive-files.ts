@@ -36,6 +36,9 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
   const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
   const normalizedWorkFolder = workFolderPosix.replace(/\/$/, '');
   for (const remotePath of input.remote_paths) {
+    if (remotePath.includes('\0')) {
+      return `⛔ Invalid remote_path: null bytes are not allowed.`;
+    }
     if (agent.agentType === 'local') {
       const resolved = path.resolve(agent.workFolder, remotePath);
       const workFolderNorm = path.resolve(agent.workFolder);

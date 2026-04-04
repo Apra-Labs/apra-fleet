@@ -28,6 +28,10 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
     return `Failed to upload files to "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
 
+  if (input.destination_path?.includes('\0')) {
+    return `⛔ Invalid destination_path: null bytes are not allowed.`;
+  }
+
   // Path security: verify destination_path stays within work_folder
   let resolvedPath: string | undefined;
   if (input.destination_path) {
