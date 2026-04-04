@@ -49,7 +49,7 @@ const cloudAgent: Agent = {
   icon: '☁️',
   createdAt: '2026-01-01T00:00:00.000Z',
   lastUsed: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2h ago
-  cloud: { provider: 'aws' as const, instanceId: 'i-12345678', region: 'us-east-1', sshKeyPath: '/tmp/key.pem', idleTimeoutMin: 1 },
+  cloud: { provider: 'aws' as const, instanceId: 'i-12345678', region: 'us-east-1', idleTimeoutMin: 1 },
 };
 
 // Local agent — no cloud field, should never be checked

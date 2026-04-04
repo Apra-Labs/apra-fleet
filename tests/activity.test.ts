@@ -44,7 +44,7 @@ const baseAgent: Agent = {
   os: 'linux',
   icon: '🤖',
   createdAt: '2026-01-01T00:00:00.000Z',
-  cloud: { instanceId: 'i-12345678', region: 'us-east-1', sshKeyPath: '/tmp/key.pem' },
+  cloud: { instanceId: 'i-12345678', region: 'us-east-1' },
 };
 
 function sshResult(stdout: string, code = 0): SSHExecResult {

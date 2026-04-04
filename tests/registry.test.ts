@@ -86,7 +86,6 @@ describe('registry - cloud agent storage', () => {
         instanceId: 'i-0abc1234def567890',
         region: 'us-east-1',
         idleTimeoutMin: 30,
-        sshKeyPath: '/home/user/.ssh/id_rsa',
       },
     });
     addAgent(agent);
@@ -96,7 +95,6 @@ describe('registry - cloud agent storage', () => {
     expect(retrieved!.cloud).toBeDefined();
     expect(retrieved!.cloud!.instanceId).toBe('i-0abc1234def567890');
     expect(retrieved!.cloud!.region).toBe('us-east-1');
-    expect(retrieved!.cloud!.sshKeyPath).toBe('/home/user/.ssh/id_rsa');
   });
 
   it('stores cloud config with optional profile', () => {
@@ -107,7 +105,6 @@ describe('registry - cloud agent storage', () => {
         region: 'eu-west-1',
         profile: 'my-profile',
         idleTimeoutMin: 60,
-        sshKeyPath: '/home/user/.ssh/key.pem',
       },
     });
     addAgent(agent);
@@ -124,7 +121,6 @@ describe('registry - cloud agent storage', () => {
         instanceId: 'i-0abc1234def567890',
         region: 'us-east-1',
         idleTimeoutMin: 30,
-        sshKeyPath: '/home/user/.ssh/id_rsa',
       },
     });
     addAgent(agent);
@@ -147,7 +143,6 @@ describe('registry - cloud agent storage', () => {
         instanceId: 'i-0abc1234def567890',
         region: 'us-east-1',
         idleTimeoutMin: 30,
-        sshKeyPath: '/home/user/.ssh/id_rsa',
       },
     });
     addAgent(agent);
@@ -158,7 +153,6 @@ describe('registry - cloud agent storage', () => {
     const stored = parsed.agents[0];
     expect(stored.cloud).toBeDefined();
     expect(stored.cloud.instanceId).toBe('i-0abc1234def567890');
-    expect(stored.cloud.sshKeyPath).toBe('/home/user/.ssh/id_rsa');
   });
 
   it('non-cloud agents have no cloud field', () => {

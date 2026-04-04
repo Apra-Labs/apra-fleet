@@ -28,7 +28,6 @@ const baseConfig: CloudConfig = {
   instanceId: 'i-0abc1234def567890',
   region: 'us-east-1',
   idleTimeoutMin: 30,
-  sshKeyPath: '/home/user/.ssh/id_rsa',
 };
 
 const configWithProfile: CloudConfig = {
@@ -268,7 +267,7 @@ describe('registerMember - cloud config', () => {
     cloud_provider: 'aws' as const,
     cloud_instance_id: 'i-0abc1234def567890',
     cloud_region: 'us-east-1',
-    cloud_ssh_key_path: '/home/user/.ssh/id_rsa',
+    key_path: '/home/user/.ssh/id_rsa',
   };
 
   it('registers a stopped cloud member without SSH connectivity check', async () => {
@@ -286,8 +285,7 @@ describe('registerMember - cloud config', () => {
     const agent = agents[0];
     expect(agent.cloud).toBeDefined();
     expect(agent.cloud!.instanceId).toBe('i-0abc1234def567890');
-    expect(agent.cloud!.sshKeyPath).toBe('/home/user/.ssh/id_rsa');
-    expect(agent.keyPath).toBe('/home/user/.ssh/id_rsa'); // F4: top-level keyPath also set
+    expect(agent.keyPath).toBe('/home/user/.ssh/id_rsa');
     expect(agent.authType).toBe('key');
   });
 
@@ -298,10 +296,10 @@ describe('registerMember - cloud config', () => {
     expect(result).toContain('cloud_instance_id');
   });
 
-  it('rejects cloud member missing cloud_ssh_key_path', async () => {
-    const result = await registerMember({ ...baseCloudInput, cloud_ssh_key_path: undefined as unknown as string });
+  it('rejects cloud member missing key_path', async () => {
+    const result = await registerMember({ ...baseCloudInput, key_path: undefined });
     expect(result).toContain('❌');
-    expect(result).toContain('cloud_ssh_key_path');
+    expect(result).toContain('key_path');
   });
 
   it('rejects cloud member missing username', async () => {
