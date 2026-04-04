@@ -47,6 +47,7 @@ async function startServer() {
   const { removeMemberSchema, removeMember } = await import('./tools/remove-member.js');
   const { updateMemberSchema, updateMember } = await import('./tools/update-member.js');
   const { sendFilesSchema, sendFiles } = await import('./tools/send-files.js');
+  const { receiveFilesSchema, receiveFiles } = await import('./tools/receive-files.js');
   const { executePromptSchema, executePrompt } = await import('./tools/execute-prompt.js');
   const { executeCommandSchema, executeCommand } = await import('./tools/execute-command.js');
   const { provisionAuthSchema, provisionAuth } = await import('./tools/provision-auth.js');
@@ -81,6 +82,7 @@ async function startServer() {
 
   // --- File Operations ---
   server.tool('send_files', 'Transfer local files to a member. Always batch multiple files into a single call — never invoke repeatedly for individual files. destination_path accepts a relative (from work_folder) or absolute path; paths outside work_folder are rejected.', sendFilesSchema.shape, async (input) => ({ content: [{ type: 'text', text: await sendFiles(input as any) }] }));
+  server.tool('receive_files', 'Download files from a member to a local directory. Always batch multiple files into a single call — never invoke repeatedly for individual files. remote_paths outside work_folder are rejected.', receiveFilesSchema.shape, async (input) => ({ content: [{ type: 'text', text: await receiveFiles(input as any) }] }));
 
   // --- Prompt Execution ---
   server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run an LLM prompt on a remote member. Supports session resume for conversational context. Respects each member\'s llm_provider setting.', executePromptSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executePrompt(input as any) }] }));
