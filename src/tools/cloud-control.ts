@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
@@ -9,7 +10,7 @@ import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import type { Agent } from '../types.js';
 
 export const cloudControlSchema = z.object({
-  member_id: z.string().describe('UUID of the cloud member'),
+  ...memberIdentifier,
   action: z.enum(['start', 'stop', 'status']).describe(
     'start: auto-start and wait for SSH ready | stop: stop instance immediately | status: return current state'
   ),
@@ -18,7 +19,7 @@ export const cloudControlSchema = z.object({
 export type CloudControlInput = z.infer<typeof cloudControlSchema>;
 
 export async function cloudControl(input: CloudControlInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

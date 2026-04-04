@@ -3,11 +3,12 @@ import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import type { Agent } from '../types.js';
 
 export const updateAgentCliSchema = z.object({
-  member_id: z.string().optional().describe('The UUID of the member to update. Omit to update ALL online members.'),
+  ...memberIdentifier,
   install_if_missing: z.boolean().default(false).describe('Install the LLM agent CLI on the member if not already installed (default: false)'),
 });
 
@@ -76,8 +77,8 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
 export async function updateAgentCli(input: UpdateAgentCliInput): Promise<string> {
   let agents: Agent[];
 
-  if (input.member_id) {
-    const agentOrError = getAgentOrFail(input.member_id);
+  if (input.member_id || input.member_name) {
+    const agentOrError = resolveMember(input.member_id, input.member_name);
     if (typeof agentOrError === 'string') return agentOrError;
     agents = [agentOrError as Agent];
   } else {

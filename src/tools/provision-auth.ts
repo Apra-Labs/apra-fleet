@@ -6,7 +6,8 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
-import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
@@ -15,7 +16,7 @@ import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
 export const provisionAuthSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   api_key: z.string().optional().describe(
     'API key for the member\'s LLM provider (e.g. ANTHROPIC_API_KEY for Claude, GEMINI_API_KEY for Gemini, OPENAI_API_KEY for Codex, COPILOT_GITHUB_TOKEN for Copilot). If provided, deploys this key instead of running OAuth login.'
   ),
@@ -181,7 +182,7 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 // ---------------------------------------------------------------------------
 
 export async function provisionAuth(input: ProvisionAuthInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

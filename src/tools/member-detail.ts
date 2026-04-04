@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
 import { DEFAULT_ICON } from '../services/icons.js';
@@ -12,14 +13,14 @@ import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../se
 import { serverVersion } from '../version.js';
 
 export const memberDetailSchema = z.object({
-  member_id: z.string().describe('UUID or friendly name of the member (worker) to inspect'),
+  ...memberIdentifier,
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
 });
 
 export type MemberDetailInput = z.infer<typeof memberDetailSchema>;
 
 export async function memberDetail(input: MemberDetailInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

@@ -1,14 +1,15 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import type { Agent } from '../types.js';
 
 export const monitorTaskSchema = z.object({
-  member_id: z.string().describe('UUID of the fleet member running the task'),
+  ...memberIdentifier,
   // Regex prevents path traversal (../etc/passwd) and shell injection (; rm -rf /)
   // Auto-generated IDs ('task-' + Date.now().toString(36)) always match this pattern
   task_id: z.string().regex(/^task-[a-z0-9]{4,20}$/, 'task_id must match pattern task-[a-z0-9]{4,20}').describe('Task ID returned by execute_command with long_running=true'),
@@ -18,7 +19,7 @@ export const monitorTaskSchema = z.object({
 export type MonitorTaskInput = z.infer<typeof monitorTaskSchema>;
 
 export async function monitorTask(input: MonitorTaskInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
 
   let agent: Agent;

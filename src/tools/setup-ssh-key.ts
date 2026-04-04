@@ -5,12 +5,12 @@ import crypto from 'node:crypto';
 import { updateAgent, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { testAuthConnection } from '../services/ssh.js';
-import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getOsCommands } from '../os/index.js';
 import type { Agent } from '../types.js';
 
 export const setupSSHKeySchema = z.object({
-  member_id: z.string().describe('The UUID of the member (worker) to set up SSH key auth for'),
+  ...memberIdentifier,
 });
 
 export type SetupSSHKeyInput = z.infer<typeof setupSSHKeySchema>;
@@ -50,7 +50,7 @@ function cleanupLocalKeys(privateKeyPath: string, publicKeyPath: string): void {
 }
 
 export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

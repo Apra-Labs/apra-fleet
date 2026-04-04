@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOrFail, getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
+import { getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
@@ -16,7 +17,7 @@ const providers: Record<string, VcsProviderService> = {
 };
 
 export const provisionVcsAuthSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
 
   // GitHub fields
@@ -62,7 +63,7 @@ function buildCredentials(input: ProvisionVcsAuthInput): unknown | string {
 }
 
 export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 

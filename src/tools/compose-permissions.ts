@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../services/strategy.js';
-import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
 import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member'),
+  ...memberIdentifier,
   role: z.enum(['doer', 'reviewer']).describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test)'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
@@ -146,7 +146,7 @@ async function deliverConfigFile(
 }
 
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
