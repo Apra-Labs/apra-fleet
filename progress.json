@@ -1,0 +1,19 @@
+﻿{
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | completed | blocked"
+  },
+  "project": "Issue #62",
+  "plan_file": "PLAN.md",
+  "created": "2023-10-24",
+  "total_tasks": 6,
+  "completed": 0,
+  "tasks": [
+    { "id": 1, "step": "Update OsCommands Interface", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
+    { "id": 2, "step": "Implement Generic Credential Paths in OS Adapters", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
+    { "id": 3, "step": "Update Credential Validation Logic", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
+    { "id": 4, "step": "Refactor provision-auth.ts", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
+    { "id": 5, "step": "Refactor remove-member.ts", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
+    { "id": 6, "step": "VERIFY: Build and Test", "type": "verify", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" }
+  ]
+}
