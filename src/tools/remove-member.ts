@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import fs from 'node:fs';
-import { removeAgent as removeFromRegistry } from '../services/registry.js';
+import { removeAgent as removeFromRegistry, getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
@@ -52,10 +52,13 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
 
   strategy.close();
 
-  // Clean up local key files (before registry removal loses the reference)
+  // Clean up local key files only if no other member shares this key
   if (agent.keyPath) {
-    try { fs.unlinkSync(agent.keyPath); } catch {}
-    try { fs.unlinkSync(`${agent.keyPath}.pub`); } catch {}
+    const sharedKey = getAllAgents().some(a => a.id !== agent.id && a.keyPath === agent.keyPath);
+    if (!sharedKey) {
+      try { fs.unlinkSync(agent.keyPath); } catch {}
+      try { fs.unlinkSync(`${agent.keyPath}.pub`); } catch {}
+    }
   }
 
   // Clean up known_hosts entry
