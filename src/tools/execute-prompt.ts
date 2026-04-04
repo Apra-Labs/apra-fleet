@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -37,44 +38,46 @@ function buildFailureMessage(agentName: string, result: SSHExecResult, provider:
 }
 
 const SERVER_RETRY_DELAY_MS = 5000;
-const PROMPT_FILE = '.fleet-task.md';
 
-async function writePromptFile(agent: Agent, strategy: AgentStrategy, content: string): Promise<void> {
+async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFileName: string, content: string): Promise<void> {
   if (agent.agentType === 'local') {
-    fs.writeFileSync(path.join(agent.workFolder, PROMPT_FILE), content, 'utf-8');
+    fs.writeFileSync(path.join(agent.workFolder, promptFileName), content, 'utf-8');
     return;
   }
   const agentOs = getAgentOS(agent);
   if (agentOs === 'windows') {
     const escapedFolder = escapeWindowsArg(agent.workFolder);
-    const psScript = `Set-Location "${escapedFolder}"; Set-Content -Path "${PROMPT_FILE}" -Value '${content.replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
+    const psScript = `Set-Location "${escapedFolder}"; Set-Content -Path "${promptFileName}" -Value '${content.replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);
   } else {
     const b64 = Buffer.from(content).toString('base64');
     const escapedFolder = escapeDoubleQuoted(agent.workFolder);
-    await strategy.execCommand(`cd "${escapedFolder}" && echo '${b64}' | base64 -d > ${PROMPT_FILE}`);
+    await strategy.execCommand(`cd "${escapedFolder}" && echo '${b64}' | base64 -d > ${promptFileName}`);
   }
 }
 
-async function deletePromptFile(agent: Agent, strategy: AgentStrategy): Promise<void> {
+async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFileName: string): Promise<void> {
   if (agent.agentType === 'local') {
-    try { fs.unlinkSync(path.join(agent.workFolder, PROMPT_FILE)); } catch { /* ignore */ }
+    try { fs.unlinkSync(path.join(agent.workFolder, promptFileName)); } catch { /* ignore */ }
     return;
   }
   const agentOs = getAgentOS(agent);
   if (agentOs === 'windows') {
     const escapedFolder = escapeWindowsArg(agent.workFolder);
-    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${PROMPT_FILE}" -Force -ErrorAction SilentlyContinue`;
+    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
     const escapedFolder = escapeDoubleQuoted(agent.workFolder);
-    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${PROMPT_FILE}`).catch(() => { /* ignore */ });
+    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
   }
 }
 
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
+  const promptFileId = crypto.randomUUID().slice(0, 8);
+  const promptFileName = `.fleet-task-${promptFileId}.md`;
+
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
@@ -97,7 +100,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const promptOpts = {
     folder: agent.workFolder,
-    promptFile: PROMPT_FILE,
+    promptFile: promptFileName,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
     model: resolvedModel,
     maxTurns: input.max_turns,
@@ -110,8 +113,8 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const timeoutMs = input.timeout_ms ?? 300000;
 
-  // Write the prompt to .fleet-task.md before execution
-  await writePromptFile(agent, strategy, input.prompt);
+  // Write the prompt to the unique prompt file before execution
+  await writePromptFile(agent, strategy, promptFileName, input.prompt);
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -152,6 +155,6 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
-    await deletePromptFile(agent, strategy);
+    await deletePromptFile(agent, strategy, promptFileName);
   }
 }
