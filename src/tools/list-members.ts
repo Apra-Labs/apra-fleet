@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getAllAgents } from '../services/registry.js';
 import { DEFAULT_ICON } from '../services/icons.js';
+import { serverVersion } from '../version.js';
 
 export const listMembersSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -16,6 +17,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
 
   if (format === 'json') {
     return JSON.stringify({
+      server_version: serverVersion,
       total: agents.length,
       members: agents.map(a => ({
         id: a.id,

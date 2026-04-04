@@ -9,6 +9,7 @@ import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
+import { serverVersion } from '../version.js';
 
 export const memberDetailSchema = z.object({
   member_id: z.string().describe('UUID or friendly name of the member (worker) to inspect'),
@@ -28,6 +29,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const strategy = getStrategy(agent);
 
   const result: Record<string, unknown> = {
+    server_version: serverVersion,
     name: agent.friendlyName,
     icon: agent.icon ?? DEFAULT_ICON,
     id: agent.id,
