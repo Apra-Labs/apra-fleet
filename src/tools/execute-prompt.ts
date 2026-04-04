@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -11,7 +12,7 @@ import type { Agent, SSHExecResult } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
 export const executePromptSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
   timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
@@ -33,7 +34,7 @@ function buildFailureMessage(agentName: string, result: SSHExecResult, provider:
 const SERVER_RETRY_DELAY_MS = 5000;
 
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {

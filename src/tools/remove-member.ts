@@ -4,19 +4,20 @@ import { removeAgent as removeFromRegistry } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const removeMemberSchema = z.object({
-  member_id: z.string().describe('The UUID of the member (worker) to remove'),
+  ...memberIdentifier,
 });
 
 export type RemoveMemberInput = z.infer<typeof removeMemberSchema>;
 
 export async function removeMember(input: RemoveMemberInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
@@ -62,7 +63,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
     removeKnownHost(agent.host, agent.port);
   }
 
-  const removed = removeFromRegistry(input.member_id);
+  const removed = removeFromRegistry(agent.id);
   writeStatusline();
 
   if (removed) {
@@ -75,5 +76,5 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
     }
     return result;
   }
-  return `Failed to remove member "${input.member_id}".`;
+  return `Failed to remove member "${agent.id}".`;
 }

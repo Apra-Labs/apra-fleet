@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
-import { getAgentOrFail, touchAgent } from '../utils/agent-helpers.js';
+import { touchAgent } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import type { Agent } from '../types.js';
 
 export const sendFilesSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   local_paths: z.array(z.string()).describe('Array of local file paths to upload'),
   remote_subfolder: z.string().optional().describe('Optional subfolder within the member\'s remote folder'),
 });
@@ -14,7 +15,7 @@ export const sendFilesSchema = z.object({
 export type SendFilesInput = z.infer<typeof sendFilesSchema>;
 
 export async function sendFiles(input: SendFilesInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {

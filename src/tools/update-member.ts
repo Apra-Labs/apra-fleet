@@ -1,14 +1,15 @@
 import { z } from 'zod';
 import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
 import { encryptPassword } from '../utils/crypto.js';
-import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { collectOobPassword } from '../services/auth-socket.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const updateMemberSchema = z.object({
-  member_id: z.string().describe('The UUID of the member (worker) to update'),
+  member_id: z.string().optional().describe('UUID of the member to update. Takes precedence over member_name if both provided.'),
+  member_name: z.string().optional().describe('Friendly name of the member. Use when UUID is not known. Ignored if member_id is also provided.'),
   friendly_name: z.string()
     .min(1).max(64)
     .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')
@@ -40,7 +41,7 @@ export const updateMemberSchema = z.object({
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 
 export async function updateMember(input: UpdateMemberInput): Promise<string> {
-  const existingOrError = getAgentOrFail(input.member_id);
+  const existingOrError = resolveMember(input.member_id, input.member_name);
   if (typeof existingOrError === 'string') return existingOrError;
   const existing = existingOrError as Agent;
 
@@ -110,9 +111,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
   }
 
-  const updated = updateInRegistry(input.member_id, updates);
+  const updated = updateInRegistry(existing.id, updates);
   if (!updated) {
-    return `Failed to update member "${input.member_id}".`;
+    return `Failed to update member "${existing.id}".`;
   }
   writeStatusline();
 

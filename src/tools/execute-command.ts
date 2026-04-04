@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
@@ -9,7 +10,7 @@ import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import type { Agent } from '../types.js';
 
 export const executeCommandSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   command: z.string().describe('The shell command to execute'),
   timeout_ms: z.number().default(120000).describe('Timeout in milliseconds (default: 2 minutes)'),
   work_folder: z.string().optional().describe("Directory to cd into before running the command. Defaults to the member's registered work folder."),
@@ -21,7 +22,7 @@ export const executeCommandSchema = z.object({
 export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 
 export async function executeCommand(input: ExecuteCommandInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {
