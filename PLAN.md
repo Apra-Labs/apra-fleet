@@ -1,31 +1,45 @@
-﻿# Plan: DRY OAuth Support in provision_auth (Issue #62)
+# Plan: DRY OAuth Support in provision_auth (Issue #62)
 
-## PHASE 1: Update OS Commands for Generic Credentials
+## Phase 1: ProviderAdapter Interface + Provider Implementations
+- Task 1.1: Add to ProviderAdapter interface (src/providers/provider.ts):
+  - oauthCredentialFiles(): Array<{localPath: string; remotePath: string}> | null
+  - oauthSettingsMerge(): Record<string, unknown> | null
+  - oauthEnvVarsToUnset(): string[]
+- Task 1.2: Implement in ClaudeProvider (src/providers/claude.ts):
+  - oauthCredentialFiles() returns [{localPath: '~/.claude/.credentials.json', remotePath: '~/.claude/.credentials.json'}]
+  - oauthSettingsMerge() returns null
+  - oauthEnvVarsToUnset() returns []
+  - Remove supportsOAuthCopy() from interface after migration
+- Task 1.3: Implement in GeminiProvider (src/providers/gemini.ts):
+  - oauthCredentialFiles() returns the 3 files: oauth_creds.json, google_accounts.json, settings.json (localPath and remotePath both under ~/.gemini/)
+  - oauthSettingsMerge() returns {security: {auth: {selectedType: 'oauth-personal'}}}
+  - oauthEnvVarsToUnset() returns ['GEMINI_API_KEY']
+  - Fix composePermissionConfig to READ existing settings.json, merge mode change, write back (do not overwrite)
+- Task 1.4: Codex and Copilot stubs — check src/providers/codex.ts and copilot.ts, add stub implementations returning null/[] with comment explaining no OAuth support
+- Task 1.5: VERIFY — build passes, all providers implement the interface
 
-### Task 1: Update `OsCommands` Interface
-- **File:** `src/os/os-commands.ts`
-- **Changes:** Modify the signatures of `credentialFileCheck()`, `credentialFileWrite(json: string)`, and `credentialFileRemove()` to include a `provider: ProviderAdapter` parameter.
+## Phase 2: Settings Merge Helper + OS Commands Fix
+- Task 2.1: Add settings merge helper to src/os/os-commands.ts (or new file):
+  - readRemoteJson(destPath): reads existing JSON file on remote, returns {} if missing
+  - deepMergeJson(destPath, newObj): reads existing, deep-merges, writes back
+- Task 2.2: Parameterize credentialFileWrite(content, destPath) and credentialFileRemove(destPath) — remove hardcoded Claude path, accept destPath parameter
+- Task 2.3: VERIFY — build passes
 
-### Task 2: Implement Generic Credential Paths in OS Adapters
-- **Files:** `src/os/linux.ts`, `src/os/macos.ts`, `src/os/windows.ts`
-- **Changes:** Update the implementation of the three credential file methods to use `provider.credentialPath` instead of hardcoded `.claude` paths. Ensure OS-specific path resolution is handled (e.g. expanding `~` to `C:\Users\akhil` on Windows).
+## Phase 3: DRY provision_auth Orchestration
+- Task 3.1: Refactor src/tools/provision-auth.ts:
+  - If input.api_key -> existing provisionApiKey path (no change)
+  - Else if provider.oauthCredentialFiles() -> new provisionOAuthCopy(agent, provider):
+    1. For each file in oauthCredentialFiles(): read local file, write to remote via credentialFileWrite(content, file.remotePath)
+    2. If oauthSettingsMerge(): call deepMergeJson on remote settings file
+    3. For each var in oauthEnvVarsToUnset(): remove from ~/.zshrc, ~/.bash_profile, ~/.bashrc, ~/.zprofile
+    4. Verify auth (existing verify logic)
+  - Else -> existing collectOobApiKey fallback
+- Task 3.2: Update src/tools/remove-member.ts — call credentialFileRemove(file.remotePath) for each file in provider.oauthCredentialFiles() ?? []
+- Task 3.3: VERIFY — build + full test suite passes, zero regressions
 
-### Task 3: Update Credential Validation Logic
-- **File:** `src/utils/credential-validation.ts`
-- **Changes:** Update `validateCredentials` to accept a `provider: ProviderAdapter`. If `provider.name !== 'claude'`, return `{ status: 'valid' }` by default since we only validate Claude's token format currently.
-
-## PHASE 2: Update Auth Orchestration
-
-### Task 4: Refactor `provision-auth.ts`
-- **File:** `src/tools/provision-auth.ts`
-- **Changes:**
-  - Update `readMasterCredentials()` to take `provider: ProviderAdapter` and resolve the `credentialPath`.
-  - Update `provisionMasterToken()` to pass `provider` to `readMasterCredentials` and `cmds.credentialFileWrite`.
-  - Replace `verifyWithClaudePrompt` with a generic `verifyWithPrompt` that uses `provider.headlessInvocation("hello")` and `cmds.agentCommand`.
-
-### Task 5: Refactor `remove-member.ts`
-- **File:** `src/tools/remove-member.ts`
-- **Changes:** Pass the `provider` argument to `cmds.credentialFileRemove(provider)` during cleanup.
-
-### Task 6: VERIFY
-- **Action:** Run `npm run build` and `npm test` to ensure there are no type errors and all tests pass (fixing any test mocks as needed).
+## Phase 4: member_detail Auth Mode (R8)
+- Task 4.1: Update src/tools/member-detail.ts and src/tools/list-members.ts:
+  - If OAuth files exist on remote AND no API key env var -> auth=oauth
+  - If API key env var set -> auth=api-key
+  - If both -> auth=api-key (WARNING: OAuth also present — API key takes precedence)
+- Task 4.2: VERIFY — final build + tests green, push
