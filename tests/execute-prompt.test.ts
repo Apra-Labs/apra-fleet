@@ -178,6 +178,51 @@ describe('executePrompt', () => {
     expect(mockExecCommand.mock.calls[0][0]).not.toContain('claude-sonnet-4-6');
   });
 
+  it('resolves tier name "standard" to claude-sonnet-4-6', async () => {
+    const agent = makeTestAgent({ friendlyName: 'tier-standard-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-ts' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'standard' });
+    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-sonnet-4-6');
+    expect(mockExecCommand.mock.calls[0][0]).not.toContain('standard');
+  });
+
+  it('resolves tier name "cheap" to claude-haiku-4-5', async () => {
+    const agent = makeTestAgent({ friendlyName: 'tier-cheap-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-tc' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'cheap' });
+    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-haiku-4-5');
+    expect(mockExecCommand.mock.calls[0][0]).not.toContain('cheap');
+  });
+
+  it('resolves tier name "premium" to claude-opus-4-6', async () => {
+    const agent = makeTestAgent({ friendlyName: 'tier-premium-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-tp' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000, model: 'premium' });
+    expect(mockExecCommand.mock.calls[0][0]).toContain('--model');
+    expect(mockExecCommand.mock.calls[0][0]).toContain('claude-opus-4-6');
+    expect(mockExecCommand.mock.calls[0][0]).not.toContain('premium');
+  });
+
   it('appends token line when usage is present in response', async () => {
     const agent = makeTestAgent({ friendlyName: 'token-agent' });
     addAgent(agent);

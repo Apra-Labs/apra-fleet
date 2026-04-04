@@ -51,7 +51,10 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
 
-  const resolvedModel = input.model ?? provider.modelTiers().standard;
+  const tiers = provider.modelTiers();
+  const resolvedModel = input.model
+    ? (tiers[input.model as keyof typeof tiers] ?? input.model)
+    : tiers.standard;
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
     folder: agent.workFolder,
