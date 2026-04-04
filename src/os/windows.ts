@@ -204,6 +204,12 @@ export class WindowsCommands implements OsCommands {
     return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
   }
 
+  // --- Git ---
+
+  gitCurrentBranch(folder: string): string {
+    return `git -C "${escapeWindowsArg(folder)}" branch --show-current 2>/dev/null || true`;
+  }
+
   // --- GPU activity ---
 
   gpuProcessCheck(): string {

@@ -162,9 +162,9 @@ These are recommendations, not restrictions — your choice is final.
 A fleet can have members on different providers for different purposes:
 
 ```
-dev1     — Claude (Sonnet)   — main implementation work
+dev1     — Claude (standard)  — main implementation work
 dev2     — Gemini            — tasks needing 1M context or Google Search
-review1  — Claude (Opus)     — code review
+review1  — Claude (premium)  — code review
 codex1   — Codex             — structured extraction tasks
 ```
 

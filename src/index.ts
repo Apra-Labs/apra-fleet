@@ -62,6 +62,7 @@ async function startServer() {
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
+  const { updateTaskTokensSchema, updateTaskTokens } = await import('./tools/update-task-tokens.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
@@ -69,7 +70,7 @@ async function startServer() {
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
 
   const server = new McpServer({
-    name: `apra-fleet ${serverVersion}`,
+    name: `apra fleet server ${serverVersion}`,
     version: versionNum,
   });
 
@@ -84,10 +85,10 @@ async function startServer() {
 
   // --- Prompt Execution ---
   server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run an LLM prompt on a remote member. Supports session resume for conversational context. Respects each member\'s llm_provider setting.', executePromptSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executePrompt(input as any) }] }));
-  server.tool('execute_command', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command directly on a member without spinning up Claude. Use for quick tasks like installing packages, checking versions, or running scripts.', executeCommandSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executeCommand(input as any) }] }));
+  server.tool('execute_command', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command directly on a member without spinning up an LLM session. Use for quick tasks like installing packages, checking versions, or running scripts.', executeCommandSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executeCommand(input as any) }] }));
 
   // --- Session Management ---
-  server.tool('reset_session', 'Clear stored session ID so the next prompt starts a fresh Claude session. Omit member_id to reset all members.', resetSessionSchema.shape, async (input) => ({ content: [{ type: 'text', text: await resetSession(input as any) }] }));
+  server.tool('reset_session', 'Clear stored session ID so the next prompt starts a fresh LLM session. Omit member_id to reset all members.', resetSessionSchema.shape, async (input) => ({ content: [{ type: 'text', text: await resetSession(input as any) }] }));
 
   // --- Authentication & SSH ---
   server.tool('provision_auth', "Authenticate a fleet member (worker). For Claude members: copies OAuth credentials (default) or pass api_key for ANTHROPIC_API_KEY. For other providers: pass api_key for the provider's auth env var (GEMINI_API_KEY, OPENAI_API_KEY, COPILOT_GITHUB_TOKEN).", provisionAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionAuth(input as any) }] }));
@@ -110,6 +111,7 @@ async function startServer() {
   // --- Cloud Control ---
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. start waits for SSH readiness; stop is immediate.', cloudControlSchema.shape, async (input) => ({ content: [{ type: 'text', text: await cloudControl(input as any) }] }));
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Use task_id returned by execute_command. Set auto_stop=true to stop the cloud instance when the task completes.', monitorTaskSchema.shape, async (input) => ({ content: [{ type: 'text', text: await monitorTask(input as any) }] }));
+  server.tool('update_task_tokens', 'Accumulate token counts (input + output) for a task entry in a member\'s progress.json. Reads current values from the member, adds the new counts, pushes the updated file back, and commits on the member. Always accumulates — never overwrites.', updateTaskTokensSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateTaskTokens(input as any) }] }));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

@@ -57,11 +57,16 @@ export class ClaudeProvider implements ProviderAdapter {
     const raw = result.stdout.trim();
     try {
       const parsed = JSON.parse(raw);
+      const u = parsed.usage;
+      const usage = (u && typeof u.input_tokens === 'number' && typeof u.output_tokens === 'number')
+        ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
+        : undefined;
       return {
         result: parsed.result ?? parsed.response ?? raw,
         sessionId: parsed.session_id,
         isError: parsed.is_error === true || result.code !== 0,
         raw,
+        usage,
       };
     } catch {
       return {
@@ -69,6 +74,7 @@ export class ClaudeProvider implements ProviderAdapter {
         sessionId: undefined,
         isError: result.code !== 0,
         raw,
+        usage: undefined,
       };
     }
   }

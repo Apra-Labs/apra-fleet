@@ -71,7 +71,17 @@ PM sends task harness → kicks off doer with execute_prompt (resume=false — f
 
 **Doer session rules:** Use `resume=false` at the start of each new phase — fresh context per phase keeps token usage small and avoids stale cross-phase confusion. Within a phase, `resume=true` is correct — tasks share context productively.
 
-**Reviewer assignment:** Reviews benefit from the highest reasoning tier. If any Claude member exists in the fleet, dispatch reviews with `model: "opus"` (Claude members can run any tier). For non-Claude providers, use the highest tier via `modelTiers()`. If no premium option exists, use what is available. User's choice is final.
+**Resume rule (token-saving best practice):** Setting `resume` correctly avoids re-reading large context files on every dispatch.
+
+| Dispatch | resume | Reason |
+|----------|--------|--------|
+| Initial plan generation | `false` | Member has no prior context |
+| Plan revision (any feedback iteration) | `true` | Member already has plan context; resuming saves re-reading files |
+| Initial review dispatch | `false` | Reviewer needs fresh, unbiased context |
+| Re-review after CHANGES NEEDED + doer fixes | `true` | Reviewer already read the plan; saves significant tokens |
+| Role switch (doer → reviewer, or reviewer → doer) | `false` | New role requires different instruction file; must start clean |
+
+**Reviewer assignment:** Reviews benefit from the highest reasoning tier. Dispatch reviews with `model: "premium"` — the PM maps this to the best available model for each provider. If no premium option exists, use what is available. User's choice is final. Doers use `model: "standard"` by default unless the task tier specifies otherwise.
 
 ### Monitoring
 - Check progress: `execute_command → cat progress.json` (cheap, fast). Check git: `git log --oneline -10`

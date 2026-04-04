@@ -82,6 +82,7 @@ export class CodexProvider implements ProviderAdapter {
       sessionId: undefined,
       isError,
       raw,
+      usage: undefined,
     };
   }
 

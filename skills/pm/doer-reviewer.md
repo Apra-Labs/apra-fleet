@@ -12,7 +12,7 @@
 
 **Single-member pairs:** One member fills both roles via `reset_session`. PM resets, sends the other role's instruction file + permissions, same member reviews with fresh context. Track current role and session ID in status.md.
 
-**Reviewer tier check:** Reviews benefit from the highest reasoning tier available. If any Claude member exists in the fleet, dispatch reviews with model=opus (Claude members can run any tier). For non-Claude providers, use the highest tier via modelTiers(). If no premium option exists, use what is available — no warning needed. User's choice is final.
+**Reviewer tier check:** Reviews benefit from the highest reasoning tier available. Dispatch reviews with `model=premium` — the PM maps this to the best available model for each provider. If no premium option exists, use what is available — no warning needed. User's choice is final. Doers use `model=standard` by default unless the task tier specifies otherwise.
 
 ## Pre-flight Checks
 
@@ -52,6 +52,36 @@ Verify reviewer is at the correct commit before starting review:
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
 6. **Pre-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT.md; git commit -m "cleanup: remove fleet control files" && git push`. These are transport files — git history preserves the content. Run cleanup and push before merging the PR.
 7. Loop until all phases APPROVED
+
+## Post-dispatch Token Tracking
+
+After every `execute_prompt` response (doer or reviewer), extract the token counts and record them in progress.json:
+
+1. **Parse the token line** from the response using the regex `Tokens: input=(\d+) output=(\d+)`. The line appears at the end of the output when the Claude provider returns usage data.
+2. **Call `update_task_tokens`** with:
+   - `member_id` — the member that owns progress.json
+   - `progress_json` — absolute path to progress.json on that member (e.g. `/home/user/project/progress.json`)
+   - `task_id` — the current task ID (e.g. `"3"`)
+   - `role` — `"doer"` for doer dispatches, `"reviewer"` for reviewer dispatches
+   - `input_tokens` — captured from regex group 1
+   - `output_tokens` — captured from regex group 2
+3. The tool accumulates tokens across calls — reviewer tokens from multiple review cycles are summed automatically. Never call it with zeroes unless that is the actual count.
+
+**Call this after every dispatch — no exceptions.** If the token line is absent (non-Claude provider or older CLI), skip the call for that dispatch only.
+
+## Resume Rule (token-saving best practice)
+
+Setting `resume` correctly avoids re-reading large context files on every dispatch.
+
+| Dispatch | resume | Reason |
+|----------|--------|--------|
+| Initial plan generation | `false` | Member has no prior context |
+| Plan revision (any feedback iteration) | `true` | Member already has plan context; resuming saves re-reading files |
+| Initial review dispatch | `false` | Reviewer needs fresh, unbiased context |
+| Re-review after CHANGES NEEDED + doer fixes | `true` | Reviewer already read the plan; saves significant tokens |
+| Role switch (doer → reviewer, or reviewer → doer) | `false` | New role requires different instruction file; must start clean |
+
+**Note:** A role switch always requires `reset_session` + `send_files` for the new instruction file before dispatch. Never resume across a role switch.
 
 ## Safeguards
 

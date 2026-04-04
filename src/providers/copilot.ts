@@ -61,6 +61,7 @@ export class CopilotProvider implements ProviderAdapter {
         sessionId: undefined,  // Copilot uses --continue (no ID), store boolean in registry
         isError: result.code !== 0,
         raw,
+        usage: undefined,
       };
     } catch {
       return {
@@ -68,6 +69,7 @@ export class CopilotProvider implements ProviderAdapter {
         sessionId: undefined,
         isError: result.code !== 0,
         raw,
+        usage: undefined,
       };
     }
   }

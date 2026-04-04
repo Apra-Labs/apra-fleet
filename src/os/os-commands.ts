@@ -51,6 +51,9 @@ export interface OsCommands {
   // --- Prompt building ---
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string;
 
+  // --- Git ---
+  gitCurrentBranch(folder: string): string;
+
   // --- GPU activity ---
   gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available
   gpuUtilization(): string;   // outputs GPU utilization 0-100 (integer), or empty if unavailable

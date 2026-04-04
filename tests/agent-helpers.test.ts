@@ -10,14 +10,25 @@ beforeEach(() => backupAndResetRegistry());
 afterEach(() => restoreRegistry());
 
 describe('getAgentOrFail', () => {
-  it('returns agent when found, error string when not', () => {
+  it('returns agent when found by UUID', () => {
     const agent = makeAgent({ id: 'found-agent', friendlyName: 'my-agent' });
     addAgent(agent);
 
     const found = getAgentOrFail('found-agent');
     expect(typeof found).not.toBe('string');
     expect((found as Agent).friendlyName).toBe('my-agent');
+  });
 
+  it('returns agent when found by friendly name', () => {
+    const agent = makeAgent({ id: 'uuid-123', friendlyName: 'focus-dev1' });
+    addAgent(agent);
+
+    const found = getAgentOrFail('focus-dev1');
+    expect(typeof found).not.toBe('string');
+    expect((found as Agent).id).toBe('uuid-123');
+  });
+
+  it('returns error string when neither UUID nor name matches', () => {
     const notFound = getAgentOrFail('nonexistent');
     expect(typeof notFound).toBe('string');
     expect(notFound).toContain('not found');

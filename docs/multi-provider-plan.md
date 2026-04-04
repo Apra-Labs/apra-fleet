@@ -22,7 +22,7 @@ Before writing code, document the CLI equivalents for every Claude concept we de
 | **Headless prompt** | `claude -p "..."` | `gemini -p "..."` | `codex exec "..."` | `copilot -p "..."` |
 | **Session resume** | `--resume <session_id>` | `-r` / `--resume` (loads most recent) | `codex exec resume` (positional) | `--continue` / `--resume` |
 | **JSON output** | `--output-format json` | `--output-format json` (also `stream-json`) | `--json` (NDJSON — one event per state change) | `--format json` |
-| **Model selection** | `--model opus/sonnet/haiku` | `--model <name>` or `GEMINI_MODEL` env var | `--model` / `-m` | `--model <name>` or `/model` interactive |
+| **Model selection** | `--model <name>` (e.g. premium/standard/cheap tier) | `--model <name>` or `GEMINI_MODEL` env var | `--model` / `-m` | `--model <name>` or `/model` interactive |
 | **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) |
 | **Skip permissions** | `--dangerously-skip-permissions` | `--yolo` / `-y` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` |
 | **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
@@ -36,7 +36,7 @@ Before writing code, document the CLI equivalents for every Claude concept we de
 | **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` |
 | **Session storage** | Server-side (session_id in JSON output) | Local: `~/.gemini/tmp/<hash>/chats/` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) |
 | **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, web search, MCP tools | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents |
-| **Context window** | 200K (Sonnet) / 1M (Opus 4.6) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
+| **Context window** | 200K (standard) / 1M (premium) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
 
 ### Model Tier Equivalents (PM escalation logic)
 
@@ -44,7 +44,7 @@ Before writing code, document the CLI equivalents for every Claude concept we de
 |------|---------|--------|--------|--------------|---------|
 | **Cheap** | Execution, status, tests, deploys | `haiku` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
 | **Mid** | Construction, code, config | `sonnet` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
-| **Premium** | Planning, review, architecture | `opus` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-opus-4-5` |
+| **Premium** | Planning, review, architecture | `opus` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
 
 **Note:** Gemini and Codex currently lack a distinct premium tier beyond their best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
 
@@ -155,7 +155,7 @@ Before writing code, document the CLI equivalents for every Claude concept we de
 
 **JSON output:** `--format json`.
 
-**Models:** Claude Sonnet 4.5 (default), Claude Opus 4.5 (Preview), Claude Haiku 4.5, Claude Sonnet 4, GPT-5.1, GPT-5.1-Codex, GPT-5. Select via `--model` or `/model`. Availability depends on subscription tier + org policy.
+**Models:** Claude Sonnet 4.5 (default), Claude Haiku 4.5, Claude Sonnet 4, GPT-5.1, GPT-5.1-Codex, GPT-5. Select via `--model` or `/model`. Availability depends on subscription tier + org policy.
 
 **Agentic capabilities:** `read_file`, `edit_file`, `run_in_terminal` tools. Plan mode for multi-step tasks. Custom agent profiles via Markdown definitions. `/fleet` for parallel subagent execution.
 
@@ -292,12 +292,12 @@ No schema version bump. `llmProvider` is optional, defaults to `'claude'`. Exist
 
 **New:** Tier-based with provider mapping:
 ```
-cheap → mid → premium
+cheap → standard → premium
 
 Claude:  haiku → sonnet → opus
 Gemini:  gemini-2.5-flash → gemini-2.5-pro → gemini-2.5-pro
 Codex:   gpt-5.4-mini → gpt-5.4 → gpt-5.4
-Copilot: claude-haiku-4-5 → claude-sonnet-4-5 → claude-opus-4-5
+Copilot: claude-haiku-4-5 → claude-sonnet-4-5 → claude-sonnet-4-5
 ```
 
 PM reads member's `llmProvider` from `member_detail` and uses the appropriate model name.

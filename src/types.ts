@@ -26,6 +26,7 @@ export interface Agent {
   vcsTokenExpiresAt?: string;  // ISO 8601
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
   encryptedEnvVars?: Record<string, string>;  // envVarName -> encrypted value
+  lastBranch?: string;
 }
 
 export interface GitHubAppConfig {
