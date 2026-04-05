@@ -106,7 +106,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
   const mergeObj = provider.oauthSettingsMerge();
   if (mergeObj) {
     const settingsFile = credentialFiles.find(f => f.remotePath.includes('settings.json'));
-    const remoteSettingsPath = settingsFile ? settingsFile.remotePath : `${provider.credentialPath}/settings.json`;
+    const remoteSettingsPath = settingsFile ? settingsFile.remotePath : `${provider.credentialPath.replace(/\/$/, '')}/settings.json`;
     try {
       const result = await strategy.execCommand(cmds.deepMergeJson(remoteSettingsPath, mergeObj), 10000);
       if (result.code !== 0 && result.stderr) {
