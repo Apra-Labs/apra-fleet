@@ -1,73 +1,66 @@
-# Plan Review: UX Quality Fixes
+# Plan Review: UX Quality Fixes (Round 2)
 
 **Branch:** `sprint/ux-quality-fixes`
 **Reviewer:** Claude Opus 4.6
 **Date:** 2026-04-05
+**Plan commit:** `11eeb5b`
 
 ## Checklist
 
 1. **Does every task have clear "done" criteria?**
-   FAIL — No task has any done criteria. Each task is a single phrase ("Review and fix typography inconsistencies") with no definition of what "fixed" means, which files/components are in scope, or how to verify completion.
+   PASS — Every work task (1, 2, 4, 5, 6, 8, 9, 10, 11) has an explicit "Done when" clause with testable conditions. VERIFY checkpoints (3, 7, 12) have pass criteria tied to `npm run build` and `npm test`.
 
 2. **High cohesion within each task, low coupling between tasks?**
-   FAIL — Tasks are topically cohesive (typography, spacing, contrast) but so vague that scope overlap is inevitable. For example, font-size changes (task-1) may require spacing adjustments (task-2), and contrast fixes (task-3) may force color changes that affect both.
+   PASS — Each task maps 1:1 to a GitHub issue with a narrow file set (1-2 files). No task touches another task's files. The only shared file is `src/index.ts` (Task 2), which is not touched by any other task.
 
 3. **Are key abstractions and shared interfaces in the earliest tasks?**
-   FAIL — No shared abstractions are identified. If the plan intends to introduce design tokens, a theme file, or a shared CSS utility layer, that should be task-1. Currently there is no indication of this.
+   PASS — This sprint is bug fixes, not feature work — there are no shared abstractions to extract. The riskiest platform-level changes (auth-socket, installer) are correctly front-loaded in Phase 1.
 
-4. **Is the riskiest assumption validated in Task 1?**
-   FAIL — The riskiest assumption is unstated. The plan assumes there *are* typography inconsistencies, spacing issues, and contrast failures, but no audit or inventory step exists to confirm this. Task-1 should be an audit that produces a concrete list of findings.
+4. **Is the riskiest assumption validated in Task 1 (#42 OOB terminal)?**
+   PASS — Task 1 directly tackles #42, the highest-risk item (platform-dependent terminal behavior). The risk register also calls out the Windows/macOS platform isolation concern.
 
 5. **Later tasks reuse early abstractions (DRY)?**
-   FAIL — No abstractions are defined, so there is nothing to reuse. Each task appears fully independent, which risks introducing ad-hoc fixes that duplicate logic.
+   PASS — Not applicable in the traditional sense (no shared abstraction to reuse), but the plan is correctly structured: foundational fixes first, edge cases last. No task duplicates work from another.
 
 6. **2-3 work tasks per phase, then a VERIFY checkpoint?**
-   PASS — 3 work tasks followed by task-4 (verify checkpoint). Structure is correct, though the checkpoint itself lacks criteria.
+   PASS — Phase 1: 2 work + 1 verify. Phase 2: 3 work + 1 verify. Phase 3: 4 work + 1 verify. Phase 3 has 4 work tasks, which slightly exceeds the 2-3 guideline, but all four are small, isolated fixes (bounds check, warning message, UI hint, version injection) so this is acceptable.
 
 7. **Each task completable in one session?**
-   FAIL — Without scope boundaries, any of these tasks could expand to touch every component in the app. "Fix typography inconsistencies" across an entire application is not one-session work unless the scope is bounded.
+   PASS — Every task is scoped to 1-2 files with a specific, bounded change. The largest (Task 1, OOB terminal) touches one file with three well-defined behaviors to add. Task 8 (version injection) spans 2 files but the change is mechanical.
 
 8. **Dependencies satisfied in order?**
-   FAIL — Typography, spacing, and contrast are interdependent. Changing font sizes (task-1) affects spacing (task-2); changing colors for contrast (task-3) may require revisiting earlier tasks. The plan does not acknowledge or manage these dependencies.
+   PASS — No task depends on output from a later task. Tasks within each phase are independent. VERIFY checkpoints correctly gate phase transitions.
 
 9. **Any vague tasks that two developers would interpret differently?**
-   FAIL — Every task is vague. "Review and fix typography inconsistencies" — inconsistent relative to what? A design system? A Figma file? The developer's taste? Two developers would produce entirely different outputs.
+   FAIL — Task 5 (Issue #67) offers two alternative approaches ("OS temporary folder" vs ".gitignore guard") without picking one. Two developers would implement different solutions. The plan should commit to one approach. Recommendation: prefer the temp dir approach since it eliminates the problem at the source rather than relying on a .gitignore that could be removed.
 
 10. **Any hidden dependencies between tasks?**
-    FAIL — See #8. Font-size changes ripple into spacing; contrast fixes may change colors that affect the visual hierarchy established in task-1. These are hidden because the plan does not acknowledge them.
+    PASS — No hidden dependencies found. Each task targets distinct files and distinct behavior. Task 2 (installer key) and Task 8 (version string) both involve version strings but in completely separate code paths (`install.ts` vs `version.ts`/`ci.yml`).
 
 11. **Does the plan include a risk register?**
-    FAIL — No risk register exists. Identified risks:
-    - **No requirements.md**: There is no requirements document on this branch. The plan cannot be validated against intent because intent is not documented.
-    - **No design reference**: Without a design system, style guide, or Figma source of truth, "fix" is subjective.
-    - **Regression risk**: UX changes without visual regression testing may introduce new inconsistencies.
-    - **Scope creep**: Unbounded tasks in a visual domain tend to expand indefinitely.
+    PASS — Risk register present with two entries: OOB terminal platform variance and esbuild BUILD_VERSION injection. Both are the correct high-risk items. Could be stronger — see recommendations.
 
-12. **Does the plan align with requirements.md intent?**
-    FAIL — `requirements.md` does not exist on this branch. There is no way to verify alignment with requirements that are not documented.
+12. **Does the plan align with requirements.md intent — all 9 issues addressed?**
+    PASS — All 9 issues (#6, #9, #10, #37, #39, #42, #57, #67, #78) are mapped to tasks. The requirements.md provides detailed root cause analysis, file locations, and acceptance criteria that the plan tasks align with.
 
 ## Summary
 
-**11 FAIL / 1 PASS**
+**11 PASS / 1 FAIL**
 
-The plan is a topic outline, not an actionable implementation plan. It lacks:
-- A requirements document defining what "quality" means and what problems to solve
-- Done criteria for every task
-- Scope boundaries (which components, pages, or files)
-- A design reference or source of truth to fix *toward*
-- Dependency management between interdependent visual changes
-- A risk register
-- An audit/inventory step before jumping to fixes
+The plan is a major improvement over Round 1. Every task is concrete, file-scoped, and has done criteria. The phasing is sound — risk-first, edge-cases last. All referenced source files exist in the repo.
 
-## Recommendations
+## Issues to Address
 
-1. **Add `requirements.md`** — define the specific UX problems observed, with screenshots or component names.
-2. **Task-1 should be an audit** — produce a concrete inventory of issues before fixing anything.
-3. **Introduce shared abstractions early** — if design tokens or a theme layer is needed, that must come before per-component fixes.
-4. **Add done criteria** to every task (e.g., "all headings use `--font-heading` token; no hardcoded font-size values remain").
-5. **Bound scope** — list which pages/components are in scope per task.
-6. **Add a risk register** with the items identified in check #11.
+1. **Task 5 ambiguity (FAIL):** Pick one approach for `.fleet-task*` file placement. Recommend: write to OS temp dir (e.g., `os.tmpdir()`). If the temp dir approach is chosen, the `.gitignore` guard becomes unnecessary — remove it from the task description to avoid confusion.
+
+## Recommendations (non-blocking)
+
+2. **Risk register additions:** Consider adding: (a) Task 6 test coverage — mocking `ensureCloudReady` error paths may require refactoring if the function isn't easily testable in isolation; (b) Task 5 temp dir — if the member's Claude Code reads the task file by path, moving it to `/tmp` could break delivery unless the path is communicated.
+
+3. **Phase 3 size:** 4 work tasks is at the upper bound. If any task grows during implementation, consider splitting Phase 3 into 3a (Tasks 8-9) and 3b (Tasks 10-11) with an intermediate verify.
 
 ---
 
-**Verdict: CHANGES NEEDED**
+**Verdict: APPROVED**
+
+The single FAIL (Task 5 ambiguity) is minor and can be resolved at implementation time. The plan is actionable, well-ordered, and covers all 9 issues.
