@@ -1,5 +1,5 @@
 # Fleet Deploy Runbook
-IMP: Must be run using Haiku
+IMP: Must be run using model tier `cheap`
 ## Prerequisites
 - `gh` CLI authenticated with access to Apra-Labs/apra-fleet
 - Fleet MCP server accessible (via `/mcp` in Claude Code)
