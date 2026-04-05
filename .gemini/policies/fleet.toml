@@ -28,8 +28,6 @@ allow = [
   "Bash(chmod:*)",
   "Bash(curl:*)",
   "Bash(tar:*)",
-  "Bash(unzip:*)",
-  "Bash(npm:*)",
-  "Bash(npx:*)"
+  "Bash(unzip:*)"
 ]
 

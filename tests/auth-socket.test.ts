@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+﻿import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import fs from 'node:fs';
 import {
@@ -345,7 +345,7 @@ describe('auth-socket', () => {
       await sendPassword(getSocketPath(), 'oob-fresh', 'fresh-secret');
 
       const result = await resultPromise;
-      expect(launchFn).toHaveBeenCalledWith('oob-fresh');
+      expect(launchFn).toHaveBeenCalledWith('oob-fresh', [], expect.any(Function));
       expect('password' in result).toBe(true);
       if ('password' in result) expect(result.password).toContain(':');
     });
@@ -375,7 +375,7 @@ describe('auth-socket', () => {
       await sendPassword(getSocketPath(), 'api-member', 'my-api-key');
 
       const result = await resultPromise;
-      expect(launchFn).toHaveBeenCalledWith('api-member', ['--api-key']);
+      expect(launchFn).toHaveBeenCalledWith('api-member', ['--api-key'], expect.any(Function));
       expect('password' in result).toBe(true);
       if ('password' in result) expect(result.password).toContain(':');
     });
