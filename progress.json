@@ -1,25 +1,69 @@
 {
+  "sprint": "ux-quality-fixes",
+  "status": "in-progress",
   "tasks": [
     {
-      "id": "task-1",
-      "status": "pending",
-      "notes": ""
+      "id": "1",
+      "title": "Issue #42 - OOB terminal cancellation & paste support",
+      "status": "pending"
     },
     {
-      "id": "task-2",
-      "status": "pending",
-      "notes": ""
+      "id": "2",
+      "title": "Issue #78 - Installer versioned MCP key",
+      "status": "pending"
     },
     {
-      "id": "task-3",
+      "id": "3",
+      "title": "Phase 1 VERIFY Checkpoint",
       "status": "pending",
-      "notes": ""
+      "type": "verify"
     },
     {
-      "id": "task-4",
+      "id": "4",
+      "title": "Issue #57 - update_task_tokens silent data loss on git commit failure",
+      "status": "pending"
+    },
+    {
+      "id": "5",
+      "title": "Issue #67 - Prevent .fleet-task* files committed to member repos",
+      "status": "pending"
+    },
+    {
+      "id": "6",
+      "title": "Issue #6 - Credential leakage test is a no-op",
+      "status": "pending"
+    },
+    {
+      "id": "7",
+      "title": "Phase 2 VERIFY Checkpoint",
       "status": "pending",
-      "type": "verify",
-      "notes": ""
+      "type": "verify"
+    },
+    {
+      "id": "8",
+      "title": "Issue #37 - --version reports wrong version",
+      "status": "pending"
+    },
+    {
+      "id": "9",
+      "title": "Issue #9 - parseGpuUtilization accepts invalid values",
+      "status": "pending"
+    },
+    {
+      "id": "10",
+      "title": "Issue #39 - De-registered member icon persists in UI",
+      "status": "pending"
+    },
+    {
+      "id": "11",
+      "title": "Issue #10 - Warn on ignored cloud fields on non-cloud",
+      "status": "pending"
+    },
+    {
+      "id": "12",
+      "title": "Phase 3 VERIFY Checkpoint",
+      "status": "pending",
+      "type": "verify"
     }
   ]
 }
