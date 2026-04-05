@@ -108,22 +108,37 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     cli.version = 'unknown';
   }
 
-  const authMethods: string[] = [];
-  try {
-    const credResult = await strategy.execCommand(cmds.credentialFileCheck('~/.claude/.credentials.json'), 10000);
-    if (credResult.stdout.trim() === 'found') {
-      authMethods.push('OAuth credentials file');
-    }
-  } catch { /* ignore */ }
+  let oauthFilesExist = false;
+  const oauthFiles = provider.oauthCredentialFiles?.();
+  if (oauthFiles && oauthFiles.length > 0) {
+    try {
+      // Check for the first file, assuming if it's there, the others are too.
+      const credResult = await strategy.execCommand(cmds.credentialFileCheck(oauthFiles[0].remotePath), 10000);
+      if (credResult.stdout.trim() === 'found') {
+        oauthFilesExist = true;
+      }
+    } catch { /* ignore */ }
+  }
 
-  try {
-    const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
-    if (apiKeyResult.stdout.trim().length > 5) {
-      authMethods.push('API key (env)');
-    }
-  } catch { /* ignore */ }
+  let apiKeyExists = false;
+  if (provider.authEnvVar) {
+    try {
+      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
+      if (apiKeyResult.stdout.trim().length > 5) {
+        apiKeyExists = true;
+      }
+    } catch { /* ignore */ }
+  }
 
-  cli.auth = authMethods.length > 0 ? authMethods : 'none';
+  if (apiKeyExists && oauthFilesExist) {
+    cli.auth = 'api-key (WARNING: OAuth also present — API key takes precedence)';
+  } else if (apiKeyExists) {
+    cli.auth = 'api-key';
+  } else if (oauthFilesExist) {
+    cli.auth = 'oauth';
+  } else {
+    cli.auth = 'none';
+  }
   result.llmProvider = agent.llmProvider ?? 'claude';
   result.claude = cli;  // kept for backwards compatibility
 
@@ -246,4 +261,6 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   return t;
 }
+
+
 
