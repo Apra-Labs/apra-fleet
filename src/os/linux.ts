@@ -117,7 +117,7 @@ export class LinuxCommands implements OsCommands {
     const escapedPath = escapeDoubleQuoted(destPath);
     const newJson = JSON.stringify(newObj).replace(/'/g, "'\\''");
 
-    const script = `const fs=require('fs');const path=process.argv[1];const newObj=JSON.parse(fs.readFileSync(0,'utf8'));let currentData={};try{currentData=JSON.parse(fs.readFileSync(path,'utf8'))}catch(e){}const deepMerge=(target,source)=>{for(const key in source){if(source[key]&&typeof source[key]==='object'&&!Array.isArray(source[key])){target[key]=deepMerge(target[key]||{},source[key])}else{target[key]=source[key]}}return target};const merged=deepMerge(currentData,newObj);fs.writeFileSync(path,JSON.stringify(merged,null,2));`;
+    const script = `const fs=require("fs");const path=process.argv[1];const newObj=JSON.parse(fs.readFileSync(0,"utf8"));let currentData={};try{currentData=JSON.parse(fs.readFileSync(path,"utf8"))}catch(e){}const deepMerge=(target,source)=>{for(const key in source){if(source[key]&&typeof source[key]==="object"&&!Array.isArray(source[key])){target[key]=deepMerge(target[key]||{},source[key])}else{target[key]=source[key]}}return target};const merged=deepMerge(currentData,newObj);fs.writeFileSync(path,JSON.stringify(merged,null,2));`;
 
     return `mkdir -p "$(dirname "${escapedPath}")" && printf '%s' '${newJson}' | node -e '${script}' '${escapedPath}'`;
   }
