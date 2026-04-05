@@ -82,6 +82,9 @@ export interface ProviderAdapter {
   // Auth capabilities
   supportsOAuthCopy(): boolean;
   supportsApiKey(): boolean;
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null;
+  oauthSettingsMerge(): Record<string, unknown> | null;
+  oauthEnvVarsToUnset(): string[];
 
   // Windows / PowerShell prompt building helpers
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
@@ -90,3 +93,4 @@ export interface ProviderAdapter {
    *  Returns e.g. `-p "LITERAL"` for Claude/Gemini/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
 }
+

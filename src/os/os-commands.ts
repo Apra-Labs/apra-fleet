@@ -1,4 +1,4 @@
-import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from '../utils/shell-escape.js';
+﻿import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from '../utils/shell-escape.js';
 import type { ProviderAdapter, PromptOptions } from '../providers/provider.js';
 
 export { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId };
@@ -25,11 +25,15 @@ export interface OsCommands {
 
   // --- Filesystem ---
   mkdir(folder: string): string;
+  readTextFile(destPath: string): string;
+  writeTextFile(destPath: string, content: string): string;
+  readRemoteJson(destPath: string): string;
+  deepMergeJson(destPath: string, newObj: Record<string, unknown>): string;
 
   // --- Auth ---
-  credentialFileCheck(): string;
-  credentialFileWrite(json: string): string;
-  credentialFileRemove(): string;
+  credentialFileCheck(destPath: string): string;
+  credentialFileWrite(content: string, destPath: string): string;
+  credentialFileRemove(destPath: string): string;
   apiKeyCheck(envVarName?: string): string;
   setEnv(name: string, value: string): string[];
   unsetEnv(name: string): string[];

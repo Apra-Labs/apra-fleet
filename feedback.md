@@ -1,48 +1,123 @@
-# Fleet-Rev Final Verdict — improve/schema-usability
+## Review: sprint/oauth-providers Phase 1
+Date: 2026-04-04
+Reviewer: fleet-rev
 
 ## Verdict: APPROVED
 
-## Summary
-
-Reviewed 6 commits since `31aa84f` covering: prompt file delivery refactor, unique prompt filenames, null byte defense, resolvedPath passthrough, stale doc cleanup, and receive_files tests. Build passes cleanly, all 614 tests pass (40 test files, 4 skipped). The core prompt-file implementation is solid and the security additions are well-placed.
-
-## Issues Found
-
-### BLOCKING
-
+## Issues
 None.
 
-### MINOR
+## What's Good
+- R1: Interface signatures are correct — `oauthCredentialFiles()` returns `Array<{localPath, remotePath}> | null`, `oauthSettingsMerge()` returns `Record<string, unknown> | null`, `oauthEnvVarsToUnset()` returns `string[]`. Clean nullable design lets callers skip providers that don't need OAuth.
+- R2 (Gemini): `oauthCredentialFiles()` correctly returns `oauth_creds.json` + `google_accounts.json` (not settings.json). `oauthSettingsMerge()` returns `{security:{auth:{selectedType:'oauth-personal'}}}` — properly separated from credential files. `oauthEnvVarsToUnset()` returns `['GEMINI_API_KEY']` so the CLI falls through to OAuth.
+- R3 (Claude): `oauthCredentialFiles()` returns `~/.claude/.credentials.json`. `oauthSettingsMerge()` returns `null` (Claude needs no settings merge). `oauthEnvVarsToUnset()` returns `[]` (no env var conflict).
+- R7: Codex and Copilot stubs return `null`/`[]` with explanatory comments — correctly indicates no OAuth support.
+- All four provider classes satisfy the `ProviderAdapter` interface with no type errors.
+- Existing methods are unchanged — no regressions.
+- Previous plan review note about settings.json separation was correctly implemented: Gemini's `oauthCredentialFiles()` returns only the 2 credential files, settings handled exclusively via `oauthSettingsMerge()`.
 
-1. **Stale `reset_session` references remain** — Found in `README.md:53`, `docs/architecture.md:167`, and `docs/MCP-BACKLOG.md:10`. The docs cleanup commit (`f9f9874`) caught the references in `docs/tools-work.md` and `docs/cloud-compute.md` but missed these three files. Non-blocking since `reset_session` is no longer a tool and these are reference docs, but should be cleaned up in a follow-up.
+---
 
-2. **Stale "Base64-encodes the prompt" in `docs/tools-work.md:69`** — The execute_prompt section still describes the old base64 inline delivery mechanism ("Base64-encodes the prompt — this avoids shell escaping issues..."). After the file-delivery refactor this is inaccurate. The description should say the prompt is written to a unique `.fleet-task-*.md` file and the CLI is instructed to read it.
+## Review: sprint/oauth-providers Phase 2
+Date: 2026-04-04
+Reviewer: fleet-rev
 
-3. **receive_files test coverage** — The 4 tests cover the critical paths (local copy, SFTP, boundary violation, null byte). A "member not found" test case would round it out but is not essential since that code path is shared with other tools that already test it.
+## Verdict: APPROVED
 
-## Review Details
+## Issues
+None.
 
-### Prompt file implementation (`execute-prompt.ts`)
-- `writePromptFile`: Correct for all three paths — local (`fs.writeFileSync`), Windows (`EncodedCommand` with proper single-quote escaping), Linux (base64 pipe to file). The base64 approach for Linux remote writes is safe since b64 output contains no shell-special characters.
-- `deletePromptFile`: Proper silent cleanup — `try/catch` for local, `.catch(() => {})` for remote. Windows uses `-Force -ErrorAction SilentlyContinue`, Linux uses `rm -f`.
-- `try/finally` wraps the entire execution block including both retry paths (stale session + server error). Cleanup is guaranteed.
-- Unique filenames: `crypto.randomUUID().slice(0, 8)` gives 8 hex chars — collision probability is negligible. The `.fleet-task-*.md` pattern is in `.gitignore` and `tpl-doer.md` warns doers not to commit it.
-- `promptFileName` is passed through to `promptOpts.promptFile` which flows into all provider `buildPromptCommand` calls correctly.
+## What's Good
+- R5: `credentialFileWrite(content, destPath)` and `credentialFileRemove(destPath)` are fully parameterized — no hardcoded paths in Linux or Windows implementations. `credentialFileCheck(destPath)` also parameterized consistently.
+- R6: `deepMergeJson(destPath, newObj)` — Linux uses inline Node.js script that reads existing file, falls back to `{}` on missing/invalid, performs recursive deep merge (nested objects merged, arrays replaced not clobbered as objects), and writes back with `JSON.stringify(merged, null, 2)`. Parent dir created via `mkdir -p`.
+- R6 Windows: PowerShell `Merge-Objects` function recurses on PSCustomObject properties, `ConvertTo-Json -Depth 99` preserves nesting, falls back to `@{}` on missing file. Uses `-EncodedCommand` for safe transport.
+- `readRemoteJson` — both platforms return raw JSON text, defaulting to `'{}'` when file is missing. Linux: `[ -f ] && cat || echo '{}'`. Windows: `Test-Path` guard with `Get-Content -Raw`.
+- `deep-merge.ts` utility: `isObject()` correctly excludes arrays (`!Array.isArray`). `deepMerge()` recursively merges nested objects; non-object values (including arrays) are replaced wholesale — correct behavior.
+- Callers pass explicit paths: `provision-auth.ts:96` calls `credentialFileWrite(creds, '~/.claude/.credentials.json')`, `remove-member.ts:37` calls `credentialFileRemove('~/.claude/.credentials.json')` — same path previously hardcoded, now parameterized.
+- No regressions in existing credential handling — method signatures changed but all call sites updated.
 
-### OS command builders
-- **Windows** (`windows.ts:93-112`): Uses `provider.headlessInvocation(instruction)` which wraps the instruction in the provider's native flag. The instruction is a fixed template with only `promptFile` interpolated — safe since the filename is internally generated `[a-f0-9]{8}`.
-- **Linux** (`linux.ts:84-95`): Delegates to `provider.buildPromptCommand(opts)` which builds the full command. The `cdPrefix` injection of `CLI_PATH` is clean.
-- No shell injection risk in either path.
+---
 
-### Provider `headlessInvocation` / `buildPromptCommand`
-All four providers (Claude, Gemini, Codex, Copilot) use the identical instruction template: `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.` All quote it properly — Claude/Gemini/Copilot via `-p "..."`, Codex via `exec "..."`. Folder paths use `escapeDoubleQuoted()` consistently.
+## Review: sprint/oauth-providers Phase 3
+Date: 2026-04-04
+Reviewer: fleet-rev
 
-### Null byte defense
-- `send_files.ts:31` — checks `destination_path` before path resolution. Correct placement.
-- `receive_files.ts:39` — checks each `remote_path` in the loop before resolution. Correct placement.
-- Both return clear error messages. Coverage is complete for the file transfer tools.
+## Verdict: APPROVED
 
-### resolvedPath passthrough (`send_files.ts:81`)
-Output now shows the actual resolved destination path instead of just the work folder. Correct.
+## Issues
+None blocking. One minor observation:
 
-## Approved for merge: yes
+- `provision-auth.ts:107` — the `credentialFiles.find(f => f.remotePath.includes('settings.json'))` search is dead code: no provider currently includes `settings.json` in `oauthCredentialFiles()` (settings are handled exclusively via `oauthSettingsMerge()`). The fallback `provider.credentialPath + "/settings.json"` always runs. Not a bug — just unnecessary.
+
+## What's Good
+
+### R4: `provisionOAuthCopy(agent, provider)` orchestration
+- Iterates `provider.oauthCredentialFiles()` and writes each file via `credentialFileWrite(content, file.remotePath)` — no hardcoded paths.
+- Reads local credential files via `file.localPath.replace('~', os.homedir())`, validates JSON credentials before deploying (expired-no-refresh check).
+- If `provider.oauthSettingsMerge()` returns non-null, calls `deepMergeJson` with the provider's settings path — fully provider-generic.
+- For each var in `provider.oauthEnvVarsToUnset()`, calls `cmds.unsetEnv()` which removes from `~/.bashrc`/`~/.profile` (consistent with `setEnv` behavior).
+- Auth verify runs after OAuth copy: Claude via prompt, others via version check.
+
+### Entry point branching (provision-auth.ts:241-253)
+- `if api_key → provisionApiKey` ✅
+- `else if oauthCredentialFiles()?.length → provisionOAuthCopy` ✅
+- `else → collectOobApiKey` fallback ✅
+- Old `readMasterCredentials()` and `provisionMasterToken()` removed — replaced by generic `provisionOAuthCopy`.
+
+### R5 cleanup: `remove-member.ts`
+- Loops `provider.oauthCredentialFiles() ?? []` and removes each `file.remotePath` — no hardcoded paths. Previously hardcoded `~/.claude/.credentials.json` is gone.
+
+### Tests
+- `provision-auth.test.ts`: Claude OAuth path covered (deploy master creds, missing creds, expired token, refresh token, near-expiry). Assertions updated to match new `"OAuth credentials for claude deployed"` message. Mock intercepts `.credentials.json` reads correctly.
+- `tool-provider.test.ts`: OOB fallback test mocks Gemini's `oauthCredentialFiles()` returning `null` to force OOB path — valid. Multi-provider API key tests cover all four providers. No regressions in execute-prompt or update-agent-cli tests.
+
+---
+
+## Review: sprint/oauth-providers Phase 4 (Final) — Merge Gate
+Date: 2026-04-04
+Reviewer: fleet-rev
+
+## Verdict: APPROVED — ready to merge after CI passes
+
+## Phase 4: R8 Auth Mode Display
+
+### member-detail.ts
+- Checks `provider.oauthCredentialFiles()` via `credentialFileCheck(oauthFiles[0].remotePath)` — provider-generic, no hardcoded paths.
+- Checks `provider.authEnvVar` via `apiKeyCheck()` — provider-generic.
+- Auth mode logic:
+  - Both present → `"api-key (WARNING: OAuth also present — API key takes precedence)"` ✅
+  - API key only → `"api-key"` ✅
+  - OAuth only → `"oauth"` ✅
+  - Neither → `"none"` ✅
+- Compact format includes `auth=` in output line.
+
+### list-members.ts
+- `getAuthStatus()` function performs same provider-generic checks per member.
+- Auth mode values: `"api-key (warn: oauth)"`, `"api-key"`, `"oauth"`, `"none"`, `"offline"`, `"N/A"` (local).
+- Checks run in parallel via `Promise.all(agents.map(getAuthStatus))`.
+
+### Tests (agent-detail.test.ts)
+- `reports no auth when nothing is found` → expects `"none"` ✅
+- `detects both auth methods when present` → expects WARNING string ✅
+- `detects API key only` → expects `"api-key"` without OAuth mention ✅
+
+## Holistic Sprint Review — Acceptance Criteria
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | `provision_auth` on Gemini (no api_key) copies all OAuth files and merges settings.json | ✅ `provisionOAuthCopy` iterates `oauthCredentialFiles()` (2 files for Gemini), then calls `deepMergeJson` with `oauthSettingsMerge()` |
+| 2 | `provision_auth` on Claude is unchanged | ✅ Claude path preserved — `oauthCredentialFiles()` returns 1 file, `oauthSettingsMerge()` returns null (no merge), same verification |
+| 3 | `composePermissionConfig` in Gemini merges settings.json instead of overwriting | ✅ `deepMergeJson` performs recursive merge |
+| 4 | `GEMINI_API_KEY` is unset from remote shell profiles after Gemini OAuth provisioning | ✅ `oauthEnvVarsToUnset()` returns `['GEMINI_API_KEY']`, `provisionOAuthCopy` calls `unsetEnv` for each |
+| 5 | `remove_member` cleans up OAuth files for any provider | ✅ Loops `provider.oauthCredentialFiles() ?? []` |
+| 6 | Zero hardcoded provider paths in provision-auth.ts or remove-member.ts | ✅ Verified via grep — no matches for `.claude/`, `.gemini/`, `.codex/`, `.copilot/` |
+| 7 | Build passes, existing tests pass | ✅ `tsc --noEmit` clean, 612 tests pass (0 failures) |
+| 8 | Codex/Copilot stubs return null/[] with comments | ✅ Verified in Phase 1 review |
+
+## Files Changed (30 files, +1350/-110)
+- **Provider interface**: `provider.ts` (+3 methods), `claude.ts`, `gemini.ts`, `codex.ts`, `copilot.ts`
+- **OS commands**: `os-commands.ts`, `linux.ts`, `windows.ts` (parameterized credential ops, `readRemoteJson`, `deepMergeJson`)
+- **Tools**: `provision-auth.ts` (refactored to provider interface), `remove-member.ts` (provider-generic cleanup), `member-detail.ts` (auth display), `list-members.ts` (auth display)
+- **Utilities**: `deep-merge.ts` (new)
+- **Tests**: `provision-auth.test.ts`, `tool-provider.test.ts`, `agent-detail.test.ts`, `platform.test.ts`
+- **Support files**: `requirements.md`, `progress.json`, `feedback.md`, `PLAN.md`, dashboard merge utility, Gemini config files

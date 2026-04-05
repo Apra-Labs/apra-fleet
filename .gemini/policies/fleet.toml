@@ -1,0 +1,35 @@
+﻿[policy]
+mode = "auto_edit"
+description = "Fleet doer permissions"
+
+[policy.tools]
+allow = [
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "Bash(git:*)",
+  "Bash(which:*)",
+  "Bash(ls:*)",
+  "Bash(cat:*)",
+  "Bash(head:*)",
+  "Bash(tail:*)",
+  "Bash(mkdir:*)",
+  "Bash(cp:*)",
+  "Bash(mv:*)",
+  "Bash(rm:*)",
+  "Bash(find:*)",
+  "Bash(wc:*)",
+  "Bash(sort:*)",
+  "Bash(diff:*)",
+  "Bash(echo:*)",
+  "Bash(touch:*)",
+  "Bash(chmod:*)",
+  "Bash(curl:*)",
+  "Bash(tar:*)",
+  "Bash(unzip:*)",
+  "Bash(npm:*)",
+  "Bash(npx:*)"
+]
+

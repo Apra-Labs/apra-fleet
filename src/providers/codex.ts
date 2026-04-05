@@ -156,6 +156,18 @@ export class CodexProvider implements ProviderAdapter {
     return true;
   }
 
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null {
+    return null; // Codex uses API key only, no OAuth credential files
+  }
+
+  oauthSettingsMerge(): Record<string, unknown> | null {
+    return null;
+  }
+
+  oauthEnvVarsToUnset(): string[] {
+    return [];
+  }
+
   jsonOutputFlag(): string {
     return '--json';
   }
