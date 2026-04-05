@@ -1,33 +1,32 @@
-## Review: sprint/oauth-providers Plan
+## Review: sprint/oauth-providers Plan v2
 Date: 2026-04-04
 Reviewer: fleet-rev
 
 ## Verdict: CHANGES NEEDED
 
-## Issues
+**Note:** PLAN.md is unchanged from v1 review. The same 6-task plan remains. All previously identified gaps persist.
 
-1. **R1 not covered** — The plan never adds `oauthCredentialFiles()`, `oauthSettingsMerge()`, or `oauthEnvVarsToUnset()` to `ProviderAdapter`. Instead it parameterizes existing methods with a `provider` object, which only exposes `credentialPath` (a single path string). This cannot handle Gemini's 3-file OAuth or per-provider settings merge.
+## Remaining Gaps
 
-2. **R2 not covered** — No mention of implementing the three new methods in `GeminiProvider`. Gemini OAuth requires copying `oauth_creds.json`, `google_accounts.json`, AND merging `settings.json` with `selectedType: 'oauth-personal'`. The plan also omits unsetting `GEMINI_API_KEY` from remote shell profiles after OAuth provisioning. The `composePermissionConfig` overwrite-vs-merge issue is also not addressed.
+1. **R1 not covered** — `ProviderAdapter` never gets `oauthCredentialFiles()`, `oauthSettingsMerge()`, or `oauthEnvVarsToUnset()`. The plan only parameterizes existing methods with a `provider` object exposing `credentialPath` (single string), which cannot handle multi-file OAuth (Gemini needs 3 files) or per-provider settings merge/env cleanup.
 
-3. **R3 not covered** — No mention of implementing the new interface methods in `ClaudeProvider` or migrating away from `supportsOAuthCopy()`. The existing hard-coded `readMasterCredentials()` path (`~/.claude/.credentials.json`) would remain.
+2. **R2 not covered** — No `GeminiProvider` implementation of the three new methods. Missing: `oauth_creds.json` + `google_accounts.json` copy, `settings.json` merge with `selectedType: 'oauth-personal'`, `GEMINI_API_KEY` unset, and fix for `composePermissionConfig` overwriting settings.json.
 
-4. **R4 partially covered** — Task 4 refactors `provision-auth.ts` but only parameterizes the single credential path. It does not implement the generic `provisionOAuthCopy()` flow that iterates `oauthCredentialFiles()`, calls `oauthSettingsMerge()`, and runs `oauthEnvVarsToUnset()`. The hard-coded Claude-only `readMasterCredentials()` and `verifyWithClaudePrompt()` remain.
+3. **R3 not covered** — No `ClaudeProvider` migration to new interface methods. `supportsOAuthCopy()` removal not planned.
 
-5. **R6 not covered** — No settings merge helper (deep-merge read/merge/write) is planned. This is critical for both Gemini OAuth provisioning and fixing the `composePermissionConfig` overwrite bug.
+4. **R4 partially covered** — Task 4 parameterizes the single credential path but does not implement the generic `provisionOAuthCopy()` loop over `oauthCredentialFiles()` → `oauthSettingsMerge()` → `oauthEnvVarsToUnset()`.
 
-6. **R7 not covered** — No investigation or stubs for Codex and Copilot providers.
+5. **R5 partially covered** — Parameterizes with `provider` object instead of `destPath` string. Does not support writing multiple files per provider.
 
-7. **R8 not covered** — No changes to `member_detail` auth mode display.
+6. **R6 not covered** — No `deepMergeJson` helper for read-merge-write of settings files.
 
-8. **R5 partially covered** — The plan parameterizes `credentialFileWrite`/`credentialFileRemove` with a `provider` object rather than a `destPath` string as specified. More importantly, it doesn't account for writing *multiple* files per provider (Gemini needs 2 credential files + 1 merged settings file).
+7. **R7 not covered** — No Codex/Copilot stubs with null returns.
+
+8. **R8 not covered** — No `member_detail` or `list-members` auth mode detection changes.
 
 ## What's Good
 
-1. **Correct starting point** — Phase 1 correctly identifies that `os-commands.ts` credential helpers need to be parameterized away from hardcoded Claude paths.
-
-2. **Build verification** — Task 6 includes a build+test verification step.
-
-3. **Clean phasing** — The two-phase structure (OS layer first, then orchestration) is a reasonable dependency order.
-
-4. **Scope awareness** — The plan touches the right files (`os-commands.ts`, `provision-auth.ts`, `remove-member.ts`), it just doesn't go deep enough on the interface changes needed.
+1. Correct identification that `os-commands.ts` credential helpers need parameterization.
+2. Build+test verification step included.
+3. Two-phase structure (OS layer → orchestration) is sound dependency ordering.
+4. Touches the right files — needs deeper interface-level changes within them.
