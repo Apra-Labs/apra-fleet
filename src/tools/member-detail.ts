@@ -110,7 +110,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   const authMethods: string[] = [];
   try {
-    const credResult = await strategy.execCommand(cmds.credentialFileCheck(), 10000);
+    const credResult = await strategy.execCommand(cmds.credentialFileCheck('~/.claude/.credentials.json'), 10000);
     if (credResult.stdout.trim() === 'found') {
       authMethods.push('OAuth credentials file');
     }
@@ -246,3 +246,4 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   return t;
 }
+

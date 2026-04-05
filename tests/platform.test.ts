@@ -181,17 +181,17 @@ describe('OsCommands via getOsCommands', () => {
   describe('auth commands', () => {
     for (const [name, cmds] of all) {
       it(`${name}: credentialFileCheck returns a check command`, () => {
-        const cmd = cmds.credentialFileCheck();
+        const cmd = cmds.credentialFileCheck('~/.claude/.credentials.json');
         expect(cmd).toContain('credentials.json');
       });
 
       it(`${name}: credentialFileWrite produces a write command`, () => {
-        const cmd = cmds.credentialFileWrite('{"token":"abc"}');
+        const cmd = cmds.credentialFileWrite('{\"token\":\"abc\"}', '~/.claude/.credentials.json');
         expect(cmd).toMatch(/credentials\.json|EncodedCommand/);
       });
 
       it(`${name}: credentialFileRemove produces a remove command`, () => {
-        const cmd = cmds.credentialFileRemove();
+        const cmd = cmds.credentialFileRemove('~/.claude/.credentials.json');
         expect(cmd.length).toBeGreaterThan(5);
       });
 
@@ -431,3 +431,4 @@ describe('injection prevention', () => {
     expect(winCmds[0]).toContain('SetEnvironmentVariable');
   });
 });
+
