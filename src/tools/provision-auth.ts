@@ -18,7 +18,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
-    `API key for the member's LLM provider. If provided, deploys this key instead of OAuth. The correct env var is determined by the member's llm_provider (e.g. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, COPILOT_GITHUB_TOKEN).`
+    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead.`
   ),
 });
 
