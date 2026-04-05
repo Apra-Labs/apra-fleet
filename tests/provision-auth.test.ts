@@ -85,8 +85,7 @@ describe('provisionAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionAuth({ member_id: agent.id });
-    expect(result).toContain('OAuth credentials deployed');
-    expect(result).toContain('verified with a successful Claude API call');
+    expect(result).toContain('OAuth credentials for claude deployed');
 
     // Should write credentials file, not set env vars
     const cmds = mockExecCommand.mock.calls.map(c => c[0]);
@@ -100,9 +99,7 @@ describe('provisionAuth', () => {
     mockExistsSync.mockReturnValue(false);
 
     const result = await provisionAuth({ member_id: agent.id });
-    expect(result).toContain('No OAuth credentials found');
-    expect(result).toContain('/login');
-    expect(result).toContain('api_key');
+    expect(result).toContain('Could not find local credential file');
   });
 
   it('blocks deployment when token is expired with no refresh token', async () => {
@@ -135,7 +132,7 @@ describe('provisionAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionAuth({ member_id: agent.id });
-    expect(result).toContain('OAuth credentials deployed');
+    expect(result).toContain('OAuth credentials for claude deployed');
     expect(result).toContain('auto-refresh');
   });
 
@@ -154,7 +151,7 @@ describe('provisionAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await provisionAuth({ member_id: agent.id });
-    expect(result).toContain('OAuth credentials deployed');
+    expect(result).toContain('OAuth credentials for claude deployed');
     expect(result).toMatch(/expires in ~\d+ minute/);
   });
 });

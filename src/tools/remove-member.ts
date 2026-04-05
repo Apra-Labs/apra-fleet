@@ -32,9 +32,10 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         const cmds = getOsCommands(getAgentOS(agent));
         const provider = getProvider(agent.llmProvider);
 
-        // Remove credentials file (only for providers that use one, e.g. Claude OAuth)
-        if (provider.supportsOAuthCopy()) {
-          await strategy.execCommand(cmds.credentialFileRemove('~/.claude/.credentials.json'), 10000).catch(() => {});
+        // Remove credentials files for any provider that uses them
+        const credentialFiles = provider.oauthCredentialFiles() ?? [];
+        for (const file of credentialFiles) {
+          await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
         }
 
         // Remove the provider's API key env var from shell profiles

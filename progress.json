@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2023-10-24",
   "total_tasks": 13,
-  "completed": 8,
+  "completed": 11,
   "tasks": [
     { "id": "1.1", "step": "Add to ProviderAdapter interface", "type": "work", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "09dbf51", "notes": "Added oauthCredentialFiles, oauthSettingsMerge, oauthEnvVarsToUnset to ProviderAdapter interface" },
     { "id": "1.2", "step": "Implement in ClaudeProvider", "type": "work", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "09dbf51", "notes": "Claude returns .credentials.json file, null settings merge, empty env unset" },
@@ -17,9 +17,9 @@
     { "id": "2.1", "step": "Add settings merge helper", "type": "work", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "Implementation already existed for this task in os-commands.ts and the OS-specific files. No new commit needed." },
     { "id": "2.2", "step": "Parameterize credentialFileWrite and Remove", "type": "work", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "Implementation was already parameterized. No new commit needed." },
     { "id": "2.3", "step": "VERIFY Phase 2", "type": "verify", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "npm run build: OK. npm test: 39 files, 613 passed, 3 skipped. No code changes in this phase, so no new commit was generated." },
-    { "id": "3.1", "step": "Refactor provision-auth.ts", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
-    { "id": "3.2", "step": "Update remove-member.ts", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
-    { "id": "3.3", "step": "VERIFY Phase 3", "type": "verify", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
+    { "id": "3.1", "step": "Refactor provision-auth.ts", "type": "work", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "tbd", "notes": "Replaced supportsOAuthCopy() with oauthCredentialFiles() interface. Implemented provisionOAuthCopy with file copy, settings merge, env var unset, and auth verify." },
+    { "id": "3.2", "step": "Update remove-member.ts", "type": "work", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "tbd", "notes": "Replaced hardcoded credentialFileRemove call with loop over provider.oauthCredentialFiles()." },
+    { "id": "3.3", "step": "VERIFY Phase 3", "type": "verify", "status": "completed", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "tbd", "notes": "npm run build: 0 TS errors. npm test: 39 files, 613 passed, 3 skipped. Fixed test naming collision in tool-provider.test.ts (providers array shadowed module import)." },
     { "id": "4.1", "step": "Update member-detail.ts and list-members.ts", "type": "work", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" },
     { "id": "4.2", "step": "VERIFY Phase 4", "type": "verify", "status": "pending", "tier": "standard", "tokens": { "doer": { "input": 0, "output": 0 }, "reviewer": { "input": 0, "output": 0 } }, "commit": "", "notes": "" }
   ]
