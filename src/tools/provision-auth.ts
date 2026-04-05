@@ -18,7 +18,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
-    `API key for the member's LLM provider (e.g. ANTHROPIC_API_KEY for Claude, GEMINI_API_KEY for Gemini, OPENAI_API_KEY for Codex, COPILOT_GITHUB_TOKEN for Copilot). If provided, deploys this key instead of running OAuth login.`
+    `API key for the member's LLM provider. If provided, deploys this key instead of OAuth. The correct env var is determined by the member's llm_provider (e.g. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, COPILOT_GITHUB_TOKEN).`
   ),
 });
 
