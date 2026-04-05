@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "id": "task-1",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-2",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-3",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "task-4",
+      "status": "pending",
+      "type": "verify",
+      "notes": ""
+    }
+  ]
+}
