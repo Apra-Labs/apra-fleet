@@ -70,3 +70,54 @@ None blocking. One minor observation:
 ### Tests
 - `provision-auth.test.ts`: Claude OAuth path covered (deploy master creds, missing creds, expired token, refresh token, near-expiry). Assertions updated to match new `"OAuth credentials for claude deployed"` message. Mock intercepts `.credentials.json` reads correctly.
 - `tool-provider.test.ts`: OOB fallback test mocks Gemini's `oauthCredentialFiles()` returning `null` to force OOB path — valid. Multi-provider API key tests cover all four providers. No regressions in execute-prompt or update-agent-cli tests.
+
+---
+
+## Review: sprint/oauth-providers Phase 4 (Final) — Merge Gate
+Date: 2026-04-04
+Reviewer: fleet-rev
+
+## Verdict: APPROVED — ready to merge after CI passes
+
+## Phase 4: R8 Auth Mode Display
+
+### member-detail.ts
+- Checks `provider.oauthCredentialFiles()` via `credentialFileCheck(oauthFiles[0].remotePath)` — provider-generic, no hardcoded paths.
+- Checks `provider.authEnvVar` via `apiKeyCheck()` — provider-generic.
+- Auth mode logic:
+  - Both present → `"api-key (WARNING: OAuth also present — API key takes precedence)"` ✅
+  - API key only → `"api-key"` ✅
+  - OAuth only → `"oauth"` ✅
+  - Neither → `"none"` ✅
+- Compact format includes `auth=` in output line.
+
+### list-members.ts
+- `getAuthStatus()` function performs same provider-generic checks per member.
+- Auth mode values: `"api-key (warn: oauth)"`, `"api-key"`, `"oauth"`, `"none"`, `"offline"`, `"N/A"` (local).
+- Checks run in parallel via `Promise.all(agents.map(getAuthStatus))`.
+
+### Tests (agent-detail.test.ts)
+- `reports no auth when nothing is found` → expects `"none"` ✅
+- `detects both auth methods when present` → expects WARNING string ✅
+- `detects API key only` → expects `"api-key"` without OAuth mention ✅
+
+## Holistic Sprint Review — Acceptance Criteria
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | `provision_auth` on Gemini (no api_key) copies all OAuth files and merges settings.json | ✅ `provisionOAuthCopy` iterates `oauthCredentialFiles()` (2 files for Gemini), then calls `deepMergeJson` with `oauthSettingsMerge()` |
+| 2 | `provision_auth` on Claude is unchanged | ✅ Claude path preserved — `oauthCredentialFiles()` returns 1 file, `oauthSettingsMerge()` returns null (no merge), same verification |
+| 3 | `composePermissionConfig` in Gemini merges settings.json instead of overwriting | ✅ `deepMergeJson` performs recursive merge |
+| 4 | `GEMINI_API_KEY` is unset from remote shell profiles after Gemini OAuth provisioning | ✅ `oauthEnvVarsToUnset()` returns `['GEMINI_API_KEY']`, `provisionOAuthCopy` calls `unsetEnv` for each |
+| 5 | `remove_member` cleans up OAuth files for any provider | ✅ Loops `provider.oauthCredentialFiles() ?? []` |
+| 6 | Zero hardcoded provider paths in provision-auth.ts or remove-member.ts | ✅ Verified via grep — no matches for `.claude/`, `.gemini/`, `.codex/`, `.copilot/` |
+| 7 | Build passes, existing tests pass | ✅ `tsc --noEmit` clean, 612 tests pass (0 failures) |
+| 8 | Codex/Copilot stubs return null/[] with comments | ✅ Verified in Phase 1 review |
+
+## Files Changed (30 files, +1350/-110)
+- **Provider interface**: `provider.ts` (+3 methods), `claude.ts`, `gemini.ts`, `codex.ts`, `copilot.ts`
+- **OS commands**: `os-commands.ts`, `linux.ts`, `windows.ts` (parameterized credential ops, `readRemoteJson`, `deepMergeJson`)
+- **Tools**: `provision-auth.ts` (refactored to provider interface), `remove-member.ts` (provider-generic cleanup), `member-detail.ts` (auth display), `list-members.ts` (auth display)
+- **Utilities**: `deep-merge.ts` (new)
+- **Tests**: `provision-auth.test.ts`, `tool-provider.test.ts`, `agent-detail.test.ts`, `platform.test.ts`
+- **Support files**: `requirements.md`, `progress.json`, `feedback.md`, `PLAN.md`, dashboard merge utility, Gemini config files
