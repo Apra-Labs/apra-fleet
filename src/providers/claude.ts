@@ -129,6 +129,18 @@ export class ClaudeProvider implements ProviderAdapter {
     return true;
   }
 
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null {
+    return [{ localPath: '~/.claude/.credentials.json', remotePath: '~/.claude/.credentials.json' }];
+  }
+
+  oauthSettingsMerge(): Record<string, unknown> | null {
+    return null;
+  }
+
+  oauthEnvVarsToUnset(): string[] {
+    return [];
+  }
+
   jsonOutputFlag(): string {
     return '--output-format json';
   }

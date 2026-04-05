@@ -148,6 +148,18 @@ export class CopilotProvider implements ProviderAdapter {
     return true;
   }
 
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null {
+    return null; // Copilot uses GitHub token only, no OAuth credential files
+  }
+
+  oauthSettingsMerge(): Record<string, unknown> | null {
+    return null;
+  }
+
+  oauthEnvVarsToUnset(): string[] {
+    return [];
+  }
+
   jsonOutputFlag(): string {
     return '--format json';
   }
