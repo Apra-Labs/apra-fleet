@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
 import { encryptPassword } from '../utils/crypto.js';
-import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { collectOobPassword } from '../services/auth-socket.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const updateMemberSchema = z.object({
-  member_id: z.string().describe('The UUID of the member (worker) to update'),
+  ...memberIdentifier,
   friendly_name: z.string()
     .min(1).max(64)
     .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')
@@ -23,7 +23,7 @@ export const updateMemberSchema = z.object({
     'Trigger secure out-of-band password re-entry for a member already using password auth. '
     + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'
   ),
-  key_path: z.string().optional().describe('New path to SSH private key'),
+  key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
   work_folder: z.string().optional().describe('New working directory on target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
@@ -32,7 +32,6 @@ export const updateMemberSchema = z.object({
   cloud_region: z.string().optional().describe('AWS region for the cloud instance'),
   cloud_profile: z.string().optional().describe('AWS CLI profile name'),
   cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
-  cloud_ssh_key_path: z.string().optional().describe('Path to SSH private key for cloud lifecycle. Also updates the member key_path.'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
   llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().describe('Change the LLM provider for this member.'),
 });
@@ -40,7 +39,7 @@ export const updateMemberSchema = z.object({
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 
 export async function updateMember(input: UpdateMemberInput): Promise<string> {
-  const existingOrError = getAgentOrFail(input.member_id);
+  const existingOrError = resolveMember(input.member_id, input.member_name);
   if (typeof existingOrError === 'string') return existingOrError;
   const existing = existingOrError as Agent;
 
@@ -93,16 +92,12 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.git_repos) updates.gitRepos = input.git_repos;
 
   // Cloud field updates: merge into existing cloud config
-  if (input.cloud_ssh_key_path || input.cloud_region || input.cloud_profile !== undefined || input.cloud_idle_timeout_min || input.cloud_activity_command !== undefined) {
+  if (input.cloud_region || input.cloud_profile !== undefined || input.cloud_idle_timeout_min || input.cloud_activity_command !== undefined) {
     if (existing.cloud) {
       const updatedCloud = { ...existing.cloud };
       if (input.cloud_region) updatedCloud.region = input.cloud_region;
       if (input.cloud_profile !== undefined) updatedCloud.profile = input.cloud_profile || undefined;
       if (input.cloud_idle_timeout_min) updatedCloud.idleTimeoutMin = input.cloud_idle_timeout_min;
-      if (input.cloud_ssh_key_path) {
-        updatedCloud.sshKeyPath = input.cloud_ssh_key_path;
-        updates.keyPath = input.cloud_ssh_key_path; // keep top-level keyPath in sync (F4)
-      }
       if (input.cloud_activity_command !== undefined) {
         updatedCloud.activityCommand = input.cloud_activity_command || undefined;
       }
@@ -110,9 +105,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
   }
 
-  const updated = updateInRegistry(input.member_id, updates);
+  const updated = updateInRegistry(existing.id, updates);
   if (!updated) {
-    return `Failed to update member "${input.member_id}".`;
+    return `Failed to update member "${existing.id}".`;
   }
   writeStatusline();
 

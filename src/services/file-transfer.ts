@@ -1,5 +1,5 @@
 import type { Agent } from '../types.js';
-import { uploadViaSFTP } from './sftp.js';
+import { uploadViaSFTP, downloadViaSFTP } from './sftp.js';
 
 /**
  * Upload files to a remote agent via SFTP.
@@ -7,7 +7,18 @@ import { uploadViaSFTP } from './sftp.js';
 export async function uploadFiles(
   agent: Agent,
   localPaths: string[],
-  remoteSubfolder?: string
+  destinationPath?: string
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
-  return uploadViaSFTP(agent, localPaths, remoteSubfolder);
+  return uploadViaSFTP(agent, localPaths, destinationPath);
+}
+
+/**
+ * Download files from a remote agent via SFTP.
+ */
+export async function downloadFiles(
+  agent: Agent,
+  remotePaths: string[],
+  localDestination: string
+): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
+  return downloadViaSFTP(agent, remotePaths, localDestination);
 }

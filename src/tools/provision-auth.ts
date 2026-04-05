@@ -6,7 +6,8 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { escapeDoubleQuoted } from '../utils/shell-escape.js';
-import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
@@ -15,9 +16,9 @@ import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
 export const provisionAuthSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   api_key: z.string().optional().describe(
-    'API key for the member\'s LLM provider (e.g. ANTHROPIC_API_KEY for Claude, GEMINI_API_KEY for Gemini, OPENAI_API_KEY for Codex, COPILOT_GITHUB_TOKEN for Copilot). If provided, deploys this key instead of running OAuth login.'
+    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead.`
   ),
 });
 
@@ -62,58 +63,91 @@ async function verifyWithVersion(agent: Agent, provider: ProviderAdapter, envPre
 }
 
 // ---------------------------------------------------------------------------
-// Flow A — Copy master's OAuth credentials (Claude only)
+// Flow A: Copy OAuth credentials using the provider interface
 // ---------------------------------------------------------------------------
-
-function readMasterCredentials(): string | null {
-  const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
-  try {
-    if (fs.existsSync(credPath)) {
-      return fs.readFileSync(credPath, 'utf-8').trim();
-    }
-  } catch { /* ignore */ }
-  return null;
-}
-
-async function provisionMasterToken(agent: Agent): Promise<string> {
+async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Promise<string> {
   const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
 
-  const creds = readMasterCredentials();
-  if (!creds) {
-    return `❌ No OAuth credentials found on this machine (~/.claude/.credentials.json).\n`
-      + `  Run /login in your Claude Code session, or use the api_key parameter instead.`;
+  const credentialFiles = provider.oauthCredentialFiles();
+  if (!credentialFiles || credentialFiles.length === 0) {
+    return `❌ Provider "${provider.name}" does not support OAuth credential copy.`;
   }
 
-  const credStatus = validateCredentials(creds);
-  if (credStatus?.status === 'expired-no-refresh') {
-    return `❌ OAuth token is expired with no refresh token.\n`
-      + `  Run /login to get a fresh token, then re-run provision_auth.`;
-  }
-
-  // Write credentials file to remote (mkdir + write in one command)
-  try {
-    const result = await strategy.execCommand(cmds.credentialFileWrite(creds), 10000);
-    if (result.code !== 0 && result.stderr) {
-      return `❌ Failed to write credentials on "${agent.friendlyName}": ${result.stderr}`;
+  // 1. Copy credential files
+  let credStatus: ReturnType<typeof validateCredentials> | null = null;
+  for (const file of credentialFiles) {
+    try {
+      const localPath = file.localPath.replace('~', os.homedir());
+      if (fs.existsSync(localPath)) {
+        const content = fs.readFileSync(localPath, 'utf-8');
+        // Validate credentials before sending
+        if (file.localPath.includes('.json')) {
+            credStatus = validateCredentials(content);
+            if (credStatus?.status === 'expired-no-refresh') {
+              return `❌ OAuth token in ${file.localPath} is expired with no refresh token.
+`
+                + `  Run /login in your ${provider.name} session, then re-run provision_auth.`;
+            }
+        }
+        const result = await strategy.execCommand(cmds.credentialFileWrite(content, file.remotePath), 10000);
+        if (result.code !== 0 && result.stderr) {
+          return `❌ Failed to write ${file.remotePath} on "${agent.friendlyName}": ${result.stderr}`;
+        }
+      } else {
+        return `❌ Could not find local credential file: ${localPath}`;
+      }
+    } catch (err: any) {
+      return `❌ Failed to copy ${file.localPath} to "${agent.friendlyName}": ${err.message}`;
     }
-  } catch (err: any) {
-    return `❌ Failed to write credentials on "${agent.friendlyName}": ${err.message}`;
   }
 
-  const authWorks = await verifyWithClaudePrompt(agent);
+  // 2. Merge settings
+  const mergeObj = provider.oauthSettingsMerge();
+  if (mergeObj) {
+    const settingsFile = credentialFiles.find(f => f.remotePath.includes('settings.json'));
+    const remoteSettingsPath = settingsFile ? settingsFile.remotePath : `${provider.credentialPath.replace(/\/$/, '')}/settings.json`;
+    try {
+      const result = await strategy.execCommand(cmds.deepMergeJson(remoteSettingsPath, mergeObj), 10000);
+      if (result.code !== 0 && result.stderr) {
+        return `❌ Failed to merge settings on "${agent.friendlyName}": ${result.stderr}`;
+      }
+    } catch (err: any) {
+      return `❌ Failed to merge settings on "${agent.friendlyName}": ${err.message}`;
+    }
+  }
+
+  // 3. Unset env vars
+  const varsToUnset = provider.oauthEnvVarsToUnset() ?? [];
+  for (const envVar of varsToUnset) {
+    const unsetCmds = cmds.unsetEnv(envVar);
+    for (const cmd of unsetCmds) {
+      // Best effort, fire and forget
+      await strategy.execCommand(cmd, 15000).catch(() => {});
+    }
+  }
+
+  // 4. Verify auth
+  const authWorks = provider.name === 'claude'
+    ? await verifyWithClaudePrompt(agent)
+    : await verifyWithVersion(agent, provider);
+
   touchAgent(agent.id);
 
   const statusNote = credentialStatusNote(credStatus);
-  const suffix = statusNote ? `\n  ${statusNote}\n` : '';
+  const suffix = statusNote ? `\n  ${statusNote}` : '';
 
   if (authWorks) {
-    return `✅ OAuth credentials deployed to "${agent.friendlyName}"\n`
-      + `  Auth: verified with a successful Claude API call\n` + suffix;
+    return `✅ OAuth credentials for ${provider.name} deployed to "${agent.friendlyName}"
+`
+      + `  Auth: verified with a successful ${provider.name} API call.${suffix}`;
   }
-  return `⚠️ Credentials deployed to "${agent.friendlyName}" but could not verify auth.\n`
-    + `  The credentials file was written — try running a prompt to confirm.\n` + suffix;
+
+  return `⚠️ ${provider.name} OAuth credentials deployed to "${agent.friendlyName}" but could not verify auth.
+`
+    + `  Credential files were written — try running a prompt to confirm.${suffix}`;
 }
+
 
 // ---------------------------------------------------------------------------
 // Flow B — API Key Override (all providers)
@@ -161,17 +195,24 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 
   let result = '';
   if (errors.length === 0) {
-    result += `✅ API key provisioned on "${agent.friendlyName}"\n`;
+    result += `✅ API key provisioned on "${agent.friendlyName}"
+`;
   } else {
-    result += `⚠️ API key provisioned with some issues on "${agent.friendlyName}":\n`;
+    result += `⚠️ API key provisioned with some issues on "${agent.friendlyName}":
+`;
     for (const e of errors) {
-      result += `  - ${e}\n`;
+      result += `  - ${e}
+`;
     }
   }
 
-  result += `\n  Environment: ${envVarName} set in shell profiles and stored in member config\n`;
-  result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}\n`;
-  result += `  Auth test: ${authWorks ? `${provider.name} CLI authenticated successfully` : 'Could not verify — may need to re-login'}\n`;
+  result += `
+  Environment: ${envVarName} set in shell profiles and stored in member config
+`;
+  result += `  Verification: ${verified ? 'Key visible in new shell' : 'Key will be available after re-login'}
+`;
+  result += `  Auth test: ${authWorks ? `${provider.name} CLI authenticated successfully` : 'Could not verify — may need to re-login'}
+`;
 
   return result;
 }
@@ -181,7 +222,7 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
 // ---------------------------------------------------------------------------
 
 export async function provisionAuth(input: ProvisionAuthInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
@@ -197,16 +238,18 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
 
   const provider = getProvider(agent.llmProvider);
 
+  // Flow B: API key is provided directly
   if (input.api_key) {
     return provisionApiKey(agent, input.api_key, provider);
   }
 
-  // Non-Claude providers: collect API key via OOB terminal prompt
-  if (!provider.supportsOAuthCopy()) {
-    const oob = await collectOobApiKey(agent.friendlyName, 'provision_auth');
-    if ('fallback' in oob) return oob.fallback;
-    return provisionApiKey(agent, decryptPassword(oob.password), provider);
+  // Flow A: OAuth credentials copy
+  if (provider.oauthCredentialFiles()?.length) {
+    return provisionOAuthCopy(agent, provider);
   }
 
-  return provisionMasterToken(agent);
+  // Fallback: OOB key collection for non-OAuth or non-copyable providers
+  const oob = await collectOobApiKey(agent.friendlyName, 'provision_auth');
+  if ('fallback' in oob) return oob.fallback;
+  return provisionApiKey(agent, decryptPassword(oob.password), provider);
 }

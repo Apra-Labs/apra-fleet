@@ -97,7 +97,6 @@ function makeCloudAgent(overrides: Partial<Agent> = {}): Agent {
       instanceId: 'i-0abc1234def567890',
       region: 'us-east-1',
       idleTimeoutMin: 1,
-      sshKeyPath: '/home/user/.ssh/key.pem',
     },
     ...overrides,
   });

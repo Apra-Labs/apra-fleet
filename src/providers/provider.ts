@@ -20,7 +20,7 @@ export function buildResumeFlag(sessionId: string | undefined, fallback = ''): s
 
 export interface PromptOptions {
   folder: string;
-  b64Prompt: string;
+  promptFile: string;
   sessionId?: string;
   dangerouslySkipPermissions?: boolean;
   model?: string;
@@ -82,11 +82,15 @@ export interface ProviderAdapter {
   // Auth capabilities
   supportsOAuthCopy(): boolean;
   supportsApiKey(): boolean;
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null;
+  oauthSettingsMerge(): Record<string, unknown> | null;
+  oauthEnvVarsToUnset(): string[];
 
   // Windows / PowerShell prompt building helpers
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
   jsonOutputFlag(): string;
-  /** Args for headless invocation with an already-decoded prompt expression (e.g. "$p" on Windows).
-   *  Returns e.g. "-p $p" for Claude/Gemini/Copilot or "exec $p" for Codex. */
-  headlessInvocation(promptExpr: string): string;
+  /** Args for headless invocation with a safe literal prompt string.
+   *  Returns e.g. `-p "LITERAL"` for Claude/Gemini/Copilot or `exec "LITERAL"` for Codex. */
+  headlessInvocation(promptLiteral: string): string;
 }
+

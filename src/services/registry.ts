@@ -177,18 +177,3 @@ export function hasDuplicateFolder(
 
   return false;
 }
-
-export function resetSession(agentId?: string): number {
-  const registry = loadRegistry();
-  let count = 0;
-  for (const agent of registry.agents) {
-    if (!agentId || agent.id === agentId) {
-      if (agent.sessionId) {
-        agent.sessionId = undefined;
-        count++;
-      }
-    }
-  }
-  saveRegistry(registry);
-  return count;
-}

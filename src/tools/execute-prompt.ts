@@ -1,17 +1,24 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOrFail, getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
+import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import type { Agent, SSHExecResult } from '../types.js';
+import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
 export const executePromptSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
   timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
@@ -32,8 +39,46 @@ function buildFailureMessage(agentName: string, result: SSHExecResult, provider:
 
 const SERVER_RETRY_DELAY_MS = 5000;
 
+async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFileName: string, content: string): Promise<void> {
+  if (agent.agentType === 'local') {
+    fs.writeFileSync(path.join(agent.workFolder, promptFileName), content, 'utf-8');
+    return;
+  }
+  const agentOs = getAgentOS(agent);
+  if (agentOs === 'windows') {
+    const escapedFolder = escapeWindowsArg(agent.workFolder);
+    const psScript = `Set-Location "${escapedFolder}"; Set-Content -Path "${promptFileName}" -Value '${content.replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);
+  } else {
+    const b64 = Buffer.from(content).toString('base64');
+    const escapedFolder = escapeDoubleQuoted(agent.workFolder);
+    await strategy.execCommand(`cd "${escapedFolder}" && echo '${b64}' | base64 -d > ${promptFileName}`);
+  }
+}
+
+async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFileName: string): Promise<void> {
+  if (agent.agentType === 'local') {
+    try { fs.unlinkSync(path.join(agent.workFolder, promptFileName)); } catch { /* ignore */ }
+    return;
+  }
+  const agentOs = getAgentOS(agent);
+  if (agentOs === 'windows') {
+    const escapedFolder = escapeWindowsArg(agent.workFolder);
+    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
+  } else {
+    const escapedFolder = escapeDoubleQuoted(agent.workFolder);
+    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
+  }
+}
+
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const promptFileId = crypto.randomUUID().slice(0, 8);
+  const promptFileName = `.fleet-task-${promptFileId}.md`;
+
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {
@@ -46,9 +91,6 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   const cmds = getOsCommands(getAgentOS(agent));
   const provider = getProvider(agent.llmProvider);
 
-  // Base64-encode the prompt to avoid shell escaping issues
-  const b64Prompt = Buffer.from(input.prompt).toString('base64');
-
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
 
   const tiers = provider.modelTiers();
@@ -56,16 +98,23 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     ? (tiers[input.model as keyof typeof tiers] ?? input.model)
     : tiers.standard;
 
-  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
+  const promptOpts = {
     folder: agent.workFolder,
-    b64Prompt,
-    sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
+    promptFile: promptFileName,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
     model: resolvedModel,
     maxTurns: input.max_turns,
+  };
+
+  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
+    ...promptOpts,
+    sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
   });
 
   const timeoutMs = input.timeout_ms ?? 300000;
+
+  // Write the prompt to the unique prompt file before execution
+  await writePromptFile(agent, strategy, promptFileName, input.prompt);
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -76,7 +125,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: resolvedModel, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
@@ -84,7 +133,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, { folder: agent.workFolder, b64Prompt, dangerouslySkipPermissions: input.dangerously_skip_permissions, model: resolvedModel, maxTurns: input.max_turns });
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
     }
@@ -105,5 +154,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
+  } finally {
+    await deletePromptFile(agent, strategy, promptFileName);
   }
 }

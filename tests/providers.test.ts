@@ -265,14 +265,14 @@ describe('GeminiProvider', () => {
   it('maps model tiers', () => {
     expect(p.modelForTier('cheap')).toBe('gemini-2.5-flash');
     expect(p.modelForTier('mid')).toBe('gemini-2.5-pro');
-    expect(p.modelForTier('premium')).toBe('gemini-2.5-pro');
+    expect(p.modelForTier('premium')).toBe('gemini-3-pro-preview');
   });
 
   it('modelTiers() returns cheap/standard/premium mapping', () => {
     const tiers = p.modelTiers();
     expect(tiers.cheap).toBe('gemini-2.5-flash');
     expect(tiers.standard).toBe('gemini-2.5-pro');
-    expect(tiers.premium).toBe('gemini-2.5-pro');
+    expect(tiers.premium).toBe('gemini-3-pro-preview');
   });
 
   it('classifies auth errors', () => {

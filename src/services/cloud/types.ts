@@ -12,7 +12,6 @@ export interface CloudConfig {
   region: string;
   profile?: string;
   idleTimeoutMin: number;
-  sshKeyPath: string;
   /** Custom shell command for workload detection; outputs "busy" or "idle" */
   activityCommand?: string;
 }

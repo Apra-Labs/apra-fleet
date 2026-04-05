@@ -106,8 +106,7 @@ describe('memberDetail auth detection', () => {
     });
 
     const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
-    expect(result.claude.auth).toContain('OAuth credentials file');
-    expect(result.claude.auth).toContain('API key (env)');
+    expect(result.claude.auth).toBe('api-key (WARNING: OAuth also present — API key takes precedence)');
   });
 
   it('detects API key only', async () => {
@@ -124,7 +123,7 @@ describe('memberDetail auth detection', () => {
     });
 
     const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
-    expect(result.claude.auth).toContain('API key (env)');
-    expect(result.claude.auth).not.toContain('OAuth credentials file');
+    expect(result.claude.auth).toBe('api-key');
+    expect(result.claude.auth).not.toContain('OAuth');
   });
 });

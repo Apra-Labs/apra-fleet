@@ -30,9 +30,10 @@ export class CodexProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let cmd = `cd "${escapedFolder}" && codex exec "$(echo '${b64Prompt}' | base64 -d)" --json`;
+    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let cmd = `cd "${escapedFolder}" && codex exec "${instruction}" --json`;
     if (sessionId) {
       cmd += ' resume';
     }
@@ -155,11 +156,23 @@ export class CodexProvider implements ProviderAdapter {
     return true;
   }
 
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null {
+    return null; // Codex uses API key only, no OAuth credential files
+  }
+
+  oauthSettingsMerge(): Record<string, unknown> | null {
+    return null;
+  }
+
+  oauthEnvVarsToUnset(): string[] {
+    return [];
+  }
+
   jsonOutputFlag(): string {
     return '--json';
   }
 
-  headlessInvocation(promptExpr: string): string {
-    return `exec ${promptExpr}`;
+  headlessInvocation(promptLiteral: string): string {
+    return `exec "${promptLiteral}"`;
   }
 }

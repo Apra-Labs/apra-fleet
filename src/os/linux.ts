@@ -1,9 +1,26 @@
-import { execSync } from 'node:child_process';
+﻿import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
 const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
+
+/** Replace leading ~ with $HOME so paths expand correctly inside double-quoted shell strings. */
+function expandHome(p: string): string {
+  return p.startsWith('~/') ? `$HOME/${p.slice(2)}` : p === '~' ? '$HOME' : p;
+}
+
+/**
+ * Escape a path for safe use inside a double-quoted shell string.
+ * Preserves $HOME at the start (it must expand on the remote shell),
+ * and escapes special characters in the rest of the path.
+ */
+function shellPath(p: string): string {
+  if (p.startsWith('$HOME/') || p === '$HOME') {
+    return '$HOME' + escapeDoubleQuoted(p.slice('$HOME'.length));
+  }
+  return escapeDoubleQuoted(p);
+}
 
 export class LinuxCommands implements OsCommands {
   private cachedEnv: Record<string, string> | null = null;
@@ -100,19 +117,44 @@ export class LinuxCommands implements OsCommands {
     return `mkdir -p "${escapeDoubleQuoted(folder)}"`;
   }
 
+  readTextFile(destPath: string): string {
+    return `cat "${escapeDoubleQuoted(destPath)}"`;
+  }
+
+  writeTextFile(destPath: string, content: string): string {
+    return `mkdir -p "$(dirname "${escapeDoubleQuoted(destPath)}")" && printf '%s' "${escapeDoubleQuoted(content)}" > "${escapeDoubleQuoted(destPath)}"`;
+  }
+
+  readRemoteJson(destPath: string): string {
+    const p = expandHome(destPath);
+    return `[ -f "${shellPath(p)}" ] && cat "${shellPath(p)}" || echo '{}'`;
+  }
+
+  deepMergeJson(destPath: string, newObj: Record<string, unknown>): string {
+    const p = expandHome(destPath);
+    const sp = shellPath(p);
+    const newJson = JSON.stringify(newObj).replace(/'/g, "'\\''");
+
+    const script = `const fs=require("fs");const path=process.argv[1];const newObj=JSON.parse(fs.readFileSync(0,"utf8"));let currentData={};try{currentData=JSON.parse(fs.readFileSync(path,"utf8"))}catch(e){}const deepMerge=(target,source)=>{for(const key in source){if(source[key]&&typeof source[key]==="object"&&!Array.isArray(source[key])){target[key]=deepMerge(target[key]||{},source[key])}else{target[key]=source[key]}}return target};const merged=deepMerge(currentData,newObj);fs.writeFileSync(path,JSON.stringify(merged,null,2));`;
+
+    return `mkdir -p "$(dirname "${sp}")" && printf '%s' '${newJson}' | node -e '${script}' "${sp}"`;
+  }
+
   // --- Auth ---
 
-  credentialFileCheck(): string {
-    return 'test -f ~/.claude/.credentials.json && echo found || echo missing';
+  credentialFileCheck(destPath: string): string {
+    const p = expandHome(destPath);
+    return `test -f "${shellPath(p)}" && echo found || echo missing`;
   }
 
-  credentialFileWrite(json: string): string {
-    const escaped = escapeDoubleQuoted(json);
-    return `mkdir -p ~/.claude && printf '%s' "${escaped}" > ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json`;
+  credentialFileWrite(content: string, destPath: string): string {
+    const p = expandHome(destPath);
+    const escaped = escapeDoubleQuoted(content);
+    return `mkdir -p "$(dirname "${shellPath(p)}")" && printf '%s' "${escaped}" > "${shellPath(p)}" && chmod 600 "${shellPath(p)}"`;
   }
 
-  credentialFileRemove(): string {
-    return 'rm -f ~/.claude/.credentials.json';
+  credentialFileRemove(destPath: string): string {
+    return `rm -f "${shellPath(expandHome(destPath))}"`;
   }
 
   apiKeyCheck(envVarName?: string): string {

@@ -33,9 +33,10 @@ export class CopilotProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let cmd = `cd "${escapedFolder}" && copilot -p "$(echo '${b64Prompt}' | base64 -d)" --format json`;
+    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let cmd = `cd "${escapedFolder}" && copilot -p "${instruction}" --format json`;
     if (sessionId) {
       cmd += ' --continue';
     }
@@ -148,11 +149,23 @@ export class CopilotProvider implements ProviderAdapter {
     return true;
   }
 
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null {
+    return null; // Copilot uses GitHub token only, no OAuth credential files
+  }
+
+  oauthSettingsMerge(): Record<string, unknown> | null {
+    return null;
+  }
+
+  oauthEnvVarsToUnset(): string[] {
+    return [];
+  }
+
   jsonOutputFlag(): string {
     return '--format json';
   }
 
-  headlessInvocation(promptExpr: string): string {
-    return `-p ${promptExpr}`;
+  headlessInvocation(promptLiteral: string): string {
+    return `-p "${promptLiteral}"`;
   }
 }

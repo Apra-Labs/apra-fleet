@@ -45,18 +45,27 @@ function sftpPut(sftp: import('ssh2').SFTPWrapper, localPath: string, remotePath
   });
 }
 
+function sftpGet(sftp: import('ssh2').SFTPWrapper, remotePath: string, localPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    sftp.fastGet(remotePath, localPath, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 export async function uploadViaSFTP(
   agent: Agent,
   localPaths: string[],
-  remoteSubfolder?: string
+  destinationPath?: string
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
   const client = await getConnection(agent);
   const sftp = await getSFTP(client);
 
-  let remoteBase = agent.workFolder.replace(/\\/g, '/');
-  if (remoteSubfolder) {
-    remoteBase = `${remoteBase}/${remoteSubfolder}`;
-  }
+  const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
+  const remoteBase = destinationPath
+    ? path.posix.resolve(workFolderPosix, destinationPath.replace(/\\/g, '/'))
+    : workFolderPosix;
 
   await sftpMkdirRecursive(sftp, remoteBase);
 
@@ -68,6 +77,36 @@ export async function uploadViaSFTP(
     const remotePath = `${remoteBase}/${fileName}`;
     try {
       await sftpPut(sftp, localPath, remotePath);
+      success.push(fileName);
+    } catch (err: any) {
+      failed.push({ path: fileName, error: err.message });
+    }
+  }
+
+  return { success, failed };
+}
+
+export async function downloadViaSFTP(
+  agent: Agent,
+  remotePaths: string[],
+  localDestination: string
+): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
+  const client = await getConnection(agent);
+  const sftp = await getSFTP(client);
+
+  fs.mkdirSync(localDestination, { recursive: true });
+
+  const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
+
+  const success: string[] = [];
+  const failed: { path: string; error: string }[] = [];
+
+  for (const remotePath of remotePaths) {
+    const resolvedRemote = path.posix.resolve(workFolderPosix, remotePath.replace(/\\/g, '/'));
+    const fileName = path.posix.basename(resolvedRemote);
+    const localPath = path.join(localDestination, fileName);
+    try {
+      await sftpGet(sftp, resolvedRemote, localPath);
       success.push(fileName);
     } catch (err: any) {
       failed.push({ path: fileName, error: err.message });

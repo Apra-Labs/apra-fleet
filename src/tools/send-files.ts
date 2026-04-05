@@ -1,20 +1,25 @@
+import path from 'node:path';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
-import { getAgentOrFail, touchAgent } from '../utils/agent-helpers.js';
+import { touchAgent } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import type { Agent } from '../types.js';
 
 export const sendFilesSchema = z.object({
-  member_id: z.string().describe('The UUID of the target member (worker)'),
+  ...memberIdentifier,
   local_paths: z.array(z.string()).describe('Array of local file paths to upload'),
-  remote_subfolder: z.string().optional().describe('Optional subfolder within the member\'s remote folder'),
+  destination_path: z.string().optional().describe(
+    'Destination path on the member. Relative paths are resolved from work_folder. ' +
+    'Absolute paths must remain within work_folder — paths outside it are rejected.'
+  ),
 });
 
 export type SendFilesInput = z.infer<typeof sendFilesSchema>;
 
 export async function sendFiles(input: SendFilesInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {
@@ -23,12 +28,37 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
     return `Failed to upload files to "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
 
+  if (input.destination_path?.includes('\0')) {
+    return `⛔ Invalid destination_path: null bytes are not allowed.`;
+  }
+
+  // Path security: verify destination_path stays within work_folder
+  let resolvedPath: string | undefined;
+  if (input.destination_path) {
+    if (agent.agentType === 'local') {
+      const resolved = path.resolve(agent.workFolder, input.destination_path);
+      const workFolderNorm = path.resolve(agent.workFolder);
+      if (resolved !== workFolderNorm && !resolved.startsWith(workFolderNorm + path.sep)) {
+        return 'destination_path resolves outside member work_folder — write blocked';
+      }
+      resolvedPath = resolved;
+    } else {
+      const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
+      const normalizedWorkFolder = workFolderPosix.replace(/\/$/, '');
+      const resolved = path.posix.resolve(workFolderPosix, input.destination_path.replace(/\\/g, '/'));
+      if (resolved !== normalizedWorkFolder && !resolved.startsWith(normalizedWorkFolder + '/')) {
+        return 'destination_path resolves outside member work_folder — write blocked';
+      }
+      resolvedPath = resolved;
+    }
+  }
+
   const strategy = getStrategy(agent);
 
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    const result = await strategy.transferFiles(input.local_paths, input.remote_subfolder);
+    const result = await strategy.transferFiles(input.local_paths, input.destination_path);
 
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
@@ -48,10 +78,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
       }
     }
 
-    const remoteDest = input.remote_subfolder
-      ? `${agent.workFolder}/${input.remote_subfolder}`
-      : agent.workFolder;
-    output += `\nRemote destination: ${remoteDest}`;
+    output += `\nDestination: ${resolvedPath ?? agent.workFolder}`;
 
     return output;
   } catch (err: any) {

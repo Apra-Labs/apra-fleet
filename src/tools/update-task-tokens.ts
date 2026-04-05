@@ -5,9 +5,11 @@ import * as path from 'node:path';
 import { executeCommand } from './execute-command.js';
 import { sendFiles } from './send-files.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
+import type { Agent } from '../types.js';
 
 export const updateTaskTokensSchema = z.object({
-  member_id: z.string().describe('The UUID of the fleet member that owns the progress.json'),
+  ...memberIdentifier,
   progress_json: z.string().describe('Absolute path to progress.json on the member (e.g. /home/user/project/progress.json)'),
   task_id: z.string().describe('The task ID to update (matches tasks[i].id in progress.json)'),
   role: z.enum(['doer', 'reviewer']).describe('Which role accumulated the tokens'),
@@ -25,9 +27,13 @@ function initTokens(): TaskTokens {
 }
 
 export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<string> {
+  const agentOrError = resolveMember(input.member_id, input.member_name);
+  if (typeof agentOrError === 'string') return agentOrError;
+  const memberId = (agentOrError as Agent).id;
+
   // 1. Read current progress.json from the member
   const catResult = await executeCommand({
-    member_id: input.member_id,
+    member_id: memberId,
     command: `cat ${escapeShellArg(input.progress_json)}`,
     timeout_ms: 30000,
     long_running: false,
@@ -74,9 +80,9 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
 
   // 4. Push updated progress.json back to the member
   const sendResult = await sendFiles({
-    member_id: input.member_id,
+    member_id: memberId,
     local_paths: [tmpFile],
-    remote_subfolder: path.dirname(input.progress_json).replace(/^\//, '') || undefined,
+    destination_path: path.dirname(input.progress_json).replace(/^\//, '') || undefined,
   });
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -87,7 +93,7 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
 
   // 5. Commit the updated progress.json on the member
   const commitResult = await executeCommand({
-    member_id: input.member_id,
+    member_id: memberId,
     command: `git add ${escapeShellArg(input.progress_json)} && git commit -m "chore: update token counts for task ${escapeShellArg(input.task_id)}"`,
     timeout_ms: 30000,
     long_running: false,

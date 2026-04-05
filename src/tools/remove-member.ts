@@ -1,22 +1,23 @@
 import { z } from 'zod';
 import fs from 'node:fs';
-import { removeAgent as removeFromRegistry } from '../services/registry.js';
+import { removeAgent as removeFromRegistry, getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
 
 export const removeMemberSchema = z.object({
-  member_id: z.string().describe('The UUID of the member (worker) to remove'),
+  ...memberIdentifier,
 });
 
 export type RemoveMemberInput = z.infer<typeof removeMemberSchema>;
 
 export async function removeMember(input: RemoveMemberInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
@@ -32,9 +33,10 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         const cmds = getOsCommands(getAgentOS(agent));
         const provider = getProvider(agent.llmProvider);
 
-        // Remove credentials file (only for providers that use one, e.g. Claude OAuth)
-        if (provider.supportsOAuthCopy()) {
-          await strategy.execCommand(cmds.credentialFileRemove(), 10000).catch(() => {});
+        // Remove credentials files for any provider that uses them
+        const credentialFiles = provider.oauthCredentialFiles() ?? [];
+        for (const file of credentialFiles) {
+          await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
         }
 
         // Remove the provider's API key env var from shell profiles
@@ -51,10 +53,13 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
 
   strategy.close();
 
-  // Clean up local key files (before registry removal loses the reference)
+  // Clean up local key files only if no other member shares this key
   if (agent.keyPath) {
-    try { fs.unlinkSync(agent.keyPath); } catch {}
-    try { fs.unlinkSync(`${agent.keyPath}.pub`); } catch {}
+    const sharedKey = getAllAgents().some(a => a.id !== agent.id && a.keyPath === agent.keyPath);
+    if (!sharedKey) {
+      try { fs.unlinkSync(agent.keyPath); } catch {}
+      try { fs.unlinkSync(`${agent.keyPath}.pub`); } catch {}
+    }
   }
 
   // Clean up known_hosts entry
@@ -62,7 +67,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
     removeKnownHost(agent.host, agent.port);
   }
 
-  const removed = removeFromRegistry(input.member_id);
+  const removed = removeFromRegistry(agent.id);
   writeStatusline();
 
   if (removed) {
@@ -75,5 +80,5 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
     }
     return result;
   }
-  return `Failed to remove member "${input.member_id}".`;
+  return `Failed to remove member "${agent.id}".`;
 }

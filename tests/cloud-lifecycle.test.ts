@@ -48,7 +48,6 @@ function makeCloudAgent(overrides = {}) {
       instanceId: 'i-0abc1234def567890',
       region: 'us-east-1',
       idleTimeoutMin: 30,
-      sshKeyPath: '/home/user/.ssh/key.pem',
     },
     ...overrides,
   });
@@ -151,7 +150,8 @@ describe('execute-prompt: ensureCloudReady wiring', () => {
 
     await executePrompt({ member_id: agent.id, prompt: 'hello', timeout_ms: 10000 });
 
-    expect(mockExecCommand).toHaveBeenCalledOnce();
+    // 3 calls: writePromptFile + main prompt command + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 
   it('propagates ensureCloudReady error as failure message', async () => {

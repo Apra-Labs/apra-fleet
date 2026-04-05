@@ -59,7 +59,6 @@ function makeStoppedCloudAgent(overrides = {}) {
       instanceId: 'i-0abc1234def567890',
       region: 'us-east-1',
       idleTimeoutMin: 30,
-      sshKeyPath: '/home/user/.ssh/key.pem',
     },
     ...overrides,
   });

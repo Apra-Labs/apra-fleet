@@ -2,23 +2,25 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOrFail, getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS } from '../utils/agent-helpers.js';
+import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, formatUptimeDuration, uptimeHoursFromLaunch } from '../services/cloud/cost.js';
+import { serverVersion } from '../version.js';
 
 export const memberDetailSchema = z.object({
-  member_id: z.string().describe('UUID or friendly name of the member (worker) to inspect'),
+  ...memberIdentifier,
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
 });
 
 export type MemberDetailInput = z.infer<typeof memberDetailSchema>;
 
 export async function memberDetail(input: MemberDetailInput): Promise<string> {
-  const agentOrError = getAgentOrFail(input.member_id);
+  const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
@@ -28,6 +30,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const strategy = getStrategy(agent);
 
   const result: Record<string, unknown> = {
+    server_version: serverVersion,
     name: agent.friendlyName,
     icon: agent.icon ?? DEFAULT_ICON,
     id: agent.id,
@@ -108,22 +111,37 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     cli.version = 'unknown';
   }
 
-  const authMethods: string[] = [];
-  try {
-    const credResult = await strategy.execCommand(cmds.credentialFileCheck(), 10000);
-    if (credResult.stdout.trim() === 'found') {
-      authMethods.push('OAuth credentials file');
-    }
-  } catch { /* ignore */ }
+  let oauthFilesExist = false;
+  const oauthFiles = provider.oauthCredentialFiles?.();
+  if (oauthFiles && oauthFiles.length > 0) {
+    try {
+      // Check for the first file, assuming if it's there, the others are too.
+      const credResult = await strategy.execCommand(cmds.credentialFileCheck(oauthFiles[0].remotePath), 10000);
+      if (credResult.stdout.trim() === 'found') {
+        oauthFilesExist = true;
+      }
+    } catch { /* ignore */ }
+  }
 
-  try {
-    const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
-    if (apiKeyResult.stdout.trim().length > 5) {
-      authMethods.push('API key (env)');
-    }
-  } catch { /* ignore */ }
+  let apiKeyExists = false;
+  if (provider.authEnvVar) {
+    try {
+      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10000);
+      if (apiKeyResult.stdout.trim().length > 5) {
+        apiKeyExists = true;
+      }
+    } catch { /* ignore */ }
+  }
 
-  cli.auth = authMethods.length > 0 ? authMethods : 'none';
+  if (apiKeyExists && oauthFilesExist) {
+    cli.auth = 'api-key (WARNING: OAuth also present — API key takes precedence)';
+  } else if (apiKeyExists) {
+    cli.auth = 'api-key';
+  } else if (oauthFilesExist) {
+    cli.auth = 'oauth';
+  } else {
+    cli.auth = 'none';
+  }
   result.llmProvider = agent.llmProvider ?? 'claude';
   result.claude = cli;  // kept for backwards compatibility
 
@@ -246,3 +264,6 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   return t;
 }
+
+
+

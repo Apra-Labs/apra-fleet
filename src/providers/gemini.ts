@@ -28,9 +28,10 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, b64Prompt, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let cmd = `cd "${escapedFolder}" && gemini -p "$(echo '${b64Prompt}' | base64 -d)" --output-format json`;
+    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json`;
     const rf = buildResumeFlag(sessionId);
     if (rf) {
       cmd += ` ${rf}`;
@@ -86,12 +87,13 @@ export class GeminiProvider implements ProviderAdapter {
     return {
       cheap: 'gemini-2.5-flash',
       standard: 'gemini-2.5-pro',
-      premium: 'gemini-2.5-pro',
+      premium: 'gemini-3-pro-preview',
     };
   }
 
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
     if (tier === 'cheap') return 'gemini-2.5-flash';
+    if (tier === 'premium') return 'gemini-3-pro-preview';
     return 'gemini-2.5-pro';
   }
 
@@ -118,8 +120,11 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    // settings.json: mode selection
+    // settings.json: merge mode into existing content — do not overwrite.
+    // TODO (Task 2.1): read existing settings.json via cmds.readRemoteJson before merging,
+    //   so that oauth-personal and other user settings are preserved.
     const mode = role === 'doer' ? 'auto_edit' : 'default';
+    // For now, carry only the mode field; caller is responsible for merging with existing content.
     const settings: Record<string, unknown> = { mode };
 
     // fleet.toml: policy rules
@@ -140,11 +145,26 @@ export class GeminiProvider implements ProviderAdapter {
     return true;
   }
 
+  oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null {
+    return [
+      { localPath: '~/.gemini/oauth_creds.json', remotePath: '~/.gemini/oauth_creds.json' },
+      { localPath: '~/.gemini/google_accounts.json', remotePath: '~/.gemini/google_accounts.json' },
+    ];
+  }
+
+  oauthSettingsMerge(): Record<string, unknown> | null {
+    return { security: { auth: { selectedType: 'oauth-personal' } } };
+  }
+
+  oauthEnvVarsToUnset(): string[] {
+    return ['GEMINI_API_KEY'];
+  }
+
   jsonOutputFlag(): string {
     return '--output-format json';
   }
 
-  headlessInvocation(promptExpr: string): string {
-    return `-p ${promptExpr}`;
+  headlessInvocation(promptLiteral: string): string {
+    return `-p "${promptLiteral}"`;
   }
 }

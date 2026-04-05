@@ -9,11 +9,14 @@ import { getAgentOS } from '../utils/agent-helpers.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
-import { uploadFiles } from './file-transfer.js';
+import { uploadFiles, downloadFiles } from './file-transfer.js';
 
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number): Promise<SSHExecResult>;
-  transferFiles(localPaths: string[], remoteSubfolder?: string): Promise<TransferResult>;
+  transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult>;
+  receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult>;
+  /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
+  deleteFiles(relativePaths: string[]): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
 }
@@ -25,8 +28,30 @@ class RemoteStrategy implements AgentStrategy {
     return sshExecCommand(this.agent, command, timeoutMs);
   }
 
-  async transferFiles(localPaths: string[], remoteSubfolder?: string): Promise<TransferResult> {
-    return uploadFiles(this.agent, localPaths, remoteSubfolder);
+  async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
+    return uploadFiles(this.agent, localPaths, destinationPath);
+  }
+
+  async receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult> {
+    return downloadFiles(this.agent, remotePaths, localDestination);
+  }
+
+  async deleteFiles(relativePaths: string[]): Promise<void> {
+    if (relativePaths.length === 0) return;
+    const agentOs = getAgentOS(this.agent);
+    const folder = this.agent.workFolder;
+    try {
+      if (agentOs === 'windows') {
+        const files = relativePaths.map(p => `"${p.replace(/"/g, '')}"`).join(', ');
+        const psScript = `Set-Location "${folder.replace(/"/g, '')}"; Remove-Item ${files} -Force -ErrorAction SilentlyContinue`;
+        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+        await this.execCommand(`powershell -EncodedCommand ${encoded}`, 10000);
+      } else {
+        const escapedFolder = folder.replace(/"/g, '\\"');
+        const files = relativePaths.map(p => `"${p.replace(/"/g, '\\"')}"`).join(' ');
+        await this.execCommand(`cd "${escapedFolder}" && rm -f ${files}`, 10000);
+      }
+    } catch { /* ignore — best-effort cleanup */ }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -71,11 +96,10 @@ class LocalStrategy implements AgentStrategy {
     });
   }
 
-  async transferFiles(localPaths: string[], remoteSubfolder?: string): Promise<TransferResult> {
-    let destBase = this.agent.workFolder;
-    if (remoteSubfolder) {
-      destBase = path.join(destBase, remoteSubfolder);
-    }
+  async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
+    const destBase = destinationPath
+      ? path.resolve(this.agent.workFolder, destinationPath)
+      : this.agent.workFolder;
 
     // Ensure destination exists
     fs.mkdirSync(destBase, { recursive: true });
@@ -95,6 +119,33 @@ class LocalStrategy implements AgentStrategy {
     }
 
     return { success, failed };
+  }
+
+  async receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult> {
+    fs.mkdirSync(localDestination, { recursive: true });
+
+    const success: string[] = [];
+    const failed: { path: string; error: string }[] = [];
+
+    for (const remotePath of remotePaths) {
+      const srcPath = path.resolve(this.agent.workFolder, remotePath);
+      const fileName = path.basename(srcPath);
+      const destPath = path.join(localDestination, fileName);
+      try {
+        fs.copyFileSync(srcPath, destPath);
+        success.push(fileName);
+      } catch (err: any) {
+        failed.push({ path: fileName, error: err.message });
+      }
+    }
+
+    return { success, failed };
+  }
+
+  async deleteFiles(relativePaths: string[]): Promise<void> {
+    for (const rel of relativePaths) {
+      try { fs.unlinkSync(path.resolve(this.agent.workFolder, rel)); } catch { /* ignore */ }
+    }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
