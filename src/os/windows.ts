@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+﻿import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars } from '../utils/shell-escape.js';
@@ -117,20 +117,70 @@ export class WindowsCommands implements OsCommands {
     return `New-Item -Path "${escapeWindowsArg(folder)}" -ItemType Directory -Force | Out-Null`;
   }
 
-  // --- Auth ---
-
-  credentialFileCheck(): string {
-    return 'if (Test-Path "$env:USERPROFILE\\.claude\\.credentials.json") { echo "found" } else { echo "missing" }';
+  readTextFile(destPath: string): string {
+    return `Get-Content -Path "${escapeWindowsArg(destPath)}" -Raw`;
   }
 
-  credentialFileWrite(json: string): string {
-    const psScript = `$d='${json.replace(/'/g, "''")}'; New-Item -Path "$env:USERPROFILE\\.claude" -ItemType Directory -Force | Out-Null; Set-Content -Path "$env:USERPROFILE\\.claude\\.credentials.json" -Value $d -NoNewline`;
+  writeTextFile(destPath: string, content: string): string {
+    const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     return `powershell -EncodedCommand ${encoded}`;
   }
 
-  credentialFileRemove(): string {
-    return 'Remove-Item "$env:USERPROFILE\\.claude\\.credentials.json" -Force -ErrorAction SilentlyContinue';
+  readRemoteJson(destPath: string): string {
+    const escapedPath = escapeWindowsArg(destPath);
+    return `if (Test-Path "${escapedPath}") { Get-Content -Path "${escapedPath}" -Raw } else { echo '{}' }`;
+  }
+
+  deepMergeJson(destPath: string, newObj: Record<string, unknown>): string {
+    const escapedPath = escapeWindowsArg(destPath);
+    const newJson = JSON.stringify(newObj).replace(/'/g, "''");
+
+    const psScript = `
+$p = '${escapedPath}';
+$new = '${newJson}' | ConvertFrom-Json;
+$current = @{};
+if (Test-Path $p) {
+  try { $current = Get-Content -Path $p -Raw | ConvertFrom-Json -ErrorAction Stop } catch {}
+}
+$merged = @{};
+if ($current) {
+  $current.psobject.properties | ForEach-Object { $merged[$_.Name] = $_.Value }
+}
+function Merge-Objects($target, $source) {
+    $source.psobject.properties | ForEach-Object {
+        $key = $_.Name;
+        $value = $_.Value;
+        if ($target.Contains($key) -and $target[$key] -is [System.Management.Automation.PSCustomObject] -and $value -is [System.Management.Automation.PSCustomObject]) {
+            Merge-Objects $target[$key] $value;
+        } else {
+            $target[$key] = $value;
+        }
+    }
+}
+Merge-Objects $merged $new;
+New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null;
+$merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
+    `.trim().replace(/\\r\\n/g, ' ');
+
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    return `powershell -EncodedCommand ${encoded}`;
+  }
+
+  // --- Auth ---
+
+  credentialFileCheck(destPath: string): string {
+    return `if (Test-Path "${escapeWindowsArg(destPath)}") { echo "found" } else { echo "missing" }`;
+  }
+
+  credentialFileWrite(content: string, destPath: string): string {
+    const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    return `powershell -EncodedCommand ${encoded}`;
+  }
+
+  credentialFileRemove(destPath: string): string {
+    return `Remove-Item "${escapeWindowsArg(destPath)}" -Force -ErrorAction SilentlyContinue`;
   }
 
   apiKeyCheck(envVarName?: string): string {

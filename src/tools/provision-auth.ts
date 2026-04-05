@@ -93,7 +93,7 @@ async function provisionMasterToken(agent: Agent): Promise<string> {
 
   // Write credentials file to remote (mkdir + write in one command)
   try {
-    const result = await strategy.execCommand(cmds.credentialFileWrite(creds), 10000);
+    const result = await strategy.execCommand(cmds.credentialFileWrite(creds, '~/.claude/.credentials.json'), 10000);
     if (result.code !== 0 && result.stderr) {
       return `❌ Failed to write credentials on "${agent.friendlyName}": ${result.stderr}`;
     }

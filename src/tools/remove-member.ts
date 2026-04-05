@@ -34,7 +34,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
 
         // Remove credentials file (only for providers that use one, e.g. Claude OAuth)
         if (provider.supportsOAuthCopy()) {
-          await strategy.execCommand(cmds.credentialFileRemove(), 10000).catch(() => {});
+          await strategy.execCommand(cmds.credentialFileRemove('~/.claude/.credentials.json'), 10000).catch(() => {});
         }
 
         // Remove the provider's API key env var from shell profiles
