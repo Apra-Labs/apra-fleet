@@ -76,3 +76,58 @@ The "See the fleet skill" prose pattern is documented with an explicit file-path
 ## Summary
 
 The split is clean, complete, and well-executed. Fleet mechanics are fully extracted into skills/fleet/SKILL.md with 7 supporting sub-documents. The PM skill contains zero fleet tool mechanics — all references use the cross-skill prose pattern. No duplication, no cross-contamination. Both skills are self-contained for their respective concerns.
+
+---
+
+# Install Order & --skill Flag Review — Commit 8e181f8 (#82)
+
+**Reviewer:** sprint/skill-refactor reviewer  
+**Date:** 2026-04-06  
+**Verdict:** APPROVED
+
+---
+
+## Review Checklist
+
+### 1. No PM refs in fleet skill
+
+**PASS.** Grep for `\bpm\b`, `/pm`, `@pm` in `skills/fleet/` returned zero matches. Fleet skill is fully self-contained with no PM dependencies.
+
+### 2. Install order — fleet before PM
+
+**PASS.** `install.ts:438-451` installs fleet at step 6, PM at step 7. `totalSteps` dynamically adjusts: 5 (no skills), 6 (fleet only), 7 (fleet+pm). The `fleet-before-pm order` test (line 525-546) explicitly verifies `mkdirSync` call ordering.
+
+### 3. --skill flag values
+
+**PASS.** All modes work correctly:
+- `install` (no flag) → `skillMode='none'` → no skills installed
+- `--skill` (no value) → `skillMode='all'` → both fleet + pm
+- `--skill all` → both fleet + pm
+- `--skill fleet` → fleet only
+- `--skill pm` → fleet + pm (with warning)
+- `--skill=<value>` equals form also works for all values
+- `--skill=invalid` → exits with error
+
+Parsing logic at lines 325-345 handles both `--skill=<val>` and `--skill <val>` forms correctly, including bare `--skill` defaulting to `'all'`.
+
+### 4. --help output
+
+**PASS.** `index.ts:18-21` documents all four install variants clearly:
+- `install` — base install only
+- `install --skill [all]` — both skills
+- `install --skill fleet` — fleet only
+- `install --skill pm` — PM (also installs fleet)
+
+### 5. --skill pm installs fleet too
+
+**PASS.** Line 435-437 prints warning: "PM skill depends on fleet skill — installing fleet skill first." Line 347 includes `'pm'` in the `installFleet` boolean. Test at line 456-477 confirms both directories are created.
+
+### 6. Tests pass
+
+**PASS.** All 41 test files pass (628 tests, 0 failures). New test file `install-multi-provider.test.ts` adds 27 tests covering all --skill flag modes, fleet-before-pm ordering, equals-form parsing, and error cases.
+
+---
+
+## Summary
+
+Clean implementation. The --skill flag parsing is robust (both equals and space forms, bare flag defaults to all, invalid values rejected). Fleet-before-pm ordering is correctly enforced in code and verified in tests. The --skill pm auto-installs fleet with a clear dependency warning. Help text accurately documents all modes.
