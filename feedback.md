@@ -1,9 +1,9 @@
-# Phase 2 VERIFY Review: State Integrity & Security Testing
+# Phase 2 VERIFY Review (Re-review): State Integrity & Security Testing
 
 **Branch:** `sprint/ux-quality-fixes`
 **Reviewer:** Claude Opus 4.6
 **Date:** 2026-04-05
-**Commits reviewed:** `731e3b1` through `2f34f84` (Phase 2: Tasks 4, 5, 6)
+**Commits reviewed:** `731e3b1` through `039d9f4` (Phase 2: Tasks 4, 5, 6 + fixes from `3da58a5`)
 
 ## Task 4: Issue #57 — update_task_tokens silent data loss on git commit failure
 
@@ -15,14 +15,17 @@ The tool now follows a clear sequence: (1) read progress.json from member, (2) a
 
 If git commit fails (line 114 check), the function returns the success message with an appended warning: `"Warning: Git commit failed. The progress.json file was updated, but the changes are not committed."` The file write is never reverted. **PASS**
 
-### Test coverage gap
+### Test coverage — git-commit-failure path (previously missing, now added)
 
-No test exercises the git-commit-failure path. All existing tests mock `executeCommand` to return `Exit code: 0` for the commit call. There should be a test where the second `executeCommand` call returns a non-zero exit code, verifying:
-- The result still contains the success message ("Token counts updated")
-- The result contains the "Warning: Git commit failed" message
-- `sendFiles` was still called (file was written)
+New test `'returns a warning when git commit fails'` in `update-task-tokens.test.ts:211-239`:
+- Mocks second `executeCommand` call to return `Exit code: 1\ngit commit failed`
+- Asserts result contains `"Token counts updated for task 1"` (success message persists)
+- Asserts result contains `"Warning: Git commit failed."` (warning present)
+- Asserts result does NOT contain `"Committed changes to git."` (no false positive)
+- Asserts `sendFiles` was called (file was written before commit attempt)
+- Verifies captured upload payload has correct accumulated token values (1000/500)
 
-**FAIL — missing test for the critical path this task was created to fix.**
+This directly exercises the critical path this task was created to fix. If the decoupling logic were reverted, this test would fail. **PASS**
 
 ## Task 5: Issue #67 — .fleet-task* files written to OS temp dir
 
@@ -42,35 +45,28 @@ The prompt file path no longer references any work directory or `process.cwd()`.
 
 The execute-prompt tests (`tests/execute-prompt.test.ts`) do not verify that the prompt file path uses `os.tmpdir()`. This is a minor gap — the code change is straightforward and correct, but a test asserting the path starts with `os.tmpdir()` would guard against regressions. **Minor concern, non-blocking.**
 
-## Task 6: Issue #6 — Credential leakage test is a no-op
+## Task 6: Issue #6 — Credential leakage test rewritten (previously a no-op, now fixed)
 
-### Test still does not invoke lifecycle.ts code
+### Test now invokes actual lifecycle.ts code
 
-The "fix" (commit `b16faf8`) only added `beforeEach`/`afterEach` registry backup hooks and reformatted indentation. The actual test body is functionally identical to the original:
+The rewritten test (`security-hardening.test.ts:195-270`) sets up a full cloud lifecycle mock environment:
 
-```typescript
-const longMessage = 'Bearer ghp_' + 'x'.repeat(100);
-const truncated = longMessage.slice(0, 50);
-expect(truncated.length).toBe(50);
-expect(truncated).not.toContain('x'.repeat(51));
-```
+1. **Mocks AWS provider** (`getInstanceState`, `startInstance`, `waitForRunning`, `getPublicIp`) so `ensureCloudReady` can execute the full start → wait → re-provision flow
+2. **Mocks `provisionAuth`** to reject with a long error containing a fake API key: `"APIError: Your API key is invalid: sk-ant-api03-xxx..."`
+3. **Mocks `node:net`** socket to simulate SSH connectivity check
+4. **Spies on `process.stderr.write`** to capture actual log output from `lifecycle.ts`
+5. **Dynamically imports `ensureCloudReady`** and calls it with a registered cloud agent
+6. **Asserts:**
+   - Logged output contains `"provision_auth failed"` (the log prefix from `reProvisionAuth`)
+   - Logged output does NOT contain the full `longErrorMessage` (credential not leaked)
+   - Logged output contains `longErrorMessage.slice(0, 50)` (truncation is applied)
 
-This tests that JavaScript's `String.slice()` works — not that `lifecycle.ts` actually truncates credentials. The test does not import `ensureCloudReady`, `reProvisionAuth`, or any code from `lifecycle.ts`. If the `.slice(0, 50)` call were removed from `lifecycle.ts`, this test would still pass.
-
-**FAIL — the issue explicitly required invoking actual lifecycle.ts code, not testing String.slice.**
-
-### What the test should do
-
-The test should:
-1. Import `ensureCloudReady` or `reProvisionAuth` from `lifecycle.ts`
-2. Mock the cloud provider to throw an error containing a long credential string
-3. Capture the logged output (mock `console.warn` or the logger)
-4. Assert the logged message is truncated to 50 chars and does not contain the full credential
+If the `.slice(0, 50)` in `lifecycle.ts:44` were removed, the full API key would appear in stderr and the `not.toContain(longErrorMessage)` assertion would fail. This is a genuine integration test of the credential masking behavior. **PASS**
 
 ## Build & Test
 
 - `npm run build`: **PASS** (clean tsc compilation)
-- `npm test`: **PASS** (614 tests passed, 4 skipped, 40 test files, 0 failures)
+- `npm test`: **PASS** (615 tests passed, 4 skipped, 40 test files, 0 failures)
 
 ## Phase 1 Regression Check
 
@@ -78,22 +74,23 @@ No changes to `auth-socket.ts`, `install.ts`, or any Phase 1 files. All 27 auth 
 
 ## Issues Found
 
-| # | Task | Severity | Issue |
-|---|------|----------|-------|
-| 1 | Task 4 | Blocking | No test for git-commit-failure path — the exact scenario this task was created to fix |
-| 2 | Task 6 | Blocking | Test is still a no-op — does not import or invoke any `lifecycle.ts` code |
+None blocking. Both previously-blocking issues (Task 4 missing test, Task 6 no-op test) have been resolved in commit `3da58a5`.
 
 ## Minor Concerns (non-blocking)
 
 1. **Task 5 test gap:** execute-prompt tests don't verify `os.tmpdir()` usage. Low risk since the code is straightforward.
+2. **Task 6 mock complexity:** The credential leakage test requires mocking 4 modules (AWS, provision-auth, provision-vcs-auth, node:net). This is inherent to testing `ensureCloudReady`'s error path — acceptable, but if lifecycle.ts is refactored, these mocks will need updating.
 
 ---
 
-**Verdict: CHANGES NEEDED**
+**Verdict: APPROVED**
 
-Task 5 (temp dir for prompt files) is correct and complete. Tasks 4 and 6 have the right production code changes but fail on test coverage:
-- Task 4 needs a test proving the git-failure path returns success + warning (not a regression to silent data loss).
-- Task 6 needs a complete rewrite of the test to actually invoke `lifecycle.ts` error handling, not just test `String.slice()`.
+All three tasks meet their "done when" criteria:
+- **Task 4:** File write always persists even when git commit fails. Warning is logged. Test proves this (615th test).
+- **Task 5:** `.fleet-task*` files written to `os.tmpdir()`, work folder stays clean, cleanup in `finally` block.
+- **Task 6:** Test now imports and invokes actual `ensureCloudReady` from `lifecycle.ts`, mocks a credential-bearing error, and verifies the logged output is truncated to 50 chars. Removing the `.slice(0, 50)` from lifecycle.ts would cause the test to fail.
+
+Build passes, 615 tests pass, no Phase 1 regressions.
 
 ---
 ---
