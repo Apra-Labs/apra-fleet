@@ -47,7 +47,7 @@ See sub-documents for detailed usage:
 
 ## Dispatch Rules
 
-All fleet operations run as background subagents using `execute_prompt` with `run_in_background=true`. Never block on a dispatch — always fire and monitor.
+`execute_prompt` must always be wrapped in a background subagent (`run_in_background=true`) — never call it directly from the main conversation. All other fleet tools (`execute_command`, `send_files`, `fleet_status`, etc.) are synchronous and called directly.
 
 ## Pre-dispatch Checks
 
