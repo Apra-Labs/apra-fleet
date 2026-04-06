@@ -10,7 +10,8 @@
     {
       "id": "2",
       "title": "Issue #78 - Installer versioned MCP key",
-      "status": "completed"
+      "status": "completed",
+      "notes": "Follow-up fix for quoted TOML key in test."
     },
     {
       "id": "3",
