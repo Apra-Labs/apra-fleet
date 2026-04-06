@@ -179,6 +179,12 @@ function extractAssetBuffer(key: string): Buffer {
   return fs.readFileSync(path.join(root, key));
 }
 
+function clearDirSync(dir: string): void {
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function copyDirSync(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -437,6 +443,7 @@ export async function runInstall(args: string[]): Promise<void> {
   }
   if (installFleet) {
     console.log(`  [6/${totalSteps}] Installing fleet skill...`);
+    clearDirSync(paths.fleetSkillsDir);
     if (isSea()) {
       fs.mkdirSync(paths.fleetSkillsDir, { recursive: true });
       for (const [name, assetKey] of Object.entries(manifest.fleetSkills)) {
@@ -453,6 +460,7 @@ export async function runInstall(args: string[]): Promise<void> {
   // --- Step 7: Install PM skill (optional) ---
   if (installPm) {
     console.log(`  [7/${totalSteps}] Installing PM skill...`);
+    clearDirSync(paths.skillsDir);
     if (isSea()) {
       fs.mkdirSync(paths.skillsDir, { recursive: true });
       for (const [name, assetKey] of Object.entries(manifest.skills)) {
