@@ -15,8 +15,10 @@ if (arg === '--help' || arg === '-h') {
 
 Usage:
   apra-fleet                  Start MCP server (stdio)
-  apra-fleet install          Install: binary + hooks + statusline + register MCP
-  apra-fleet install --skill  Same + PM skill to ~/.claude/skills/pm/
+  apra-fleet install                   Install: binary + hooks + statusline + register MCP
+  apra-fleet install --skill [all]     Same + fleet skill + PM skill (default when --skill given without value)
+  apra-fleet install --skill fleet     Install fleet skill only
+  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet auth <name>      Provide password for pending registration (auto-launched)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);

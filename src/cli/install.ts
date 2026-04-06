@@ -318,10 +318,37 @@ export async function runInstall(args: string[]): Promise<void> {
   }
 
   const paths = getProviderInstallConfig(llm);
-  const installSkill = args.includes('--skill');
-  const totalSteps = installSkill ? 6 : 5;
 
-  if (llm === 'gemini' && installSkill) {
+  // Parse --skill flag: accepts no value (→ all), or all|fleet|pm
+  type SkillMode = 'none' | 'all' | 'fleet' | 'pm';
+  let skillMode: SkillMode = 'none';
+  const skillEqualArg = args.find(a => a.startsWith('--skill='));
+  if (skillEqualArg) {
+    const val = skillEqualArg.split('=')[1];
+    if (val === 'all' || val === 'fleet' || val === 'pm') {
+      skillMode = val;
+    } else {
+      console.error(`Error: --skill value must be one of: all, fleet, pm (got "${val}")`);
+      process.exit(1);
+    }
+  } else {
+    const skillIdx = args.indexOf('--skill');
+    if (skillIdx >= 0) {
+      const nextArg = args[skillIdx + 1];
+      if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm')) {
+        skillMode = nextArg;
+      } else {
+        // --skill with no value → install both
+        skillMode = 'all';
+      }
+    }
+  }
+
+  const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
+  const installPm = skillMode === 'pm' || skillMode === 'all';
+  const totalSteps = (installFleet && installPm) ? 7 : installFleet ? 6 : installPm ? 7 : 5;
+
+  if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
   }
 
@@ -404,29 +431,43 @@ export async function runInstall(args: string[]): Promise<void> {
     mergeCopilotConfig(paths, mcpConfig);
   }
 
-  // --- Step 6: Install PM + fleet skills (optional) ---
-  if (installSkill) {
-    console.log(`  [6/${totalSteps}] Installing skills...`);
+  // --- Step 6: Install fleet skill (optional) ---
+  if (skillMode === 'pm') {
+    console.warn(`\n⚠ Note: PM skill depends on fleet skill — installing fleet skill first.\n`);
+  }
+  if (installFleet) {
+    console.log(`  [6/${totalSteps}] Installing fleet skill...`);
     if (isSea()) {
-      fs.mkdirSync(paths.skillsDir, { recursive: true });
-      for (const [name, assetKey] of Object.entries(manifest.skills)) {
-        const content = extractAsset(assetKey);
-        writeAssetFile(path.join(paths.skillsDir, name), content);
-      }
       fs.mkdirSync(paths.fleetSkillsDir, { recursive: true });
       for (const [name, assetKey] of Object.entries(manifest.fleetSkills)) {
         const content = extractAsset(assetKey);
         writeAssetFile(path.join(paths.fleetSkillsDir, name), content);
       }
     } else {
-      // Dev mode: copy from project skills/pm/ and skills/fleet/
-      const pmSrc = path.join(findProjectRoot(), 'skills', 'pm');
-      copyDirSync(pmSrc, paths.skillsDir);
+      // Dev mode: copy from project skills/fleet/
       const fleetSrc = path.join(findProjectRoot(), 'skills', 'fleet');
       copyDirSync(fleetSrc, paths.fleetSkillsDir);
     }
-  } else {
-    console.log(`  Skipping skills (use --skill to install)`);
+  }
+
+  // --- Step 7: Install PM skill (optional) ---
+  if (installPm) {
+    console.log(`  [7/${totalSteps}] Installing PM skill...`);
+    if (isSea()) {
+      fs.mkdirSync(paths.skillsDir, { recursive: true });
+      for (const [name, assetKey] of Object.entries(manifest.skills)) {
+        const content = extractAsset(assetKey);
+        writeAssetFile(path.join(paths.skillsDir, name), content);
+      }
+    } else {
+      // Dev mode: copy from project skills/pm/
+      const pmSrc = path.join(findProjectRoot(), 'skills', 'pm');
+      copyDirSync(pmSrc, paths.skillsDir);
+    }
+  }
+
+  if (!installFleet && !installPm) {
+    console.log(`  Skipping skills (use --skill [all|fleet|pm] to install)`);
   }
 
   // Finalize permissions
@@ -439,7 +480,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installSkill ? `\n  PM Skill:    ${paths.skillsDir}\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}
+  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
 
 ${instructions}
 `);
