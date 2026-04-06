@@ -1,0 +1,54 @@
+{
+  "project": "skill-refactor",
+  "branch": "sprint/skill-refactor",
+  "tasks": [
+    {
+      "id": "1",
+      "phase": 1,
+      "title": "Investigate @fleet reference mechanism and create skills/fleet/SKILL.md skeleton",
+      "type": "task",
+      "status": "completed",
+      "notes": "Created skills/fleet/SKILL.md with valid frontmatter (name: fleet). Cross-skill reference mechanism: Claude Code resolves skill references by matching the name field in frontmatter to prose patterns like 'See the fleet skill'. Fallback documented: use explicit path 'See skills/fleet/SKILL.md' if loader doesn't auto-resolve."
+    },
+    {
+      "id": "2",
+      "phase": 1,
+      "title": "Populate skills/fleet/SKILL.md with fleet mechanics extracted from PM skill",
+      "type": "task",
+      "status": "completed",
+      "notes": "Fully populated skills/fleet/SKILL.md with all fleet mechanics sections: Tool Boundaries, Dispatch Rules, Pre-dispatch Checks, Pre-flight Checks, Task Harness Delivery, Delivery Mechanics, Monitoring, Recovery Commands, Token Tracking, Git as Transport, Cleanup Commands, Permissions, Model Tiers, Member Icons, Provider Awareness. Moved 7 files from skills/pm/ to skills/fleet/: onboarding.md, permissions.md, troubleshooting.md, skill-matrix.md, auth-github.md, auth-bitbucket.md, auth-azdevops.md (completed in Task 5 verification since prior doer had not actually moved them)."
+    },
+    {
+      "id": "3",
+      "phase": 1,
+      "title": "Refactor skills/pm/SKILL.md to remove fleet mechanics, add @fleet references",
+      "type": "task",
+      "status": "completed",
+      "notes": "Replaced inline fleet mechanics in SKILL.md with fleet skill references. Rules 3, 4, 8, 11, 13 updated. /pm pair, /pm deploy, /pm cleanup commands trimmed of inline tool usage. Rule 5 execute_prompt reference replaced. Plan Generation send_files/execute_prompt references replaced. Recovery section execute_command patterns replaced. Task Harness, Monitoring, Model Selection, Member Icons, Provider Awareness table replaced with fleet skill references."
+    },
+    {
+      "id": "4",
+      "phase": 1,
+      "title": "Trim doer-reviewer.md of fleet tool mechanics",
+      "type": "task",
+      "status": "completed",
+      "notes": "Removed all inline fleet tool patterns from doer-reviewer.md: Setup items 2, 3, 4 reference fleet skill; Pre-flight Checks reference fleet skill; Flow steps 2, 3, 6 reference fleet skill; Post-dispatch Token Tracking replaced with one-liner; Safeguards table max_turns row trimmed; Permissions section references fleet skill; Git as transport .gitignore reference updated."
+    },
+    {
+      "id": "5",
+      "phase": 1,
+      "title": "Verify the split is complete",
+      "type": "task",
+      "status": "completed",
+      "notes": "All checks passed: (1) skills/pm/ has no inline fleet tool usage instructions — only context mentions in plan-prompt.md; (2) skills/fleet/ has no PM workflow terms (APPROVED/CHANGES NEEDED/doer-reviewer loop/lifecycle); (3) all 7 files confirmed moved from skills/pm/ to skills/fleet/; (4) skills/fleet/SKILL.md has valid frontmatter (name: fleet); (5) cross-references are bidirectional — PM references fleet sections that all now exist in fleet/SKILL.md."
+    },
+    {
+      "id": "6",
+      "phase": 1,
+      "title": "VERIFY checkpoint",
+      "type": "verify",
+      "status": "verify",
+      "notes": "All Tasks 1-5 completed. skills/fleet/ contains SKILL.md plus 7 sub-documents. skills/pm/ contains only PM workflow files. Clean separation confirmed. Pushed to origin/sprint/skill-refactor for PM review."
+    }
+  ]
+}

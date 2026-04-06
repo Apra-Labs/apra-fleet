@@ -3,12 +3,12 @@
 ## Setup Checklist
 
 1. Record pair in `<project>/status.md`. Multiple pairs per project is normal.
-2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color. This is not optional.
+2. Override icons — doer gets circle, reviewer gets square, same color. See the fleet skill for icon assignment. This is not optional.
 3. Compose and deliver permissions per the fleet skill for each member's role.
 4. Configure role-specific instruction file — three distinct phases:
-   - **Planning:** Dispatch `plan-prompt.md` content via `execute_prompt` — no instruction file needed for planning
-   - **Execution:** Send `tpl-doer.md` as the member's instruction file to doer via `send_files` — **must be sent before execution starts** (persists across session resumes). See the fleet skill for provider-specific file naming.
-   - **Review:** Send `tpl-reviewer.md` as the reviewer's instruction file via `send_files` — **must be sent before review dispatch** (persists across session resumes). See the fleet skill for provider-specific file naming. Use `tpl-reviewer-plan.md` for plan review.
+   - **Planning:** Dispatch `plan-prompt.md` content — see the fleet skill for dispatch mechanics. No instruction file needed for planning.
+   - **Execution:** Send `tpl-doer.md` as the member's instruction file to doer — **must be sent before execution starts** (persists across session resumes). See the fleet skill for delivery mechanics and provider-specific file naming.
+   - **Review:** Send `tpl-reviewer.md` as the reviewer's instruction file — **must be sent before review dispatch** (persists across session resumes). See the fleet skill for delivery mechanics and provider-specific file naming. Use `tpl-reviewer-plan.md` for plan review.
 
 
 
@@ -34,7 +34,7 @@ Verify reviewer is at the correct commit before starting review — see the flee
 
 2. **PM handles git transport** between doer and reviewer — see the fleet skill for git transport commands.
 
-3. **PM dispatches REVIEWER at every VERIFY checkpoint** — PM never self-reviews. PM sends context docs to reviewer via `send_files`: `<project>/requirements.md`, `<project>/design.md`, and relevant `<project>/*plan.md`. Then dispatches reviewer with `resume=false` (fresh session).
+3. **PM dispatches REVIEWER at every VERIFY checkpoint** — PM never self-reviews. PM sends context docs to reviewer (`<project>/requirements.md`, `<project>/design.md`, and relevant `<project>/*plan.md`) — see the fleet skill for delivery mechanics. Then dispatches reviewer with `resume=false` (fresh session).
 
    **Reviewer workflow rules:**
    - **Prep reviewer in parallel while doer works** — send requirements, set up branch, start a context-reading session on reviewer. Use session resume to send updated docs at handoff. Eliminates dead time.
@@ -45,7 +45,7 @@ Verify reviewer is at the correct commit before starting review — see the flee
 5. PM reads verdict:
    - **APPROVED** → cleanup → merge → next phase
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
-6. **Pre-merge cleanup** — run via `execute_command` on doer: remove PLAN.md, progress.json, feedback.md, and the provider instruction file; commit and push. These are transport files — git history preserves the content.
+6. **Pre-merge cleanup** — remove fleet control files from doer (PLAN.md, progress.json, feedback.md, and the provider instruction file); commit and push — see the fleet skill for cleanup commands.
 7. Loop until all phases APPROVED
 
 ## Post-dispatch Token Tracking
@@ -72,7 +72,7 @@ The PM must enforce these limits to prevent infinite loops and runaway sessions:
 
 | Safeguard | Trigger | PM Action | Limit |
 |-----------|---------|-----------|-------|
-| max_turns budget | Every `execute_prompt` dispatch | Session ends naturally at turn limit | Set per dispatch in `execute_prompt` |
+| max_turns budget | Every dispatch | Session ends naturally at turn limit | Set per dispatch — see the fleet skill |
 | PM retry limit | Same dispatch fails (error, no output) | Retry up to 3×, then pause sprint + flag user | 3 retries per dispatch |
 | Doer-reviewer cycle limit | Reviewer returns CHANGES NEEDED | Re-dispatch doer with feedback; if 3 cycles don't resolve all HIGH items, pause sprint + flag user | 3 cycles per phase |
 | Model escalation | Zero progress after session resets | Reset session and resume; after 2 resets with zero progress: escalate model (cheap→standard→premium). Still zero after premium? Flag user | 2 resets per model tier |
