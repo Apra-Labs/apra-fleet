@@ -1,7 +1,7 @@
 # {{PROJECT_NAME}} — Code Review
 
 ## Context Recovery
-Before starting any review: `git log --oneline main..<current-branch>`
+Before starting any review: `git log --oneline {{base_branch}}..{{branch}}`
 
 ## Review Model
 You are reviewing work tracked in PLAN.md and progress.json.
@@ -31,7 +31,33 @@ Reviews are CUMULATIVE — review all phases up to and including the current one
 
 ## Output
 
-Commit findings to feedback.md. Output verdict as final line: APPROVED or CHANGES NEEDED.
+Overwrite feedback.md with this structure:
+
+```
+# <Sprint/Feature Name> — Code Review
+
+**Reviewer:** <member name>
+**Date:** YYYY-MM-DD HH:MM:SS+TZ
+**Verdict:** APPROVED | CHANGES NEEDED
+
+> See the recent git history of this file to understand the context of this review.
+
+---
+
+## <Review section>
+
+<Detailed narrative. PASS/FAIL/NOTE inline. Explain what you found, where, and why it matters.>
+
+---
+
+## Summary
+
+<Synthesize what passed, what must change, what is deferred.>
+```
+
+If verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
+
+Commit feedback.md and push.
 
 ## Rules
 - NEVER push to the base branch (main, master, or integration branch) — always work on feature branches

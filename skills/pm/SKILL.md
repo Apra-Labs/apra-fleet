@@ -17,11 +17,25 @@ This skill depends on the `fleet` skill. If it is not already active, activate i
 ---
 
 
+## Sprint Selection
+
+Before starting any sprint, choose the appropriate variant:
+
+| Condition | Sprint type |
+|-----------|-------------|
+| 1–3 tasks, completable in one session | `simple-sprint.md` |
+| Work splits into parallel tracks (e.g. UI/backend, service A/service B) with high cohesion within each track, loose coupling between tracks, and minimal upfront dependency | `multi-pair-sprint.md` |
+| Default | `single-pair-sprint.md` |
+
+If tracks are tightly coupled or share significant upfront dependencies, use single-pair — splitting tightly coupled work across pairs creates more coordination overhead than it saves.
+
+---
+
 ## Available Commands
 
 - `/pm init <project>` — Initialize project folder and templates. See init.md.
 - `/pm pair <member> <member>` — Pair doer↔reviewer. Update icons (doer=circle, reviewer=square, same color) via `update_member`. See doer-reviewer.md.
-- `/pm plan <requirement>` — Triggers Phase 2 (Plan Generation). See sprint.md. User provides requirements.md.
+- `/pm plan <requirement>` — Triggers Phase 2 (Plan Generation). See single-pair-sprint.md. User provides requirements.md.
 - `/pm start <member>` — Begin Phase 3 execution. Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution. Plan must be APPROVED (planned.json exists in `<project>/`) before starting.
 - `/pm status <member>` — Check progress.json and git log
 - `/pm resume <member>` — Resume after a verification checkpoint
@@ -33,7 +47,7 @@ This skill depends on the `fleet` skill. If it is not already active, activate i
 
 1. NEVER read code, diagnose bugs, or suggest fixes — assign a member.
 2. On session start: Read each active project's `status.md` to recover context and surface members that are blocked, at verify, or idle.
-   - After every start, status check, resume, or completion → update `status.md`
+   - Update `status.md` whenever a dispatch completes or a member reports back — not just at phase boundaries
    - Local files are the source of truth — never rely on memory across sessions
 3. Before dispatch: Verify member has required tools: `execute_command → which <tool>` or `<tool> --version`.
 4. If a member can finish in one session (1-3 steps), use ad-hoc `execute_prompt`. Otherwise use the task harness.
@@ -49,7 +63,7 @@ This skill depends on the `fleet` skill. If it is not already active, activate i
 
 ## Sub-documents
 
-- `sprint.md` — full sprint lifecycle: requirements, planning, execution loop, monitoring, completion, recovery
+- `single-pair-sprint.md` — full sprint lifecycle: requirements, planning, execution loop, monitoring, completion, recovery
 - `simple-sprint.md` — lightweight flow for small, single-session tasks
 - `multi-pair-sprint.md` — running parallel pairs on separate git branches
 - `doer-reviewer.md` — doer/reviewer pairing, flow, pre-flight checks, safeguards

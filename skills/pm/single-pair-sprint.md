@@ -36,11 +36,12 @@ Write `<project>/requirements.md`. Quality bar:
 
 ### Task Harness
 
-The task harness is the set of three files sent to the doer's `work_folder` root via `send_files` to bootstrap execution:
+The task harness is the set of files sent to the doer's `work_folder` root via `send_files` to bootstrap execution:
 
 1. **Agent context file** — from `tpl-doer.md`. See `context-file.md` for filename and delivery rules.
 2. **PLAN.md** — implementation plan with phases and tasks
 3. **progress.json** — task tracker (generated from PLAN.md per `tpl-progress.json`)
+4. **Project docs** — `requirements.md`, `design.md`, and any other docs the doer needs. Doer commits these to the branch. Re-send via `send_files` if PM-side docs are updated mid-sprint.
 
 `progress.json` is the living state. Always query it for current status.
 

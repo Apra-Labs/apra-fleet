@@ -23,7 +23,7 @@ Use `member_detail` → `llmProvider` to determine the correct target filename:
 ## Rules
 
 - Pick the correct template based on role and correct target filename based on provider
-- Make a copy of the template to the local project folder, update it with project details
+- Make a copy of the template to the local project folder, update it with project details — fill in `{{branch}}` and `{{base_branch}}` with the sprint branch and base branch before delivering
 - Send to member via `send_files` to the member's `work_folder` root before dispatch
 - Never commit to git — on first send, add the Agent Context File filename to the member's `.gitignore` via `execute_command → echo '<filename>' >> .gitignore`
 - On role switch (doer ↔ reviewer): send the new context file before dispatch

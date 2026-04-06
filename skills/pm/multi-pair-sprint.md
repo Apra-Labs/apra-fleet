@@ -25,6 +25,12 @@ main
 - Each pair's doer works only on their own branch — never the base or another pair's branch
 - Pairs do not merge into the base branch themselves — PM handles integration
 
+## Contracts
+
+Before dispatching either pair, PM identifies shared interfaces — APIs, data models, file formats, event schemas — that both tracks will depend on. These are documented in `<project>/contracts.md` and sent to both doers via `send_files`.
+
+Both pairs treat contracts as immutable during the sprint. If a pair discovers a contract must change, they stop and notify PM. PM assigns the contract revision to one pair; the other waits until it is APPROVED and merged before continuing.
+
 ## Coordination Rules
 
 - Assign tracks at sprint start — document in `<project>/status.md` which pair owns which tasks
