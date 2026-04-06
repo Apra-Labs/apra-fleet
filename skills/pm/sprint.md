@@ -36,7 +36,7 @@ Write `<project>/requirements.md`. Quality bar:
 
 ### Task Harness
 
-Send three files to the doer's `work_folder` root via `send_files`:
+The task harness is the set of three files sent to the doer's `work_folder` root via `send_files` to bootstrap execution:
 
 1. **Agent context file** — from `tpl-doer.md`. See `context-file.md` for filename and delivery rules.
 2. **PLAN.md** — implementation plan with phases and tasks
@@ -62,6 +62,7 @@ PM sends task harness → kicks off doer (resume=false — fresh session per pha
 |----------|--------|
 | Start of new phase | `false` |
 | Within a phase | `true` |
+| Plan revision (any feedback iteration) | `true` |
 | Initial review dispatch | `false` |
 | Re-review after fixes | `true` |
 | Role switch (doer↔reviewer) | `false` |
@@ -76,6 +77,7 @@ Before kicking off execution, compose and deliver permissions for each member's 
 - Check git: `execute_command → git log --oneline -10`
 - Members may blow past VERIFY checkpoints if context gets large — dispatch a review immediately when caught
 - Long-running branches: check drift with `git log <branch>..origin/main --oneline`. If main moved, instruct rebase + retest
+- After every review verdict: move unaddressed MEDIUM/LOW findings and any deferred scope items into `<project>/backlog.md`
 
 ### Safeguards
 
@@ -90,7 +92,7 @@ Before kicking off execution, compose and deliver permissions for each member's 
 
 ## Phase 4 — Deployment
 
-Run `<project>/deploy.md` steps on the member via `execute_command`, then verify the deployment succeeded. See `/pm deploy`.
+Run `<project>/deploy.md` steps on the member via `execute_command`. Verification and rollback steps must be defined in `deploy.md` by the user — follow them exactly. On failure, execute the rollback steps in `deploy.md` and flag the user.
 
 ---
 
@@ -98,13 +100,9 @@ Run `<project>/deploy.md` steps on the member via `execute_command`, then verify
 
 When all phases are APPROVED:
 
-1. **Cleanup** — remove fleet control files from doer and reviewer:
-   ```
-   execute_command: git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT-INSTRUCTIONS.md; git commit -m "cleanup: remove fleet control files" && git push
-   ```
-   Run on both doer and reviewer.
+1. **Cleanup and raise PR** — See cleanup.md.
 
-2. **Merge** — PM runs `gh pr merge` directly (never delegate to fleet members). CI must be green and reviewer APPROVED verdict must exist. No exceptions.
+2. **Update backlog.md** — record all unresolved MEDIUM/LOW review findings and deferred items from this sprint.
 
 3. **Update status.md** — mark sprint complete, record member states.
 
@@ -120,10 +118,12 @@ For each member in the project:
 3. `execute_command → git status` — uncommitted changes?
 4. Compare against local `<project>/status.md` — what did PM last know?
 
-Present findings to user with options:
-- **Completed checkpoint:** "member finished phase 2, needs review. Trigger reviewer?"
-- **Mid-task with commits:** "member committed task 3 but didn't reach checkpoint. Resume?"
-- **Uncommitted changes:** "member has uncommitted work. Commit and resume, or discard?"
-- **No progress:** "member unchanged since last known state. Re-dispatch?"
+**Auto-resume** (PM acts immediately, no user input needed):
+- **Checkpoint reached, review pending** → dispatch reviewer now
+- **Mid-task with commits, clear next step** → resume doer with `resume=true`
+- **No progress, member idle** → re-dispatch from last known state
 
-User picks, PM executes.
+**Escalate to user** (ambiguous or risky — present options and wait):
+- **Uncommitted changes of unknown origin** → "member has uncommitted work not matching any known task. Commit and resume, or discard?"
+- **Conflicting state** (progress.json says complete but git shows no commits) → "state inconsistency detected. Investigate or reset?"
+- **Zero progress after re-dispatch** → "member made no progress after re-dispatch. Escalate model or reassign?"

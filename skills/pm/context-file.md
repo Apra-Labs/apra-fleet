@@ -25,6 +25,6 @@ Use `member_detail` → `llmProvider` to determine the correct target filename:
 - Pick the correct template based on role and correct target filename based on provider
 - Make a copy of the template to the local project folder, update it with project details
 - Send to member via `send_files` to the member's `work_folder` root before dispatch
-- Never commit to git — add the provider-appropriate filename to `.gitignore`
+- Never commit to git — on first send, add the Agent Context File filename to the member's `.gitignore` via `execute_command → echo '<filename>' >> .gitignore`
 - On role switch (doer ↔ reviewer): send the new context file before dispatch
 - Remove before merge: `rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT-INSTRUCTIONS.md` (part of pre-merge cleanup — see doer-reviewer.md)

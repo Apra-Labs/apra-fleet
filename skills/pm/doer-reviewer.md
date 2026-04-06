@@ -44,10 +44,10 @@ Verify reviewer is at the correct commit before starting review:
 
 4. Reviewer reads deliverables + diff, conducts cumulative review (all phases up to current, not just the latest) per its agent context file. Commits findings to feedback.md, pushes, and outputs verdict: APPROVED or CHANGES NEEDED
 5. PM reads verdict:
-   - **APPROVED** → cleanup → merge → next phase
+   - **APPROVED** → proceed to next phase (or sprint completion if all phases done)
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
-6. **Pre-merge cleanup** — run on both doer and reviewer via `execute_command`: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT-INSTRUCTIONS.md; git commit -m "cleanup: remove fleet control files" && git push`. Always Run before merging the PR.
-7. Loop until all phases APPROVED
+6. Loop until all phases APPROVED
+7. **Sprint completion** — See cleanup.md.
 
 ## Resume Rule
 
