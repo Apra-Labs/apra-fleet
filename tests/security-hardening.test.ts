@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import { registerMemberSchema } from '../src/tools/register-member.js';
 import { updateMemberSchema } from '../src/tools/update-member.js';
@@ -8,6 +8,10 @@ import { LinuxCommands } from '../src/os/linux.js';
 import { WindowsCommands } from '../src/os/windows.js';
 import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
 import { makeTestAgent, REGISTRY_PATH, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { ensureCloudReady } from '../src/services/cloud/lifecycle.js';
+import * as cloud from '../src/services/cloud/provider.js';
+
+vi.mock('../src/services/cloud/provider.js');
 
 // --- Item 1: Registry file permissions ---
 
@@ -44,7 +48,8 @@ describe('friendlyName Zod validation', () => {
       'test`id`',
       'test|cat /etc/passwd',
       'test & rm -rf /',
-      'test\nwhoami',
+      'test
+whoami',
       'hello world',
       'name<script>',
       "it's",
@@ -193,14 +198,41 @@ describe('registerMemberSchema cloud config validation', () => {
 // --- T1: Credential leakage audit ---
 
 describe('credential leakage prevention', () => {
-  it('lifecycle log truncates error messages to 50 chars', () => {
-    // Verify the truncation constant: slice(0, 50) ensures long error messages
-    // (which might contain tokens) are never fully logged
-    const longMessage = 'Bearer ghp_' + 'x'.repeat(100);
-    const truncated = longMessage.slice(0, 50);
-    expect(truncated.length).toBe(50);
-    expect(truncated).not.toContain('x'.repeat(51));
-  });
+    beforeEach(() => {
+        backupAndResetRegistry();
+        vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        restoreRegistry();
+    });
+
+    it('ensureCloudReady truncates long error messages', async () => {
+        const longErrorMessage = 'aws failed: The security token included in the request is invalid. Token: ghp_' + 'x'.repeat(200);
+
+        vi.mocked(cloud.getCloudProvider).mockReturnValue({
+            start: vi.fn().mockRejectedValue(new Error(longErrorMessage)),
+            stop: vi.fn(),
+            getState: vi.fn().mockResolvedValue('stopped'),
+        } as any);
+
+        const cloudAgent = makeTestAgent({
+            id: 'cloud-leak-test',
+            agentType: 'remote',
+            cloudProvider: 'aws',
+            cloudInstanceId: 'i-12345',
+        });
+        addAgent(cloudAgent);
+
+        try {
+            await ensureCloudReady(cloudAgent);
+            // Should not reach here
+            expect(true).toBe(false);
+        } catch (e: any) {
+            expect(e.message.length).toBeLessThan(100);
+            expect(e.message).not.toContain('ghp_');
+        }
+    });
 });
 
 // Legacy salt removal: covered by crypto.test.ts (round-trip + tampered ciphertext)
@@ -231,7 +263,7 @@ describe('deploySSHPublicKey', () => {
 
     // Should not have unescaped single quotes
     expect(result[4]).not.toContain("it's-key'");
-    expect(result[4]).toContain("'\\''");
+    expect(result[4]).toContain("'''");
   });
 
   it('Windows: generates proper commands', () => {
