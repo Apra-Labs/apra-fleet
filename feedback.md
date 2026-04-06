@@ -1,133 +1,125 @@
-# Skill Refactor Implementation Review — Issue #66
+# Bug Fixes & API Cleanup Sprint — Plan Review
 
 **Reviewer:** sprint/skill-refactor reviewer  
-**Date:** 2026-04-06  
-**Verdict:** APPROVED
+**Date:** 2026-04-06 14:32:00+00:00  
+**Verdict:** CHANGES NEEDED
+
+> See the recent git history of this file to understand the context of this review.
 
 ---
 
-## Review Checklist
+## 1. Requirements-Plan Alignment Analysis
 
-### 1. Completeness — fleet/SKILL.md contains all required fleet mechanics
+**CRITICAL FINDING: The user's review checklist references specifications that do NOT appear in requirements.md.**
 
-| Mechanic | Status | Location |
-|----------|--------|----------|
-| Provider awareness table | PASS | Lines 174-185 — covers instruction file naming, permissions, model tiers, CLI commands, attribution, timeouts |
-| Model tiers | PASS | Lines 157-161 — cheap/standard/premium, server resolves via modelTiers() |
-| execute_prompt mechanics | PASS | Lines 56-57 — background subagent dispatch, run_in_background=true |
-| execute_command tunnel rule | PASS | Lines 50-53 — tool boundaries, fleet tools are canonical interface |
-| send_files/receive_files | PASS | Lines 80-94 — task harness delivery + delivery mechanics sections |
-| compose_permissions mechanics | PASS | Lines 150-154 + permissions.md sub-document |
-| Background subagent requirement | PASS | Line 57 — "Never block on a dispatch — always fire and monitor" |
-| dangerously_skip_permissions ban | NOTE | Not in fleet skill. Currently only in pm/SKILL.md rule 8. Non-blocking — see observation below. |
+I compared each item from the user's prompt against the actual requirements.md:
 
-**Sub-documents present:** onboarding.md, permissions.md, troubleshooting.md, skill-matrix.md, auth-github.md, auth-bitbucket.md, auth-azdevops.md — all moved from pm/ to fleet/.
+| User's Question | What requirements.md Actually Says | Match? |
+|-----------------|-----------------------------------|--------|
+| #89: CWD fix correct? | Agent CWD = `agent.workFolder`, prompt file in tmpDir | YES |
+| #88: Fix crash `ledger.granted is not iterable`? Fix template? Test fresh template? | Only: add warning when granting without `project_folder` | **NO** — no crash fix, no template fix mentioned |
+| #87: Rename to `llm_cli` (not just `cli`)? | Rename to `cli` or provider-agnostic name | **NO** — requirements say `cli` is acceptable |
+| #85: Rename `work_folder` → `run_from`? macOS tilde expansion? Update execute_prompt defaults? | Only: document `work_folder` in skill docs | **NO** — no renames, no tilde fix, no execute_prompt changes |
+| #84: Rename `provision_auth` → `provision_llm_auth`? | Only: audit for consistent naming (no hyphenated refs) | **NO** — no rename to `provision_llm_auth` |
+| #83: Server-side accumulation + REMOVE tool? | Only: clarify best-effort git commit behavior in docs | **NO** — no removal, just documentation |
 
-### 2. Clean PM skill — zero fleet tool mechanics
+**Diagnosis:** Either:
+1. requirements.md is incomplete and needs to be updated with the full specifications, OR
+2. The user's checklist is based on an outdated understanding of the scope
 
-**PASS.** Grep for all 21 fleet tool names (execute_prompt, execute_command, send_files, receive_files, compose_permissions, monitor_task, register_member, remove_member, update_member, fleet_status, member_detail, list_members, provision_auth, provision_vcs_auth, setup_ssh_key, setup_git_app, cloud_control, shutdown_server, update_llm_cli, update_task_tokens, revoke_vcs_auth) returned **zero matches** in pm/SKILL.md.
-
-PM references fleet mechanics exclusively via "see the fleet skill" prose pattern.
-
-### 3. No duplication
-
-**PASS.** Same grep across pm/SKILL.md and doer-reviewer.md — no fleet tool names appear as inline mechanics. All references are cross-skill pointers ("see the fleet skill").
-
-### 4. Fleet skill is self-contained
-
-**PASS.** An agent loading only skills/fleet/SKILL.md gets everything needed to operate fleet tools:
-- Complete tool table (21 tools)
-- Dispatch rules (background subagent requirement)
-- Pre-dispatch and pre-flight checks
-- Task harness delivery mechanics
-- Monitoring and recovery commands
-- Git-as-transport protocol
-- Cleanup commands
-- Permissions (with sub-doc)
-- Model tiers
-- Member icons
-- Provider awareness table
-- 7 sub-documents for detailed procedures
-
-### 5. PM skill still complete
-
-**PASS.** All PM commands present: /pm init, plan, start, status, resume, pair, deploy, recover, cleanup. Lifecycle phases (vision → requirements → design → plan → development → testing → deployment), execution loop, doer-reviewer flow, recovery procedure, and all 15 core rules intact. Cross-skill references are correct and consistent.
-
-### 6. Cross-contamination check
-
-**PASS.** 
-- No PM orchestration content (commands, lifecycle, execution loop, doer-reviewer workflow) found in fleet/SKILL.md
-- No fleet tool mechanics (tool names as inline instructions) found in pm/SKILL.md or doer-reviewer.md
-- "Task Harness Delivery" in fleet (lines 80-88) correctly describes the *delivery mechanism* (how to use send_files); PM describes *what* to deliver and *when* — proper separation of concerns
-- "Recovery Commands" in fleet (lines 106-111) correctly describes the *commands to run*; PM's Recovery section describes the *decision workflow* — proper separation
+The plan correctly addresses requirements.md as currently written. But if the user's checklist represents the TRUE intent, then requirements.md is the problem, not the plan.
 
 ---
 
-## Minor Observation (non-blocking)
+## 2. Plan Review Checklist (Against Current requirements.md)
 
-The `dangerously_skip_permissions` ban lives only in pm/SKILL.md rule 8. If the fleet skill is ever consumed by a non-PM agent, that agent wouldn't see this ban. Consider adding a one-liner to fleet's permissions section or tool boundaries section in a future pass. This does not block approval — PM is currently the only consumer, and the ban is present there.
+| # | Check | Status |
+|---|-------|--------|
+| 1 | Every task has clear "done" criteria? | PASS — all tasks have explicit "Done when:" |
+| 2 | High cohesion within tasks, low coupling between? | PASS |
+| 3 | Key abstractions in earliest tasks? | PASS — #89 is front-loaded |
+| 4 | Riskiest assumption validated in Task 1? | PASS — CWD fix explicitly first |
+| 5 | Later tasks reuse early abstractions (DRY)? | N/A — independent bug fixes |
+| 6 | 2-3 work tasks per phase + VERIFY? | PASS — all phases structured correctly |
+| 7 | Each task completable in one session? | PASS — all marked cheap/standard |
+| 8 | Dependencies satisfied in order? | PASS — Task 6 waits for Task 4 |
+| 9 | Vague tasks two devs would interpret differently? | PASS — all specific |
+| 10 | Hidden dependencies? | PASS — none found |
+| 11 | Risk register? | PASS — 4 risks documented |
+| 12 | Aligns with requirements.md intent? | **CONDITIONAL PASS** — matches current requirements.md, but requirements.md may be incomplete |
 
-## Cross-Skill Reference Mechanism
+---
 
-The "See the fleet skill" prose pattern is documented with an explicit file-path fallback (fleet/SKILL.md lines 10-14). Pragmatic and resilient.
+## 3. Specific Issue-by-Issue Analysis
+
+### #89 — CWD Fix
+**PASS.** Plan Task 1 correctly identifies:
+- Change `promptOpts.folder` from `tmpDir` to `agent.workFolder`
+- Keep prompt file written to `tmpDir`
+- Pass absolute path to `buildAgentPromptCommand`
+- Verify `os-commands.ts` supports absolute paths (blocker noted)
+
+Code at `execute-prompt.ts:112` confirms `folder: tmpDir` is the bug. Plan addresses this correctly.
+
+### #88 — Ledger Warning
+**PASS (per requirements.md).** Plan Task 2 adds a warning when granting without `project_folder`.
+
+**But if the user's intent is to fix a crash:** The plan does NOT address `ledger.granted is not iterable`. Looking at `compose-permissions.ts:161`, the code already defaults to `{ stacks: [], granted: [] }` when `project_folder` is omitted, so `granted` should always be an array. Either:
+- The crash scenario is different than expected (e.g., `loadLedger` returning malformed data), OR
+- requirements.md omitted the crash fix specification
+
+### #87 — Field Rename
+**PASS (per requirements.md).** Plan Task 4 renames `claude` → `cli`. Code at `member-detail.ts:146` shows `result.claude = cli`.
+
+**Note:** requirements.md says `cli` is acceptable. If the actual requirement is `llm_cli`, requirements.md should specify this.
+
+### #85 — work_folder Documentation
+**PASS (per requirements.md).** Plan Task 6 item 1 documents `work_folder` in skill docs.
+
+**Note:** requirements.md does NOT mention:
+- Renaming to `run_from`
+- macOS tilde expansion
+- Updating `execute_prompt` defaults
+- "Never pass registered folder explicitly" guidance
+
+If these are required, they must be added to requirements.md.
+
+### #84 — provision_auth Consistency
+**PASS (per requirements.md).** Plan Task 6 item 2 audits for consistent naming.
+
+Code at `src/index.ts:95` shows the tool is registered as `provision_auth`. requirements.md only asks for consistency audit, not a rename to `provision_llm_auth`.
+
+### #83 — Token Behavior Documentation
+**PASS (per requirements.md).** Plan Task 5 updates the tool description and improves the warning message.
+
+requirements.md explicitly states this is a documentation fix, not a tool removal.
+
+---
+
+## 4. Missing Items
+
+If the user's checklist represents true intent, the following are missing from requirements.md AND the plan:
+
+1. **#88 crash fix:** The `ledger.granted is not iterable` scenario and its fix
+2. **#88 template fix:** Whatever template issue exists
+3. **#88 fresh template test:** Test for fresh template handling
+4. **#87 field name:** `llm_cli` vs `cli` decision
+5. **#85 renames:** `work_folder` → `run_from` if intended
+6. **#85 tilde expansion:** macOS tilde expansion fix
+7. **#85 execute_prompt:** Update defaults for execute_prompt
+8. **#84 rename:** `provision_auth` → `provision_llm_auth` if intended
+9. **#83 tool removal:** Server-side accumulation + tool removal if intended
 
 ---
 
 ## Summary
 
-The split is clean, complete, and well-executed. Fleet mechanics are fully extracted into skills/fleet/SKILL.md with 7 supporting sub-documents. The PM skill contains zero fleet tool mechanics — all references use the cross-skill prose pattern. No duplication, no cross-contamination. Both skills are self-contained for their respective concerns.
+The plan is correctly aligned with requirements.md as written. However, the user's review checklist references specifications that are NOT in requirements.md. This is a **requirements gap**, not a planning error.
 
----
+**Action Required:**
 
-# Install Order & --skill Flag Review — Commit 8e181f8 (#82)
+1. **Update requirements.md** with the full specifications for each issue (crash fixes, renames, tool removals, etc.) if those are the true requirements
+2. **Re-plan** once requirements are authoritative
+3. OR **Confirm current scope** — if requirements.md accurately reflects the intended scope, the plan can proceed as-is
 
-**Reviewer:** sprint/skill-refactor reviewer  
-**Date:** 2026-04-06  
-**Verdict:** APPROVED
-
----
-
-## Review Checklist
-
-### 1. No PM refs in fleet skill
-
-**PASS.** Grep for `\bpm\b`, `/pm`, `@pm` in `skills/fleet/` returned zero matches. Fleet skill is fully self-contained with no PM dependencies.
-
-### 2. Install order — fleet before PM
-
-**PASS.** `install.ts:438-451` installs fleet at step 6, PM at step 7. `totalSteps` dynamically adjusts: 5 (no skills), 6 (fleet only), 7 (fleet+pm). The `fleet-before-pm order` test (line 525-546) explicitly verifies `mkdirSync` call ordering.
-
-### 3. --skill flag values
-
-**PASS.** All modes work correctly:
-- `install` (no flag) → `skillMode='none'` → no skills installed
-- `--skill` (no value) → `skillMode='all'` → both fleet + pm
-- `--skill all` → both fleet + pm
-- `--skill fleet` → fleet only
-- `--skill pm` → fleet + pm (with warning)
-- `--skill=<value>` equals form also works for all values
-- `--skill=invalid` → exits with error
-
-Parsing logic at lines 325-345 handles both `--skill=<val>` and `--skill <val>` forms correctly, including bare `--skill` defaulting to `'all'`.
-
-### 4. --help output
-
-**PASS.** `index.ts:18-21` documents all four install variants clearly:
-- `install` — base install only
-- `install --skill [all]` — both skills
-- `install --skill fleet` — fleet only
-- `install --skill pm` — PM (also installs fleet)
-
-### 5. --skill pm installs fleet too
-
-**PASS.** Line 435-437 prints warning: "PM skill depends on fleet skill — installing fleet skill first." Line 347 includes `'pm'` in the `installFleet` boolean. Test at line 456-477 confirms both directories are created.
-
-### 6. Tests pass
-
-**PASS.** All 41 test files pass (628 tests, 0 failures). New test file `install-multi-provider.test.ts` adds 27 tests covering all --skill flag modes, fleet-before-pm ordering, equals-form parsing, and error cases.
-
----
-
-## Summary
-
-Clean implementation. The --skill flag parsing is robust (both equals and space forms, bare flag defaults to all, invalid values rejected). Fleet-before-pm ordering is correctly enforced in code and verified in tests. The --skill pm auto-installs fleet with a clear dependency warning. Help text accurately documents all modes.
+**Cannot approve until** the requirements-checklist discrepancy is resolved. The plan should not be implemented against ambiguous specifications.
