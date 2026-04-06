@@ -1,3 +1,51 @@
+# Phase 3 VERIFY Re-review: Edge Cases & Minor Bugs
+
+**Branch:** `sprint/ux-quality-fixes`
+**Reviewer:** Claude Opus 4.6
+**Date:** 2026-04-05
+**Commit reviewed:** `74c05eb` (Task 11 test added)
+
+## Previously Blocking Issue — RESOLVED
+
+**Task 11 (Issue #10) missing test** — now resolved in `tests/update-member.test.ts`.
+
+### Test Review
+
+The new test file covers three scenarios:
+
+1. **Local non-cloud member + cloud field** (line 15-25): Creates a local agent via `makeTestLocalAgent()`, calls `updateMember` with `cloud_region: 'us-east-1'`, asserts response contains `"Warning: cloud fields (cloud_region) are ignored for non-cloud members."` **PASS**
+
+2. **Remote non-cloud member + multiple cloud fields** (line 27-38): Creates a remote agent via `makeTestAgent()`, passes both `cloud_region` and `cloud_profile`, asserts the warning lists both fields. **PASS**
+
+3. **Cloud member — no warning** (line 40-58): Creates a remote agent with a `cloud` property (AWS, instance ID, region, timeout), passes `cloud_region`, asserts no `Warning:` in output and confirms the update succeeded. This is the important negative test. **PASS**
+
+Test uses `backupAndResetRegistry`/`restoreRegistry` for proper isolation.
+
+## Build & Test
+
+- `npm run build`: **PASS**
+- `npm test`: **PASS** (619 tests passed, 4 skipped, 41 test files, 0 failures)
+
+## All Phase 3 Tasks — Final Status
+
+| Task | Issue | Status |
+|------|-------|--------|
+| Task 8 | #37 — CI fetch-depth: 0 | ✅ PASS |
+| Task 9 | #9 — gpu-parser bounds checking | ✅ PASS |
+| Task 10 | #39 — remove_member /mcp Reconnect | ✅ PASS |
+| Task 11 | #10 — update_member cloud field warning | ✅ PASS (test added) |
+
+No Phase 1 or Phase 2 regressions.
+
+---
+
+**Verdict: APPROVED**
+
+All four Phase 3 tasks meet their "done when" criteria with passing tests. The previously blocking issue (missing Task 11 test) has been fully resolved with a comprehensive 3-case test suite.
+
+---
+---
+
 # Phase 3 VERIFY Review: Edge Cases & Minor Bugs
 
 **Branch:** `sprint/ux-quality-fixes`
