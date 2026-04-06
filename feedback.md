@@ -1,3 +1,103 @@
+# Phase 2 VERIFY Review: State Integrity & Security Testing
+
+**Branch:** `sprint/ux-quality-fixes`
+**Reviewer:** Claude Opus 4.6
+**Date:** 2026-04-05
+**Commits reviewed:** `731e3b1` through `2f34f84` (Phase 2: Tasks 4, 5, 6)
+
+## Task 4: Issue #57 — update_task_tokens silent data loss on git commit failure
+
+### File write decoupled from git commit
+
+The tool now follows a clear sequence: (1) read progress.json from member, (2) accumulate tokens in-memory, (3) write to temp file and upload via `sendFiles`, (4) attempt git commit as best-effort. The git commit at `update-task-tokens.ts:106-112` is fully independent of the file write at lines 80-95. **PASS**
+
+### Git failure handling
+
+If git commit fails (line 114 check), the function returns the success message with an appended warning: `"Warning: Git commit failed. The progress.json file was updated, but the changes are not committed."` The file write is never reverted. **PASS**
+
+### Test coverage gap
+
+No test exercises the git-commit-failure path. All existing tests mock `executeCommand` to return `Exit code: 0` for the commit call. There should be a test where the second `executeCommand` call returns a non-zero exit code, verifying:
+- The result still contains the success message ("Token counts updated")
+- The result contains the "Warning: Git commit failed" message
+- `sendFiles` was still called (file was written)
+
+**FAIL — missing test for the critical path this task was created to fix.**
+
+## Task 5: Issue #67 — .fleet-task* files written to OS temp dir
+
+### Temp dir usage
+
+`execute-prompt.ts:77`: `const promptFilePath = path.join(os.tmpdir(), promptFileName);` — the `.fleet-task-*` file is now written to `os.tmpdir()` instead of the work folder. For local agents, `writePromptFile` (line 44) calls `fs.writeFileSync(promptFilePath, ...)` with the temp path. For remote agents, the file is written remotely via `strategy.execCommand`. **PASS**
+
+### Cleanup
+
+The `finally` block at line 162 calls `deletePromptFile` which removes the temp file. **PASS**
+
+### Work folder is clean
+
+The prompt file path no longer references any work directory or `process.cwd()`. The work folder cannot be polluted. **PASS**
+
+### Test coverage
+
+The execute-prompt tests (`tests/execute-prompt.test.ts`) do not verify that the prompt file path uses `os.tmpdir()`. This is a minor gap — the code change is straightforward and correct, but a test asserting the path starts with `os.tmpdir()` would guard against regressions. **Minor concern, non-blocking.**
+
+## Task 6: Issue #6 — Credential leakage test is a no-op
+
+### Test still does not invoke lifecycle.ts code
+
+The "fix" (commit `b16faf8`) only added `beforeEach`/`afterEach` registry backup hooks and reformatted indentation. The actual test body is functionally identical to the original:
+
+```typescript
+const longMessage = 'Bearer ghp_' + 'x'.repeat(100);
+const truncated = longMessage.slice(0, 50);
+expect(truncated.length).toBe(50);
+expect(truncated).not.toContain('x'.repeat(51));
+```
+
+This tests that JavaScript's `String.slice()` works — not that `lifecycle.ts` actually truncates credentials. The test does not import `ensureCloudReady`, `reProvisionAuth`, or any code from `lifecycle.ts`. If the `.slice(0, 50)` call were removed from `lifecycle.ts`, this test would still pass.
+
+**FAIL — the issue explicitly required invoking actual lifecycle.ts code, not testing String.slice.**
+
+### What the test should do
+
+The test should:
+1. Import `ensureCloudReady` or `reProvisionAuth` from `lifecycle.ts`
+2. Mock the cloud provider to throw an error containing a long credential string
+3. Capture the logged output (mock `console.warn` or the logger)
+4. Assert the logged message is truncated to 50 chars and does not contain the full credential
+
+## Build & Test
+
+- `npm run build`: **PASS** (clean tsc compilation)
+- `npm test`: **PASS** (614 tests passed, 4 skipped, 40 test files, 0 failures)
+
+## Phase 1 Regression Check
+
+No changes to `auth-socket.ts`, `install.ts`, or any Phase 1 files. All 27 auth socket tests and 19 install tests pass unchanged. **No regressions.**
+
+## Issues Found
+
+| # | Task | Severity | Issue |
+|---|------|----------|-------|
+| 1 | Task 4 | Blocking | No test for git-commit-failure path — the exact scenario this task was created to fix |
+| 2 | Task 6 | Blocking | Test is still a no-op — does not import or invoke any `lifecycle.ts` code |
+
+## Minor Concerns (non-blocking)
+
+1. **Task 5 test gap:** execute-prompt tests don't verify `os.tmpdir()` usage. Low risk since the code is straightforward.
+
+---
+
+**Verdict: CHANGES NEEDED**
+
+Task 5 (temp dir for prompt files) is correct and complete. Tasks 4 and 6 have the right production code changes but fail on test coverage:
+- Task 4 needs a test proving the git-failure path returns success + warning (not a regression to silent data loss).
+- Task 6 needs a complete rewrite of the test to actually invoke `lifecycle.ts` error handling, not just test `String.slice()`.
+
+---
+---
+
 # Phase 1 VERIFY Review: OOB Terminal & Versioned MCP Key
 
 **Branch:** `sprint/ux-quality-fixes`
