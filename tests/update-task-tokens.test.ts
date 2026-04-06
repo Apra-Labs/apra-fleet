@@ -15,7 +15,7 @@ vi.mock('../src/tools/send-files.js', () => ({
     if (fs.existsSync(filePath)) {
       capturedUploads.push(JSON.parse(fs.readFileSync(filePath, 'utf8')));
     }
-    return '✅ Successfully uploaded 1 file(s) to test-agent:\n  - progress.json\n\nRemote destination: /home/user/project';
+    return '? Successfully uploaded 1 file(s) to test-agent:\n  - progress.json\n\nRemote destination: /home/user/project';
   }),
 }));
 
@@ -51,8 +51,8 @@ describe('updateTaskTokens', () => {
       { id: '1', step: 'Task 1', type: 'work', status: 'pending', tokens: { doer: { input: 0, output: 0 }, reviewer: { input: 0, output: 0 } } },
     ]);
     mockExecuteCommand
-      .mockResolvedValueOnce(`Exit code: 0\n${progress}`)
-      .mockResolvedValueOnce('Exit code: 0\n[main abc1234] chore: update token counts for task 1');
+      .mockResolvedValueOnce(Exit code: 0\n)
+      .mockResolvedValueOnce('Exit code: 0\n[main abc1234] chore(tokens): update for task 1 (doer)');
 
     const result = await updateTaskTokens({
       member_id: agent.id,
@@ -64,9 +64,9 @@ describe('updateTaskTokens', () => {
     });
 
     expect(result).toContain('task 1');
-    expect(result).toContain('doer.input  += 1000');
-    expect(result).toContain('doer.output += 500');
-    expect(result).toContain('Committed to git on member');
+    expect(result).toContain('.input  : 0 + 1000 = 1000');
+    expect(result).toContain('.output : 0 + 500 = 500');
+    expect(result).toContain('Committed changes to git.');
     expect(mockSendFiles).toHaveBeenCalledOnce();
   });
 
@@ -78,7 +78,7 @@ describe('updateTaskTokens', () => {
       { id: '1', step: 'Task 1', type: 'work', status: 'completed', tokens: { doer: { input: 1000, output: 500 }, reviewer: { input: 0, output: 0 } } },
     ]);
     mockExecuteCommand
-      .mockResolvedValueOnce(`Exit code: 0\n${progress}`)
+      .mockResolvedValueOnce(Exit code: 0\n)
       .mockResolvedValueOnce('Exit code: 0\ncommit done');
 
     const result = await updateTaskTokens({
@@ -90,8 +90,8 @@ describe('updateTaskTokens', () => {
       output_tokens: 100,
     });
 
-    expect(result).toContain('reviewer.input  += 200');
-    expect(result).toContain('reviewer.output += 100');
+    expect(result).toContain('.input  : 0 + 200 = 200');
+    expect(result).toContain('.output : 0 + 100 = 100');
 
     const uploaded = capturedUploads[0];
     expect(uploaded.tasks[0].tokens.doer.input).toBe(1000);   // unchanged
@@ -108,7 +108,7 @@ describe('updateTaskTokens', () => {
       { id: '1', step: 'Task 1', tokens: { doer: { input: 1000, output: 500 }, reviewer: { input: 0, output: 0 } } },
     ]);
     mockExecuteCommand
-      .mockResolvedValueOnce(`Exit code: 0\n${progress1}`)
+      .mockResolvedValueOnce(Exit code: 0\n)
       .mockResolvedValueOnce('Exit code: 0\ncommit done');
 
     await updateTaskTokens({
@@ -127,7 +127,7 @@ describe('updateTaskTokens', () => {
     // Second review cycle: add 300/150 on top (simulate member returning updated state)
     const progress2 = JSON.stringify(afterFirst);
     mockExecuteCommand
-      .mockResolvedValueOnce(`Exit code: 0\n${progress2}`)
+      .mockResolvedValueOnce(Exit code: 0\n)
       .mockResolvedValueOnce('Exit code: 0\ncommit done');
 
     await updateTaskTokens({
@@ -152,7 +152,7 @@ describe('updateTaskTokens', () => {
       { id: '2', step: 'Task 2', type: 'work', status: 'pending' },
     ]);
     mockExecuteCommand
-      .mockResolvedValueOnce(`Exit code: 0\n${progress}`)
+      .mockResolvedValueOnce(Exit code: 0\n)
       .mockResolvedValueOnce('Exit code: 0\ncommit done');
 
     const result = await updateTaskTokens({
@@ -164,7 +164,7 @@ describe('updateTaskTokens', () => {
       output_tokens: 250,
     });
 
-    expect(result).toContain('doer.input  += 500');
+    expect(result).toContain('.input  : 0 + 500 = 500');
     const uploaded = capturedUploads[0];
     expect(uploaded.tasks[0].tokens.doer.input).toBe(500);
     expect(uploaded.tasks[0].tokens.reviewer.input).toBe(0);
@@ -194,7 +194,7 @@ describe('updateTaskTokens', () => {
     addAgent(agent);
 
     const progress = makeProgress([{ id: '1', step: 'Task 1' }]);
-    mockExecuteCommand.mockResolvedValueOnce(`Exit code: 0\n${progress}`);
+    mockExecuteCommand.mockResolvedValueOnce(Exit code: 0\n);
 
     const result = await updateTaskTokens({
       member_id: agent.id,
