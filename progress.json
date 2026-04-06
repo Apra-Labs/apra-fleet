@@ -1,0 +1,54 @@
+{
+  "project": "skill-refactor",
+  "branch": "sprint/skill-refactor",
+  "tasks": [
+    {
+      "id": "1",
+      "phase": 1,
+      "title": "Investigate @fleet reference mechanism and create skills/fleet/SKILL.md skeleton",
+      "type": "task",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "2",
+      "phase": 1,
+      "title": "Populate skills/fleet/SKILL.md with fleet mechanics extracted from PM skill",
+      "type": "task",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "3",
+      "phase": 1,
+      "title": "Refactor skills/pm/SKILL.md to remove fleet mechanics, add @fleet references",
+      "type": "task",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "4",
+      "phase": 1,
+      "title": "Trim doer-reviewer.md of fleet tool mechanics",
+      "type": "task",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "5",
+      "phase": 1,
+      "title": "Verify the split is complete",
+      "type": "task",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "6",
+      "phase": 1,
+      "title": "VERIFY checkpoint",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}
