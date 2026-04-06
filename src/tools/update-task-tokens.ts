@@ -55,7 +55,7 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
 
   // 2. Find the task and accumulate tokens
   if (!Array.isArray(progress.tasks)) {
-    return `Invalid progress.json: missing tasks array`;
+    return 'Invalid progress.json: missing tasks array';
   }
 
   const task = progress.tasks.find((t: any) => String(t.id) === String(input.task_id));
@@ -69,6 +69,9 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
   if (!task.tokens[input.role] || typeof task.tokens[input.role] !== 'object') {
     task.tokens[input.role] = { input: 0, output: 0 };
   }
+
+  const oldInput = task.tokens[input.role].input;
+  const oldOutput = task.tokens[input.role].output;
 
   task.tokens[input.role].input += input.input_tokens;
   task.tokens[input.role].output += input.output_tokens;
@@ -91,21 +94,27 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
     return `Failed to upload updated progress.json: ${sendResult}`;
   }
 
-  // 5. Commit the updated progress.json on the member
+  const successMessage = [
+    `Token counts updated for task ${input.task_id} (role: ${input.role}):`,
+    `  .input  : ${oldInput} + ${input.input_tokens} = ${task.tokens[input.role].input}`,
+    `  .output : ${oldOutput} + ${input.output_tokens} = ${task.tokens[input.role].output}`,
+    `Successfully updated ${input.progress_json} on member.`,
+  ].join('\n');
+
+  // 5. Attempt to commit the updated progress.json on the member. This is best-effort.
+  const commitMessage = `chore(tokens): update for task ${input.task_id} (${input.role})`;
   const commitResult = await executeCommand({
     member_id: memberId,
-    command: `git add ${escapeShellArg(input.progress_json)} && git commit -m "chore: update token counts for task ${escapeShellArg(input.task_id)}"`,
+    command: `git add ${escapeShellArg(input.progress_json)} && git commit -m "${commitMessage}"`,
     timeout_ms: 30000,
     long_running: false,
     max_retries: 3,
   });
 
-  const committed = commitResult.includes('Exit code: 0');
+  if (commitResult.startsWith('Exit code: 0')) {
+    return `${successMessage}\nCommitted changes to git.`;
+  }
 
-  return [
-    `Token counts updated for task ${input.task_id} (role: ${input.role}):`,
-    `  ${input.role}.input  += ${input.input_tokens} → ${task.tokens[input.role].input}`,
-    `  ${input.role}.output += ${input.output_tokens} → ${task.tokens[input.role].output}`,
-    committed ? 'Committed to git on member.' : `Git commit result: ${commitResult}`,
-  ].join('\n');
+  const warning = `\n\nWarning: Git commit failed. The progress.json file was updated, but the changes are not committed. You may need to commit them manually.\nGit output:\n${commitResult}`;
+  return successMessage + warning;
 }

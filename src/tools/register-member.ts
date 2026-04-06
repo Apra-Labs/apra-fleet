@@ -62,7 +62,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   let preEncryptedPassword: string | undefined;
   if (!isLocal && input.auth_type === 'password' && !input.password) {
     const oob = await collectOobPassword(input.friendly_name, 'register_member');
-    if ('fallback' in oob) return oob.fallback;
+    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
     preEncryptedPassword = oob.password;
   }
 

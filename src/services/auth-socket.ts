@@ -1,7 +1,9 @@
-import net from 'node:net';
+﻿import net from 'node:net';
 import fs from 'node:fs';
+import { promises as fsPromises } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 
@@ -26,6 +28,7 @@ let socketServer: net.Server | null = null;
 
 export function getSocketPath(): string {
   if (process.platform === 'win32') {
+    // Note: this path is automatically scoped to the user session by Windows.
     const username = process.env.USERNAME ?? 'user';
     return `\\\\.\\pipe\\apra-fleet-auth-${username}`;
   }
@@ -69,13 +72,13 @@ export async function ensureAuthSocket(): Promise<void> {
           if (msg.type === 'auth' && msg.member_name && msg.password) {
             const pending = pendingRequests.get(msg.member_name);
             if (!pending) {
-              conn.write(JSON.stringify({ type: 'ack', ok: false, error: `No pending auth for "${msg.member_name}"` }) + '\n');
+              conn.write(JSON.stringify({ type: 'ack', ok: false, error: `No pending auth for ${msg.member_name}` }) + '\n');
               return;
             }
             // Encrypt immediately, discard plaintext
             pending.encryptedPassword = encryptPassword(msg.password);
             // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
-            msg.password = '';
+            (msg as any).password = '';
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
             // Resolve any waiting tool handler
             const waiter = passwordWaiters.get(msg.member_name);
@@ -154,7 +157,7 @@ export function waitForPassword(memberName: string, timeoutMs: number = 300_000)
     const timer = setTimeout(() => {
       passwordWaiters.delete(memberName);
       pendingRequests.delete(memberName);
-      reject(new Error(`Password entry timed out for "${memberName}"`));
+      reject(new Error(`Password entry timed out for ${memberName}`));
     }, timeoutMs);
 
     passwordWaiters.set(memberName, { resolve, reject, timer });
@@ -189,90 +192,122 @@ export function cleanupAuthSocket(): void {
   pendingRequests.clear();
 }
 
+type OobLaunchFn = (
+  name: string,
+  extraArgs: string[] | undefined,
+  onExit: (code: number | null) => void,
+) => string;
+
+
 /**
- * Collect a password out-of-band: launch a terminal prompt and block until
- * the password arrives over the socket, or return a fallback message for
- * headless environments. Returns `{ password }` on success or `{ fallback }`
- * with a user-facing message if the terminal couldn't be launched.
- *
- * The optional `_opts` parameter is for testing only: inject a stub
- * `launchFn` or short `waitTimeoutMs` without spawning real terminals.
+ * Core logic for out-of-band credential collection.
+ * Launches a terminal, then races a password waiter against a cancellation signal.
+ */
+async function collectOobInput(
+  mode: 'password' | 'api-key',
+  memberName: string,
+  toolName: string,
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+): Promise<{ password?: string; fallback?: string }> {
+  const launch = _opts?.launchFn ?? launchAuthTerminal;
+  const waitTimeoutMs = _opts?.waitTimeoutMs;
+
+  const extraArgs = mode === 'api-key' ? ['--api-key'] : [];
+  const inputType = mode === 'api-key' ? 'API key' : 'Password';
+
+  const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
+  const cancelledMessage = `❌ Password entry cancelled. Call ${toolName} again to retry.`;
+
+  // Re-entrant case
+  if (hasPendingAuth(memberName)) {
+    const encPw = getPendingPassword(memberName);
+    if (encPw) return { password: encPw };
+    try {
+      // Another process already launched the terminal, just wait for the result.
+      return { password: await waitForPassword(memberName, waitTimeoutMs ?? 300_000) };
+    } catch {
+      return { fallback: timeoutMessage };
+    }
+  }
+
+  await ensureAuthSocket();
+  createPendingAuth(memberName);
+
+  try {
+    const passwordPromise = waitForPassword(memberName, waitTimeoutMs);
+
+    const cancellationPromise = new Promise<{ fallback: string } | null>((resolve, reject) => {
+      const result = launch(memberName, extraArgs, (exitCode) => {
+        if (exitCode !== 0) {
+          reject(new Error('cancelled'));
+        }
+        // If exit is 0, passwordPromise will win the race.
+        // We can resolve this with null to signal completion without a fallback.
+        resolve(null);
+      });
+
+      if (result.startsWith('fallback:')) {
+        const manualMsg = result.slice('fallback:'.length);
+        resolve({ fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
+      }
+    });
+
+    const raceResult = await Promise.race([passwordPromise, cancellationPromise]);
+
+    if (raceResult === null) {
+      // This case should not be hit if passwordPromise always wins on success,
+      // but as a safeguard, we wait for the password again.
+      return { password: await passwordPromise };
+    }
+
+    // Handle the fallback case from the cancellation promise
+    if (typeof raceResult === 'object' && raceResult?.fallback) {
+      return raceResult;
+    }
+
+    return { password: raceResult as string };
+  } catch (err: any) {
+    // Clean up the pending request if the user cancelled.
+    const waiter = passwordWaiters.get(memberName);
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      passwordWaiters.delete(memberName);
+    }
+    pendingRequests.delete(memberName);
+
+    if (err.message === 'cancelled') {
+      return { fallback: cancelledMessage };
+    }
+    // It must be a timeout from waitForPassword
+    return { fallback: timeoutMessage };
+  }
+}
+
+
+/**
+ * Collect a password out-of-band.
+ * @see collectOobInput
  */
 export async function collectOobPassword(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: (name: string, extraArgs?: string[]) => string },
-): Promise<{ password: string } | { fallback: string }> {
-  const launch = _opts?.launchFn ?? launchAuthTerminal;
-  const waitTimeoutMs = _opts?.waitTimeoutMs;
-
-  // Re-entrant: a prior call may have already created a pending auth (e.g., terminal
-  // launched but user hasn't entered password yet, or a fallback was returned and the
-  // caller is retrying). Piggyback on the existing entry rather than spawning a duplicate.
-  if (hasPendingAuth(memberName)) {
-    const encPw = getPendingPassword(memberName);
-    if (encPw) return { password: encPw };
-    try {
-      return { password: await waitForPassword(memberName, waitTimeoutMs ?? 300_000) };
-    } catch {
-      return { fallback: `❌ Password entry timed out for "${memberName}". Call ${toolName} again to retry.` };
-    }
-  }
-
-  await ensureAuthSocket();
-  createPendingAuth(memberName);
-  const result = launch(memberName);
-
-  if (result.startsWith('fallback:')) {
-    const manualMsg = result.slice('fallback:'.length);
-    return { fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the password, call ${toolName} again with the same parameters (without password).` };
-  }
-
-  try {
-    return { password: await waitForPassword(memberName, waitTimeoutMs) };
-  } catch {
-    return { fallback: `❌ Password entry timed out for "${memberName}". Call ${toolName} again to retry.` };
-  }
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+): Promise<{ password?: string; fallback?: string }> {
+  return collectOobInput('password', memberName, toolName, _opts);
 }
 
 /**
- * Collect an API key out-of-band: same mechanism as collectOobPassword but
- * launches the terminal with the `--api-key` flag so the prompt reads
- * "Enter API key" instead of "Enter SSH password".
+ * Collect an API key out-of-band.
+ * @see collectOobInput
  */
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: (name: string, extraArgs?: string[]) => string },
-): Promise<{ password: string } | { fallback: string }> {
-  const launch = _opts?.launchFn ?? launchAuthTerminal;
-  const waitTimeoutMs = _opts?.waitTimeoutMs;
-
-  if (hasPendingAuth(memberName)) {
-    const encPw = getPendingPassword(memberName);
-    if (encPw) return { password: encPw };
-    try {
-      return { password: await waitForPassword(memberName, waitTimeoutMs ?? 300_000) };
-    } catch {
-      return { fallback: `❌ API key entry timed out for "${memberName}". Call ${toolName} again to retry.` };
-    }
-  }
-
-  await ensureAuthSocket();
-  createPendingAuth(memberName);
-  const result = launch(memberName, ['--api-key']);
-
-  if (result.startsWith('fallback:')) {
-    const manualMsg = result.slice('fallback:'.length);
-    return { fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the API key, call ${toolName} again with the same parameters (without api_key).` };
-  }
-
-  try {
-    return { password: await waitForPassword(memberName, waitTimeoutMs) };
-  } catch {
-    return { fallback: `❌ API key entry timed out for "${memberName}". Call ${toolName} again to retry.` };
-  }
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+): Promise<{ password?: string; fallback?: string }> {
+  return collectOobInput('api-key', memberName, toolName, _opts);
 }
+
 
 /**
  * Resolve the command to invoke this binary's `auth` subcommand.
@@ -308,38 +343,103 @@ function findLinuxTerminal(): string | null {
 
 /**
  * Launch a new terminal window running `apra-fleet auth <memberName>`.
- * Returns a user-facing message describing what happened.
+ * Returns a user-facing message describing what happened and executes a
+ * callback when the spawned terminal process exits.
  */
-export function launchAuthTerminal(memberName: string, extraArgs?: string[]): string {
+export function launchAuthTerminal(
+  memberName: string,
+  extraArgs: string[] | undefined,
+  onExit: (code: number | null) => void,
+): string {
   const { cmd, args } = getAuthCommand(memberName, extraArgs);
   const fullArgs = [cmd, ...args];
+  let child: ChildProcess;
 
   try {
     const platform = process.platform;
 
     if (platform === 'darwin') {
-      // macOS: use osascript to open a new Terminal.app window
-      const script = `tell application "Terminal" to do script "${fullArgs.map(a => a.replace(/"/g, '\\"')).join(' ')}"`;
-      spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref();
+      // macOS: Use a complex AppleScript to wait for the window to close and get an exit code.
+      // This is memory-hardened by writing the exit code to a temp file.
+      (async () => {
+        let exitCode = 1; // Default to cancellation
+        const tmpFile = path.join(os.tmpdir(), `fleet-auth-exit-${Date.now()}`);
+        try {
+          // The command to run in the terminal. It must be a single string.
+          // It writes its own exit code to a temp file so we can read it later.
+          const command = [...fullArgs, `; echo $? > "${tmpFile}"`].join(' ');
+
+          // AppleScript to launch terminal, run command, and wait for it to be "not busy".
+          const appleScript = `
+            tell application "Terminal"
+                activate
+                set w to do script "${command.replace(/"/g, '\\"')}"
+                delay 1
+                repeat while busy of w
+                    delay 0.5
+                end repeat
+            end tell
+          `;
+
+          const child = spawn('osascript', ['-']);
+          child.stdin.write(appleScript);
+          child.stdin.end();
+
+          child.on('close', async (code) => {
+            if (code !== 0) {
+              // osascript itself failed.
+              onExit(1);
+              return;
+            }
+            try {
+              const codeStr = await fsPromises.readFile(tmpFile, 'utf-8');
+              exitCode = parseInt(codeStr.trim(), 10);
+              if (isNaN(exitCode)) exitCode = 1;
+            } catch {
+              exitCode = 1; // Assume cancellation if file not found (e.g., window closed manually)
+            } finally {
+              await fsPromises.unlink(tmpFile).catch(() => {});
+              onExit(exitCode);
+            }
+          });
+          child.on('error', (err) => {
+            console.error('Failed to launch osascript for auth:', err);
+            onExit(1);
+          });
+        } catch (e) {
+          onExit(1); // Default to cancellation on any unexpected error.
+        }
+      })();
+      return 'launched';
     } else if (platform === 'win32') {
-      // Windows: start a new cmd window
-      spawn('cmd', ['/c', 'start', 'cmd', '/c', ...fullArgs], { detached: true, stdio: 'ignore' }).unref();
+      // Windows: start /wait ensures that the parent cmd.exe process waits for the new
+      // terminal window to be closed. This allows us to capture the exit event.
+      // The title argument to start is required.
+      const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
+      child = spawn('cmd', spawnArgs, { detached: true, stdio: 'ignore' });
     } else {
-      // Linux: find available terminal emulator
+      // Linux: find available terminal emulator. Most support an execute flag.
       const terminal = findLinuxTerminal();
       if (!terminal) {
-        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${fullArgs.join(' ')}`;
+        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}`;
       }
       if (terminal === 'gnome-terminal') {
-        spawn(terminal, ['--', ...fullArgs], { detached: true, stdio: 'ignore' }).unref();
+        child = spawn(terminal, ['--', ...fullArgs], { detached: true, stdio: 'ignore' });
       } else {
-        // xterm, x-terminal-emulator
-        spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' }).unref();
+        // xterm, x-terminal-emulator etc.
+        child = spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' });
       }
     }
 
+    child.on('close', onExit);
+    child.on('error', (err) => {
+      console.error(`Failed to launch terminal for ${memberName}: `, err);
+      onExit(1); // Treat spawn error as a non-zero exit.
+    });
+    child.unref();
+
     return 'launched';
-  } catch {
-    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${fullArgs.join(' ')}`;
+  } catch (err: any) {
+    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}`;
   }
 }

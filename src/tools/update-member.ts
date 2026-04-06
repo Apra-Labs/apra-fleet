@@ -68,11 +68,12 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   const rotatingPassword = !!input.rotate_password && existing.authType === 'password';
   if ((switchingToPassword || rotatingPassword) && !input.password && existing.agentType === 'remote') {
     const oob = await collectOobPassword(existing.friendlyName, 'update_member');
-    if ('fallback' in oob) return oob.fallback;
+    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
     preEncryptedPassword = oob.password;
   }
 
   const updates: Record<string, unknown> = {};
+  const warnings: string[] = [];
 
   if (resolvedIcon) updates.icon = resolvedIcon;
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
@@ -92,7 +93,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.git_repos) updates.gitRepos = input.git_repos;
 
   // Cloud field updates: merge into existing cloud config
-  if (input.cloud_region || input.cloud_profile !== undefined || input.cloud_idle_timeout_min || input.cloud_activity_command !== undefined) {
+  const cloudFields = ['cloud_region', 'cloud_profile', 'cloud_idle_timeout_min', 'cloud_activity_command'] as const;
+  const passedCloudFields = cloudFields.filter(f => input[f] !== undefined);
+
+  if (passedCloudFields.length > 0) {
     if (existing.cloud) {
       const updatedCloud = { ...existing.cloud };
       if (input.cloud_region) updatedCloud.region = input.cloud_region;
@@ -102,6 +106,8 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
         updatedCloud.activityCommand = input.cloud_activity_command || undefined;
       }
       updates.cloud = updatedCloud;
+    } else {
+      warnings.push(`Warning: cloud fields (${passedCloudFields.join(', ')}) are ignored for non-cloud members.`);
     }
   }
 
@@ -122,6 +128,13 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   result += `  Folder:  ${updated.workFolder}\n`;
   if (updated.authType) {
     result += `  Auth:    ${updated.authType}\n`;
+  }
+
+  if (warnings.length > 0) {
+    result += '\n';
+    for (const w of warnings) {
+      result += `⚠️ ${w}\n`;
+    }
   }
 
   return result;

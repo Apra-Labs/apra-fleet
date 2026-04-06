@@ -32,6 +32,7 @@ function makeProgress(tasks: any[]) {
 
 describe('updateTaskTokens', () => {
   beforeEach(() => {
+    vi.resetModules();
     backupAndResetRegistry();
     vi.clearAllMocks();
     capturedUploads = [];
@@ -51,7 +52,7 @@ describe('updateTaskTokens', () => {
     ]);
     mockExecuteCommand
       .mockResolvedValueOnce(`Exit code: 0\n${progress}`)
-      .mockResolvedValueOnce('Exit code: 0\n[main abc1234] chore: update token counts for task 1');
+      .mockResolvedValueOnce('Exit code: 0\n[main abc1234] chore(tokens): update for task 1 (doer)');
 
     const result = await updateTaskTokens({
       member_id: agent.id,
@@ -63,9 +64,9 @@ describe('updateTaskTokens', () => {
     });
 
     expect(result).toContain('task 1');
-    expect(result).toContain('doer.input  += 1000');
-    expect(result).toContain('doer.output += 500');
-    expect(result).toContain('Committed to git on member');
+    expect(result).toContain('.input  : 0 + 1000 = 1000');
+    expect(result).toContain('.output : 0 + 500 = 500');
+    expect(result).toContain('Committed changes to git.');
     expect(mockSendFiles).toHaveBeenCalledOnce();
   });
 
@@ -89,8 +90,8 @@ describe('updateTaskTokens', () => {
       output_tokens: 100,
     });
 
-    expect(result).toContain('reviewer.input  += 200');
-    expect(result).toContain('reviewer.output += 100');
+    expect(result).toContain('.input  : 0 + 200 = 200');
+    expect(result).toContain('.output : 0 + 100 = 100');
 
     const uploaded = capturedUploads[0];
     expect(uploaded.tasks[0].tokens.doer.input).toBe(1000);   // unchanged
@@ -163,7 +164,7 @@ describe('updateTaskTokens', () => {
       output_tokens: 250,
     });
 
-    expect(result).toContain('doer.input  += 500');
+    expect(result).toContain('.input  : 0 + 500 = 500');
     const uploaded = capturedUploads[0];
     expect(uploaded.tasks[0].tokens.doer.input).toBe(500);
     expect(uploaded.tasks[0].tokens.reviewer.input).toBe(0);
@@ -206,5 +207,36 @@ describe('updateTaskTokens', () => {
 
     expect(result).toContain('Task "999" not found');
     expect(mockSendFiles).not.toHaveBeenCalled();
+  });
+
+  it('returns a warning when git commit fails', async () => {
+    const agent = makeTestAgent();
+    addAgent(agent);
+
+    const progress = makeProgress([
+      { id: '1', step: 'Task 1', type: 'work', status: 'pending', tokens: { doer: { input: 0, output: 0 }, reviewer: { input: 0, output: 0 } } },
+    ]);
+    mockExecuteCommand
+      .mockResolvedValueOnce(`Exit code: 0\n${progress}`)
+      .mockResolvedValueOnce('Exit code: 1\ngit commit failed');
+
+    const result = await updateTaskTokens({
+      member_id: agent.id,
+      progress_json: '/home/user/project/progress.json',
+      task_id: '1',
+      role: 'doer',
+      input_tokens: 1000,
+      output_tokens: 500,
+    });
+
+    expect(result).toContain('Token counts updated for task 1');
+    expect(result).toContain('Warning: Git commit failed.');
+    expect(result).not.toContain('Committed changes to git.');
+    expect(mockSendFiles).toHaveBeenCalledOnce();
+
+    // Verify the file was still written and prepared for upload
+    const uploaded = capturedUploads[0];
+    expect(uploaded.tasks[0].tokens.doer.input).toBe(1000);
+    expect(uploaded.tasks[0].tokens.doer.output).toBe(500);
   });
 });

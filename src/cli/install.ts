@@ -209,11 +209,11 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any): void 
   writeConfig(paths, settings);
 }
 
-function mergePermissions(paths: ProviderInstallConfig): void {
+function mergePermissions(paths: ProviderInstallConfig, mcpKey: string): void {
   const settings = readConfig(paths);
 
   const requiredPerms = [
-    'mcp__apra-fleet__*',
+    `mcp__${mcpKey}__*`,
     'Agent(*)',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
   ];
@@ -241,10 +241,24 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): 
   writeConfig(paths, settings);
 }
 
-function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+function cleanupStaleMcpServers(settings: any, mcpKey: string): void {
+  const serverDicts = ['mcpServers', 'mcp_servers'];
+  for (const dict of serverDicts) {
+    if (settings[dict]) {
+      for (const key in settings[dict]) {
+        if ((key.startsWith('apra-fleet-') || key.startsWith('apra-fleet_')) && key !== mcpKey) {
+          delete settings[dict][key];
+        }
+      }
+    }
+  }
+}
+
+function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
   const settings = readConfig(paths);
+  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers['apra-fleet'] = {
+  settings.mcpServers[mcpKey] = {
     ...mcpConfig,
     trust: true,
   };
@@ -265,18 +279,20 @@ function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string):
   writeConfig(paths, settings);
 }
 
-function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
   const settings = readConfig(paths);
+  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers['apra-fleet'] = mcpConfig;
+  settings.mcpServers[mcpKey] = mcpConfig;
 
   writeConfig(paths, settings);
 }
 
-function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
   const settings = readConfig(paths);
+  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcp_servers = settings.mcp_servers || {};
-  settings.mcp_servers['apra-fleet'] = {
+  settings.mcp_servers[mcpKey] = {
     command: mcpConfig.command.replace(/\\/g, '/'),
     args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
   };
@@ -312,12 +328,19 @@ export async function runInstall(args: string[]): Promise<void> {
   const paths = getProviderInstallConfig(llm);
   const installSkill = args.includes('--skill');
   const totalSteps = installSkill ? 6 : 5;
+  const mcpKey = 'apra-fleet';
 
   if (llm === 'gemini' && installSkill) {
-    console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
+    console.warn(`
+⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the
+  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).
+  For best orchestration performance, consider using Claude. See docs for details.
+`);
   }
 
-  console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
+  console.log(`
+Installing Apra Fleet ${serverVersion} for ${paths.name}...
+`);
 
   // --- Step 1: Copy binary ---
   let binaryPath = '';
@@ -380,20 +403,18 @@ export async function runInstall(args: string[]): Promise<void> {
     : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
 
   if (llm === 'claude') {
-    try {
-      run('claude mcp remove apra-fleet', { stdio: 'ignore' });
-    } catch { /* not registered */ }
+
     
     const cmd = mcpConfig.command === 'node' 
-      ? `claude mcp add --scope user apra-fleet -- node "${mcpConfig.args[0]}"`
-      : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
+      ? `claude mcp add --scope user ${mcpKey} -- node "${mcpConfig.args[0]}"`
+      : `claude mcp add --scope user ${mcpKey} -- "${mcpConfig.command}"`;
     run(cmd);
   } else if (llm === 'gemini') {
-    mergeGeminiConfig(paths, mcpConfig);
+    mergeGeminiConfig(paths, mcpConfig, mcpKey);
   } else if (llm === 'codex') {
-    mergeCodexConfig(paths, mcpConfig);
+    mergeCodexConfig(paths, mcpConfig, mcpKey);
   } else if (llm === 'copilot') {
-    mergeCopilotConfig(paths, mcpConfig);
+    mergeCopilotConfig(paths, mcpConfig, mcpKey);
   }
 
   // --- Step 6: Install PM skill (optional) ---
@@ -415,7 +436,7 @@ export async function runInstall(args: string[]): Promise<void> {
   }
 
   // Finalize permissions
-  mergePermissions(paths);
+  mergePermissions(paths, mcpKey);
 
   // --- Done ---
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
@@ -424,7 +445,8 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installSkill ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
+  Settings:    ${paths.settingsFile}${installSkill ? `
+  PM Skill:    ${paths.skillsDir}` : ''}
 
 ${instructions}
 `);

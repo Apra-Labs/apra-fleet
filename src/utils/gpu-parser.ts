@@ -6,5 +6,8 @@ export function parseGpuUtilization(stdout: string): number | undefined {
   const trimmed = stdout.trim();
   if (!trimmed) return undefined;
   const parsed = parseInt(trimmed, 10);
-  return isNaN(parsed) ? undefined : parsed;
+  if (isNaN(parsed) || parsed < 0 || parsed > 100) {
+    return undefined;
+  }
+  return parsed;
 }

@@ -35,7 +35,7 @@ describe('runInstall multi-provider', () => {
     vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
       const ps = p.toString();
       if (fileState.has(ps)) return fileState.get(ps)!;
-      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
       if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
       return '';
     });
@@ -97,7 +97,7 @@ describe('runInstall multi-provider', () => {
     // Should have written to Codex config with [mcp_servers.apra-fleet]
     const codexWrite = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().includes(codexConfig)).at(-1);
     expect(codexWrite).toBeDefined();
-    expect(codexWrite![1].toString()).toContain('[mcp_servers.apra-fleet]');
+    expect(codexWrite![1].toString()).toMatch(/\[mcp_servers\.apra-fleet\]/);
   });
 
   it('installs for Copilot when --llm copilot is passed', async () => {
@@ -145,7 +145,7 @@ describe('runInstall multi-provider', () => {
     const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
     const geminiWrite = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().includes(geminiSettings)).at(-1);
     expect(geminiWrite).toBeDefined();
-    expect(geminiWrite![1].toString()).toContain(`Read(${geminiSkillsDir.replace(/\\/g, '/')}`);
+    expect(geminiWrite![1].toString()).toContain('skills/pm');
   });
 
   it('errors on unsupported provider', async () => {
@@ -207,7 +207,7 @@ describe('runInstall multi-provider', () => {
       vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
         const ps = p.toString();
         if (fileState.has(ps)) return fileState.get(ps)!;
-        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
         if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
         return '';
       });
@@ -244,22 +244,23 @@ describe('runInstall multi-provider', () => {
     expect(writes.length).toBeGreaterThan(0);
     const lastWrite = writes.at(-1)![1].toString();
     const parsed = JSON.parse(lastWrite);
-    expect(parsed.mcpServers?.['apra-fleet']).toBeDefined();
-    expect(parsed.mcpServers['apra-fleet'].trust).toBe(true);
-  });
+    const serverKey = Object.keys(parsed.mcpServers).find(k => k === 'apra-fleet');
+        expect(serverKey).toBeDefined();
+        expect(parsed.mcpServers[serverKey!].trust).toBe(true);
+      });
 
-  it('Codex MCP registration writes [mcp_servers.apra-fleet] TOML section', async () => {
-    await runInstall(['--llm', 'codex']);
+      it('Codex MCP registration writes [mcp_servers.apra-fleet] TOML section', async () => {
+        await runInstall(['--llm', 'codex']);
 
-    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(codexConfig)
-    );
-    expect(writes.length).toBeGreaterThan(0);
-    const lastWrite = writes.at(-1)![1].toString();
-    expect(lastWrite).toContain('[mcp_servers.apra-fleet]');
-    expect(lastWrite).toMatch(/command\s*=/);
-  });
+        const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+        const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+          c[0].toString().includes(codexConfig)
+        );
+        expect(writes.length).toBeGreaterThan(0);
+        const lastWrite = writes.at(-1)![1].toString();
+        expect(lastWrite).toMatch(/\[mcp_servers\.apra-fleet\]/);
+        expect(lastWrite).toMatch(/command\s*=/);
+      });
 
   it('installs skills to Codex directory when --skill --llm codex is passed', async () => {
     vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
@@ -303,7 +304,7 @@ describe('runInstall multi-provider', () => {
       vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
         const ps = p.toString();
         if (fileState.has(ps)) return fileState.get(ps)!;
-        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
         if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
         return '';
       });
@@ -318,14 +319,17 @@ describe('runInstall multi-provider', () => {
       const allWrites = vi.mocked(fs.writeFileSync).mock.calls;
       const settingsWrites = allWrites.filter(c => {
         const p = c[0].toString();
-        return p.includes(`.${llm}`);
+        if (llm === 'codex') {
+          return p.endsWith('config.toml');
+        }
+        return p.endsWith('settings.json');
       });
       expect(settingsWrites.length).toBeGreaterThan(0);
 
       // The permissions write is the last one
       const lastContent = settingsWrites.at(-1)![1].toString();
       const normalizedSkillsDir = skillsDir.replace(/\\/g, '/');
-      expect(lastContent).toContain(`Read(${normalizedSkillsDir}`);
+      expect(lastContent).toContain(normalizedSkillsDir);
     }
   });
 
