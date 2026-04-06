@@ -29,7 +29,8 @@
     {
       "id": "5",
       "title": "Issue #67 - Prevent .fleet-task* files committed to member repos",
-      "status": "pending"
+      "status": "completed",
+      "notes": "Prompt files are now created in the OS temporary directory."
     },
     {
       "id": "6",
