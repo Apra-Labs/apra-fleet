@@ -192,23 +192,96 @@ describe('registerMemberSchema cloud config validation', () => {
 
 // --- T1: Credential leakage audit ---
 
+// Mocks for lifecycle test
+const { mockGetInstanceState, mockStartInstance, mockWaitForRunning, mockGetPublicIp,
+        mockProvisionAuth, mockProvisionVcsAuth, mockCreateConnection } = vi.hoisted(() => ({
+  mockGetInstanceState: vi.fn(),
+  mockStartInstance: vi.fn().mockResolvedValue(undefined),
+  mockWaitForRunning: vi.fn().mockResolvedValue(undefined),
+  mockGetPublicIp: vi.fn().mockResolvedValue('1.2.3.4'),
+  mockProvisionAuth: vi.fn(),
+  mockProvisionVcsAuth: vi.fn(),
+  mockCreateConnection: vi.fn(),
+}));
+
+vi.mock('../src/services/cloud/aws.js', () => ({
+  awsProvider: {
+    getInstanceState: mockGetInstanceState,
+    startInstance: mockStartInstance,
+    waitForRunning: mockWaitForRunning,
+    waitForStopped: vi.fn().mockResolvedValue(undefined),
+    getPublicIp: mockGetPublicIp,
+  },
+}));
+
+vi.mock('../src/tools/provision-auth.js', () => ({
+  provisionAuth: mockProvisionAuth,
+}));
+
+vi.mock('../src/tools/provision-vcs-auth.js', () => ({
+  provisionVcsAuth: mockProvisionVcsAuth,
+}));
+
+vi.mock('node:net', () => ({
+  default: {
+    createConnection: mockCreateConnection,
+  },
+}));
+
+function mockSshReady() {
+  mockCreateConnection.mockImplementation(() => {
+    const socket = {
+      on: (event: string, handler: () => void) => {
+        if (event === 'connect') setImmediate(handler);
+        return socket;
+      },
+      destroy: vi.fn(),
+    };
+    return socket;
+  });
+}
+
 describe('credential leakage prevention', () => {
     beforeEach(() => {
         backupAndResetRegistry();
         vi.clearAllMocks();
+        mockGetInstanceState.mockResolvedValue('stopped');
+        mockSshReady();
     });
 
     afterEach(() => {
         restoreRegistry();
     });
 
-    it('lifecycle log truncates error messages to prevent credential leakage', () => {
-        // The reProvisionAuth function in lifecycle.ts uses .slice(0, 50) to prevent
-        // long error messages (which might contain tokens) from being fully logged.
-        const longMessage = 'Bearer ghp_' + 'x'.repeat(100);
-        const truncated = longMessage.slice(0, 50);
-        expect(truncated.length).toBe(50);
-        expect(truncated).not.toContain('x'.repeat(51));
+    it('lifecycle log truncates error messages to prevent credential leakage', async () => {
+        const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+        const longErrorMessage = 'APIError: Your API key is invalid: sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+        mockProvisionAuth.mockRejectedValue(new Error(longErrorMessage));
+
+        const agent = makeTestAgent({
+            cloud: {
+                provider: 'aws',
+                instanceId: 'i-123',
+                region: 'us-east-1',
+                idleTimeoutMin: 10,
+            }
+        });
+        addAgent(agent);
+
+        // Dynamically import to use the mocks
+        const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+        await ensureCloudReady(agent);
+
+        const loggedOutput = stderrWrite.mock.calls.map(call => call[0]).join('\n');
+
+        expect(loggedOutput).toContain('provision_auth failed');
+        // Verify the original long error message is NOT present
+        expect(loggedOutput).not.toContain(longErrorMessage);
+        // Verify the truncated message IS present
+        expect(loggedOutput).toContain(longErrorMessage.slice(0, 50));
+
+        stderrWrite.mockRestore();
     });
 });
 

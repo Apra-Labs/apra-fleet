@@ -208,4 +208,35 @@ describe('updateTaskTokens', () => {
     expect(result).toContain('Task "999" not found');
     expect(mockSendFiles).not.toHaveBeenCalled();
   });
+
+  it('returns a warning when git commit fails', async () => {
+    const agent = makeTestAgent();
+    addAgent(agent);
+
+    const progress = makeProgress([
+      { id: '1', step: 'Task 1', type: 'work', status: 'pending', tokens: { doer: { input: 0, output: 0 }, reviewer: { input: 0, output: 0 } } },
+    ]);
+    mockExecuteCommand
+      .mockResolvedValueOnce(`Exit code: 0\n${progress}`)
+      .mockResolvedValueOnce('Exit code: 1\ngit commit failed');
+
+    const result = await updateTaskTokens({
+      member_id: agent.id,
+      progress_json: '/home/user/project/progress.json',
+      task_id: '1',
+      role: 'doer',
+      input_tokens: 1000,
+      output_tokens: 500,
+    });
+
+    expect(result).toContain('Token counts updated for task 1');
+    expect(result).toContain('Warning: Git commit failed.');
+    expect(result).not.toContain('Committed changes to git.');
+    expect(mockSendFiles).toHaveBeenCalledOnce();
+
+    // Verify the file was still written and prepared for upload
+    const uploaded = capturedUploads[0];
+    expect(uploaded.tasks[0].tokens.doer.input).toBe(1000);
+    expect(uploaded.tasks[0].tokens.doer.output).toBe(500);
+  });
 });
