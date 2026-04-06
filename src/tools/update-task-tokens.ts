@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -34,23 +34,23 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
   // 1. Read current progress.json from the member
   const catResult = await executeCommand({
     member_id: memberId,
-    command: cat ,
+    command: `cat ${escapeShellArg(input.progress_json)}`,
     timeout_ms: 30000,
     long_running: false,
     max_retries: 3,
   });
 
   if (!catResult.startsWith('Exit code: 0')) {
-    return Failed to read progress.json from member: ;
+    return `Failed to read progress.json from member: ${catResult}`;
   }
 
-  const jsonText = catResult.replace(/^Exit code: 0\\n/, '');
+  const jsonText = catResult.replace(/^Exit code: 0\n/, '');
 
   let progress: any;
   try {
     progress = JSON.parse(jsonText);
   } catch (err: any) {
-    return Failed to parse progress.json: ;
+    return `Failed to parse progress.json: ${err.message}`;
   }
 
   // 2. Find the task and accumulate tokens
@@ -60,61 +60,61 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
 
   const task = progress.tasks.find((t: any) => String(t.id) === String(input.task_id));
   if (!task) {
-    return Task " \ not found in progress.json;
- }
+    return `Task "${input.task_id}" not found in progress.json`;
+  }
 
- if (!task.tokens || typeof task.tokens !== 'object') {
- task.tokens = initTokens();
- }
- if (!task.tokens[input.role] || typeof task.tokens[input.role] !== 'object') {
- task.tokens[input.role] = { input: 0, output: 0 };
- }
+  if (!task.tokens || typeof task.tokens !== 'object') {
+    task.tokens = initTokens();
+  }
+  if (!task.tokens[input.role] || typeof task.tokens[input.role] !== 'object') {
+    task.tokens[input.role] = { input: 0, output: 0 };
+  }
 
- const oldInput = task.tokens[input.role].input;
- const oldOutput = task.tokens[input.role].output;
+  const oldInput = task.tokens[input.role].input;
+  const oldOutput = task.tokens[input.role].output;
 
- task.tokens[input.role].input += input.input_tokens;
- task.tokens[input.role].output += input.output_tokens;
+  task.tokens[input.role].input += input.input_tokens;
+  task.tokens[input.role].output += input.output_tokens;
 
- // 3. Write updated JSON to a temp file
- const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-tokens-'));
- const tmpFile = path.join(tmpDir, 'progress.json');
- fs.writeFileSync(tmpFile, JSON.stringify(progress, null, 2));
+  // 3. Write updated JSON to a temp file named progress.json so send_files preserves the basename
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-tokens-'));
+  const tmpFile = path.join(tmpDir, 'progress.json');
+  fs.writeFileSync(tmpFile, JSON.stringify(progress, null, 2));
 
- // 4. Push updated progress.json back to the member
- const sendResult = await sendFiles({
- member_id: memberId,
- local_paths: [tmpFile],
- destination_path: path.dirname(input.progress_json).replace(/^\\//, '') || undefined,
- });
+  // 4. Push updated progress.json back to the member
+  const sendResult = await sendFiles({
+    member_id: memberId,
+    local_paths: [tmpFile],
+    destination_path: path.dirname(input.progress_json).replace(/^\//, '') || undefined,
+  });
 
- fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 
- if (!sendResult.includes('Successfully uploaded')) {
- return Failed to upload updated progress.json: ;
- }
+  if (!sendResult.includes('Successfully uploaded')) {
+    return `Failed to upload updated progress.json: ${sendResult}`;
+  }
 
- const successMessage = [
- Token counts updated for task (role: ):,
- .input : + = ,
- .output : + = ,
- Successfully updated on member.,
- ].join('\\n');
+  const successMessage = [
+    `Token counts updated for task ${input.task_id} (role: ${input.role}):`,
+    `  .input  : ${oldInput} + ${input.input_tokens} = ${task.tokens[input.role].input}`,
+    `  .output : ${oldOutput} + ${input.output_tokens} = ${task.tokens[input.role].output}`,
+    `Successfully updated ${input.progress_json} on member.`,
+  ].join('\n');
 
- // 5. Attempt to commit the updated progress.json on the member. This is best-effort.
- const commitMessage = chore(tokens): update for task ();
- const commitResult = await executeCommand({
- member_id: memberId,
- command: git add && git commit -m \\,
- timeout_ms: 30000,
- long_running: false,
- max_retries: 3,
- });
+  // 5. Attempt to commit the updated progress.json on the member. This is best-effort.
+  const commitMessage = `chore(tokens): update for task ${input.task_id} (${input.role})`;
+  const commitResult = await executeCommand({
+    member_id: memberId,
+    command: `git add ${escapeShellArg(input.progress_json)} && git commit -m "${commitMessage}"`,
+    timeout_ms: 30000,
+    long_running: false,
+    max_retries: 3,
+  });
 
- if (commitResult.startsWith('Exit code: 0')) {
- return ${successMessage}\\nCommitted changes to git.;
- }
+  if (commitResult.startsWith('Exit code: 0')) {
+    return `${successMessage}\nCommitted changes to git.`;
+  }
 
- const warning = \\n\\nWarning: Git commit failed. The progress.json file was updated, but the changes are not committed. You may need to commit them manually.\\nGit output:\\n;
- return successMessage + warning;
+  const warning = `\n\nWarning: Git commit failed. The progress.json file was updated, but the changes are not committed. You may need to commit them manually.\nGit output:\n${commitResult}`;
+  return successMessage + warning;
 }
