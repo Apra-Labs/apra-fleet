@@ -35,7 +35,8 @@
     {
       "id": "6",
       "title": "Issue #6 - Credential leakage test is a no-op",
-      "status": "pending"
+      "status": "completed",
+      "notes": "Fixed the no-op credential leakage test."
     },
     {
       "id": "7",
