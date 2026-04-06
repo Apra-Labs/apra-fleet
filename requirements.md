@@ -1,112 +1,61 @@
-# Requirements: Bug Fixes & API Cleanup Sprint
+# Requirements — Bug Fixes & API Cleanup (#83, #84, #85, #87, #88, #89)
 
-**Issues:** #83, #84, #85, #87, #88, #89
-**Branch:** `sprint/skill-refactor`
-**Base branch:** `main`
-**Repo:** `C:\akhil\git\apra-fleet`
+## Base Branch
+`main` — branch to fork from and merge back to
 
----
+## Goal
+Fix a critical CWD bug in `execute_prompt` that causes agents to operate on the wrong repo, fix a crash in `compose_permissions`, and clean up provider-agnostic naming across 4 tools. Update all skill docs to reflect the changes.
 
-## Issue #89 — execute_prompt: agent CWD is /tmp instead of work folder
+## Scope
 
-### Problem
-`execute_prompt` sets the agent's working directory to the OS temp directory (`/tmp` or `os.tmpdir()`) instead of the member's registered work folder. The prompt file is correctly written to tmpDir, but `promptOpts.folder` is also set to `tmpDir` — meaning `buildAgentPromptCommand` launches the Claude Code agent with CWD in `/tmp`.
+### Critical Bug
+- **#89** — `execute_prompt`: always run from member `work_folder`; write `.fleet-task-*` files there (not Temp)
+  - Run `execute_prompt` from the member's registered `work_folder` — no CWD resets, no exceptions
+  - Write `.fleet-task-<id>.md` into `work_folder`
+  - Gitignore `.fleet-task*` in `work_folder` on first use / during onboarding
 
-### Root cause
-`src/tools/execute-prompt.ts:97,112` — `tmpDir` is used for both the prompt file location AND the agent launch folder. These should be separate: the prompt file goes in tmpDir, but the agent should launch in `agent.workFolder`.
+### Bug
+- **#88** — `compose_permissions`: crashes with `"ledger.granted is not iterable"` on fresh `permissions.json`
+  - Guard: `const granted = ledger.granted ?? [];`
+  - Fix the template `permissions.json` file to ship with `{"granted": []}` not `{}`
+  - Add a test: initializing from the template and calling `compose_permissions` must not throw
 
-### Expected behavior
-The launched agent's CWD should be `agent.workFolder` (the member's project directory). The prompt file can remain in tmpDir.
+### Refactors
+- **#87** — `member_detail`: rename `claude.version` → `llm_cli.version`, `claude.auth` → `llm_cli.auth`; strip provider prefix from version string (e.g. `"2.1.92"` not `"Claude Code 2.1.92"`)
 
-### Acceptance criteria
-- Agent launches with CWD = `agent.workFolder`
-- Prompt file still written to tmpDir (no change)
-- `buildAgentPromptCommand` receives `folder: agent.workFolder` and a separate prompt file path
-- Existing tests updated to verify CWD
+- **#85** — `execute_command` + `execute_prompt`: CWD defaulting and parameter rename
+  - Rename param `work_folder` → `run_from` in `execute_command`
+  - Both `execute_command` and `execute_prompt` must default to running from the member's registered `work_folder` — no override needed in 99% of cases
+  - Fix `~` tilde expansion on macOS so `/Users/akhil/~/git/foo` never happens — resolve `~` to the actual home directory server-side before constructing the path
+  - Update tool schema descriptions to make clear that `run_from` is rarely needed and defaults to the member's folder
+  - Update fleet skill docs so they never instruct agents to pass the registered work folder path explicitly
 
----
+- **#84** — rename `provision_auth` → `provision_llm_auth` in `src/index.ts` and all skill docs
 
-## Issue #88 — compose_permissions: ledger lost when project_folder omitted
+- **#83** — replace `update_task_tokens` with automatic per-member token accumulation in the fleet server; surface totals via `member_detail` / `fleet_status`; remove manual PM burden
 
-### Problem
-When `project_folder` is not provided to `compose_permissions`, the ledger defaults to `{ stacks: [], granted: [] }` — discarding any prior grant history. Additionally, on reactive grants, the ledger is only saved when `project_folder` is provided, meaning mid-sprint grants can be silently lost.
+### Skill Doc Sweep
+- Audit every skill doc (`skills/pm/`, `skills/fleet/`, and any others) for references to renamed tools and parameters
+- Fix all references: `provision_auth` → `provision_llm_auth`, `work_folder` → `run_from` (where applicable), `claude.version` → `llm_cli.version`
+- Remove any patterns that pass registered work folder path explicitly to `execute_command` or `execute_prompt`
+- Remove any PM instructions to call `update_task_tokens`
 
-### Root cause
-`src/tools/compose-permissions.ts:156` — `loadLedger` is conditionally called. No warning is returned when ledger is unavailable.
+## Out of Scope
+- Dashboard or UI changes
+- New tool features beyond the fixes and renames above
 
-### Fix
-1. Return a warning in the response when `project_folder` is omitted and grants are being applied (caller should know grants won't persist)
-2. Ensure the ledger guard is documented in the skill doc
+## Constraints
+- Clean breaking changes throughout — no backward-compat shims
+- macOS tilde resolution must be fixed server-side (fleet-rev is on macOS and will catch regressions in review)
 
-### Acceptance criteria
-- Warning message when granting permissions without `project_folder`
-- Existing grants still accumulate correctly when `project_folder` IS provided
-- Test coverage for the no-project-folder path
-
----
-
-## Issue #87 — member_detail: `claude.version` and `claude.auth` hardcoded for all providers
-
-### Problem
-`member_detail` returns auth and version info under the `claude` key (`result.claude = { version, auth }`) regardless of the actual LLM provider. For non-Claude members (Gemini, Codex, Copilot), this is misleading.
-
-### Root cause
-`src/tools/member-detail.ts:146` — field name `claude` is hardcoded, ignoring `agent.llmProvider`.
-
-### Fix
-Rename the field to `cli` or make it provider-agnostic (e.g., `result.cli = { version, auth }`). Update skill docs that reference `claude.version` or `claude.auth`.
-
-### Acceptance criteria
-- Field name reflects the generic nature (not provider-specific)
-- Skill docs updated
-- Backwards-compatible or documented as breaking change
-
----
-
-## Issue #85 — execute_command: work_folder not documented in skill docs
-
-### Problem
-`execute_command` supports an optional `work_folder` parameter (tool schema, line 16) that overrides the member's registered folder. This parameter is not mentioned in skill docs, so the PM skill doesn't know it exists.
-
-### Root cause
-`skills/fleet/SKILL.md` lists `execute_command` but doesn't document the `work_folder` override.
-
-### Fix
-Add `work_folder` parameter documentation to the fleet skill doc's `execute_command` section.
-
-### Acceptance criteria
-- Skill doc describes `work_folder` parameter, its default, and when to use it
-
----
-
-## Issue #84 — provision_auth: inconsistent tool name in skill docs and OOB calls
-
-### Problem
-The tool is registered as `provision_auth` in `src/index.ts:95`. Inside `src/tools/provision-auth.ts:252`, the OOB fallback passes the hardcoded string `'provision_auth'` to `collectOobApiKey`. Skill docs reference `provision_auth` correctly in the fleet skill table but may have stale references elsewhere.
-
-### Fix
-Audit all references to `provision_auth` / `provision-auth` across skill docs and source code. Ensure consistent naming.
-
-### Acceptance criteria
-- All skill doc references use the registered tool name `provision_auth`
-- No stale `provision-auth` (hyphenated) references remain
-
----
-
-## Issue #83 — update_task_tokens: clarify token accumulation and git-failure behavior
-
-### Problem
-`update_task_tokens` accumulates tokens correctly and handles git commit failure gracefully (returns warning). However, the tool's behavior on git failure is not documented — callers may not know that tokens are persisted even when the commit fails.
-
-### Root cause
-`src/tools/update-task-tokens.ts:104-119` — git commit is best-effort, but this isn't clear in the tool description or skill docs.
-
-### Fix
-1. Update tool description to clarify best-effort git commit behavior
-2. Update fleet skill doc to note that tokens are persisted to file regardless of git commit result
-3. Ensure the warning message on git failure is clear and actionable
-
-### Acceptance criteria
-- Tool description mentions best-effort commit
-- Skill doc updated
-- Warning message includes guidance (e.g., "manually commit progress.json")
+## Acceptance Criteria
+- [ ] `execute_prompt` always runs from `work_folder`; `.fleet-task-*` files land in `work_folder`
+- [ ] `compose_permissions` does not throw when `permissions.json` is initialized from the template
+- [ ] Test: fresh template `permissions.json` → `compose_permissions` → no crash
+- [ ] `member_detail` returns `llm_cli.version` and `llm_cli.auth` for all providers; version strings have no prefix
+- [ ] `execute_command` parameter is named `run_from`; both tools default to member `work_folder` without any override
+- [ ] `~` in registered `work_folder` resolves correctly on macOS
+- [ ] MCP tool formerly named `provision_auth` is now `provision_llm_auth`
+- [ ] Token counts accumulated automatically by the server; `update_task_tokens` removed
+- [ ] All skill docs updated — no stale tool names, no patterns passing registered folder explicitly
+- [ ] All existing tests pass; new tests added for CWD fix, tilde resolution, and `compose_permissions` guard
