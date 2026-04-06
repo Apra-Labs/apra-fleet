@@ -32,6 +32,7 @@ function makeProgress(tasks: any[]) {
 
 describe('updateTaskTokens', () => {
   beforeEach(() => {
+    vi.resetModules();
     backupAndResetRegistry();
     vi.clearAllMocks();
     capturedUploads = [];

@@ -14,6 +14,7 @@ vi.mock('../src/services/strategy.js', () => ({
 
 describe('fleetStatus branch display', () => {
   beforeEach(() => {
+    vi.resetModules();
     backupAndResetRegistry();
     vi.clearAllMocks();
   });
