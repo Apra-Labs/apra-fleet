@@ -95,7 +95,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   }
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
-  const promptFilePath = path.join(tmpDir, promptFileName);
+  const promptFilePath = path.join(agent.workFolder, promptFileName);
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
@@ -109,7 +109,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     : tiers.standard;
 
   const promptOpts = {
-    folder: tmpDir,
+    folder: agent.workFolder,
     promptFile: promptFileName,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
     model: resolvedModel,
