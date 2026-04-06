@@ -63,6 +63,7 @@ async function startServer() {
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
   const { updateTaskTokensSchema, updateTaskTokens } = await import('./tools/update-task-tokens.js');
+  const { versionSchema, version } = await import('./tools/version.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
@@ -102,6 +103,7 @@ async function startServer() {
   // --- Maintenance ---
   server.tool('update_llm_cli', "Update or install the AI provider CLI on members. Omit member to update all online members at once. Use install_if_missing to install on members that don't have it yet.", updateAgentCliSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateAgentCli(input as any) }] }));
   server.tool('shutdown_server', 'Gracefully shut down the MCP server. Run /mcp afterwards to start a fresh instance with the latest code.', shutdownServerSchema.shape, async () => ({ content: [{ type: 'text', text: await shutdownServer() }] }));
+  server.tool('version', 'Returns the installed apra-fleet server version', versionSchema.shape, async () => ({ content: [{ type: 'text', text: await version() }] }));
 
   // --- Permissions ---
   server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role. Automatically tailors permissions to the project type. Use grant to add specific permissions mid-sprint without a full recompose.', composePermissionsSchema.shape, async (input) => ({ content: [{ type: 'text', text: await composePermissions(input as any) }] }));

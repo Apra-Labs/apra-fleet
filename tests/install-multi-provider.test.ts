@@ -97,7 +97,7 @@ describe('runInstall multi-provider', () => {
     // Should have written to Codex config with [mcp_servers.apra-fleet]
     const codexWrite = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().includes(codexConfig)).at(-1);
     expect(codexWrite).toBeDefined();
-    expect(codexWrite![1].toString()).toMatch(/\[mcp_servers\."apra-fleet_.*"\]/);
+    expect(codexWrite![1].toString()).toMatch(/\[mcp_servers\.apra-fleet\]/);
   });
 
   it('installs for Copilot when --llm copilot is passed', async () => {
@@ -244,23 +244,23 @@ describe('runInstall multi-provider', () => {
     expect(writes.length).toBeGreaterThan(0);
     const lastWrite = writes.at(-1)![1].toString();
     const parsed = JSON.parse(lastWrite);
-    const serverKey = Object.keys(parsed.mcpServers).find(k => k.startsWith('apra-fleet_'));
-    expect(serverKey).toBeDefined();
-    expect(parsed.mcpServers[serverKey!].trust).toBe(true);
-  });
+    const serverKey = Object.keys(parsed.mcpServers).find(k => k === 'apra-fleet');
+        expect(serverKey).toBeDefined();
+        expect(parsed.mcpServers[serverKey!].trust).toBe(true);
+      });
 
-  it('Codex MCP registration writes [mcp_servers.apra-fleet] TOML section', async () => {
-    await runInstall(['--llm', 'codex']);
+      it('Codex MCP registration writes [mcp_servers.apra-fleet] TOML section', async () => {
+        await runInstall(['--llm', 'codex']);
 
-    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
-    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
-      c[0].toString().includes(codexConfig)
-    );
-    expect(writes.length).toBeGreaterThan(0);
-    const lastWrite = writes.at(-1)![1].toString();
-    expect(lastWrite).toMatch(/\[mcp_servers\."apra-fleet_.*"\]/);
-    expect(lastWrite).toMatch(/command\s*=/);
-  });
+        const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+        const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+          c[0].toString().includes(codexConfig)
+        );
+        expect(writes.length).toBeGreaterThan(0);
+        const lastWrite = writes.at(-1)![1].toString();
+        expect(lastWrite).toMatch(/\[mcp_servers\.apra-fleet\]/);
+        expect(lastWrite).toMatch(/command\s*=/);
+      });
 
   it('installs skills to Codex directory when --skill --llm codex is passed', async () => {
     vi.mocked(fs.readdirSync).mockImplementation((p: any) => {

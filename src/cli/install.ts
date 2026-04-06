@@ -241,15 +241,23 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): 
   writeConfig(paths, settings);
 }
 
-function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
-  const settings = readConfig(paths);
-  settings.mcpServers = settings.mcpServers || {};
-  // Clean up old keys
-  for (const key in settings.mcpServers) {
-    if (key.startsWith('apra-fleet') && key !== mcpKey) {
-      delete settings.mcpServers[key];
+function cleanupStaleMcpServers(settings: any, mcpKey: string): void {
+  const serverDicts = ['mcpServers', 'mcp_servers'];
+  for (const dict of serverDicts) {
+    if (settings[dict]) {
+      for (const key in settings[dict]) {
+        if ((key.startsWith('apra-fleet-') || key.startsWith('apra-fleet_')) && key !== mcpKey) {
+          delete settings[dict][key];
+        }
+      }
     }
   }
+}
+
+function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
+  const settings = readConfig(paths);
+  cleanupStaleMcpServers(settings, mcpKey);
+  settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers[mcpKey] = {
     ...mcpConfig,
     trust: true,
@@ -273,13 +281,8 @@ function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string):
 
 function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
   const settings = readConfig(paths);
+  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcpServers = settings.mcpServers || {};
-    // Clean up old keys
-  for (const key in settings.mcpServers) {
-    if (key.startsWith('apra-fleet') && key !== mcpKey) {
-      delete settings.mcpServers[key];
-    }
-  }
   settings.mcpServers[mcpKey] = mcpConfig;
 
   writeConfig(paths, settings);
@@ -287,13 +290,8 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey
 
 function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
   const settings = readConfig(paths);
+  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcp_servers = settings.mcp_servers || {};
-    // Clean up old keys
-  for (const key in settings.mcp_servers) {
-    if (key.startsWith('apra-fleet') && key !== mcpKey) {
-      delete settings.mcp_servers[key];
-    }
-  }
   settings.mcp_servers[mcpKey] = {
     command: mcpConfig.command.replace(/\\/g, '/'),
     args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
@@ -330,7 +328,7 @@ export async function runInstall(args: string[]): Promise<void> {
   const paths = getProviderInstallConfig(llm);
   const installSkill = args.includes('--skill');
   const totalSteps = installSkill ? 6 : 5;
-  const mcpKey = `apra-fleet_${serverVersion.replace(/\+/g, '_')}`;
+  const mcpKey = 'apra-fleet';
 
   if (llm === 'gemini' && installSkill) {
     console.warn(`
@@ -405,10 +403,7 @@ Installing Apra Fleet ${serverVersion} for ${paths.name}...
     : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
 
   if (llm === 'claude') {
-    try {
-      // Remove legacy key. We can't easily find/remove other versioned keys.
-      run('claude mcp remove apra-fleet', { stdio: 'ignore' });
-    } catch { /* not registered */ }
+
     
     const cmd = mcpConfig.command === 'node' 
       ? `claude mcp add --scope user ${mcpKey} -- node "${mcpConfig.args[0]}"`
