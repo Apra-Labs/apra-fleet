@@ -23,4 +23,11 @@ describe('parseGpuUtilization', () => {
     expect(parseGpuUtilization('error')).toBeUndefined();
     expect(parseGpuUtilization('N/A')).toBeUndefined();
   });
+
+  it('returns undefined for out-of-bounds values', () => {
+    expect(parseGpuUtilization('-1')).toBeUndefined();
+    expect(parseGpuUtilization('101')).toBeUndefined();
+    expect(parseGpuUtilization('-1000')).toBeUndefined();
+    expect(parseGpuUtilization('1001')).toBeUndefined();
+  });
 });

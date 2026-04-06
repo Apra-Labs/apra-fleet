@@ -71,7 +71,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   writeStatusline();
 
   if (removed) {
-    let result = `✅ Member "${agent.friendlyName}" (${agent.id}) has been removed.`;
+    let result = `✅ Member "${agent.friendlyName}" (${agent.id}) has been removed.\n\nTo refresh the member list in your UI, run /mcp and select Reconnect.`;
     if (warnings.length > 0) {
       result += `\n\n⚠️ Warnings:\n`;
       for (const w of warnings) {
@@ -82,3 +82,4 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
   return `Failed to remove member "${agent.id}".`;
 }
+
