@@ -95,7 +95,9 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   }
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
-  const promptFilePath = path.join(agent.workFolder, promptFileName);
+  const promptFilePath = agent.agentType === 'local'
+    ? path.join(agent.workFolder, promptFileName)
+    : `${agent.workFolder}/${promptFileName}`;
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
