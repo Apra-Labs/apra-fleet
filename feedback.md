@@ -1,3 +1,67 @@
+# Phase 3 VERIFY Review: Edge Cases & Minor Bugs
+
+**Branch:** `sprint/ux-quality-fixes`
+**Reviewer:** Claude Opus 4.6
+**Date:** 2026-04-05
+**Commits reviewed:** `79ddce9` (CI fix), `2599eee` (Phase 3 tasks)
+
+## Task 8: Issue #37 — CI `fetch-depth: 0` for version injection
+
+All 4 checkout steps (`build-and-test`, `package`, `build-binary`, `release`) now include `fetch-depth: 0`. This ensures full git history is available for version resolution. The version step reads from `version.json` + `GITHUB_SHA` short hash. **PASS**
+
+## Task 10: Issue #39 — remove_member `/mcp` Reconnect instruction
+
+`remove-member.ts:74`: Success message now includes `"To refresh the member list in your UI, run /mcp and select Reconnect."` — clear, in the right place (after removal confirmation), and only shown on success. **PASS**
+
+## Task 9: Issue #9 — parseGpuUtilization bounds checking
+
+`gpu-parser.ts:9`: `if (isNaN(parsed) || parsed < 0 || parsed > 100) return undefined;`
+
+- Boundary values 0 and 100 remain valid (tested in existing test)
+- Returns `undefined` for negative and >100 values
+- Tests added: `-1`, `101`, `-1000`, `1001` all assert `toBeUndefined()`
+
+**PASS**
+
+## Task 11: Issue #10 — update_member cloud field warning for non-cloud members
+
+`update-member.ts:97-112`: Detects cloud fields passed on non-cloud members (where `existing.cloud` is falsy) and pushes a warning: `"Warning: cloud fields (X) are ignored for non-cloud members."` The warning is included in the response output at lines 133-138.
+
+**Code logic is correct.** However:
+
+**⚠️ BLOCKING: No test exists for this behavior.** The task description states "tests added" but the diff shows no test changes for `update-member`. There is no `tests/update-member.test.ts` file, and no existing test file covers the cloud-fields-on-non-cloud warning path. A test is needed that:
+1. Sets up a non-cloud member (no `cloud` property)
+2. Calls `updateMember` with a cloud field (e.g., `cloud_region`)
+3. Asserts the result contains the warning string
+
+## Build & Test
+
+- `npm run build`: **PASS**
+- `npm test`: **PASS** (616 tests passed, 4 skipped, 40 test files, 0 failures)
+
+## Phase 1 & 2 Regression Check
+
+No changes to Phase 1 files (`auth-socket.ts`, `install.ts`) or Phase 2 files (`update-task-tokens.ts`, `execute-prompt.ts`, `security-hardening.test.ts`). All 40 test files pass. **No regressions.**
+
+## Issues Found
+
+| # | Severity | Task | Issue |
+|---|----------|------|-------|
+| 1 | **Blocking** | Task 11 | Missing test for cloud-fields-on-non-cloud warning |
+
+## Action Required
+
+Add a unit test for the `updateMember` cloud field warning on non-cloud members. This is the only blocking item.
+
+---
+
+**Verdict: CHANGES NEEDED**
+
+Tasks 8, 9, and 10 are fully complete. Task 11 code is correct but lacks the test required by its "done when" criteria. Once the test is added and passes, this phase can be re-reviewed.
+
+---
+---
+
 # Phase 2 VERIFY Review (Re-review): State Integrity & Security Testing
 
 **Branch:** `sprint/ux-quality-fixes`
