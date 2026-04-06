@@ -21,14 +21,14 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `execute_prompt` | Dispatch a prompt to a member's LLM agent |
 | `send_files` | Push files from local to a member's work folder |
 | `receive_files` | Pull files from a member's work folder |
-| `monitor_task` | Monitor a running task's output |
+| `monitor_task` | Check status of a long-running background command on a cloud member (cloud members only) |
 | `compose_permissions` | Generate and deliver provider-native permission config |
 | `provision_auth` | Provision authentication for a member |
 | `provision_vcs_auth` | Provision VCS credentials (GitHub, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Revoke VCS credentials |
 | `setup_ssh_key` | Migrate remote member from password to key-based auth |
 | `setup_git_app` | Configure GitHub App for token minting |
-| `update_task_tokens` | Record token usage from dispatches into progress.json |
+| `update_task_tokens` | Accumulate token usage counts for a task |
 | `update_llm_cli` | Update the LLM CLI on a member |
 | `cloud_control` | Manage cloud infrastructure for members |
 | `shutdown_server` | Shut down a remote member's server |
@@ -55,7 +55,7 @@ Before dispatching any work:
 1. `fleet_status` — confirm member is idle (status must not be busy)
 2. Member must have completed onboarding — see `onboarding.md`
 
-Do not dispatch to a busy member. If busy, wait or check `monitor_task` to understand the current task's state.
+Do not dispatch to a busy member. If busy, wait or re-check `fleet_status`.
 
 ## Pre-flight Checks
 
@@ -77,38 +77,6 @@ To send documents to a member (requirements, design, context docs):
 - Remote path is relative to the member's work_folder
 - To receive results or updated files back: `receive_files` with member_id and file list
 
-## Monitoring
-
-Check a member's progress:
-1. `execute_command → cat progress.json` — current task states (completed/pending/blocked)
-2. `execute_command → git log --oneline -5` — recent commits
-3. `execute_command → git status` — uncommitted changes
-4. `monitor_task` with task_id from `execute_prompt` response — live output of a running task
-
-Use these after every dispatch to confirm progress before escalating.
-
-## Recovery Commands
-
-To recover member state:
-1. `execute_command → cat progress.json` — what tasks are completed/pending/blocked?
-2. `execute_command → git log --oneline -5` — any commits since last known state?
-3. `execute_command → git status` — uncommitted changes?
-
-## Token Tracking
-
-After every `execute_prompt` response, extract token counts and call `update_task_tokens`:
-
-1. **Parse the token line** from the response using regex `Tokens: input=(\d+) output=(\d+)` — appears at the end of output when Claude provider returns usage data
-2. **Call `update_task_tokens`** with:
-   - `member_id` — the member that owns progress.json
-   - `progress_json` — absolute path to progress.json on that member
-   - `task_id` — the current task ID (e.g. `"3"`)
-   - `role` — the dispatch role (e.g. `"doer"`, `"reviewer"`)
-   - `input_tokens` — captured from regex group 1
-   - `output_tokens` — captured from regex group 2
-3. The tool accumulates tokens across calls — tokens from multiple cycles are summed automatically. Never call with zeroes unless that is the actual count.
-4. If the token line is absent (non-Claude provider or older CLI), skip the call for that dispatch only.
-
 ## Git as Transport
 
 Git is the transport between members. The orchestrator manages the sync:
@@ -118,16 +86,6 @@ Git is the transport between members. The orchestrator manages the sync:
 
 The member instruction file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) is NEVER committed — it is role-specific. Add it to `.gitignore` on the member:
 - `execute_command → echo "<provider-file>" >> .gitignore` (use Provider Awareness lookup for the correct filename)
-
-## Cleanup Commands
-
-Before merging a branch, remove fleet control files from members. On each member:
-
-```
-execute_command: git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT.md; git commit -m "cleanup: remove fleet control files" && git push
-```
-
-These are transport files — git history preserves the content.
 
 ## Permissions
 
