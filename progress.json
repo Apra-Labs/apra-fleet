@@ -16,8 +16,9 @@
     {
       "id": "3",
       "title": "Phase 1 VERIFY Checkpoint",
-      "status": "in_progress",
-      "type": "verify"
+      "status": "completed",
+      "type": "verify",
+      "notes": "Build and all tests passed."
     },
     {
       "id": "4",

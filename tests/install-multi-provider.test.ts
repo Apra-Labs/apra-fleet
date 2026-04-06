@@ -145,7 +145,7 @@ describe('runInstall multi-provider', () => {
     const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
     const geminiWrite = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().includes(geminiSettings)).at(-1);
     expect(geminiWrite).toBeDefined();
-    expect(geminiWrite![1].toString()).toContain(Read();
+    expect(geminiWrite![1].toString()).toContain('skills/pm');
   });
 
   it('errors on unsupported provider', async () => {
@@ -319,14 +319,17 @@ describe('runInstall multi-provider', () => {
       const allWrites = vi.mocked(fs.writeFileSync).mock.calls;
       const settingsWrites = allWrites.filter(c => {
         const p = c[0].toString();
-        return p.includes(.);
+        if (llm === 'codex') {
+          return p.endsWith('config.toml');
+        }
+        return p.endsWith('settings.json');
       });
       expect(settingsWrites.length).toBeGreaterThan(0);
 
       // The permissions write is the last one
       const lastContent = settingsWrites.at(-1)![1].toString();
       const normalizedSkillsDir = skillsDir.replace(/\\/g, '/');
-      expect(lastContent).toContain(Read();
+      expect(lastContent).toContain(normalizedSkillsDir);
     }
   });
 
