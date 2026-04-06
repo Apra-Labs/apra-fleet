@@ -23,7 +23,8 @@
     {
       "id": "4",
       "title": "Issue #57 - update_task_tokens silent data loss on git commit failure",
-      "status": "pending"
+      "status": "completed",
+      "notes": "Decoupled file write from git commit. The tool now always saves the token count and warns on commit failure."
     },
     {
       "id": "5",
