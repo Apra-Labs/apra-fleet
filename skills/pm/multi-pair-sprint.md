@@ -8,7 +8,7 @@ A multi-pair sprint assigns multiple doer/reviewer pairs to the same sprint, eac
 - Two or more pairs can work in parallel without blocking each other
 - Each track has a clear boundary (e.g. frontend / backend, service A / service B)
 
-Use a single-pair sprint (sprint.md) if the work is sequential or tightly coupled.
+Use a single-pair sprint (single-pair-sprint.md) if the work is sequential or tightly coupled.
 
 ## Branching Strategy
 
@@ -43,7 +43,7 @@ Both pairs treat contracts as immutable during the sprint. If a pair discovers a
 1. Each pair follows the standard doer-reviewer loop (see doer-reviewer.md) on their own branch
 2. When a pair's track is APPROVED: PM merges that pair's branch into the sprint base branch via `execute_command`
 3. PM notifies dependent pairs to rebase: `git fetch origin && git rebase origin/sprint/<name>`
-4. Once all pairs are APPROVED and merged into the sprint base branch: run cleanup on all members, then raise a single PR from the sprint base branch to main (see cleanup.md)
+4. Once all pairs are APPROVED and merged into the sprint base branch: update `<project>/backlog.md` with any unresolved findings or deferred items from all pairs, then run cleanup on all members and raise a single PR from the sprint base branch to main (see cleanup.md)
 
 ## Reviewer Scope
 

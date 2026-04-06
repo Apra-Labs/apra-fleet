@@ -23,6 +23,8 @@ Write `<project>/requirements.md`. Quality bar:
 
 ## Phase 2 — Plan Generation
 
+**Branch naming:** choose a name that makes the purpose of the branch immediately clear — `sprint/<description>`, `feat/<description>`, `bug_fix/<short_description>`, etc. PM records this as `{{branch}}` in the agent context file before dispatch.
+
 1. Send `requirements.md` to doer via `send_files`
 2. Dispatch `plan-prompt.md` via `execute_prompt` (wrapped in background Agent)
 3. Run doer-reviewer loop (see `doer-reviewer.md`) using `tpl-reviewer-plan.md` for the reviewer
@@ -101,11 +103,13 @@ Run `<project>/deploy.md` steps on the member via `execute_command`. Verificatio
 
 When all phases are APPROVED:
 
-1. **Cleanup and raise PR** — See cleanup.md.
+1. **Documentation Harvest** — Dispatch a member to extract long-term knowledge from `requirements.md`, `design.md`, and `PLAN.md` into `docs/`. Structure inside `docs/` is content-driven (e.g. `docs/architecture.md`, `docs/features/<name>.md`). Extract: architecture decisions, feature design, key trade-offs, API contracts. Do NOT extract: task lists, code-line references, debug notes, implementation steps. Member commits the docs/ output to the branch. Then dispatch reviewer to review the harvest — verify it captures durable knowledge and nothing transient slipped in. Iterate until APPROVED.
 
-2. **Update backlog.md** — record all unresolved MEDIUM/LOW review findings and deferred items from this sprint.
+2. **Cleanup and raise PR** — See cleanup.md.
 
-3. **Update status.md** — mark sprint complete, record member states.
+3. **Update backlog.md** — record all unresolved MEDIUM/LOW review findings and deferred items from this sprint.
+
+4. **Update status.md** — mark sprint complete, record member states.
 
 ---
 
@@ -113,11 +117,20 @@ When all phases are APPROVED:
 
 When the PM session ends unexpectedly, remote agent CLI processes are killed (SSH channel close → SIGHUP). Partial work may be uncommitted.
 
+**Step 0 — Global triage:** `fleet_status` — see which members are idle, busy, or unreachable before per-member inspection.
+
 For each member in the project:
 1. `execute_command → cat progress.json` — what tasks are completed/pending/blocked?
+   - **On reviewer members:** progress.json is not authoritative — it reflects the doer's task state at last sync. Check `git log --oneline -- feedback.md` for reviewer progress instead.
 2. `execute_command → git log --oneline -5` — any commits since last known state?
 3. `execute_command → git status` — uncommitted changes?
 4. Compare against local `<project>/status.md` — what did PM last know?
+
+Present a per-member state summary before acting:
+
+| Member | PM last knew | Actual state | Delta | Action |
+|--------|-------------|--------------|-------|--------|
+| <name> | <phase/task from status.md> | <last commit + progress summary> | <what changed> | auto-resume / escalate |
 
 **Auto-resume** (PM acts immediately, no user input needed):
 - **Checkpoint reached, review pending** → dispatch reviewer now

@@ -6,11 +6,11 @@ Before starting any review: `git log --oneline {{base_branch}}..{{branch}}`
 ## Review Model
 You are reviewing work tracked in PLAN.md and progress.json.
 
-Reviews are CUMULATIVE — review all phases up to and including the current one, not just the latest. Earlier phases may have regressed.
+Review scope covers all phases from Phase 1 through the current phase — not just the latest diff. Code written in earlier phases may have regressed or been invalidated by later changes.
 
 ## On each review
 
-1. Read feedback.md — understand what you previously reviewed and approved. Focus on divergence from prior approvals, not fresh-eyes re-review
+1. Run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand previous findings and how the doer addressed them. Incorporate the doer's responses into your review notes so the full picture is captured in the new write-up.
 2. Read progress.json — identify which tasks are marked completed since last review
 3. Read PLAN.md, requirements.md, and any design docs in the work folder — verify code aligns with requirements intent, not just plan mechanics
 4. `git diff` the relevant commits against the base branch
@@ -28,6 +28,7 @@ Reviews are CUMULATIVE — review all phases up to and including the current one
 - Are there security issues (injection, auth bypass, secrets in code)?
 - Is the code consistent with existing patterns and conventions?
 - Are docs updated if behavior changed?
+- Are all factual references correct — URLs, repo names, package names, install commands, version numbers? Members hallucinate these; spot-check against known sources.
 
 ## Output
 

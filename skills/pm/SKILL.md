@@ -36,11 +36,11 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 - `/pm init <project>` — Initialize project folder and templates. See init.md.
 - `/pm pair <member> <member>` — Pair doer↔reviewer. Update icons (doer=circle, reviewer=square, same color) via `update_member`. See doer-reviewer.md.
 - `/pm plan <requirement>` — Triggers Phase 2 (Plan Generation). See single-pair-sprint.md. User provides requirements.md.
-- `/pm start <member>` — Begin Phase 3 execution. Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution. Plan must be APPROVED (planned.json exists in `<project>/`) before starting.
+- `/pm start <member>` — Begin Phase 3 execution. Before dispatch: complete doer-reviewer.md setup checklist and pre-flight checks. Plan must be APPROVED (planned.json exists in `<project>/`). Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution.
 - `/pm status <member>` — Check progress.json and git log
 - `/pm resume <member>` — Resume after a verification checkpoint
 - `/pm deploy <member>` — Run `<project>/deploy.md` steps via `execute_command`, then verify
-- `/pm recover <project>` — After PM restart: inspect each member's state and present recovery options. See sprint.md.
+- `/pm recover <project>` — After PM restart: inspect each member's state and present recovery options. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md depending on sprint type.
 - `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, then raise the PR. See cleanup.md.
 
 ## Core Rules
@@ -53,7 +53,7 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 4. If a member can finish in one session (1-3 steps), use ad-hoc `execute_prompt`. Otherwise use the task harness.
 5. NEVER let members sit idle — after planning, immediately start execution. At verify checkpoints, immediately dispatch reviews.
 6. During execution: keep going until stuck or done — don't wait for the user. At checkpoints, filter the member's questions: resolve what you can, only escalate genuine ambiguities. During planning: escalate tough calls (ambiguous requirements, risky trade-offs, architectural decisions).
-7. `execute_prompt` and `execute_command` must never be called directly — always wrap them in a background Agent: `Agent(run_in_background=true)`. Club multiple sequential fleet operations into a single background Agent.
+7. When making multiple sequential fleet calls — execute_command steps, send_files, receive_files — club them into a single background Agent rather than issuing individual calls.
 8. Never pass `dangerously_skip_permissions=true` to `execute_prompt` — always compose and deliver permissions via `compose_permissions` before dispatch (see fleet skill `permissions.md`).
 9. During a sprint, PLAN.md, progress.json, and feedback.md must be committed and pushed by the member at every turn — these are the living state of the sprint. Only the agent context file stays uncommitted. See context-file.md and doer-reviewer.md for details.
 10. Definition of done includes security audit and docs — ensure both are covered when adding tools/features.

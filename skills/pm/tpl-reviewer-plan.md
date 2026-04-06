@@ -19,6 +19,8 @@ You are reviewing a plan in PLAN.md against requirements.md and any design docs 
 
 ## Output
 
+If this is a re-review: run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand what was previously flagged and how the doer addressed it. Incorporate those responses into your new write-up.
+
 Overwrite feedback.md with this structure:
 
 ```

@@ -52,7 +52,9 @@ All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify
 
 ## Dispatch Rules
 
-`execute_prompt` and `execute_command` must never be called directly from the main conversation — always wrap them in a background Agent: `Agent(run_in_background=true)`. When making multiple sequential fleet operations, club them into a single background Agent rather than separate calls.
+- **`execute_prompt`** — always wrap in a background Agent: `Agent(run_in_background=true)`. No exceptions.
+- **`execute_command`** — any command that may take several seconds must be wrapped in a background Agent. Short reads (`cat`, `git status`, `echo`) can be called inline. Always use bash syntax — Git Bash is universally available on developer machines. Never use PowerShell or cmd.exe syntax, even on Windows members.
+- **`send_files` / `receive_files`** — transfers exceeding 1MB must use a background Agent.
 
 ## Pre-dispatch Checks
 
