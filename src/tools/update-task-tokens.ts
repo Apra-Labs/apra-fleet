@@ -1,4 +1,4 @@
-import { z } from 'zod';
+﻿import { z } from 'zod';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -34,14 +34,14 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
   // 1. Read current progress.json from the member
   const catResult = await executeCommand({
     member_id: memberId,
-    command: `cat ${escapeShellArg(input.progress_json)}`,
+    command: cat ,
     timeout_ms: 30000,
     long_running: false,
     max_retries: 3,
   });
 
   if (!catResult.startsWith('Exit code: 0')) {
-    return `Failed to read progress.json from member: ${catResult}`;
+    return Failed to read progress.json from member: ;
   }
 
   const jsonText = catResult.replace(/^Exit code: 0\n/, '');
@@ -50,17 +50,17 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
   try {
     progress = JSON.parse(jsonText);
   } catch (err: any) {
-    return `Failed to parse progress.json: ${err.message}`;
+    return Failed to parse progress.json: ;
   }
 
   // 2. Find the task and accumulate tokens
   if (!Array.isArray(progress.tasks)) {
-    return `Invalid progress.json: missing tasks array`;
+    return Invalid progress.json: missing tasks array;
   }
 
   const task = progress.tasks.find((t: any) => String(t.id) === String(input.task_id));
   if (!task) {
-    return `Task "${input.task_id}" not found in progress.json`;
+    return Task "" not found in progress.json;
   }
 
   if (!task.tokens || typeof task.tokens !== 'object') {
@@ -88,24 +88,31 @@ export async function updateTaskTokens(input: UpdateTaskTokensInput): Promise<st
   fs.rmSync(tmpDir, { recursive: true, force: true });
 
   if (!sendResult.includes('Successfully uploaded')) {
-    return `Failed to upload updated progress.json: ${sendResult}`;
+    return Failed to upload updated progress.json: ;
   }
 
-  // 5. Commit the updated progress.json on the member
+  // 5. Attempt to commit the updated progress.json on the member
   const commitResult = await executeCommand({
     member_id: memberId,
-    command: `git add ${escapeShellArg(input.progress_json)} && git commit -m "chore: update token counts for task ${escapeShellArg(input.task_id)}"`,
+    command: git add  && git commit -m "chore: update token counts for task ",
     timeout_ms: 30000,
     long_running: false,
     max_retries: 3,
   });
 
-  const committed = commitResult.includes('Exit code: 0');
+  const committed = commitResult.startsWith('Exit code: 0');
 
-  return [
-    `Token counts updated for task ${input.task_id} (role: ${input.role}):`,
-    `  ${input.role}.input  += ${input.input_tokens} → ${task.tokens[input.role].input}`,
-    `  ${input.role}.output += ${input.output_tokens} → ${task.tokens[input.role].output}`,
-    committed ? 'Committed to git on member.' : `Git commit result: ${commitResult}`,
+  const successMessage = [
+    Token counts updated for task  (role: ):,
+      .input  +=  → ,
+      .output +=  → ,
+    'Successfully updated progress.json on member.',
   ].join('\n');
+
+  if (committed) {
+    return ${successMessage}\nCommitted changes to git.;
+  }
+
+  const warning = \n\nWarning: Git commit failed. The progress.json file was updated, but the changes are not committed. You may need to commit them manually.\nGit output:\n;
+  return successMessage + warning;
 }
