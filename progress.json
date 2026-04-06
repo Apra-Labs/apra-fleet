@@ -24,7 +24,7 @@
       "id": "4",
       "title": "Issue #57 - update_task_tokens silent data loss on git commit failure",
       "status": "completed",
-      "notes": "Decoupled file write from git commit. The tool now always saves the token count and warns on commit failure."
+      "notes": "Fixed as per reviewer feedback. Added test case for git commit failure."
     },
     {
       "id": "5",
@@ -36,14 +36,14 @@
       "id": "6",
       "title": "Issue #6 - Credential leakage test is a no-op",
       "status": "completed",
-      "notes": "Fixed the no-op credential leakage test."
+      "notes": "Fixed as per reviewer feedback. Rewrote the no-op credential leakage test to be a valid integration test."
     },
     {
       "id": "7",
       "title": "Phase 2 VERIFY Checkpoint",
-      "status": "completed",
+      "status": "verify",
       "type": "verify",
-      "notes": "Build and all 615 tests passed after fixing Gemini-corrupted test mocks and TS type errors."
+      "notes": "Fixes for issues #57 and #6 are complete. Ready for re-verification."
     },
     {
       "id": "8",
