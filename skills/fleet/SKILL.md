@@ -55,7 +55,7 @@ Before dispatching any work:
 1. `fleet_status` — confirm member is idle (status must not be busy)
 2. Member must have completed onboarding — see `onboarding.md`
 
-Do not dispatch to a busy member. If busy, wait or re-check `fleet_status`.
+Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
 ## Pre-flight Checks
 
