@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: Fleet infrastructure mechanics — member management, permissions, onboarding, provider awareness, tool usage patterns, and git-as-transport
+description: Fleet infrastructure mechanics — member management, permissions, onboarding, provider awareness, and tool usage patterns
 ---
 
 # Fleet Skill
@@ -35,10 +35,15 @@ This skill defines how to interact with fleet infrastructure: registering and on
 
 See sub-documents for detailed usage:
 - `onboarding.md` — full 7-step member onboarding sequence
-- `permissions.md` — permission composition and mid-sprint denial handling
+- `permissions.md` — permission composition and denial handling
+- `profiles/` — stack permission profiles (base-dev, base-reviewer, node, python, go, etc.) — add new profiles here to support additional stacks or roles
 - `troubleshooting.md` — fleet tool troubleshooting by symptom
 - `skill-matrix.md` — skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md` — VCS auth provisioning per provider
+
+## Member Identification
+
+All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify a member. `member_id` takes precedence when both are provided.
 
 ## Tool Boundaries
 
@@ -57,46 +62,25 @@ Before dispatching any work:
 
 Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
-## Pre-flight Checks
+## File Transfer
 
-### Before any dispatch
-Verify member is on the correct branch with a clean working tree:
-1. `execute_command → git status && git branch --show-current` — confirm clean tree and correct branch
+Both `send_files` and `receive_files` are batch operations — always transfer all files in a single call, never one file per call.
 
-Do not dispatch to a member on the wrong branch or with uncommitted changes.
-
-### Before review dispatch
-Verify reviewer is at the correct commit:
-1. `execute_command → git rev-parse HEAD` on reviewer — must match doer's pushed HEAD SHA
-2. If SHA doesn't match: `execute_command → git fetch origin && git reset --hard origin/<branch>` on reviewer, then re-verify
-
-## Delivery Mechanics
-
-To send documents to a member (requirements, design, context docs):
-- `send_files` with member_id and list of `{local_path, remote_path}` objects
-- Remote path is relative to the member's work_folder
-- To receive results or updated files back: `receive_files` with member_id and file list
-
-## Git as Transport
-
-Git is the transport between members. The orchestrator manages the sync:
-
-- **Push side:** `execute_command → git push origin <branch>` — verify push succeeded
-- **Pull side:** `execute_command → git fetch origin && git checkout <branch> && git reset --hard origin/<branch>`
-
-The member instruction file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) is NEVER committed — it is role-specific. Add it to `.gitignore` on the member:
-- `execute_command → echo "<provider-file>" >> .gitignore` (use Provider Awareness lookup for the correct filename)
+- `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content
+- `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc.
+- Both take a list of `{local_path, remote_path}` objects — bundle everything into one call
+- Remote path is relative to the member's `work_folder`
 
 ## Permissions
 
 `compose_permissions` produces provider-native config automatically. See `permissions.md` for:
-- How to compose and deliver permissions before a sprint
-- How to handle mid-sprint permission denials
+- How to compose and deliver permissions before dispatching work
+- How to handle permission denials during execution
 - How to recompose when switching roles
 
 ## Model Tiers
 
-Use model tiers: `cheap` for execution (commands, status, tests, deploys), `standard` for construction (code, config, devops), `premium` for planning, review, design, and architecture. The server resolves tiers to provider-specific models via `modelTiers()`. User override always wins. When in doubt, prefer cheaper.
+Use model tiers: `cheap` for execution (commands, status, tests, deploys), `standard` for construction (code, config, devops), `premium` for planning, review, design, and architecture. The server resolves tiers to the appropriate model for each provider. User override always wins. When in doubt, prefer cheaper.
 
 Pass as `model: "cheap" | "standard" | "premium"` in `execute_prompt`.
 
@@ -108,13 +92,8 @@ To override, use `update_member` with the icon parameter.
 
 ## Provider Awareness
 
-Fleet members run different LLM providers (Claude, Gemini, Codex, Copilot). All provider differences are handled by the fleet server — never construct CLI commands or read raw config formats directly.
-
 | Concern | How to handle |
 |---------|---------------|
-| **Instruction file name** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT.md (Copilot) |
-| **Permissions** | `compose_permissions` produces provider-native config automatically — call it with role + member |
-| **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to provider-specific models via `modelTiers()` |
-| **CLI commands** | Handled by `ProviderAdapter` — never construct provider CLI strings directly |
+| **Agent context file** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT-INSTRUCTIONS.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
 | **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members |

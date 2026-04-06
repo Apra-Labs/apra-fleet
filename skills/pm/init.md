@@ -2,7 +2,7 @@
 
 ## Flow
 
-1. If CLAUDE.md doesn't exist in PM's working directory → create from tpl-claude-pm.md
+1. Determine the PM's agent context filename from `llmProvider` (see `context-file.md`). If that file doesn't exist in PM's working directory → create from `tpl-pm.md`
 2. If projects.md doesn't exist → create from tpl-projects.md
 3. Create `<project>/` subfolder, populate from templates:
    - `status.md` — members, phases, sessions, blockers (tpl-status.md)

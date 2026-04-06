@@ -1,35 +1,22 @@
 # Member Permissions
 
-## Provider Permission Mechanisms
+## Before dispatching work
 
-`compose_permissions` produces the correct provider-native config automatically. No manual file editing required.
+Call `compose_permissions` with the member and role (`doer` or `reviewer` — additional roles can be added to the profiles). Optionally pass `project_folder` — the path to a folder containing a `permissions.json` ledger of previously approved permissions. The tool detects the project stack (Node.js, Python, Go, etc.) from the member's `work_folder`, selects the matching permission profile from the fleet profiles, merges any ledger grants, and delivers the right provider-native config to the member. Same call works across all agentic providers.
 
-| Provider | Config Path(s) | Format | Mechanism |
-|----------|---------------|--------|-----------|
-| Claude | `.claude/settings.local.json` | JSON | Per-tool allow list |
-| Gemini | `.gemini/settings.json` + `.gemini/policies/fleet.toml` | JSON + TOML | Mode selection + TOML policy rules |
-| Codex | `.codex/config.toml` | TOML | Approval mode (`full-auto`/`suggest`) + sandbox settings |
-| Copilot | `.github/copilot/settings.local.json` | JSON | Per-tool allow/deny flags |
+> "Compose permissions for java-dev1 as doer, project folder ./my-project"
 
-## Before every sprint
+## Permission denial during execution
 
-Run `compose_permissions` with member_id, role (doer/reviewer), and project_folder:
-
-> "Compose permissions for build-server as doer, project folder ./my-project"
-
-The tool detects the project stack, merges base + stack profiles + project ledger, and delivers the provider-native permission config to the member. Zero manual file composition.
-
-## Mid-sprint denial
-
-When a member's output contains a permission denial, call `compose_permissions` with `grant`:
+When `execute_prompt` output contains a permission denial, call `compose_permissions` with `grant`:
 
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
-The tool validates (blocks dangerous tools like sudo/env), expands co-occurrences (docker→docker-compose), delivers the updated config, and appends to the project ledger for next sprint.
+The tool validates (blocks dangerous tools like sudo/env), expands co-occurrences (docker→docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
 ## Role switch
 
-When switching doer↔reviewer, re-run `compose_permissions` with the new role.
+When a member's role changes, re-run `compose_permissions` with the new role.
 
 ## Never auto-granted
 
