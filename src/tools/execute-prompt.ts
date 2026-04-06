@@ -46,13 +46,18 @@ async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFile
     return;
   }
   const agentOs = getAgentOS(agent);
+  const promptFileName = path.basename(promptFilePath);
+  const remoteDir = path.dirname(promptFilePath);
+
   if (agentOs === 'windows') {
-    const psScript = `Set-Content -Path '${promptFilePath}' -Value '${content.replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
+    const escapedFolder = escapeWindowsArg(remoteDir);
+    const psScript = `New-Item -Path '${escapedFolder}' -ItemType Directory -Force | Out-Null; Set-Location "${escapedFolder}"; Set-Content -Path "${promptFileName}" -Value '${content.replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);
   } else {
     const b64 = Buffer.from(content).toString('base64');
-    await strategy.execCommand(`echo '${b64}' | base64 -d > ${promptFilePath}`);
+    const escapedFolder = escapeDoubleQuoted(remoteDir);
+    await strategy.execCommand(`mkdir -p "${escapedFolder}" && cd "${escapedFolder}" && echo '${b64}' | base64 -d > ${promptFileName}`);
   }
 }
 
@@ -62,19 +67,23 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     return;
   }
   const agentOs = getAgentOS(agent);
+  const promptFileName = path.basename(promptFilePath);
+  const remoteDir = path.dirname(promptFilePath);
+
   if (agentOs === 'windows') {
-    const psScript = `Remove-Item "${promptFilePath}" -Force -ErrorAction SilentlyContinue`;
+    const escapedFolder = escapeWindowsArg(remoteDir);
+    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
-    await strategy.execCommand(`rm -f ${promptFilePath}`).catch(() => { /* ignore */ });
+    const escapedFolder = escapeDoubleQuoted(remoteDir);
+    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
   }
 }
 
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
   const promptFileId = crypto.randomUUID().slice(0, 8);
   const promptFileName = `.fleet-task-${promptFileId}.md`;
-  const promptFilePath = path.join(os.tmpdir(), promptFileName);
 
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -84,6 +93,9 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   } catch (err: any) {
     return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
+
+  const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
+  const promptFilePath = path.join(tmpDir, promptFileName);
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
@@ -97,8 +109,8 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     : tiers.standard;
 
   const promptOpts = {
-    folder: path.dirname(promptFilePath),
-    promptFile: path.basename(promptFileName),
+    folder: tmpDir,
+    promptFile: promptFileName,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
     model: resolvedModel,
     maxTurns: input.max_turns,
