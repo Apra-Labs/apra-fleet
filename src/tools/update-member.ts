@@ -68,7 +68,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   const rotatingPassword = !!input.rotate_password && existing.authType === 'password';
   if ((switchingToPassword || rotatingPassword) && !input.password && existing.agentType === 'remote') {
     const oob = await collectOobPassword(existing.friendlyName, 'update_member');
-    if ('fallback' in oob) return oob.fallback;
+    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
     preEncryptedPassword = oob.password;
   }
 

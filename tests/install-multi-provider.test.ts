@@ -35,7 +35,7 @@ describe('runInstall multi-provider', () => {
     vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
       const ps = p.toString();
       if (fileState.has(ps)) return fileState.get(ps)!;
-      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
       if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
       return '';
     });
@@ -97,7 +97,7 @@ describe('runInstall multi-provider', () => {
     // Should have written to Codex config with [mcp_servers.apra-fleet]
     const codexWrite = vi.mocked(fs.writeFileSync).mock.calls.filter(c => c[0].toString().includes(codexConfig)).at(-1);
     expect(codexWrite).toBeDefined();
-    expect(codexWrite![1].toString()).toContain('[mcp_servers.apra-fleet]');
+    expect(codexWrite![1].toString()).toMatch(/\[mcp_servers\.apra-fleet_.*\]/);
   });
 
   it('installs for Copilot when --llm copilot is passed', async () => {
@@ -207,7 +207,7 @@ describe('runInstall multi-provider', () => {
       vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
         const ps = p.toString();
         if (fileState.has(ps)) return fileState.get(ps)!;
-        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
         if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
         return '';
       });
@@ -303,7 +303,7 @@ describe('runInstall multi-provider', () => {
       vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
         const ps = p.toString();
         if (fileState.has(ps)) return fileState.get(ps)!;
-        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+        if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
         if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
         return '';
       });

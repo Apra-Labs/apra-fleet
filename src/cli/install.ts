@@ -38,8 +38,7 @@ function writeConfig(paths: ProviderInstallConfig, config: any): void {
   if (paths.settingsFile.endsWith('.toml')) {
     content = stringify(config);
   } else {
-    content = JSON.stringify(config, null, 2) + '
-';
+    content = JSON.stringify(config, null, 2) + '\n';
   }
   fs.writeFileSync(paths.settingsFile, content);
 }
@@ -124,11 +123,11 @@ function collectFilesRec(dir: string, base: string, rootBase?: string): Record<s
   if (!fs.existsSync(dir)) return results;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
-    const relPath = path.join(base, entry.name).replace(/\/g, '/');
+    const relPath = path.join(base, entry.name).replace(/\\/g, '/');
     if (entry.isDirectory()) {
       Object.assign(results, collectFilesRec(fullPath, relPath, effectiveRootBase));
     } else {
-      results[path.relative(effectiveRootBase, relPath).replace(/\/g, '/')] = relPath;
+      results[path.relative(effectiveRootBase, relPath).replace(/\\/g, '/')] = relPath;
     }
   }
   return results;
@@ -216,7 +215,7 @@ function mergePermissions(paths: ProviderInstallConfig, mcpKey: string): void {
   const requiredPerms = [
     `mcp__${mcpKey}__*`,
     'Agent(*)',
-    `Read(${paths.skillsDir.replace(/\/g, '/')}/**)`,
+    `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
   ];
 
   settings.permissions = settings.permissions || {};
@@ -296,8 +295,8 @@ function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: 
     }
   }
   settings.mcp_servers[mcpKey] = {
-    command: mcpConfig.command.replace(/\/g, '/'),
-    args: mcpConfig.args.map((a: string) => a.replace(/\/g, '/')),
+    command: mcpConfig.command.replace(/\\/g, '/'),
+    args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
   };
 
   writeConfig(paths, settings);
