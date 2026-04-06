@@ -4,11 +4,11 @@
 
 1. Record pair in `<project>/status.md`. Multiple pairs per project is normal.
 2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color. This is not optional.
-3. Compose and deliver permissions per permissions.md for each member's role.
+3. Compose and deliver permissions per the fleet skill for each member's role.
 4. Configure role-specific instruction file — three distinct phases:
    - **Planning:** Dispatch `plan-prompt.md` content via `execute_prompt` — no instruction file needed for planning
-   - **Execution:** Send `tpl-doer.md` as the member's instruction file to doer via `send_files` — **must be sent before execution starts** (persists across session resumes). File name depends on provider: CLAUDE.md for Claude, GEMINI.md for Gemini, AGENTS.md for Codex, COPILOT.md for Copilot. Use `member_detail` → `llmProvider` to determine the correct name.
-   - **Review:** Send `tpl-reviewer.md` as the reviewer's instruction file via `send_files` — **must be sent before review dispatch** (persists across session resumes). Use provider-appropriate file name (same lookup as above). Use `tpl-reviewer-plan.md` for plan review.
+   - **Execution:** Send `tpl-doer.md` as the member's instruction file to doer via `send_files` — **must be sent before execution starts** (persists across session resumes). See the fleet skill for provider-specific file naming.
+   - **Review:** Send `tpl-reviewer.md` as the reviewer's instruction file via `send_files` — **must be sent before review dispatch** (persists across session resumes). See the fleet skill for provider-specific file naming. Use `tpl-reviewer-plan.md` for plan review.
 
 
 
@@ -17,16 +17,12 @@
 ## Pre-flight Checks
 
 ### Before any dispatch
-Verify member is on the correct branch with a clean working tree:
-1. `fleet_status` — confirm member is idle
-2. `execute_command → git status && git branch --show-current` — confirm clean tree and correct branch
+Verify member is on the correct branch with a clean working tree — see the fleet skill for pre-flight check commands.
 
 Do not dispatch to a member on the wrong branch or with uncommitted changes.
 
 ### Before review dispatch
-Verify reviewer is at the correct commit before starting review:
-1. `execute_command → git rev-parse HEAD` on reviewer — must match doer's pushed HEAD SHA
-2. If SHA doesn't match: run `git fetch origin && git reset --hard origin/<branch>` on reviewer, then re-verify
+Verify reviewer is at the correct commit before starting review — see the fleet skill for SHA verification commands.
 
 ## Flow
 
@@ -36,38 +32,25 @@ Verify reviewer is at the correct commit before starting review:
    - **Start of each new phase:** use `resume=false` — fresh context per phase keeps token usage small and avoids cross-phase confusion from stale context
    - **Within a phase:** resume is allowed — tasks within a phase are cohesive and benefit from shared context
 
-2. **PM handles git transport via `execute_command`** — never delegate to prompts:
-   - Dev side: `git push origin <branch>` — verify push succeeded
-   - Rev side: `git fetch origin && git checkout <branch> && git reset --hard origin/<branch>`
+2. **PM handles git transport** between doer and reviewer — see the fleet skill for git transport commands.
+
 3. **PM dispatches REVIEWER at every VERIFY checkpoint** — PM never self-reviews. PM sends context docs to reviewer via `send_files`: `<project>/requirements.md`, `<project>/design.md`, and relevant `<project>/*plan.md`. Then dispatches reviewer with `resume=false` (fresh session).
 
    **Reviewer workflow rules:**
    - **Prep reviewer in parallel while doer works** — send requirements, set up branch, start a context-reading session on reviewer. Use session resume to send updated docs at handoff. Eliminates dead time.
    - **Always use `resume=false` for review dispatches** — never resume a stale review session. Each review must start fresh.
-   - **Verify SHA before dispatching review** — `execute_command → git rev-parse HEAD` on reviewer must match doer's pushed HEAD (see Pre-flight Checks above).
+   - **Verify SHA before dispatching review** — see the fleet skill for pre-flight check details.
 
 4. Reviewer reads deliverables + diff, conducts cumulative review (all phases up to current, not just the latest) per its instruction file. Commits findings to feedback.md, pushes, and outputs verdict: APPROVED or CHANGES NEEDED
 5. PM reads verdict:
    - **APPROVED** → cleanup → merge → next phase
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
-6. **Pre-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT.md; git commit -m "cleanup: remove fleet control files" && git push`. These are transport files — git history preserves the content. Run cleanup and push before merging the PR.
+6. **Pre-merge cleanup** — run via `execute_command` on doer: remove PLAN.md, progress.json, feedback.md, and the provider instruction file; commit and push. These are transport files — git history preserves the content.
 7. Loop until all phases APPROVED
 
 ## Post-dispatch Token Tracking
 
-After every `execute_prompt` response (doer or reviewer), extract the token counts and record them in progress.json:
-
-1. **Parse the token line** from the response using the regex `Tokens: input=(\d+) output=(\d+)`. The line appears at the end of the output when the Claude provider returns usage data.
-2. **Call `update_task_tokens`** with:
-   - `member_id` — the member that owns progress.json
-   - `progress_json` — absolute path to progress.json on that member (e.g. `/home/user/project/progress.json`)
-   - `task_id` — the current task ID (e.g. `"3"`)
-   - `role` — `"doer"` for doer dispatches, `"reviewer"` for reviewer dispatches
-   - `input_tokens` — captured from regex group 1
-   - `output_tokens` — captured from regex group 2
-3. The tool accumulates tokens across calls — reviewer tokens from multiple review cycles are summed automatically. Never call it with zeroes unless that is the actual count.
-
-**Call this after every dispatch — no exceptions.** If the token line is absent (non-Claude provider or older CLI), skip the call for that dispatch only.
+Track tokens after every dispatch — see the fleet skill for token tracking details.
 
 ## Resume Rule (token-saving best practice)
 
@@ -104,11 +87,11 @@ The PM must enforce these limits to prevent infinite loops and runaway sessions:
 - Doers commit: deliverables, PLAN.md, progress.json, project docs
 - Reviewers commit: feedback.md
 - The member instruction file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) is NEVER committed — it is role-specific (different for doer vs reviewer)
-- Only the instruction file goes in .gitignore (add the provider-appropriate name)
+- Only the instruction file goes in .gitignore (add the provider-appropriate name — see the fleet skill for provider file naming)
 
 ## Permissions
 
-Compose and deliver permissions per permissions.md. Recompose when switching roles (doer↔reviewer). Each provider gets its native permission config — `compose_permissions` handles the format automatically.
+Compose and deliver permissions per the fleet skill. Recompose when switching roles (doer↔reviewer).
 
 ## PM responsibilities
 
