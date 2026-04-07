@@ -281,6 +281,8 @@ Note: #89 is already fixed (commits e28f294, f02a4a0) — not included.
 **Changes:**
 1. Grep all PM docs for `update_task_tokens` — remove any instructions to call it
 2. Grep for `provision_auth` — replace with `provision_llm_auth`
+3. Add permission denial handling to `skills/pm/single-pair-sprint.md` `### Permissions` section and `skills/pm/doer-reviewer.md` `## Permissions` section:
+   > **Mid-sprint denial:** If a member is blocked by a permission denial, call `compose_permissions` with `grant: [<denied permission>]` and `project_folder` — this grants the missing permission, delivers the updated config, and appends to the ledger so future phases and sprints start with it already included. Then resume the member with `resume=true`. Never bypass by running the denied command yourself via `execute_command`.
 
 ### Task 5.4 — Final stale-reference grep
 **Tier:** cheap
