@@ -74,6 +74,8 @@ PM sends task harness → kicks off doer (resume=false — fresh session per pha
 
 Before kicking off execution, compose and deliver permissions for each member's role (see the fleet skill, `permissions.md`). Recompose on every role switch.
 
+**Mid-sprint denial:** If a member is blocked by a permission denial, call `compose_permissions` with `grant: [<denied permission>]` and `project_folder` — this grants the missing permission, delivers the updated config, and appends to the ledger so future phases and sprints start with it already included. Then resume the member with `resume=true`. Never bypass by running the denied command yourself via `execute_command`.
+
 ### Monitoring
 
 - Check progress: `execute_command → cat progress.json`

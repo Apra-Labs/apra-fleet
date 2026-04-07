@@ -56,7 +56,7 @@ describe('executePrompt', () => {
     const result = await promise;
 
     expect(result).toContain('/login');
-    expect(result).toContain('provision_auth');
+    expect(result).toContain('provision_llm_auth');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });

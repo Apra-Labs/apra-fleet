@@ -15,5 +15,5 @@ export function isRetryable(category: PromptErrorCategory): boolean {
 }
 
 export function authErrorAdvice(agentName: string): string {
-  return `Authentication failed on "${agentName}". Run /login to refresh your credentials, then run provision_auth to deploy them to this agent.`;
+  return `Authentication failed on "${agentName}". Run /login to refresh your credentials, then run provision_llm_auth to deploy them to this agent.`;
 }

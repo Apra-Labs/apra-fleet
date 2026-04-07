@@ -85,6 +85,8 @@ Verify reviewer is at the correct commit before starting review:
 
 Compose and deliver permissions per `permissions.md` (fleet skill). Recompose when switching roles (e.g. doer↔reviewer). Each provider gets its native permission config — `compose_permissions` handles the format automatically.
 
+**Mid-sprint denial:** If a member is blocked by a permission denial, call `compose_permissions` with `grant: [<denied permission>]` and `project_folder` — this grants the missing permission, delivers the updated config, and appends to the ledger so future phases and sprints start with it already included. Then resume the member with `resume=true`. Never bypass by running the denied command yourself via `execute_command`.
+
 ## PM responsibilities
 
 - Distribute work across pairs based on cohesion (high cohesion within a pair, loose coupling between pairs)

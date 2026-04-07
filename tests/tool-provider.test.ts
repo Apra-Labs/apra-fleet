@@ -195,7 +195,7 @@ describe('provisionAuth — API key per provider', () => {
     mockCollectOobApiKey.mockResolvedValue({ fallback: '🔐 Could not open terminal. Run manually.' });
 
     const result = await provisionAuth({ member_id: agent.id });
-    expect(mockCollectOobApiKey).toHaveBeenCalledWith('gemini-oauth', 'provision_auth');
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith('gemini-oauth', 'provision_llm_auth');
     expect(result).toContain('Could not open terminal');
 
     spy.mockRestore();

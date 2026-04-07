@@ -23,12 +23,11 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `receive_files` | Pull files from a member's work folder |
 | `monitor_task` | Check status of a long-running background command on a cloud member (cloud members only) |
 | `compose_permissions` | Generate and deliver provider-native permission config |
-| `provision_auth` | Provision authentication for a member |
+| `provision_llm_auth` | Provision authentication for a member |
 | `provision_vcs_auth` | Provision VCS credentials (GitHub, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Revoke VCS credentials |
 | `setup_ssh_key` | Migrate remote member from password to key-based auth |
 | `setup_git_app` | Configure GitHub App for token minting |
-| `update_task_tokens` | Accumulate token usage counts for a task |
 | `update_llm_cli` | Update the LLM CLI on a member |
 | `cloud_control` | Manage cloud infrastructure for members |
 | `shutdown_server` | Shut down a remote member's server |

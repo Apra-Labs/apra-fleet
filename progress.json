@@ -125,98 +125,98 @@
       "id": "4.1",
       "step": "Add tokenUsage field to Agent type (#83)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "prior-session",
+      "notes": "tokenUsage?: { input: number; output: number } added to Agent interface in src/types.ts"
     },
     {
       "id": "4.2",
       "step": "Auto-accumulate tokens in execute_prompt (#83)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "prior-session",
+      "notes": "updateAgent imported; token accumulation after touchAgent in execute-prompt.ts using parsed.usage"
     },
     {
       "id": "4.3",
       "step": "Surface token totals in member_detail (#83)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "prior-session",
+      "notes": "result.tokenUsage set from agent.tokenUsage in member-detail.ts when present"
     },
     {
       "id": "4.4",
       "step": "Surface token totals in fleet_status (#83)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "prior-session",
+      "notes": "tokenUsage included in per-agent output in check-status.ts when present"
     },
     {
       "id": "4.5",
       "step": "Remove update_task_tokens tool (#83)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "prior-session",
+      "notes": "update-task-tokens.ts deleted; import and server.tool registration removed from index.ts; test file deleted"
     },
     {
       "id": "V4",
       "step": "VERIFY Phase 4: npm test — all tests pass, no update_task_tokens refs in src/",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "prior-session",
+      "notes": "Phase 4 code verified complete; update_task_tokens absent from src/"
     },
     {
       "id": "5.1",
       "step": "Update fleet SKILL.md — provision_llm_auth, remove update_task_tokens row",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "pending-commit",
+      "notes": "provision_auth → provision_llm_auth on line 26; update_task_tokens row removed"
     },
     {
       "id": "5.2",
       "step": "Update fleet onboarding.md — verify no stale tool names",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "pending-commit",
+      "notes": "No provision_auth or update_task_tokens refs found in onboarding.md — confirmed clean"
     },
     {
       "id": "5.3",
       "step": "Update PM skill docs — remove update_task_tokens, provision_llm_auth",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "pending-commit",
+      "notes": "No stale refs in PM docs; added mid-sprint denial guidance to single-pair-sprint.md and doer-reviewer.md"
     },
     {
       "id": "5.4",
       "step": "Final stale-reference grep across skills/ and src/",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "pending-commit",
+      "notes": "Zero matches for provision_auth|update_task_tokens|claude.version|claude.auth in skills/ and src/ (excluding provisionAuth internal export)"
     },
     {
       "id": "V5",
       "step": "VERIFY Phase 5: grep confirms no stale refs, full npm test passes",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "pending-commit",
+      "notes": "629 tests pass, 3 skipped. Zero stale refs. All skill docs updated."
     }
   ]
 }
