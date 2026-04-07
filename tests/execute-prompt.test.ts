@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -266,6 +266,33 @@ describe('executePrompt', () => {
 
     const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
     expect(result).not.toContain('Tokens:');
+    expect(getAgent(agent.id)?.tokenUsage).toBeUndefined();
+  });
+
+  it('accumulates tokenUsage on agent when usage is present in response', async () => {
+    const agent = makeTestAgent({ friendlyName: 'accumulate-token-agent' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-acc', usage: { input_tokens: 50, output_tokens: 75 } }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    expect(getAgent(agent.id)?.tokenUsage).toEqual({ input: 50, output: 75 });
+  });
+
+  it('accumulates tokenUsage on top of existing values when agent already has tokenUsage', async () => {
+    const agent = makeTestAgent({ friendlyName: 'accumulate-existing-agent', tokenUsage: { input: 30, output: 20 } });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-acc2', usage: { input_tokens: 10, output_tokens: 5 } }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    expect(getAgent(agent.id)?.tokenUsage).toEqual({ input: 40, output: 25 });
   });
 
   it('returns raw error for unknown error without retry', async () => {

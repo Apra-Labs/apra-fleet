@@ -55,6 +55,11 @@ The implementation is correct:
 1. After a prompt response with `usage`, `updateAgent` is called with the correct `tokenUsage` accumulation
 2. When `usage` is absent, `updateAgent` is NOT called for token accumulation (the existing "does not append token line" test should also assert this)
 
+**Addressed (2026-04-06):** Three tests added to `tests/execute-prompt.test.ts`:
+- *"accumulates tokenUsage on agent when usage is present in response"* — verifies `getAgent(id).tokenUsage` equals `{ input: 50, output: 75 }` after a response with `{ input_tokens: 50, output_tokens: 75 }` on an agent with no prior usage.
+- *"accumulates tokenUsage on top of existing values when agent already has tokenUsage"* — verifies accumulation adds to prior values (30+10=40, 20+5=25).
+- *"does not append token line when usage is absent"* — extended to also assert `getAgent(id).tokenUsage` is `undefined` when `usage` is absent.
+
 ---
 
 ## Task 4.3 — Surface tokenUsage in member_detail — PASS
