@@ -80,7 +80,8 @@ function loadProfile(profilesDir: string, name: string): any {
 function loadLedger(projectFolder: string): Ledger {
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   if (fs.existsSync(ledgerPath)) {
-    return JSON.parse(fs.readFileSync(ledgerPath, 'utf-8'));
+    const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf-8'));
+    return { stacks: raw.stacks ?? [], granted: raw.granted ?? [] };
   }
   return { stacks: [], granted: [] };
 }

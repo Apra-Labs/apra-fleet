@@ -13,6 +13,7 @@ import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-h
 import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import type { SSHExecResult } from '../src/types.js';
+import fs from 'node:fs';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 
@@ -332,5 +333,40 @@ describe('composePermissions — no llmProvider defaults to Claude', () => {
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
     // Should write to Claude's path
     expect(writes.some(cmd => cmd.includes('.claude/settings.local.json'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fresh/empty permissions.json — no crash (#88)
+// ---------------------------------------------------------------------------
+
+describe('composePermissions — fresh/empty permissions.json', () => {
+  it('does not crash when permissions.json exists but contains only {}', async () => {
+    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+      const s = String(p);
+      if (s.endsWith('permissions.json')) return true;
+      // Let profile lookups fall through as not found
+      return false;
+    });
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, enc) => {
+      if (String(p).endsWith('permissions.json')) return '{}';
+      throw new Error(`unexpected readFileSync: ${p}`);
+    });
+
+    let result: string;
+    await expect(async () => {
+      result = await composePermissions({
+        member_id: agent.id,
+        role: 'doer',
+        project_folder: '/fake/project',
+      });
+    }).not.toThrow();
+
+    existsSpy.mockRestore();
+    readSpy.mockRestore();
   });
 });
