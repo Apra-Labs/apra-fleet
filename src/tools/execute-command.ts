@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -9,11 +10,18 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import type { Agent } from '../types.js';
 
+export function resolveTilde(p: string): string {
+  if (p === '~' || p.startsWith('~/')) {
+    return p.replace('~', os.homedir());
+  }
+  return p;
+}
+
 export const executeCommandSchema = z.object({
   ...memberIdentifier,
   command: z.string().describe('The shell command to execute'),
   timeout_ms: z.number().default(120000).describe('Timeout in milliseconds (default: 2 minutes)'),
-  work_folder: z.string().optional().describe("Directory to cd into before running the command. Defaults to the member's registered work folder."),
+  run_from: z.string().optional().describe("Override directory to run from. Defaults to member's registered work folder — rarely needed."),
   long_running: z.boolean().optional().default(false).describe('Run as background task; returns task_id for use with monitor_task'),
   max_retries: z.number().int().min(0).max(10).optional().default(3).describe('Max crash retries (long_running only)'),
   restart_command: z.string().optional().describe('Command for retry runs, e.g. checkpoint resume (long_running only)'),
@@ -34,7 +42,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
 
-  const folder = input.work_folder ?? agent.workFolder;
+  const folder = resolveTilde(input.run_from ?? agent.workFolder);
 
   // -- Long-running background task path --
   if (input.long_running) {

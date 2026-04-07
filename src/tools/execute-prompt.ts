@@ -13,6 +13,7 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
+import { resolveTilde } from './execute-command.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -95,9 +96,10 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   }
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
+  const resolvedWorkFolder = resolveTilde(agent.workFolder);
   const promptFilePath = agent.agentType === 'local'
-    ? path.join(agent.workFolder, promptFileName)
-    : `${agent.workFolder}/${promptFileName}`;
+    ? path.join(resolvedWorkFolder, promptFileName)
+    : `${resolvedWorkFolder}/${promptFileName}`;
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
@@ -111,7 +113,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     : tiers.standard;
 
   const promptOpts = {
-    folder: agent.workFolder,
+    folder: resolvedWorkFolder,
     promptFile: promptFileName,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
     model: resolvedModel,
