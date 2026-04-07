@@ -81,45 +81,45 @@
       "id": "3.1",
       "step": "Rename work_folder → run_from in execute_command schema (#85)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "32d82c8",
+      "notes": "Schema param renamed work_folder→run_from; description updated; input.run_from used in folder resolution"
     },
     {
       "id": "3.2",
       "step": "Server-side tilde expansion for workFolder (#85)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "32d82c8",
+      "notes": "resolveTilde exported from execute-command.ts; applied to run_from/workFolder in execute-command.ts and agent.workFolder in execute-prompt.ts"
     },
     {
       "id": "3.3",
       "step": "Update execute_command test for run_from rename (#85)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "1ef1bd1",
+      "notes": "work_folder→run_from in test input; test name updated"
     },
     {
       "id": "3.4",
       "step": "Add tilde resolution tests (#85)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "1ef1bd1",
+      "notes": "4 resolveTilde tests: ~/path, ~, /absolute, relative — all in describe block in execute-command.test.ts"
     },
     {
       "id": "V3",
       "step": "VERIFY Phase 3: npm test — all tests pass",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "blocked",
+      "commit": "1ef1bd1",
+      "notes": "BLOCKED: npm test requires shell approval that was denied in this session. All 4 tasks (3.1–3.4) are committed. PM must run npm test manually or re-invoke agent with npm approved."
     },
     {
       "id": "4.1",
