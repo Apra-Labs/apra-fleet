@@ -1,8 +1,8 @@
 # API Cleanup & Skill Doc Sweep — Plan Review
 
-**Reviewer:** fleet-rev (sprint/skill-refactor reviewer)  
-**Date:** 2026-04-06 21:30:00+00:00  
-**Verdict:** CHANGES NEEDED
+**Reviewer:** fleet-rev  
+**Date:** 2026-04-06 22:15:00+00:00  
+**Verdict:** APPROVED
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -10,80 +10,74 @@
 
 ## Prior Review Context
 
-Two prior reviews (commits fdbcf0c, 18f8309) flagged a gap between requirements.md and the plan — the plan addressed a narrower scope than the user's checklist demanded. The doer resolved this by choosing **Option B: Expand Requirements**. requirements.md was rewritten to cover all six issues (#83, #84, #85, #87, #88, #89), and PLAN.md was rewritten from scratch (commit ad156f8) to address the expanded scope. This review evaluates the new plan against the new requirements.
+This is the fourth review of this plan. The first two reviews (commits fdbcf0c, 18f8309) flagged a requirements-checklist gap. The doer resolved this by expanding requirements.md (Option B). The third review (commit 8dd42ea) found three blocking issues: missing risk register, missing tilde test task, and an unresolved #88 template discrepancy. The doer addressed all three in commit 892a2c6:
+
+- **Risk register:** Added R1–R4 to PLAN.md covering breaking changes, token race (correctly assessed as non-issue in single-threaded Node.js), tilde edge cases, and the template discrepancy. All four risks are well-characterized with impact and mitigation.
+- **Tilde test task:** Added Task 3.4 with four test cases (`~/path`, bare `~`, absolute passthrough, relative passthrough). Phase 3 summary updated to reflect 3.1–3.4.
+- **#88 template discrepancy:** Requirements.md updated to replace the template-fix sub-item with the guard-based `loadLedger` approach. Task 1.1 done criteria explicitly state no template file is created. Risk R4 documents the resolution. This is the right call — guarding in `loadLedger` is strictly more robust than shipping a template.
 
 ---
 
-## 1. Done Criteria — PASS
+## Plan Review Checklist
 
-Every task has an explicit **Done:** line with a verifiable condition. Examples: Task 1.1 specifies that `loadLedger` never returns undefined `granted` or `stacks` regardless of file content. Task 2.2 specifies the exact output format (`"2.1.92"` not `"Claude Code 2.1.92"`). Task 4.5 specifies full removal with no backward-compat shim. No ambiguity.
+### 1. Done Criteria — PASS
 
-## 2. Cohesion and Coupling — PASS
+Every task has an explicit **Done:** line with a verifiable condition. Task 1.1 now includes the guard-based approach clarification. Task 3.4 specifies all four tilde test cases must pass. No task leaves the definition of "done" ambiguous.
 
-Each phase groups tightly related changes: Phase 1 = crash fix + low-risk rename, Phase 2 = member_detail output shape, Phase 3 = execute_command params + tilde fix, Phase 4 = token accumulation lifecycle, Phase 5 = docs. Cross-phase coupling is minimal — the only dependency is that Phase 5 references names introduced in Phases 1-4.
+### 2. Cohesion and Coupling — PASS
 
-## 3. Key Abstractions in Earliest Tasks — PASS
+Each phase groups tightly related changes: Phase 1 = crash fix + low-risk rename, Phase 2 = member_detail output, Phase 3 = execute_command params + tilde, Phase 4 = token lifecycle, Phase 5 = docs. The only cross-phase dependency (Phase 5 references names from Phases 1-4) is correctly ordered.
 
-Task 3.2 introduces the `resolveTilde` helper shared between `execute-command.ts` and `execute-prompt.ts`. Task 4.1 introduces `tokenUsage` on the `Agent` type before Tasks 4.2-4.4 consume it. Both are correctly front-loaded within their phases.
+### 3. Key Abstractions in Earliest Tasks — PASS
 
-## 4. Riskiest Assumption in Task 1 — PASS
+`resolveTilde` (Task 3.2) is introduced before it's used in both `execute-command.ts` and `execute-prompt.ts`. `tokenUsage` type (Task 4.1) is introduced before Tasks 4.2-4.4 consume it.
 
-The crash fix (#88) is front-loaded as Task 1.1. This is the right call — it's the only bug that causes a runtime crash in production. The `compose_permissions` `loadLedger` guard is low-risk but validates the assumption that the fix is a simple null-coalescing guard (confirmed: `loadLedger` at lines 80-86 of `compose-permissions.ts` parses JSON directly without guards).
+### 4. Riskiest Assumption in Task 1 — PASS
 
-## 5. Later Tasks Reuse Early Abstractions — PASS
+The crash fix (#88) is front-loaded as Task 1.1 — the only runtime crash. The `loadLedger` guard validates the assumption that the fix is a simple null-coalescing guard (confirmed against line 80-86 of `compose-permissions.ts`).
 
-`resolveTilde` (Task 3.2) is used in both `execute-command.ts` and `execute-prompt.ts`. `tokenUsage` type (Task 4.1) flows through Tasks 4.2 → 4.3 → 4.4. Phase 5 doc updates reference the renames from Phases 1-3.
+### 5. Later Tasks Reuse Early Abstractions — PASS
 
-## 6. Phase Size — NOTE
+`resolveTilde` is shared across `execute-command.ts` and `execute-prompt.ts`. `tokenUsage` flows through Tasks 4.2 → 4.3 → 4.4. Phase 5 doc updates reference the renames from Phases 1-3.
 
-Phases 1-3 and 5 follow the 2-3 tasks + VERIFY guideline. **Phase 4 has 5 tasks**, exceeding the guideline. However, Tasks 4.3-4.5 are all marked cheap and are essentially mechanical (add a field to output, delete a file). The 5-task phase is acceptable here because the tasks form a tight dependency chain (type → accumulate → surface × 2 → remove old), but the plan should acknowledge this deviation.
+### 6. Phase Size — PASS (with note)
 
-## 7. Each Task Completable in One Session — PASS
+Phases 1-3 and 5 have 3-4 tasks each. Phase 4 has 5 tasks, slightly exceeding the 2-3 guideline, but tasks 4.3-4.5 are cheap and mechanical (add field to output, delete files). The 5-task phase is acceptable because the tasks form a tight dependency chain. Phase 3 grew from 3 to 4 tasks with the addition of Task 3.4 (tilde tests), which is the right place for it.
 
-All tasks are marked cheap except 4.1-4.2 (standard). Even the standard tasks are well-scoped: 4.1 is adding a single field to a type, 4.2 is ~10 lines of accumulation logic. No task requires multi-session work.
+### 7. Each Task Completable in One Session — PASS
 
-## 8. Dependencies Satisfied in Order — PASS
+All tasks marked cheap except 4.1-4.2 (standard). Even the standard tasks are well-scoped: 4.1 adds a single type field, 4.2 is ~10 lines of accumulation logic.
 
-Task 4.1 (type) before 4.2 (use it). Task 4.2 (accumulate) before 4.3-4.4 (surface). Task 4.5 (remove old tool) after 4.2 provides the replacement. Phase 5 (doc sweep) after all code changes. `updateAgent` import in Task 4.2 is verified to exist at `src/services/registry.ts:111`.
+### 8. Dependencies Satisfied in Order — PASS
 
-## 9. Vague Tasks — PASS
+Task 4.1 (type) before 4.2 (use). Task 4.2 (accumulate) before 4.3-4.4 (surface). Task 4.5 (remove old tool) after replacement is in place. Task 3.2 (helper) before 3.4 (test it). Phase 5 (docs) after all code changes. `updateAgent` (referenced in Task 4.2) verified to exist at `src/services/registry.ts:111`.
 
-Every task specifies exact files, line numbers, and code snippets. The line number references were verified against the codebase and are accurate (within ±1 line). No task is ambiguous enough for two developers to interpret differently.
+### 9. Vague Tasks — PASS
 
-## 10. Hidden Dependencies — PASS
+Every task specifies exact files, line numbers, and code snippets. Line references verified against the codebase and are accurate. Task 3.4 specifies all four test cases explicitly.
 
-No hidden dependencies found. The only cross-phase dependency (Phase 5 referencing names from Phases 1-4) is explicit in the phase ordering.
+### 10. Hidden Dependencies — PASS
 
-## 11. Risk Register — FAIL
+No hidden dependencies. Task 5.1 references names from Phases 1 and 4 (`provision_llm_auth`, `update_task_tokens` removal) — correctly ordered after those phases.
 
-**The plan contains no risk register.** The previous plan version (commit 99e9a11) had 4 documented risks. The rewritten plan dropped them entirely. Identified risks that should be documented:
+### 11. Risk Register — PASS
 
-1. **Breaking change risk:** `provision_auth` → `provision_llm_auth` (Task 1.3) and `work_folder` → `run_from` (Task 3.1) are schema-level renames. Any external caller using the old names will break. Mitigation: requirements explicitly say "no backward-compat shims" — this is intentional, but the risk should be acknowledged.
-2. **Token accumulation race:** Task 4.2 reads `agent.tokenUsage`, adds to it, then writes back. If two concurrent `execute_prompt` calls finish simultaneously for the same agent, one update could be lost. Mitigation: assess whether `updateAgent` is atomic or needs a compare-and-swap.
-3. **Tilde expansion edge cases:** Task 3.2 only handles `~/` and bare `~`. Paths like `~user/foo` (other user's home) would not be resolved. Mitigation: document that only `~` (current user) is supported.
-4. **#88 template discrepancy:** Requirements say "Fix the template permissions.json file to ship with `{"granted": []}` not `{}`" but the plan notes no template file exists in the repo. The plan's guard-in-`loadLedger` approach is arguably better (defends against any malformed JSON), but the requirement is technically unmet. Mitigation: explicitly close this out — either create the template or update requirements to reflect the guard-based fix.
+Risk register added with four well-characterized risks (R1-R4). R2 (token race) correctly identifies that single-threaded Node.js event loop makes this a non-issue. R3 (tilde edge cases) correctly scopes `~user/foo` out — not a fleet use case. R4 (template discrepancy) is resolved with both a requirements update and code-level documentation.
 
-## 12. Alignment with requirements.md — FAIL (two gaps)
+### 12. Alignment with requirements.md — PASS
 
-**Gap A — Missing tilde resolution test.** Requirements acceptance criteria state: *"All existing tests pass; new tests added for CWD fix, tilde resolution, and compose_permissions guard."* The plan includes a test for compose_permissions (Task 1.2) and updates existing tests (Tasks 2.3, 3.3), but **no task creates a test for tilde resolution**. Task 3.3 only renames `work_folder` → `run_from` in existing tests. A test should verify that `resolveTilde('~/git/project')` returns the expanded path and that a bare `~` is handled correctly.
+All six issues are addressed:
+- **#89:** Already fixed (noted in plan header, commits e28f294, f02a4a0)
+- **#88:** Guard-based fix in Task 1.1 + test in Task 1.2; requirements updated to match
+- **#87:** Rename + version strip in Tasks 2.1-2.2 + test update in Task 2.3
+- **#85:** Param rename in Task 3.1 + tilde fix in Task 3.2 + test updates in Tasks 3.3-3.4
+- **#84:** Rename in Task 1.3
+- **#83:** Auto-accumulation in Tasks 4.1-4.4 + tool removal in Task 4.5
 
-**Gap B — #88 template fix.** As noted in the risk register section, requirements.md explicitly asks to "Fix the template permissions.json file to ship with `{"granted": []}` not `{}`". The plan's investigation found no template file exists, and the `loadLedger` guard is a valid fix, but the plan should either (a) add a task to create the template file with correct defaults, or (b) explicitly propose updating requirements.md to remove the template fix line. Currently it's a silent deviation.
+Acceptance criteria coverage: CWD fix (#89 already done), compose_permissions test (Task 1.2), tilde resolution tests (Task 3.4), all existing tests pass (VERIFY checkpoints after each phase), skill docs updated (Phase 5).
 
 ---
 
 ## Summary
 
-The plan is well-structured, with accurate file/line references, clear done criteria, correct dependency ordering, and good phase decomposition. The requirements-checklist gap from prior reviews has been fully resolved by expanding requirements.md.
-
-**Two items block approval:**
-
-1. **Add a risk register** — at minimum covering breaking changes, token race conditions, tilde edge cases, and the template discrepancy.
-   **Doer:** fixed in commit 892a2c6 — added Risk Register section to PLAN.md with risks R1–R4 covering breaking changes, token race (assessed as non-issue in single-threaded Node.js), tilde edge cases, and #88 template discrepancy.
-
-2. **Add a tilde resolution test task** (e.g., Task 3.4) that tests `resolveTilde` with `~/path`, bare `~`, and a non-tilde path. This is explicitly required by the acceptance criteria.
-   **Doer:** fixed in commit 892a2c6 — added Task 3.4 to PLAN.md with four test cases: `~/path`, bare `~`, absolute path passthrough, relative path passthrough.
-
-3. **Resolve the #88 template discrepancy** — either add a template creation task or propose a requirements update. Don't leave it as a silent deviation.
-   **Doer:** fixed in commit 892a2c6 — updated requirements.md to replace template-fix sub-item with guard-based fix description. Updated Task 1.1 done criteria to explicitly state guard-based approach is chosen (no template file created). Added Risk R4 documenting the resolution.
-
-Once these are addressed, the plan should be ready for APPROVED.
+All 12 checklist items pass. The three blocking issues from the prior review have been resolved cleanly: risk register is complete and well-reasoned, tilde test task fills the acceptance criteria gap, and the #88 template discrepancy is resolved at both the requirements and plan level. The plan is ready for implementation.
