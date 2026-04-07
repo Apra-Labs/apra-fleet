@@ -32,6 +32,7 @@ interface AgentStatusRow {
   lastActivity: string;
   branch?: string;
   cloudInfo?: CloudInfo;
+  tokenUsage?: { input: number; output: number };
 }
 
 function formatTimeAgo(isoDate?: string): string {
@@ -58,6 +59,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     session: agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : '(none)',
     lastActivity: formatTimeAgo(agent.lastUsed),
     branch: agent.lastBranch,
+    tokenUsage: agent.tokenUsage,
   };
 
   const strategy = getStrategy(agent);
@@ -223,7 +225,9 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   t += '\n';
   for (const r of rows) {
     const branchStr = r.branch ? ` | branch=${r.branch}` : '';
-    let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}`;
+    const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
+      ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
+    let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}${tokenStr}`;
     if (r.cloudInfo) {
       const ci = r.cloudInfo;
       const uptimeHrs = uptimeHoursFromLaunch(ci.launchTime);
