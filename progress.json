@@ -1,54 +1,222 @@
 {
-  "project": "skill-refactor",
-  "branch": "sprint/skill-refactor",
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | completed | blocked"
+  },
+  "project": "apra-fleet",
+  "plan_file": "PLAN.md",
+  "created": "2026-04-06",
   "tasks": [
     {
-      "id": "1",
-      "phase": 1,
-      "title": "Investigate @fleet reference mechanism and create skills/fleet/SKILL.md skeleton",
-      "type": "task",
+      "id": "1.1",
+      "step": "Fix compose_permissions crash on fresh permissions.json (#88)",
+      "type": "work",
       "status": "completed",
-      "notes": "Created skills/fleet/SKILL.md with valid frontmatter (name: fleet). Cross-skill reference mechanism: Claude Code resolves skill references by matching the name field in frontmatter to prose patterns like 'See the fleet skill'. Fallback documented: use explicit path 'See skills/fleet/SKILL.md' if loader doesn't auto-resolve."
+      "tier": "cheap",
+      "commit": "6930f55",
+      "notes": "Guarded loadLedger with nullish coalescing: raw.stacks ?? [], raw.granted ?? []"
     },
     {
-      "id": "2",
-      "phase": 1,
-      "title": "Populate skills/fleet/SKILL.md with fleet mechanics extracted from PM skill",
-      "type": "task",
+      "id": "1.2",
+      "step": "Add test: fresh template → compose_permissions → no crash (#88)",
+      "type": "work",
       "status": "completed",
-      "notes": "Fully populated skills/fleet/SKILL.md with all fleet mechanics sections: Tool Boundaries, Dispatch Rules, Pre-dispatch Checks, Pre-flight Checks, Task Harness Delivery, Delivery Mechanics, Monitoring, Recovery Commands, Token Tracking, Git as Transport, Cleanup Commands, Permissions, Model Tiers, Member Icons, Provider Awareness. Moved 7 files from skills/pm/ to skills/fleet/: onboarding.md, permissions.md, troubleshooting.md, skill-matrix.md, auth-github.md, auth-bitbucket.md, auth-azdevops.md (completed in Task 5 verification since prior doer had not actually moved them)."
+      "tier": "cheap",
+      "commit": "6930f55",
+      "notes": "Added describe block 'fresh/empty permissions.json' with spy-based mock of fs.existsSync/readFileSync"
     },
     {
-      "id": "3",
-      "phase": 1,
-      "title": "Refactor skills/pm/SKILL.md to remove fleet mechanics, add @fleet references",
-      "type": "task",
+      "id": "1.3",
+      "step": "Rename provision_auth → provision_llm_auth (#84)",
+      "type": "work",
       "status": "completed",
-      "notes": "Replaced inline fleet mechanics in SKILL.md with fleet skill references. Rules 3, 4, 8, 11, 13 updated. /pm pair, /pm deploy, /pm cleanup commands trimmed of inline tool usage. Rule 5 execute_prompt reference replaced. Plan Generation send_files/execute_prompt references replaced. Recovery section execute_command patterns replaced. Task Harness, Monitoring, Model Selection, Member Icons, Provider Awareness table replaced with fleet skill references."
+      "tier": "cheap",
+      "commit": "6930f55",
+      "notes": "Renamed MCP tool registration in src/index.ts line 95; internal export name provisionAuth unchanged"
     },
     {
-      "id": "4",
-      "phase": 1,
-      "title": "Trim doer-reviewer.md of fleet tool mechanics",
-      "type": "task",
-      "status": "completed",
-      "notes": "Removed all inline fleet tool patterns from doer-reviewer.md: Setup items 2, 3, 4 reference fleet skill; Pre-flight Checks reference fleet skill; Flow steps 2, 3, 6 reference fleet skill; Post-dispatch Token Tracking replaced with one-liner; Safeguards table max_turns row trimmed; Permissions section references fleet skill; Git as transport .gitignore reference updated."
-    },
-    {
-      "id": "5",
-      "phase": 1,
-      "title": "Verify the split is complete",
-      "type": "task",
-      "status": "completed",
-      "notes": "All checks passed: (1) skills/pm/ has no inline fleet tool usage instructions — only context mentions in plan-prompt.md; (2) skills/fleet/ has no PM workflow terms (APPROVED/CHANGES NEEDED/doer-reviewer loop/lifecycle); (3) all 7 files confirmed moved from skills/pm/ to skills/fleet/; (4) skills/fleet/SKILL.md has valid frontmatter (name: fleet); (5) cross-references are bidirectional — PM references fleet sections that all now exist in fleet/SKILL.md."
-    },
-    {
-      "id": "6",
-      "phase": 1,
-      "title": "VERIFY checkpoint",
+      "id": "V1",
+      "step": "VERIFY Phase 1: npm test — all existing tests pass, new test passes",
       "type": "verify",
-      "status": "verify",
-      "notes": "All Tasks 1-5 completed. skills/fleet/ contains SKILL.md plus 7 sub-documents. skills/pm/ contains only PM workflow files. Clean separation confirmed. Pushed to origin/sprint/skill-refactor for PM review."
+      "status": "completed",
+      "commit": "6930f55",
+      "notes": "41 test files, 629 tests passed, 3 skipped. All green."
+    },
+    {
+      "id": "2.1",
+      "step": "Rename claude → llm_cli in member_detail output (#87)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "2.2",
+      "step": "Strip provider prefix from version string (#87)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "2.3",
+      "step": "Update member_detail test for llm_cli rename (#87)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V2",
+      "step": "VERIFY Phase 2: npm test — all tests pass",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "3.1",
+      "step": "Rename work_folder → run_from in execute_command schema (#85)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "3.2",
+      "step": "Server-side tilde expansion for workFolder (#85)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "3.3",
+      "step": "Update execute_command test for run_from rename (#85)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "3.4",
+      "step": "Add tilde resolution tests (#85)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V3",
+      "step": "VERIFY Phase 3: npm test — all tests pass",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "4.1",
+      "step": "Add tokenUsage field to Agent type (#83)",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "4.2",
+      "step": "Auto-accumulate tokens in execute_prompt (#83)",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "4.3",
+      "step": "Surface token totals in member_detail (#83)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "4.4",
+      "step": "Surface token totals in fleet_status (#83)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "4.5",
+      "step": "Remove update_task_tokens tool (#83)",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V4",
+      "step": "VERIFY Phase 4: npm test — all tests pass, no update_task_tokens refs in src/",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "5.1",
+      "step": "Update fleet SKILL.md — provision_llm_auth, remove update_task_tokens row",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "5.2",
+      "step": "Update fleet onboarding.md — verify no stale tool names",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "5.3",
+      "step": "Update PM skill docs — remove update_task_tokens, provision_llm_auth",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "5.4",
+      "step": "Final stale-reference grep across skills/ and src/",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "V5",
+      "step": "VERIFY Phase 5: grep confirms no stale refs, full npm test passes",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
     }
   ]
 }
