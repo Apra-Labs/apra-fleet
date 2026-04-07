@@ -47,7 +47,7 @@ Look up the member's project + VCS + roles in skill-matrix.md. Install any missi
 
 ## Step 7: Add Fleet Ephemeral Files to .gitignore
 
-Run `execute_command → echo '.fleet-task*' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
+Run `execute_command → echo '.fleet-task.md' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
 
 ## Step 8: Update Member Status File
 
