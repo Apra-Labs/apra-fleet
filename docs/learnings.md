@@ -132,14 +132,14 @@ If SSH is enabled but connection still refused, check firewall rules:
 
 ### Prerequisites
 
-- **For OAuth (default):** Run `/login` in your Claude Code session (or `claude auth login` from terminal) first. `provision_auth` copies your credentials to the remote member.
-- **For API key:** Have your Anthropic API key ready. Pass it as the `api_key` parameter to `provision_auth`.
+- **For OAuth (default):** Run `/login` in your Claude Code session (or `claude auth login` from terminal) first. `provision_llm_auth` copies your credentials to the remote member.
+- **For API key:** Have your Anthropic API key ready. Pass it as the `api_key` parameter to `provision_llm_auth`.
 
-`provision_auth` checks token expiry before deploying. If your access token is expired but a refresh token exists, deployment proceeds — the member's CLI will auto-refresh on first use.
+`provision_llm_auth` checks token expiry before deploying. If your access token is expired but a refresh token exists, deployment proceeds — the member's CLI will auto-refresh on first use.
 
 ### Auth Check Failed Warning During Registration
 
-If `register_member` succeeds but shows `Claude CLI auth check failed — you may need to run provision_auth`, this is normal for new members. Run `provision_auth` with the member's ID to set up authentication.
+If `register_member` succeeds but shows `Claude CLI auth check failed — you may need to run provision_llm_auth`, this is normal for new members. Run `provision_llm_auth` with the member's ID to set up authentication.
 
 ## Local Member on Windows — Pristine Shell Issues
 

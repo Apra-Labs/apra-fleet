@@ -11,7 +11,7 @@ The edge-vision-trainer (EC2 g5.2xlarge, A10G GPU) was manually set up with shel
 - `fleet-ec2.sh ensure <conf>` — starts instance, waits for SSH, updates fleet member IP
 - `fleet-ec2.sh watchdog <conf>` — auto-stops after 30 min idle
 - Activity file touch mechanism (`/tmp/fleet-ec2-activity-<instance-id>`)
-- `provision_auth` to deploy Claude CLI credentials after instance start
+- `provision_llm_auth` to deploy Claude CLI credentials after instance start
 - `provision_vcs_auth` to deploy GitHub App tokens for git access
 
 ### What broke repeatedly:

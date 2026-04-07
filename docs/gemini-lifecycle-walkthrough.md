@@ -89,7 +89,7 @@ Traces the complete PM workflow for a Gemini member. Each step is marked with it
 
 | Check | Status | Notes |
 |-------|--------|-------|
-| API key flow (`GEMINI_API_KEY`) | ✅ | `GeminiProvider.authEnvVar = 'GEMINI_API_KEY'`; `provision_auth` sets this env var |
+| API key flow (`GEMINI_API_KEY`) | ✅ | `GeminiProvider.authEnvVar = 'GEMINI_API_KEY'`; `provision_llm_auth` sets this env var |
 | OAuth copy flow | ❌ | `GeminiProvider.supportsOAuthCopy()` returns false — no OAuth copy for Gemini |
 
 ---
