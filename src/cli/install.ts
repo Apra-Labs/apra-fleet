@@ -422,7 +422,7 @@ export async function runInstall(args: string[]): Promise<void> {
 
   if (llm === 'claude') {
     try {
-      run('claude mcp remove apra-fleet', { stdio: 'ignore' });
+      run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
     } catch { /* not registered */ }
     
     const cmd = mcpConfig.command === 'node' 
