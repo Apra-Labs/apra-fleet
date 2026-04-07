@@ -8,126 +8,151 @@
   "created": "2026-04-07",
   "tasks": [
     {
-      "id": "1.1",
-      "step": "Create ORG_PREFIX resolver module (src/config/org-prefix.ts)",
+      "id": 1,
+      "step": "Validate R1 — MCP tool ID namespacing is client-controlled",
       "type": "work",
       "status": "pending",
-      "tier": "cheap",
-      "phase": 1,
-      "blockers": []
+      "tier": "premium",
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "1.2",
-      "step": "Template MCP server name with prefix resolver (src/index.ts:74-77)",
+      "id": 2,
+      "step": "Create ORG_PREFIX resolver — single source of truth",
       "type": "work",
       "status": "pending",
-      "tier": "cheap",
-      "phase": 1,
-      "blockers": ["1.1"]
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "V1",
-      "step": "VERIFY-1: R1 smoke test — MCP tool ID resolves with templated prefix",
+      "id": 3,
+      "step": "VERIFY: Phase 1 — Foundations",
       "type": "verify",
       "status": "pending",
-      "phase": 1,
-      "blockers": ["1.2"]
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "2.1",
-      "step": "Template data dir and env var in src/paths.ts",
+      "id": 4,
+      "step": "Refactor paths.ts and all non-installer src/ files to use resolver",
       "type": "work",
       "status": "pending",
-      "tier": "cheap",
-      "phase": 2,
-      "blockers": ["1.1"]
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "2.2",
-      "step": "Reconcile install paths — unified server name (install.cjs + src/cli/install.ts)",
+      "id": 5,
+      "step": "Refactor installer to accept --prefix and template MCP registrations",
       "type": "work",
       "status": "pending",
-      "tier": "medium",
-      "phase": 2,
-      "blockers": ["1.1"]
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "2.3",
-      "step": "Template permission glob in src/cli/install.ts:229",
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "phase": 2,
-      "blockers": ["1.1"]
-    },
-    {
-      "id": "V2",
-      "step": "VERIFY-2: Full grep sweep for remaining 'apra' references in code",
+      "id": 6,
+      "step": "VERIFY: Phase 2 — Source De-branding",
       "type": "verify",
       "status": "pending",
-      "phase": 2,
-      "blockers": ["2.1", "2.2", "2.3"]
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "3.1",
-      "step": "Add --prefix= flag to install paths (install.cjs + src/cli/install.ts)",
+      "id": 7,
+      "step": "Template install.cjs and shell wrappers",
       "type": "work",
       "status": "pending",
-      "tier": "medium",
-      "phase": 3,
-      "blockers": ["2.1", "2.2"]
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "4.1",
-      "step": "Update existing tests + add prefix coverage (tests/org-prefix.test.ts)",
-      "type": "work",
-      "status": "pending",
-      "tier": "medium",
-      "phase": 4,
-      "blockers": ["2.1", "2.2", "2.3"]
-    },
-    {
-      "id": "V3",
-      "step": "VERIFY-3: Full test suite passes (npm test)",
-      "type": "verify",
-      "status": "pending",
-      "phase": 4,
-      "blockers": ["4.1"]
-    },
-    {
-      "id": "5.1",
-      "step": "Update docs and README — template all apra references",
-      "type": "work",
-      "status": "pending",
-      "tier": "medium",
-      "phase": 5,
-      "blockers": []
-    },
-    {
-      "id": "5.2",
-      "step": "Major version bump 0.1.3 → 0.2.0 + CHANGELOG entry",
+      "id": 8,
+      "step": "Template hooks, statusline, .mcp.json, and SEA build scripts",
       "type": "work",
       "status": "pending",
       "tier": "cheap",
-      "phase": 5,
-      "blockers": ["4.1"]
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "5.3",
-      "step": "Update npm package name to @apra-labs/fleet",
+      "id": 9,
+      "step": "VERIFY: Phase 3 — Install Scripts",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 10,
+      "step": "Update test assertions and add prefix-specific tests",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 11,
+      "step": "VERIFY: Phase 4 — Tests",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 12,
+      "step": "Package rename, version bump, and CHANGELOG",
       "type": "work",
       "status": "pending",
       "tier": "cheap",
-      "phase": 5,
-      "blockers": []
+      "commit": "",
+      "notes": ""
     },
     {
-      "id": "V4",
-      "step": "VERIFY-4: Final acceptance — all 6 acceptance criteria checks pass",
+      "id": 13,
+      "step": "De-brand README.md and docs/",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 14,
+      "step": "Dev box migration helper",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 15,
+      "step": "VERIFY: Phase 5 — Docs & Migration",
       "type": "verify",
       "status": "pending",
-      "phase": 5,
-      "blockers": ["5.1", "5.2", "5.3"]
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 16,
+      "step": "Final acceptance validation",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 17,
+      "step": "VERIFY: Phase 6 — Final",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
     }
   ]
 }
