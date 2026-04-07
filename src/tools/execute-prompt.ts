@@ -7,6 +7,7 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
@@ -158,6 +159,16 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Update session ID and last used
     touchAgent(agent.id, parsed.sessionId); // T7: idle manager resets its timer via touchAgent
+
+    if (parsed.usage) {
+      const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+      updateAgent(agent.id, {
+        tokenUsage: {
+          input: prev.input + parsed.usage.input_tokens,
+          output: prev.output + parsed.usage.output_tokens,
+        },
+      });
+    }
 
     writeStatusline();
 
