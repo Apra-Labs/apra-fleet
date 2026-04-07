@@ -1,80 +1,103 @@
-# API Cleanup & Skill Doc Sweep — Phase 5 Re-Review
+# Documentation Harvest — Code Review
 
 **Reviewer:** fleet-rev  
-**Date:** 2026-04-06 23:15:00-04:00  
-**Verdict:** APPROVED
+**Date:** 2026-04-06 23:30:00-04:00  
+**Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
 
 ---
 
-## Prior Review Context
+## Scope
 
-Phase 5 initial review (commit 92b8be0) found 3 findings — 2 blocking and 1 non-blocking — all stale `provision_auth` references in test files that the Task 5.4 sweep missed. The doer addressed all 3 in commit `f1aae41`.
+Commit `0ea09e8` ("docs: extract long-term knowledge from sprint into docs/") adds one new ADR and updates three existing tool docs. Four files changed:
 
----
-
-## Fix Verification — All 3 Findings Resolved — PASS
-
-Commit `f1aae41` makes the following changes:
-
-### Finding 1 (was BLOCKING) — `tests/integration.test.ts:210` — FIXED
-
-`result.includes('provision_auth')` → `result.includes('provision_llm_auth')`. The auth-detection integration test will now correctly match the output of `authErrorAdvice()`, which returns `provision_llm_auth` since Phase 5. Silent regression eliminated.
-
-### Finding 2 (was BLOCKING) — `tests/integration.test.ts:104` — FIXED
-
-Skip message updated from `provision_auth` to `provision_llm_auth`. User-visible string now reflects the current tool name.
-
-### Finding 3 (was NON-BLOCKING) — `tests/auth-socket.test.ts` — FIXED
-
-All 6 occurrences of `'provision_auth'` updated to `'provision_llm_auth'`:
-- Lines 372, 389, 400, 411: `collectOobApiKey` tool name argument
-- Lines 404, 415: `.toContain('provision_llm_auth')` assertions
-
-Tests now reflect production usage where `provisionAuth()` passes `'provision_llm_auth'` to `collectOobApiKey`.
-
-### Additional changes in `f1aae41`
-
-- `PLAN.md` Task 5.4: grep scope expanded from `skills/ src/` to `skills/ src/ tests/` with a note explaining why. Good — prevents repeat of this class of miss.
-- `progress.json` Tasks 5.4 and V5: notes updated to reflect the expanded scope and fix count. Clean.
-- `feedback.md`: Doer annotated all 3 findings with "✓ DONE" and updated verdict to "CHANGES NEEDED → RESOLVED". Follows the review protocol.
+- `docs/adr-provider-agnostic-api.md` (new — 97 lines)
+- `docs/tools-infrastructure.md` (heading rename + auth error guidance)
+- `docs/tools-observability.md` (provider-neutral language + token display)
+- `docs/tools-work.md` (run_from rename + token accumulation section)
 
 ---
 
-## Stale Reference Sweep — PASS
+## Methodology
 
-Final grep across all three directories confirms zero stale references:
-
-- `skills/` — zero matches for `provision_auth|update_task_tokens|claude.version|claude.auth`
-- `src/` — zero matches (excluding internal `provisionAuth` export name, which is correct)
-- `tests/` — zero matches
+All tool names, parameter names, and behavior descriptions were verified against the source code (12 claims checked). Build passes (`tsc --noEmit`). All 628 tests pass (4 skipped).
 
 ---
 
-## Build & Full Test Suite — PASS
+## ADR Quality — PASS (with 1 NOTE)
 
-- `npm test` — 40 test files, 628 passed, 4 skipped. No failures.
+`adr-provider-agnostic-api.md` is well-structured: 5 decisions, each with what/why/trade-offs. Content is durable architecture knowledge — design rationale, race condition analysis, guard-vs-template reasoning. Issue numbers tie back to the tracker. No task lists, debug notes, or implementation steps.
+
+**NOTE — transient sprint reference (line 35):** "The skill doc sweep (Phase 5 of the plan) updated all known internal callers." Future readers won't have context for "Phase 5." Suggest replacing with "A skill doc sweep updated all known internal callers." Non-blocking.
 
 ---
 
-## Phase 1–4 Regression Check — PASS
+## Tool Docs — Factual Accuracy
 
-No prior phase source files modified. All tests continue to pass.
+### Finding 1 (BLOCKING) — `tools-infrastructure.md:43` — stale `provision_auth` reference
+
+The commit renamed the heading on line 5 from `provision_auth` to `provision_llm_auth`, but line 43 still reads:
+
+> **Token validation:** Before deploying, `provision_auth` checks the OAuth token's expiry.
+
+Should be `provision_llm_auth`. This is in a file that was explicitly updated by this commit — same class of miss that was caught in tests during the Phase 5 review.
+
+### Finding 2 (BLOCKING) — `tools-work.md:108` — inaccurate tilde expansion description
+
+Line 108 reads:
+
+> Tilde (`~`) at the start of either path is expanded to the member's home directory server-side before the command runs.
+
+The code (`resolveTilde` in `execute-command.ts:13-18`) uses `os.homedir()`, which resolves to the **master/server** machine's home directory, not the member's. The ADR (line 61) correctly states: "The resolution uses Node's `os.homedir()` on the master machine, which is correct because the master constructs the command string."
+
+The tool doc should align with the ADR. Suggested fix: "Tilde (`~`) at the start of either path is expanded server-side to the master machine's home directory before the command runs."
+
+---
+
+## Tool Docs — Durable Knowledge Check — PASS
+
+No transient content found in the three updated tool docs. All additions are reference material: table columns, parameter descriptions, error handling behavior, section descriptions. No code-line references, debug notes, or task lists.
+
+---
+
+## Stale References in Non-Updated Docs (NOTE — out of scope but flagged)
+
+The harvest updated 4 files but did not sweep the broader `docs/` directory. Grep reveals `provision_auth` (old name) still appears in 7 other docs:
+
+- `tools-lifecycle.md:31`
+- `cloud-compute.md:114`
+- `learnings.md:135-142` (4 occurrences)
+- `architecture.md:124, 170`
+- `gemini-lifecycle-walkthrough.md:92`
+- `provider-matrix.md:75`
+- `requirements/cloud-compute-reqs.md:14`
+
+These pre-date this commit and are not blocking this review, but should be addressed in a follow-up sweep. The `work_folder` references in `tools-lifecycle.md` and `design-git-auth.md` refer to the member registration property (which is still `workFolder` internally), so those are correct — only the `execute_command` parameter was renamed.
+
+---
+
+## Build & Tests — PASS
+
+- `tsc --noEmit` — clean
+- `npx vitest run` — 40 test files, 628 passed, 4 skipped, 0 failures
 
 ---
 
 ## Summary
 
-| Task | Verdict | Notes |
-|------|---------|-------|
-| 5.1 — Update fleet SKILL.md | PASS | Unchanged since initial review |
-| 5.2 — Update fleet onboarding.md | PASS | Unchanged since initial review |
-| 5.3 — Update PM skill docs | PASS | Unchanged since initial review |
-| 5.4 — Final stale-reference grep | PASS | All 8 stale refs in tests/ fixed; grep scope expanded to include tests/ |
-| V5 — npm test | PASS | 628 passed, 4 skipped |
-| Phase 1–4 regression | PASS | No regressions |
+| Item | Verdict |
+|------|---------|
+| ADR structure & durability | PASS |
+| ADR factual accuracy | PASS |
+| Tool doc updates — factual accuracy | **FAIL** — 2 findings |
+| Tool doc updates — no transient content | PASS |
+| Build & tests | PASS |
 
-**Carried forward (non-blocking):** `member_detail` shows token string even when both values are 0; `fleet_status` suppresses zeros. Minor display inconsistency — cosmetic, not blocking.
+**Must fix before approval:**
+1. `tools-infrastructure.md:43` — `provision_auth` → `provision_llm_auth`
+2. `tools-work.md:108` — tilde expansion uses master's homedir, not member's
 
-All 5 phases APPROVED. Sprint work is complete.
+**Non-blocking notes:**
+- ADR line 35: replace "Phase 5 of the plan" with sprint-agnostic phrasing
+- 7 other doc files still reference `provision_auth` (pre-existing, separate sweep recommended)
