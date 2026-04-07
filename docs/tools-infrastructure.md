@@ -40,7 +40,7 @@ Used when the user has a Claude Max subscription. Copies `~/.claude/.credentials
 - No credentials file exists on the master machine — prompts the user to run `/login` or use `api_key` instead.
 - Token is expired with no refresh token — blocks deployment and suggests running `/login`.
 
-**Token validation:** Before deploying, `provision_auth` checks the OAuth token's expiry. If the token is expired but has a refresh token, deployment proceeds — the member's CLI will auto-refresh on first use. If near-expiry, a warning is appended to the output.
+**Token validation:** Before deploying, `provision_llm_auth` checks the OAuth token's expiry. If the token is expired but has a refresh token, deployment proceeds — the member's CLI will auto-refresh on first use. If near-expiry, a warning is appended to the output.
 
 ### Flow B — API Key (`api_key` provided, all providers)
 

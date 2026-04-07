@@ -105,7 +105,7 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 **What it does:**
 
 1. Looks up the member by ID.
-2. Resolves the working directory — uses `run_from` if provided, otherwise the member's registered `workFolder`. Tilde (`~`) at the start of either path is expanded to the member's home directory server-side before the command runs.
+2. Resolves the working directory — uses `run_from` if provided, otherwise the member's registered `workFolder`. Tilde (`~`) at the start of either path is expanded server-side to the master machine's home directory before the command runs.
 3. Wraps the command with a `cd` (Unix) or `Set-Location` (Windows) into the resolved folder.
 4. Executes via `strategy.execCommand()` with the specified timeout.
 5. Returns stdout, stderr, and exit code.

@@ -32,7 +32,7 @@ This ADR records the design decisions made to address these issues.
 
 ### Trade-offs
 
-**Breaking change, intentional.** No backward-compat shims were added — callers must update to the new names. The skill doc sweep (Phase 5 of the plan) updated all known internal callers.
+**Breaking change, intentional.** No backward-compat shims were added — callers must update to the new names. A skill doc sweep updated all known internal callers.
 
 **`run_from` is rarely needed.** Both `execute_command` and `execute_prompt` default to the member's registered `workFolder`. The parameter exists only for unusual cases. Skill docs should not instruct the PM to pass the registered path explicitly.
 

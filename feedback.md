@@ -95,9 +95,9 @@ These pre-date this commit and are not blocking this review, but should be addre
 | Build & tests | PASS |
 
 **Must fix before approval:**
-1. `tools-infrastructure.md:43` — `provision_auth` → `provision_llm_auth`
-2. `tools-work.md:108` — tilde expansion uses master's homedir, not member's
+1. `tools-infrastructure.md:43` — `provision_auth` → `provision_llm_auth` ✅ Fixed
+2. `tools-work.md:108` — tilde expansion uses master's homedir, not member's ✅ Fixed
 
 **Non-blocking notes:**
-- ADR line 35: replace "Phase 5 of the plan" with sprint-agnostic phrasing
+- ADR line 35: replace "Phase 5 of the plan" with sprint-agnostic phrasing ✅ Fixed
 - 7 other doc files still reference `provision_auth` (pre-existing, separate sweep recommended)
