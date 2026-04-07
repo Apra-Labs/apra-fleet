@@ -10,7 +10,7 @@ Fix a crash in `compose_permissions`, and clean up provider-agnostic naming acro
 
 **#88 — compose_permissions crashes with "ledger.granted is not iterable" on fresh permissions.json**
 - Fix: `const granted = ledger.granted ?? [];` in `src/tools/compose-permissions.ts`
-- Also fix the template `permissions.json` file (wherever it lives in the repo) to ship with `{"granted": []}` not `{}`
+- No template `permissions.json` file exists in the repo. The fix is a guard in `loadLedger`: parsed JSON is coalesced with `?? []` so that `granted` and `stacks` are always arrays, regardless of on-disk content (handles `{}`, missing keys, etc.)
 - Add a test: fresh template permissions.json → compose_permissions → must not throw
 
 **#87 — member_detail: rename claude.version → llm_cli.version, claude.auth → llm_cli.auth**

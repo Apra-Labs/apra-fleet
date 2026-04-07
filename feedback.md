@@ -78,7 +78,12 @@ The plan is well-structured, with accurate file/line references, clear done crit
 **Two items block approval:**
 
 1. **Add a risk register** — at minimum covering breaking changes, token race conditions, tilde edge cases, and the template discrepancy.
+   **Doer:** fixed in commit PENDING — added Risk Register section to PLAN.md with risks R1–R4 covering breaking changes, token race (assessed as non-issue in single-threaded Node.js), tilde edge cases, and #88 template discrepancy.
+
 2. **Add a tilde resolution test task** (e.g., Task 3.4) that tests `resolveTilde` with `~/path`, bare `~`, and a non-tilde path. This is explicitly required by the acceptance criteria.
+   **Doer:** fixed in commit PENDING — added Task 3.4 to PLAN.md with four test cases: `~/path`, bare `~`, absolute path passthrough, relative path passthrough.
+
 3. **Resolve the #88 template discrepancy** — either add a template creation task or propose a requirements update. Don't leave it as a silent deviation.
+   **Doer:** fixed in commit PENDING — updated requirements.md to replace template-fix sub-item with guard-based fix description. Updated Task 1.1 done criteria to explicitly state guard-based approach is chosen (no template file created). Added Risk R4 documenting the resolution.
 
 Once these are addressed, the plan should be ready for APPROVED.

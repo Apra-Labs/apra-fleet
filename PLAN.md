@@ -23,7 +23,7 @@ Note: #89 is already fixed (commits e28f294, f02a4a0) — not included.
    ```
 2. No template permissions.json file exists in the repo (glob confirmed). The `loadLedger` default when file is missing already returns `{ stacks: [], granted: [] }`. The fix ensures even a malformed on-disk `{}` is safe.
 
-**Done:** `loadLedger` never returns undefined `granted` or `stacks`, regardless of file content.
+**Done:** `loadLedger` never returns undefined `granted` or `stacks`, regardless of file content. No template file is created — the guard-based approach in `loadLedger` is the chosen fix (see Risk R4).
 
 ### Task 1.2 — Add test: fresh template → compose_permissions → no crash (#88)
 **Tier:** cheap
@@ -141,6 +141,21 @@ Note: #89 is already fixed (commits e28f294, f02a4a0) — not included.
 - `tests/execute-command.test.ts` — find and replace `work_folder` → `run_from` in test inputs
 
 **Done:** Tests use new param name.
+
+### Task 3.4 — Add tilde resolution tests
+**Tier:** cheap
+
+**Files:**
+- `tests/execute-command.test.ts` (new `describe` block, or a new `tests/resolve-tilde.test.ts` if `resolveTilde` is exported)
+
+**Changes:**
+1. Add tests covering:
+   - `resolveTilde('~/git/project')` returns `os.homedir() + '/git/project'`
+   - `resolveTilde('~')` returns `os.homedir()`
+   - `resolveTilde('/absolute/path')` passes through unchanged
+   - `resolveTilde('relative/path')` passes through unchanged
+
+**Done:** All four cases pass. Tilde resolution acceptance criterion met.
 
 ---
 
@@ -282,14 +297,25 @@ Note: #89 is already fixed (commits e28f294, f02a4a0) — not included.
 
 ---
 
+## Risk Register
+
+| # | Risk | Impact | Mitigation |
+|---|------|--------|------------|
+| R1 | **Breaking change:** `provision_auth` → `provision_llm_auth` (Task 1.3) and `work_folder` → `run_from` (Task 3.1) are schema-level renames. Any external caller using the old names will break. | High — callers must update immediately | Intentional per requirements ("no backward-compat shims"). Skill doc sweep (Phase 5) updates all known callers. |
+| R2 | **Token accumulation race:** Task 4.2 does a read-modify-write on `agent.tokenUsage` via `updateAgent`. If two concurrent `execute_prompt` calls finish simultaneously for the same agent, one update could be lost. | Low — fleet members typically run one prompt at a time | `updateAgent` writes to an in-memory `Map` in a single-threaded Node.js event loop — no concurrent mutation is possible within one process. No atomic handling needed. |
+| R3 | **Tilde expansion edge cases:** `resolveTilde` (Task 3.2) only handles `~/` and bare `~`. Paths like `~user/foo` (another user's home directory) are **not** resolved. | Low — fleet members always register their own home paths | Document in code comment that only current-user `~` is supported. `~user/foo` syntax is not a fleet use case. |
+| R4 | **#88 template discrepancy:** Requirements originally said "fix the template permissions.json to ship with `{\"granted\": []}`" but no template file exists in the repo. | None — resolved | The `loadLedger` guard (Task 1.1) is the correct fix: it defends against any malformed JSON on disk, not just a missing template. Requirements.md updated to reflect the guard-based approach. |
+
+---
+
 ## Summary
 
 | Phase | Tasks | Focus |
 |-------|-------|-------|
 | 1 | 1.1–1.3 | Crash fix (#88), provision_auth rename (#84) |
 | 2 | 2.1–2.3 | member_detail rename (#87) |
-| 3 | 3.1–3.3 | execute_command param rename + tilde fix (#85) |
+| 3 | 3.1–3.4 | execute_command param rename + tilde fix + tilde tests (#85) |
 | 4 | 4.1–4.5 | Auto-token accumulation, remove update_task_tokens (#83) |
 | 5 | 5.1–5.4 | Skill doc sweep (all issues) |
 
-All tasks are cheap except 4.1–4.2 (standard). Total: ~15 tasks across 5 phases with verification after each phase.
+All tasks are cheap except 4.1–4.2 (standard). Total: ~16 tasks across 5 phases with verification after each phase.
