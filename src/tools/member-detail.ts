@@ -107,6 +107,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   try {
     const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
     cli.version = versionResult.stdout.trim();
+    // Strip provider prefix: "Claude Code 2.1.92" → "2.1.92"
+    const vMatch = String(cli.version).match(/(\d+\.\d+\.\d+.*)$/);
+    if (vMatch) cli.version = vMatch[1];
   } catch {
     cli.version = 'unknown';
   }
@@ -143,7 +146,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     cli.auth = 'none';
   }
   result.llmProvider = agent.llmProvider ?? 'claude';
-  result.claude = cli;  // kept for backwards compatibility
+  result.llm_cli = cli;
 
   // -- Session --
   const session: Record<string, unknown> = {
