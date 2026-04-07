@@ -1,8 +1,8 @@
-# API Cleanup & Skill Doc Sweep — Plan Review
+# API Cleanup & Skill Doc Sweep — Phase 1 Code Review
 
 **Reviewer:** fleet-rev  
-**Date:** 2026-04-06 22:15:00+00:00  
-**Verdict:** APPROVED
+**Date:** 2026-04-06 21:35:00-04:00  
+**Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -10,74 +10,64 @@
 
 ## Prior Review Context
 
-This is the fourth review of this plan. The first two reviews (commits fdbcf0c, 18f8309) flagged a requirements-checklist gap. The doer resolved this by expanding requirements.md (Option B). The third review (commit 8dd42ea) found three blocking issues: missing risk register, missing tilde test task, and an unresolved #88 template discrepancy. The doer addressed all three in commit 892a2c6:
-
-- **Risk register:** Added R1–R4 to PLAN.md covering breaking changes, token race (correctly assessed as non-issue in single-threaded Node.js), tilde edge cases, and the template discrepancy. All four risks are well-characterized with impact and mitigation.
-- **Tilde test task:** Added Task 3.4 with four test cases (`~/path`, bare `~`, absolute passthrough, relative passthrough). Phase 3 summary updated to reflect 3.1–3.4.
-- **#88 template discrepancy:** Requirements.md updated to replace the template-fix sub-item with the guard-based `loadLedger` approach. Task 1.1 done criteria explicitly state no template file is created. Risk R4 documents the resolution. This is the right call — guarding in `loadLedger` is strictly more robust than shipping a template.
+The plan review (commit 8350b36) was APPROVED after four rounds. This is the first code review, covering Phase 1 tasks (1.1, 1.2, 1.3, V1) completed in commit f70637f (reported as 6930f55 in progress.json — the doer likely rebased or the SHA is from the pre-push state). The commit message references #84 and #88 correctly.
 
 ---
 
-## Plan Review Checklist
+## Build & Tests
 
-### 1. Done Criteria — PASS
+- `npx tsc --noEmit` — clean, no errors. PASS
+- `npx vitest run` — 41 test files, 628 passed, 4 skipped. PASS
 
-Every task has an explicit **Done:** line with a verifiable condition. Task 1.1 now includes the guard-based approach clarification. Task 3.4 specifies all four tilde test cases must pass. No task leaves the definition of "done" ambiguous.
+---
 
-### 2. Cohesion and Coupling — PASS
+## Task 1.1 — Fix compose_permissions crash on fresh permissions.json (#88) — PASS
 
-Each phase groups tightly related changes: Phase 1 = crash fix + low-risk rename, Phase 2 = member_detail output, Phase 3 = execute_command params + tilde, Phase 4 = token lifecycle, Phase 5 = docs. The only cross-phase dependency (Phase 5 references names from Phases 1-4) is correctly ordered.
+`src/tools/compose-permissions.ts:80-87`: The `loadLedger` function now parses the JSON into `raw` and returns `{ stacks: raw.stacks ?? [], granted: raw.granted ?? [] }`. This correctly defends against `{}`, `{"stacks": null}`, or any other malformed content. The default return when the file doesn't exist (`{ stacks: [], granted: [] }`) is unchanged. Clean, minimal fix — exactly what the plan specified.
 
-### 3. Key Abstractions in Earliest Tasks — PASS
+---
 
-`resolveTilde` (Task 3.2) is introduced before it's used in both `execute-command.ts` and `execute-prompt.ts`. `tokenUsage` type (Task 4.1) is introduced before Tasks 4.2-4.4 consume it.
+## Task 1.2 — Add test: fresh template -> compose_permissions -> no crash (#88) — FAIL
 
-### 4. Riskiest Assumption in Task 1 — PASS
+`tests/compose-permissions.test.ts:343-372`: The test has two compounding bugs that cause it to **pass vacuously** without actually verifying the fix:
 
-The crash fix (#88) is front-loaded as Task 1.1 — the only runtime crash. The `loadLedger` guard validates the assumption that the fix is a simple null-coalescing guard (confirmed against line 80-86 of `compose-permissions.ts`).
+**Bug 1 — Mock breaks `findProfilesDir` before `loadLedger` is reached.** The `existsSpy` (line 349) returns `false` for all paths except those ending in `permissions.json`. But `composePermissions` calls `findProfilesDir()` at line 161 **before** calling `loadLedger()` at line 162. `findProfilesDir` checks paths like `~/.claude/skills/fleet/profiles`, `~/.claude/skills/pm/profiles`, and walks up from `__dirname` — none of which end in `permissions.json`. So the mock returns `false` for every candidate, and `findProfilesDir` throws `Error('Cannot find profiles directory')`. The test never exercises `loadLedger` at all.
 
-### 5. Later Tasks Reuse Early Abstractions — PASS
+**Bug 2 — Async assertion pattern doesn't catch promise rejections.** The assertion:
+```ts
+await expect(async () => {
+  result = await composePermissions({...});
+}).not.toThrow();
+```
+In vitest, `expect(fn).not.toThrow()` only detects **synchronous** throws. When the async function's inner `await` rejects (from `findProfilesDir` throwing inside the async `composePermissions`), the rejection propagates as a rejected promise from the outer async wrapper — which `.toThrow()` does not inspect. The test passes regardless of whether the code works.
 
-`resolveTilde` is shared across `execute-command.ts` and `execute-prompt.ts`. `tokenUsage` flows through Tasks 4.2 → 4.3 → 4.4. Phase 5 doc updates reference the renames from Phases 1-3.
+**Fix needed:** The mock must also return `true` for at least one profiles directory candidate (e.g., `s.includes('profiles')`) to let `findProfilesDir` succeed. The assertion should use `await expect(composePermissions({...})).resolves.toBeDefined()` or simply `await composePermissions({...})` (vitest fails on unhandled rejections). The `loadProfile` calls in `compose()` also need handling — the mock should return `false` for profile JSON files, which it already does (they don't end in `permissions.json`), so `loadProfile` would return `null` and the base profile would be empty. That's fine for this test — it only needs to prove no crash, not validate permission content.
 
-### 6. Phase Size — PASS (with note)
+---
 
-Phases 1-3 and 5 have 3-4 tasks each. Phase 4 has 5 tasks, slightly exceeding the 2-3 guideline, but tasks 4.3-4.5 are cheap and mechanical (add field to output, delete files). The 5-task phase is acceptable because the tasks form a tight dependency chain. Phase 3 grew from 3 to 4 tasks with the addition of Task 3.4 (tilde tests), which is the right place for it.
+## Task 1.3 — Rename provision_auth -> provision_llm_auth (#84) — PASS
 
-### 7. Each Task Completable in One Session — PASS
+`src/index.ts:95`: The MCP tool registration is correctly renamed from `'provision_auth'` to `'provision_llm_auth'`. The internal export name `provisionAuth` is unchanged, consistent with the plan's "No code-level rename needed" note.
 
-All tasks marked cheap except 4.1-4.2 (standard). Even the standard tasks are well-scoped: 4.1 adds a single type field, 4.2 is ~10 lines of accumulation logic.
+**NOTE (non-blocking, deferred to Phase 5):** There are 8+ user-facing strings in `src/` that still reference `provision_auth` — error messages in `prompt-errors.ts:18`, `register-member.ts:40/199/200/214`, `provision-auth.ts:90/252`, and `lifecycle.ts:40/45`. These tell users to "run provision_auth" but the tool is now `provision_llm_auth`. Phase 5 Task 5.4 greps `src/` for `provision_auth` and expects zero matches (excluding the internal export name), so this should be caught then. Flagging now so the doer is aware these must be updated — the grep will surface them, but the plan's Phase 5 tasks (5.1-5.3) only mention skill docs, not source-code strings. Task 5.4 would catch them, but there's no explicit task to fix them.
 
-### 8. Dependencies Satisfied in Order — PASS
+---
 
-Task 4.1 (type) before 4.2 (use). Task 4.2 (accumulate) before 4.3-4.4 (surface). Task 4.5 (remove old tool) after replacement is in place. Task 3.2 (helper) before 3.4 (test it). Phase 5 (docs) after all code changes. `updateAgent` (referenced in Task 4.2) verified to exist at `src/services/registry.ts:111`.
+## Regressions in Previously Approved Phases — PASS
 
-### 9. Vague Tasks — PASS
-
-Every task specifies exact files, line numbers, and code snippets. Line references verified against the codebase and are accurate. Task 3.4 specifies all four test cases explicitly.
-
-### 10. Hidden Dependencies — PASS
-
-No hidden dependencies. Task 5.1 references names from Phases 1 and 4 (`provision_llm_auth`, `update_task_tokens` removal) — correctly ordered after those phases.
-
-### 11. Risk Register — PASS
-
-Risk register added with four well-characterized risks (R1-R4). R2 (token race) correctly identifies that single-threaded Node.js event loop makes this a non-issue. R3 (tilde edge cases) correctly scopes `~user/foo` out — not a fleet use case. R4 (template discrepancy) is resolved with both a requirements update and code-level documentation.
-
-### 12. Alignment with requirements.md — PASS
-
-All six issues are addressed:
-- **#89:** Already fixed (noted in plan header, commits e28f294, f02a4a0)
-- **#88:** Guard-based fix in Task 1.1 + test in Task 1.2; requirements updated to match
-- **#87:** Rename + version strip in Tasks 2.1-2.2 + test update in Task 2.3
-- **#85:** Param rename in Task 3.1 + tilde fix in Task 3.2 + test updates in Tasks 3.3-3.4
-- **#84:** Rename in Task 1.3
-- **#83:** Auto-accumulation in Tasks 4.1-4.4 + tool removal in Task 4.5
-
-Acceptance criteria coverage: CWD fix (#89 already done), compose_permissions test (Task 1.2), tilde resolution tests (Task 3.4), all existing tests pass (VERIFY checkpoints after each phase), skill docs updated (Phase 5).
+No regressions detected. The `findProfilesDir` update (checking fleet/profiles before pm/profiles) and `execute-prompt.ts` CWD fix (writing task files to `agent.workFolder`) were from earlier commits on this branch and are unchanged by Phase 1.
 
 ---
 
 ## Summary
 
-All 12 checklist items pass. The three blocking issues from the prior review have been resolved cleanly: risk register is complete and well-reasoned, tilde test task fills the acceptance criteria gap, and the #88 template discrepancy is resolved at both the requirements and plan level. The plan is ready for implementation.
+| Task | Verdict | Notes |
+|------|---------|-------|
+| 1.1 — loadLedger guard | PASS | Clean null-coalescing fix |
+| 1.2 — Fresh permissions test | **FAIL** | Vacuously passing — mock breaks findProfilesDir, async assertion doesn't catch rejections |
+| 1.3 — provision_llm_auth rename | PASS | MCP registration updated correctly |
+| V1 — npm test | PASS | 628/628 passed, 4 skipped |
+
+**Blocking:** Task 1.2 must be fixed — the test gives false confidence. The loadLedger guard (1.1) is correct but unverified by tests.
+
+**Non-blocking:** User-facing `provision_auth` strings in `src/` need updating (expected in Phase 5, but plan tasks 5.1-5.3 only mention docs — the doer should ensure Task 5.4's grep results are acted on).
