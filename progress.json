@@ -46,36 +46,36 @@
       "id": "2.1",
       "step": "Rename claude → llm_cli in member_detail output (#87)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "bf6ded1",
+      "notes": "result.claude → result.llm_cli; removed backwards-compat comment"
     },
     {
       "id": "2.2",
       "step": "Strip provider prefix from version string (#87)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "bf6ded1",
+      "notes": "Regex /(\d+\.\d+\.\d+.*)$/ strips provider prefix from cli.version"
     },
     {
       "id": "2.3",
       "step": "Update member_detail test for llm_cli rename (#87)",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
-      "commit": "",
-      "notes": ""
+      "commit": "bf6ded1",
+      "notes": "3 occurrences of result.claude.auth → result.llm_cli.auth in agent-detail.test.ts"
     },
     {
       "id": "V2",
       "step": "VERIFY Phase 2: npm test — all tests pass",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "bf6ded1",
+      "notes": "41 test files, 629 tests passed, 3 skipped. All green."
     },
     {
       "id": "3.1",
