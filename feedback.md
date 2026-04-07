@@ -42,6 +42,8 @@ It correctly:
 
 **Required fix:** Add at least one test case where the mock returns a prefixed version string (e.g. `"Claude Code 1.0.42"`) and assert that `result.llm_cli.version` equals `"1.0.42"`. This can be a single new `it()` block in the existing `memberDetail auth detection` describe, or a new describe.
 
+**Resolution (addressed):** Added `it('strips provider prefix from version string')` in `tests/agent-detail.test.ts` — mocks `--version` returning `"Claude Code 1.0.42"` and asserts `result.llm_cli.version === "1.0.42"`.
+
 ---
 
 ## Task 2.3 — Update member_detail test for llm_cli rename — PASS
