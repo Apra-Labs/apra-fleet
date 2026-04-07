@@ -348,8 +348,10 @@ describe('composePermissions — fresh/empty permissions.json', () => {
 
     const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
       const s = String(p);
+      // Allow findProfilesDir() to succeed by returning true for any profiles dir candidate
+      if (s.includes('profiles')) return true;
       if (s.endsWith('permissions.json')) return true;
-      // Let profile lookups fall through as not found
+      // Profile JSON files and everything else: not found
       return false;
     });
     const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, enc) => {
@@ -357,14 +359,14 @@ describe('composePermissions — fresh/empty permissions.json', () => {
       throw new Error(`unexpected readFileSync: ${p}`);
     });
 
-    let result: string;
-    await expect(async () => {
-      result = await composePermissions({
+    // Use .resolves so vitest actually awaits the promise and catches rejections
+    await expect(
+      composePermissions({
         member_id: agent.id,
         role: 'doer',
         project_folder: '/fake/project',
-      });
-    }).not.toThrow();
+      })
+    ).resolves.toBeDefined();
 
     existsSpy.mockRestore();
     readSpy.mockRestore();

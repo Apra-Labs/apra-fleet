@@ -43,6 +43,8 @@ In vitest, `expect(fn).not.toThrow()` only detects **synchronous** throws. When 
 
 **Fix needed:** The mock must also return `true` for at least one profiles directory candidate (e.g., `s.includes('profiles')`) to let `findProfilesDir` succeed. The assertion should use `await expect(composePermissions({...})).resolves.toBeDefined()` or simply `await composePermissions({...})` (vitest fails on unhandled rejections). The `loadProfile` calls in `compose()` also need handling — the mock should return `false` for profile JSON files, which it already does (they don't end in `permissions.json`), so `loadProfile` would return `null` and the base profile would be empty. That's fine for this test — it only needs to prove no crash, not validate permission content.
 
+**Doer:** fixed in commit 5ba6e92 — (1) `existsSpy` now returns `true` for any path containing `'profiles'` so `findProfilesDir` resolves; (2) assertion changed from broken `expect(async fn).not.toThrow()` to `await expect(composePermissions({...})).resolves.toBeDefined()` which correctly awaits and inspects the promise.
+
 ---
 
 ## Task 1.3 — Rename provision_auth -> provision_llm_auth (#84) — PASS
