@@ -2,7 +2,7 @@
 
 One-time setup and maintenance tools — provisioning authentication, migrating to SSH keys, and updating the LLM CLI.
 
-## provision_auth
+## provision_llm_auth
 
 Authenticates a fleet member for LLM CLI usage. Two flows: copy master's OAuth credentials (Claude only) or deploy an API key (all providers).
 
@@ -67,6 +67,7 @@ For users who need per-member OAuth without sharing credentials, a future flow w
 **Important notes:**
 - Both flows verify the member is online before proceeding.
 - `member_detail` detects all auth methods: credentials file (Claude OAuth) and API key env var (per-provider).
+- If `execute_prompt` returns an auth error for a member, call `provision_llm_auth` for that member to restore credentials, then resume the prompt with `resume=true`.
 
 ## setup_ssh_key
 
