@@ -37,7 +37,7 @@ export const registerMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_auth, and update_llm_cli.'),
+  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -196,8 +196,8 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
     const authCheck = !isLocal
       ? strategy.execCommand(cmds.agentVersion(provider), 60000)
-          .then(r => { r.code !== 0 && warnings.push(`${providerName} CLI not available — you may need to run provision_auth`); })
-          .catch(() => { warnings.push(`${providerName} CLI check timed out or failed — run provision_auth to set up authentication`); })
+          .then(r => { r.code !== 0 && warnings.push(`${providerName} CLI not available — you may need to run provision_llm_auth`); })
+          .catch(() => { warnings.push(`${providerName} CLI check timed out or failed — run provision_llm_auth to set up authentication`); })
       : Promise.resolve();
 
     const mkdirCheck = isLocal
@@ -211,7 +211,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   } else {
     tempAgent.os = detectedOS;
     if (isCloud) {
-      warnings.push(`${input.llm_provider ?? 'claude'} CLI and auth not verified — run provision_auth after the instance starts.`);
+      warnings.push(`${input.llm_provider ?? 'claude'} CLI and auth not verified — run provision_llm_auth after the instance starts.`);
     }
   }
 

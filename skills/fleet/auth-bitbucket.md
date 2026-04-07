@@ -8,7 +8,7 @@ API tokens (app passwords) tied to a user account. Long-lived, no auto-expire.
    (or Bitbucket: Settings > Personal Bitbucket settings > App passwords)
 2. Create app password with required scopes (see below)
 3. Copy token — shown only once
-4. Provide token, email, and workspace slug to the PM
+4. Provide token, email, and workspace slug when prompted
 
 ## Deploy
 

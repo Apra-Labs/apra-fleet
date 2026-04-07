@@ -107,6 +107,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   try {
     const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
     cli.version = versionResult.stdout.trim();
+    // Strip provider prefix: "Claude Code 2.1.92" → "2.1.92"
+    const vMatch = String(cli.version).match(/(\d+\.\d+\.\d+.*)$/);
+    if (vMatch) cli.version = vMatch[1];
   } catch {
     cli.version = 'unknown';
   }
@@ -143,7 +146,10 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     cli.auth = 'none';
   }
   result.llmProvider = agent.llmProvider ?? 'claude';
-  result.claude = cli;  // kept for backwards compatibility
+  result.llm_cli = cli;
+  if (agent.tokenUsage) {
+    result.tokenUsage = agent.tokenUsage;
+  }
 
   // -- Session --
   const session: Record<string, unknown> = {
@@ -248,7 +254,8 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
   let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
-  t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}\n`;
+  const tokenStr = agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';
+  t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}${tokenStr}\n`;
   const branchStr = branch ? ` | branch=${branch}` : '';
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}${branchStr}\n`;
 

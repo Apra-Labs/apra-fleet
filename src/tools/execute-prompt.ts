@@ -7,12 +7,14 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
+import { resolveTilde } from './execute-command.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -95,7 +97,10 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   }
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
-  const promptFilePath = path.join(tmpDir, promptFileName);
+  const resolvedWorkFolder = resolveTilde(agent.workFolder);
+  const promptFilePath = agent.agentType === 'local'
+    ? path.join(resolvedWorkFolder, promptFileName)
+    : `${resolvedWorkFolder}/${promptFileName}`;
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
@@ -109,7 +114,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     : tiers.standard;
 
   const promptOpts = {
-    folder: tmpDir,
+    folder: resolvedWorkFolder,
     promptFile: promptFileName,
     dangerouslySkipPermissions: input.dangerously_skip_permissions,
     model: resolvedModel,
@@ -154,6 +159,16 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Update session ID and last used
     touchAgent(agent.id, parsed.sessionId); // T7: idle manager resets its timer via touchAgent
+
+    if (parsed.usage) {
+      const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+      updateAgent(agent.id, {
+        tokenUsage: {
+          input: prev.input + parsed.usage.input_tokens,
+          output: prev.output + parsed.usage.output_tokens,
+        },
+      });
+    }
 
     writeStatusline();
 

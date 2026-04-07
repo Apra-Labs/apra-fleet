@@ -2,7 +2,7 @@
 
 One-time setup and maintenance tools — provisioning authentication, migrating to SSH keys, and updating the LLM CLI.
 
-## provision_auth
+## provision_llm_auth
 
 Authenticates a fleet member for LLM CLI usage. Two flows: copy master's OAuth credentials (Claude only) or deploy an API key (all providers).
 
@@ -40,7 +40,7 @@ Used when the user has a Claude Max subscription. Copies `~/.claude/.credentials
 - No credentials file exists on the master machine — prompts the user to run `/login` or use `api_key` instead.
 - Token is expired with no refresh token — blocks deployment and suggests running `/login`.
 
-**Token validation:** Before deploying, `provision_auth` checks the OAuth token's expiry. If the token is expired but has a refresh token, deployment proceeds — the member's CLI will auto-refresh on first use. If near-expiry, a warning is appended to the output.
+**Token validation:** Before deploying, `provision_llm_auth` checks the OAuth token's expiry. If the token is expired but has a refresh token, deployment proceeds — the member's CLI will auto-refresh on first use. If near-expiry, a warning is appended to the output.
 
 ### Flow B — API Key (`api_key` provided, all providers)
 
@@ -67,6 +67,7 @@ For users who need per-member OAuth without sharing credentials, a future flow w
 **Important notes:**
 - Both flows verify the member is online before proceeding.
 - `member_detail` detects all auth methods: credentials file (Claude OAuth) and API key env var (per-provider).
+- If `execute_prompt` returns an auth error for a member, call `provision_llm_auth` for that member to restore credentials, then resume the prompt with `resume=true`.
 
 ## setup_ssh_key
 

@@ -27,6 +27,7 @@ export interface Agent {
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
   encryptedEnvVars?: Record<string, string>;  // envVarName -> encrypted value
   lastBranch?: string;
+  tokenUsage?: { input: number; output: number };
 }
 
 export interface GitHubAppConfig {

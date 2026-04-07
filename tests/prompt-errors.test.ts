@@ -29,10 +29,10 @@ describe('isRetryable', () => {
 });
 
 describe('authErrorAdvice', () => {
-  it('includes agent name, /login, and provision_auth', () => {
+  it('includes agent name, /login, and provision_llm_auth', () => {
     const advice = authErrorAdvice('my-agent');
     expect(advice).toContain('my-agent');
     expect(advice).toContain('/login');
-    expect(advice).toContain('provision_auth');
+    expect(advice).toContain('provision_llm_auth');
   });
 });

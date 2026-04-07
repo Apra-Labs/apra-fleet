@@ -37,12 +37,12 @@ async function reProvisionAuth(agent: Agent): Promise<void> {
   try {
     const result = await provisionAuth({ member_id: agent.id });
     if (!result.startsWith('\u2705')) {
-      log('provision_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
+      log('provision_llm_auth warning for ' + agent.friendlyName + ': ' + result.split('\n')[0]);
     }
   } catch (e) {
     // Truncate error message to prevent accidental credential leakage in log output
     const msg = (e as Error).message.slice(0, 50);
-    log('provision_auth failed for ' + agent.friendlyName + ': ' + msg);
+    log('provision_llm_auth failed for ' + agent.friendlyName + ': ' + msg);
   }
 
   // F5: Re-mint GitHub App tokens if agent has git repos configured (best-effort)

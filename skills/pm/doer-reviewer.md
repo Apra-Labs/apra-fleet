@@ -3,16 +3,11 @@
 ## Setup Checklist
 
 1. Record pair in `<project>/status.md`. Multiple pairs per project is normal.
-2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color. This is not optional.
-3. Compose and deliver permissions per permissions.md for each member's role.
-4. Configure role-specific instruction file — three distinct phases:
-   - **Planning:** Dispatch `plan-prompt.md` content via `execute_prompt` — no instruction file needed for planning
-   - **Execution:** Send `tpl-doer.md` as the member's instruction file to doer via `send_files` — **must be sent before execution starts** (persists across session resumes). File name depends on provider: CLAUDE.md for Claude, GEMINI.md for Gemini, AGENTS.md for Codex, COPILOT.md for Copilot. Use `member_detail` → `llmProvider` to determine the correct name.
-   - **Review:** Send `tpl-reviewer.md` as the reviewer's instruction file via `send_files` — **must be sent before review dispatch** (persists across session resumes). Use provider-appropriate file name (same lookup as above). Use `tpl-reviewer-plan.md` for plan review.
+2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color.
+3. Compose and deliver permissions per `permissions.md` (fleet skill) for each member's role.
+4. Send the role-specific agent context file via `send_files` before dispatch. See `context-file.md` for provider filename lookup and role templates. Planning and plan review are dispatched as inline prompts — no agent context file needed for those phases.
 
-
-
-**Reviewer tier check:** Reviews benefit from the highest reasoning tier available. Dispatch reviews with `model=premium` — the PM maps this to the best available model for each provider. If no premium option exists, use what is available — no warning needed. User's choice is final. Doers use `model=standard` by default unless the task tier specifies otherwise.
+**Model tier check:** Reviews benefit from the highest reasoning tier available. Dispatch reviews with `model=premium`. If no premium option exists, use what is available — no warning needed. User's choice is final. Doers use `model=standard` by default unless the task tier specifies otherwise.
 
 ## Pre-flight Checks
 
@@ -21,7 +16,7 @@ Verify member is on the correct branch with a clean working tree:
 1. `fleet_status` — confirm member is idle
 2. `execute_command → git status && git branch --show-current` — confirm clean tree and correct branch
 
-Do not dispatch to a member on the wrong branch or with uncommitted changes.
+Do not dispatch to a member on the wrong branch or with uncommitted source code changes.
 
 ### Before review dispatch
 Verify reviewer is at the correct commit before starting review:
@@ -33,59 +28,40 @@ Verify reviewer is at the correct commit before starting review:
 1. Doer works, commits and pushes deliverables at every turn → STOPS at every VERIFY checkpoint
 
    **Doer session rules:**
-   - **Start of each new phase:** use `resume=false` — fresh context per phase keeps token usage small and avoids cross-phase confusion from stale context
-   - **Within a phase:** resume is allowed — tasks within a phase are cohesive and benefit from shared context
+   - **Start of each new phase:** use `resume=false`
+   - **Within a phase:** resume is allowed
 
 2. **PM handles git transport via `execute_command`** — never delegate to prompts:
    - Dev side: `git push origin <branch>` — verify push succeeded
    - Rev side: `git fetch origin && git checkout <branch> && git reset --hard origin/<branch>`
-3. **PM dispatches REVIEWER at every VERIFY checkpoint** — PM never self-reviews. PM sends context docs to reviewer via `send_files`: `<project>/requirements.md`, `<project>/design.md`, and relevant `<project>/*plan.md`. Then dispatches reviewer with `resume=false` (fresh session).
+
+3. **PM dispatches REVIEWER at every VERIFY checkpoint** — PM never self-reviews. Most context docs are committed in repository. PM sends any other required background information  to reviewer via `send_files`. Then dispatches reviewer with `resume=false` (fresh session).
 
    **Reviewer workflow rules:**
-   - **Prep reviewer in parallel while doer works** — send requirements, set up branch, start a context-reading session on reviewer. Use session resume to send updated docs at handoff. Eliminates dead time.
-   - **Always use `resume=false` for review dispatches** — never resume a stale review session. Each review must start fresh.
+   - **During planning stage prep reviewer in parallel while doer works** — send requirements, set up branch, start a context-reading session on reviewer. Use session resume to send updated docs at handoff when doer is ready.
+   - **During execution phase**: for each new phase's review use `resume=false` for the reviewer.
    - **Verify SHA before dispatching review** — `execute_command → git rev-parse HEAD` on reviewer must match doer's pushed HEAD (see Pre-flight Checks above).
 
-4. Reviewer reads deliverables + diff, conducts cumulative review (all phases up to current, not just the latest) per its instruction file. Commits findings to feedback.md, pushes, and outputs verdict: APPROVED or CHANGES NEEDED
+4. Reviewer reads deliverables + diff, conducts cumulative review (all phases up to current, not just the latest) per its agent context file. Commits findings to feedback.md, pushes, and outputs verdict: APPROVED or CHANGES NEEDED
 5. PM reads verdict:
-   - **APPROVED** → cleanup → merge → next phase
+   - **APPROVED** → proceed to next phase (or sprint completion if all phases done)
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
-6. **Pre-merge cleanup** — `execute_command` on doer: `git rm PLAN.md progress.json feedback.md 2>/dev/null; rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT.md; git commit -m "cleanup: remove fleet control files" && git push`. These are transport files — git history preserves the content. Run cleanup and push before merging the PR.
-7. Loop until all phases APPROVED
+6. Loop until all phases APPROVED
+7. **Sprint completion** — See cleanup.md.
 
-## Post-dispatch Token Tracking
+## Resume Rule
 
-After every `execute_prompt` response (doer or reviewer), extract the token counts and record them in progress.json:
+| Dispatch | resume |
+|----------|--------|
+| Initial plan generation | `false` |
+| Plan revision (any feedback iteration) | `true` |
+| Initial review dispatch | `false` |
+| Re-review after CHANGES NEEDED + doer fixes | `true` |
+| Role switch (doer → reviewer, or reviewer → doer) | `false` |
 
-1. **Parse the token line** from the response using the regex `Tokens: input=(\d+) output=(\d+)`. The line appears at the end of the output when the Claude provider returns usage data.
-2. **Call `update_task_tokens`** with:
-   - `member_id` — the member that owns progress.json
-   - `progress_json` — absolute path to progress.json on that member (e.g. `/home/user/project/progress.json`)
-   - `task_id` — the current task ID (e.g. `"3"`)
-   - `role` — `"doer"` for doer dispatches, `"reviewer"` for reviewer dispatches
-   - `input_tokens` — captured from regex group 1
-   - `output_tokens` — captured from regex group 2
-3. The tool accumulates tokens across calls — reviewer tokens from multiple review cycles are summed automatically. Never call it with zeroes unless that is the actual count.
-
-**Call this after every dispatch — no exceptions.** If the token line is absent (non-Claude provider or older CLI), skip the call for that dispatch only.
-
-## Resume Rule (token-saving best practice)
-
-Setting `resume` correctly avoids re-reading large context files on every dispatch.
-
-| Dispatch | resume | Reason |
-|----------|--------|--------|
-| Initial plan generation | `false` | Member has no prior context |
-| Plan revision (any feedback iteration) | `true` | Member already has plan context; resuming saves re-reading files |
-| Initial review dispatch | `false` | Reviewer needs fresh, unbiased context |
-| Re-review after CHANGES NEEDED + doer fixes | `true` | Reviewer already read the plan; saves significant tokens |
-| Role switch (doer → reviewer, or reviewer → doer) | `false` | New role requires different instruction file; must start clean |
-
-**Note:** A role switch always requires sending the new instruction file before dispatch. Never resume across a role switch.
+**Note:** A role switch always requires sending the new agent context file before dispatch. Never resume across a role switch.
 
 ## Safeguards
-
-The PM must enforce these limits to prevent infinite loops and runaway sessions:
 
 | Safeguard | Trigger | PM Action | Limit |
 |-----------|---------|-----------|-------|
@@ -101,16 +77,18 @@ The PM must enforce these limits to prevent infinite loops and runaway sessions:
 
 ## Git as transport
 
-- Doers commit: deliverables, PLAN.md, progress.json, project docs
-- Reviewers commit: feedback.md
-- The member instruction file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) is NEVER committed — it is role-specific (different for doer vs reviewer)
-- Only the instruction file goes in .gitignore (add the provider-appropriate name)
+- Doers commit: deliverables, PLAN.md, progress.json, project docs. When fixing review findings, doer also annotates feedback.md — adding `**Doer:** fixed in commit <sha> — <what changed>` under each addressed finding — then commits feedback.md. Doer never rewrites feedback.md content.
+- Reviewers commit: feedback.md (full content — see tpl-reviewer.md for format)
+- The member agent context file is NEVER committed — see `context-file.md`
 
 ## Permissions
 
-Compose and deliver permissions per permissions.md. Recompose when switching roles (doer↔reviewer). Each provider gets its native permission config — `compose_permissions` handles the format automatically.
+Compose and deliver permissions per `permissions.md` (fleet skill). Recompose when switching roles (e.g. doer↔reviewer). Each provider gets its native permission config — `compose_permissions` handles the format automatically.
+
+**Mid-sprint denial:** If a member is blocked by a permission denial, call `compose_permissions` with `grant: [<denied permission>]` and `project_folder` — this grants the missing permission, delivers the updated config, and appends to the ledger so future phases and sprints start with it already included. Then resume the member with `resume=true`. Never bypass by running the denied command yourself via `execute_command`.
 
 ## PM responsibilities
 
 - Distribute work across pairs based on cohesion (high cohesion within a pair, loose coupling between pairs)
-- Keep going autonomously (rule 7) — don't wait for user between doer and reviewer handoffs
+- Don't wait for user between doer and reviewer handoffs, autonomously keep progressing the project unless blockers are observed
+

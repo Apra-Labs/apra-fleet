@@ -275,7 +275,7 @@ describe('credential leakage prevention', () => {
 
         const loggedOutput = stderrWrite.mock.calls.map(call => call[0]).join('\n');
 
-        expect(loggedOutput).toContain('provision_auth failed');
+        expect(loggedOutput).toContain('provision_llm_auth failed');
         // Verify the original long error message is NOT present
         expect(loggedOutput).not.toContain(longErrorMessage);
         // Verify the truncated message IS present

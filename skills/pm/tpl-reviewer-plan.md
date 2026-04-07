@@ -19,6 +19,34 @@ You are reviewing a plan in PLAN.md against requirements.md and any design docs 
 
 ## Output
 
-For each check: PASS or FAIL with one-line reason.
+If this is a re-review: run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand what was previously flagged and how the doer addressed it. Incorporate those responses into your new write-up.
 
-Commit findings to feedback.md. Output verdict as final line: APPROVED or CHANGES NEEDED.
+Overwrite feedback.md with this structure:
+
+```
+# <Sprint/Feature Name> — Plan Review
+
+**Reviewer:** <member name>
+**Date:** YYYY-MM-DD HH:MM:SS+TZ
+**Verdict:** APPROVED | CHANGES NEEDED
+
+> See the recent git history of this file to understand the context of this review.
+
+---
+
+## <Review section>
+
+<Detailed narrative. PASS/FAIL/NOTE inline. Explain what you found, where, and why it matters.>
+
+---
+
+## Summary
+
+<Synthesize what passed, what must change, what is deferred.>
+```
+
+For each check: PASS or FAIL with narrative — not one-liners.
+
+If verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
+
+Commit feedback.md and push.

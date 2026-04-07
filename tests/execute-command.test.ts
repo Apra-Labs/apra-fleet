@@ -1,7 +1,8 @@
+import os from 'node:os';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { executeCommand } from '../src/tools/execute-command.js';
+import { executeCommand, resolveTilde } from '../src/tools/execute-command.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -47,12 +48,12 @@ describe('executeCommand', () => {
     );
   });
 
-  it('uses custom work_folder when provided', async () => {
+  it('uses custom run_from when provided', async () => {
     const agent = makeTestAgent({ workFolder: '/home/user/project' });
     addAgent(agent);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    await executeCommand({ member_id: agent.id, command: 'ls', timeout_ms: 5000, work_folder: '/tmp/other' });
+    await executeCommand({ member_id: agent.id, command: 'ls', timeout_ms: 5000, run_from: '/tmp/other' });
     expect(mockExecCommand).toHaveBeenCalledWith(
       expect.stringContaining('/tmp/other'),
       5000,
@@ -106,5 +107,23 @@ describe('executeCommand', () => {
     expect(result).toContain('output');
     expect(result).toContain('[stderr]');
     expect(result).toContain('warning');
+  });
+});
+
+describe('resolveTilde', () => {
+  it('expands ~/path to homedir/path', () => {
+    expect(resolveTilde('~/git/project')).toBe(os.homedir() + '/git/project');
+  });
+
+  it('expands bare ~ to homedir', () => {
+    expect(resolveTilde('~')).toBe(os.homedir());
+  });
+
+  it('passes through absolute paths unchanged', () => {
+    expect(resolveTilde('/absolute/path')).toBe('/absolute/path');
+  });
+
+  it('passes through relative paths unchanged', () => {
+    expect(resolveTilde('relative/path')).toBe('relative/path');
   });
 });

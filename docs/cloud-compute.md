@@ -111,7 +111,7 @@ When `execute_command`, `execute_prompt`, or `send_files` is called on a cloud m
 
 After the instance is running:
 - Polls SSH port (TCP connect) every 2 seconds, up to 60 seconds
-- Re-provisions Claude OAuth credentials (`provision_auth`) — F5
+- Re-provisions Claude OAuth credentials (`provision_llm_auth`) — F5
 - Re-mints GitHub App tokens if the member has git repos configured — F5
 
 The returned agent object has the fresh public IP. All subsequent SSH calls use it.

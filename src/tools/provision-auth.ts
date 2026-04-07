@@ -87,7 +87,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
             if (credStatus?.status === 'expired-no-refresh') {
               return `❌ OAuth token in ${file.localPath} is expired with no refresh token.
 `
-                + `  Run /login in your ${provider.name} session, then re-run provision_auth.`;
+                + `  Run /login in your ${provider.name} session, then re-run provision_llm_auth.`;
             }
         }
         const result = await strategy.execCommand(cmds.credentialFileWrite(content, file.remotePath), 10000);
@@ -249,7 +249,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   }
 
   // Fallback: OOB key collection for non-OAuth or non-copyable providers
-  const oob = await collectOobApiKey(agent.friendlyName, 'provision_auth');
+  const oob = await collectOobApiKey(agent.friendlyName, 'provision_llm_auth');
   if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
   return provisionApiKey(agent, decryptPassword(oob.password!), provider);
 }

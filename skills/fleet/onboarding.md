@@ -45,7 +45,11 @@ Verify auth, provision if needed. See auth-{provider}.md for provider-specific s
 
 Look up the member's project + VCS + roles in skill-matrix.md. Install any missing skills.
 
-## Step 7: Update Member Status File
+## Step 7: Add Fleet Ephemeral Files to .gitignore
+
+Run `execute_command → echo '.fleet-task*' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
+
+## Step 8: Update Member Status File
 
 Add to the member's status file:
 

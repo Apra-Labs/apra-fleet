@@ -15,8 +15,10 @@ if (arg === '--help' || arg === '-h') {
 
 Usage:
   apra-fleet                  Start MCP server (stdio)
-  apra-fleet install          Install: binary + hooks + statusline + register MCP
-  apra-fleet install --skill  Same + PM skill to ~/.claude/skills/pm/
+  apra-fleet install                   Install: binary + hooks + statusline + register MCP
+  apra-fleet install --skill [all]     Same + fleet skill + PM skill (default when --skill given without value)
+  apra-fleet install --skill fleet     Install fleet skill only
+  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet auth <name>      Provide password for pending registration (auto-launched)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
@@ -62,7 +64,6 @@ async function startServer() {
   const { composePermissionsSchema, composePermissions } = await import('./tools/compose-permissions.js');
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
-  const { updateTaskTokensSchema, updateTaskTokens } = await import('./tools/update-task-tokens.js');
   const { versionSchema, version } = await import('./tools/version.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
@@ -90,7 +91,7 @@ async function startServer() {
   server.tool('execute_command', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command on a member. Use for quick tasks like installing packages, checking versions, or running scripts.', executeCommandSchema.shape, async (input) => ({ content: [{ type: 'text', text: await executeCommand(input as any) }] }));
 
   // --- Authentication & SSH ---
-  server.tool('provision_auth', "Authenticate a fleet member so it can run prompts. Copies your current login session to the member, or deploys an API key if provided. Run this before execute_prompt if the member reports no authentication.", provisionAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionAuth(input as any) }] }));
+  server.tool('provision_llm_auth', "Authenticate a fleet member so it can run prompts. Copies your current login session to the member, or deploys an API key if provided. Run this before execute_prompt if the member reports no authentication.", provisionAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionAuth(input as any) }] }));
   server.tool('setup_ssh_key', 'Generate an SSH key pair and migrate a member from password to key-based authentication.', setupSSHKeySchema.shape, async (input) => ({ content: [{ type: 'text', text: await setupSSHKey(input as any) }] }));
   server.tool('setup_git_app', "One-time setup: register a GitHub App for git token minting. Requires a GitHub App ID, private key (.pem) file path, and installation ID. The app must already be created at github.com/organizations/{org}/settings/apps.", setupGitAppSchema.shape, async (input) => ({ content: [{ type: 'text', text: await setupGitApp(input as any) }] }));
   server.tool('provision_vcs_auth', 'Set up git access credentials on a member. Supports GitHub, Bitbucket, and Azure DevOps. Tests connectivity after setup.', provisionVcsAuthSchema.shape, async (input) => ({ content: [{ type: 'text', text: await provisionVcsAuth(input as any) }] }));
@@ -111,8 +112,6 @@ async function startServer() {
   // --- Cloud Control ---
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. Start waits until the member is ready; stop is immediate.', cloudControlSchema.shape, async (input) => ({ content: [{ type: 'text', text: await cloudControl(input as any) }] }));
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Optionally stop the cloud instance automatically when the task completes.', monitorTaskSchema.shape, async (input) => ({ content: [{ type: 'text', text: await monitorTask(input as any) }] }));
-  server.tool('update_task_tokens', 'Add token usage to a task\'s running total on a member. Always accumulates — never overwrites.', updateTaskTokensSchema.shape, async (input) => ({ content: [{ type: 'text', text: await updateTaskTokens(input as any) }] }));
-
   // --- Start Server ---
   const transport = new StdioServerTransport();
   await server.connect(transport);

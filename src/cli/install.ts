@@ -16,6 +16,7 @@ interface ProviderInstallConfig {
   configDir: string;
   settingsFile: string;
   skillsDir: string;
+  fleetSkillsDir: string;
   name: string;
 }
 
@@ -50,6 +51,7 @@ function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig 
         configDir: path.join(home, '.gemini'),
         settingsFile: path.join(home, '.gemini', 'settings.json'),
         skillsDir: path.join(home, '.gemini', 'skills', 'pm'),
+        fleetSkillsDir: path.join(home, '.gemini', 'skills', 'fleet'),
         name: 'Gemini',
       };
     case 'codex':
@@ -57,6 +59,7 @@ function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig 
         configDir: path.join(home, '.codex'),
         settingsFile: path.join(home, '.codex', 'config.toml'),
         skillsDir: path.join(home, '.codex', 'skills', 'pm'),
+        fleetSkillsDir: path.join(home, '.codex', 'skills', 'fleet'),
         name: 'Codex',
       };
     case 'copilot':
@@ -64,6 +67,7 @@ function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig 
         configDir: path.join(home, '.copilot'),
         settingsFile: path.join(home, '.copilot', 'settings.json'),
         skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
+        fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
         name: 'Copilot',
       };
     case 'claude':
@@ -72,6 +76,7 @@ function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig 
         configDir: path.join(home, '.claude'),
         settingsFile: path.join(home, '.claude', 'settings.json'),
         skillsDir: path.join(home, '.claude', 'skills', 'pm'),
+        fleetSkillsDir: path.join(home, '.claude', 'skills', 'fleet'),
         name: 'Claude',
       };
   }
@@ -104,6 +109,7 @@ interface AssetManifest {
   hooks: Record<string, string>;
   scripts: Record<string, string>;
   skills: Record<string, string>;
+  fleetSkills: Record<string, string>;
 }
 
 // Find project root — works for both tsc (dist/cli/install.js) and esbuild (dist/sea-bundle.cjs)
@@ -144,8 +150,9 @@ function buildDevManifest(root: string): AssetManifest {
     scripts[entry] = `scripts/${entry}`;
   }
   const skills = collectFilesRec(path.join(root, 'skills', 'pm'), 'skills/pm');
+  const fleetSkills = collectFilesRec(path.join(root, 'skills', 'fleet'), 'skills/fleet');
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills };
+  return { version: vf.version, hooks, scripts, skills, fleetSkills };
 }
 
 function loadManifest(): AssetManifest {
@@ -170,6 +177,12 @@ function extractAssetBuffer(key: string): Buffer {
   }
   const root = findProjectRoot();
   return fs.readFileSync(path.join(root, key));
+}
+
+function clearDirSync(dir: string): void {
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function copyDirSync(src: string, dest: string): void {
@@ -209,13 +222,14 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any): void 
   writeConfig(paths, settings);
 }
 
-function mergePermissions(paths: ProviderInstallConfig, mcpKey: string): void {
+function mergePermissions(paths: ProviderInstallConfig): void {
   const settings = readConfig(paths);
 
   const requiredPerms = [
-    `mcp__${mcpKey}__*`,
+    'mcp__apra-fleet__*',
     'Agent(*)',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
+    `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
   ];
 
   settings.permissions = settings.permissions || {};
@@ -241,24 +255,10 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): 
   writeConfig(paths, settings);
 }
 
-function cleanupStaleMcpServers(settings: any, mcpKey: string): void {
-  const serverDicts = ['mcpServers', 'mcp_servers'];
-  for (const dict of serverDicts) {
-    if (settings[dict]) {
-      for (const key in settings[dict]) {
-        if ((key.startsWith('apra-fleet-') || key.startsWith('apra-fleet_')) && key !== mcpKey) {
-          delete settings[dict][key];
-        }
-      }
-    }
-  }
-}
-
-function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
+function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
-  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers[mcpKey] = {
+  settings.mcpServers['apra-fleet'] = {
     ...mcpConfig,
     trust: true,
   };
@@ -279,20 +279,18 @@ function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string):
   writeConfig(paths, settings);
 }
 
-function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
+function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
-  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers[mcpKey] = mcpConfig;
+  settings.mcpServers['apra-fleet'] = mcpConfig;
 
   writeConfig(paths, settings);
 }
 
-function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any, mcpKey: string): void {
+function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
-  cleanupStaleMcpServers(settings, mcpKey);
   settings.mcp_servers = settings.mcp_servers || {};
-  settings.mcp_servers[mcpKey] = {
+  settings.mcp_servers['apra-fleet'] = {
     command: mcpConfig.command.replace(/\\/g, '/'),
     args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
   };
@@ -326,21 +324,41 @@ export async function runInstall(args: string[]): Promise<void> {
   }
 
   const paths = getProviderInstallConfig(llm);
-  const installSkill = args.includes('--skill');
-  const totalSteps = installSkill ? 6 : 5;
-  const mcpKey = 'apra-fleet';
 
-  if (llm === 'gemini' && installSkill) {
-    console.warn(`
-⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the
-  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).
-  For best orchestration performance, consider using Claude. See docs for details.
-`);
+  // Parse --skill flag: accepts no value (→ all), or all|fleet|pm
+  type SkillMode = 'none' | 'all' | 'fleet' | 'pm';
+  let skillMode: SkillMode = 'none';
+  const skillEqualArg = args.find(a => a.startsWith('--skill='));
+  if (skillEqualArg) {
+    const val = skillEqualArg.split('=')[1];
+    if (val === 'all' || val === 'fleet' || val === 'pm') {
+      skillMode = val;
+    } else {
+      console.error(`Error: --skill value must be one of: all, fleet, pm (got "${val}")`);
+      process.exit(1);
+    }
+  } else {
+    const skillIdx = args.indexOf('--skill');
+    if (skillIdx >= 0) {
+      const nextArg = args[skillIdx + 1];
+      if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm')) {
+        skillMode = nextArg;
+      } else {
+        // --skill with no value → install both
+        skillMode = 'all';
+      }
+    }
   }
 
-  console.log(`
-Installing Apra Fleet ${serverVersion} for ${paths.name}...
-`);
+  const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
+  const installPm = skillMode === 'pm' || skillMode === 'all';
+  const totalSteps = (installFleet && installPm) ? 7 : installFleet ? 6 : installPm ? 7 : 5;
+
+  if (llm === 'gemini' && (installFleet || installPm)) {
+    console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
+  }
+
+  console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
 
   // --- Step 1: Copy binary ---
   let binaryPath = '';
@@ -403,23 +421,46 @@ Installing Apra Fleet ${serverVersion} for ${paths.name}...
     : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
 
   if (llm === 'claude') {
-
+    try {
+      run('claude mcp remove apra-fleet', { stdio: 'ignore' });
+    } catch { /* not registered */ }
     
     const cmd = mcpConfig.command === 'node' 
-      ? `claude mcp add --scope user ${mcpKey} -- node "${mcpConfig.args[0]}"`
-      : `claude mcp add --scope user ${mcpKey} -- "${mcpConfig.command}"`;
+      ? `claude mcp add --scope user apra-fleet -- node "${mcpConfig.args[0]}"`
+      : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
     run(cmd);
   } else if (llm === 'gemini') {
-    mergeGeminiConfig(paths, mcpConfig, mcpKey);
+    mergeGeminiConfig(paths, mcpConfig);
   } else if (llm === 'codex') {
-    mergeCodexConfig(paths, mcpConfig, mcpKey);
+    mergeCodexConfig(paths, mcpConfig);
   } else if (llm === 'copilot') {
-    mergeCopilotConfig(paths, mcpConfig, mcpKey);
+    mergeCopilotConfig(paths, mcpConfig);
   }
 
-  // --- Step 6: Install PM skill (optional) ---
-  if (installSkill) {
-    console.log(`  [6/${totalSteps}] Installing PM skill...`);
+  // --- Step 6: Install fleet skill (optional) ---
+  if (skillMode === 'pm') {
+    console.warn(`\n⚠ Note: PM skill depends on fleet skill — installing fleet skill first.\n`);
+  }
+  if (installFleet) {
+    console.log(`  [6/${totalSteps}] Installing fleet skill...`);
+    clearDirSync(paths.fleetSkillsDir);
+    if (isSea()) {
+      fs.mkdirSync(paths.fleetSkillsDir, { recursive: true });
+      for (const [name, assetKey] of Object.entries(manifest.fleetSkills)) {
+        const content = extractAsset(assetKey);
+        writeAssetFile(path.join(paths.fleetSkillsDir, name), content);
+      }
+    } else {
+      // Dev mode: copy from project skills/fleet/
+      const fleetSrc = path.join(findProjectRoot(), 'skills', 'fleet');
+      copyDirSync(fleetSrc, paths.fleetSkillsDir);
+    }
+  }
+
+  // --- Step 7: Install PM skill (optional) ---
+  if (installPm) {
+    console.log(`  [7/${totalSteps}] Installing PM skill...`);
+    clearDirSync(paths.skillsDir);
     if (isSea()) {
       fs.mkdirSync(paths.skillsDir, { recursive: true });
       for (const [name, assetKey] of Object.entries(manifest.skills)) {
@@ -431,12 +472,14 @@ Installing Apra Fleet ${serverVersion} for ${paths.name}...
       const pmSrc = path.join(findProjectRoot(), 'skills', 'pm');
       copyDirSync(pmSrc, paths.skillsDir);
     }
-  } else {
-    console.log(`  Skipping PM skill (use --skill to install)`);
+  }
+
+  if (!installFleet && !installPm) {
+    console.log(`  Skipping skills (use --skill [all|fleet|pm] to install)`);
   }
 
   // Finalize permissions
-  mergePermissions(paths, mcpKey);
+  mergePermissions(paths);
 
   // --- Done ---
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
@@ -445,8 +488,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installSkill ? `
-  PM Skill:    ${paths.skillsDir}` : ''}
+  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
 
 ${instructions}
 `);

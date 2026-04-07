@@ -53,14 +53,19 @@ interface Ledger {
 }
 
 function findProfilesDir(): string {
-  // Installed: ~/.claude/skills/pm/profiles/
-  const installed = path.join(os.homedir(), '.claude', 'skills', 'pm', 'profiles');
-  if (fs.existsSync(installed)) return installed;
-  // Dev: walk up from __dirname looking for skills/pm/profiles/
+  // Installed: ~/.claude/skills/fleet/profiles/ (new location after skill split)
+  const installedFleet = path.join(os.homedir(), '.claude', 'skills', 'fleet', 'profiles');
+  if (fs.existsSync(installedFleet)) return installedFleet;
+  // Installed (legacy): ~/.claude/skills/pm/profiles/
+  const installedPm = path.join(os.homedir(), '.claude', 'skills', 'pm', 'profiles');
+  if (fs.existsSync(installedPm)) return installedPm;
+  // Dev: walk up from __dirname looking for skills/fleet/profiles/
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
-    const candidate = path.join(dir, 'skills', 'pm', 'profiles');
-    if (fs.existsSync(candidate)) return candidate;
+    const candidateFleet = path.join(dir, 'skills', 'fleet', 'profiles');
+    if (fs.existsSync(candidateFleet)) return candidateFleet;
+    const candidatePm = path.join(dir, 'skills', 'pm', 'profiles');
+    if (fs.existsSync(candidatePm)) return candidatePm;
     dir = path.dirname(dir);
   }
   throw new Error('Cannot find profiles directory');
@@ -75,7 +80,8 @@ function loadProfile(profilesDir: string, name: string): any {
 function loadLedger(projectFolder: string): Ledger {
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   if (fs.existsSync(ledgerPath)) {
-    return JSON.parse(fs.readFileSync(ledgerPath, 'utf-8'));
+    const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf-8'));
+    return { stacks: raw.stacks ?? [], granted: raw.granted ?? [] };
   }
   return { stacks: [], granted: [] };
 }

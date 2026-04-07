@@ -28,7 +28,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 3. **Tests connectivity** — remote members get an SSH connection test with latency measurement. Local members always pass (they're on the same machine).
 4. **Detects OS** — remote members run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local members read `process.platform` directly.
 5. **Checks provider CLI** — runs `<provider> --version` (e.g. `claude --version`, `gemini --version`) to verify the LLM CLI is installed and capture the version.
-6. **Auth test (remote only)** — for Claude members, runs a quick `claude -p "hello"` to verify authentication. For non-Claude providers, the version check from step 5 serves as the CLI availability check; auth is verified separately via `provision_auth`. Skipped for local members since they inherit the current session's auth.
+6. **Auth test (remote only)** — for Claude members, runs a quick `claude -p "hello"` to verify authentication. For non-Claude providers, the version check from step 5 serves as the CLI availability check; auth is verified separately via `provision_llm_auth`. Skipped for local members since they inherit the current session's auth.
 7. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
 8. **Persists** — saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID, including the `llmProvider` field.
 

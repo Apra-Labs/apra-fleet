@@ -1,30 +1,50 @@
-# Review: Commits 96f2afd + 7895b2d — sprint/ux-quality-fixes
+# Documentation Harvest — Re-Review
+
 **Reviewer:** fleet-rev  
-**Date:** 2026-04-06  
-**Verdict: APPROVED**
+**Date:** 2026-04-06 23:35:00-04:00  
+**Verdict:** APPROVED
+
+> See the recent git history of this file to understand the context of this review.
 
 ---
 
-## Checklist Results
+## Prior Review Context
 
-### 1. npm test — PASS
-619 passed + 4 skipped (623 total). All 41 test files green. The 4 skipped tests are pre-existing (not introduced by these commits). Meets the ≥620 expectation.
-
-### 2. Install key is plain `apra-fleet` across all 4 providers — PASS
-`mcpKey = 'apra-fleet'` set at line 331 of `src/cli/install.ts`. All four provider code paths (Claude `claude mcp add`, Gemini `mergeGeminiConfig`, Codex `mergeCodexConfig`, Copilot `mergeCopilotConfig`) receive and use this single constant. No versioned key anywhere.
-
-### 3. Stale key cleanup is correct — PASS
-`cleanupStaleMcpServers()` checks both `mcpServers` and `mcp_servers` dicts. The guard condition `(key.startsWith('apra-fleet-') || key.startsWith('apra-fleet_')) && key !== mcpKey` is precise: it only removes keys that begin with the exact versioned prefixes used by previous releases and skips the new plain key. No risk of removing unrelated entries (any non-`apra-fleet-*` / `apra-fleet_*` key is untouched).
-
-### 4. `version` tool correctly wired — PASS
-`src/tools/version.ts` exports `versionSchema` (empty `z.object({}`), no inputs required) and `version()` which returns `` `apra-fleet ${serverVersion}` ``. Wired in `src/index.ts` under the `'version'` tool name with the correct description. Import and registration are clean.
-
-### 5. Remote tmp path fix is correct — PASS
-`promptFilePath` is now constructed **after** `agent` is resolved (line 94–96 in `execute-prompt.ts`). The ternary `agent.agentType === 'local' ? os.tmpdir() : '/tmp'` correctly routes: local members (including the Windows PM host) use `os.tmpdir()`, remote SSH members (macOS/Linux) use `/tmp`. This directly fixes the regression where a Windows `os.tmpdir()` path (`C:\Users\...\AppData\Local\Temp`) was sent to remote SSH members. The `path.join(tmpDir, promptFileName)` then builds a valid path for both branches.
-
-### 6. No other regressions — PASS
-The whitespace-only blank line left in the Claude install block (where the legacy `claude mcp remove` try/catch was removed) is cosmetic only. All tests pass. No functional regressions detected.
+Initial docs review (commit 92d35f7) found 2 blocking findings and 1 non-blocking note. The doer addressed all 3 in commit `799e50e`.
 
 ---
 
-**APPROVED** — both commits are correct, targeted, and well-tested. Ready to merge.
+## Fix Verification — All 3 Findings Resolved — PASS
+
+### Finding 1 (was BLOCKING) — `tools-infrastructure.md:43` — FIXED
+
+`provision_auth` → `provision_llm_auth`. Matches the MCP tool registration in `src/index.ts:94`. Clean.
+
+### Finding 2 (was BLOCKING) — `tools-work.md:108` — FIXED
+
+Changed "expanded to the member's home directory" to "expanded server-side to the master machine's home directory." Now accurately describes `resolveTilde` which uses `os.homedir()` on the master. Aligns with the ADR's description (line 61).
+
+### Non-blocking note — ADR line 35 — FIXED
+
+"The skill doc sweep (Phase 5 of the plan) updated all known internal callers" → "A skill doc sweep updated all known internal callers." Sprint-specific phrasing removed.
+
+---
+
+## Build & Tests — PASS
+
+- `npm test` — 40 test files, 628 passed, 4 skipped, 0 failures.
+
+---
+
+## Summary
+
+| Item | Verdict |
+|------|---------|
+| Finding 1 — stale `provision_auth` in tools-infrastructure.md | FIXED |
+| Finding 2 — inaccurate tilde expansion in tools-work.md | FIXED |
+| Non-blocking — transient ADR phrasing | FIXED |
+| Build & tests | PASS |
+
+**Carried forward (non-blocking):** 7 pre-existing doc files still reference `provision_auth` — recommended for a separate sweep.
+
+Docs harvest is approved.

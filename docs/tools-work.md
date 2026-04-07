@@ -77,8 +77,11 @@ Do NOT enable this for open-ended prompts on members with access to sensitive da
 **Output:** The agent's response text, plus the session ID if one was returned.
 
 **Error handling:**
-- If the prompt fails due to an authentication issue, returns actionable guidance (`provision_auth`) instead of raw error output.
+- If the prompt fails due to an authentication issue, returns actionable guidance (`provision_llm_auth`) instead of raw error output.
 - Automatically retries once with a 5-second backoff on transient server errors.
+
+**Token accumulation:**
+After each successful prompt response, the server automatically accumulates `input_tokens` and `output_tokens` from the provider's usage metadata onto the member record. Running totals are accessible via `member_detail` and `fleet_status`. No manual token reporting is needed from agents or the PM.
 
 **Session behavior:**
 - First prompt on a member: no session exists, agent starts fresh.
@@ -97,12 +100,12 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 | `member_id` | string | yes | UUID of the target member |
 | `command` | string | yes | The shell command to execute |
 | `timeout_ms` | number | no | Default: 120000 (2 minutes). Max time to wait for the command to finish |
-| `work_folder` | string | no | Directory to cd into before running the command. Defaults to the member's registered work folder |
+| `run_from` | string | no | Override directory to run from. Defaults to member's registered work folder — rarely needed. |
 
 **What it does:**
 
 1. Looks up the member by ID.
-2. Resolves the working directory — uses `work_folder` if provided, otherwise the member's registered `workFolder`.
+2. Resolves the working directory — uses `run_from` if provided, otherwise the member's registered `workFolder`. Tilde (`~`) at the start of either path is expanded server-side to the master machine's home directory before the command runs.
 3. Wraps the command with a `cd` (Unix) or `Set-Location` (Windows) into the resolved folder.
 4. Executes via `strategy.execCommand()` with the specified timeout.
 5. Returns stdout, stderr, and exit code.

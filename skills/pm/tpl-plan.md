@@ -11,18 +11,21 @@
 #### Task 1: {{TASK_TITLE}}
 - **Change:** {{what to do}}
 - **Files:** {{which files}}
+- **Tier:** cheap | standard | premium
 - **Done when:** {{acceptance criteria}}
 - **Blockers:** {{potential blockers}}
 
 #### Task 2: {{TASK_TITLE}}
 - **Change:** {{what to do}}
 - **Files:** {{which files}}
+- **Tier:** cheap | standard | premium
 - **Done when:** {{acceptance criteria}}
 - **Blockers:** {{potential blockers}}
 
 #### Task 3: {{TASK_TITLE}}
 - **Change:** {{what to do}}
 - **Files:** {{which files}}
+- **Tier:** cheap | standard | premium
 - **Done when:** {{acceptance criteria}}
 - **Blockers:** {{potential blockers}}
 

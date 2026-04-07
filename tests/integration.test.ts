@@ -101,7 +101,7 @@ async function preflight(config: FleetConfig) {
 
   hasCreds
     ? ok('~/.claude/.credentials.json exists')
-    : skip('~/.claude/.credentials.json missing — provision_auth will be skipped for remote agents');
+    : skip('~/.claude/.credentials.json missing — provision_llm_auth will be skipped for remote agents');
 
   // Token health reporting (informational only)
   if (hasCreds) {
@@ -207,7 +207,7 @@ async function testAuthErrorDetection(nameToId: Map<string, string>, config: Fle
 
     const result = await executePrompt({ member_id: id, prompt: 'hello', resume: false, timeout_ms: 30000 });
 
-    result.includes('/login') && result.includes('provision_auth')
+    result.includes('/login') && result.includes('provision_llm_auth')
       ? ok(`Auth error detected on ${ac.friendly_name}`)
       : skip(`Auth detect ${ac.friendly_name} — unexpected result (agent may have residual auth)`);
   });

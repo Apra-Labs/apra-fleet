@@ -10,7 +10,7 @@ Personal Access Tokens (PATs) with configurable scopes and expiration. Auth: emp
 4. Select required scopes (see below)
 5. Set expiration (recommend: 90 days)
 6. Copy token — shown only once
-7. Provide token and org URL to the PM
+7. Provide token and org URL when prompted
 
 ## Deploy
 

@@ -33,9 +33,10 @@ On Unix, this works by running `pgrep -f "claude"` to find PIDs, then `ps -o arg
 | Name | member's friendly name | — |
 | Host | `host:port` or `(local)` | Connection target |
 | Status | `online` / `OFFLINE` | Can we reach the member right now? |
-| Busy? | `BUSY` / `idle` / `idle*` / `unknown` / `-` | Is a fleet Claude process running? |
+| Busy? | `BUSY` / `idle` / `idle*` / `unknown` / `-` | Is a fleet LLM process running? |
 | Session | first 8 chars of session ID or `(none)` | Active conversation thread |
 | Last Activity | relative time (e.g. "5m ago", "2d ago") | When `execute_prompt` or `send_files` last touched this member |
+| Tokens | `in: N / out: N` or omitted | Accumulated token totals for this member (shown when nonzero) |
 
 A footnote is appended to the table when any member shows `idle*`, explaining that Claude processes were found but none are servicing that fleet member.
 
@@ -63,9 +64,10 @@ Runs a series of commands on the member via `strategy.execCommand()` and assembl
 - **Local members:** reports "Connected (local)".
 - If the connection fails, the report stops here with an offline warning — no point running further commands.
 
-### Section 2: Claude CLI
-- Runs `claude --version` to get the installed version.
-- Checks for auth: `~/.claude/.credentials.json` (OAuth credentials file) and `ANTHROPIC_API_KEY` env var. Reports all detected methods or "No authentication detected".
+### Section 2: LLM CLI (`llm_cli`)
+- Runs `<provider> --version` to get the installed version. The version string is normalized — any provider prefix is stripped, so the output is always a bare semver string (e.g. `"2.1.92"`, not `"Claude Code 2.1.92"`).
+- Checks for auth appropriate to the member's provider. For Claude: `~/.claude/.credentials.json` (OAuth credentials file) and `ANTHROPIC_API_KEY` env var. For other providers: the relevant API key env var. Reports all detected methods or "No authentication detected".
+- Results are returned under the `llm_cli` key in JSON output, covering all providers (not just Claude).
 
 ### Section 3: Session
 - Shows the stored session ID (or "none").
@@ -81,5 +83,9 @@ Runs a series of commands on the member via `strategy.execCommand()` and assembl
 - **Disk:** `df -h "{folder}"` (Unix), `wmic logicaldisk` (Windows) — shows usage for the member's working directory.
 
 Each resource query has its own try/catch — if one fails (e.g. `wmic` not available), it reports "unavailable" and continues with the rest.
+
+### Section 5: Token Usage
+- If `execute_prompt` has been called for this member at least once, shows accumulated `input` and `output` token totals. These are lifetime totals since the member was registered (or since the registry was last cleared).
+- Token counts are accumulated automatically by the server on every successful `execute_prompt` call — no manual reporting needed.
 
 **Output:** A structured text report with section headers (`── Connectivity ──`, etc.) showing all gathered information.

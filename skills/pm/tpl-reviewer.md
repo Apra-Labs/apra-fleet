@@ -1,16 +1,16 @@
 # {{PROJECT_NAME}} — Code Review
 
 ## Context Recovery
-Before starting any review: `git log --oneline main..<current-branch>`
+Before starting any review: `git log --oneline {{base_branch}}..{{branch}}`
 
 ## Review Model
 You are reviewing work tracked in PLAN.md and progress.json.
 
-Reviews are CUMULATIVE — review all phases up to and including the current one, not just the latest. Earlier phases may have regressed.
+Review scope covers all phases from Phase 1 through the current phase — not just the latest diff. Code written in earlier phases may have regressed or been invalidated by later changes.
 
 ## On each review
 
-1. Read feedback.md — understand what you previously reviewed and approved. Focus on divergence from prior approvals, not fresh-eyes re-review
+1. Run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand previous findings and how the doer addressed them. Incorporate the doer's responses into your review notes so the full picture is captured in the new write-up.
 2. Read progress.json — identify which tasks are marked completed since last review
 3. Read PLAN.md, requirements.md, and any design docs in the work folder — verify code aligns with requirements intent, not just plan mechanics
 4. `git diff` the relevant commits against the base branch
@@ -28,11 +28,38 @@ Reviews are CUMULATIVE — review all phases up to and including the current one
 - Are there security issues (injection, auth bypass, secrets in code)?
 - Is the code consistent with existing patterns and conventions?
 - Are docs updated if behavior changed?
+- Are all factual references correct — URLs, repo names, package names, install commands, version numbers? Members hallucinate these; spot-check against known sources.
 
 ## Output
 
-Commit findings to feedback.md. Output verdict as final line: APPROVED or CHANGES NEEDED.
+Overwrite feedback.md with this structure:
+
+```
+# <Sprint/Feature Name> — Code Review
+
+**Reviewer:** <member name>
+**Date:** YYYY-MM-DD HH:MM:SS+TZ
+**Verdict:** APPROVED | CHANGES NEEDED
+
+> See the recent git history of this file to understand the context of this review.
+
+---
+
+## <Review section>
+
+<Detailed narrative. PASS/FAIL/NOTE inline. Explain what you found, where, and why it matters.>
+
+---
+
+## Summary
+
+<Synthesize what passed, what must change, what is deferred.>
+```
+
+If verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
+
+Commit feedback.md and push.
 
 ## Rules
 - NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
-- NEVER commit this instruction file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) — it is role-specific and not shared
+- NEVER commit this agent context file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT-INSTRUCTIONS.md) — it is role-specific and not shared

@@ -32,7 +32,7 @@ When to use: Personal repos, or when GitHub App install isn't possible.
 Setup:
 1. Go to `https://github.com/settings/tokens`
 2. Create fine-grained or classic token with required scopes
-3. Provide token to the PM
+3. Provide token when prompted
 
 Deploy:
 ```

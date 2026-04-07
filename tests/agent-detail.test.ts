@@ -89,7 +89,7 @@ describe('memberDetail auth detection', () => {
     setupDefaultMock();
 
     const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
-    expect(result.claude.auth).toBe('none');
+    expect(result.llm_cli.auth).toBe('none');
   });
 
   it('detects both auth methods when present', async () => {
@@ -106,7 +106,7 @@ describe('memberDetail auth detection', () => {
     });
 
     const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
-    expect(result.claude.auth).toBe('api-key (WARNING: OAuth also present — API key takes precedence)');
+    expect(result.llm_cli.auth).toBe('api-key (WARNING: OAuth also present — API key takes precedence)');
   });
 
   it('detects API key only', async () => {
@@ -123,7 +123,24 @@ describe('memberDetail auth detection', () => {
     });
 
     const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
-    expect(result.claude.auth).toBe('api-key');
-    expect(result.claude.auth).not.toContain('OAuth');
+    expect(result.llm_cli.auth).toBe('api-key');
+    expect(result.llm_cli.auth).not.toContain('OAuth');
+  });
+
+  it('strips provider prefix from version string', async () => {
+    const agent = makeTestAgent({ friendlyName: 'prefixed-version' });
+    addAgent(agent);
+    setupDefaultMock();
+
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('.credentials.json')) return { stdout: 'missing', stderr: '', code: 0 };
+      if (cmd.includes('ANTHROPIC_API_KEY')) return { stdout: '', stderr: '', code: 0 };
+      if (cmd.includes('--version')) return { stdout: 'Claude Code 1.0.42', stderr: '', code: 0 };
+      if (cmd.includes('pgrep') || cmd.includes('wmic process')) return { stdout: 'idle', stderr: '', code: 0 };
+      return { stdout: 'N/A', stderr: '', code: 0 };
+    });
+
+    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    expect(result.llm_cli.version).toBe('1.0.42');
   });
 });
