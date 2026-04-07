@@ -1,7 +1,7 @@
-# Bug Fixes & API Cleanup Sprint — Plan Review
+# API Cleanup & Skill Doc Sweep — Plan Review
 
-**Reviewer:** sprint/skill-refactor reviewer  
-**Date:** 2026-04-06 16:45:00+00:00  
+**Reviewer:** fleet-rev (sprint/skill-refactor reviewer)  
+**Date:** 2026-04-06 21:30:00+00:00  
 **Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
@@ -10,71 +10,75 @@
 
 ## Prior Review Context
 
-The previous review (commit fdbcf0c) identified a **requirements-checklist gap**. The plan is correctly aligned with requirements.md as written, but the user's review checklist asks about specifications that do not appear in requirements.md. No changes have been made to requirements.md or PLAN.md since that review.
+Two prior reviews (commits fdbcf0c, 18f8309) flagged a gap between requirements.md and the plan — the plan addressed a narrower scope than the user's checklist demanded. The doer resolved this by choosing **Option B: Expand Requirements**. requirements.md was rewritten to cover all six issues (#83, #84, #85, #87, #88, #89), and PLAN.md was rewritten from scratch (commit ad156f8) to address the expanded scope. This review evaluates the new plan against the new requirements.
 
 ---
 
-## Requirements vs. Checklist — Gap Summary
+## 1. Done Criteria — PASS
 
-| Issue | User's Checklist Question | What requirements.md Says | Verdict |
-|-------|---------------------------|---------------------------|---------|
-| #89 | CWD fix correct? | Agent CWD = `agent.workFolder`, prompt in tmpDir | **MATCH** |
-| #88 | Fix crash `ledger.granted is not iterable`? Fix template? Fresh template test? | Only: add warning when granting without `project_folder` | **GAP** |
-| #87 | Rename to `llm_cli`? | `cli` is acceptable | **GAP** |
-| #85 | Rename `work_folder` → `run_from`? macOS tilde? Update execute_prompt defaults? | Only: document `work_folder` in skill docs | **GAP** |
-| #84 | Rename `provision_auth` → `provision_llm_auth`? | Only: audit for consistent naming | **GAP** |
-| #83 | Server-side accumulation + REMOVE tool? | Only: document best-effort git commit | **GAP** |
+Every task has an explicit **Done:** line with a verifiable condition. Examples: Task 1.1 specifies that `loadLedger` never returns undefined `granted` or `stacks` regardless of file content. Task 2.2 specifies the exact output format (`"2.1.92"` not `"Claude Code 2.1.92"`). Task 4.5 specifies full removal with no backward-compat shim. No ambiguity.
 
-The plan correctly implements requirements.md. The checklist asks for more than requirements.md specifies.
+## 2. Cohesion and Coupling — PASS
 
----
+Each phase groups tightly related changes: Phase 1 = crash fix + low-risk rename, Phase 2 = member_detail output shape, Phase 3 = execute_command params + tilde fix, Phase 4 = token accumulation lifecycle, Phase 5 = docs. Cross-phase coupling is minimal — the only dependency is that Phase 5 references names introduced in Phases 1-4.
 
-## Plan Review Checklist (Against Current requirements.md)
+## 3. Key Abstractions in Earliest Tasks — PASS
 
-| # | Check | Status |
-|---|-------|--------|
-| 1 | Every task has clear "done" criteria? | **PASS** |
-| 2 | High cohesion, low coupling? | **PASS** |
-| 3 | Key abstractions in earliest tasks? | **PASS** — #89 front-loaded |
-| 4 | Riskiest assumption in Task 1? | **PASS** |
-| 5 | Later tasks reuse early abstractions? | **N/A** — independent bug fixes |
-| 6 | 2-3 tasks per phase + VERIFY? | **PASS** |
-| 7 | Each task one session? | **PASS** |
-| 8 | Dependencies satisfied in order? | **PASS** |
-| 9 | Vague tasks? | **PASS** — all specific |
-| 10 | Hidden dependencies? | **PASS** |
-| 11 | Risk register? | **PASS** |
-| 12 | Aligns with requirements.md? | **CONDITIONAL PASS** |
+Task 3.2 introduces the `resolveTilde` helper shared between `execute-command.ts` and `execute-prompt.ts`. Task 4.1 introduces `tokenUsage` on the `Agent` type before Tasks 4.2-4.4 consume it. Both are correctly front-loaded within their phases.
 
----
+## 4. Riskiest Assumption in Task 1 — PASS
 
-## Path Forward
+The crash fix (#88) is front-loaded as Task 1.1. This is the right call — it's the only bug that causes a runtime crash in production. The `compose_permissions` `loadLedger` guard is low-risk but validates the assumption that the fix is a simple null-coalescing guard (confirmed: `loadLedger` at lines 80-86 of `compose-permissions.ts` parses JSON directly without guards).
 
-Two options:
+## 5. Later Tasks Reuse Early Abstractions — PASS
 
-### Option A: Confirm Current Scope
-If requirements.md is authoritative, the plan can proceed. The additional items in the checklist (#88 crash fix, #87 `llm_cli`, #85 renames/tilde, #84 rename, #83 tool removal) are **out of scope** and should be tracked as separate issues.
+`resolveTilde` (Task 3.2) is used in both `execute-command.ts` and `execute-prompt.ts`. `tokenUsage` type (Task 4.1) flows through Tasks 4.2 → 4.3 → 4.4. Phase 5 doc updates reference the renames from Phases 1-3.
 
-### Option B: Expand Requirements
-If the checklist represents true intent, update requirements.md with:
+## 6. Phase Size — NOTE
 
-1. **#88:** Add crash fix specification (`ledger.granted is not iterable`), template fix, fresh template test requirement
-2. **#87:** Change field name from `cli` to `llm_cli` if that's the desired name
-3. **#85:** Add `work_folder` → `run_from` rename, macOS tilde expansion fix, `execute_prompt` defaults update, skill doc guidance
-4. **#84:** Add `provision_auth` → `provision_llm_auth` rename
-5. **#83:** Add server-side token accumulation implementation and tool removal
+Phases 1-3 and 5 follow the 2-3 tasks + VERIFY guideline. **Phase 4 has 5 tasks**, exceeding the guideline. However, Tasks 4.3-4.5 are all marked cheap and are essentially mechanical (add a field to output, delete a file). The 5-task phase is acceptable here because the tasks form a tight dependency chain (type → accumulate → surface × 2 → remove old), but the plan should acknowledge this deviation.
 
-Then re-plan to address the expanded scope.
+## 7. Each Task Completable in One Session — PASS
+
+All tasks are marked cheap except 4.1-4.2 (standard). Even the standard tasks are well-scoped: 4.1 is adding a single field to a type, 4.2 is ~10 lines of accumulation logic. No task requires multi-session work.
+
+## 8. Dependencies Satisfied in Order — PASS
+
+Task 4.1 (type) before 4.2 (use it). Task 4.2 (accumulate) before 4.3-4.4 (surface). Task 4.5 (remove old tool) after 4.2 provides the replacement. Phase 5 (doc sweep) after all code changes. `updateAgent` import in Task 4.2 is verified to exist at `src/services/registry.ts:111`.
+
+## 9. Vague Tasks — PASS
+
+Every task specifies exact files, line numbers, and code snippets. The line number references were verified against the codebase and are accurate (within ±1 line). No task is ambiguous enough for two developers to interpret differently.
+
+## 10. Hidden Dependencies — PASS
+
+No hidden dependencies found. The only cross-phase dependency (Phase 5 referencing names from Phases 1-4) is explicit in the phase ordering.
+
+## 11. Risk Register — FAIL
+
+**The plan contains no risk register.** The previous plan version (commit 99e9a11) had 4 documented risks. The rewritten plan dropped them entirely. Identified risks that should be documented:
+
+1. **Breaking change risk:** `provision_auth` → `provision_llm_auth` (Task 1.3) and `work_folder` → `run_from` (Task 3.1) are schema-level renames. Any external caller using the old names will break. Mitigation: requirements explicitly say "no backward-compat shims" — this is intentional, but the risk should be acknowledged.
+2. **Token accumulation race:** Task 4.2 reads `agent.tokenUsage`, adds to it, then writes back. If two concurrent `execute_prompt` calls finish simultaneously for the same agent, one update could be lost. Mitigation: assess whether `updateAgent` is atomic or needs a compare-and-swap.
+3. **Tilde expansion edge cases:** Task 3.2 only handles `~/` and bare `~`. Paths like `~user/foo` (other user's home) would not be resolved. Mitigation: document that only `~` (current user) is supported.
+4. **#88 template discrepancy:** Requirements say "Fix the template permissions.json file to ship with `{"granted": []}` not `{}`" but the plan notes no template file exists in the repo. The plan's guard-in-`loadLedger` approach is arguably better (defends against any malformed JSON), but the requirement is technically unmet. Mitigation: explicitly close this out — either create the template or update requirements to reflect the guard-based fix.
+
+## 12. Alignment with requirements.md — FAIL (two gaps)
+
+**Gap A — Missing tilde resolution test.** Requirements acceptance criteria state: *"All existing tests pass; new tests added for CWD fix, tilde resolution, and compose_permissions guard."* The plan includes a test for compose_permissions (Task 1.2) and updates existing tests (Tasks 2.3, 3.3), but **no task creates a test for tilde resolution**. Task 3.3 only renames `work_folder` → `run_from` in existing tests. A test should verify that `resolveTilde('~/git/project')` returns the expanded path and that a bare `~` is handled correctly.
+
+**Gap B — #88 template fix.** As noted in the risk register section, requirements.md explicitly asks to "Fix the template permissions.json file to ship with `{"granted": []}` not `{}`". The plan's investigation found no template file exists, and the `loadLedger` guard is a valid fix, but the plan should either (a) add a task to create the template file with correct defaults, or (b) explicitly propose updating requirements.md to remove the template fix line. Currently it's a silent deviation.
 
 ---
 
 ## Summary
 
-The plan passes all structural checks and is correctly aligned with requirements.md as written. However, the review cannot be approved because the user's checklist references specifications not captured in requirements.md.
+The plan is well-structured, with accurate file/line references, clear done criteria, correct dependency ordering, and good phase decomposition. The requirements-checklist gap from prior reviews has been fully resolved by expanding requirements.md.
 
-**Blocking issue:** Resolve the requirements-checklist gap before proceeding.
+**Two items block approval:**
 
-- If Option A: Confirm scope, plan can proceed (change verdict to APPROVED)
-- If Option B: Update requirements.md first, then re-plan
+1. **Add a risk register** — at minimum covering breaking changes, token race conditions, tilde edge cases, and the template discrepancy.
+2. **Add a tilde resolution test task** (e.g., Task 3.4) that tests `resolveTilde` with `~/path`, bare `~`, and a non-tilde path. This is explicitly required by the acceptance criteria.
+3. **Resolve the #88 template discrepancy** — either add a template creation task or propose a requirements update. Don't leave it as a silent deviation.
 
-The doer should clarify which option applies before implementation begins.
+Once these are addressed, the plan should be ready for APPROVED.
