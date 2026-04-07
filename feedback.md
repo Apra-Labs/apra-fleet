@@ -1,8 +1,8 @@
-# API Cleanup & Skill Doc Sweep — Phase 3 Code Review
+# API Cleanup & Skill Doc Sweep — Phase 4 Code Review
 
 **Reviewer:** fleet-rev  
-**Date:** 2026-04-06 22:10:00-04:00  
-**Verdict:** APPROVED
+**Date:** 2026-04-06 22:30:00-04:00  
+**Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -10,86 +10,104 @@
 
 ## Prior Review Context
 
-Phase 2 was APPROVED in commit a778ac0 after a re-review cycle. Phase 1 was APPROVED in commit 2174d0e. Both phases remain clean — no regressions detected (Phase 1/2 source files are unchanged since approval).
+Phase 3 was APPROVED in commit b47fdab. Phases 1 and 2 remain clean — no regressions detected (source files unchanged since their approvals).
 
-Phase 3 work spans two commits:
-- `32d82c8` — Tasks 3.1 + 3.2 (rename `work_folder`→`run_from`, add `resolveTilde`)
-- `1ef1bd1` — Tasks 3.3 + 3.4 (test updates for rename, tilde resolution tests)
-
----
-
-## Task 3.1 — Rename work_folder → run_from in execute_command schema — PASS
-
-Commit `32d82c8` changes `src/tools/execute-command.ts`:
-- Schema parameter renamed from `work_folder` to `run_from` (line 24)
-- Description updated to: `"Override directory to run from. Defaults to member's registered work folder — rarely needed."` — clear that it's an override, not a required param
-- Usage at line 45: `const folder = resolveTilde(input.run_from ?? agent.workFolder);`
-
-Remaining `work_folder` references in `src/` are all member-property contexts (register-member, update-member, send-files, receive-files, strategy) — these correctly refer to the registered member folder, not the execute_command parameter. The plan explicitly says to keep these as-is.
+Phase 4 work spans five commits:
+- `59207ca` — Task 4.1 (add `tokenUsage` field to Agent type)
+- `6251173` — Task 4.2 (auto-accumulate tokens in `execute_prompt`)
+- `294d3db` — Task 4.3 (surface `tokenUsage` in `member_detail`)
+- `cb352f4` — Task 4.4 (surface `tokenUsage` in `fleet_status`)
+- `1c29207` — Task 4.5 (remove `update_task_tokens` tool)
 
 ---
 
-## Task 3.2 — Server-side tilde expansion for workFolder — PASS
+## Task 4.1 — Add tokenUsage field to Agent type — PASS
 
-`resolveTilde` exported at `src/tools/execute-command.ts:13-18`:
+`src/types.ts:30`: `tokenUsage?: { input: number; output: number };` added to the `Agent` interface. Optional field — existing agents remain valid. Clean.
+
+---
+
+## Task 4.2 — Auto-accumulate tokens in execute_prompt — PASS (code), FAIL (test coverage)
+
+`src/tools/execute-prompt.ts:163-171`: After `touchAgent`, the code checks `parsed.usage` and does a read-modify-write via `updateAgent`:
 
 ```ts
-export function resolveTilde(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return p.replace('~', os.homedir());
-  }
-  return p;
+if (parsed.usage) {
+  const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+  updateAgent(agent.id, {
+    tokenUsage: {
+      input: prev.input + parsed.usage.input_tokens,
+      output: prev.output + parsed.usage.output_tokens,
+    },
+  });
 }
 ```
 
-Applied in two locations:
-1. `src/tools/execute-command.ts:45` — resolves `run_from` or `agent.workFolder` before use as CWD
-2. `src/tools/execute-prompt.ts:99` — `const resolvedWorkFolder = resolveTilde(agent.workFolder);` used for both `promptFilePath` construction (line 101-102) and `promptOpts.folder` (line 116)
+The implementation is correct:
+- `parsed.usage` is typed `{ input_tokens: number; output_tokens: number }` from `provider.ts:35`
+- Correctly maps provider field names (`input_tokens`) to agent field names (`input`)
+- Defaults to `{ input: 0, output: 0 }` when no prior usage exists
+- Race condition is a non-issue per Risk R2 (single-threaded Node.js event loop)
 
-The `import { resolveTilde } from './execute-command.js';` at `execute-prompt.ts:16` correctly reuses the same function — no duplication.
+**However:** The existing test at `execute-prompt.test.ts:245` only asserts the output string contains `"Tokens: input=100 output=200"` — it does not verify that `updateAgent` was called with accumulated `tokenUsage`. The old `update-task-tokens.test.ts` (242 lines, 7 test cases) was deleted, but no replacement tests were added for the new accumulation path. This is a new code path that should have at least one test verifying `updateAgent` is called with the correct accumulated values when `parsed.usage` is present.
 
-Implementation correctly handles only current-user `~` (bare `~` and `~/...`). The `~user/` syntax is intentionally unsupported per Risk R3 in the plan. The `String.replace('~', ...)` call only replaces the first occurrence, which is correct since `~` is guaranteed to be at position 0 by the guard.
-
----
-
-## Task 3.3 — Update execute_command test for run_from rename — PASS
-
-Commit `1ef1bd1` in `tests/execute-command.test.ts`:
-- Test name: `'uses custom work_folder when provided'` → `'uses custom run_from when provided'` (line 51)
-- Test input: `work_folder: '/tmp/other'` → `run_from: '/tmp/other'` (line 55)
-
-Single occurrence, cleanly updated. Assertion unchanged — still checks that `mockExecCommand` received a string containing `/tmp/other`.
+**Required:** Add a test in `tests/execute-prompt.test.ts` that verifies:
+1. After a prompt response with `usage`, `updateAgent` is called with the correct `tokenUsage` accumulation
+2. When `usage` is absent, `updateAgent` is NOT called for token accumulation (the existing "does not append token line" test should also assert this)
 
 ---
 
-## Task 3.4 — Add tilde resolution tests — PASS
+## Task 4.3 — Surface tokenUsage in member_detail — PASS
 
-Commit `1ef1bd1` adds a `describe('resolveTilde')` block at `tests/execute-command.test.ts:113-129` with four test cases:
+`src/tools/member-detail.ts:150-152`: Adds `result.tokenUsage = agent.tokenUsage` when present (JSON format).
 
-1. `'expands ~/path to homedir/path'` — asserts `resolveTilde('~/git/project') === os.homedir() + '/git/project'`
-2. `'expands bare ~ to homedir'` — asserts `resolveTilde('~') === os.homedir()`
-3. `'passes through absolute paths unchanged'` — asserts `/absolute/path` passthrough
-4. `'passes through relative paths unchanged'` — asserts `relative/path` passthrough
+`src/tools/member-detail.ts:257`: Compact format appends `| tokens=in:N out:N` when `agent.tokenUsage` is truthy. Clean.
 
-All four cases match the plan specification exactly. The tests use `os.homedir()` dynamically rather than hardcoding a path, making them portable.
+NOTE: The compact format shows tokens even when both values are 0 (as long as `tokenUsage` is set). This differs from `fleet_status` which suppresses zero values (see Task 4.4). Minor inconsistency — not blocking, but worth noting for Phase 5 doc sweep.
+
+---
+
+## Task 4.4 — Surface tokenUsage in fleet_status — PASS
+
+`src/tools/check-status.ts:228-229`: Compact format includes token string only when `tokenUsage` exists AND at least one value is > 0:
+
+```ts
+const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
+  ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
+```
+
+The `AgentStatusRow` interface at line 35 correctly includes `tokenUsage?: { input: number; output: number }`. The `checkAgent` function at line 62 passes through `agent.tokenUsage`. Clean.
+
+---
+
+## Task 4.5 — Remove update_task_tokens tool — PASS
+
+- `src/tools/update-task-tokens.ts` — deleted (120 lines)
+- `tests/update-task-tokens.test.ts` — deleted (242 lines)
+- `src/index.ts:67` — import removed
+- `src/index.ts:116` — `server.tool('update_task_tokens', ...)` registration removed
+
+Verified: `grep -rn 'update_task_tokens\|updateTaskTokens' src/` returns zero matches. Clean removal, no orphaned references.
 
 ---
 
 ## Build & Full Test Suite — PASS
 
 - `npx tsc --noEmit` — clean, no type errors
-- `npx vitest run` — 41 test files, 633 passed, 4 skipped. No failures.
+- `npx vitest run` — 40 test files, 626 passed, 4 skipped. No failures.
 
-Test count: progress.json reports 634/3 skipped vs my run showing 633/4 skipped. Total is 637 in both cases — the difference is a platform-conditional skip. Not a concern.
+Test count decreased from Phase 3 (633 passed → 626 passed) because the 7 `update-task-tokens.test.ts` tests were removed. Test file count decreased from 41 → 40. This is expected and correct.
 
 ---
 
-## Phase 1+2 Regression Check — PASS
+## Phase 1+2+3 Regression Check — PASS
 
 - `src/tools/compose-permissions.ts` — unchanged since Phase 1 approval
-- `src/tools/member-detail.ts` — unchanged since Phase 2 approval
-- `src/index.ts` (provision_llm_auth rename) — unchanged since Phase 1 approval
-- All Phase 1+2 tests continue to pass
+- `src/tools/member-detail.ts` — modified in Phase 4 (Task 4.3), changes are additive only
+- `src/tools/execute-command.ts` — unchanged since Phase 3 approval
+- `src/tools/execute-prompt.ts` — modified in Phase 4 (Task 4.2), changes are additive only
+- `src/index.ts` — modified in Phase 4 (Task 4.5), removal only
+- All Phase 1+2+3 tests continue to pass
 
 ---
 
@@ -97,13 +115,16 @@ Test count: progress.json reports 634/3 skipped vs my run showing 633/4 skipped.
 
 | Task | Verdict | Notes |
 |------|---------|-------|
-| 3.1 — Rename work_folder → run_from | PASS | Schema, description, and usage all updated; other `work_folder` refs are member-property contexts |
-| 3.2 — Server-side tilde expansion | PASS | `resolveTilde` correctly handles `~` and `~/...`; applied in both execute-command and execute-prompt |
-| 3.3 — Update test for rename | PASS | Test name and input param updated |
-| 3.4 — Add tilde resolution tests | PASS | 4 cases covering ~/path, bare ~, absolute, relative |
-| V3 — npm test | PASS | 633 passed, 4 skipped (637 total) |
-| Phase 1+2 regression | PASS | No changes to previously approved files |
+| 4.1 — Add tokenUsage to Agent type | PASS | Clean optional field addition |
+| 4.2 — Auto-accumulate in execute_prompt | PASS (code) / FAIL (tests) | Logic is correct but no test verifies `updateAgent` is called with accumulated tokens |
+| 4.3 — Surface in member_detail | PASS | JSON + compact format both work |
+| 4.4 — Surface in fleet_status | PASS | Correctly suppresses zero-value display |
+| 4.5 — Remove update_task_tokens | PASS | Clean removal, zero stale references in src/ |
+| V4 — npm test | PASS | 626 passed, 4 skipped (40 files) |
+| Phase 1+2+3 regression | PASS | No regressions |
 
-**Non-blocking (carried forward to Phase 5):** User-facing strings in `src/` still reference `provision_auth` (prompt-errors.ts, register-member.ts, provision-auth.ts, lifecycle.ts). Phase 5 Task 5.4's grep should surface these.
+**Blocking:** Task 4.2 needs at least one test verifying that `updateAgent` is called with the correct accumulated `tokenUsage` when `parsed.usage` is present. The old tool had 7 tests covering accumulation behavior — the replacement should have at least basic coverage.
 
-Phase 3 is complete. Ready for Phase 4.
+**Non-blocking (carried forward):** `member_detail` shows token string even when both values are 0; `fleet_status` suppresses zeros. Minor inconsistency — can be addressed in Phase 5 or left as-is.
+
+**Non-blocking (carried from Phase 3):** User-facing strings in `src/` still reference `provision_auth` — Phase 5 Task 5.4 scope.
