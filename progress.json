@@ -208,7 +208,7 @@
       "status": "completed",
       "tier": "cheap",
       "commit": "pending-commit",
-      "notes": "Zero matches for provision_auth|update_task_tokens|claude.version|claude.auth in skills/ and src/ (excluding provisionAuth internal export)"
+      "notes": "Zero matches for provision_auth|update_task_tokens|claude.version|claude.auth in skills/, src/, and tests/ (excluding provisionAuth internal export). Fixed 8 stale refs missed in initial sweep: 2 in integration.test.ts (lines 104, 210) and 6 in auth-socket.test.ts. PLAN.md updated to include tests/ in grep scope."
     },
     {
       "id": "V5",
@@ -216,7 +216,7 @@
       "type": "verify",
       "status": "completed",
       "commit": "pending-commit",
-      "notes": "629 tests pass, 3 skipped. Zero stale refs. All skill docs updated."
+      "notes": "629 tests pass, 3 skipped. Zero stale refs (skills/, src/, tests/). All skill docs updated. 8 stale provision_auth refs fixed in tests/ per Phase 5 review."
     }
   ]
 }

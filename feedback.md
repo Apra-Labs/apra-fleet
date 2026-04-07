@@ -2,7 +2,7 @@
 
 **Reviewer:** fleet-rev  
 **Date:** 2026-04-06 23:10:00-04:00  
-**Verdict:** CHANGES NEEDED
+**Verdict:** CHANGES NEEDED → RESOLVED (2026-04-06)
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -60,7 +60,7 @@ result.includes('/login') && result.includes('provision_auth')
 
 `authErrorAdvice()` in `src/utils/prompt-errors.ts` now returns `provision_llm_auth`. This means `result.includes('provision_auth')` will **always be false**, so the auth-detection test will silently skip every time — it can never detect auth errors anymore. This is a functional regression in the integration test.
 
-**Fix:** Change `provision_auth` → `provision_llm_auth` on line 210.
+**Fix:** Change `provision_auth` → `provision_llm_auth` on line 210. ✓ DONE
 
 ### Finding 2 (BLOCKING) — `tests/integration.test.ts:104` — stale skip message
 
@@ -70,13 +70,13 @@ result.includes('/login') && result.includes('provision_auth')
 
 The tool is now named `provision_llm_auth`. This is a user-visible message.
 
-**Fix:** Change `provision_auth` → `provision_llm_auth` on line 104.
+**Fix:** Change `provision_auth` → `provision_llm_auth` on line 104. ✓ DONE
 
 ### Finding 3 (NON-BLOCKING) — `tests/auth-socket.test.ts` — stale tool name in direct calls
 
 Lines 372, 389, 400, 404, 411, 415: Tests call `collectOobApiKey('...', 'provision_auth', ...)` and assert fallback messages contain `'provision_auth'`. These tests still pass because `collectOobApiKey` uses whatever tool name is passed to it — so the function works correctly with any string. However, the tests no longer reflect production usage where `provisionAuth()` now passes `'provision_llm_auth'`.
 
-**Recommended fix:** Update the tool name argument to `'provision_llm_auth'` in all 6 occurrences, and update the `.toContain('provision_auth')` assertions on lines 404 and 415 to `.toContain('provision_llm_auth')`. This keeps the tests aligned with the actual caller.
+**Recommended fix:** Update the tool name argument to `'provision_llm_auth'` in all 6 occurrences, and update the `.toContain('provision_auth')` assertions on lines 404 and 415 to `.toContain('provision_llm_auth')`. This keeps the tests aligned with the actual caller. ✓ DONE (all 6 occurrences replaced)
 
 ---
 
@@ -117,7 +117,7 @@ No prior phase source files (`compose-permissions.ts`, `member-detail.ts`, `exec
 | 5.1 — Update fleet SKILL.md | PASS | `provision_llm_auth` renamed, `update_task_tokens` removed |
 | 5.2 — Update fleet onboarding.md | PASS | No stale refs existed |
 | 5.3 — Update PM skill docs | PASS | Mid-sprint denial guidance added |
-| 5.4 — Final stale-reference grep | FAIL | Sweep missed `tests/` — 2 blocking + 1 non-blocking stale refs |
+| 5.4 — Final stale-reference grep | FAIL → FIXED | Sweep missed `tests/` — 8 stale refs fixed; PLAN.md updated to include `tests/` in grep scope |
 | V5 — npm test | PASS | 628 passed, 4 skipped |
 | Phase 1–4 regression | PASS | No regressions |
 

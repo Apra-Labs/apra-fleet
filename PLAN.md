@@ -288,8 +288,10 @@ Note: #89 is already fixed (commits e28f294, f02a4a0) — not included.
 **Tier:** cheap
 
 **Changes:**
-1. Run: `grep -rn 'provision_auth\|update_task_tokens\|claude\.version\|claude\.auth' skills/ src/`
+1. Run: `grep -rn 'provision_auth\|update_task_tokens\|claude\.version\|claude\.auth' skills/ src/ tests/`
 2. Confirm zero matches (except `provisionAuth` as a code-internal export name, which is fine)
+
+**Note (from Phase 5 review):** The initial sweep omitted `tests/` — stale refs in test files can cause silent regressions (e.g. `result.includes('provision_auth')` never matching after the rename). Always include `tests/` in the grep scope.
 
 **Done:** All skill docs updated. No stale tool names remain.
 
