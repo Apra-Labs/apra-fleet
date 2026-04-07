@@ -1,8 +1,8 @@
-# API Cleanup & Skill Doc Sweep — Phase 4 Re-Review
+# API Cleanup & Skill Doc Sweep — Phase 5 Code Review
 
 **Reviewer:** fleet-rev  
-**Date:** 2026-04-06 22:45:00-04:00  
-**Verdict:** APPROVED
+**Date:** 2026-04-06 23:10:00-04:00  
+**Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -10,38 +10,103 @@
 
 ## Prior Review Context
 
-Phase 4 initial review (commit fc22dbd) found one blocking issue: no test coverage for the new `updateAgent` token accumulation path in `execute_prompt`. The doer addressed this in commit `aa177e2`.
+Phase 4 re-review (commit d977bfc) was APPROVED. Phases 1–4 remain clean — no source files modified in Phase 5 that touch prior phase logic.
+
+Phase 4 review carried forward one non-blocking item: "User-facing strings in `src/` still reference `provision_auth` — Phase 5 Task 5.4 scope." Phase 5 commit `7662a22` addressed this in `src/` — see Task 5.4 below.
+
+Phase 5 work is a single commit: `7662a22` ("Phase 5: skill doc sweep — provision_llm_auth, rm update_task_tokens, permission denial guidance"). It touches 12 files: skill docs, source files, tests, and progress.json.
 
 ---
 
-## Fix Verification — Token Accumulation Tests — PASS
+## Task 5.1 — Update fleet SKILL.md — PASS
 
-Commit `aa177e2` adds three test changes to `tests/execute-prompt.test.ts`:
+`skills/fleet/SKILL.md:26`: `provision_auth` → `provision_llm_auth`. Correct.
 
-1. **"accumulates tokenUsage on agent when usage is present in response"** (line 270-281) — Creates an agent with no prior `tokenUsage`, sends a response with `{ input_tokens: 50, output_tokens: 75 }`, asserts `getAgent(id).tokenUsage` equals `{ input: 50, output: 75 }`. Verifies the fresh-accumulation path.
+`skills/fleet/SKILL.md`: `update_task_tokens` row removed from tool table. Correct.
 
-2. **"accumulates tokenUsage on top of existing values when agent already has tokenUsage"** (line 283-294) — Creates an agent pre-seeded with `tokenUsage: { input: 30, output: 20 }`, sends a response with `{ input_tokens: 10, output_tokens: 5 }`, asserts `getAgent(id).tokenUsage` equals `{ input: 40, output: 25 }`. Verifies the additive accumulation path.
+No other stale references in this file. Clean.
 
-3. **"does not append token line when usage is absent"** (line 267) — Extended to also assert `getAgent(id).tokenUsage` is `undefined`. Verifies the no-op path when `parsed.usage` is absent.
+---
 
-All three tests directly verify the `updateAgent` call's effect by reading back from the registry via `getAgent` — this is the correct approach (testing the observable side effect rather than mocking internals).
+## Task 5.2 — Update fleet onboarding.md — PASS
 
-The import of `getAgent` from `../src/services/registry.js` at line 3 is the only non-test change. Clean.
+No stale `provision_auth` or `update_task_tokens` references existed. Confirmed clean.
+
+---
+
+## Task 5.3 — Update PM skill docs — PASS
+
+`skills/pm/doer-reviewer.md:88`: Mid-sprint denial guidance added under `## Permissions`. Matches PLAN.md specification verbatim. Clean.
+
+`skills/pm/single-pair-sprint.md:77`: Same mid-sprint denial guidance added under `### Permissions`. Clean.
+
+No stale `update_task_tokens` or `provision_auth` references existed in PM docs.
+
+---
+
+## Task 5.4 — Final stale-reference grep — FAIL
+
+The doer's grep was scoped to `skills/` and `src/` (matching the PLAN), and those directories are clean: zero matches for `provision_auth|update_task_tokens|claude.version|claude.auth`.
+
+**However, the sweep missed `tests/`.** Two test files still contain stale `provision_auth` references:
+
+### Finding 1 (BLOCKING) — `tests/integration.test.ts:210` — silent test regression
+
+```ts
+result.includes('/login') && result.includes('provision_auth')
+  ? ok(`Auth error detected on ${ac.friendly_name}`)
+  : skip(`Auth detect ${ac.friendly_name} — unexpected result ...`);
+```
+
+`authErrorAdvice()` in `src/utils/prompt-errors.ts` now returns `provision_llm_auth`. This means `result.includes('provision_auth')` will **always be false**, so the auth-detection test will silently skip every time — it can never detect auth errors anymore. This is a functional regression in the integration test.
+
+**Fix:** Change `provision_auth` → `provision_llm_auth` on line 210.
+
+### Finding 2 (BLOCKING) — `tests/integration.test.ts:104` — stale skip message
+
+```ts
+: skip('~/.claude/.credentials.json missing — provision_auth will be skipped for remote agents');
+```
+
+The tool is now named `provision_llm_auth`. This is a user-visible message.
+
+**Fix:** Change `provision_auth` → `provision_llm_auth` on line 104.
+
+### Finding 3 (NON-BLOCKING) — `tests/auth-socket.test.ts` — stale tool name in direct calls
+
+Lines 372, 389, 400, 404, 411, 415: Tests call `collectOobApiKey('...', 'provision_auth', ...)` and assert fallback messages contain `'provision_auth'`. These tests still pass because `collectOobApiKey` uses whatever tool name is passed to it — so the function works correctly with any string. However, the tests no longer reflect production usage where `provisionAuth()` now passes `'provision_llm_auth'`.
+
+**Recommended fix:** Update the tool name argument to `'provision_llm_auth'` in all 6 occurrences, and update the `.toContain('provision_auth')` assertions on lines 404 and 415 to `.toContain('provision_llm_auth')`. This keeps the tests aligned with the actual caller.
+
+---
+
+## Source file changes — PASS
+
+The commit also updated `provision_auth` → `provision_llm_auth` in user-facing strings across source files. All changes are correct:
+
+- `src/services/cloud/lifecycle.ts:40,44` — log messages. PASS.
+- `src/tools/provision-auth.ts:90,252` — error message and OOB tool name. PASS.
+- `src/tools/register-member.ts:40,199,200,204` — schema description and warning messages. PASS.
+- `src/utils/prompt-errors.ts:18` — `authErrorAdvice` message. PASS.
+
+Corresponding test updates:
+- `tests/execute-prompt.test.ts:59` — assertion updated. PASS.
+- `tests/prompt-errors.test.ts:32,35` — test name and assertion updated. PASS.
+- `tests/security-hardening.test.ts:278` — assertion updated. PASS.
+- `tests/tool-provider.test.ts:198` — assertion updated. PASS.
 
 ---
 
 ## Build & Full Test Suite — PASS
 
-- `npx tsc --noEmit` — clean, no type errors
-- `npx vitest run` — 40 test files, 628 passed, 4 skipped. No failures.
-
-Test count: 626 → 628 (+2 new tests; the third change extended an existing test rather than adding a new one). Correct.
+- `npm test` — 40 test files, 628 passed, 4 skipped. No failures.
+- Zero stale references in `skills/` and `src/` (confirmed via grep).
 
 ---
 
-## Phase 1+2+3 Regression Check — PASS
+## Phase 1–4 Regression Check — PASS
 
-No source files outside `tests/execute-prompt.test.ts` were modified. All prior phase tests continue to pass.
+No prior phase source files (`compose-permissions.ts`, `member-detail.ts`, `execute-command.ts`, `execute-prompt.ts`, `check-status.ts`, `types.ts`) were modified in Phase 5. `git diff d977bfc..7662a22` shows no changes to these files. All prior phase tests continue to pass.
 
 ---
 
@@ -49,16 +114,15 @@ No source files outside `tests/execute-prompt.test.ts` were modified. All prior 
 
 | Task | Verdict | Notes |
 |------|---------|-------|
-| 4.1 — Add tokenUsage to Agent type | PASS | Unchanged since initial review |
-| 4.2 — Auto-accumulate in execute_prompt | PASS | Code + tests now both verified |
-| 4.3 — Surface in member_detail | PASS | Unchanged since initial review |
-| 4.4 — Surface in fleet_status | PASS | Unchanged since initial review |
-| 4.5 — Remove update_task_tokens | PASS | Unchanged since initial review |
-| V4 — npm test | PASS | 628 passed, 4 skipped (40 files) |
-| Phase 1+2+3 regression | PASS | No regressions |
+| 5.1 — Update fleet SKILL.md | PASS | `provision_llm_auth` renamed, `update_task_tokens` removed |
+| 5.2 — Update fleet onboarding.md | PASS | No stale refs existed |
+| 5.3 — Update PM skill docs | PASS | Mid-sprint denial guidance added |
+| 5.4 — Final stale-reference grep | FAIL | Sweep missed `tests/` — 2 blocking + 1 non-blocking stale refs |
+| V5 — npm test | PASS | 628 passed, 4 skipped |
+| Phase 1–4 regression | PASS | No regressions |
 
-**Non-blocking (carried forward to Phase 5):** `member_detail` shows token string even when both values are 0; `fleet_status` suppresses zeros. Minor inconsistency.
+**Blocking:** Fix the 2 stale `provision_auth` references in `tests/integration.test.ts` (lines 104 and 210). Line 210 is a silent regression — the auth-detection integration test can never pass with the old string.
 
-**Non-blocking (carried from Phase 3):** User-facing strings in `src/` still reference `provision_auth` — Phase 5 Task 5.4 scope.
+**Non-blocking:** Update 6 stale `provision_auth` occurrences in `tests/auth-socket.test.ts` to match production usage.
 
-Phase 4 is complete. Ready for Phase 5.
+**Carried forward from Phase 4 (non-blocking):** `member_detail` shows token string even when both values are 0; `fleet_status` suppresses zeros. Minor display inconsistency.
