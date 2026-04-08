@@ -1,0 +1,128 @@
+{
+  "plan": "onboarding-ux",
+  "branch": "feat/onboarding-ux",
+  "base": "main",
+  "created": "2026-04-08",
+  "phases": [
+    {
+      "id": 1,
+      "name": "Foundations",
+      "status": "pending",
+      "tasks": [
+        {
+          "id": "1.1",
+          "name": "Onboarding state service",
+          "tier": "standard",
+          "status": "pending",
+          "files": ["src/services/onboarding.ts", "src/types.ts"],
+          "notes": ""
+        },
+        {
+          "id": "1.2",
+          "name": "Text constants module",
+          "tier": "cheap",
+          "status": "pending",
+          "files": ["src/onboarding/text.ts"],
+          "notes": ""
+        }
+      ],
+      "verify": {
+        "id": "V1",
+        "status": "pending",
+        "checks": ["npm run build succeeds", "npm test passes", "onboarding state unit tests pass"]
+      }
+    },
+    {
+      "id": 2,
+      "name": "Core Integration",
+      "status": "pending",
+      "tasks": [
+        {
+          "id": "2.1",
+          "name": "Central wrapTool() in index.ts",
+          "tier": "standard",
+          "status": "pending",
+          "files": ["src/index.ts"],
+          "notes": "Riskiest change — touches all 21 tool registrations"
+        },
+        {
+          "id": "2.2",
+          "name": "First-run banner + getting started guide",
+          "tier": "cheap",
+          "status": "pending",
+          "files": ["src/services/onboarding.ts"],
+          "notes": ""
+        }
+      ],
+      "verify": {
+        "id": "V2",
+        "status": "pending",
+        "checks": ["npm run build succeeds", "ALL existing tests pass", "banner shown once test", "JSON tool skip test"]
+      }
+    },
+    {
+      "id": 3,
+      "name": "Contextual Nudges",
+      "status": "pending",
+      "tasks": [
+        {
+          "id": "3.1",
+          "name": "Post-registration and post-prompt nudges",
+          "tier": "standard",
+          "status": "pending",
+          "files": ["src/services/onboarding.ts", "src/index.ts"],
+          "notes": ""
+        },
+        {
+          "id": "3.2",
+          "name": "Review cycle celebration + welcome-back",
+          "tier": "cheap",
+          "status": "pending",
+          "files": ["src/services/onboarding.ts", "src/index.ts"],
+          "notes": ""
+        }
+      ],
+      "verify": {
+        "id": "V3",
+        "status": "pending",
+        "checks": ["npm run build succeeds", "all tests pass", "nudge sequence test", "welcome-back test"]
+      }
+    },
+    {
+      "id": 4,
+      "name": "Hardening & Polish",
+      "status": "pending",
+      "tasks": [
+        {
+          "id": "4.1",
+          "name": "Edge cases and defensive behavior",
+          "tier": "cheap",
+          "status": "pending",
+          "files": ["src/services/onboarding.ts"],
+          "notes": "Upgrade detection: existing registry + no onboarding.json = skip banner"
+        },
+        {
+          "id": "4.2",
+          "name": "Final test coverage and cleanup",
+          "tier": "cheap",
+          "status": "pending",
+          "files": ["tests/onboarding.test.ts", "tests/onboarding-text.test.ts"],
+          "notes": ""
+        }
+      ],
+      "verify": {
+        "id": "V4",
+        "status": "pending",
+        "checks": ["npm run build succeeds", "ALL tests pass", "acceptance criteria checklist"]
+      }
+    }
+  ],
+  "risks": [
+    {"id": "R1", "description": "wrapTool refactor breaks JSON-returning tools", "impact": "high", "mitigation": "Skip prepend when response starts with { or ["},
+    {"id": "R2", "description": "Prepending to error responses confuses AI agent", "impact": "medium", "mitigation": "Only prepend/append to successful responses"},
+    {"id": "R3", "description": "Onboarding state file corruption", "impact": "low", "mitigation": "Treat corrupt file as default state; atomic writes"},
+    {"id": "R4", "description": "Existing users see banner after upgrade", "impact": "medium", "mitigation": "Detect existing registry → pre-set bannerShown=true"},
+    {"id": "R5", "description": "Review cycle heuristic false-positives", "impact": "low", "mitigation": "Conservative keyword matching; only on execute_prompt"},
+    {"id": "R6", "description": "Welcome-back registry read fails", "impact": "low", "mitigation": "Graceful fallback: generic 'Fleet ready.' message"}
+  ]
+}
