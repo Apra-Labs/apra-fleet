@@ -10,9 +10,9 @@ import type { Agent } from '../types.js';
 export const sendFilesSchema = z.object({
   ...memberIdentifier,
   local_paths: z.array(z.string()).describe('Array of local file paths to upload'),
-  dest_dir: z.string().optional().describe(
-    'Destination directory on the member. Defaults to the member\'s work_folder — ' +
-    'omit this parameter in most cases. Must be a directory path, not a filename. ' +
+  dest_subdir: z.string().optional().describe(
+    'Destination subdirectory relative to work_folder on the member. ' +
+    'Defaults to work_folder root (equivalent to "."). ' +
     'Paths outside work_folder are rejected.'
   ),
 });
@@ -29,26 +29,26 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
     return `Failed to upload files to "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
 
-  if (input.dest_dir?.includes('\0')) {
-    return `⛔ Invalid dest_dir: null bytes are not allowed.`;
+  if (input.dest_subdir?.includes('\0')) {
+    return `⛔ Invalid dest_subdir: null bytes are not allowed.`;
   }
 
-  // Path security: verify dest_dir stays within work_folder
+  // Path security: verify dest_subdir stays within work_folder
   let resolvedPath: string | undefined;
-  if (input.dest_dir) {
+  if (input.dest_subdir) {
     if (agent.agentType === 'local') {
-      const resolved = path.resolve(agent.workFolder, input.dest_dir);
+      const resolved = path.resolve(agent.workFolder, input.dest_subdir);
       const workFolderNorm = path.resolve(agent.workFolder);
       if (resolved !== workFolderNorm && !resolved.startsWith(workFolderNorm + path.sep)) {
-        return 'dest_dir resolves outside member work_folder — write blocked';
+        return 'dest_subdir resolves outside member work_folder — write blocked';
       }
       resolvedPath = resolved;
     } else {
       const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
       const normalizedWorkFolder = workFolderPosix.replace(/\/$/, '');
-      const resolved = path.posix.resolve(workFolderPosix, input.dest_dir.replace(/\\/g, '/'));
+      const resolved = path.posix.resolve(workFolderPosix, input.dest_subdir.replace(/\\/g, '/'));
       if (resolved !== normalizedWorkFolder && !resolved.startsWith(normalizedWorkFolder + '/')) {
-        return 'dest_dir resolves outside member work_folder — write blocked';
+        return 'dest_subdir resolves outside member work_folder — write blocked';
       }
       resolvedPath = resolved;
     }
@@ -59,7 +59,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    const result = await strategy.transferFiles(input.local_paths, input.dest_dir);
+    const result = await strategy.transferFiles(input.local_paths, input.dest_subdir);
 
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
