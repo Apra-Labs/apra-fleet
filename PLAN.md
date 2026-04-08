@@ -315,7 +315,8 @@ Items marked 🌱 are good first issues for new contributors.
 
 ## Medium-term (3-6 months)
 
-- [ ] **Multi-provider agent support** — First-class Gemini CLI, Codex CLI, Copilot CLI support beyond Claude Code
+- [ ] **Codex CLI & GitHub Copilot support** — First-class support for Codex CLI and GitHub Copilot as member agents — coming soon 🚀
+- [ ] **Gemini CLI support** — First-class Gemini CLI support as a member agent provider — coming soon 🚀
 - [ ] **File sync / watch mode** — Bidirectional file sync between host and members
 - [ ] **Web dashboard** — Browser UI for fleet status and member management (foundation in `dashboard/`) 🌱
 - [ ] **Plugin system** — Community-built plugins for custom tools and providers
