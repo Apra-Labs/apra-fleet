@@ -85,8 +85,9 @@ User: "Run the full test suite on build-server"
 ### 3. Send files then execute
 ```
 User: "Send src/ to build-server and run npm build"
-→ Call send_files with local_paths=["src/"], then execute_command
+→ Call send_files with local_paths=["src/index.ts", "src/utils.ts"] (individual file paths), then execute_command
 ```
+Note: send_files accepts individual file paths only — directories and glob patterns are not yet supported (see issue #98).
 
 ### 4. Check fleet status
 ```
