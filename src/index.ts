@@ -44,7 +44,7 @@ async function startServer() {
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
 
   // Load onboarding state once at server startup (in-memory singleton)
-  const { loadOnboardingState, getFirstRunPreamble, isJsonResponse } = await import('./services/onboarding.js');
+  const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingNudge, getWelcomeBackPreamble } = await import('./services/onboarding.js');
   loadOnboardingState();
 
   // Tool schemas and handlers
@@ -77,12 +77,7 @@ async function startServer() {
   // tools (fleet_status, list_members, member_detail, monitor_task).
 
   function getOnboardingPreamble(): string | null {
-    return getFirstRunPreamble();
-  }
-
-  // Stub — filled in Task 3.1
-  function getOnboardingNudge(_toolName: string, _input: any, _result: string): string | null {
-    return null;
+    return getFirstRunPreamble() ?? getWelcomeBackPreamble();
   }
 
   function wrapTool(toolName: string, handler: (input: any) => Promise<string>) {
