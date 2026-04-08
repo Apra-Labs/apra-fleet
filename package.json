@@ -41,7 +41,7 @@
     "remote-execution",
     "ssh"
   ],
-  "license": "CC-BY-SA-3.0",
+  "license": "Apache-2.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
     "smol-toml": "^1.6.1",

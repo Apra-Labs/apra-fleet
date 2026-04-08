@@ -110,4 +110,4 @@ node dist/index.js install     # Dev-mode install (registers MCP, hooks, statusl
 
 ## License
 
-CC BY-SA 3.0
+Apache 2.0 — see [LICENSE](LICENSE) for the full text.
