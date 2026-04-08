@@ -293,3 +293,135 @@ None of the 5 RECs were addressed in Phase 3. This is acceptable — they are al
 Phase 3 completes the contextual nudges and welcome-back features cleanly. `getOnboardingNudge()` correctly uses `input.member_type` (no response parsing), appends nudges after tool results, gates each nudge behind a persistent milestone flag, and follows the correct sequence (first-register → multi-member → first-prompt). Welcome-back works correctly: null on first run, shows once per lifecycle with accurate member count and relative last-active time, falls back to "Fleet ready." with zero agents. Phases 1-3 integrate without friction — the preamble chain (`getFirstRunPreamble() ?? getWelcomeBackPreamble()`) and the suffix (`getOnboardingNudge()`) work independently within `wrapTool`. Test coverage is thorough with 14 new tests covering all nudge scenarios and welcome-back edge cases. One minor issue noted: `formatLastActive` could produce `"NaNd ago"` on malformed `lastUsed` — trivial to harden in Phase 4.
 
 **All 9 review criteria pass. APPROVED.**
+
+---
+---
+
+# Onboarding & User Engagement — Final Review (Cumulative, Phases 1-4)
+
+**Reviewer:** reviewerAF
+**Date:** 2026-04-08
+**Scope:** Phase 4 (Hardening & Polish) + cumulative review of ALL phases (1-4)
+**Verdict:** APPROVED
+
+---
+
+## Prior RECs Resolution
+
+| REC | Status | Resolution |
+|-----|--------|------------|
+| REC-1 (WELCOME_BACK box-drawing width) | **Resolved** | Box-drawing replaced with fixed-width separator lines (`text.ts:79-82`). Dynamic content no longer causes alignment issues. |
+| REC-2 (double enforceOwnerOnly) | **Resolved** | Redundant `enforceOwnerOnly(tmp)` removed. Only the final file gets `enforceOwnerOnly` after `renameSync` (`onboarding.ts:73-74`). |
+| REC-3 (no permission test) | **Resolved** | Permission test added at `onboarding.test.ts:128-137` — verifies `0o600` via `fs.statSync`. |
+| REC-4 (JSON first-call consumes banner) | **Resolved** | `wrapTool` now checks `isJsonResponse` *before* calling `getOnboardingPreamble()` (`index.ts:89-90`). Banner milestone is not consumed on JSON responses; retried on next non-JSON call. Integration tests verify (`onboarding.test.ts:385-415`). |
+| REC-5 (startup missing member count) | **Resolved** | `loadOnboardingState(getAgentsForStartup().length)` at `index.ts:50`. Upgrade detection now fires correctly. |
+
+All 5 non-blocking RECs addressed. ✓
+
+---
+
+## formatLastActive NaN Guard
+
+- `onboarding.ts:171`: `.filter(t => !isNaN(t))` added to the timestamp pipeline, filtering out `NaN` values from malformed `lastUsed` strings before `Math.max()`.
+- If all timestamps are invalid, `times` is empty → returns `'unknown'`. Correct.
+- Test at `onboarding.test.ts:535-549`: agent with `lastUsed: 'not-a-date'` → output contains `'unknown'`, does not contain `'NaN'`. ✓
+
+---
+
+## Upgrade Detection
+
+- `loadOnboardingState(existingMemberCount)` at `onboarding.ts:37-48`: if no `onboarding.json` AND `existingMemberCount > 0`, sets `bannerShown = true`.
+- Startup call at `index.ts:48-50`: imports `getAllAgents` as `getAgentsForStartup`, passes `.length` to `loadOnboardingState`.
+- Scenario: existing fleet with members, user upgrades to version with onboarding → no onboarding.json exists → `existingMemberCount > 0` → `bannerShown = true` → banner skipped. Correct.
+- Test at `onboarding.test.ts:57-61`: `loadOnboardingState(3)` → `bannerShown === true`. ✓
+
+---
+
+## Corruption Recovery
+
+- `onboarding.ts:55-58`: `catch` block on `JSON.parse` returns `DEFAULT_STATE` and writes warning to stderr. Does not throw, does not crash.
+- Forward-compat: `{ ...DEFAULT_STATE, ...parsed }` merges with defaults at line 54, so files from older versions with fewer fields are handled.
+- Test at `onboarding.test.ts:76-85`: writes `'not-valid-json{{{' → loadOnboardingState()` returns default state without throwing. ✓
+
+---
+
+## Token Cost Estimate
+
+- `text.ts:6-33`: detailed comment block with per-constant token estimates.
+- One-time: ~370 tokens (banner + guide). Recurring: ~20 tokens/server-start (welcome-back). All nudges: ~80 tokens total.
+- Methodology documented (~4 chars/token). Numbers are reasonable for the string lengths involved. ✓
+
+---
+
+## Acceptance Criteria (requirements.md)
+
+### a. First call after fresh install shows ASCII banner + guide — PASS
+- `getFirstRunPreamble()` returns `BANNER + '\n' + GETTING_STARTED_GUIDE` when `bannerShown === false`.
+- `BANNER` in `text.ts:36-47` matches `requirements.md` ASCII art exactly (verified character-by-character).
+- Test: `onboarding.test.ts:213-221`.
+
+### b. Banner never appears again — PASS
+- `advanceMilestone('bannerShown')` called before return in `getFirstRunPreamble()`. State persisted to disk immediately.
+- Second call returns `null`. Survives server restart (test: `onboarding.test.ts:232-243`).
+
+### c. Contextual nudges after correct triggers, each at most once — PASS
+- `register_member` + `✅` → first-register nudge (once) → multi-member nudge at 2+ agents (once).
+- `execute_prompt` + `📋` → prompt nudge (once).
+- Each gated by `shouldShow()` → `advanceMilestone()` → persistent.
+- Review cycle nudge deferred (sensible — requires PM skill integration). Documented in PLAN.md.
+- Full sequence test: `onboarding.test.ts:440-476`.
+
+### d. Welcome-back once per server lifecycle (not first run) — PASS
+- `getWelcomeBackPreamble()` returns `null` when `bannerShown === false` (first run).
+- Returns welcome-back text once, then `null` (session flag `welcomeBackShownThisSession`).
+- Tests: `onboarding.test.ts:479-533`.
+
+### e. State persists across restarts — PASS
+- In-memory singleton loaded at startup, written to disk on every `advanceMilestone()` call.
+- Atomic write (temp + rename) at `onboarding.ts:71-74`.
+- Persistence test: `onboarding.test.ts:232-243` (reset, reload from disk, verify state retained).
+
+### f. Upgrade preserves state — PASS
+- Existing registry + no onboarding.json → `bannerShown = true` (upgrade detection).
+- Existing onboarding.json → loaded and merged with defaults (forward-compat for new fields).
+- `install.ts:14-16` explicitly documents that data dir is never touched by install.
+
+### g. All existing tests pass + new tests cover onboarding — PASS
+- Full suite: **658 passed**, 1 failed (pre-existing `platform.test.ts` PATH env), 3 skipped.
+- 2 suite failures (pre-existing: `smol-toml` in `install-multi-provider.test.ts`, `platform.test.ts`).
+- **57 new onboarding tests** (43 service + 14 text constants). No regressions.
+
+### h. Works in dev mode and SEA binary mode — PASS
+- All text constants are in code (`text.ts`), not in external files — no embedded asset requirements.
+- State file path uses `FLEET_DIR` which respects `APRA_FLEET_DATA_DIR` env override (`paths.ts:4`).
+- No new production dependencies.
+
+---
+
+## Security — PASS
+
+- State file: `0o600` permissions (`onboarding.ts:72`), fleet dir: `0o700` (`onboarding.ts:27`).
+- `enforceOwnerOnly()` called on final file after atomic rename.
+- No user input flows into text constants — all strings are hardcoded in `text.ts`.
+- No `eval`, no template interpolation with user data, no shell execution.
+- No path traversal: `ONBOARDING_PATH` derived from `FLEET_DIR` constant.
+- No new dependencies.
+
+---
+
+## Code Quality — PASS
+
+- **Clean separation**: state management (`onboarding.ts`), text constants (`text.ts`), integration point (`index.ts` `wrapTool`).
+- **Minimal surface**: `wrapTool` is the single integration point — all 21 tools flow through it without individual modification.
+- **Defensive without over-engineering**: corruption recovery, NaN guard, upgrade detection — each is a few lines, not a framework.
+- **Test quality**: each test is focused, uses temp dirs for isolation, `_resetForTest()` for state cleanup. Integration tests replicate `wrapTool` logic to verify composition without needing to start the full MCP server.
+- **No unnecessary abstractions**: `formatLastActive` is the only helper, and it's well-scoped.
+- Diff is +1735 lines across 11 files. Proportionate for the feature scope.
+
+---
+
+## Summary
+
+The onboarding feature is complete across all 4 phases. All 5 non-blocking RECs from prior reviews are resolved. The `formatLastActive` NaN bug is fixed. Upgrade detection correctly prevents the banner for existing users. Corruption recovery is robust. Token cost is documented and reasonable (~370 one-time, ~20 recurring). All 8 acceptance criteria from requirements.md are met. 658 tests pass with no regressions. Code is clean, well-structured, and secure.
+
+**All 8 final review criteria pass. APPROVED.**
