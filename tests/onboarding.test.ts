@@ -124,6 +124,17 @@ describe('saveOnboardingState', () => {
     expect(fs.existsSync(tmp)).toBe(false);
     expect(fs.existsSync(ONBOARDING_PATH)).toBe(true);
   });
+
+  it('writes onboarding.json with 0o600 permissions (owner-only)', async () => {
+    const { loadOnboardingState, saveOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    saveOnboardingState();
+
+    const stat = fs.statSync(ONBOARDING_PATH);
+    // Mask to lower 9 permission bits
+    const perms = stat.mode & 0o777;
+    expect(perms).toBe(0o600);
+  });
 });
 
 describe('advanceMilestone', () => {
@@ -418,5 +429,21 @@ describe('getWelcomeBackPreamble', () => {
     expect(result).not.toBeNull();
     expect(result).toContain('1 member');
     expect(result).toContain('2h ago');
+  });
+
+  it('shows "unknown" lastActive when agent has a malformed lastUsed (NaN guard)', async () => {
+    const { loadOnboardingState, getWelcomeBackPreamble, _resetForTest } = await import('../src/services/onboarding.js');
+    fs.writeFileSync(ONBOARDING_PATH, JSON.stringify({ bannerShown: true, firstMemberRegistered: true, firstPromptExecuted: false, multiMemberNudgeShown: false }), { mode: 0o600 });
+    _resetForTest();
+    loadOnboardingState();
+
+    writeRegistry([
+      { id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString(), lastUsed: 'not-a-date' },
+    ]);
+
+    const result = getWelcomeBackPreamble();
+    expect(result).not.toBeNull();
+    expect(result).not.toContain('NaN');
+    expect(result).toContain('unknown');
   });
 });

@@ -70,7 +70,6 @@ export function saveOnboardingState(): void {
 
   const tmp = ONBOARDING_PATH + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(_state, null, 2), { mode: 0o600 });
-  enforceOwnerOnly(tmp);
   fs.renameSync(tmp, ONBOARDING_PATH);
   enforceOwnerOnly(ONBOARDING_PATH);
 }
@@ -168,7 +167,8 @@ function formatLastActive(agents: { lastUsed?: string }[]): string {
   const times = agents
     .map(a => a.lastUsed)
     .filter((t): t is string => Boolean(t))
-    .map(t => new Date(t).getTime());
+    .map(t => new Date(t).getTime())
+    .filter(t => !isNaN(t)); // guard against malformed date strings
   if (times.length === 0) return 'unknown';
   const diff = Date.now() - Math.max(...times);
   const minutes = Math.floor(diff / 60000);

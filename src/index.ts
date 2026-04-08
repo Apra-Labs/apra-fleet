@@ -45,7 +45,9 @@ async function startServer() {
 
   // Load onboarding state once at server startup (in-memory singleton)
   const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingNudge, getWelcomeBackPreamble } = await import('./services/onboarding.js');
-  loadOnboardingState();
+  const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
+  // Pass current member count so upgrade detection works: existing registry + no onboarding.json → skip banner
+  loadOnboardingState(getAgentsForStartup().length);
 
   // Tool schemas and handlers
   const { registerMemberSchema, registerMember } = await import('./tools/register-member.js');
@@ -83,10 +85,12 @@ async function startServer() {
   function wrapTool(toolName: string, handler: (input: any) => Promise<string>) {
     return async (input: any) => {
       const result = await handler(input);
-      const preamble = getOnboardingPreamble();
+      // Check JSON first so we don't consume the banner milestone on JSON-returning tools
+      const isJson = isJsonResponse(result);
+      const preamble = isJson ? null : getOnboardingPreamble();
       const suffix = getOnboardingNudge(toolName, input, result);
       let text = result;
-      if (preamble && !isJsonResponse(result)) text = preamble + '\n\n---\n\n' + text;
+      if (preamble) text = preamble + '\n\n---\n\n' + text;
       if (suffix) text = text + '\n\n---\n\n' + suffix;
       return { content: [{ type: 'text' as const, text }] };
     };
