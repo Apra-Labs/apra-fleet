@@ -12,18 +12,16 @@ Items marked 🌱 are good first issues for new contributors.
 - [ ] **npm publish** — Publish to npm so users can `npx apra-fleet install` 🌱
 - [ ] **Cursor / Windsurf integration guide** — Step-by-step docs for non-Claude-Code AI assistants 🌱
 - [ ] **Codex CLI & GitHub Copilot support** — First-class support as member agent providers — coming soon 🚀
-- [ ] **Connection health checks** — Periodic SSH keepalive pings with automatic reconnect
 - [ ] **Member groups / tags** — Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups
 - [ ] **Session log export** — Export prompt execution history as markdown 🌱
 
 ## Medium-term (3-6 months)
 
 - [ ] **Expanded member targets** — Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
-- [ ] **File sync / watch mode** — Bidirectional file sync between host and members
 - [ ] **Web dashboard** — Browser UI for fleet status and member management (foundation in `dashboard/`) 🌱
 - [ ] **Plugin system** — Community-built plugins for custom tools and providers
 - [ ] **Result aggregation** — Merge outputs from parallel member executions into a unified report
-- [ ] **Cost dashboard** — Visualize cloud compute spend across members
+- [ ] **Cost dashboard** — Visualize token and cloud spend across members
 
 ## Long-term (6+ months)
 
