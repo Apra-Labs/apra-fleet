@@ -165,6 +165,70 @@ describe('shouldShow', () => {
   });
 });
 
+describe('isJsonResponse', () => {
+  it('returns true for object JSON', async () => {
+    const { isJsonResponse } = await import('../src/services/onboarding.js');
+    expect(isJsonResponse('{"members":[]}')).toBe(true);
+    expect(isJsonResponse('{ "foo": 1 }')).toBe(true);
+  });
+
+  it('returns true for array JSON', async () => {
+    const { isJsonResponse } = await import('../src/services/onboarding.js');
+    expect(isJsonResponse('[1,2,3]')).toBe(true);
+    expect(isJsonResponse('[ ]')).toBe(true);
+  });
+
+  it('returns false for non-JSON responses', async () => {
+    const { isJsonResponse } = await import('../src/services/onboarding.js');
+    expect(isJsonResponse('✅ Member registered.')).toBe(false);
+    expect(isJsonResponse('❌ Error: member not found')).toBe(false);
+    expect(isJsonResponse('Fleet ready.')).toBe(false);
+    expect(isJsonResponse('')).toBe(false);
+  });
+});
+
+describe('getFirstRunPreamble', () => {
+  it('returns banner + guide on fresh install (first call)', async () => {
+    const { loadOnboardingState, getFirstRunPreamble } = await import('../src/services/onboarding.js');
+    loadOnboardingState(); // fresh state — bannerShown = false
+
+    const result = getFirstRunPreamble();
+    expect(result).not.toBeNull();
+    expect(result).toContain('One model is a tool'); // tagline in ASCII art banner
+    expect(result).toContain('Getting Started');      // guide header
+  });
+
+  it('returns null on second call (banner already shown)', async () => {
+    const { loadOnboardingState, getFirstRunPreamble } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+
+    getFirstRunPreamble(); // first call shows banner
+    const second = getFirstRunPreamble(); // second call must return null
+    expect(second).toBeNull();
+  });
+
+  it('persists bannerShown so server crash cannot re-show banner', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, _resetForTest } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    getFirstRunPreamble(); // marks bannerShown = true and writes to disk
+
+    // Simulate server restart
+    _resetForTest();
+    loadOnboardingState(); // reloads from disk
+
+    const result = getFirstRunPreamble();
+    expect(result).toBeNull(); // must not show banner again
+  });
+
+  it('returns null when state is loaded with bannerShown=true (upgrade/existing user)', async () => {
+    const { loadOnboardingState, getFirstRunPreamble } = await import('../src/services/onboarding.js');
+    loadOnboardingState(3); // 3 existing members → upgrade path → bannerShown=true
+
+    const result = getFirstRunPreamble();
+    expect(result).toBeNull();
+  });
+});
+
 describe('session flags', () => {
   it('welcomeBackShownThisSession starts false', async () => {
     const mod = await import('../src/services/onboarding.js');

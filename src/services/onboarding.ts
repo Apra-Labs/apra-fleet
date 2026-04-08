@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { OnboardingState } from '../types.js';
 import { FLEET_DIR } from '../paths.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
+import { BANNER, GETTING_STARTED_GUIDE } from '../onboarding/text.js';
 
 const ONBOARDING_PATH = path.join(FLEET_DIR, 'onboarding.json');
 
@@ -110,6 +111,28 @@ export function resetSessionFlags(): void {
  */
 export function markWelcomeBackShown(): void {
   welcomeBackShownThisSession = true;
+}
+
+/**
+ * Returns true if the tool response is JSON-formatted (starts with `{` or `[`).
+ * Used by wrapTool to skip prepending onboarding text to structured data responses.
+ * Covers: fleet_status, list_members, member_detail, monitor_task.
+ */
+export function isJsonResponse(result: string): boolean {
+  return result.startsWith('{') || result.startsWith('[');
+}
+
+/**
+ * Returns the first-run banner + getting started guide if this is the first tool
+ * call after a fresh install. Marks bannerShown and persists immediately so a
+ * server crash won't re-show the banner.
+ * Returns null if the banner has already been shown.
+ */
+export function getFirstRunPreamble(): string | null {
+  const state = getOnboardingState();
+  if (state.bannerShown) return null;
+  advanceMilestone('bannerShown');
+  return BANNER + '\n' + GETTING_STARTED_GUIDE;
 }
 
 /**
