@@ -33,7 +33,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `shutdown_server` | Shut down a remote member's server |
 
 See sub-documents for detailed usage:
-- `onboarding.md` — full 7-step member onboarding sequence
+- `onboarding.md` — full 8-step member onboarding sequence
 - `permissions.md` — permission composition and denial handling
 - `profiles/` — stack permission profiles (base-dev, base-reviewer, node, python, go, etc.) — add new profiles here to support additional stacks or roles
 - `troubleshooting.md` — fleet tool troubleshooting by symptom
