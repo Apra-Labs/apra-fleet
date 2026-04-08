@@ -1,6 +1,6 @@
 # Skill Matrix
 
-Maps project + role to required skills. Used during onboarding (Step 7).
+Maps project + role to required skills. Used during onboarding (Step 6).
 
 | Project | VCS | Role | Required Skills |
 |---------|-----|------|----------------|

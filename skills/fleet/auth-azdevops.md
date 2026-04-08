@@ -4,7 +4,7 @@ Personal Access Tokens (PATs) with configurable scopes and expiration. Auth: emp
 
 ## Setup
 
-1. Go to `https://dev.azure.com/{org}/_usersSettings/tokens`
+1. Go to `https://dev.azure.com/{org}/_settings/tokens`
 2. Click "New Token"
 3. Set descriptive name (e.g., "fleet-{name}")
 4. Select required scopes (see below)

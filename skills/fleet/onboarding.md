@@ -1,6 +1,6 @@
 # Member Onboarding
 
-After `register_member`, run these 7 steps before dispatching any work.
+After `register_member`, run these 8 steps before dispatching any work.
 
 ## Step 1: Setup SSH Key Auth (remote members only)
 
@@ -15,7 +15,7 @@ Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` w
 - **Codex:** `codex --version`
 - **Copilot:** `copilot --version`
 
-If the CLI is not installed or the command fails, run the provider's install command (`installAgent` via `execute_command`) before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
+If the LLM CLI is not installed or the command fails, use `update_llm_cli` to install it before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
 
 ## Step 2: Disable AI Attribution
 
@@ -47,7 +47,7 @@ Look up the member's project + VCS + roles in skill-matrix.md. Install any missi
 
 ## Step 7: Add Fleet Ephemeral Files to .gitignore
 
-Run `execute_command → echo '.fleet-task*' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
+Run `execute_command → echo '.fleet-task.md' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
 
 ## Step 8: Update Member Status File
 

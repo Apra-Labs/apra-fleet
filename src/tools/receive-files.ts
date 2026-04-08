@@ -15,8 +15,8 @@ export const receiveFilesSchema = z.object({
     'Always batch multiple files into a single call.'
   ),
   // No boundary restriction — caller controls their own local filesystem
-  local_destination: z.string().describe(
-    'Local directory to write the downloaded files into.'
+  local_dest_dir: z.string().describe(
+    'Required. Local directory to write the downloaded files into.'
   ),
 });
 
@@ -58,7 +58,7 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    const result = await strategy.receiveFiles(input.remote_paths, input.local_destination);
+    const result = await strategy.receiveFiles(input.remote_paths, input.local_dest_dir);
 
     touchAgent(agent.id);
 
@@ -78,7 +78,7 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
       }
     }
 
-    output += `\nLocal destination: ${input.local_destination}`;
+    output += `\nLocal destination: ${input.local_dest_dir}`;
 
     return output;
   } catch (err: any) {

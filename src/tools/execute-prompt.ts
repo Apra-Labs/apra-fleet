@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -84,8 +83,7 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
 }
 
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
-  const promptFileId = crypto.randomUUID().slice(0, 8);
-  const promptFileName = `.fleet-task-${promptFileId}.md`;
+  const promptFileName = `.fleet-task.md`;
 
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;

@@ -53,7 +53,7 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 4. If a member can finish in one session (1-3 steps), use ad-hoc `execute_prompt`. Otherwise use the task harness.
 5. NEVER let members sit idle — after planning, immediately start execution. At verify checkpoints, immediately dispatch reviews.
 6. During execution: keep going until stuck or done — don't wait for the user. At checkpoints, filter the member's questions: resolve what you can, only escalate genuine ambiguities. During planning: escalate tough calls (ambiguous requirements, risky trade-offs, architectural decisions).
-7. When making multiple sequential fleet calls — execute_command steps, send_files, receive_files — club them into a single background Agent rather than issuing individual calls.
+7. When executing a sequence of fleet calls — any combination of `send_files`, `execute_command`, `execute_prompt`, `receive_files` — club them into a single background Agent rather than issuing individual calls or multiple background agents.
 8. Never pass `dangerously_skip_permissions=true` to `execute_prompt` — always compose and deliver permissions via `compose_permissions` before dispatch (see fleet skill `permissions.md`).
 9. During a sprint, PLAN.md, progress.json, and feedback.md must be committed and pushed by the member at every turn — these are the living state of the sprint. Only the agent context file stays uncommitted. See context-file.md and doer-reviewer.md for details.
 10. Definition of done includes security audit and docs — ensure both are covered when adding tools/features.
@@ -91,3 +91,4 @@ PM manages members running different LLM providers (Claude, Gemini, Codex, Copil
 | **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to the appropriate model for each provider |
 | **CLI commands** | Handled by the server — PM never constructs provider CLI strings directly |
 | **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members |
+| **Attribution config** | Claude only (onboarding Step 2) — skip for all other providers |

@@ -7,7 +7,7 @@
 3. Compose and deliver permissions per `permissions.md` (fleet skill) for each member's role.
 4. Send the role-specific agent context file via `send_files` before dispatch. See `context-file.md` for provider filename lookup and role templates. Planning and plan review are dispatched as inline prompts — no agent context file needed for those phases.
 
-**Model tier check:** Reviews benefit from the highest reasoning tier available. Dispatch reviews with `model=premium`. If no premium option exists, use what is available — no warning needed. User's choice is final. Doers use `model=standard` by default unless the task tier specifies otherwise.
+**Model tier check:** Dispatch reviews with the costliest model tier available (`model=premium` where supported). Doers use `model=standard` by default unless the task tier specifies otherwise. User override always wins. 
 
 ## Pre-flight Checks
 
