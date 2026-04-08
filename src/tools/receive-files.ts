@@ -16,7 +16,7 @@ export const receiveFilesSchema = z.object({
   ),
   // No boundary restriction — caller controls their own local filesystem
   local_dest_dir: z.string().describe(
-    'Local directory to write the downloaded files into.'
+    'Required. Local directory to write the downloaded files into.'
   ),
 });
 
