@@ -33,7 +33,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `shutdown_server` | Shut down a remote member's server |
 
 See sub-documents for detailed usage:
-- `onboarding.md` — full 7-step member onboarding sequence
+- `onboarding.md` — full 8-step member onboarding sequence
 - `permissions.md` — permission composition and denial handling
 - `profiles/` — stack permission profiles (base-dev, base-reviewer, node, python, go, etc.) — add new profiles here to support additional stacks or roles
 - `troubleshooting.md` — fleet tool troubleshooting by symptom
@@ -67,10 +67,8 @@ Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
 Both `send_files` and `receive_files` are batch operations — always transfer all files in a single call, never one file per call.
 
-- `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content
-- `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc.
-- Both take a list of `{local_path, remote_path}` objects — bundle everything into one call
-- Remote path is relative to the member's `work_folder`
+- `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
+- `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
 
 ## Permissions
 
