@@ -2,114 +2,71 @@
 
 **Reviewer:** reviewerAF
 **Date:** 2026-04-08
-**Verdict:** CHANGES NEEDED
+**Verdict:** APPROVED
 
-> See the recent git history of this file to understand the context of this review.
+> Review cycle 2. Cycle 1 verdict: CHANGES NEEDED (6 must-fix, 4 recommended). This cycle re-evaluates the revised plan.
 
 ---
 
-## 1. Clear 'Done' Criteria — PASS
+## Must-Fix Resolution Check
 
-Every task has an explicit "Done" section with testable conditions. Task 1.1 specifies "unit test creates temp state file, advances milestones, verifies persistence." Task 2.1 specifies "all 21 tools use wrapTool()" and names specific edge case tests. Task 4.1 specifies corrupt JSON and upgrade-detection test scenarios. These are concrete enough that two developers would produce comparable verification.
+### MF-1: Task 2.1/2.2 dependency ordering — RESOLVED
+Task 2.1 now explicitly creates `getOnboardingPreamble()` and `getOnboardingNudge()` as stubs returning `null`. Task 2.2 fills in preamble, Task 3.1 fills in nudges. Each task is independently testable and the VERIFY 2 checklist includes "stubs return null (no behavior change)."
 
-## 2. Cohesion & Coupling — PASS
+### MF-2: Task 3.1 member type detection via response parsing — RESOLVED
+`wrapTool` now passes `toolName` and `input` to `getOnboardingNudge(toolName, input, result)`. Task 3.1 reads `input.member_type` directly. No response string parsing. The blockers section confirms `input.member_type` is always present in the register_member schema (verified — it's a required enum field with default `"remote"`).
 
-Task boundaries are well-drawn. State service (1.1) is pure file I/O with no MCP awareness. Text constants (1.2) are pure data with no logic. The wrapTool integration (2.1) is the only task that touches index.ts broadly. Nudge logic (3.1, 3.2) extends the service without re-opening the wrapTool structure. Coupling between tasks is limited to the `OnboardingState` interface and the `onboarding.ts` service API — both established in Phase 1.
+### MF-3: Review cycle heuristic — RESOLVED
+Dropped entirely from initial scope. `reviewCycleNudgeShown` removed from `OnboardingState`. Plan documents the rationale: the requirement implies PM skill integration, not keyword heuristics. R5 in the risk register updated to "DEFERRED." This is the right call.
 
-## 3. Shared Abstractions in Earliest Tasks — PASS
+### MF-4: `welcomeBackShownThisSession` mixed into persisted interface — RESOLVED
+Now a module-level variable in `onboarding.ts`. `OnboardingState` contains only: `bannerShown`, `firstMemberRegistered`, `firstPromptExecuted`, `multiMemberNudgeShown`. Clean separation.
 
-`OnboardingState` interface and the core service API (`loadOnboardingState`, `saveOnboardingState`, `advanceMilestone`, `shouldShow`) are all in Task 1.1. Text constants are in 1.2. Every later task imports from these two modules. Good layering.
+### MF-5: R7 concurrent first-call race — RESOLVED
+R7 added to risk register. Architecture Overview explicitly states "loaded once at server start into an in-memory singleton" with JS event loop serialization. Task 1.1 notes enforce this pattern.
 
-## 4. Riskiest Assumption Validated Early — PASS
+### MF-6: `lastActive` computation unspecified — RESOLVED
+Task 3.2 specifies: `lastActive = max(agent.lastActivity for all agents in registry)`, formatted as relative time, falls back to `"unknown"`. VERIFY 3 includes "welcome-back with member count + lastActive."
 
-The plan explicitly calls out Task 2.1 (wrapTool refactor) as the riskiest change and schedules it in Phase 2 with a dedicated VERIFY checkpoint that includes "ALL existing tests pass" and JSON edge-case tests. This is correct — if wrapTool breaks tool responses, everything downstream is invalid. Phase 2 is early enough to catch this before nudge logic is built on top.
+## Should-Fix Resolution Check
 
-## 5. Later Tasks Reuse Early Abstractions (DRY) — PASS
+### SF-1: `monitor_task` always returns JSON — RESOLVED
+Task 2.1 now explicitly lists `monitor_task` as always-JSON and the `isJsonResponse()` function explicitly covers it. R1 in the risk register updated to name all four JSON-returning tools.
 
-Tasks 3.1, 3.2, and 4.1 all work through the `advanceMilestone`/`shouldShow` API from Task 1.1 and import text from Task 1.2. No duplication of state management or text construction. The wrapTool from 2.1 is the single integration point for all preamble/append logic.
+### SF-2: Verify install CLI doesn't reset data directory — RESOLVED
+Task 4.1 now includes: "Verify `install` CLI (`src/cli/install.ts`) does not overwrite or reset the data directory — read the install flow and confirm it only writes hooks, scripts, and MCP config, not data files."
 
-## 6. 2-3 Work Tasks Per Phase + VERIFY — PASS
+### SF-3: Prepend-vs-append deviation acknowledged — RESOLVED
+Architecture Decision #5 explicitly documents the deviation and justifies it: "the requirement's intent is 'don't replace the tool response,' which appending also satisfies."
 
-Phase 1: 2 tasks + VERIFY. Phase 2: 2 tasks + VERIFY. Phase 3: 2 tasks + VERIFY. Phase 4: 2 tasks + VERIFY. This is exactly the right cadence.
+### SF-4: "First meaningful interaction" = "first tool call" equivalence — RESOLVED
+Architecture Overview, Decision #2 now states: "'First meaningful interaction' in the requirements = first MCP tool call (MCP tools are the only user-facing interaction surface)."
 
-## 7. Each Task Completable in One Session — PASS
+---
 
-All tasks are scoped to 1-3 files. The largest (Task 2.1) touches one file (index.ts) with a mechanical refactor (21 inline wrappers → wrapTool calls). No task requires cross-cutting changes or extensive research. Task tiers (standard vs cheap) are reasonable.
+## 12-Criteria Re-Evaluation
 
-## 8. Dependencies Satisfied in Order — FAIL
+1. **Clear 'done' criteria** — PASS. Unchanged from cycle 1; all tasks have testable done conditions.
+2. **High cohesion / low coupling** — PASS. Unchanged. The removal of `reviewCycleNudgeShown` from the interface actually improves cohesion.
+3. **Shared abstractions early** — PASS. `OnboardingState` and service API in Task 1.1, text in 1.2, stubs in 2.1.
+4. **Riskiest assumption early** — PASS. wrapTool refactor is Phase 2 with stub-based isolation.
+5. **Later tasks reuse early abstractions** — PASS. Tasks 3.1, 3.2, 4.1 all build on the Phase 1 + 2 foundation.
+6. **2-3 tasks + VERIFY per phase** — PASS. 4 phases, 2 tasks each, all with VERIFY checkpoints.
+7. **Each task one-session** — PASS. No task exceeds 3 files.
+8. **Dependencies in order** — PASS. The stub approach in 2.1 cleanly resolves the prior cycle's finding.
+9. **No ambiguous tasks** — PASS. Member type from input, lastActive specified, review cycle deferred.
+10. **No hidden dependencies** — PASS. JSON tools enumerated, runtime state separated, install CLI verified.
+11. **Risk register** — PASS. R1-R7 covers all identified risks. R5 honestly marked as deferred.
+12. **Alignment with requirements** — PASS. All deviations acknowledged and justified. Review cycle deferral is documented and reasonable.
 
-**Issue:** Task 2.2 ("First-run banner + getting started guide") adds `getFirstRunPreamble()` to `src/services/onboarding.ts`, but the plan says Task 2.1 calls `getOnboardingPreamble()`. There's an implicit dependency — 2.1's `wrapTool` references a function that doesn't exist until 2.2 implements it. The plan should clarify: either 2.1 includes a stub/no-op for `getOnboardingPreamble()` that 2.2 fills in, or 2.2 should be reordered before 2.1 (less likely to work since 2.1 is the integration point).
+---
 
-**Fix:** Add a note to Task 2.1 that it creates `getOnboardingPreamble()` as a stub returning `null` (no onboarding text), and Task 2.2 fills in the banner logic. This makes both tasks independently testable.
+## New Issues Introduced by Revisions
 
-**Doer:** fixed — Task 2.1 now explicitly creates `getOnboardingPreamble()` and `getOnboardingNudge()` as stubs returning `null`. Task 2.2 fills in preamble, Task 3.1 fills in nudges. Each task is independently testable.
-
-## 9. Vague Tasks / Ambiguity — FAIL
-
-**Issue 1 — Task 3.1 member type detection:** The plan says to "parse from the response text (`Type: remote` or `Type: local`)" to determine member type for the nudge. This is brittle string parsing of another tool's output format. If the register_member response format changes, the nudge breaks silently. Two developers could implement this differently (regex vs indexOf vs split).
-
-**Fix:** Instead of parsing the response string, pass the tool input (which contains `member_type`) into the nudge logic. The wrapTool wrapper has access to the input — thread it through.
-
-**Doer:** fixed — `wrapTool` now passes `toolName` and `input` to `getOnboardingNudge(toolName, input, result)`. Task 3.1 reads `input.member_type` directly. No response string parsing for member type.
-
-**Issue 2 — Task 3.2 review cycle detection:** The plan says to detect review-related keywords in execute_prompt responses. The "Done" criteria say `"approved" or "review complete"` but the What section says `"review", "approved", "LGTM"`. These don't match. Also, this heuristic will false-positive on any prompt that happens to contain these words (e.g., "review the PR" as an instruction, not a result).
-
-**Fix:** Tighten the keyword list to only `"approved"` and `"LGTM"` (results, not instructions). Document the exact list in both the What and Done sections. Alternatively, consider dropping the review cycle nudge entirely — it's low value and high false-positive risk, and the requirements say "After first review cycle complete" which implies integration with the PM skill's review tracking, not keyword-sniffing on raw prompt output.
-
-**Doer:** fixed — Review cycle celebration dropped from initial scope entirely. The requirement implies PM skill integration (doer-reviewer pairs), not keyword heuristics. `reviewCycleNudgeShown` removed from `OnboardingState`. Will implement when PM skill exposes a review-complete event.
-
-## 10. Hidden Dependencies — FAIL
-
-**Issue 1 — `monitor_task` always returns JSON:** The plan's R1 mitigation says "skip prepend when response starts with `{` or `[`". But `monitor_task` (line 99 of monitor-task.ts) always returns `JSON.stringify(result, null, 2)` — it has no compact/text mode. The plan doesn't mention `monitor_task` specifically. The heuristic of checking `{`/`[` prefix will catch it, but this should be explicitly called out and tested since it's a tool that ALWAYS returns JSON, not just optionally.
-
-**Issue 2 — `welcomeBackShownThisSession` in the interface but not persisted:** The plan says this is "in-memory only, not persisted" and listed in the `OnboardingState` interface in types.ts. This is a design smell — mixing persisted and runtime state in the same interface leads to bugs where someone accidentally persists it or where `loadOnboardingState()` returns it as `false` (from disk) even though the banner was already shown. 
-
-**Fix:** Keep `welcomeBackShownThisSession` as a separate module-level variable in `onboarding.ts`, not part of the `OnboardingState` interface. The interface should only contain persistable fields.
-
-**Doer:** fixed — `welcomeBackShownThisSession` moved to a module-level variable in onboarding.ts. `OnboardingState` interface now contains only persistable fields: `bannerShown`, `firstMemberRegistered`, `firstPromptExecuted`, `multiMemberNudgeShown`.
-
-**Issue 3 — `lastActive` for welcome-back message:** Task 3.2 references `WELCOME_BACK(memberCount, onlineCount, lastActive)` from the text constants. But where does `lastActive` come from? The registry stores `createdAt` and `lastActivity` per agent — but `lastActivity` is set by `touchAgent()` in some tool handlers, not all. The plan doesn't specify how to compute "last active" across the fleet. Two developers would implement this differently.
-
-**Fix:** Specify in Task 3.2: `lastActive = max(agent.lastActivity for agent in registry)`, falling back to "unknown" if none have been touched.
-
-**Doer:** fixed — Task 3.2 now specifies: `lastActive = max(agent.lastActivity for all agents in registry)`, formatted as relative time (e.g., "2h ago"), falls back to `"unknown"` if no agents have a `lastActivity` timestamp.
-
-## 11. Risk Register — PASS (with gaps)
-
-The register covers the major risks (R1-R6). However, it's missing one:
-
-**Missing R7 — Race condition on first tool call:** If the AI client sends two tool calls simultaneously (e.g., `fleet_status` and `list_members` in parallel), both could see `bannerShown: false`, both prepend the banner, and then both try to write `bannerShown: true`. Result: banner shown twice. This is plausible because MCP servers can handle concurrent requests.
-
-**Fix:** Add R7 to the risk register. Mitigation: load onboarding state once at server startup into memory, use the in-memory copy for all checks, and write to disk on state changes. This serializes through the JS event loop naturally. The plan already hints at this ("loaded once at server start") in the Architecture Overview but doesn't call it out as a concurrency risk or ensure Task 1.1 implements it this way.
-
-**Doer:** fixed — R7 added to risk register. Architecture Overview now explicitly states "loaded once at server start into an in-memory singleton" with JS event loop serialization. Task 1.1 notes updated to enforce this pattern.
-
-## 12. Alignment with Requirements — FAIL
-
-**Issue 1 — Requirements say "first meaningful interaction after install."** The plan implements "first tool call." These are the same thing in practice (MCP tools are the only interaction), but the plan should explicitly state this equivalence to show the requirement was considered.
-
-**Issue 2 — Requirements say onboarding text is "prepended, not replacing."** The plan correctly prepends for banner/welcome-back but APPENDS nudges (Task 3.1: "Nudges are APPENDED"). This is actually the right UX decision (contextual follow-ups should come after the result), and the requirement arguably means "don't replace the tool response" rather than strictly "prepend." But the plan should acknowledge this deviation and justify it.
-
-**Issue 3 — Requirements say "re-install / upgrade preserves onboarding state."** Task 4.1 handles the case where `onboarding.json` is missing but registry has members. But what about the `install` CLI command (`src/cli/install.ts`)? Does it touch the data directory? The plan doesn't verify that the install flow doesn't overwrite or reset the data directory. This should be explicitly verified in Task 4.1.
+None identified. The revisions are clean — they address the findings without introducing new complexity or changing the phase structure.
 
 ---
 
 ## Summary
 
-The plan is well-structured with good phase decomposition, clear abstractions, and the riskiest change (wrapTool) correctly prioritized. The risk register covers most scenarios. However, there are several issues that need resolution before implementation:
-
-**Must fix (blocking):**
-- Task 2.1/2.2 dependency ordering — clarify the stub/fill-in relationship for `getOnboardingPreamble()`
-- Task 3.1 member type detection — use tool input instead of parsing response strings
-- Task 3.2 review detection heuristic — tighten keyword list or reconsider the feature
-- Separate `welcomeBackShownThisSession` from the persisted `OnboardingState` interface
-- Add R7 (concurrent first-call race) to risk register with in-memory state mitigation
-- Specify how `lastActive` is computed for welcome-back messages
-
-**Should fix (non-blocking but recommended):**
-- Task 3.1/3.2 — explicitly note that `monitor_task` always returns JSON
-- Task 4.1 — verify the `install` CLI doesn't reset the data directory
-- Acknowledge the prepend-vs-append deviation from requirements wording for nudges
-- Confirm "first meaningful interaction" = "first tool call" equivalence
-
-**Doer:** all four addressed — Task 2.1 now explicitly lists `monitor_task` in the JSON tools. Task 4.1 adds install CLI verification step. Architecture Decision #5 explains the prepend-vs-append rationale. Architecture Decision #2 confirms "first meaningful interaction" = "first MCP tool call".
+All 6 must-fix and 4 should-fix items from cycle 1 are adequately resolved. The plan passes all 12 quality criteria. The review cycle celebration deferral is well-justified. The plan is ready for implementation.
