@@ -1,6 +1,15 @@
 # Apra Fleet
 
+[![CI](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5+-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
+[![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
+
 Coordinate AI coding agents across every machine in your network — from a single conversation.
+
+**Apra Fleet** is an open-source **MCP server** for **LLM orchestration** and **agentic workflow** automation. It enables **multi-agent systems** where **autonomous agents** coordinate across machines via SSH. Built for developers using Claude Code, Cursor, Copilot, Windsurf, and other AI coding assistants. Supports **agent memory** persistence, **remote execution**, and cloud compute.
 
 ## Why
 
@@ -10,8 +19,11 @@ You're working with an AI coding agent and you want to:
 - Have one agent build the frontend, another the backend, and a third running tests — all in parallel
 - Spin up isolated workspaces on the same machine without them stepping on each other
 - Use a beefy cloud VM for compilation while coding from your laptop
+- Coordinate autonomous agents across your entire infrastructure — one conversation, zero context-switching
 
 Apra Fleet makes all of this a conversation. No dashboards, no orchestration YAML — just tell your agent what you want and it happens.
+
+Apra Fleet is the missing orchestration layer between your AI coding assistant and your infrastructure.
 
 ## How it works
 
@@ -107,6 +119,10 @@ npm test                       # Unit tests (vitest)
 npm run build:binary           # Build single-executable binary
 node dist/index.js install     # Dev-mode install (registers MCP, hooks, statusline)
 ```
+
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for planned features and good-first-issue ideas for contributors.
 
 ## License
 
