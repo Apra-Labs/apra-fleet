@@ -165,3 +165,131 @@ Phase 2 is a clean, well-executed refactor. The `wrapTool()` function correctly 
 Two new non-blocking recommendations (REC-4: banner consumed on JSON first-call, REC-5: missing member count at startup). Both are low-risk edge cases with clear paths to resolution in later phases.
 
 **All 8 review criteria pass. APPROVED.**
+
+---
+---
+
+# Onboarding & User Engagement — Phase 3 Code Review (Cumulative)
+
+**Reviewer:** reviewerAF
+**Date:** 2026-04-08
+**Scope:** Tasks 3.1 (Post-registration & post-prompt nudges) and 3.2 (Welcome-back message). Cumulative review of Phases 1-3.
+**Verdict:** APPROVED
+
+---
+
+## Criteria Evaluation
+
+### 1. Does getOnboardingNudge use input.member_type (not response parsing)? — PASS
+
+- `getOnboardingNudge()` at `onboarding.ts:144-165`: reads `input.member_type as string` directly from the tool input parameter (line 148).
+- No string parsing of the `result` for member type. The `result` parameter is only checked for the `✅` / `📋` success prefixes (lines 145, 158) — this is correct, as nudges should only fire on successful tool calls.
+- `wrapTool` in `index.ts:87` passes `input` through to `getOnboardingNudge(toolName, input, result)` — the full tool input object is available.
+
+### 2. Are nudges APPENDED (not prepended) to tool results? — PASS
+
+- `index.ts:90`: `if (suffix) text = text + '\n\n---\n\n' + suffix;` — nudges are appended after the tool result.
+- Preamble (banner/welcome-back) is prepended (line 89), nudge (suffix) is appended (line 90). Clean separation matching PLAN.md Architecture Decision #5.
+- The `---` separator between tool result and nudge provides visual distinction.
+
+### 3. Does each nudge fire at most once (state-gated)? — PASS
+
+- `firstMemberRegistered`: checked via `shouldShow()` at line 146, advanced via `advanceMilestone()` at line 147. Once set, the `if` branch never fires again.
+- `multiMemberNudgeShown`: checked at line 150, advanced at line 153. Same pattern.
+- `firstPromptExecuted`: checked at line 159, advanced at line 160. Same pattern.
+- `advanceMilestone()` is idempotent (line 98: early return if already set) and persists to disk immediately (line 100: `saveOnboardingState()`). Server crash after milestone advance won't re-show nudge.
+- Tests verify: first call returns nudge, second call returns null (lines 286-295, 315-329, 341-348).
+
+### 4. Is the nudge sequence correct? — PASS
+
+Sequence: **first-register → multi-member (2+ agents) → first-prompt → (review cycle deferred)**
+
+- `register_member` + `✅`: first checks `firstMemberRegistered` (line 146), then `multiMemberNudgeShown` with `agents.length >= 2` guard (lines 150-155). This ensures:
+  - 1st registration → `NUDGE_AFTER_FIRST_REGISTER`
+  - 2nd+ registration with 2+ agents → `NUDGE_AFTER_MULTI_MEMBER`
+  - Subsequent registrations → `null` (both milestones consumed)
+- `execute_prompt` + `📋`: checks `firstPromptExecuted` (line 159) → `NUDGE_AFTER_FIRST_PROMPT`
+- Review cycle nudge correctly deferred (PLAN.md line 162: "will be implemented when PM skill exposes a review-complete event"). No `reviewCycleNudgeShown` field in `OnboardingState`. Sensible — keyword heuristics would have high false-positive risk.
+- `NUDGE_AFTER_MULTI_MEMBER` text content (`text.ts:105-107`) correctly introduces the PM skill with `/pm init → /pm pair → /pm plan`.
+
+### 5. Does welcome-back work correctly? — PASS
+
+- **Null on first run**: `getWelcomeBackPreamble()` at `onboarding.ts:189`: returns `null` if `!state.bannerShown`. On first run, banner hasn't been shown yet, so welcome-back is skipped. Correct.
+- **Shows once per lifecycle**: `welcomeBackShownThisSession` module-level flag (line 23) checked at line 190, set via `markWelcomeBackShown()` at line 191. Second call returns null. Test confirms (lines 386-394).
+- **Correct lastActive computation**: `formatLastActive()` at `onboarding.ts:167-180`: maps agents to `lastUsed` timestamps, takes `Math.max()`, formats as relative time (`just now`, `Nm ago`, `Nh ago`, `Nd ago`). Falls back to `'unknown'` if no agents have `lastUsed`. Test verifies 2h-old timestamp produces `'2h ago'` (line 421).
+- **Preamble chain**: `getOnboardingPreamble()` at `index.ts:79-81`: `getFirstRunPreamble() ?? getWelcomeBackPreamble()`. First-run preamble takes priority; on non-first-run, welcome-back fires. Correct use of nullish coalescing.
+- **onlineCount hardcoded to 0**: `onboarding.ts:194`: `WELCOME_BACK(agents.length, 0, lastActive)`. As noted in progress.json: "no SSH checks at startup" — acceptable trade-off to avoid slow startup.
+
+### 6. Zero-agent fallback? — PASS
+
+- `WELCOME_BACK(0, 0, lastActive)` at `text.ts:78-79`: `if (memberCount === 0)` → returns `"Fleet ready. Register a member to get started."` in box-drawing format.
+- `formatLastActive([])` → `'unknown'` (line 171: empty times array). But since WELCOME_BACK short-circuits on `memberCount === 0`, the `lastActive` value is unused. No issue.
+- Test confirms (lines 396-405): no registry file → getAllAgents() returns empty → output contains "Fleet ready".
+
+### 7. Cumulative check: Phases 1-3 integrate correctly? — PASS
+
+Integration points verified:
+- **Phase 1 → Phase 2**: `OnboardingState` interface (types.ts) used correctly by `loadOnboardingState()`, `advanceMilestone()`, `shouldShow()`. Text constants from `text.ts` imported by `onboarding.ts` (line 6). All function signatures stable.
+- **Phase 2 → Phase 3**: `wrapTool()` in `index.ts` already passes `toolName`, `input`, `result` to `getOnboardingNudge()`. The Phase 2 stub (`return null`) was replaced with the real implementation in `onboarding.ts:144-165` and imported at `index.ts:47`. No structural changes to `wrapTool` were needed.
+- **Preamble + suffix interaction**: Both can fire on the same tool call (e.g., first-run banner prepended + first-register nudge appended). The `---` separators keep them visually distinct. This is correct behavior — the banner and a nudge are independent.
+- **State management**: Single in-memory singleton loaded at startup (`index.ts:48`), all reads from memory, writes to disk on milestone advance. Module-level `welcomeBackShownThisSession` correctly isolated from persisted state. No circular dependencies between `onboarding.ts` and `registry.ts` (registry is read-only via `getAllAgents()`).
+- **Test isolation**: `_resetForTest()` + temp directory per test run. Registry written directly to disk for nudge tests (bypasses registry service — acceptable for unit testing). No test pollution observed (14 new tests all pass independently).
+
+### 8. Test coverage for nudge sequences and welcome-back edge cases? — PASS
+
+**Nudge tests** (onboarding.test.ts lines 265-365 — 10 tests):
+- First register (local): shows execute_prompt nudge ✓
+- First register (remote): shows setup_ssh_key nudge ✓
+- Second register (same count): no nudge ✓
+- Multi-member (2+ agents): shows PM skill nudge ✓
+- Multi-member repeat: no nudge ✓
+- First prompt: shows fleet_status nudge ✓
+- Second prompt: no nudge ✓
+- Failed register (❌ prefix): no nudge ✓
+- Unrelated tool: no nudge ✓
+- (Missing: nudge on register_member when result doesn't start with ✅ but isn't ❌ either — very minor gap, the `startsWith('✅')` guard handles all non-success cases.)
+
+**Welcome-back tests** (lines 367-422 — 5 tests):
+- First run (bannerShown=false): returns null ✓
+- Existing user first call: shows welcome-back ✓
+- Second call same session: returns null ✓
+- Zero agents: "Fleet ready." fallback ✓
+- With agents + lastUsed: correct member count and relative time ✓
+
+**Total new Phase 3 tests: 14** (progress.json confirms 652 total, up from 638).
+
+### 9. Any of the 5 non-blocking RECs addressed in this phase? — NO (acceptable)
+
+| REC | Status | Notes |
+|-----|--------|-------|
+| REC-1 (WELCOME_BACK box width) | Open | Box widths still misaligned in `text.ts:79-81`. Content width varies with input. Non-blocking. |
+| REC-2 (double enforceOwnerOnly) | Open | `onboarding.ts:73-75` still calls enforceOwnerOnly on both tmp and final. Harmless redundancy. |
+| REC-3 (no permission test) | Open | No `stat` check in save tests. Low priority. |
+| REC-4 (JSON first-call consumes banner) | Open | `getFirstRunPreamble()` still advances milestone before return. Edge case — unlikely first call is JSON-returning tool. |
+| REC-5 (startup missing member count) | Open | `index.ts:48` still calls `loadOnboardingState()` with no args. Phase 4.1 scope per plan. |
+
+None of the 5 RECs were addressed in Phase 3. This is acceptable — they are all non-blocking and REC-5 is explicitly Phase 4.1 scope. Phase 3 focused correctly on new functionality rather than polish.
+
+---
+
+## Additional Observations
+
+### `getAllAgents()` dependency in nudge logic
+`getOnboardingNudge()` calls `getAllAgents()` (line 151) to check registry size for the multi-member nudge. This reads the registry from disk on each call. In `wrapTool`, the handler runs first (which updates the registry), then `getOnboardingNudge` reads it — so the count reflects the just-registered member. Correct sequencing.
+
+### `formatLastActive` edge cases
+- `NaN` timestamps: if `lastUsed` is a malformed date string, `new Date(t).getTime()` returns `NaN`, and `Math.max(...times)` with any `NaN` returns `NaN`, making `diff` `NaN` and all comparisons false → falls through to `${Math.floor(NaN / 24)}d ago` = `"NaNd ago"`. This is a minor bug but extremely unlikely (registry validates dates). Could be hardened in Phase 4.
+- Negative diffs (future timestamps): if a machine's clock is ahead, `diff` would be negative, `minutes < 1` would be true → `"just now"`. Acceptable behavior.
+
+### Code quality
+- `getOnboardingNudge` is clean and linear — no nested conditions deeper than 2 levels.
+- `getWelcomeBackPreamble` correctly chains the two guard conditions (first-run check, session flag) before doing work.
+- No unnecessary abstractions. The `formatLastActive` helper is well-scoped.
+
+---
+
+## Summary
+
+Phase 3 completes the contextual nudges and welcome-back features cleanly. `getOnboardingNudge()` correctly uses `input.member_type` (no response parsing), appends nudges after tool results, gates each nudge behind a persistent milestone flag, and follows the correct sequence (first-register → multi-member → first-prompt). Welcome-back works correctly: null on first run, shows once per lifecycle with accurate member count and relative last-active time, falls back to "Fleet ready." with zero agents. Phases 1-3 integrate without friction — the preamble chain (`getFirstRunPreamble() ?? getWelcomeBackPreamble()`) and the suffix (`getOnboardingNudge()`) work independently within `wrapTool`. Test coverage is thorough with 14 new tests covering all nudge scenarios and welcome-back edge cases. One minor issue noted: `formatLastActive` could produce `"NaNd ago"` on malformed `lastUsed` — trivial to harden in Phase 4.
+
+**All 9 review criteria pass. APPROVED.**
