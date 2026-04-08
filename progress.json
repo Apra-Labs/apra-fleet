@@ -88,29 +88,42 @@
     {
       "id": 3,
       "name": "Contextual Nudges",
-      "status": "pending",
+      "status": "completed",
       "tasks": [
         {
           "id": "3.1",
           "name": "Post-registration and post-prompt nudges",
           "tier": "standard",
-          "status": "pending",
-          "files": ["src/services/onboarding.ts"],
-          "notes": "Uses input.member_type from tool input — no response string parsing for member type"
+          "status": "completed",
+          "files": ["src/services/onboarding.ts", "src/index.ts"],
+          "notes": "getOnboardingNudge(toolName, input, result) exported from onboarding.ts. register_member (✅ prefix): firstMemberRegistered → NUDGE_AFTER_FIRST_REGISTER(input.member_type); 2+ agents + !multiMemberNudgeShown → NUDGE_AFTER_MULTI_MEMBER(). execute_prompt (📋 prefix): firstPromptExecuted → NUDGE_AFTER_FIRST_PROMPT(). Uses input.member_type directly. index.ts stub replaced with real import. getAllAgents() imported from registry.ts — no circular dep."
         },
         {
           "id": "3.2",
           "name": "Welcome-back message",
           "tier": "cheap",
-          "status": "pending",
-          "files": ["src/services/onboarding.ts"],
-          "notes": "lastActive = max(agent.lastActivity), fallback 'unknown'. Review cycle celebration deferred to PM skill integration."
+          "status": "completed",
+          "files": ["src/services/onboarding.ts", "src/index.ts"],
+          "notes": "getWelcomeBackPreamble() exported from onboarding.ts. Returns null if bannerShown=false (first run) or welcomeBackShownThisSession=true. reads getAllAgents(); lastActive=max(agent.lastUsed) as relative string ('Nm ago', 'Nh ago', 'Nd ago', 'just now', 'unknown' if no lastUsed). Falls back to 'Fleet ready.' when 0 agents. onlineCount=0 (no SSH checks at startup). getOnboardingPreamble() in index.ts: getFirstRunPreamble() ?? getWelcomeBackPreamble()."
         }
       ],
       "verify": {
         "id": "V3",
-        "status": "pending",
-        "checks": ["npm run build succeeds", "all tests pass", "nudge sequence test with input.member_type", "welcome-back with member count + lastActive", "welcome-back fallback with zero agents"]
+        "status": "completed",
+        "checks": [
+          "npm run build — pre-existing smol-toml error only, no new errors",
+          "ALL tests pass — 652 passed (up from 638), 1 failed (platform PATH — pre-existing), 1 suite failed (smol-toml — pre-existing). No regressions.",
+          "nudge sequence: register(local) → NUDGE_AFTER_FIRST_REGISTER, register again (1 agent) → null, register with 2 agents → NUDGE_AFTER_MULTI_MEMBER, execute_prompt → NUDGE_AFTER_FIRST_PROMPT, execute_prompt again → null — all pass",
+          "welcome-back: existing user (bannerShown=true) → first call shows welcome-back with memberCount + lastActive, second call → null — pass",
+          "welcome-back fallback: zero agents → 'Fleet ready.' — pass"
+        ],
+        "testResults": {
+          "totalPassed": 652,
+          "totalFailed": 1,
+          "skipped": 3,
+          "newTestsPassed": 14,
+          "preExistingFailures": ["install-multi-provider.test.ts (smol-toml missing package)", "platform.test.ts > cleanExec > linux: returns pristine env from login shell (PATH undefined)"]
+        }
       }
     },
     {
