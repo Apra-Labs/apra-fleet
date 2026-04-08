@@ -67,10 +67,8 @@ Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
 Both `send_files` and `receive_files` are batch operations — always transfer all files in a single call, never one file per call.
 
-- `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content
-- `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc.
-- `send_files` takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
-- `receive_files` takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
+- `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
+- `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
 
 ## Permissions
 
