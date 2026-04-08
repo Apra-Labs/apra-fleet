@@ -12,7 +12,7 @@ Older versions do not receive security fixes. Please upgrade to the latest 0.1.x
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Email **security@apralabs.com** with:
+Email **contact@apralabs.com** with:
 - A description of the vulnerability
 - Steps to reproduce or a proof-of-concept
 - Potential impact assessment
