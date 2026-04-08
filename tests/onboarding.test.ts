@@ -375,6 +375,107 @@ describe('getOnboardingNudge', () => {
   });
 });
 
+/**
+ * Integration tests: simulate wrapTool logic (isJson check → preamble → nudge).
+ * wrapTool is defined inside startServer() and can't be imported directly, so these
+ * tests replicate the same conditional logic to verify the REC-4 fix and overall
+ * banner + nudge composition.
+ */
+describe('wrapTool output sequence (integration)', () => {
+  it('JSON response does NOT consume the banner (REC-4 fix)', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+
+    // Simulate wrapTool: JSON result → skip preamble entirely
+    const jsonResult = '{"members":[]}';
+    const isJson = isJsonResponse(jsonResult);
+    const preamble = isJson ? null : getFirstRunPreamble();
+
+    expect(preamble).toBeNull();
+    // Banner milestone must NOT have advanced — it should appear on the next non-JSON call
+    expect(getOnboardingState().bannerShown).toBe(false);
+  });
+
+  it('banner is shown on first non-JSON call even after prior JSON calls', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+
+    // First call: JSON (fleet_status) — banner preserved
+    const jsonResult = '{"members":[]}';
+    const p1 = isJsonResponse(jsonResult) ? null : getFirstRunPreamble();
+    expect(p1).toBeNull();
+    expect(getOnboardingState().bannerShown).toBe(false);
+
+    // Second call: non-JSON (register_member) — banner now shown
+    const textResult = '✅ Member registered.';
+    const p2 = isJsonResponse(textResult) ? null : getFirstRunPreamble();
+    expect(p2).not.toBeNull();
+    expect(p2).toContain('One model is a tool');
+    expect(getOnboardingState().bannerShown).toBe(true);
+  });
+
+  it('banner + nudge both appear on the same response (first register_member)', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingNudge } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
+
+    const result = '✅ Member registered.';
+    const isJson = isJsonResponse(result);
+    const preamble = isJson ? null : getFirstRunPreamble();
+    const suffix = getOnboardingNudge('register_member', { member_type: 'local' }, result);
+
+    expect(preamble).not.toBeNull();
+    expect(suffix).not.toBeNull();
+
+    // Replicate wrapTool composition
+    let text = result;
+    if (preamble) text = preamble + '\n\n---\n\n' + text;
+    if (suffix) text = text + '\n\n---\n\n' + suffix;
+
+    expect(text).toContain('One model is a tool');     // banner in preamble
+    expect(text).toContain('✅ Member registered.');   // original result preserved
+    expect(text).toContain('execute_prompt');           // nudge appended
+  });
+
+  it('full first-session sequence: banner → register nudge → multi-member nudge → prompt nudge', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingNudge } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+
+    // Call 1: first register_member → banner + first-register nudge
+    writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
+    const r1 = '✅ Member registered.';
+    const pre1 = isJsonResponse(r1) ? null : getFirstRunPreamble();
+    const suf1 = getOnboardingNudge('register_member', { member_type: 'local' }, r1);
+    expect(pre1).toContain('Getting Started');   // banner shown
+    expect(suf1).toContain('execute_prompt');    // first-register nudge
+
+    // Call 2: second register_member (now 2 agents) → no banner, multi-member nudge
+    writeRegistry([
+      { id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() },
+      { id: '2', friendlyName: 'beta', agentType: 'remote', workFolder: '/tmp/b', createdAt: new Date().toISOString() },
+    ]);
+    const r2 = '✅ Member registered.';
+    const pre2 = isJsonResponse(r2) ? null : getFirstRunPreamble();
+    const suf2 = getOnboardingNudge('register_member', { member_type: 'remote' }, r2);
+    expect(pre2).toBeNull();             // banner already shown
+    expect(suf2).toContain('PM skill');  // multi-member nudge
+
+    // Call 3: execute_prompt → prompt nudge
+    const r3 = '📋 Task submitted.';
+    const pre3 = isJsonResponse(r3) ? null : getFirstRunPreamble();
+    const suf3 = getOnboardingNudge('execute_prompt', {}, r3);
+    expect(pre3).toBeNull();
+    expect(suf3).toContain('fleet_status');
+
+    // Call 4: any further tool → no onboarding output
+    const r4 = '📋 Another task.';
+    const pre4 = isJsonResponse(r4) ? null : getFirstRunPreamble();
+    const suf4 = getOnboardingNudge('execute_prompt', {}, r4);
+    expect(pre4).toBeNull();
+    expect(suf4).toBeNull();
+  });
+});
+
 describe('getWelcomeBackPreamble', () => {
   it('returns null on first run (bannerShown=false)', async () => {
     const { loadOnboardingState, getWelcomeBackPreamble } = await import('../src/services/onboarding.js');
