@@ -1,6 +1,6 @@
 # Member Onboarding
 
-After `register_member`, run these 7 steps before dispatching any work.
+After `register_member`, run these 8 steps before dispatching any work.
 
 ## Step 1: Setup SSH Key Auth (remote members only)
 

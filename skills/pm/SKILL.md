@@ -91,3 +91,4 @@ PM manages members running different LLM providers (Claude, Gemini, Codex, Copil
 | **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to the appropriate model for each provider |
 | **CLI commands** | Handled by the server — PM never constructs provider CLI strings directly |
 | **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members |
+| **Attribution config** | Claude only (onboarding Step 2) — skip for all other providers |
