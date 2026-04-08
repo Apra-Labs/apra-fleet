@@ -201,13 +201,13 @@ describe('registry - duplicate folder validation', () => {
 
   it('excludes agent by ID (for updates)', () => {
     addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined }));
-    expect(hasDuplicateFolder('local', '/home/user/project', undefined, 'local-1')).toBe(false);
+    expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, 'local-1')).toBe(false);
   });
 
   it('rejects update_agent folder change when duplicate exists', () => {
     addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project-a', host: undefined }));
     addAgent(makeAgent({ id: 'local-2', agentType: 'local', workFolder: '/home/user/project-b', host: undefined }));
 
-    expect(hasDuplicateFolder('local', '/home/user/project-a', undefined, 'local-2')).toBe(true);
+    expect(hasDuplicateFolder('local', '/home/user/project-a', undefined, undefined, 'local-2')).toBe(true);
   });
 });
