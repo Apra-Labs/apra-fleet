@@ -1,72 +1,67 @@
-# Onboarding & User Engagement — Plan Review
+# Onboarding & User Engagement — Phase 1 Code Review
 
 **Reviewer:** reviewerAF
 **Date:** 2026-04-08
+**Scope:** Tasks 1.1 (Onboarding state service) and 1.2 (Text constants module)
 **Verdict:** APPROVED
 
-> Review cycle 2. Cycle 1 verdict: CHANGES NEEDED (6 must-fix, 4 recommended). This cycle re-evaluates the revised plan.
+---
+
+## Criteria Evaluation
+
+### 1. Code matches plan specifications — PASS
+- `OnboardingState` interface in `src/types.ts:61-66` matches plan exactly (4 boolean fields).
+- `src/services/onboarding.ts` implements all required functions: `loadOnboardingState()`, `saveOnboardingState()`, `advanceMilestone()`, `shouldShow()`, `getOnboardingState()`, `resetSessionFlags()`, `markWelcomeBackShown()`, `_resetForTest()`.
+- `src/onboarding/text.ts` exports all required constants: `BANNER`, `GETTING_STARTED_GUIDE`, `WELCOME_BACK()`, `NUDGE_AFTER_FIRST_REGISTER()`, `NUDGE_AFTER_FIRST_PROMPT()`, `NUDGE_AFTER_MULTI_MEMBER()`.
+
+### 2. OnboardingState contains only persisted fields — PASS
+Interface has exactly: `bannerShown`, `firstMemberRegistered`, `firstPromptExecuted`, `multiMemberNudgeShown`. No runtime flags.
+
+### 3. welcomeBackShownThisSession is module-level — PASS
+Declared at `onboarding.ts:22` as `export let welcomeBackShownThisSession = false`. Mutated through `markWelcomeBackShown()` and `resetSessionFlags()`. Clean separation from persisted state.
+
+### 4. Atomic writes (temp + rename) — PASS
+`saveOnboardingState()` at `onboarding.ts:65-74`: writes to `.tmp`, calls `enforceOwnerOnly`, then `renameSync`. Follows the plan's atomic write requirement. (Note: actually more robust than `registry.ts` which writes directly — good.)
+
+### 5. Upgrade detection — PASS
+`loadOnboardingState(existingMemberCount)` at `onboarding.ts:38-45`: if no onboarding file and `existingMemberCount > 0`, sets `bannerShown = true`. Correctly prevents banner for existing users upgrading.
+
+### 6. Corruption recovery — PASS
+`onboarding.ts:53-57`: catch block on `JSON.parse` returns `DEFAULT_STATE` and logs warning to stderr. Does not throw. Forward-compatibility also handled: partial JSON merged with defaults at line 52.
+
+### 7. Text constants complete and monospace-formatted — PASS (with recommendations)
+All constants present. Box-drawing borders used throughout. Banner matches requirements.md ASCII art exactly. See REC-1 and REC-2 below for minor formatting notes.
+
+### 8. Token cost estimate — PASS
+Comment block at `text.ts:6-33`. Estimates: ~370 one-time, ~20 recurring/server-start, ~80 total nudges. Methodology stated (~4 chars/token). Reasonable and well-documented.
+
+### 9. Test coverage — PASS
+- `onboarding.test.ts`: 16 tests covering load (missing file, upgrade path, persisted state, corrupted JSON, forward-compat), save (atomic write, no leftover tmp), advance (single, idempotent, independent), shouldShow, and session flags.
+- `onboarding-text.test.ts`: 14 tests covering banner content, guide content, welcome-back (plural, singular, zero-member fallback), nudge variants (remote/local), prompt nudge, multi-member nudge.
+- Edge cases well covered. See REC-3 for a minor gap.
+
+### 10. Security — PASS
+- State file written with `mode: 0o600` (`onboarding.ts:70`).
+- Fleet directory created with `mode: 0o700` (`onboarding.ts:25`).
+- `enforceOwnerOnly()` called on both temp and final file.
+- No path traversal risk — path is derived from `FLEET_DIR` constant, not user input.
+- `FLEET_DIR` respects `APRA_FLEET_DATA_DIR` env var (via `src/paths.ts:4`).
 
 ---
 
-## Must-Fix Resolution Check
+## Recommended Improvements (non-blocking)
 
-### MF-1: Task 2.1/2.2 dependency ordering — RESOLVED
-Task 2.1 now explicitly creates `getOnboardingPreamble()` and `getOnboardingNudge()` as stubs returning `null`. Task 2.2 fills in preamble, Task 3.1 fills in nudges. Each task is independently testable and the VERIFY 2 checklist includes "stubs return null (no behavior change)."
+### REC-1: WELCOME_BACK box-drawing width mismatch
+The box borders in `WELCOME_BACK()` don't align in monospace rendering. The zero-member case has top/content/bottom widths of 49/51/50 characters respectively. The non-zero case uses a fixed-width bottom border but dynamic content, so alignment varies with input length. Consider either padding the content to a fixed width or dropping the box-drawing for `WELCOME_BACK` in favor of a simple one-liner (it's only ~20 tokens anyway).
 
-### MF-2: Task 3.1 member type detection via response parsing — RESOLVED
-`wrapTool` now passes `toolName` and `input` to `getOnboardingNudge(toolName, input, result)`. Task 3.1 reads `input.member_type` directly. No response string parsing. The blockers section confirms `input.member_type` is always present in the register_member schema (verified — it's a required enum field with default `"remote"`).
+### REC-2: Double enforceOwnerOnly on atomic write
+`saveOnboardingState()` calls `enforceOwnerOnly` on both the `.tmp` file (line 71) and the final file after rename (line 73). Since `renameSync` preserves permissions, the second call is redundant. Not harmful, just unnecessary.
 
-### MF-3: Review cycle heuristic — RESOLVED
-Dropped entirely from initial scope. `reviewCycleNudgeShown` removed from `OnboardingState`. Plan documents the rationale: the requirement implies PM skill integration, not keyword heuristics. R5 in the risk register updated to "DEFERRED." This is the right call.
-
-### MF-4: `welcomeBackShownThisSession` mixed into persisted interface — RESOLVED
-Now a module-level variable in `onboarding.ts`. `OnboardingState` contains only: `bannerShown`, `firstMemberRegistered`, `firstPromptExecuted`, `multiMemberNudgeShown`. Clean separation.
-
-### MF-5: R7 concurrent first-call race — RESOLVED
-R7 added to risk register. Architecture Overview explicitly states "loaded once at server start into an in-memory singleton" with JS event loop serialization. Task 1.1 notes enforce this pattern.
-
-### MF-6: `lastActive` computation unspecified — RESOLVED
-Task 3.2 specifies: `lastActive = max(agent.lastActivity for all agents in registry)`, formatted as relative time, falls back to `"unknown"`. VERIFY 3 includes "welcome-back with member count + lastActive."
-
-## Should-Fix Resolution Check
-
-### SF-1: `monitor_task` always returns JSON — RESOLVED
-Task 2.1 now explicitly lists `monitor_task` as always-JSON and the `isJsonResponse()` function explicitly covers it. R1 in the risk register updated to name all four JSON-returning tools.
-
-### SF-2: Verify install CLI doesn't reset data directory — RESOLVED
-Task 4.1 now includes: "Verify `install` CLI (`src/cli/install.ts`) does not overwrite or reset the data directory — read the install flow and confirm it only writes hooks, scripts, and MCP config, not data files."
-
-### SF-3: Prepend-vs-append deviation acknowledged — RESOLVED
-Architecture Decision #5 explicitly documents the deviation and justifies it: "the requirement's intent is 'don't replace the tool response,' which appending also satisfies."
-
-### SF-4: "First meaningful interaction" = "first tool call" equivalence — RESOLVED
-Architecture Overview, Decision #2 now states: "'First meaningful interaction' in the requirements = first MCP tool call (MCP tools are the only user-facing interaction surface)."
-
----
-
-## 12-Criteria Re-Evaluation
-
-1. **Clear 'done' criteria** — PASS. Unchanged from cycle 1; all tasks have testable done conditions.
-2. **High cohesion / low coupling** — PASS. Unchanged. The removal of `reviewCycleNudgeShown` from the interface actually improves cohesion.
-3. **Shared abstractions early** — PASS. `OnboardingState` and service API in Task 1.1, text in 1.2, stubs in 2.1.
-4. **Riskiest assumption early** — PASS. wrapTool refactor is Phase 2 with stub-based isolation.
-5. **Later tasks reuse early abstractions** — PASS. Tasks 3.1, 3.2, 4.1 all build on the Phase 1 + 2 foundation.
-6. **2-3 tasks + VERIFY per phase** — PASS. 4 phases, 2 tasks each, all with VERIFY checkpoints.
-7. **Each task one-session** — PASS. No task exceeds 3 files.
-8. **Dependencies in order** — PASS. The stub approach in 2.1 cleanly resolves the prior cycle's finding.
-9. **No ambiguous tasks** — PASS. Member type from input, lastActive specified, review cycle deferred.
-10. **No hidden dependencies** — PASS. JSON tools enumerated, runtime state separated, install CLI verified.
-11. **Risk register** — PASS. R1-R7 covers all identified risks. R5 honestly marked as deferred.
-12. **Alignment with requirements** — PASS. All deviations acknowledged and justified. Review cycle deferral is documented and reasonable.
-
----
-
-## New Issues Introduced by Revisions
-
-None identified. The revisions are clean — they address the findings without introducing new complexity or changing the phase structure.
+### REC-3: No test for file permissions
+No test verifies the `0o600` permission on the written onboarding.json file. Consider adding a `stat` check in the save test (low priority — `enforceOwnerOnly` is tested elsewhere).
 
 ---
 
 ## Summary
 
-All 6 must-fix and 4 should-fix items from cycle 1 are adequately resolved. The plan passes all 12 quality criteria. The review cycle celebration deferral is well-justified. The plan is ready for implementation.
+Phase 1 implementation is clean and well-structured. The onboarding state service correctly implements the in-memory singleton pattern with atomic persistence, corruption recovery, and upgrade detection. Text constants are complete with appropriate formatting and token cost documentation. Test coverage is thorough with good edge case handling. All 10 review criteria pass. The three recommendations are minor and non-blocking.
