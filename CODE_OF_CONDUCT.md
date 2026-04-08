@@ -15,7 +15,7 @@ https://www.contributor-covenant.org/version/2/1/code_of_conduct/
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers at:
 
-**opensource@apralabs.com**
+**contact@apralabs.com**
 
 All complaints will be reviewed and investigated promptly and fairly. Maintainers are obligated to respect the privacy and security of the reporter.
 
