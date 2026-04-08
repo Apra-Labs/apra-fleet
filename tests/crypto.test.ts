@@ -35,7 +35,9 @@ describe('crypto', () => {
   it('throws on tampered ciphertext', () => {
     const encrypted = encryptPassword('secret');
     const parts = encrypted.split(':');
-    parts[2] = 'ff' + parts[2].slice(2);
+    const firstByte = parseInt(parts[2].slice(0, 2), 16);
+    const tamperedByte = ((firstByte ^ 0xff) || 0x01).toString(16).padStart(2, '0');
+    parts[2] = tamperedByte + parts[2].slice(2);
     expect(() => decryptPassword(parts.join(':'))).toThrow();
   });
 
