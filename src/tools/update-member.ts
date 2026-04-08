@@ -46,8 +46,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // Check for duplicate folder if work_folder is being changed
   if (input.work_folder && input.work_folder !== existing.workFolder) {
     const host = input.host ?? existing.host;
-    if (hasDuplicateFolder(existing.agentType, input.work_folder, host, existing.id)) {
-      const scope = existing.agentType === 'local' ? 'this machine' : `host ${host}`;
+    const port = input.port ?? existing.port;
+    if (hasDuplicateFolder(existing.agentType, input.work_folder, host, port, existing.id)) {
+      const scope = existing.agentType === 'local' ? 'this machine' : `host ${host}:${port}`;
       return `❌ Another member already uses folder "${input.work_folder}" on ${scope}. Update rejected.`;
     }
   }

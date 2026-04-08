@@ -67,8 +67,8 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
 
   // --- Duplicate folder check ---
-  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host)) {
-    const scope = isLocal ? 'this machine' : `host ${input.host}`;
+  if (hasDuplicateFolder(input.member_type, input.work_folder, input.host, input.port)) {
+    const scope = isLocal ? 'this machine' : `host ${input.host}:${input.port}`;
     return `❌ Another member already uses folder "${input.work_folder}" on ${scope}. Member was NOT registered.`;
   }
 

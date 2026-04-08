@@ -171,12 +171,22 @@ describe('registry - duplicate folder validation', () => {
 
   it('detects duplicate remote host+folder', () => {
     addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', workFolder: '/srv/app' }));
-    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.1')).toBe(true);
+    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.1', 22)).toBe(true);
   });
 
   it('allows same folder on different remote hosts', () => {
     addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', workFolder: '/srv/app' }));
     expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.2')).toBe(false);
+  });
+
+  it('allows same host+folder on different ports (RPort scenario)', () => {
+    addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', port: 24091, workFolder: '/home/blub0x' }));
+    expect(hasDuplicateFolder('remote', '/home/blub0x', '10.0.0.1', 21870)).toBe(false);
+  });
+
+  it('detects duplicate remote host+port+folder', () => {
+    addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' }));
+    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.1', 22)).toBe(true);
   });
 
   it('allows same path for local + remote agents', () => {

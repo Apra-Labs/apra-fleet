@@ -149,13 +149,14 @@ function normalizeFolderPath(folder: string): string {
 /**
  * Check if another agent already uses the same folder on the same device.
  * - Local agents: match any existing local agent with the same normalized folder.
- * - Remote agents: match any existing remote agent with the same host + normalized folder.
+ * - Remote agents: match any existing remote agent with the same host + port + normalized folder.
  * Returns true if a duplicate exists.
  */
 export function hasDuplicateFolder(
   agentType: 'local' | 'remote',
   folder: string,
   host?: string,
+  port?: number,
   excludeId?: string,
 ): boolean {
   const agents = getAllAgents();
@@ -170,7 +171,7 @@ export function hasDuplicateFolder(
     if (agentType === 'local' && agent.agentType === 'local') {
       return true;
     }
-    if (agentType === 'remote' && agent.agentType === 'remote' && agent.host === host) {
+    if (agentType === 'remote' && agent.agentType === 'remote' && agent.host === host && agent.port === port) {
       return true;
     }
   }
