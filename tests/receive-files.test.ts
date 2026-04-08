@@ -46,7 +46,7 @@ describe('receiveFiles', () => {
     const result = await receiveFiles({
       member_id: localAgent.id,
       remote_paths: ['test.txt'],
-      local_destination: localDestination,
+      local_dest_dir: localDestination,
     });
 
     expect(result).toContain('Successfully downloaded 1 file(s)');
@@ -67,7 +67,7 @@ describe('receiveFiles', () => {
     await receiveFiles({
       member_id: remoteAgent.id,
       remote_paths: ['test.txt'],
-      local_destination: localDestination,
+      local_dest_dir: localDestination,
     });
 
     expect(downloadViaSFTP).toHaveBeenCalledWith(remoteAgent, ['test.txt'], localDestination);
@@ -77,7 +77,7 @@ describe('receiveFiles', () => {
     const result = await receiveFiles({
       member_id: localAgent.id,
       remote_paths: ['../test.txt'],
-      local_destination: tmpDir,
+      local_dest_dir: tmpDir,
     });
 
     expect(result).toContain('resolves outside member work_folder');
@@ -87,7 +87,7 @@ describe('receiveFiles', () => {
     const result = await receiveFiles({
       member_id: localAgent.id,
       remote_paths: ['test\0.txt'],
-      local_destination: tmpDir,
+      local_dest_dir: tmpDir,
     });
 
     expect(result).toContain('null bytes are not allowed');
