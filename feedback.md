@@ -42,15 +42,21 @@ All tasks are scoped to 1-3 files. The largest (Task 2.1) touches one file (inde
 
 **Fix:** Add a note to Task 2.1 that it creates `getOnboardingPreamble()` as a stub returning `null` (no onboarding text), and Task 2.2 fills in the banner logic. This makes both tasks independently testable.
 
+**Doer:** fixed — Task 2.1 now explicitly creates `getOnboardingPreamble()` and `getOnboardingNudge()` as stubs returning `null`. Task 2.2 fills in preamble, Task 3.1 fills in nudges. Each task is independently testable.
+
 ## 9. Vague Tasks / Ambiguity — FAIL
 
 **Issue 1 — Task 3.1 member type detection:** The plan says to "parse from the response text (`Type: remote` or `Type: local`)" to determine member type for the nudge. This is brittle string parsing of another tool's output format. If the register_member response format changes, the nudge breaks silently. Two developers could implement this differently (regex vs indexOf vs split).
 
 **Fix:** Instead of parsing the response string, pass the tool input (which contains `member_type`) into the nudge logic. The wrapTool wrapper has access to the input — thread it through.
 
+**Doer:** fixed — `wrapTool` now passes `toolName` and `input` to `getOnboardingNudge(toolName, input, result)`. Task 3.1 reads `input.member_type` directly. No response string parsing for member type.
+
 **Issue 2 — Task 3.2 review cycle detection:** The plan says to detect review-related keywords in execute_prompt responses. The "Done" criteria say `"approved" or "review complete"` but the What section says `"review", "approved", "LGTM"`. These don't match. Also, this heuristic will false-positive on any prompt that happens to contain these words (e.g., "review the PR" as an instruction, not a result).
 
 **Fix:** Tighten the keyword list to only `"approved"` and `"LGTM"` (results, not instructions). Document the exact list in both the What and Done sections. Alternatively, consider dropping the review cycle nudge entirely — it's low value and high false-positive risk, and the requirements say "After first review cycle complete" which implies integration with the PM skill's review tracking, not keyword-sniffing on raw prompt output.
+
+**Doer:** fixed — Review cycle celebration dropped from initial scope entirely. The requirement implies PM skill integration (doer-reviewer pairs), not keyword heuristics. `reviewCycleNudgeShown` removed from `OnboardingState`. Will implement when PM skill exposes a review-complete event.
 
 ## 10. Hidden Dependencies — FAIL
 
@@ -60,9 +66,13 @@ All tasks are scoped to 1-3 files. The largest (Task 2.1) touches one file (inde
 
 **Fix:** Keep `welcomeBackShownThisSession` as a separate module-level variable in `onboarding.ts`, not part of the `OnboardingState` interface. The interface should only contain persistable fields.
 
+**Doer:** fixed — `welcomeBackShownThisSession` moved to a module-level variable in onboarding.ts. `OnboardingState` interface now contains only persistable fields: `bannerShown`, `firstMemberRegistered`, `firstPromptExecuted`, `multiMemberNudgeShown`.
+
 **Issue 3 — `lastActive` for welcome-back message:** Task 3.2 references `WELCOME_BACK(memberCount, onlineCount, lastActive)` from the text constants. But where does `lastActive` come from? The registry stores `createdAt` and `lastActivity` per agent — but `lastActivity` is set by `touchAgent()` in some tool handlers, not all. The plan doesn't specify how to compute "last active" across the fleet. Two developers would implement this differently.
 
 **Fix:** Specify in Task 3.2: `lastActive = max(agent.lastActivity for agent in registry)`, falling back to "unknown" if none have been touched.
+
+**Doer:** fixed — Task 3.2 now specifies: `lastActive = max(agent.lastActivity for all agents in registry)`, formatted as relative time (e.g., "2h ago"), falls back to `"unknown"` if no agents have a `lastActivity` timestamp.
 
 ## 11. Risk Register — PASS (with gaps)
 
@@ -71,6 +81,8 @@ The register covers the major risks (R1-R6). However, it's missing one:
 **Missing R7 — Race condition on first tool call:** If the AI client sends two tool calls simultaneously (e.g., `fleet_status` and `list_members` in parallel), both could see `bannerShown: false`, both prepend the banner, and then both try to write `bannerShown: true`. Result: banner shown twice. This is plausible because MCP servers can handle concurrent requests.
 
 **Fix:** Add R7 to the risk register. Mitigation: load onboarding state once at server startup into memory, use the in-memory copy for all checks, and write to disk on state changes. This serializes through the JS event loop naturally. The plan already hints at this ("loaded once at server start") in the Architecture Overview but doesn't call it out as a concurrency risk or ensure Task 1.1 implements it this way.
+
+**Doer:** fixed — R7 added to risk register. Architecture Overview now explicitly states "loaded once at server start into an in-memory singleton" with JS event loop serialization. Task 1.1 notes updated to enforce this pattern.
 
 ## 12. Alignment with Requirements — FAIL
 
@@ -99,3 +111,5 @@ The plan is well-structured with good phase decomposition, clear abstractions, a
 - Task 4.1 — verify the `install` CLI doesn't reset the data directory
 - Acknowledge the prepend-vs-append deviation from requirements wording for nudges
 - Confirm "first meaningful interaction" = "first tool call" equivalence
+
+**Doer:** all four addressed — Task 2.1 now explicitly lists `monitor_task` in the JSON tools. Task 4.1 adds install CLI verification step. Architecture Decision #5 explains the prepend-vs-append rationale. Architecture Decision #2 confirms "first meaningful interaction" = "first MCP tool call".

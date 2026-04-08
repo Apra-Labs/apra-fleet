@@ -3,6 +3,7 @@
   "branch": "feat/onboarding-ux",
   "base": "main",
   "created": "2026-04-08",
+  "revised": "2026-04-08",
   "phases": [
     {
       "id": 1,
@@ -15,7 +16,7 @@
           "tier": "standard",
           "status": "pending",
           "files": ["src/services/onboarding.ts", "src/types.ts"],
-          "notes": ""
+          "notes": "In-memory singleton loaded once at startup. welcomeBackShownThisSession is a module-level var, NOT in OnboardingState interface. reviewCycleNudgeShown removed."
         },
         {
           "id": "1.2",
@@ -23,7 +24,7 @@
           "tier": "cheap",
           "status": "pending",
           "files": ["src/onboarding/text.ts"],
-          "notes": ""
+          "notes": "Review cycle nudge removed from scope"
         }
       ],
       "verify": {
@@ -43,7 +44,7 @@
           "tier": "standard",
           "status": "pending",
           "files": ["src/index.ts"],
-          "notes": "Riskiest change — touches all 21 tool registrations"
+          "notes": "Creates getOnboardingPreamble() and getOnboardingNudge() as STUBS returning null. Task 2.2 fills preamble, Task 3.1 fills nudges. wrapTool passes toolName + input to nudge logic. isJsonResponse() explicitly covers monitor_task (always JSON)."
         },
         {
           "id": "2.2",
@@ -57,7 +58,7 @@
       "verify": {
         "id": "V2",
         "status": "pending",
-        "checks": ["npm run build succeeds", "ALL existing tests pass", "banner shown once test", "JSON tool skip test"]
+        "checks": ["npm run build succeeds", "ALL existing tests pass", "stubs return null (no behavior change)", "isJsonResponse test", "banner shown once test"]
       }
     },
     {
@@ -70,22 +71,22 @@
           "name": "Post-registration and post-prompt nudges",
           "tier": "standard",
           "status": "pending",
-          "files": ["src/services/onboarding.ts", "src/index.ts"],
-          "notes": ""
+          "files": ["src/services/onboarding.ts"],
+          "notes": "Uses input.member_type from tool input — no response string parsing for member type"
         },
         {
           "id": "3.2",
-          "name": "Review cycle celebration + welcome-back",
+          "name": "Welcome-back message",
           "tier": "cheap",
           "status": "pending",
-          "files": ["src/services/onboarding.ts", "src/index.ts"],
-          "notes": ""
+          "files": ["src/services/onboarding.ts"],
+          "notes": "lastActive = max(agent.lastActivity), fallback 'unknown'. Review cycle celebration deferred to PM skill integration."
         }
       ],
       "verify": {
         "id": "V3",
         "status": "pending",
-        "checks": ["npm run build succeeds", "all tests pass", "nudge sequence test", "welcome-back test"]
+        "checks": ["npm run build succeeds", "all tests pass", "nudge sequence test with input.member_type", "welcome-back with member count + lastActive", "welcome-back fallback with zero agents"]
       }
     },
     {
@@ -99,7 +100,7 @@
           "tier": "cheap",
           "status": "pending",
           "files": ["src/services/onboarding.ts"],
-          "notes": "Upgrade detection: existing registry + no onboarding.json = skip banner"
+          "notes": "Upgrade detection: existing registry + no onboarding.json = skip banner. Verify install CLI doesn't reset data dir."
         },
         {
           "id": "4.2",
@@ -118,11 +119,12 @@
     }
   ],
   "risks": [
-    {"id": "R1", "description": "wrapTool refactor breaks JSON-returning tools", "impact": "high", "mitigation": "Skip prepend when response starts with { or ["},
+    {"id": "R1", "description": "wrapTool refactor breaks JSON-returning tools (fleet_status, member_detail, list_members, monitor_task)", "impact": "high", "mitigation": "isJsonResponse() skips prepend when response starts with { or [; monitor_task explicitly tested"},
     {"id": "R2", "description": "Prepending to error responses confuses AI agent", "impact": "medium", "mitigation": "Only prepend/append to successful responses"},
     {"id": "R3", "description": "Onboarding state file corruption", "impact": "low", "mitigation": "Treat corrupt file as default state; atomic writes"},
     {"id": "R4", "description": "Existing users see banner after upgrade", "impact": "medium", "mitigation": "Detect existing registry → pre-set bannerShown=true"},
-    {"id": "R5", "description": "Review cycle heuristic false-positives", "impact": "low", "mitigation": "Conservative keyword matching; only on execute_prompt"},
-    {"id": "R6", "description": "Welcome-back registry read fails", "impact": "low", "mitigation": "Graceful fallback: generic 'Fleet ready.' message"}
+    {"id": "R5", "description": "Review cycle heuristic false-positives", "impact": "low", "mitigation": "DEFERRED — removed from initial scope, will integrate with PM skill review-complete event"},
+    {"id": "R6", "description": "Welcome-back registry read fails", "impact": "low", "mitigation": "Graceful fallback: generic 'Fleet ready.' message"},
+    {"id": "R7", "description": "Race condition: parallel first tool calls both see bannerShown=false", "impact": "medium", "mitigation": "Load state once at server start into in-memory singleton; JS event loop serializes all reads; disk write on state change"}
   ]
 }
