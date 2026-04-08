@@ -15,7 +15,7 @@ Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` w
 - **Codex:** `codex --version`
 - **Copilot:** `copilot --version`
 
-If the CLI is not installed or the command fails, run the provider's install command (`installAgent` via `execute_command`) before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
+If the LLM CLI is not installed or the command fails, use `update_llm_cli` to install it before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
 
 ## Step 2: Disable AI Attribution
 
