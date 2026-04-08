@@ -8,29 +8,41 @@
     {
       "id": 1,
       "name": "Foundations",
-      "status": "pending",
+      "status": "completed",
       "tasks": [
         {
           "id": "1.1",
           "name": "Onboarding state service",
           "tier": "standard",
-          "status": "pending",
+          "status": "completed",
           "files": ["src/services/onboarding.ts", "src/types.ts"],
-          "notes": "In-memory singleton loaded once at startup. welcomeBackShownThisSession is a module-level var, NOT in OnboardingState interface. reviewCycleNudgeShown removed."
+          "notes": "OnboardingState interface added to types.ts. onboarding.ts implements loadOnboardingState(), saveOnboardingState(), advanceMilestone(), shouldShow(), getOnboardingState(), resetSessionFlags(), markWelcomeBackShown(), _resetForTest(). In-memory singleton loaded once at startup. Atomic write (temp+rename). welcomeBackShownThisSession is module-level var, NOT in OnboardingState."
         },
         {
           "id": "1.2",
           "name": "Text constants module",
           "tier": "cheap",
-          "status": "pending",
+          "status": "completed",
           "files": ["src/onboarding/text.ts"],
-          "notes": "Review cycle nudge removed from scope"
+          "notes": "Exports BANNER (exact ASCII art from requirements), GETTING_STARTED_GUIDE, WELCOME_BACK(memberCount, onlineCount, lastActive), NUDGE_AFTER_FIRST_REGISTER(memberType), NUDGE_AFTER_FIRST_PROMPT(), NUDGE_AFTER_MULTI_MEMBER(). Token cost comment block included as specified in task addition for 4.1. Review cycle nudge not included (deferred)."
         }
       ],
       "verify": {
         "id": "V1",
-        "status": "pending",
-        "checks": ["npm run build succeeds", "npm test passes", "onboarding state unit tests pass"]
+        "status": "completed",
+        "checks": [
+          "npm run build — pre-existing smol-toml TS error in src/cli/install.ts (unrelated to onboarding changes; all onboarding files compile cleanly with no new errors)",
+          "npm test — 631 passed, 1 failed (platform.test.ts env PATH test — pre-existing), 1 suite failed (install-multi-provider.test.ts — smol-toml, pre-existing). No regressions from onboarding changes.",
+          "onboarding.test.ts — 16 tests, all pass (isolated run confirmed)",
+          "onboarding-text.test.ts — 14 tests, all pass"
+        ],
+        "testResults": {
+          "totalPassed": 631,
+          "totalFailed": 1,
+          "skipped": 3,
+          "newTestsPassed": 30,
+          "preExistingFailures": ["install-multi-provider.test.ts (smol-toml missing package)", "platform.test.ts > cleanExec > linux: returns pristine env from login shell (PATH undefined)"]
+        }
       }
     },
     {
@@ -58,7 +70,7 @@
       "verify": {
         "id": "V2",
         "status": "pending",
-        "checks": ["npm run build succeeds", "ALL existing tests pass", "stubs return null (no behavior change)", "isJsonResponse test", "banner shown once test"]
+        "checks": ["npm run build succeeds", "ALL existing tests pass (critical — wrapTool refactor touches every tool)", "stubs return null (no behavior change)", "isJsonResponse test", "banner shown once test"]
       }
     },
     {
@@ -100,7 +112,7 @@
           "tier": "cheap",
           "status": "pending",
           "files": ["src/services/onboarding.ts"],
-          "notes": "Upgrade detection: existing registry + no onboarding.json = skip banner. Verify install CLI doesn't reset data dir."
+          "notes": "Upgrade detection: existing registry + no onboarding.json = skip banner. Verify install CLI doesn't reset data dir. Token cost comment block DONE (already added to text.ts in 1.2 per task addition)."
         },
         {
           "id": "4.2",
