@@ -316,11 +316,10 @@ Items marked 🌱 are good first issues for new contributors.
 ## Medium-term (3-6 months)
 
 - [ ] **Codex CLI & GitHub Copilot support** — First-class support for Codex CLI and GitHub Copilot as member agents — coming soon 🚀
-- [ ] **Gemini CLI support** — First-class Gemini CLI support as a member agent provider — coming soon 🚀
 - [ ] **File sync / watch mode** — Bidirectional file sync between host and members
 - [ ] **Web dashboard** — Browser UI for fleet status and member management (foundation in `dashboard/`) 🌱
 - [ ] **Plugin system** — Community-built plugins for custom tools and providers
-- [ ] **Docker member type** — Register Docker containers as fleet members without SSH
+- [ ] **Expanded member targets** — Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
 - [ ] **Result aggregation** — Merge outputs from parallel member executions into a unified report
 - [ ] **Cost dashboard** — Visualize cloud compute spend across members
 
