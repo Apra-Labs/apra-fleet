@@ -23,41 +23,40 @@ describe('BANNER', () => {
 });
 
 describe('GETTING_STARTED_GUIDE', () => {
-  it('mentions register_member', () => {
-    expect(GETTING_STARTED_GUIDE).toContain('register_member');
+  it('covers adding a member', () => {
+    expect(GETTING_STARTED_GUIDE).toContain('Add your first member');
   });
 
-  it('mentions execute_prompt', () => {
-    expect(GETTING_STARTED_GUIDE).toContain('execute_prompt');
+  it('covers giving it work with natural language examples', () => {
+    expect(GETTING_STARTED_GUIDE).toContain('Ask my-server to run the test suite');
+    expect(GETTING_STARTED_GUIDE).toContain('Send the src/ folder to my-server and run the build');
   });
 
-  it('mentions fleet_status', () => {
-    expect(GETTING_STARTED_GUIDE).toContain('fleet_status');
+  it('covers checking status', () => {
+    expect(GETTING_STARTED_GUIDE).toContain('Show fleet status');
   });
 
-  it('mentions PM skill commands', () => {
-    expect(GETTING_STARTED_GUIDE).toContain('/pm init');
-    expect(GETTING_STARTED_GUIDE).toContain('/pm pair');
-    expect(GETTING_STARTED_GUIDE).toContain('/pm plan');
+  it('does not include the /pm step', () => {
+    expect(GETTING_STARTED_GUIDE).not.toContain('/pm init');
   });
 });
 
 describe('WELCOME_BACK', () => {
-  it('shows member count and online count', () => {
-    const msg = WELCOME_BACK(3, 2, '2h ago');
+  it('shows member count and last active time', () => {
+    const msg = WELCOME_BACK(3, '2h ago');
     expect(msg).toContain('3 member');
-    expect(msg).toContain('2 online');
     expect(msg).toContain('2h ago');
+    expect(msg).not.toContain('online');
   });
 
   it('uses singular "member" for count of 1', () => {
-    const msg = WELCOME_BACK(1, 1, '5m ago');
-    expect(msg).toContain('1 member,');
+    const msg = WELCOME_BACK(1, '5m ago');
+    expect(msg).toContain('1 member');
     expect(msg).not.toContain('1 members');
   });
 
   it('shows fallback message when fleet has no members', () => {
-    const msg = WELCOME_BACK(0, 0, 'unknown');
+    const msg = WELCOME_BACK(0, 'unknown');
     expect(msg).toContain('Fleet ready');
   });
 });
@@ -65,14 +64,20 @@ describe('WELCOME_BACK', () => {
 describe('NUDGE_AFTER_FIRST_REGISTER', () => {
   it('suggests SSH key setup for remote members', () => {
     const msg = NUDGE_AFTER_FIRST_REGISTER('remote');
-    expect(msg).toContain('setup_ssh_key');
+    expect(msg).toContain('key-based auth');
     expect(msg).toContain('🔑');
   });
 
-  it('suggests running a prompt for local members', () => {
+  it('suggests giving work to local members using default name', () => {
     const msg = NUDGE_AFTER_FIRST_REGISTER('local');
-    expect(msg).toContain('execute_prompt');
+    expect(msg).toContain('my-server');
     expect(msg).toContain('🚀');
+  });
+
+  it('uses the actual member name when provided', () => {
+    const msg = NUDGE_AFTER_FIRST_REGISTER('local', 'build-box');
+    expect(msg).toContain('build-box');
+    expect(msg).not.toContain('my-server');
   });
 });
 

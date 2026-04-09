@@ -144,7 +144,7 @@ export function getOnboardingNudge(toolName: string, input: any, result: string)
   if (toolName === 'register_member' && result.startsWith('✅')) {
     if (shouldShow('firstMemberRegistered')) {
       advanceMilestone('firstMemberRegistered');
-      return NUDGE_AFTER_FIRST_REGISTER(input.member_type as string);
+      return NUDGE_AFTER_FIRST_REGISTER(input.member_type as string, input.friendly_name as string);
     }
     if (shouldShow('multiMemberNudgeShown')) {
       const agents = getAllAgents();
@@ -191,7 +191,7 @@ export function getWelcomeBackPreamble(): string | null {
   markWelcomeBackShown();
   const agents = getAllAgents();
   const lastActive = formatLastActive(agents);
-  return WELCOME_BACK(agents.length, 0, lastActive);
+  return WELCOME_BACK(agents.length, lastActive);
 }
 
 /**

@@ -280,9 +280,9 @@ describe('getOnboardingNudge', () => {
     loadOnboardingState();
     writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
 
-    const result = getOnboardingNudge('register_member', { member_type: 'local' }, '✅ Member registered.');
+    const result = getOnboardingNudge('register_member', { member_type: 'local', friendly_name: 'alpha' }, '✅ Member registered.');
     expect(result).not.toBeNull();
-    expect(result).toContain('execute_prompt');
+    expect(result).toContain('alpha');
   });
 
   it('shows NUDGE_AFTER_FIRST_REGISTER(remote) with SSH key tip', async () => {

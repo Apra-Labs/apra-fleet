@@ -10,9 +10,9 @@
  *
  * ONE-TIME costs (shown once ever, on first tool call after install):
  *   BANNER                      ~120 tokens
- *   GETTING_STARTED_GUIDE       ~230 tokens
+ *   GETTING_STARTED_GUIDE       ~190 tokens
  *   ─────────────────────────────────────
- *   Total one-time cost:        ~350 tokens  (single response, never repeated)
+ *   Total one-time cost:        ~310 tokens  (single response, never repeated)
  *
  * RECURRING costs (once per server lifecycle, after first run):
  *   WELCOME_BACK()              ~20 tokens
@@ -22,14 +22,14 @@
  * NUDGE costs (each shown at most once across the user's entire journey):
  *   NUDGE_AFTER_FIRST_REGISTER  ~25 tokens
  *   NUDGE_AFTER_FIRST_PROMPT    ~20 tokens
- *   NUDGE_AFTER_MULTI_MEMBER    ~35 tokens
+ *   NUDGE_AFTER_MULTI_MEMBER    ~40 tokens
  *   ─────────────────────────────────────
- *   Total nudge cost (all):     ~80 tokens  (spread across multiple sessions)
+ *   Total nudge cost (all):     ~85 tokens  (spread across multiple sessions)
  *
  * Summary:
- *   First server start ever:    ~370 tokens  (banner + guide + welcome-back skipped on first run)
+ *   First server start ever:    ~330 tokens  (banner + guide + welcome-back skipped on first run)
  *   Subsequent server starts:   ~20 tokens   (welcome-back only)
- *   Full onboarding journey:    ~430 tokens  (one-time + all nudges, amortized over many calls)
+ *   Full onboarding journey:    ~395 tokens  (one-time + all nudges, amortized over many calls)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -56,14 +56,10 @@ export const GETTING_STARTED_GUIDE = `
 │                                                                    │
 │  2. Give it work                                                   │
 │     'Ask my-server to run the test suite'                          │
-│     'Send this prompt to my-server: <task>'                        │
+│     'Send the src/ folder to my-server and run the build'          │
 │                                                                    │
 │  3. See what's happening                                           │
 │     'Show fleet status'                                            │
-│                                                                    │
-│  4. Orchestrate with /pm                                           │
-│     Plan, build, and review across members — like a dev team.      │
-│     /pm init → /pm pair → /pm plan → /pm start                    │
 │                                                                    │
 │  Docs: https://github.com/Apra-Labs/apra-fleet                    │
 └────────────────────────────────────────────────────────────────────┘`;
@@ -71,26 +67,26 @@ export const GETTING_STARTED_GUIDE = `
 /**
  * Welcome-back message shown once per server lifecycle (not on first run).
  * @param memberCount  Total number of registered members
- * @param onlineCount  Number of members currently reachable
  * @param lastActive   Relative time string, e.g. "2h ago" or "unknown"
  */
-export function WELCOME_BACK(memberCount: number, onlineCount: number, lastActive: string): string {
+export function WELCOME_BACK(memberCount: number, lastActive: string): string {
   if (memberCount === 0) {
     return '── Apra Fleet ──────────────────────────────────────\nFleet ready. Register a member to get started.\n────────────────────────────────────────────────────';
   }
   const plural = memberCount !== 1 ? 's' : '';
-  return `── Apra Fleet ──────────────────────────────────────\nFleet: ${memberCount} member${plural}, ${onlineCount} online · Last active: ${lastActive}\n────────────────────────────────────────────────────`;
+  return `── Apra Fleet ──────────────────────────────────────\nFleet: ${memberCount} member${plural} · Last active: ${lastActive}\n────────────────────────────────────────────────────`;
 }
 
 /**
  * Nudge shown after the user registers their first member.
- * @param memberType "local" | "remote"
+ * @param memberType  "local" | "remote"
+ * @param memberName  Registered name to show in the example (default: "my-server")
  */
-export function NUDGE_AFTER_FIRST_REGISTER(memberType: string): string {
+export function NUDGE_AFTER_FIRST_REGISTER(memberType: string, memberName = 'my-server'): string {
   if (memberType === 'remote') {
     return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🔑 Upgrade to key-based auth for this member:              │\n│    'Set up key-based auth for this member' — more secure.  │\n└────────────────────────────────────────────────────────────┘`;
   }
-  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🚀 Member registered! Give it work:                        │\n│    'Ask <member> to run the test suite'                    │\n└────────────────────────────────────────────────────────────┘`;
+  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🚀 Member registered! Give it work:                        │\n│    'Ask ${memberName} to run the test suite'${' '.repeat(Math.max(1, 28 - memberName.length))}│\n└────────────────────────────────────────────────────────────┘`;
 }
 
 /**
@@ -104,5 +100,5 @@ export function NUDGE_AFTER_FIRST_PROMPT(): string {
  * Nudge shown after the user registers 2+ members (introduces PM skill).
  */
 export function NUDGE_AFTER_MULTI_MEMBER(): string {
-  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🤝 You have multiple members — try the PM skill:           │\n│    /pm init  →  /pm pair  →  /pm plan                      │\n│    Coordinate doer-reviewer pairs across your fleet.       │\n└────────────────────────────────────────────────────────────┘`;
+  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🤝 You have multiple members — try the PM skill:           │\n│    /pm init  →  /pm pair  →  /pm plan                      │\n│    One member builds, another reviews — across machines.   │\n└────────────────────────────────────────────────────────────┘`;
 }
