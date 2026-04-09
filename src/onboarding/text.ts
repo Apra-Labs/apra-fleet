@@ -10,9 +10,9 @@
  *
  * ONE-TIME costs (shown once ever, on first tool call after install):
  *   BANNER                      ~120 tokens
- *   GETTING_STARTED_GUIDE       ~250 tokens
+ *   GETTING_STARTED_GUIDE       ~230 tokens
  *   ─────────────────────────────────────
- *   Total one-time cost:        ~370 tokens  (single response, never repeated)
+ *   Total one-time cost:        ~350 tokens  (single response, never repeated)
  *
  * RECURRING costs (once per server lifecycle, after first run):
  *   WELCOME_BACK()              ~20 tokens
@@ -27,9 +27,9 @@
  *   Total nudge cost (all):     ~80 tokens  (spread across multiple sessions)
  *
  * Summary:
- *   First server start ever:    ~390 tokens  (banner + guide + welcome-back skipped on first run)
+ *   First server start ever:    ~370 tokens  (banner + guide + welcome-back skipped on first run)
  *   Subsequent server starts:   ~20 tokens   (welcome-back only)
- *   Full onboarding journey:    ~450 tokens  (one-time + all nudges, amortized over many calls)
+ *   Full onboarding journey:    ~430 tokens  (one-time + all nudges, amortized over many calls)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -47,26 +47,26 @@ export const BANNER = `───────────────────
 ────────────────────────────────────────────────────────────────────────────────`;
 
 export const GETTING_STARTED_GUIDE = `
-┌─ Getting Started ──────────────────────────────────────────────────────────┐
-│                                                                             │
-│  1. Register a member                                                       │
-│     • This machine:  register_member (member_type="local")                  │
-│     • Remote via SSH: register_member (member_type="remote")                │
-│     Isolate work per task, parallelize across machines.                     │
-│                                                                             │
-│  2. Run your first prompt                                                   │
-│     execute_prompt — send an AI task to any member                          │
-│                                                                             │
-│  3. Check fleet status                                                      │
-│     fleet_status — see all members, who's online, last activity             │
-│                                                                             │
-│  4. Scale up with the PM skill                                              │
-│     Orchestrate multi-step work with doer-reviewer pairs.                   │
-│     /pm init  →  /pm pair  →  /pm plan                                     │
-│     Scale from solo to a coordinated team in minutes.                       │
-│                                                                             │
-│  Docs & help:  https://github.com/wayfaringbit/apra-fleet                  │
-└─────────────────────────────────────────────────────────────────────────────┘`;
+┌─ Getting Started ─────────────────────────────────────────────────┐
+│                                                                    │
+│  1. Add your first member                                          │
+│     'Add this machine to the fleet' (local)                        │
+│     'Register my-server as a remote member' (SSH)                  │
+│     Each member works in its own directory — parallel by design.   │
+│                                                                    │
+│  2. Give it work                                                   │
+│     'Ask my-server to run the test suite'                          │
+│     'Send this prompt to my-server: <task>'                        │
+│                                                                    │
+│  3. See what's happening                                           │
+│     'Show fleet status'                                            │
+│                                                                    │
+│  4. Orchestrate with /pm                                           │
+│     Plan, build, and review across members — like a dev team.      │
+│     /pm init → /pm pair → /pm plan → /pm start                    │
+│                                                                    │
+│  Docs: https://github.com/Apra-Labs/apra-fleet                    │
+└────────────────────────────────────────────────────────────────────┘`;
 
 /**
  * Welcome-back message shown once per server lifecycle (not on first run).
@@ -88,16 +88,16 @@ export function WELCOME_BACK(memberCount: number, onlineCount: number, lastActiv
  */
 export function NUDGE_AFTER_FIRST_REGISTER(memberType: string): string {
   if (memberType === 'remote') {
-    return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🔑 Upgrade to key-based auth for this member:              │\n│    setup_ssh_key — no more passwords, more secure.         │\n└────────────────────────────────────────────────────────────┘`;
+    return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🔑 Upgrade to key-based auth for this member:              │\n│    'Set up key-based auth for this member' — more secure.  │\n└────────────────────────────────────────────────────────────┘`;
   }
-  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🚀 Member registered! Run your first AI prompt:            │\n│    execute_prompt — send a task to this member.            │\n└────────────────────────────────────────────────────────────┘`;
+  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🚀 Member registered! Give it work:                        │\n│    'Ask <member> to run the test suite'                    │\n└────────────────────────────────────────────────────────────┘`;
 }
 
 /**
  * Nudge shown after the user runs their first prompt.
  */
 export function NUDGE_AFTER_FIRST_PROMPT(): string {
-  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 📊 Monitor your fleet anytime:                             │\n│    fleet_status — online members, last activity, sessions. │\n└────────────────────────────────────────────────────────────┘`;
+  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 📊 Monitor your fleet anytime:                             │\n│    'Show fleet status' — online members, last activity.    │\n└────────────────────────────────────────────────────────────┘`;
 }
 
 /**
