@@ -125,7 +125,8 @@ describe('saveOnboardingState', () => {
     expect(fs.existsSync(ONBOARDING_PATH)).toBe(true);
   });
 
-  it('writes onboarding.json with 0o600 permissions (owner-only)', async () => {
+  it('writes onboarding.json with 0o600 permissions (owner-only, non-Windows)', async () => {
+    if (process.platform === 'win32') return;
     const { loadOnboardingState, saveOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
     saveOnboardingState();
