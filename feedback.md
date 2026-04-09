@@ -1,62 +1,85 @@
-# Onboarding UX Feedback — Round 2
+# Onboarding Banner Visibility Fix — Code Review
 
-**Reviewer perspective:** First-time user who knows Claude Code, never used Apra Fleet.
+**Commits reviewed:** `07e214e` and `a06e052`
+**Scope:** wrapTool passive guard, isActiveTool, PASSIVE_TOOLS, resetSessionFlags, MCP content annotations, banner bypassing the JSON response check
 
 ---
 
 ## Verdict: APPROVED
 
-All 5 requested fixes are correctly implemented. The onboarding flow now reads naturally from a first-time user's perspective.
+---
+
+## Test Results
+
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | Pass (clean) |
+| `npm test` | 50/50 onboarding tests pass; 1 unrelated failure in `platform.test.ts` (`cleanExec` env test) |
+| `node tests/onboarding-smoke.mjs` | All 5 smoke tests pass |
 
 ---
 
-## Fix Verification
+## Review of Changes
 
-### 1. PM skill removed from getting-started guide ✅
-The guide now has 3 focused steps: add a member, give it work, check status. No cognitive overload. The PM skill is properly deferred to the multi-member nudge where it belongs.
+### 1. Passive Tool Guard (`isActiveTool` + `PASSIVE_TOOLS`) — GOOD
 
-### 2. NUDGE_AFTER_FIRST_REGISTER uses actual member name ✅
-The function now accepts `memberName` and interpolates it into the example: `'Ask build-server to run the test suite'`. The caller passes `input.friendly_name`. Dynamic padding via `Math.max(1, 28 - memberName.length)` keeps the box border aligned for typical names.
+**What it does:** Prevents `version` and `shutdown_server` from consuming the one-shot banner or welcome-back preamble.
 
-### 3. WELCOME_BACK no longer shows misleading "0 online" ✅
-The `onlineCount` parameter is gone entirely. The signature is now `(memberCount, lastActive)` and the output reads `Fleet: 3 members · Last active: 2h ago`. Clean and honest — no misleading data.
+**Why it's correct:** MCP clients (Claude Code, Cursor) often call `version` automatically at startup during capability negotiation. Without this guard, the banner would be "consumed" by a background tool call the user never sees. The `Set`-based lookup is O(1) and the two passive tools are well-chosen — both are diagnostic/lifecycle tools with no user-facing output.
 
-### 4. Step 2 phrasing is natural ✅
-Both examples are now things a user would actually say:
-- `'Ask my-server to run the test suite'`
-- `'Send the src/ folder to my-server and run the build'`
+**The guard is properly layered:** `isActiveTool` only controls whether onboarding preambles attach. Nudges already have their own tool-name filters (`register_member`, `execute_prompt`), so there's no double-gating concern.
 
-The second example also demonstrates file transfer, which is a nice way to show two capabilities in one natural sentence.
+### 2. Banner Bypasses JSON Check — GOOD
 
-### 5. NUDGE_AFTER_MULTI_MEMBER has plain-language PM explanation ✅
-Now reads: "One member builds, another reviews — across machines." This is concrete and immediately understandable without knowing fleet internals.
+**What it does (a06e052):** The first-run banner now shows regardless of whether the tool response is JSON. The welcome-back message and nudges still respect the JSON check.
 
-### 6. SSH key nudge timing (kept as-is per user decision) — Acknowledged
-Not re-flagging. The nudge is still useful security guidance even if the timing is eager.
+**Why it's correct:** If a user's very first tool call happens to be `fleet_status` (which returns JSON), the old code would silently consume the banner milestone without ever displaying it. The fix splits the logic:
 
----
+```
+banner = getFirstRunPreamble()           // always, if active tool
+welcome-back = isJson ? null : ...       // respects JSON check
+nudge = isJson ? null : ...              // respects JSON check
+```
 
-## Full Read-Through — Final Notes
+This is the right tradeoff: the banner is a one-time event that must not be silently lost, while welcome-back and nudges are recurring/contextual and can safely yield to JSON responses.
 
-Reading through the entire flow as a new user (banner → guide → nudges → welcome-back), it flows well. Two minor observations that are **not blockers**:
+### 3. MCP Content Annotations — GOOD
 
-**A. Nudge box padding with very long member names:** If a user registers a member with a name longer than ~27 characters (e.g., `production-build-server-east`), the nudge text line will exceed the box width since the padding floors at 1 space. This is an edge case — most names are short — but worth a defensive clamp or truncation if you want pixel-perfect boxes.
+**What it does:** Instead of string-concatenating banner + result + nudge into one text blob, wrapTool now returns separate `content` blocks with MCP `annotations`:
 
-**B. Zero-member welcome-back:** Still says "Register a member to get started" which is slightly redundant after the first-run guide. Minor — the user may not remember the guide from a previous session, so repeating it is reasonable.
+- Banner: `{ audience: ['user'], priority: 1 }`
+- Result: no annotation (default)
+- Nudge: `{ audience: ['user'], priority: 0.8 }`
 
-Neither of these warrant blocking the merge.
+**Why it's correct:** This follows the MCP spec for content annotations. Clients that support annotations can render the banner prominently to the user without feeding it to the model as context. Clients that don't support annotations degrade gracefully — they just see multiple text blocks. The priority ordering (banner > result > nudge) is sensible.
+
+### 4. `resetSessionFlags()` at Startup — GOOD
+
+**What it does:** Explicitly resets `welcomeBackShownThisSession` to `false` at server startup, right after `loadOnboardingState()`.
+
+**Why it's correct:** The session flag is a module-level `let` variable. In normal operation it starts as `false`, but calling `resetSessionFlags()` explicitly makes the invariant visible and protects against edge cases (hot module reload, test runners that reuse the module). The function is clean and the call site is correct.
+
+### 5. Test Coverage — GOOD
+
+The test suite covers:
+- `isActiveTool` returns false for `version` and `shutdown_server`, true for active tools
+- Passive tool (`version`) does not consume the banner
+- Banner is preserved after passive call and consumed on next active call
+- Banner shows on JSON response from active tool (the key fix)
+- Full first-session sequence: banner → register nudge → multi-member nudge → prompt nudge
+- Welcome-back session flag lifecycle
+- Smoke test replicates the exact `wrapTool` logic from `src/index.ts`
+
+### 6. Minor Observations (Non-blocking)
+
+**A. PASSIVE_TOOLS extensibility:** If new diagnostic tools are added (e.g., `health_check`), someone needs to remember to add them to `PASSIVE_TOOLS`. A comment above the Set already documents this, which is sufficient for now. An alternative would be a schema-level `passive: true` annotation on tool definitions, but that's over-engineering for 2 tools.
+
+**B. Nudge suppression on JSON responses (a06e052):** The second commit also suppresses nudges for JSON responses (`const suffix = isJson ? null : getOnboardingNudge(...)`) which is correct — nudges after `fleet_status` JSON output would be confusing — but this change isn't called out in the commit message. Minor documentation gap only.
+
+**C. Smoke test t3 comment mismatch:** The smoke test comment on test 3 says "Expected: preamble=null" but then accepts a welcome-back preamble as passing. The output is correct (welcome-back is shown once), but the comment is slightly misleading. Non-blocking.
 
 ---
 
 ## Summary
 
-| Fix | Status |
-|-----|--------|
-| PM removed from guide | ✅ Verified |
-| Real member name in nudge | ✅ Verified |
-| No misleading "0 online" | ✅ Verified |
-| Natural step 2 phrasing | ✅ Verified |
-| Plain-language PM nudge | ✅ Verified |
-| SSH nudge timing (kept) | Acknowledged |
-
-**The onboarding text is ready to ship.**
+The two commits solve a real problem (banner silently consumed by passive or JSON-returning tools) with a clean, minimal fix. The layering is correct: passive guard → banner bypass → JSON check for welcome-back/nudges. MCP annotations are a nice forward-looking addition. Test coverage is thorough. Ship it.
