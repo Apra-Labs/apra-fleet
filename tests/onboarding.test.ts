@@ -292,7 +292,7 @@ describe('getOnboardingNudge', () => {
 
     const result = getOnboardingNudge('register_member', { member_type: 'remote' }, '✅ Member registered.');
     expect(result).not.toBeNull();
-    expect(result).toContain('setup_ssh_key');
+    expect(result).toContain('key-based auth');
   });
 
   it('does not show first-register nudge on second registration', async () => {
@@ -347,7 +347,7 @@ describe('getOnboardingNudge', () => {
 
     const result = getOnboardingNudge('execute_prompt', {}, '📋 Task submitted.');
     expect(result).not.toBeNull();
-    expect(result).toContain('fleet_status');
+    expect(result).toContain('Show fleet status');
   });
 
   it('does not show prompt nudge on second execute_prompt', async () => {
@@ -435,7 +435,7 @@ describe('wrapTool output sequence (integration)', () => {
 
     expect(text).toContain('One model is a tool');     // banner in preamble
     expect(text).toContain('✅ Member registered.');   // original result preserved
-    expect(text).toContain('execute_prompt');           // nudge appended
+    expect(text).toContain('🚀');                      // nudge appended
   });
 
   it('full first-session sequence: banner → register nudge → multi-member nudge → prompt nudge', async () => {
@@ -448,7 +448,7 @@ describe('wrapTool output sequence (integration)', () => {
     const pre1 = isJsonResponse(r1) ? null : getFirstRunPreamble();
     const suf1 = getOnboardingNudge('register_member', { member_type: 'local' }, r1);
     expect(pre1).toContain('Getting Started');   // banner shown
-    expect(suf1).toContain('execute_prompt');    // first-register nudge
+    expect(suf1).toContain('🚀');               // first-register nudge
 
     // Call 2: second register_member (now 2 agents) → no banner, multi-member nudge
     writeRegistry([
@@ -466,7 +466,7 @@ describe('wrapTool output sequence (integration)', () => {
     const pre3 = isJsonResponse(r3) ? null : getFirstRunPreamble();
     const suf3 = getOnboardingNudge('execute_prompt', {}, r3);
     expect(pre3).toBeNull();
-    expect(suf3).toContain('fleet_status');
+    expect(suf3).toContain('Show fleet status');
 
     // Call 4: any further tool → no onboarding output
     const r4 = '📋 Another task.';

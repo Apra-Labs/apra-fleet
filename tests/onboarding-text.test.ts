@@ -82,9 +82,10 @@ describe('NUDGE_AFTER_FIRST_REGISTER', () => {
 });
 
 describe('NUDGE_AFTER_FIRST_PROMPT', () => {
-  it('mentions fleet_status', () => {
+  it('suggests checking fleet status', () => {
     const msg = NUDGE_AFTER_FIRST_PROMPT();
-    expect(msg).toContain('fleet_status');
+    expect(msg).toContain('Show fleet status');
+    expect(msg).toContain('📊');
   });
 });
 
