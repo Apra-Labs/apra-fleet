@@ -76,22 +76,26 @@ async function startServer() {
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
   // --- Onboarding helpers ---
-  // isJsonResponse imported from onboarding service — skip prepend for JSON-returning
-  // tools (fleet_status, list_members, member_detail, monitor_task).
   // isActiveTool guards passive tools (version, shutdown_server) from consuming the banner.
+  // First-run banner bypasses the JSON check — passive guard is sufficient protection.
+  // Welcome-back and nudges still respect the JSON check.
 
-  function getOnboardingPreamble(toolName: string): string | null {
+  function getOnboardingPreamble(toolName: string, isJson: boolean): string | null {
     if (!isActiveTool(toolName)) return null;
-    return getFirstRunPreamble() ?? getWelcomeBackPreamble();
+    // First-run banner always shows regardless of response format
+    const banner = getFirstRunPreamble();
+    if (banner) return banner;
+    // Welcome-back still respects JSON check
+    if (isJson) return null;
+    return getWelcomeBackPreamble();
   }
 
   function wrapTool(toolName: string, handler: (input: any) => Promise<string>) {
     return async (input: any) => {
       const result = await handler(input);
-      // Check JSON first so we don't consume the banner milestone on JSON-returning tools
       const isJson = isJsonResponse(result);
-      const preamble = isJson ? null : getOnboardingPreamble(toolName);
-      const suffix = getOnboardingNudge(toolName, input, result);
+      const preamble = getOnboardingPreamble(toolName, isJson);
+      const suffix = isJson ? null : getOnboardingNudge(toolName, input, result);
 
       // Return separate content blocks with MCP annotations so clients
       // display onboarding text to the user instead of collapsing it.

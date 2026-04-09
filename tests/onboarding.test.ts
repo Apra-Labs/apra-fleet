@@ -410,36 +410,41 @@ describe('getOnboardingNudge', () => {
  * banner + nudge composition.
  */
 describe('wrapTool output sequence (integration)', () => {
-  it('JSON response does NOT consume the banner (REC-4 fix)', async () => {
-    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingState } = await import('../src/services/onboarding.js');
+  it('banner shows on JSON response from active tool', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getWelcomeBackPreamble, getOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
-    // Simulate wrapTool: JSON result → skip preamble entirely
+    // New behavior: first-run banner bypasses JSON check — active tool guard is sufficient
     const jsonResult = '{"members":[]}';
     const isJson = isJsonResponse(jsonResult);
-    const preamble = (isJson || !isActiveTool('fleet_status')) ? null : getFirstRunPreamble();
+    // Simulate new getOnboardingPreamble(toolName, isJson) logic
+    const banner = isActiveTool('fleet_status') ? getFirstRunPreamble() : null;
+    const preamble = banner ?? (!isJson ? getWelcomeBackPreamble() : null);
 
-    expect(preamble).toBeNull();
-    // Banner milestone must NOT have advanced — it should appear on the next non-JSON call
-    expect(getOnboardingState().bannerShown).toBe(false);
+    expect(preamble).not.toBeNull(); // banner shown even on JSON response
+    expect(preamble).toContain('One model is a tool');
+    expect(getOnboardingState().bannerShown).toBe(true);
   });
 
-  it('banner is shown on first non-JSON call even after prior JSON calls', async () => {
-    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingState } = await import('../src/services/onboarding.js');
+  it('banner shown on first JSON call; subsequent call gets null', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getWelcomeBackPreamble, getOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
-    // First call: JSON (fleet_status) — banner preserved
+    // First call: JSON (fleet_status) — banner now shown (bypasses JSON check)
     const jsonResult = '{"members":[]}';
-    const p1 = (isJsonResponse(jsonResult) || !isActiveTool('fleet_status')) ? null : getFirstRunPreamble();
-    expect(p1).toBeNull();
-    expect(getOnboardingState().bannerShown).toBe(false);
-
-    // Second call: non-JSON (register_member) — banner now shown
-    const textResult = '✅ Member registered.';
-    const p2 = (isJsonResponse(textResult) || !isActiveTool('register_member')) ? null : getFirstRunPreamble();
-    expect(p2).not.toBeNull();
-    expect(p2).toContain('One model is a tool');
+    const isJson1 = isJsonResponse(jsonResult);
+    const banner1 = isActiveTool('fleet_status') ? getFirstRunPreamble() : null;
+    const p1 = banner1 ?? (!isJson1 ? getWelcomeBackPreamble() : null);
+    expect(p1).not.toBeNull();
+    expect(p1).toContain('One model is a tool');
     expect(getOnboardingState().bannerShown).toBe(true);
+
+    // Second call: JSON (fleet_status again) — banner already consumed, welcome-back suppressed for JSON
+    const jsonResult2 = '{"members":[]}';
+    const isJson2 = isJsonResponse(jsonResult2);
+    const banner2 = isActiveTool('fleet_status') ? getFirstRunPreamble() : null;
+    const p2 = banner2 ?? (!isJson2 ? getWelcomeBackPreamble() : null);
+    expect(p2).toBeNull(); // banner consumed; welcome-back suppressed for JSON responses
   });
 
   it('passive tool (version) does NOT consume the banner', async () => {

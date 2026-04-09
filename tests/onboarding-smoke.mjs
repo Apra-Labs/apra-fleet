@@ -49,13 +49,19 @@ if (state.bannerShown !== false) {
 }
 
 // --- Simulate wrapTool helper ---
+// Banner bypasses JSON check; welcome-back and nudges still respect it.
 function simulateWrapTool(toolName, result) {
   const isJson = isJsonResponse(result);
   let preamble = null;
-  if (!isJson && isActiveTool(toolName)) {
-    preamble = getFirstRunPreamble() ?? getWelcomeBackPreamble();
+  if (isActiveTool(toolName)) {
+    const banner = getFirstRunPreamble();
+    if (banner) {
+      preamble = banner;
+    } else if (!isJson) {
+      preamble = getWelcomeBackPreamble();
+    }
   }
-  const suffix = getOnboardingNudge(toolName, {}, result);
+  const suffix = isJson ? null : getOnboardingNudge(toolName, {}, result);
   return { preamble, result, suffix };
 }
 
@@ -69,15 +75,15 @@ if (t1.preamble !== null) { console.error('  FAIL'); process.exit(1); }
 if (getOnboardingState().bannerShown !== false) { console.error('  FAIL'); process.exit(1); }
 console.log('  PASS\n');
 
-// --- Test 2: fleet_status (active) should show banner ---
-console.log('--- Test 2: fleet_status (active tool, first call) ---');
-const t2 = simulateWrapTool('fleet_status', 'No members registered.');
+// --- Test 2: fleet_status with JSON response — banner bypasses JSON check ---
+console.log('--- Test 2: fleet_status (active tool, JSON response) should show banner ---');
+const t2 = simulateWrapTool('fleet_status', '{"members":[]}');
 console.log(`  preamble: ${t2.preamble ? 'YES (' + t2.preamble.length + ' chars)' : 'null'}`);
 console.log(`  contains banner: ${t2.preamble?.includes('One model is a tool') ?? false}`);
 console.log(`  contains guide: ${t2.preamble?.includes('Getting Started') ?? false}`);
 console.log(`  bannerShown: ${getOnboardingState().bannerShown}`);
-console.log(`  Expected: preamble=YES (banner+guide), bannerShown=true`);
-if (!t2.preamble) { console.error('  FAIL: no preamble'); process.exit(1); }
+console.log(`  Expected: preamble=YES (banner+guide even for JSON), bannerShown=true`);
+if (!t2.preamble) { console.error('  FAIL: no preamble — banner must bypass JSON check'); process.exit(1); }
 if (!t2.preamble.includes('One model is a tool')) { console.error('  FAIL: missing banner'); process.exit(1); }
 console.log('  PASS\n');
 
