@@ -8,6 +8,13 @@ import { getAllAgents } from './registry.js';
 
 const ONBOARDING_PATH = path.join(FLEET_DIR, 'onboarding.json');
 
+/**
+ * Tools that should NOT consume the onboarding banner or welcome-back preamble.
+ * These are diagnostic/administrative tools that may be called automatically
+ * by the client before the user's first meaningful interaction.
+ */
+const PASSIVE_TOOLS = new Set(['version', 'shutdown_server']);
+
 const DEFAULT_STATE: OnboardingState = {
   bannerShown: false,
   firstMemberRegistered: false,
@@ -111,6 +118,14 @@ export function resetSessionFlags(): void {
  */
 export function markWelcomeBackShown(): void {
   welcomeBackShownThisSession = true;
+}
+
+/**
+ * Returns true if this tool should be able to consume onboarding preambles.
+ * Passive tools (version, shutdown_server) should never consume the banner.
+ */
+export function isActiveTool(toolName: string): boolean {
+  return !PASSIVE_TOOLS.has(toolName);
 }
 
 /**

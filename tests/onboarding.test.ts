@@ -188,6 +188,33 @@ describe('shouldShow', () => {
   });
 });
 
+describe('isActiveTool', () => {
+  it('returns false for version tool', async () => {
+    const { isActiveTool } = await import('../src/services/onboarding.js');
+    expect(isActiveTool('version')).toBe(false);
+  });
+
+  it('returns false for shutdown_server tool', async () => {
+    const { isActiveTool } = await import('../src/services/onboarding.js');
+    expect(isActiveTool('shutdown_server')).toBe(false);
+  });
+
+  it('returns true for register_member', async () => {
+    const { isActiveTool } = await import('../src/services/onboarding.js');
+    expect(isActiveTool('register_member')).toBe(true);
+  });
+
+  it('returns true for execute_prompt', async () => {
+    const { isActiveTool } = await import('../src/services/onboarding.js');
+    expect(isActiveTool('execute_prompt')).toBe(true);
+  });
+
+  it('returns true for fleet_status', async () => {
+    const { isActiveTool } = await import('../src/services/onboarding.js');
+    expect(isActiveTool('fleet_status')).toBe(true);
+  });
+});
+
 describe('isJsonResponse', () => {
   it('returns true for object JSON', async () => {
     const { isJsonResponse } = await import('../src/services/onboarding.js');
@@ -384,13 +411,13 @@ describe('getOnboardingNudge', () => {
  */
 describe('wrapTool output sequence (integration)', () => {
   it('JSON response does NOT consume the banner (REC-4 fix)', async () => {
-    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingState } = await import('../src/services/onboarding.js');
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
     // Simulate wrapTool: JSON result → skip preamble entirely
     const jsonResult = '{"members":[]}';
     const isJson = isJsonResponse(jsonResult);
-    const preamble = isJson ? null : getFirstRunPreamble();
+    const preamble = (isJson || !isActiveTool('fleet_status')) ? null : getFirstRunPreamble();
 
     expect(preamble).toBeNull();
     // Banner milestone must NOT have advanced — it should appear on the next non-JSON call
@@ -398,54 +425,74 @@ describe('wrapTool output sequence (integration)', () => {
   });
 
   it('banner is shown on first non-JSON call even after prior JSON calls', async () => {
-    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingState } = await import('../src/services/onboarding.js');
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
     // First call: JSON (fleet_status) — banner preserved
     const jsonResult = '{"members":[]}';
-    const p1 = isJsonResponse(jsonResult) ? null : getFirstRunPreamble();
+    const p1 = (isJsonResponse(jsonResult) || !isActiveTool('fleet_status')) ? null : getFirstRunPreamble();
     expect(p1).toBeNull();
     expect(getOnboardingState().bannerShown).toBe(false);
 
     // Second call: non-JSON (register_member) — banner now shown
     const textResult = '✅ Member registered.';
-    const p2 = isJsonResponse(textResult) ? null : getFirstRunPreamble();
+    const p2 = (isJsonResponse(textResult) || !isActiveTool('register_member')) ? null : getFirstRunPreamble();
     expect(p2).not.toBeNull();
     expect(p2).toContain('One model is a tool');
     expect(getOnboardingState().bannerShown).toBe(true);
   });
 
+  it('passive tool (version) does NOT consume the banner', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+
+    // Simulate wrapTool for version tool: passive → skip preamble
+    const result = 'apra-fleet v1.0.0';
+    const preamble = (isJsonResponse(result) || !isActiveTool('version')) ? null : getFirstRunPreamble();
+
+    expect(preamble).toBeNull();
+    expect(getOnboardingState().bannerShown).toBe(false); // NOT consumed
+  });
+
+  it('banner is preserved after version call and consumed on register_member', async () => {
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+
+    // version call — passive, no consumption
+    const v = 'apra-fleet v1.0.0';
+    const p1 = (isJsonResponse(v) || !isActiveTool('version')) ? null : getFirstRunPreamble();
+    expect(p1).toBeNull();
+    expect(getOnboardingState().bannerShown).toBe(false);
+
+    // register_member — active, consumes banner
+    const r = '✅ Member registered.';
+    const p2 = (isJsonResponse(r) || !isActiveTool('register_member')) ? null : getFirstRunPreamble();
+    expect(p2).not.toBeNull();
+    expect(getOnboardingState().bannerShown).toBe(true);
+  });
+
   it('banner + nudge both appear on the same response (first register_member)', async () => {
-    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingNudge } = await import('../src/services/onboarding.js');
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge } = await import('../src/services/onboarding.js');
     loadOnboardingState();
     writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
 
     const result = '✅ Member registered.';
     const isJson = isJsonResponse(result);
-    const preamble = isJson ? null : getFirstRunPreamble();
+    const preamble = (isJson || !isActiveTool('register_member')) ? null : getFirstRunPreamble();
     const suffix = getOnboardingNudge('register_member', { member_type: 'local' }, result);
 
     expect(preamble).not.toBeNull();
     expect(suffix).not.toBeNull();
-
-    // Replicate wrapTool composition
-    let text = result;
-    if (preamble) text = preamble + '\n\n---\n\n' + text;
-    if (suffix) text = text + '\n\n---\n\n' + suffix;
-
-    expect(text).toContain('One model is a tool');     // banner in preamble
-    expect(text).toContain('✅ Member registered.');   // original result preserved
-    expect(text).toContain('🚀');                      // nudge appended
   });
 
   it('full first-session sequence: banner → register nudge → multi-member nudge → prompt nudge', async () => {
-    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingNudge } = await import('../src/services/onboarding.js');
+    const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
     // Call 1: first register_member → banner + first-register nudge
     writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
     const r1 = '✅ Member registered.';
-    const pre1 = isJsonResponse(r1) ? null : getFirstRunPreamble();
+    const pre1 = (isJsonResponse(r1) || !isActiveTool('register_member')) ? null : getFirstRunPreamble();
     const suf1 = getOnboardingNudge('register_member', { member_type: 'local' }, r1);
     expect(pre1).toContain('Getting Started');   // banner shown
     expect(suf1).toContain('🚀');               // first-register nudge
@@ -456,21 +503,21 @@ describe('wrapTool output sequence (integration)', () => {
       { id: '2', friendlyName: 'beta', agentType: 'remote', workFolder: '/tmp/b', createdAt: new Date().toISOString() },
     ]);
     const r2 = '✅ Member registered.';
-    const pre2 = isJsonResponse(r2) ? null : getFirstRunPreamble();
+    const pre2 = (isJsonResponse(r2) || !isActiveTool('register_member')) ? null : getFirstRunPreamble();
     const suf2 = getOnboardingNudge('register_member', { member_type: 'remote' }, r2);
     expect(pre2).toBeNull();             // banner already shown
     expect(suf2).toContain('PM skill');  // multi-member nudge
 
     // Call 3: execute_prompt → prompt nudge
     const r3 = '📋 Task submitted.';
-    const pre3 = isJsonResponse(r3) ? null : getFirstRunPreamble();
+    const pre3 = (isJsonResponse(r3) || !isActiveTool('execute_prompt')) ? null : getFirstRunPreamble();
     const suf3 = getOnboardingNudge('execute_prompt', {}, r3);
     expect(pre3).toBeNull();
     expect(suf3).toContain('Show fleet status');
 
     // Call 4: any further tool → no onboarding output
     const r4 = '📋 Another task.';
-    const pre4 = isJsonResponse(r4) ? null : getFirstRunPreamble();
+    const pre4 = (isJsonResponse(r4) || !isActiveTool('execute_prompt')) ? null : getFirstRunPreamble();
     const suf4 = getOnboardingNudge('execute_prompt', {}, r4);
     expect(pre4).toBeNull();
     expect(suf4).toBeNull();

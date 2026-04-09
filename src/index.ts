@@ -44,10 +44,11 @@ async function startServer() {
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
 
   // Load onboarding state once at server startup (in-memory singleton)
-  const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, getOnboardingNudge, getWelcomeBackPreamble } = await import('./services/onboarding.js');
+  const { loadOnboardingState, resetSessionFlags, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./services/onboarding.js');
   const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
   // Pass current member count so upgrade detection works: existing registry + no onboarding.json → skip banner
   loadOnboardingState(getAgentsForStartup().length);
+  resetSessionFlags();
 
   // Tool schemas and handlers
   const { registerMemberSchema, registerMember } = await import('./tools/register-member.js');
@@ -77,8 +78,10 @@ async function startServer() {
   // --- Onboarding helpers ---
   // isJsonResponse imported from onboarding service — skip prepend for JSON-returning
   // tools (fleet_status, list_members, member_detail, monitor_task).
+  // isActiveTool guards passive tools (version, shutdown_server) from consuming the banner.
 
-  function getOnboardingPreamble(): string | null {
+  function getOnboardingPreamble(toolName: string): string | null {
+    if (!isActiveTool(toolName)) return null;
     return getFirstRunPreamble() ?? getWelcomeBackPreamble();
   }
 
@@ -87,12 +90,20 @@ async function startServer() {
       const result = await handler(input);
       // Check JSON first so we don't consume the banner milestone on JSON-returning tools
       const isJson = isJsonResponse(result);
-      const preamble = isJson ? null : getOnboardingPreamble();
+      const preamble = isJson ? null : getOnboardingPreamble(toolName);
       const suffix = getOnboardingNudge(toolName, input, result);
-      let text = result;
-      if (preamble) text = preamble + '\n\n---\n\n' + text;
-      if (suffix) text = text + '\n\n---\n\n' + suffix;
-      return { content: [{ type: 'text' as const, text }] };
+
+      // Return separate content blocks with MCP annotations so clients
+      // display onboarding text to the user instead of collapsing it.
+      const content: Array<{ type: 'text'; text: string; annotations?: { audience?: ('user' | 'assistant')[]; priority?: number } }> = [];
+      if (preamble) {
+        content.push({ type: 'text' as const, text: preamble, annotations: { audience: ['user'], priority: 1 } });
+      }
+      content.push({ type: 'text' as const, text: result });
+      if (suffix) {
+        content.push({ type: 'text' as const, text: suffix, annotations: { audience: ['user'], priority: 0.8 } });
+      }
+      return { content };
     };
   }
 
