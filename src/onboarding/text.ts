@@ -3,33 +3,33 @@
  * Logic never constructs display text directly — it always imports from here.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * TOKEN COST ESTIMATE — onboarding UX overhead
+ * TOKEN COST ANALYSIS — onboarding UX overhead
  * ─────────────────────────────────────────────────────────────────────────────
- * Token counts are approximate (GPT-4 / Claude tokenization, ~4 chars/token).
+ * Methodology: ASCII text ~4 chars/token; box-drawing & unicode ~1-2 chars/token.
  * These tokens are added to MCP tool responses and consumed by the model.
  *
  * ONE-TIME costs (shown once ever, on first tool call after install):
- *   BANNER                      ~120 tokens
- *   GETTING_STARTED_GUIDE       ~190 tokens
+ *   BANNER                      678 chars  → ~380 tokens
+ *   GETTING_STARTED_GUIDE      1134 chars  → ~346 tokens
  *   ─────────────────────────────────────
- *   Total one-time cost:        ~310 tokens  (single response, never repeated)
+ *   Total one-time cost:                    ~726 tokens  (single response, never repeated)
  *
  * RECURRING costs (once per server lifecycle, after first run):
- *   WELCOME_BACK()              ~20 tokens
+ *   WELCOME_BACK()              143–152 chars → ~75 tokens
  *   ─────────────────────────────────────
- *   Total recurring cost:       ~20 tokens/server-start
+ *   Total recurring cost:                   ~75 tokens/server-start
  *
  * NUDGE costs (each shown at most once across the user's entire journey):
- *   NUDGE_AFTER_FIRST_REGISTER  ~25 tokens
- *   NUDGE_AFTER_FIRST_PROMPT    ~20 tokens
- *   NUDGE_AFTER_MULTI_MEMBER    ~40 tokens
+ *   NUDGE_AFTER_FIRST_REGISTER  252 chars  → ~114–115 tokens  (local or remote variant)
+ *   NUDGE_AFTER_FIRST_PROMPT    252 chars  → ~115 tokens
+ *   NUDGE_AFTER_MULTI_MEMBER    315 chars  → ~133 tokens
  *   ─────────────────────────────────────
- *   Total nudge cost (all):     ~85 tokens  (spread across multiple sessions)
+ *   Total nudge cost (all):                 ~363 tokens  (spread across multiple sessions)
  *
  * Summary:
- *   First server start ever:    ~330 tokens  (banner + guide + welcome-back skipped on first run)
- *   Subsequent server starts:   ~20 tokens   (welcome-back only)
- *   Full onboarding journey:    ~395 tokens  (one-time + all nudges, amortized over many calls)
+ *   First server start ever:    ~726 tokens  (banner + guide; welcome-back skipped on first run)
+ *   Subsequent server starts:    ~75 tokens  (welcome-back only)
+ *   Full onboarding journey:   ~1164 tokens  (one-time + welcome-back + all nudges)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
