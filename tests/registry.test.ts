@@ -171,12 +171,22 @@ describe('registry - duplicate folder validation', () => {
 
   it('detects duplicate remote host+folder', () => {
     addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', workFolder: '/srv/app' }));
-    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.1')).toBe(true);
+    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.1', 22)).toBe(true);
   });
 
   it('allows same folder on different remote hosts', () => {
     addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', workFolder: '/srv/app' }));
     expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.2')).toBe(false);
+  });
+
+  it('allows same host+folder on different ports (RPort scenario)', () => {
+    addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', port: 24091, workFolder: '/home/blub0x' }));
+    expect(hasDuplicateFolder('remote', '/home/blub0x', '10.0.0.1', 21870)).toBe(false);
+  });
+
+  it('detects duplicate remote host+port+folder', () => {
+    addAgent(makeAgent({ id: 'remote-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' }));
+    expect(hasDuplicateFolder('remote', '/srv/app', '10.0.0.1', 22)).toBe(true);
   });
 
   it('allows same path for local + remote agents', () => {
@@ -191,13 +201,13 @@ describe('registry - duplicate folder validation', () => {
 
   it('excludes agent by ID (for updates)', () => {
     addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined }));
-    expect(hasDuplicateFolder('local', '/home/user/project', undefined, 'local-1')).toBe(false);
+    expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, 'local-1')).toBe(false);
   });
 
   it('rejects update_agent folder change when duplicate exists', () => {
     addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project-a', host: undefined }));
     addAgent(makeAgent({ id: 'local-2', agentType: 'local', workFolder: '/home/user/project-b', host: undefined }));
 
-    expect(hasDuplicateFolder('local', '/home/user/project-a', undefined, 'local-2')).toBe(true);
+    expect(hasDuplicateFolder('local', '/home/user/project-a', undefined, undefined, 'local-2')).toBe(true);
   });
 });
