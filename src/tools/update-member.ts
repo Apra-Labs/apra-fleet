@@ -43,13 +43,24 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (typeof existingOrError === 'string') return existingOrError;
   const existing = existingOrError as Agent;
 
-  // Check for duplicate folder if work_folder is being changed
-  if (input.work_folder && input.work_folder !== existing.workFolder) {
-    const host = input.host ?? existing.host;
-    const port = input.port ?? existing.port;
-    if (hasDuplicateFolder(existing.agentType, input.work_folder, host, port, existing.id)) {
-      const scope = existing.agentType === 'local' ? 'this machine' : `host ${host}:${port}`;
-      return `❌ Another member already uses folder "${input.work_folder}" on ${scope}. Update rejected.`;
+  // Check for duplicate folder whenever identity fields (host, port, or work_folder) change.
+  // For remote members: fire on any identity-field change (host, port, or folder).
+  // For local members: fire only on folder change (host/port are not part of local identity).
+  const hostChanged = input.host !== undefined && input.host !== existing.host;
+  const portChanged = input.port !== undefined && input.port !== existing.port;
+  const folderChanged = input.work_folder !== undefined && input.work_folder !== existing.workFolder;
+
+  const needsUniquenessCheck = existing.agentType === 'remote'
+    ? (hostChanged || portChanged || folderChanged)
+    : folderChanged;
+
+  if (needsUniquenessCheck) {
+    const newHost = input.host ?? existing.host;
+    const newPort = input.port ?? existing.port;
+    const newFolder = input.work_folder ?? existing.workFolder;
+    if (hasDuplicateFolder(existing.agentType, newFolder, newHost, newPort, existing.id)) {
+      const scope = existing.agentType === 'local' ? 'this machine' : `host ${newHost}:${newPort}`;
+      return `❌ Another member already uses folder "${newFolder}" on ${scope}. Update rejected.`;
     }
   }
 
