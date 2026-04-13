@@ -1,68 +1,6 @@
 import net from 'node:net';
 import { getSocketPath } from '../services/auth-socket.js';
-
-/**
- * Read a password from stdin with hidden input (echo '*' per character).
- */
-function readPassword(prompt: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    process.stderr.write(prompt);
-
-    if (!process.stdin.isTTY) {
-      // Non-interactive: read a line from stdin
-      let data = '';
-      process.stdin.setEncoding('utf-8');
-      process.stdin.on('data', (chunk) => {
-        data += chunk;
-        const nl = data.indexOf('\n');
-        if (nl !== -1) {
-          resolve(data.slice(0, nl));
-        }
-      });
-      process.stdin.on('end', () => resolve(data.trim()));
-      return;
-    }
-
-    const stdin = process.stdin;
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding('utf-8');
-
-    let password = '';
-
-    const onData = (ch: string) => {
-      const code = ch.charCodeAt(0);
-
-      if (ch === '\r' || ch === '\n') {
-        // Enter
-        stdin.setRawMode(false);
-        stdin.pause();
-        stdin.removeListener('data', onData);
-        process.stderr.write('\n');
-        resolve(password);
-      } else if (code === 3) {
-        // Ctrl+C
-        stdin.setRawMode(false);
-        stdin.pause();
-        stdin.removeListener('data', onData);
-        process.stderr.write('\n');
-        reject(new Error('Cancelled'));
-      } else if (code === 127 || code === 8) {
-        // Backspace
-        if (password.length > 0) {
-          password = password.slice(0, -1);
-          process.stderr.write('\b \b');
-        }
-      } else if (code >= 32) {
-        // Printable character
-        password += ch;
-        process.stderr.write('*');
-      }
-    };
-
-    stdin.on('data', onData);
-  });
-}
+import { secureInput } from '../utils/secure-input.js';
 
 export async function runAuth(args: string[]): Promise<void> {
   const isApiKey = args.includes('--api-key');
@@ -84,7 +22,7 @@ export async function runAuth(args: string[]): Promise<void> {
 
   let password: string;
   try {
-    password = await readPassword(isApiKey ? '  API key: ' : '  Password: ');
+    password = await secureInput({ prompt: isApiKey ? '  API key: ' : '  Password: ' });
   } catch {
     console.error('Cancelled.');
     process.exit(1);
