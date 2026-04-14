@@ -9,6 +9,7 @@ const IV_LENGTH = 16;
 const SALT_LENGTH = 32;
 const SALT_PATH = path.join(FLEET_DIR, 'salt');
 const KEY_PATH = path.join(FLEET_DIR, 'key');
+const CREDENTIALS_PATH = path.join(FLEET_DIR, 'credentials.json');
 
 /**
  * Get or create a per-installation random salt.
@@ -54,6 +55,19 @@ function getOrCreateKey(): Buffer {
   }
   const key = crypto.randomBytes(KEY_LENGTH);
   fs.writeFileSync(KEY_PATH, key, { mode: 0o600 });
+
+  // Migration: if credentials.json already exists, it was encrypted with the
+  // old deriveKey() scheme and cannot be decrypted with the new random key.
+  // Back it up so the user's data isn't silently lost.
+  if (fs.existsSync(CREDENTIALS_PATH)) {
+    fs.renameSync(CREDENTIALS_PATH, CREDENTIALS_PATH + '.bak');
+    console.warn(
+      '[apra-fleet] Encryption key upgraded to random persistent key. ' +
+      'Existing stored credentials could not be migrated and have been backed up to credentials.json.bak. ' +
+      'Please re-enter any stored API keys via credential_store_set.',
+    );
+  }
+
   return key;
 }
 

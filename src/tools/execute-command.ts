@@ -35,6 +35,9 @@ export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 // Network tools that trigger the "confirm" egress check
 const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|Invoke-WebRequest|Invoke-RestMethod)\b/i;
 
+// Matches raw sec:// credential handles that must never reach shell or LLM
+const SEC_RE = /sec:\/\/[a-zA-Z0-9_]+/;
+
 interface ResolvedCredential {
   name: string;
   plaintext: string;
@@ -118,7 +121,6 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   const agentOs = getAgentOS(agent);
 
   // -- Block sec:// handles in run_from and restart_command --
-  const SEC_RE = /sec:\/\/[a-zA-Z0-9_]+/;
   if (input.run_from && SEC_RE.test(input.run_from)) {
     return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
   }
