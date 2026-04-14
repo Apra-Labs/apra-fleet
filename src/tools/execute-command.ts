@@ -8,6 +8,9 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
+import { escapeShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
+import { credentialResolve } from '../services/credential-store.js';
+import { collectOobConfirm } from '../services/auth-socket.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -29,6 +32,74 @@ export const executeCommandSchema = z.object({
 
 export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 
+// Network tools that trigger the "confirm" egress check
+const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|Invoke-WebRequest|Invoke-RestMethod)\b/i;
+
+interface ResolvedCredential {
+  name: string;
+  plaintext: string;
+  network_policy: 'allow' | 'confirm' | 'deny';
+}
+
+/**
+ * Scan a command string for {{secure.NAME}} tokens, resolve each from the
+ * credential store, and return the substituted command plus metadata for
+ * output redaction and egress checks.
+ *
+ * Returns an error string if any token cannot be resolved or is blocked.
+ */
+async function resolveSecureTokens(
+  command: string,
+  agentOs: 'windows' | 'macos' | 'linux',
+): Promise<{ resolved: string; credentials: ResolvedCredential[] } | { error: string }> {
+  // Refuse if raw sec:// handles appear (these should not be passed to commands)
+  if (/sec:\/\/[a-zA-Z0-9_]+/.test(command)) {
+    return { error: 'Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.' };
+  }
+
+  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+  const credentials: ResolvedCredential[] = [];
+  let resolved = command;
+  let match: RegExpExecArray | null;
+
+  // Collect all unique token names first
+  const tokenNames = new Set<string>();
+  while ((match = TOKEN_RE.exec(command)) !== null) {
+    tokenNames.add(match[1]);
+  }
+
+  for (const name of tokenNames) {
+    const entry = credentialResolve(name);
+    if (!entry) {
+      return { error: `Credential "${name}" not found. Run credential_store_set first.` };
+    }
+    credentials.push({ name, plaintext: entry.plaintext, network_policy: entry.meta.network_policy });
+  }
+
+  // Substitute tokens with shell-escaped values
+  for (const cred of credentials) {
+    const escaped = agentOs === 'windows'
+      ? `"${escapeWindowsArg(cred.plaintext)}"`
+      : escapeShellArg(cred.plaintext);
+    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped);
+  }
+
+  return { resolved, credentials };
+}
+
+/**
+ * Replace occurrences of credential plaintext values in output with [REDACTED:NAME].
+ */
+function redactOutput(output: string, credentials: ResolvedCredential[]): string {
+  let redacted = output;
+  for (const cred of credentials) {
+    if (cred.plaintext.length > 0) {
+      redacted = redacted.replaceAll(cred.plaintext, `[REDACTED:${cred.name}]`);
+    }
+  }
+  return redacted;
+}
+
 export async function executeCommand(input: ExecuteCommandInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -41,20 +112,42 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
+  const agentOs = getAgentOS(agent);
+
+  // -- Resolve {{secure.NAME}} tokens --
+  const tokenResult = await resolveSecureTokens(input.command, agentOs);
+  if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
+
+  const { resolved: resolvedCommand, credentials } = tokenResult;
+
+  // -- Network egress check for credentials with confirm/deny policy --
+  if (credentials.length > 0 && NETWORK_TOOL_RE.test(resolvedCommand)) {
+    for (const cred of credentials) {
+      if (cred.network_policy === 'deny') {
+        return `❌ Blocked: credential "${cred.name}" has network_policy=deny and the command contains a network tool.`;
+      }
+      if (cred.network_policy === 'confirm') {
+        const confirmed = await collectOobConfirm(cred.name);
+        if (!confirmed) {
+          return `❌ Network egress for credential "${cred.name}" was not confirmed. Command not executed.`;
+        }
+      }
+    }
+  }
 
   const folder = resolveTilde(input.run_from ?? agent.workFolder);
 
   // -- Long-running background task path --
   if (input.long_running) {
-    const agentOs = getAgentOS(agent);
-    const longRunningOsWarning = agentOs !== 'linux'
-      ? `Note: Long-running tasks use a bash wrapper script designed for Linux. The member's OS is ${agentOs}, which may not support this feature.\n`
+    const agentOsVal = getAgentOS(agent);
+    const longRunningOsWarning = agentOsVal !== 'linux'
+      ? `Note: Long-running tasks use a bash wrapper script designed for Linux. The member's OS is ${agentOsVal}, which may not support this feature.\n`
       : '';
 
     const taskId = 'task-' + Date.now().toString(36);
     const wrapperScript = generateTaskWrapper({
       taskId,
-      command: input.command,
+      command: resolvedCommand,
       restartCommand: input.restart_command,
       maxRetries: input.max_retries ?? 3,
       activityIntervalSec: 300,
@@ -84,7 +177,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   // -- Regular (synchronous) command path --
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
-  const wrapped = authPrefix + cmds.wrapInWorkFolder(folder, input.command);
+  const wrapped = authPrefix + cmds.wrapInWorkFolder(folder, resolvedCommand);
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -96,7 +189,10 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
     const parts: string[] = [];
     if (result.stdout) parts.push(result.stdout);
     if (result.stderr) parts.push(`[stderr]\n${result.stderr}`);
-    const output = parts.join('\n') || '(no output)';
+    const rawOutput = parts.join('\n') || '(no output)';
+
+    // Redact credential values from output
+    const output = credentials.length > 0 ? redactOutput(rawOutput, credentials) : rawOutput;
 
     writeStatusline();
 
