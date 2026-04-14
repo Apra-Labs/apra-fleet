@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { credentialDelete } from '../services/credential-store.js';
 
 export const credentialStoreDeleteSchema = z.object({
-  name: z.string().describe('Name of the credential to delete'),
+  name: z.string().regex(/^[a-zA-Z0-9_]{1,64}$/).describe('Name of the credential to delete'),
 });
 
 export type CredentialStoreDeleteInput = z.infer<typeof credentialStoreDeleteSchema>;

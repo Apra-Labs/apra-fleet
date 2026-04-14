@@ -140,18 +140,17 @@ export function credentialList(): CredentialMeta[] {
 }
 
 export function credentialDelete(name: string): boolean {
-  let deleted = false;
   if (sessionStore.has(name)) {
     sessionStore.delete(name);
-    deleted = true;
+    return true;
   }
   const file = loadCredentialFile();
   if (name in file.credentials) {
     delete file.credentials[name];
     saveCredentialFile(file);
-    deleted = true;
+    return true;
   }
-  return deleted;
+  return false;
 }
 
 /**

@@ -316,10 +316,10 @@ export async function collectOobApiKey(
 export async function collectOobConfirm(
   credentialName: string,
   _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
-): Promise<boolean> {
+): Promise<{ confirmed: boolean; terminalUnavailable: boolean }> {
   const result = await collectOobInput('confirm', credentialName, 'execute_command', _opts);
-  if (result.fallback) return false;
-  return Boolean(result.password);
+  if (result.fallback) return { confirmed: false, terminalUnavailable: true };
+  return { confirmed: Boolean(result.password), terminalUnavailable: false };
 }
 
 /**

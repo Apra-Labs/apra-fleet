@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from '../paths.js';
@@ -7,13 +6,14 @@ import { FLEET_DIR } from '../paths.js';
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
 const IV_LENGTH = 16;
-const AUTH_TAG_LENGTH = 16;
 const SALT_LENGTH = 32;
 const SALT_PATH = path.join(FLEET_DIR, 'salt');
+const KEY_PATH = path.join(FLEET_DIR, 'key');
 
 /**
  * Get or create a per-installation random salt.
  * The salt is stored in ~/.apra-fleet/data/salt (32 random bytes, hex-encoded).
+ * Kept for legacy compatibility.
  */
 function getOrCreateSalt(): string {
   try {
@@ -32,14 +32,33 @@ function getOrCreateSalt(): string {
   return salt;
 }
 
-function deriveKey(salt?: string): Buffer {
-  const machineId = `${os.hostname()}-${os.userInfo().username}-apra-fleet`;
-  const actualSalt = salt ?? getOrCreateSalt();
-  return crypto.scryptSync(machineId, actualSalt, KEY_LENGTH);
+// Suppress "unused" warning — kept for legacy compatibility with any callers.
+void getOrCreateSalt;
+
+/**
+ * Get or create a per-installation random AES-256-GCM key.
+ * The key is stored in ~/.apra-fleet/data/key (32 random bytes, raw binary, mode 0o600).
+ * On first run a fresh random key is generated; subsequent runs load from file.
+ */
+function getOrCreateKey(): Buffer {
+  try {
+    if (fs.existsSync(KEY_PATH)) {
+      return fs.readFileSync(KEY_PATH);
+    }
+  } catch {
+    // Fall through to create new key
+  }
+
+  if (!fs.existsSync(FLEET_DIR)) {
+    fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
+  }
+  const key = crypto.randomBytes(KEY_LENGTH);
+  fs.writeFileSync(KEY_PATH, key, { mode: 0o600 });
+  return key;
 }
 
 export function encryptPassword(plaintext: string): string {
-  const key = deriveKey();
+  const key = getOrCreateKey();
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
 
@@ -55,7 +74,7 @@ export function decryptPassword(ciphertext: string): string {
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
 
-  const key = deriveKey();
+  const key = getOrCreateKey();
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
   let decrypted = decipher.update(encrypted, 'hex', 'utf8');

@@ -8,7 +8,7 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
-import { escapeShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
+import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import type { Agent } from '../types.js';
@@ -76,10 +76,13 @@ async function resolveSecureTokens(
     credentials.push({ name, plaintext: entry.plaintext, network_policy: entry.meta.network_policy });
   }
 
-  // Substitute tokens with shell-escaped values
+  // Substitute tokens with shell-escaped values.
+  // Windows members run under PowerShell (confirmed by WindowsCommands.cleanExec),
+  // so use single-quote escaping — internal single quotes are doubled ('').
+  // This is safer than cmd.exe double-quote + ^ escaping which is unreliable in PS.
   for (const cred of credentials) {
     const escaped = agentOs === 'windows'
-      ? `"${escapeWindowsArg(cred.plaintext)}"`
+      ? escapePowerShellArg(cred.plaintext)
       : escapeShellArg(cred.plaintext);
     resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped);
   }
@@ -114,6 +117,15 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   const cmds = getOsCommands(getAgentOS(agent));
   const agentOs = getAgentOS(agent);
 
+  // -- Block sec:// handles in run_from and restart_command --
+  const SEC_RE = /sec:\/\/[a-zA-Z0-9_]+/;
+  if (input.run_from && SEC_RE.test(input.run_from)) {
+    return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
+  }
+  if (input.restart_command && SEC_RE.test(input.restart_command)) {
+    return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
+  }
+
   // -- Resolve {{secure.NAME}} tokens --
   const tokenResult = await resolveSecureTokens(input.command, agentOs);
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
@@ -127,9 +139,12 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
         return `❌ Blocked: credential "${cred.name}" has network_policy=deny and the command contains a network tool.`;
       }
       if (cred.network_policy === 'confirm') {
-        const confirmed = await collectOobConfirm(cred.name);
+        const { confirmed, terminalUnavailable } = await collectOobConfirm(cred.name);
         if (!confirmed) {
-          return `❌ Network egress for credential "${cred.name}" was not confirmed. Command not executed.`;
+          const reason = terminalUnavailable
+            ? 'could not be confirmed (terminal unavailable)'
+            : 'was not confirmed';
+          return `❌ Network egress for credential "${cred.name}" ${reason}. Command not executed.`;
         }
       }
     }
