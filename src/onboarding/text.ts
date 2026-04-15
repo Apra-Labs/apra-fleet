@@ -3,33 +3,54 @@
  * Logic never constructs display text directly — it always imports from here.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * TOKEN COST ANALYSIS — onboarding UX overhead
+ * TOKEN COST ANALYSIS — onboarding UX overhead (notification-hybrid delivery)
  * ─────────────────────────────────────────────────────────────────────────────
  * Methodology: ASCII text ~4 chars/token; box-drawing & unicode ~1-2 chars/token.
- * These tokens are added to MCP tool responses and consumed by the model.
+ * Run `node count_tokens.mjs` to reproduce. All numbers below are LLM-context
+ * tokens (input + output) — NOT wire bytes.
  *
- * ONE-TIME costs (shown once ever, on first tool call after install):
+ * Delivery model:
+ *   • Banner/welcome-back/nudges are returned as tool-result content blocks
+ *     wrapped in <apra-fleet-display>…</apra-fleet-display> markers, plus a
+ *     one-time server `instructions` field telling the LLM to reproduce them
+ *     verbatim. The same text is also emitted via MCP `sendLoggingMessage`.
+ *   • sendLoggingMessage payloads are OUT-OF-BAND: they cost wire bytes but
+ *     NOT LLM-context tokens (they are not added to the conversation).
+ *
+ * PER-CONNECTION cost (paid once at `initialize`, into the system prompt):
+ *   VERBATIM_INSTRUCTIONS       457 chars  → ~115 tokens
+ *   ─────────────────────────────────────
+ *   Cost per MCP server start:              ~115 tokens
+ *
+ * ONE-TIME banner cost (shown once ever, on first active tool call):
  *   BANNER                      678 chars  → ~380 tokens
  *   GETTING_STARTED_GUIDE      1134 chars  → ~346 tokens
+ *   Marker wrapper overhead                → ~11 tokens
  *   ─────────────────────────────────────
- *   Total one-time cost:                    ~726 tokens  (single response, never repeated)
+ *   Banner+Guide wrapped:                   ~737 tokens  (single response, never repeated)
  *
- * RECURRING costs (once per server lifecycle, after first run):
+ * RECURRING welcome-back (once per server lifecycle after first run):
  *   WELCOME_BACK()              143–152 chars → ~75 tokens
+ *   Marker wrapper overhead                → ~10 tokens
  *   ─────────────────────────────────────
- *   Total recurring cost:                   ~75 tokens/server-start
+ *   WELCOME_BACK wrapped:                   ~85 tokens/server-start
  *
  * NUDGE costs (each shown at most once across the user's entire journey):
- *   NUDGE_AFTER_FIRST_REGISTER  252 chars  → ~114–115 tokens  (local or remote variant)
- *   NUDGE_AFTER_FIRST_PROMPT    252 chars  → ~115 tokens
- *   NUDGE_AFTER_MULTI_MEMBER    315 chars  → ~133 tokens
+ *   NUDGE_AFTER_FIRST_REGISTER  252 chars  → ~114–115 tokens  +wrap → ~125 tokens
+ *   NUDGE_AFTER_FIRST_PROMPT    252 chars  → ~115 tokens       +wrap → ~126 tokens
+ *   NUDGE_AFTER_MULTI_MEMBER    315 chars  → ~133 tokens       +wrap → ~143 tokens
  *   ─────────────────────────────────────
- *   Total nudge cost (all):                 ~363 tokens  (spread across multiple sessions)
+ *   All nudges wrapped (sum):               ~395 tokens  (spread across sessions)
  *
- * Summary:
- *   First server start ever:    ~726 tokens  (banner + guide; welcome-back skipped on first run)
- *   Subsequent server starts:    ~75 tokens  (welcome-back only)
- *   Full onboarding journey:   ~1164 tokens  (one-time + welcome-back + all nudges)
+ * Lifecycle totals:
+ *   Fresh-install, first server start:  ~852 tokens  (115 init + 737 bannerWrapped)
+ *   Fresh-install, full journey:       ~1247 tokens  (115 init + 737 banner + 395 nudges)
+ *   Returning user per server start:    ~200 tokens  (115 init + 85 WB)
+ *
+ * Delta vs. pre-notification implementation:
+ *   Per-connection:  +115 tokens  (new VERBATIM_INSTRUCTIONS — paid every server start)
+ *   Per message:      +10-11 tokens/section (marker wrapping)
+ *   Full journey:    ~+83 tokens  over baseline ~1164
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
