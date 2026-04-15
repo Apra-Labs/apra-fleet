@@ -1,13 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
+import { FLEET_DIR } from '../src/paths.js';
 
-const SALT_PATH = path.join(
-  process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data'),
-  'salt',
-);
+const KEY_PATH = path.join(FLEET_DIR, 'salt');
 
 describe('crypto', () => {
   it('encrypts and decrypts a password round-trip', () => {
@@ -41,16 +38,19 @@ describe('crypto', () => {
     expect(() => decryptPassword(parts.join(':'))).toThrow();
   });
 
-  it('creates and reuses a per-installation salt file', () => {
-    expect(fs.existsSync(SALT_PATH)).toBe(true);
-    const salt = fs.readFileSync(SALT_PATH, 'utf-8').trim();
-    expect(salt).toHaveLength(64);
-    expect(/^[0-9a-f]+$/.test(salt)).toBe(true);
+  it('creates and reuses a per-installation key file', () => {
+    // First encryption call creates the key file if it does not exist
+    encryptPassword('init');
 
-    // Salt stays consistent across calls
+    expect(fs.existsSync(KEY_PATH)).toBe(true);
+    const key1 = fs.readFileSync(KEY_PATH, 'utf-8').trim();
+    expect(key1).toHaveLength(64); // 32 random bytes, hex-encoded
+    expect(/^[0-9a-f]+$/.test(key1)).toBe(true);
+
+    // Key stays consistent across subsequent calls
     const encrypted = encryptPassword('test-consistent');
-    const salt2 = fs.readFileSync(SALT_PATH, 'utf-8').trim();
-    expect(salt).toBe(salt2);
+    const key2 = fs.readFileSync(KEY_PATH, 'utf-8').trim();
+    expect(key1).toBe(key2);
     expect(decryptPassword(encrypted)).toBe('test-consistent');
   });
 });
