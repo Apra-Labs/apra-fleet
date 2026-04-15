@@ -282,3 +282,17 @@ jobs:
             release-binaries/apra-fleet-darwin-arm64
             release-binaries/apra-fleet-win-x64.exe
           generate_release_notes: true
+
+      - name: Bump version.json for next dev cycle
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          NEXT=$(node -e "const [ma,mi,pa]='${TAG}'.split('.');console.log([ma,mi,parseInt(pa)+1].join('.'))")
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('version.json','utf-8'));v.version='${NEXT}';fs.writeFileSync('version.json',JSON.stringify(v,null,2)+'\n')"
+          git add version.json
+          git commit -m "chore: bump version to ${NEXT} [skip ci]"
+          git push origin main
