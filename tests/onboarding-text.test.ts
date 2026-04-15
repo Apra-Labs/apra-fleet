@@ -6,6 +6,7 @@ import {
   NUDGE_AFTER_FIRST_REGISTER,
   NUDGE_AFTER_FIRST_PROMPT,
   NUDGE_AFTER_MULTI_MEMBER,
+  VERBATIM_INSTRUCTIONS,
 } from '../src/onboarding/text.js';
 
 describe('BANNER', () => {
@@ -95,5 +96,32 @@ describe('NUDGE_AFTER_MULTI_MEMBER', () => {
     expect(msg).toContain('/pm init');
     expect(msg).toContain('/pm pair');
     expect(msg).toContain('/pm plan');
+  });
+});
+
+describe('VERBATIM_INSTRUCTIONS', () => {
+  it('is a non-empty string', () => {
+    expect(typeof VERBATIM_INSTRUCTIONS).toBe('string');
+    expect(VERBATIM_INSTRUCTIONS.length).toBeGreaterThan(0);
+  });
+
+  it('references the apra-fleet-display marker tag', () => {
+    expect(VERBATIM_INSTRUCTIONS).toContain('<apra-fleet-display>');
+    expect(VERBATIM_INSTRUCTIONS).toContain('</apra-fleet-display>');
+  });
+
+  it('instructs the client LLM to reproduce content verbatim', () => {
+    // Must convey "verbatim / exact / literal" intent
+    expect(VERBATIM_INSTRUCTIONS.toLowerCase()).toMatch(/verbatim|exactly|literal/);
+  });
+
+  it('instructs the client not to paraphrase or summarize', () => {
+    // Guards against LLM's default summarize-tool-output behavior
+    expect(VERBATIM_INSTRUCTIONS.toLowerCase()).toMatch(/not.*(paraphrase|summar)/);
+  });
+
+  it('tells the client to strip the marker tags themselves', () => {
+    // Otherwise users would see the literal tags in output
+    expect(VERBATIM_INSTRUCTIONS.toLowerCase()).toMatch(/strip|remove|omit/);
   });
 });

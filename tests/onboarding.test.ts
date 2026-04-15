@@ -752,4 +752,40 @@ describe('wrapTool notification emission', () => {
 
     expect(stub.server.sendLoggingMessage).not.toHaveBeenCalled();
   });
+
+  it('tool result text is NOT wrapped in <apra-fleet-display> markers', async () => {
+    // Negative test: only preamble/suffix get markers; the actual tool
+    // output must stay untagged so it flows through normal rendering.
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
+    const stub = makeStubServer();
+
+    const toolResult = '✅ Member registered.';
+    const { content } = await simulateWrapTool('register_member', toolResult, stub);
+
+    const resultBlock = content.find(b => b.text === toolResult);
+    expect(resultBlock).toBeDefined();
+    expect(resultBlock!.text).not.toContain('<apra-fleet-display>');
+    expect(resultBlock!.text).not.toContain('</apra-fleet-display>');
+    // And it should have no user-audience annotation — that's reserved for onboarding text
+    expect(resultBlock!.annotations).toBeUndefined();
+  });
+
+  it('banner AND nudge both emit on first register_member call (two notifications)', async () => {
+    // On a fresh install, the first register_member fires two user-facing messages:
+    // the banner (preamble) and the first-register nudge (suffix). Both must go
+    // through the notification channel — not just the first one.
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
+    const stub = makeStubServer();
+
+    await simulateWrapTool('register_member', '✅ Member registered.', stub);
+
+    expect(stub.server.sendLoggingMessage).toHaveBeenCalledTimes(2);
+    const payloads = stub.server.sendLoggingMessage.mock.calls.map((c: any[]) => c[0].data as string);
+    expect(payloads.some(p => p.includes('One model is a tool'))).toBe(true); // banner
+    expect(payloads.some(p => p.includes('🚀'))).toBe(true);                   // nudge
+  });
 });
