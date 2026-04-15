@@ -50,7 +50,8 @@ if (state.bannerShown !== false) {
 
 // --- Simulate wrapTool helper ---
 // Banner bypasses JSON check; welcome-back and nudges still respect it.
-function simulateWrapTool(toolName, result) {
+// Optional notify callback is called for preamble and suffix (simulates sendLoggingMessage).
+function simulateWrapTool(toolName, result, notify) {
   const isJson = isJsonResponse(result);
   let preamble = null;
   if (isActiveTool(toolName)) {
@@ -62,7 +63,22 @@ function simulateWrapTool(toolName, result) {
     }
   }
   const suffix = isJson ? null : getOnboardingNudge(toolName, {}, result);
-  return { preamble, result, suffix };
+
+  // Channel 1: notify callback (simulates out-of-band sendLoggingMessage)
+  if (preamble && notify) notify(preamble);
+  if (suffix && notify) notify(suffix);
+
+  // Build content blocks with <apra-fleet-display> markers
+  const content = [];
+  if (preamble) {
+    content.push({ type: 'text', text: `<apra-fleet-display>\n${preamble}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 1 } });
+  }
+  content.push({ type: 'text', text: result });
+  if (suffix) {
+    content.push({ type: 'text', text: `<apra-fleet-display>\n${suffix}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 0.8 } });
+  }
+
+  return { preamble, result, suffix, content };
 }
 
 // --- Test 1: version (passive) should NOT consume banner ---
@@ -77,7 +93,8 @@ console.log('  PASS\n');
 
 // --- Test 2: fleet_status with JSON response — banner bypasses JSON check ---
 console.log('--- Test 2: fleet_status (active tool, JSON response) should show banner ---');
-const t2 = simulateWrapTool('fleet_status', '{"members":[]}');
+const t2NotifyCalls = [];
+const t2 = simulateWrapTool('fleet_status', '{"members":[]}', (text) => t2NotifyCalls.push(text));
 console.log(`  preamble: ${t2.preamble ? 'YES (' + t2.preamble.length + ' chars)' : 'null'}`);
 console.log(`  contains banner: ${t2.preamble?.includes('One model is a tool') ?? false}`);
 console.log(`  contains guide: ${t2.preamble?.includes('Getting Started') ?? false}`);
@@ -85,6 +102,14 @@ console.log(`  bannerShown: ${getOnboardingState().bannerShown}`);
 console.log(`  Expected: preamble=YES (banner+guide even for JSON), bannerShown=true`);
 if (!t2.preamble) { console.error('  FAIL: no preamble — banner must bypass JSON check'); process.exit(1); }
 if (!t2.preamble.includes('One model is a tool')) { console.error('  FAIL: missing banner'); process.exit(1); }
+console.log('  PASS\n');
+
+// --- Test 2b: notify callback was called with banner text ---
+console.log('--- Test 2b: notify callback called with banner text ---');
+console.log(`  notify call count: ${t2NotifyCalls.length}`);
+console.log(`  Expected: at least 1 call with banner text`);
+if (t2NotifyCalls.length === 0) { console.error('  FAIL: notify was never called'); process.exit(1); }
+if (!t2NotifyCalls[0].includes('One model is a tool')) { console.error('  FAIL: notify not called with banner text'); process.exit(1); }
 console.log('  PASS\n');
 
 // --- Test 3: second call should NOT show banner again ---
@@ -104,14 +129,24 @@ console.log('--- Test 4: register_member nudge ---');
 fs.writeFileSync(REGISTRY_PATH, JSON.stringify({ version: '1.0', agents: [
   { id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }
 ] }), { mode: 0o600 });
-const t4input = { member_type: 'local', friendly_name: 'alpha' };
-const t4result = '\u2705 Member registered.';
-const t4isJson = isJsonResponse(t4result);
-const t4suffix = getOnboardingNudge('register_member', t4input, t4result);
-console.log(`  nudge: ${t4suffix ? 'YES' : 'null'}`);
-console.log(`  contains rocket: ${t4suffix?.includes('\u{1F680}') ?? false}`);
+// Use simulateWrapTool to capture both the suffix and the content blocks in one call
+const t4NotifyCalls = [];
+const t4 = simulateWrapTool('register_member', '\u2705 Member registered.', (text) => t4NotifyCalls.push(text));
+console.log(`  nudge: ${t4.suffix ? 'YES' : 'null'}`);
+console.log(`  contains rocket: ${t4.suffix?.includes('\u{1F680}') ?? false}`);
 console.log(`  Expected: nudge with member name`);
-if (!t4suffix) { console.error('  FAIL: no nudge'); process.exit(1); }
+if (!t4.suffix) { console.error('  FAIL: no nudge'); process.exit(1); }
+console.log('  PASS\n');
+
+// --- Test 4b: content blocks contain <apra-fleet-display> markers ---
+console.log('--- Test 4b: content blocks contain <apra-fleet-display> markers ---');
+// t4 already contains the content from the same call — check the suffix block
+console.log(`  content blocks: ${t4.content.length}`);
+console.log(`  Expected: suffix block wrapped in <apra-fleet-display> markers`);
+const t4bSuffixBlock = t4.content.find(b => b.text.includes('<apra-fleet-display>') && b.text.includes('\u{1F680}'));
+if (!t4bSuffixBlock) { console.error('  FAIL: no content block with <apra-fleet-display> markers around nudge'); process.exit(1); }
+if (!t4bSuffixBlock.text.startsWith('<apra-fleet-display>')) { console.error('  FAIL: block does not start with opening marker'); process.exit(1); }
+if (!t4bSuffixBlock.text.endsWith('</apra-fleet-display>')) { console.error('  FAIL: block does not end with closing marker'); process.exit(1); }
 console.log('  PASS\n');
 
 // --- Test 5: Simulate server restart (welcome-back) ---

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -599,5 +599,157 @@ describe('getWelcomeBackPreamble', () => {
     expect(result).not.toBeNull();
     expect(result).not.toContain('NaN');
     expect(result).toContain('unknown');
+  });
+});
+
+/**
+ * wrapTool notification emission tests.
+ * These tests replicate the wrapTool logic inline (like the integration block above)
+ * and use a stub server to verify sendLoggingMessage is called correctly.
+ */
+describe('wrapTool notification emission', () => {
+  // Helper: build a stub server with a mock sendLoggingMessage
+  function makeStubServer() {
+    return {
+      server: {
+        sendLoggingMessage: vi.fn(() => Promise.resolve()),
+      },
+    };
+  }
+
+  // Helper: replicates wrapTool logic with a notify callback
+  async function simulateWrapTool(
+    toolName: string,
+    result: string,
+    stubServer: ReturnType<typeof makeStubServer>,
+  ) {
+    const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('../src/services/onboarding.js');
+
+    const isJson = isJsonResponse(result);
+    let preamble: string | null = null;
+    if (isActiveTool(toolName)) {
+      const banner = getFirstRunPreamble();
+      if (banner) {
+        preamble = banner;
+      } else if (!isJson) {
+        preamble = getWelcomeBackPreamble();
+      }
+    }
+    const suffix = isJson ? null : getOnboardingNudge(toolName, {}, result);
+
+    // Channel 1: out-of-band notifications (best effort)
+    if (preamble) {
+      try {
+        await stubServer.server.sendLoggingMessage({ level: 'info', logger: 'apra-fleet-onboarding', data: preamble });
+      } catch { /* best-effort */ }
+    }
+    if (suffix) {
+      try {
+        await stubServer.server.sendLoggingMessage({ level: 'info', logger: 'apra-fleet-onboarding', data: suffix });
+      } catch { /* best-effort */ }
+    }
+
+    // Channel 2 + 3: content blocks with markers
+    const content: Array<{ type: 'text'; text: string; annotations?: { audience?: ('user' | 'assistant')[]; priority?: number } }> = [];
+    if (preamble) {
+      content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${preamble}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 1 } });
+    }
+    content.push({ type: 'text' as const, text: result });
+    if (suffix) {
+      content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${suffix}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 0.8 } });
+    }
+    return { content };
+  }
+
+  it('banner emits via sendLoggingMessage on first active call', async () => {
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    const stub = makeStubServer();
+
+    await simulateWrapTool('fleet_status', '{"members":[]}', stub);
+
+    expect(stub.server.sendLoggingMessage).toHaveBeenCalled();
+    const calls = stub.server.sendLoggingMessage.mock.calls;
+    const data = calls[0][0].data as string;
+    expect(data).toContain('One model is a tool');
+    expect(calls[0][0].logger).toBe('apra-fleet-onboarding');
+    expect(calls[0][0].level).toBe('info');
+  });
+
+  it('nudge emits via sendLoggingMessage', async () => {
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    // consume banner first
+    const { getFirstRunPreamble } = await import('../src/services/onboarding.js');
+    getFirstRunPreamble();
+
+    writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
+    const stub = makeStubServer();
+
+    await simulateWrapTool('register_member', '✅ Member registered.', stub);
+
+    expect(stub.server.sendLoggingMessage).toHaveBeenCalled();
+    const calls = stub.server.sendLoggingMessage.mock.calls;
+    const allData = calls.map((c: any[]) => c[0].data as string).join(' ');
+    expect(allData).toContain('🚀');
+  });
+
+  it('welcome-back emits via sendLoggingMessage', async () => {
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    // Simulate existing user: bannerShown=true
+    fs.writeFileSync(ONBOARDING_PATH, JSON.stringify({ bannerShown: true, firstMemberRegistered: false, firstPromptExecuted: false, multiMemberNudgeShown: false }), { mode: 0o600 });
+    loadOnboardingState();
+    const stub = makeStubServer();
+
+    await simulateWrapTool('fleet_status', 'Fleet: 1 member.', stub);
+
+    expect(stub.server.sendLoggingMessage).toHaveBeenCalled();
+    const calls = stub.server.sendLoggingMessage.mock.calls;
+    const data = calls[0][0].data as string;
+    expect(data).toContain('Fleet');
+  });
+
+  it('content block is wrapped in <apra-fleet-display> markers', async () => {
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    const stub = makeStubServer();
+
+    const { content } = await simulateWrapTool('fleet_status', '{"members":[]}', stub);
+
+    // First block should have markers wrapping banner text
+    const preambleBlock = content.find(b => b.text.includes('<apra-fleet-display>'));
+    expect(preambleBlock).toBeDefined();
+    expect(preambleBlock!.text).toMatch(/^<apra-fleet-display>\n/);
+    expect(preambleBlock!.text).toMatch(/\n<\/apra-fleet-display>$/);
+    expect(preambleBlock!.text).toContain('One model is a tool');
+  });
+
+  it('sendLoggingMessage rejection does not break tool result', async () => {
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    const stub = {
+      server: {
+        sendLoggingMessage: vi.fn(() => Promise.reject(new Error('client does not support logging'))),
+      },
+    };
+
+    // Should not throw even though sendLoggingMessage rejects
+    const response = await simulateWrapTool('fleet_status', '{"members":[]}', stub);
+
+    // Tool result is still returned with content
+    expect(response).toBeDefined();
+    expect(response.content).toBeDefined();
+    const resultBlock = response.content.find(b => b.text === '{"members":[]}');
+    expect(resultBlock).toBeDefined();
+  });
+
+  it('passive tool does not emit onboarding notification', async () => {
+    const { loadOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    const stub = makeStubServer();
+
+    await simulateWrapTool('version', 'apra-fleet v1.0.0', stub);
+
+    expect(stub.server.sendLoggingMessage).not.toHaveBeenCalled();
   });
 });
