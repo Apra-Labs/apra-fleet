@@ -70,9 +70,13 @@ jobs:
       - name: Read version
         id: version
         run: |
-          VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('version.json','utf-8')).version)")
-          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-6)
-          FULL_VERSION="v${VERSION}_${SHORT_SHA}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            FULL_VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('version.json','utf-8')).version)")
+            SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-6)
+            FULL_VERSION="v${VERSION}_${SHORT_SHA}"
+          fi
           echo "version=$FULL_VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $FULL_VERSION"
 
@@ -125,6 +129,14 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Inject version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('version.json','utf-8'));v.version='${TAG}';fs.writeFileSync('version.json',JSON.stringify(v,null,2))"
+          echo "Injected version: ${TAG}"
 
       - name: Install rcedit (Windows only)
         if: runner.os == 'Windows'
