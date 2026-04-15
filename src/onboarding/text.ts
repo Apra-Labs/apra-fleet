@@ -102,3 +102,9 @@ export function NUDGE_AFTER_FIRST_PROMPT(): string {
 export function NUDGE_AFTER_MULTI_MEMBER(): string {
   return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🤝 You have multiple members — try the PM skill:           │\n│    /pm init  →  /pm pair  →  /pm plan                      │\n│    One member builds, another reviews — across machines.   │\n└────────────────────────────────────────────────────────────┘`;
 }
+
+/**
+ * Server-level instruction injected once at `initialize` time.
+ * Instructs the LLM to reproduce verbatim any text inside <apra-fleet-display> tags.
+ */
+export const VERBATIM_INSTRUCTIONS = `When a tool response contains text wrapped in \`<apra-fleet-display>…</apra-fleet-display>\` tags, that content is user-facing onboarding material. Reproduce it VERBATIM in your reply to the user as the very first thing you output, preserving all formatting, line breaks, and emoji. Do not paraphrase, summarize, translate, or comment on it. Do not wrap it in code fences. Strip the \`<apra-fleet-display>\` tags themselves — they are for your recognition only.`;

@@ -45,6 +45,7 @@ async function startServer() {
 
   // Load onboarding state once at server startup (in-memory singleton)
   const { loadOnboardingState, resetSessionFlags, getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('./services/onboarding.js');
+  const { VERBATIM_INSTRUCTIONS } = await import('./onboarding/text.js');
   const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
   // Pass current member count so upgrade detection works: existing registry + no onboarding.json → skip banner
   loadOnboardingState(getAgentsForStartup().length);
@@ -75,10 +76,33 @@ async function startServer() {
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
+  // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
+  const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
+
+  const server = new McpServer(
+    { name: `apra fleet server ${serverVersion}`, version: versionNum },
+    {
+      capabilities: { logging: {} },
+      instructions: VERBATIM_INSTRUCTIONS,
+    },
+  );
+
   // --- Onboarding helpers ---
   // isActiveTool guards passive tools (version, shutdown_server) from consuming the banner.
   // First-run banner bypasses the JSON check — passive guard is sufficient protection.
   // Welcome-back and nudges still respect the JSON check.
+
+  async function sendOnboardingNotification(srv: typeof server, text: string): Promise<void> {
+    try {
+      await srv.server.sendLoggingMessage({
+        level: 'info',
+        logger: 'apra-fleet-onboarding',
+        data: text,
+      });
+    } catch {
+      // best-effort; fall through to content-block channel
+    }
+  }
 
   function getOnboardingPreamble(toolName: string, isJson: boolean): string | null {
     if (!isActiveTool(toolName)) return null;
@@ -97,27 +121,22 @@ async function startServer() {
       const preamble = getOnboardingPreamble(toolName, isJson);
       const suffix = isJson ? null : getOnboardingNudge(toolName, input, result);
 
-      // Return separate content blocks with MCP annotations so clients
-      // display onboarding text to the user instead of collapsing it.
+      // Channel 1: out-of-band notifications (best effort, never throws)
+      if (preamble) void sendOnboardingNotification(server, preamble);
+      if (suffix)   void sendOnboardingNotification(server, suffix);
+
+      // Channel 2 + 3: content blocks with markers + audience annotation
       const content: Array<{ type: 'text'; text: string; annotations?: { audience?: ('user' | 'assistant')[]; priority?: number } }> = [];
       if (preamble) {
-        content.push({ type: 'text' as const, text: preamble, annotations: { audience: ['user'], priority: 1 } });
+        content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${preamble}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 1 } });
       }
       content.push({ type: 'text' as const, text: result });
       if (suffix) {
-        content.push({ type: 'text' as const, text: suffix, annotations: { audience: ['user'], priority: 0.8 } });
+        content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${suffix}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 0.8 } });
       }
       return { content };
     };
   }
-
-  // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
-  const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
-
-  const server = new McpServer({
-    name: `apra fleet server ${serverVersion}`,
-    version: versionNum,
-  });
 
   // --- Core Member Management ---
   server.tool('register_member', 'Add a machine to the fleet. Use member_type "local" for this machine or "remote" for a machine reachable over SSH. Choose the AI provider the member will use for prompts.', registerMemberSchema.shape, wrapTool('register_member', (input) => registerMember(input as any)));
