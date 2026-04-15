@@ -27,6 +27,8 @@ const ONBOARDING_PATH = path.join(TEST_DIR, 'onboarding.json');
 // Write empty registry
 fs.writeFileSync(REGISTRY_PATH, JSON.stringify({ version: '1.0', agents: [] }), { mode: 0o600 });
 
+try {
+
 // Import after setting env
 const {
   loadOnboardingState, resetSessionFlags, getFirstRunPreamble,
@@ -161,7 +163,9 @@ console.log(`  Expected: welcome-back preamble`);
 if (!t5.preamble) { console.error('  FAIL: no welcome-back'); process.exit(1); }
 console.log('  PASS\n');
 
-// Cleanup
-fs.rmSync(TEST_DIR, { recursive: true, force: true });
-
 console.log('=== ALL TESTS PASSED ===\n');
+
+} finally {
+  fs.rmSync(TEST_DIR, { recursive: true, force: true });
+}
+

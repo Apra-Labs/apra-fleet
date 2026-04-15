@@ -99,9 +99,16 @@ async function startServer() {
         logger: 'apra-fleet-onboarding',
         data: text,
       });
-    } catch {
-      // best-effort; fall through to content-block channel
+    } catch (e: unknown) {
+      const msg = (e instanceof Error ? e.message : String(e));
+      if (!/logging|method not found|not supported/i.test(msg)) {
+        process.stderr.write(`[apra-fleet] onboarding notification failed: ${msg}\n`);
+      }
     }
+  }
+
+  function sanitizeToolResult(s: string): string {
+    return s.replace(/<\/?apra-fleet-display[^>]*>/gi, '[tag-stripped]');
   }
 
   function getOnboardingPreamble(toolName: string, isJson: boolean): string | null {
@@ -130,7 +137,7 @@ async function startServer() {
       if (preamble) {
         content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${preamble}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 1 } });
       }
-      content.push({ type: 'text' as const, text: result });
+      content.push({ type: 'text' as const, text: sanitizeToolResult(result) });
       if (suffix) {
         content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${suffix}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 0.8 } });
       }
