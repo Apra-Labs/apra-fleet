@@ -42,7 +42,7 @@ The optional Project Manager skill goes beyond simple task dispatch:
 - **Verification checkpoints** — agents pause at defined points for review
 - **Progress tracking** — state synced via git (`PLAN.md`, `progress.json`, `feedback.md`)
 
-Install it with `--skill` during setup. See `skills/pm/SKILL.md` for details.
+Install it with `--skill` during setup. See [`skills/pm/SKILL.md`](skills/pm/SKILL.md) for details.
 
 ## Quick start
 
@@ -103,7 +103,7 @@ Fleet can provision scoped, short-lived tokens to members — so each member get
 
 **Access levels:** `read`, `push`, `admin`, `issues`, `full`.
 
-See `docs/design-git-auth.md` for the full design.
+See [`docs/design-git-auth.md`](docs/design-git-auth.md) for the full design.
 
 ## Secure Password Entry
 
@@ -114,7 +114,7 @@ When registering a remote member with password authentication, you don't need to
 - Headless or unsupported environments get a manual command fallback
 - Supports password rotation via `update_member`
 
-See `docs/adr-oob-password.md` for the design rationale.
+See [`docs/adr-oob-password.md`](docs/adr-oob-password.md) for the design rationale.
 
 ## Cloud Compute
 
@@ -126,7 +126,7 @@ Fleet members can run on cloud instances (AWS EC2) that start and stop automatic
 - **Cost tracking** — real-time cost estimates based on instance type and uptime, with warnings for high spend
 - **Custom workload detection** — define a shell command to signal busy/idle for arbitrary workloads (CPU training, downloads, etc.)
 
-See `docs/cloud-compute.md` for setup and configuration details.
+See [`docs/cloud-compute.md`](docs/cloud-compute.md) for setup and configuration details.
 
 ## FAQ
 
