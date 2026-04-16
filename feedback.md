@@ -260,3 +260,80 @@ The requirements diff also adds the `cherry-pick 0b9c2f7` section (line +168). T
 ### Verdict
 
 **APPROVED** — proceed with Task 2.3 as written. The three minor findings above are doer-side tightenings, not plan defects. Recommend the one VERIFY FINAL mirror-edit as a low-effort plan-hygiene improvement.
+
+# Install UX, Bug Fixes & Docs — Phase 1 Code Review
+
+**Reviewer:** fleet-rev
+**Date:** 2026-04-16 05:09:36-0400
+**Verdict:** APPROVED
+
+> See the recent git history of this file to understand the context of this review.
+
+---
+
+## Task 1.1 — Codex TOML + provider fallback (#115)
+
+**Code change** (`src/providers/index.ts:15-24`): `getProvider` now throws `TypeError` for any non-empty `llmProvider` string not in the registry, while preserving `undefined`/`null` → `claude` for legacy agents. Error message lists all four supported providers.
+
+Done-criteria walk:
+- **`getProvider('bogus')` throws** — covered by `tests/providers.test.ts:563-567` (asserts both `TypeError` type and message text).
+- **`getProvider(undefined)` returns Claude** — pre-existing test at `providers.test.ts:534-536` still green; behavior preserved.
+- **Fresh Codex install produces valid TOML** — new test at `tests/install-multi-provider.test.ts:379-398` runs `runInstall(['--llm', 'codex'])`, grabs the final `config.toml` write, and (a) greps for the broken `=\` scalar pattern, (b) greps for `defaultModel = "gpt-5.4"` with proper quoting, (c) round-trips through `smol-toml.parse` and asserts `defaultModel`, `mcp_servers.apra-fleet.command` (string), and `args` (array) parse cleanly.
+- **Error message lists supported providers** — `providers.test.ts:569-578` checks all four names appear in the thrown message.
+
+**Non-blocking observation.** The "error message lists supported providers" test at `providers.test.ts:569-578` uses a bare `try/catch` with no `expect.assertions(N)` guard — if `getProvider('nonsense')` did not throw, all four `expect` calls in `catch` would be skipped and the test would vacuously pass. The preceding test at line 563 already guarantees throw behavior, so this is belt-and-suspenders and harmless, but adding `expect.assertions(4)` inside the `it(...)` body would remove the vacuous-pass gap. Non-blocking.
+
+**Note on TOML-writer scope.** Plan 1.1 step 1 called for an audit of six writers to find the `model = \gpt-5.3-codex` producer, and progress.json notes the root cause "couldn't be reproduced with mocked fs; deferred to actual Windows install smoke test." The silent-fallback half of #115 is fixed; the raw-bytes TOML half is covered by a parse-round-trip regression guard but the actual Windows writer that produced the broken bytes in the reporter's environment was not identified. Consistent with the plan's Blocks clause ("escalate — may need actual Windows install"). Acceptable for Phase 1 because the regression guard will now catch any writer that emits non-TOML bytes for a Codex install path. If the reporter re-hits the bug on Windows after this sprint, the test scaffolding is ready for a repro.
+
+## Task 1.2 — Statusline clear (#39)
+
+**Code change** (`src/services/statusline.ts:42-52`): when `agents.length === 0`, `writeStatusline` now overwrites `statusline.txt` with `'\n'` and resets `statusline-state.json` to `'{}'`, instead of returning early and leaving stale content.
+
+Done-criteria walk:
+- **Statusline clears when last member removed** — new `tests/statusline.test.ts:39-62`: registers one agent, calls `writeStatusline(busy)`, asserts file contains `agent-a`, removes the agent, calls `writeStatusline()`, asserts `fs.readFileSync(STATUSLINE_PATH).trim() === ''` and `statusline-state.json` parses to `{}`.
+- **Non-last removal preserves remaining agents** — companion test at `tests/statusline.test.ts:64-77` registers two agents, removes one, asserts the remaining agent's icon/name is still in the statusline and the removed one is gone.
+- **New test present** — yes, 2 tests in a new file.
+
+Test implementation is clean: it sets `APRA_FLEET_DATA_DIR` to a per-PID temp dir *before* importing `statusline.js` (top-level `await import`), so path resolution picks up the sandbox — no fs mocks, real disk I/O, real state round-trip. Proper teardown in `afterEach` using `fs.rmSync` with `recursive: true`. Good form.
+
+Downstream verification: `src/tools/remove-member.ts:70-71` calls `removeFromRegistry(agent.id)` followed by `writeStatusline()` with no overrides, which matches the test's exercise path exactly. Removal flow is wired correctly.
+
+## Task 1.3 — Claude -c resume (#108)
+
+**Code changes** (`src/providers/claude.ts:1, 39-41, 89-91`):
+- Dropped the `buildResumeFlag` import in `claude.ts:1`.
+- `buildPromptCommand`: when `sessionId` is truthy, appends ` -c` instead of `buildResumeFlag(sessionId)` → `--resume "<id>"`.
+- `resumeFlag(sessionId?)`: returns `'-c'` when `sessionId` truthy, else `''`.
+
+Done-criteria walk:
+- **Claude command uses `-c` instead of `--resume <id>`** — `tests/providers.test.ts:67-72` asserts command matches `/\s-c(\s|$)/`, does NOT contain `--resume`, and does NOT leak the session ID into the command string.
+- **Empty sessionId emits neither flag** — `providers.test.ts:74-78` asserts absence of both `-c` and `--resume` when `sessionId` omitted.
+- **`resumeFlag` returns `-c`** — `providers.test.ts:135-137` asserts `p.resumeFlag('ses-1') === '-c'`; existing empty-sessionId test at `providers.test.ts:139-141` preserved.
+- **`buildResumeFlag` retained for Gemini** — verified via `Grep`: `src/providers/provider.ts:14` defines it; `src/providers/gemini.ts:35, 83` are the only callers; `tests/providers.test.ts:581-601` still exercises the helper directly.
+- **New test present** — yes, two new `-c`-specific cases plus one updated existing case.
+
+**Session-ID capture intact.** `execute-prompt.ts:159` (`touchAgent(agent.id, parsed.sessionId)`) unchanged; `parseResponse` at `claude.ts:55-79` still extracts `parsed.session_id`. Session IDs continue to be stored post-run for observability — they just stop being the resume mechanism.
+
+**Stale-session retry (`execute-prompt.ts:140-144`) still works.** First attempt passes `sessionId: agent.sessionId` when `input.resume` set (→ `claude ... -c`); retry passes `promptOpts` without `sessionId` (→ `claude ...` no flag, fresh session). With `-c`, if no prior session exists claude starts fresh (per requirements §#108), so the retry path may fire less often but does not regress. Correct.
+
+## Tests & Build
+
+- `npm run build`: **PASS** (tsc clean, exit 0).
+- `npm test`: **PASS** — 41 files, 640 passed, 4 skipped, 0 failed, 15.26s total. `tests/providers.test.ts` reports 102 tests green (includes the 3 new/modified `-c` + provider-factory cases). `tests/statusline.test.ts` reports 2 tests green (new file). `tests/install-multi-provider.test.ts` full matrix green (existing Codex cases + new TOML-validity case).
+- No new test files breach the existing conventions (vitest, co-located with `tests/`, env-var-based sandboxing mirrors `tests/activity.test.ts`'s pattern).
+- No security regressions. The provider-factory throw is fail-loud rather than fail-silent — a net security improvement because corrupted/spoofed `llmProvider` fields in the registry no longer silently redirect to a different provider.
+
+## Summary
+
+**APPROVED.** All three Phase 1 tasks (#115, #39, #108) meet their PLAN.md done-criteria and requirements.md acceptance items. Build green; full test suite green (640 passed).
+
+- Task 1.1 ships the provider-factory fail-loud fix plus a TOML-validity regression guard; the raw-bytes Windows reproduction is acknowledged-deferred per the plan's Blocks clause, acceptable.
+- Task 1.2 ships the one-line statusline clear + state reset with two clean sandbox tests that exercise real fs I/O.
+- Task 1.3 swaps `--resume "<id>"` → `-c` for Claude only; Gemini's `buildResumeFlag` path untouched; session-ID capture for observability preserved.
+
+**Non-blocking observations:**
+1. `providers.test.ts:569-578` uses bare `try/catch` without `expect.assertions(N)` — would vacuously pass if the throw regressed. The sibling test at line 563 already covers the throw contract, so this is belt-and-suspenders. Consider `expect.assertions(4)` as a future tightening.
+2. `progress.json` records commit hashes `d2571a3`, `75c7239`, `387a08c` for Phase 1 tasks, but the actual commits on the branch are `c5aea06`, `a52c6f6`, `ce6c358` (likely a post-rebase mismatch noted in the `verifyResults` block itself). Housekeeping-only; does not affect correctness. Consider refreshing progress.json commit pointers before merge.
+3. No CLAUDE.md or permissions.json committed. Sprint control files (PLAN.md, progress.json, requirements.md, feedback.md) present on branch — consistent with prior sprint branches in this repo (e.g. commits `9f8ce94`, `37b5576` show these get cleaned pre-merge to main). Follow the same pre-merge cleanup here.
+
+Proceed to Phase 2.
