@@ -792,7 +792,7 @@ describe('wrapTool notification emission', () => {
 
 // Helper: replicate sanitizeToolResult from src/index.ts for unit testing
 function sanitizeToolResult(s: string): string {
-  return s.replace(/<\/?apra-fleet-display[^>]*>/gi, '[tag-stripped]');
+  return s.replace(/<\/?apra-fleet-display[^>]*(?:>|$)/gi, '[tag-stripped]');
 }
 
 describe('sanitization: marker injection defense', () => {
@@ -831,6 +831,12 @@ describe('sanitization: marker injection defense', () => {
     // Two occurrences should produce two replacements
     const doubleOut = sanitizeToolResult('<apra-fleet-display>a</apra-fleet-display> <apra-fleet-display>b</apra-fleet-display>');
     expect(doubleOut.split('[tag-stripped]').length - 1).toBe(4); // 2 open + 2 close tags
+  });
+
+  it('sanitizeToolResult strips unterminated tags (no closing >)', () => {
+    const input = 'prefix <apra-fleet-display no-close';
+    const out = sanitizeToolResult(input);
+    expect(out).toBe('prefix [tag-stripped]');
   });
 });
 
@@ -883,6 +889,34 @@ describe('register-member schema validation', () => {
       const folderIssues = result.success ? [] : result.error.issues.filter(i => i.path[0] === 'work_folder');
       expect(hostIssues).toHaveLength(0);
       expect(folderIssues).toHaveLength(0);
+    }
+  });
+});
+
+describe('update-member schema validation', () => {
+  it('rejects host containing angle brackets', async () => {
+    const { updateMemberSchema } = await import('../src/tools/update-member.js');
+    const result = updateMemberSchema.safeParse({
+      member_name: 'my-server',
+      host: '<evil>',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const msgs = result.error.issues.map(i => i.message).join(' ');
+      expect(msgs).toContain('angle brackets');
+    }
+  });
+
+  it('rejects work_folder containing angle brackets', async () => {
+    const { updateMemberSchema } = await import('../src/tools/update-member.js');
+    const result = updateMemberSchema.safeParse({
+      member_name: 'my-server',
+      work_folder: '/path/<inject>',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const msgs = result.error.issues.map(i => i.message).join(' ');
+      expect(msgs).toContain('angle brackets');
     }
   });
 });

@@ -14,7 +14,10 @@ export const updateMemberSchema = z.object({
     .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')
     .optional()
     .describe('New friendly name'),
-  host: z.string().optional().describe('New host (remote members only)'),
+  host: z.string()
+    .regex(/^[^<>\n\r]+$/, 'host must not contain angle brackets or newlines')
+    .optional()
+    .describe('New host (remote members only)'),
   port: z.number().optional().describe('New SSH port (remote members only)'),
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
@@ -24,7 +27,10 @@ export const updateMemberSchema = z.object({
     + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'
   ),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
-  work_folder: z.string().optional().describe('New working directory on target machine'),
+  work_folder: z.string()
+    .regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines')
+    .optional()
+    .describe('New working directory on target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   icon: z.string().optional().describe('Override the auto-assigned emoji icon. Use named aliases: blue-circle, green-square, red-circle, etc. (8 colors × 2 shapes: circle, square). Or pass raw emoji.'),

@@ -104,10 +104,11 @@ export function WELCOME_BACK(memberCount: number, lastActive: string): string {
  * @param memberName  Registered name to show in the example (default: "my-server")
  */
 export function NUDGE_AFTER_FIRST_REGISTER(memberType: string, memberName = 'my-server'): string {
+  const displayName = memberName.length > 20 ? memberName.slice(0, 20) + '…' : memberName;
   if (memberType === 'remote') {
     return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🔑 Upgrade to key-based auth for this member:              │\n│    'Set up key-based auth for this member' — more secure.  │\n└────────────────────────────────────────────────────────────┘`;
   }
-  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🚀 Member registered! Give it work:                        │\n│    'Ask ${memberName} to run the test suite'${' '.repeat(Math.max(1, 28 - memberName.length))}│\n└────────────────────────────────────────────────────────────┘`;
+  return `\n┌─ Tip ──────────────────────────────────────────────────────┐\n│ 🚀 Member registered! Give it work:                        │\n│    'Ask ${displayName} to run the test suite'${' '.repeat(Math.max(1, 28 - displayName.length))}│\n└────────────────────────────────────────────────────────────┘`;
 }
 
 /**

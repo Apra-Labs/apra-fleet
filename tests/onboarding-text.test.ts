@@ -80,6 +80,25 @@ describe('NUDGE_AFTER_FIRST_REGISTER', () => {
     expect(msg).toContain('build-box');
     expect(msg).not.toContain('my-server');
   });
+
+  it('truncates long friendly_name to 20 chars with ellipsis and keeps box border aligned', () => {
+    const longName = 'a'.repeat(35); // 35-char name
+    const msg = NUDGE_AFTER_FIRST_REGISTER('local', longName);
+    // Truncated to 20 chars + '…'
+    const truncated = 'a'.repeat(20) + '…';
+    expect(msg).toContain(truncated);
+    // The full 35-char name must NOT appear in the output
+    expect(msg).not.toContain(longName);
+    // Each line of the box must not exceed the box width (62 visible chars per line including │ borders)
+    const lines = msg.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('│')) {
+        // Count visible length (the '…' is 1 char in JS string length but 3 UTF-8 bytes;
+        // we measure JS .length which is what matters for the repeat() padding calculation)
+        expect(line.length).toBeLessThanOrEqual(63);
+      }
+    }
+  });
 });
 
 describe('NUDGE_AFTER_FIRST_PROMPT', () => {

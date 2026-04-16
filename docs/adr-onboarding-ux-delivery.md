@@ -199,6 +199,7 @@ Reproduce with `node count_tokens.mjs`.
 
 - The `instructions` field is sent over every MCP connection; this is billable input-context tokens for any client that counts MCP init toward its model budget.
 - The marker channel works because the LLM chooses to follow instructions. Silent regressions are possible if a model's policy shifts. Mitigated by the redundant notification channel.
+- The `VERBATIM_INSTRUCTIONS` directive says "as the very first thing you output." LLMs in extended-thinking mode may prepend internal reasoning before the visible reply, causing the banner to appear after a thinking preamble rather than as the literal first output. The notification channel (Channel 1) is unaffected by this since it bypasses the LLM entirely.
 - `update_member` gap exists (see Decision 2 "Known gap"). Tracked.
 
 ### Neutral

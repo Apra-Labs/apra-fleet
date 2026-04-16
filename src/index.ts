@@ -108,7 +108,7 @@ async function startServer() {
   }
 
   function sanitizeToolResult(s: string): string {
-    return s.replace(/<\/?apra-fleet-display[^>]*>/gi, '[tag-stripped]');
+    return s.replace(/<\/?apra-fleet-display[^>]*(?:>|$)/gi, '[tag-stripped]');
   }
 
   function getOnboardingPreamble(toolName: string, isJson: boolean): string | null {
