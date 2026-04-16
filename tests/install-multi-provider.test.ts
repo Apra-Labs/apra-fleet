@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { parse as parseToml } from 'smol-toml';
 import { runInstall } from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
@@ -373,6 +374,29 @@ describe('runInstall multi-provider', () => {
     const defaultModelWrite = writes.find(c => c[1].toString().includes('defaultModel'));
     expect(defaultModelWrite).toBeDefined();
     expect(defaultModelWrite![1].toString()).toContain('gpt-5.4');
+  });
+
+  it('Codex config.toml is valid TOML — every scalar string is properly double-quoted (#115)', async () => {
+    await runInstall(['--llm', 'codex']);
+
+    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(codexConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const finalContent = writes.at(-1)![1].toString();
+
+    // Regression guard for #115: no bare/backslash-prefixed scalars like `model = \gpt-5.3-codex`.
+    // Every `key = value` scalar must either be quoted, a boolean, a number, a table, or an array.
+    expect(finalContent).not.toMatch(/=\s*\\/);
+    expect(finalContent).toMatch(/defaultModel\s*=\s*"gpt-5\.4"/);
+
+    // Parsing back with smol-toml must succeed and round-trip defaultModel.
+    const parsed = parseToml(finalContent) as any;
+    expect(parsed.defaultModel).toBe('gpt-5.4');
+    // mcp_servers.apra-fleet.command should be a plain string (proper TOML string literal).
+    expect(typeof parsed.mcp_servers['apra-fleet'].command).toBe('string');
+    expect(Array.isArray(parsed.mcp_servers['apra-fleet'].args)).toBe(true);
   });
 
   it('writes defaultModel for Copilot (claude-sonnet-4-5) to settings.json', async () => {

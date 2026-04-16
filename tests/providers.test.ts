@@ -551,6 +551,23 @@ describe('getProvider factory', () => {
     expect(getProvider('claude')).toBe(getProvider('claude'));
     expect(getProvider('gemini')).toBe(getProvider('gemini'));
   });
+
+  it('throws TypeError for unknown provider strings (no silent fallback)', () => {
+    // Cast to bypass TS — registry JSON could yield arbitrary strings at runtime
+    expect(() => getProvider('bogus' as any)).toThrow(TypeError);
+    expect(() => getProvider('bogus' as any)).toThrow(/Unknown LLM provider "bogus"/);
+  });
+
+  it('error message lists supported providers', () => {
+    try {
+      getProvider('nonsense' as any);
+    } catch (e: any) {
+      expect(e.message).toMatch(/claude/);
+      expect(e.message).toMatch(/gemini/);
+      expect(e.message).toMatch(/codex/);
+      expect(e.message).toMatch(/copilot/);
+    }
+  });
 });
 
 // ─── buildResumeFlag shared helper ───────────────────────────────────────────
