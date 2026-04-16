@@ -342,6 +342,24 @@ export function killApraFleet(): void {
 }
 
 export async function runInstall(args: string[]): Promise<void> {
+  // --help / -h guard — must come first, before any side effects (#142)
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`apra-fleet install
+
+Usage:
+  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet install --skill all       Same as bare install (all skills)
+  apra-fleet install --skill fleet     Install fleet skill only
+  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill none      Skip skill installation
+  apra-fleet install --no-skill        Same as --skill none
+  apra-fleet install --force           Stop a running server, then install
+  apra-fleet install --llm <provider>  Install for a specific LLM provider (claude, gemini, codex, copilot)
+  apra-fleet install --help            Show this help`);
+    process.exit(0);
+    return;
+  }
+
   // Parse --llm flag
   let llm: LlmProvider = 'claude';
   const llmArg = args.find(a => a.startsWith('--llm='));
