@@ -44,6 +44,18 @@ The optional Project Manager skill goes beyond simple task dispatch:
 
 Install it with `--skill` during setup. See [`skills/pm/SKILL.md`](skills/pm/SKILL.md) for details.
 
+### Provider recommendations
+
+Fleet members can run different LLM backends. Mix and match based on the role:
+
+| Role | Recommended | Why |
+|------|-------------|-----|
+| **PM (orchestrator)** | Claude (Opus or Sonnet) | Most thoroughly tested for planning and multi-step orchestration |
+| **Doer** | Any provider | Claude Sonnet, Gemini Flash, Codex, Copilot — mix freely |
+| **Reviewer** | Premium tier models | Catches subtle issues that smaller models miss |
+
+See [`docs/provider-matrix.md`](docs/provider-matrix.md) for the full capability comparison.
+
 ## Quick start
 
 Copy-paste the one-liner for your platform:
@@ -94,15 +106,18 @@ Apra Fleet is an MCP server that agentic coding systems connect to. It manages a
 | `execute_command` | Run a shell command directly on a member (no Claude CLI needed) |
 | `reset_session` | Clear session ID so the next prompt starts fresh |
 | `send_files` | Upload local files to a remote member via SFTP |
-| `provision_auth` | Deploy OAuth credentials or an API key to a member |
+| `receive_files` | Download files from a member's work folder |
+| `provision_llm_auth` | Deploy OAuth credentials or an API key to a member |
 | `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
 | `cloud_control` | Start, stop, or check status of cloud compute instances |
 | `monitor_task` | Monitor long-running tasks on cloud members |
+| `compose_permissions` | Generate and deliver provider-native permission config |
 | `update_llm_cli` | Update or install AI coding agent CLI on members |
 | `shutdown_server` | Gracefully shut down the MCP server |
+| `version` | Report server version |
 
 ## Git Authentication
 

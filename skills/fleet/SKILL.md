@@ -70,6 +70,14 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 - `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
 - `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
 
+**Directories and globs:** `send_files` accepts individual file paths only — directories and glob patterns are not supported yet (see issue #98). To transfer an entire directory, tar it locally and extract on the member:
+
+```
+1. execute_command on local: tar -czf /tmp/src.tar.gz -C /path/to src/
+2. send_files: local_paths=["/tmp/src.tar.gz"]
+3. execute_command on member: tar -xzf src.tar.gz && rm src.tar.gz
+```
+
 ## Permissions
 
 `compose_permissions` produces provider-native config automatically. See `permissions.md` for:
