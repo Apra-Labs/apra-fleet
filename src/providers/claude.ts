@@ -1,5 +1,4 @@
 import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
-import { buildResumeFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -37,9 +36,8 @@ export class ClaudeProvider implements ProviderAdapter {
     const turns = maxTurns ?? 50;
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
-    const rf = buildResumeFlag(sessionId);
-    if (rf) {
-      cmd += ` ${rf}`;
+    if (sessionId) {
+      cmd += ' -c';
     }
     if (dangerouslySkipPermissions) {
       cmd += ' --dangerously-skip-permissions';
@@ -89,7 +87,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   resumeFlag(sessionId?: string): string {
-    return buildResumeFlag(sessionId);
+    return sessionId ? '-c' : '';
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
