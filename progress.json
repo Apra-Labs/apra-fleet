@@ -3,7 +3,8 @@
   "branch": "feat/install-ux-and-docs",
   "updated": "2026-04-16",
   "verifyResults": {
-    "VERIFY 1": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "641 passed, 3 skipped, 0 failed (41 files, 31s)", "notes": "Ran npm run build + npm test after rebase onto origin/feat/install-ux-and-docs (preserved 2 upstream review commits). Full suite green." }
+    "VERIFY 1": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "641 passed, 3 skipped, 0 failed (41 files, 31s)", "notes": "Ran npm run build + npm test after rebase onto origin/feat/install-ux-and-docs (preserved 2 upstream review commits). Full suite green." },
+    "VERIFY 2": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "661 passed, 3 skipped, 0 failed (42 files, 34s)", "notes": "npm run build + npm test after rebase onto origin/main. All Phase 2 tasks done. Pushed to origin/feat/install-ux-and-docs." }
   },
   "phases": [
     {
@@ -20,13 +21,13 @@
     {
       "id": 2,
       "title": "Install UX",
-      "status": "pending",
+      "status": "done",
       "tasks": [
-        { "id": "2.1", "title": "--skill default = all, add none/--no-skill (#139)", "tier": "standard", "status": "done", "commit": "d3b4ab1", "notes": "Default (no flag) = all; supports all|fleet|pm|none values; --no-skill synonym for none; bare --skill = all (backwards-compat); unknown --skill=X errors; full matrix test in tests/install-multi-provider.test.ts." },
-        { "id": "2.2", "title": "--force flag + busy prompt (#96)", "tier": "standard", "status": "pending" },
-        { "id": "2.3", "title": "--help/-h guard in install command (#142)", "tier": "cheap", "status": "pending" }
+        { "id": "2.1", "title": "--skill default = all, add none/--no-skill (#139)", "tier": "standard", "status": "done", "commit": "d3b4ab1", "notes": "Default (no flag) = all; supports all|fleet|pm|none values; --no-skill synonym for none; bare --skill = all (backwards-compat); unknown --skill=X errors; 4 new matrix tests in tests/install-multi-provider.test.ts." },
+        { "id": "2.2", "title": "--force flag + busy prompt (#96)", "tier": "standard", "status": "done", "commit": "fb02e83", "notes": "isApraFleetRunning uses pgrep -x (exact name, per NOTE 2) on Linux/macOS; tasklist on Windows. killApraFleet uses pkill -x / taskkill /F /IM. Guard fires only in SEA mode. --force kills server + waits 500ms; appends restart note to success message. Unknown flags now error. _setSeaOverride/_setManifestOverride exported for test isolation. 14 tests in tests/install-force.test.ts." },
+        { "id": "2.3", "title": "--help/-h guard in install command (#142)", "tier": "cheap", "status": "done", "commit": "b53bad2", "notes": "Early exit at top of runInstall before any side effects. Prints install-specific usage and exits 0. 2 tests verify no writeFileSync calls." }
       ],
-      "verify": { "id": "VERIFY 2", "status": "pending" }
+      "verify": { "id": "VERIFY 2", "status": "passed", "date": "2026-04-16", "notes": "npm run build (tsc clean) + npm test: 661 passed / 3 skipped / 0 failed (42 files). Pushed to origin/feat/install-ux-and-docs." }
     },
     {
       "id": 3,
