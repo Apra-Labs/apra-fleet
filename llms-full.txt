@@ -1,0 +1,703 @@
+<project title="Apra Fleet" summary="AI-managed fleet orchestration for Claude Code — run, update, and coordinate multiple Claude Code agents from a single hub.">
+  <docs>
+  <doc title="User Guide" desc="Installation, configuration, member registration, and day-to-day usage for operators.">
+<!-- llm-context: This is the primary getting-started guide for apra-fleet. It covers installation, member registration (local and remote), multi-provider setup, git authentication, and the PM skill with doer-reviewer workflows. When a user asks "how do I..." about fleet, this is the first doc to consult. -->
+<!-- keywords: install, setup, register, member, local, remote, SSH, provider, Claude, Gemini, Codex, Copilot, git auth, GitHub App, PAT, Bitbucket, Azure DevOps, PM, doer, reviewer, pair, troubleshooting -->
+<!-- see-also: FAQ.md (common questions), architecture.md (how it works internally), cloud-compute.md (EC2 integration), provider-matrix.md (provider capabilities) -->
+
+# User Guide
+
+## What is Apra Fleet?
+
+Apra Fleet lets you control AI coding agents on multiple machines from a single conversation. Register your machines once, then tell Claude to run prompts, execute commands, or send files to any of them — local or remote. Members can run different LLM backends (Claude, Gemini, Codex, Copilot) and be mixed freely within a single fleet.
+
+## Install
+
+### One-liner install
+
+**macOS (Apple Silicon)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
+
+**Linux (x64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
+
+**Windows (x64)** — run in PowerShell:
+```powershell
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install --skill
+```
+
+### Manual install
+
+Download the binary for your platform from [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases):
+
+- `apra-fleet-linux-x64` — Linux (x86_64)
+- `apra-fleet-darwin-arm64` — macOS (Apple Silicon)
+- `apra-fleet-win-x64.exe` — Windows
+
+Then run the installer:
+
+```bash
+# macOS / Linux
+chmod +x apra-fleet-darwin-arm64
+./apra-fleet-darwin-arm64 install --skill
+
+# Windows
+apra-fleet-win-x64.exe install --skill
+```
+
+The `--skill` flag installs the PM (Project Manager) skill, which adds orchestration capabilities for multi-step projects. Omit it if you only need basic fleet operations.
+
+**What `install` does:**
+- Copies the binary to `~/.apra-fleet/bin/`
+- Installs hooks and scripts to `~/.apra-fleet/`
+- Registers the fleet server with Claude Code
+- Configures a status bar showing fleet member activity
+- (With `--skill`) Installs the PM skill to `~/.claude/skills/pm/`
+
+### 3. Load the server in Claude Code
+
+Start or restart Claude Code, then type:
+
+```
+/mcp
+```
+
+You should see `apra-fleet` listed as a connected server.
+
+## Register your first member
+
+A "member" is any machine (or workspace) that fleet manages. There are two types:
+
+### Local member (same machine)
+
+Just tell Claude:
+
+> "Register a local member called `my-project` working in `C:\Users\me\projects\myapp`."
+
+No SSH needed — it runs as a child process on your machine.
+
+### Remote member (another machine via SSH)
+
+You need SSH access to the remote machine. Tell Claude:
+
+> "Register 192.168.1.10 as `build-server`. Username is akhil, password is mypass, work folder `/home/akhil/projects/myapp`."
+
+Fleet will test connectivity, detect the OS, and check if the LLM CLI is installed. If it isn't installed, you can say:
+
+> "Install Claude Code on build-server."
+
+### Registering with a non-Claude provider
+
+Specify the `llm_provider` when registering:
+
+> "Register `gemini-worker` at 192.168.1.11 as a Gemini member. Work folder `/home/user/work`, username user, password pass."
+
+Or tell Claude directly:
+
+> "Register a Codex member called `codex-dev` locally, work folder `C:\Users\me\codex-project`."
+
+Supported values: `claude` (default), `gemini`, `codex`, `copilot`.
+
+### SSH key auth
+
+After registering a remote member with a password, migrate to key-based auth:
+
+> "Set up SSH key auth for build-server."
+
+This generates a key pair, deploys it, verifies it works, then removes the password from storage.
+
+## Using fleet members
+
+### Run a prompt on a member
+
+> "On build-server, run the test suite and fix any failures."
+
+The prompt is sent to the member's LLM CLI instance, which has full access to the code in its work folder. The correct CLI is selected automatically based on the member's provider.
+
+### Run a command on a member
+
+> "Run `git status` on build-server."
+
+Direct shell commands without starting a Claude session — useful for quick checks.
+
+### Send files to a member
+
+> "Send `config.json` and `deploy.sh` to build-server."
+
+Uploads files via SFTP to the member's work folder.
+
+### Check status
+
+> "Show me fleet status."
+
+Shows all members, their status (online/offline), and last activity.
+
+## Multi-Provider Fleets
+
+### Provisioning auth for non-Claude members
+
+Non-Claude members require an API key — OAuth credential copy is Claude-only.
+
+| Provider | What to say |
+|----------|-------------|
+| Gemini | "Provision auth for gemini-worker with API key GEMINI_API_KEY_VALUE" |
+| Codex | "Provision auth for codex-dev with API key OPENAI_API_KEY_VALUE" |
+| Copilot | "Provision auth for copilot-member with API key COPILOT_GITHUB_TOKEN_VALUE" |
+
+Fleet automatically uses the correct env var name per provider.
+
+### Installing CLIs on members
+
+> "Install the Gemini CLI on gemini-worker."
+
+> "Update all members' CLIs."
+
+`update_llm_cli` uses the correct install/update command per provider.
+
+### Provider capabilities and limits
+
+- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_ms` to bound execution.
+- Fine-grained permission control (`compose_permissions`) is Claude-only. Other providers use all-or-nothing skip-permissions flags.
+- Codex output uses NDJSON internally — fleet handles this transparently.
+- Gemini responses may silently truncate at ~8K tokens. Split large tasks into smaller units.
+- Copilot requires a paid GitHub Copilot subscription (Pro/Business/Enterprise).
+
+See [`provider-matrix.md`](provider-matrix.md) for the full comparison table.
+
+### Provider Recommendations
+
+These are recommendations, not restrictions — your choice is final.
+
+| Role | Recommended | Notes |
+|------|-------------|-------|
+| **Orchestrator (PM)** | Claude (Opus or Sonnet) | Gemini lacks background agents — every `execute_prompt` blocks, serializing all fleet operations. This negates the core value of parallel dispatch. |
+| **Doer** | Any provider | Claude Sonnet, Gemini Flash, Codex, Copilot — mix freely. Multiple members of any provider are supported. |
+| **Reviewer** | Highest-tier models (use premium tier) | Highest review quality; catches subtle issues that smaller models miss. |
+
+### Mix-and-match example
+
+A fleet can have members on different providers for different purposes:
+
+```
+dev1     — Claude (standard)  — main implementation work
+dev2     — Gemini            — tasks needing 1M context or Google Search
+review1  — Claude (premium)  — code review
+codex1   — Codex             — structured extraction tasks
+```
+
+All members use the same fleet tools — the PM dispatches to whichever member fits the task.
+
+## Git authentication
+
+By default, remote members can't push/pull from your repositories. Fleet provisions scoped credentials so each member gets only the access it needs.
+
+### GitHub
+
+**Apra Labs members:**
+
+The `apra-fleet-git` app is already installed on the Apra-Labs org. Two steps:
+
+1. **Ensure your repo is added:** Go to `https://github.com/organizations/Apra-Labs/settings/installations` → `apra-fleet-git` → Configure → select your repositories. (Ask an org admin if you don't have access.)
+2. **Download the private key:** [apra-fleet-git.pem](https://drive.google.com/file/d/1evUnHsDpv6ZaHyiHoRv-ElQc6vjaWYHd/view?usp=drive_link) (Apra Labs internal — requires org access)
+3. **Register the app on your fleet instance (once per machine):** "Set up git auth with app ID 3001109, installation ID 113837928, and private key at ~/Downloads/apra-fleet-git.pem." This only needs to happen once — after that, any member can be provisioned.
+
+Then provision any member:
+
+> "Provision git auth for build-server with push access to Apra-Labs/my-repo."
+
+Skip the "Option A" setup below — it's for creating your own app.
+
+**Option A: GitHub App (recommended for orgs)**
+
+Setting up your own GitHub App (skip this if using the Apra-Labs app above):
+
+1. Go to `https://github.com/organizations/{your-org}/settings/apps` → New GitHub App
+2. Name it (e.g. "fleet-git"), set Homepage URL to anything
+3. Under Permissions, grant: **Contents** (Read & Write), **Pull Requests** (Read & Write), **Actions** (Read) — add more as needed
+4. Create the app, then **Generate a private key** (downloads a `.pem` file)
+5. **Install the app** on your org and select which repos it can access
+6. Note the **App ID** (from the app's settings page) and **Installation ID** (from the URL after installing: `https://github.com/settings/installations/{installation_id}`)
+
+Then tell Claude:
+
+> "Set up git auth with app ID 12345, installation ID 67890, and private key at ~/my-app.pem."
+
+Now you can provision any member:
+
+> "Provision git auth for build-server with push access to Apra-Labs/my-repo."
+
+Tokens expire after 1 hour and are re-minted automatically.
+
+**Option B: Personal Access Token (simpler, for personal repos)**
+
+1. Go to `https://github.com/settings/tokens` → Generate new token
+2. Select scopes: `repo` for full access, or fine-grained per-repo tokens
+
+Then tell Claude:
+
+> "Provision GitHub PAT auth for build-server. Token is ghp_xxxxx."
+
+### Bitbucket
+
+1. Go to Atlassian account → **App passwords** → Create app password
+2. Grant permissions: Repository Read/Write, Pull Request Read/Write
+
+Then:
+
+> "Provision Bitbucket auth for build-server. Email is me@example.com, workspace is my-team, token is xxxx."
+
+### Azure DevOps
+
+1. Go to `https://dev.azure.com/{org}/_usersSettings/tokens` → New Token
+2. Grant scopes: Code (Read & Write), Pull Request Threads (Read & Write)
+
+Then:
+
+> "Provision Azure DevOps auth for build-server. Org URL is https://dev.azure.com/my-org, token is xxxx."
+
+## PM Skill (Project Manager)
+
+If you installed with `--skill`, you have access to the PM — an orchestration layer for multi-step projects.
+
+### Initialize a project
+
+> "/pm init my-project"
+
+Creates a project folder with templates for status tracking, requirements, design docs, and deployment steps.
+
+### Plan and execute
+
+> "/pm plan Implement user authentication with OAuth2"
+
+The PM writes requirements, dispatches a member to generate an implementation plan, runs it through a review cycle, then executes it phase by phase with verification checkpoints.
+
+### Doer-reviewer loop
+
+> "/pm pair frontend-dev frontend-reviewer"
+
+Pairs two members — one builds, one reviews. The PM handles git transport between them, sends context docs to the reviewer, and iterates until the reviewer approves.
+
+### Key PM commands
+
+| Command | What it does |
+|---------|-------------|
+| `/pm init <project>` | Create project folder with templates |
+| `/pm plan <requirement>` | Generate an implementation plan |
+| `/pm start <member> <plan>` | Send task harness and kick off execution |
+| `/pm status <member>` | Check progress |
+| `/pm resume <member>` | Resume after a verification checkpoint |
+| `/pm pair <member> <member>` | Pair doer and reviewer |
+| `/pm deploy <member>` | Run deployment steps |
+
+## Troubleshooting
+
+**Member shows as offline?**
+- Check if the machine is reachable: `ping <ip>`
+- For remote members, verify SSH: `ssh user@host "echo ok"`
+- Auth issue? Re-provision: "Provision auth for build-server"
+
+**Permission denied on a member?**
+- Fleet can configure member permissions. Say: "Grant build-server permission to run npm install"
+
+**Can't push workflow files or merge PRs from a member?**
+- Minted tokens may lack CI/CD permissions. Run these operations from your main Claude Code session instead — it has your full git credentials.
+
+**Empty response from a member?**
+- Usually an expired auth token. Say: "Provision auth for build-server"
+
+**Member blew past a checkpoint?**
+- Check what actually happened: "Run `cat progress.json` on build-server"
+  </doc>
+
+  <doc title="Vocabulary" desc="Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.">
+<!-- llm-context: Defines the terminology used throughout apra-fleet — member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
+<!-- keywords: vocabulary, terminology, member, fleet, PM, doer, reviewer, provider, session, agent, orchestrator -->
+<!-- see-also: architecture.md (how these concepts relate), user-guide.md (practical usage) -->
+
+# Fleet Vocabulary
+
+## The Problem
+
+"Agent" is overloaded:
+1. A fleet member (registered machine/folder that does work)
+2. A background Claude process the PM spawns to coordinate
+
+"The agent is running" — which one? This causes real confusion in logs, conversation, and status updates.
+
+## Approach: Names Over Nouns
+
+Most of the time, use the **specific name** and drop the category word entirely:
+
+- "Sent to dev2" — not "sent to member dev2"
+- "review1 passed PR #13" — not "reviewer member passed"
+- "dev1 is on main" — not "the dev1 member is on main"
+
+Names are unambiguous. Category nouns are noise when the name is present.
+
+## When You Need the Category
+
+For generic references ("list all ___", "register a new ___"), use:
+
+| Term | Meaning |
+|------|---------|
+| **member** (or **worker**) | A registered fleet member. The thing that does the work. |
+| **subagent** | A background Claude process spawned by the PM. Ephemeral. |
+| **session** | A conversation thread on a member. Context persists within it. |
+| **fleet** | The collection of all registered members. |
+| **PM** | The Project Manager — the master Claude instance that orchestrates everything. |
+| **provider** (or **LLM backend**) | The LLM CLI a member uses: `claude`, `gemini`, `codex`, or `copilot`. Each member has exactly one provider, set at registration and changeable via `update_member`. |
+
+## Rules
+
+1. **Prefer the name**: "dev2 rebased" not "the dev2 member rebased"
+2. **"Subagent" is always "subagent"** — never just "agent" when referring to a background Claude process
+3. **"Agent" is banned in PM conversation** — too ambiguous. Use the name or "member/worker" for fleet members, "subagent" for Claude processes.
+4. **API keeps `agent_id`** — backwards compat in code. User-facing language evolves separately.
+5. **Provider is a property of a member**, not a conversation topic. Say "dev2 uses Gemini" not "dev2 is a Gemini agent". The member identity (the name) is what matters; the provider is just how it executes prompts.
+
+## Example Fleet
+
+```
+PM (orchestrator)
+  |
+  +-- dev1       (apra-focus, local, claude/standard)
+  +-- dev2       (apra-focus-dev2, remote, gemini/pro)
+  +-- review1    (apra-focus-review, remote, claude/premium)
+  +-- review2    (apra-focus-review2, remote, copilot)
+```
+
+PM spawns **subagents** to interact with **members**. A subagent is ephemeral (dies after task). A member is persistent (registered, has sessions, has state).
+
+Members with different **providers** are interchangeable from the PM's perspective — same tools, same dispatch pattern, different CLI underneath.
+  </doc>
+
+  <doc title="Provider Matrix" desc="Which LLM providers are supported, their capabilities, and how to configure them.">
+<!-- llm-context: This is the reference table comparing LLM provider capabilities in apra-fleet (Claude, Gemini, Codex, Copilot). Consult when a user asks which provider supports a feature, what the limitations are, or which provider to choose for a role (PM, doer, reviewer). -->
+<!-- keywords: provider, Claude, Gemini, Codex, Copilot, capabilities, max_turns, timeout, permissions, NDJSON, truncation, comparison -->
+<!-- see-also: user-guide.md (provider setup instructions), FAQ.md (common provider questions) -->
+
+# Provider Matrix
+
+Reference tables for all LLM providers supported by Apra Fleet. Extracted from `docs/multi-provider-plan.md`.
+
+> Tracking issues: #26 (Gemini), #27 (OpenAI Codex), #35 (GitHub Copilot)
+
+---
+
+## Strategic Comparison
+
+| Feature | Claude Code | Gemini CLI | OpenAI Codex CLI | GitHub Copilot CLI |
+|---------|-------------|------------|------------------|-------------------|
+| **Install** | Native binary / `curl \| bash` | `npm i -g @google/gemini-cli` (Node 20+) | `npm i -g @openai/codex` / Homebrew / binary (Node 18+) | `npm i -g @github/copilot` / Homebrew / WinGet |
+| **Headless prompt** | `claude -p "..."` | `gemini -p "..."` | `codex exec "..."` | `copilot -p "..."` |
+| **Session resume** | `--resume <session_id>` | `-r` / `--resume` (loads most recent) | `codex exec resume` (positional) | `--continue` / `--resume` |
+| **JSON output** | `--output-format json` | `--output-format json` (also `stream-json`) | `--json` (NDJSON — one event per state change) | `--format json` |
+| **Model selection** | `--model opus/sonnet/haiku` | `--model <name>` or `GEMINI_MODEL` env var | `--model` / `-m` | `--model <name>` or `/model` interactive |
+| **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) |
+| **Skip permissions** | `--dangerously-skip-permissions` | `--yolo` / `-y` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` |
+| **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
+| **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Google OAuth (browser-based, not copyable) | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) |
+| **Version check** | `claude --version` | `gemini --version` | `codex --version` | `copilot --version` |
+| **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` |
+| **Install cmd (macOS)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `brew install --cask codex` | `brew install --cask copilot` |
+| **Install cmd (Windows)** | `irm https://claude.ai/install.ps1 \| iex` | `npm i -g @google/gemini-cli` | Binary from GitHub releases (experimental) | `winget install GitHub.CopilotCLI` |
+| **Update command** | `claude update` | `npm update -g @google/gemini-cli` | `npm update -g @openai/codex` | `copilot update` |
+| **Process name** | `claude` | `gemini` | `codex` | `copilot` |
+| **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` |
+| **Session storage** | Server-side (session_id in JSON output) | Local: `~/.gemini/tmp/<hash>/chats/` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) |
+| **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, web search, MCP tools | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents |
+| **Context window** | 200K (Sonnet) / 1M (Opus 4.6) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
+
+---
+
+## Model Tier Equivalents
+
+Used by the PM for model escalation (`cheap → mid → premium`).
+
+| Tier | Purpose | Claude | Gemini | OpenAI Codex | Copilot |
+|------|---------|--------|--------|--------------|---------|
+| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
+| **mid** | Construction, code, config | `sonnet` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
+| **premium** | Planning, review, architecture | `opus` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
+
+**Note:** Gemini and Codex currently lack a distinct premium tier beyond their best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
+
+---
+
+## Unique Capabilities
+
+Features available in non-Claude providers that Claude lacks natively.
+
+| Feature | Available In | Not In Claude | Impact on Fleet |
+|---------|-------------|--------------|-----------------|
+| **1M token native context** | Gemini | Claude caps at 200K (Sonnet), 1M only on Opus 4.6 | Gemini members can ingest larger codebases in single pass |
+| **Built-in Google Search** | Gemini | Claude needs external MCP tool | Gemini agents can web-search natively — useful for researching APIs, docs |
+| **Output schema enforcement** | Codex (`--output-schema <file>`) | Claude | Codex can guarantee response conforms to a JSON Schema — enables structured extraction |
+| **Multi-model marketplace** | Copilot (Claude + GPT models) | Claude | Copilot users choose between Claude and GPT families without switching CLI |
+| **Auto-compaction** | Copilot, Codex | Claude (context just fills up) | Infinite-length sessions via automatic context summarization at 95% capacity |
+| **Native subagent parallelism** | Codex | Claude (requires external orchestration like fleet) | Codex can fork subtasks internally — less need for fleet orchestration on simple parallel work |
+| **Custom agent profiles** | Copilot (Markdown agent definitions) | Claude (CLAUDE.md is similar but informal) | Copilot has a formalized `agents/` directory with typed profiles |
+| **Session browser** | Gemini (`/resume` interactive picker) | Claude (only has `--resume <id>`) | Gemini users can browse and search past sessions interactively |
+
+---
+
+## Critical Gaps & Mitigations
+
+Known limitations when using non-Claude providers in a fleet.
+
+| Gap | Provider(s) | Impact on Fleet | Mitigation |
+|-----|------------|----------------|------------|
+| **No `--max-turns`** | Gemini, Codex, Copilot | Can't bound execution by turn count | Use `timeout_ms` as the primary execution guard. `max_turns` is Claude-only and ignored for other providers. |
+| **No server-side session ID in JSON output** | Gemini, Codex, Copilot | Can't store a session ID to pass back for `--resume` | Provider-specific approach: Claude stores `session_id` from JSON. Others use generic "resume last session" flag (`-r`, `exec resume`, `--continue`). |
+| **NDJSON vs single JSON** | Codex | Response format differs from other providers | CodexProvider parser collects NDJSON events and extracts the final result + metadata from the last event. Transparent to tool code via `provider.parseResponse()`. |
+| **OAuth credential copy doesn't work** | Gemini, Codex, Copilot | `provision_llm_auth` Flow A (copy `~/.claude/.credentials.json`) is Claude-only | For non-Claude providers: use the `api_key` parameter with the provider's env var (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`). OAuth/login must be done interactively on the member. |
+| **Different credential file locations** | All | Credential paths differ per provider | `provider.credentialPath` supplies the correct path per provider. `credentialFileCheck` is Claude-specific (OAuth credentials); non-Claude providers rely on API key env var detection. |
+| **Gemini output truncation** | Gemini | Responses silently truncate at ~8K tokens (known bug) | Document limitation. For large outputs, consider splitting tasks into smaller units. |
+| **Copilot 64K context limit** | Copilot | Smallest context window — may struggle with large PLAN.md + codebase | Recommend Copilot for smaller, focused tasks. Auto-compaction helps but summarization loses detail. |
+| **Copilot requires paid subscription** | Copilot | Not free-tier friendly | Copilot requires GitHub Copilot Pro/Business/Enterprise. No free API key path. |
+| **Codex message quotas** | Codex | Rolling 5-hour message windows instead of token budgets | Long sprints may hit quota limits. Spread work across time or use API key tier. |
+| **Permission model differences** | All | Claude uses `settings.local.json`. Others use CLI flags only. | For Claude members: continue using `compose_permissions` + `settings.local.json`. For others: `dangerously_skip_permissions=true` in `execute_prompt` (maps to provider's skip-permissions flag). No fine-grained per-tool permissions outside Claude. |
+
+---
+
+## Auth Env Var Reference
+
+| Provider | Env Var | Source |
+|----------|---------|--------|
+| Claude | `ANTHROPIC_API_KEY` | console.anthropic.com |
+| Gemini | `GEMINI_API_KEY` | aistudio.google.com |
+| Codex | `OPENAI_API_KEY` | platform.openai.com |
+| Copilot | `COPILOT_GITHUB_TOKEN` | github.com/settings/tokens (fine-grained PAT with "Copilot Requests" permission) |
+
+---
+
+## Instruction File Names
+
+Each provider auto-loads a provider-specific instruction file from the working directory.
+
+| Provider | Auto-loaded file |
+|----------|-----------------|
+| Claude | `CLAUDE.md` |
+| Gemini | `GEMINI.md` |
+| Codex | `AGENTS.md` |
+| Copilot | `COPILOT.md` |
+
+When the PM sends task harness files via `send_files`, it renames `tpl-agent.md` to the correct filename per provider.
+  </doc>
+
+  <doc title="FAQ" desc="Common questions about setup, troubleshooting, and the doer-reviewer loop.">
+# Frequently Asked Questions
+
+<!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge — fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
+<!-- keywords: install, setup, single machine, local, provider, Claude, Gemini, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
+<!-- see-also: user-guide.md (getting started), architecture.md (how it works), provider-matrix.md (provider capabilities) -->
+
+> **For AI agents:** The FAQ is maintained as GitHub Discussions — one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file — follow the link.
+
+All questions and answers are maintained at:
+
+**[FAQ Index — GitHub Discussions #127](https://github.com/Apra-Labs/apra-fleet/discussions/127)**
+
+Topics covered:
+
+- **Getting started** — installation, device requirements, provider support
+- **Understanding members and workflows** — icons, status line, doer-reviewer setup, folder separation
+- **Capabilities and use cases** — scope beyond software dev, credential security, custom skills
+- **Ecosystem and protocols** — relationship to Google's A2A protocol
+- **Advanced / operations** — token usage, crash recovery
+
+---
+
+**Related docs:** [User Guide](user-guide.md) | [Architecture](architecture.md) | [Cloud Compute](cloud-compute.md) | [Provider Matrix](provider-matrix.md)
+  </doc>
+
+  <doc title="Architecture" desc="How the fleet hub, MCP server, and members interact at a system level.">
+<!-- llm-context: This document explains the internal architecture of apra-fleet — the MCP server, member registry, SSH transport, session management, and how tools are dispatched. Read this when a user asks how fleet works under the hood, or when debugging connectivity or session issues. -->
+<!-- keywords: MCP server, member registry, SSH, transport, session, tool dispatch, child process, local member, remote member, architecture -->
+<!-- see-also: user-guide.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
+
+# Architecture
+
+## Why This Exists
+
+AI coding agents are powerful on a single machine. But real work spans many machines — a dev server, a staging box, a GPU trainer, a production host. Today, if you want Claude Code working across all of them, you SSH in manually, run prompts one at a time, and copy files by hand. There's no single pane of glass.
+
+Apra Fleet gives one Claude instance the ability to orchestrate many. Register machines, push files, run prompts, monitor health — all through natural language from your terminal. One master, many members.
+
+## Conceptual Model
+
+The system has three layers of abstraction:
+
+**Fleet** → **Members** → **Sessions**
+
+A *fleet* is the collection of all registered machines. A *member* is one machine with a working directory — the unit you talk to. A *session* is a conversation thread on a member — Claude remembers context across prompts within a session, and you can reset it to start fresh.
+
+Members come in two flavors:
+- **Remote members** communicate over SSH. They can be any machine you can reach — Linux VMs, macOS servers, Windows boxes.
+- **Local members** run on the same machine as the master, in a different folder. No SSH needed. Useful for isolating work into separate project directories without spinning up another machine.
+
+This distinction is hidden behind a **Strategy pattern**: every tool interacts with members through a uniform interface. The strategy implementation (remote via SSH, or local via child process) is selected at runtime based on member type. Tools never know or care which kind of member they're talking to.
+
+## How It Fits Together
+
+```
+┌────────────────────────────────────────────────────┐
+│  Master Machine                                    │
+│                                                    │
+│  Claude Code CLI ◄──stdio──► Apra Fleet Server      │
+│                               │                    │
+│                    ┌──────────┴──────────┐         │
+│                    │  Member Strategy    │         │
+│                    │  (uniform interface)│         │
+│                    └──┬─────────────┬───┘         │
+│                       │             │              │
+│              Remote Strategy   Local Strategy      │
+│              (ssh2 + sftp)    (child_process + fs) │
+│                       │             │              │
+│                    SSH│        local exec           │
+└───────────────────────┼─────────────┼──────────────┘
+                        │             │
+           ┌────────────┘             └──► /other/project/
+           ▼                               (same machine)
+    ┌──────────────┐
+    │ Remote Member │
+    │ (any OS,      │
+    │  any provider)│
+    └──────────────┘
+```
+
+The MCP server speaks **stdio** — the standard transport for Claude Code MCP servers. Claude sends JSON-RPC tool calls, the server executes them, returns results. No HTTP, no ports to open.
+
+## Layers
+
+The codebase follows a strict layering:
+
+```
+  index.ts           ← MCP server entry point, tool registration
+  tools/*            ← one file per tool, each self-contained
+  services/*         ← core capabilities (strategy, registry, SSH, file transfer)
+  providers/*        ← LLM provider adapters (Claude, Gemini, Codex, Copilot)
+  os/*               ← OS-specific command builders (Linux, macOS, Windows)
+  utils/*            ← stateless helpers (crypto, shell escaping)
+  types.ts           ← shared data structures
+```
+
+Each layer only depends on the layers below it. Tools never import other tools. Services don't know about the MCP protocol.
+
+## Provider Abstraction
+
+Fleet supports four LLM providers: Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot CLI. Members can mix providers within a single fleet.
+
+### How It Works
+
+Each member has an optional `llmProvider` field (`'claude' | 'gemini' | 'codex' | 'copilot'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+
+```
+┌──────────┐     getProvider()     ┌─────────────────┐
+│  Tool    │ ───────────────────►  │ ProviderAdapter  │
+│ (generic)│                       │  (per-provider)  │
+└──────────┘                       └────────┬─────────┘
+                                            │ supplies:
+                                     cliCommand()
+                                     buildPromptCommand()
+                                     parseResponse()
+                                     classifyError()
+                                     authEnvVar
+                                     processName
+                                     ...
+```
+
+The `OsCommands` layer sits below this: it handles OS-specific shell wrapping (PATH prepend, PowerShell syntax, base64 decode) and delegates CLI-specific parts (binary name, flags, JSON format) to the provider.
+
+### Provider Files
+
+```
+src/providers/
+  provider.ts    — ProviderAdapter interface + shared types
+  claude.ts      — ClaudeProvider
+  gemini.ts      — GeminiProvider
+  codex.ts       — CodexProvider (NDJSON parser)
+  copilot.ts     — CopilotProvider
+  index.ts       — getProvider() singleton factory
+```
+
+### Mix-and-Match Fleet
+
+A fleet can have members on different providers simultaneously. The PM dispatches work to members by name — it doesn't need to know which LLM backend each member uses. The fleet server resolves the correct CLI commands per member at runtime.
+
+```
+PM (orchestrator, Claude)
+  |
+  +-- dev1   (claude,  remote)
+  +-- dev2   (gemini,  remote)
+  +-- dev3   (codex,   local)
+  +-- review (copilot, remote)
+```
+
+All four members use the same `execute_prompt` tool call. The tool builds provider-correct CLI commands for each.
+
+### Key Differences Across Providers
+
+- **`max_turns`** — Claude-only. Ignored for Gemini, Codex, and Copilot.
+- **OAuth credential copy** — Claude-only. Non-Claude providers require an API key (`provision_llm_auth` with `api_key`).
+- **JSON output format** — Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
+- **Session resume** — Claude stores a server-side session ID. Others resume the most recent local session via a generic flag.
+
+See `docs/provider-matrix.md` for the full comparison table.
+
+## Key Design Decisions
+
+### Strategy Pattern for Member Types
+
+Rather than scattering `if (agent.agentType === 'local')` checks across every tool, the local/remote distinction lives in a single place: the strategy factory. Tools call `getStrategy(agent).execCommand(...)` and get back the same result shape regardless of how it was executed. Adding a third member type (e.g., Docker containers, cloud VMs with API-based access) means writing one new strategy class — no tool changes.
+
+### Passwords Encrypted at Rest
+
+SSH passwords are encrypted with AES-256-GCM before being written to the registry file. The encryption key is derived from the machine's identity (hostname + OS username), so the registry file is meaningless if copied to another machine. This isn't meant to stop a determined attacker with root access — it prevents accidental plaintext exposure in backups, screenshots, or config file shares.
+
+### Connection Pooling with Idle Timeout
+
+SSH connections are expensive to establish (TCP + key exchange + auth). The server pools them in memory and reuses connections across tool calls, with a 5-minute idle timeout that auto-closes unused connections. Timers are `unref()`'d so they don't prevent Node from exiting.
+
+### Base64 Prompt Encoding
+
+Prompts sent to remote members are base64-encoded before being passed through SSH. This sidesteps the shell escaping nightmare of nested quoting across SSH → bash → claude CLI, across different operating systems. The remote member decodes before passing to Claude.
+
+### Session Persistence
+
+Each member stores an optional `sessionId` — a Claude conversation thread ID. When `resume=true` (the default), subsequent prompts continue the same conversation, so the remote Claude has full context of prior exchanges. Resetting a session is an explicit action, not an accident.
+
+### File-Based Registry
+
+All fleet state lives in `~/.apra-fleet/data/registry.json` — a single JSON file in the user's home directory. It's deliberately not in the project directory (won't be git-committed accidentally) and not in a database (no server to run, no migrations). For a fleet of dozens of members, JSON is more than sufficient.
+
+### Duplicate Folder Prevention
+
+Two members cannot share the same working directory on the same device. For remote members, "same device" means same SSH host. For local members, "same device" is always the master machine. This is enforced during registration and updates. It prevents two members from stomping on each other's files.
+
+## Tools
+
+The tools break into natural groups. Each group has detailed documentation:
+
+**[Lifecycle](tools-lifecycle.md)** — `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
+Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of auth credentials on the member.
+
+**[Work](tools-work.md)** — `send_files`, `execute_prompt`, `execute_command`, `reset_session`
+The core workflow. Push files to a member, run prompts against it, run shell commands directly, manage conversation sessions.
+
+**[Infrastructure](tools-infrastructure.md)** — `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
+One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key for any provider), migrate from password to key auth, update the LLM CLI on members.
+
+**[Observability](tools-observability.md)** — `fleet_status`, `member_detail`
+Two-layer monitoring. `fleet_status` gives a quick summary table across all members with fleet-aware busy detection (distinguishes between Claude processes serving this member vs unrelated Claude activity). `member_detail` drills into one member with connectivity, CLI version, session state, and system resource metrics.
+
+## Cross-Platform Support
+
+Members can run Windows, macOS, or Linux. The `platform.ts` utility generates the right shell commands for each OS — different commands for checking processes, reading memory, setting environment variables. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
+  </doc>
+  </docs>
+</project>

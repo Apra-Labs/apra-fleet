@@ -1,0 +1,13 @@
+# Apra Fleet
+
+> AI-managed fleet orchestration for Claude Code — run, update, and coordinate multiple Claude Code agents from a single hub.
+
+Apra Fleet is a multi-agent orchestration layer that lets a PM agent delegate work to a fleet of Claude Code instances via MCP tools, Git, and SSH. Each fleet member runs its own Claude Code session; the PM agent controls lifecycle, skills, and task assignment. Members can run different LLM backends (Claude, Gemini, Codex, Copilot) and be mixed freely within a single fleet.
+
+## Docs
+
+- [User Guide](docs/user-guide.md): Installation, configuration, member registration, and day-to-day usage for operators.
+- [Vocabulary](docs/vocabulary.md): Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.
+- [Provider Matrix](docs/provider-matrix.md): Which LLM providers are supported, their capabilities, and how to configure them.
+- [FAQ](docs/FAQ.md): Common questions about setup, troubleshooting, and the doer-reviewer loop.
+- [Architecture](docs/architecture.md): How the fleet hub, MCP server, and members interact at a system level.
