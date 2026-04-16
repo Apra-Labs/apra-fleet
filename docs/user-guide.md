@@ -1,3 +1,7 @@
+<!-- llm-context: This is the primary getting-started guide for apra-fleet. It covers installation, member registration (local and remote), multi-provider setup, git authentication, and the PM skill with doer-reviewer workflows. When a user asks "how do I..." about fleet, this is the first doc to consult. -->
+<!-- keywords: install, setup, register, member, local, remote, SSH, provider, Claude, Gemini, Codex, Copilot, git auth, GitHub App, PAT, Bitbucket, Azure DevOps, PM, doer, reviewer, pair, troubleshooting -->
+<!-- see-also: FAQ.md (common questions), architecture.md (how it works internally), cloud-compute.md (EC2 integration), provider-matrix.md (provider capabilities) -->
+
 # User Guide
 
 ## What is Apra Fleet?
