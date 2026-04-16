@@ -14,17 +14,17 @@ Apra Fleet lets you control AI coding agents on multiple machines from a single 
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
 ```
 
 **Windows (x64)** — run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install --skill
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install
 ```
 
 ### Manual install
@@ -40,22 +40,60 @@ Then run the installer:
 ```bash
 # macOS / Linux
 chmod +x apra-fleet-darwin-arm64
-./apra-fleet-darwin-arm64 install --skill
+./apra-fleet-darwin-arm64 install
 
 # Windows
-apra-fleet-win-x64.exe install --skill
+apra-fleet-win-x64.exe install
 ```
 
-The `--skill` flag installs the PM (Project Manager) skill, which adds orchestration capabilities for multi-step projects. Omit it if you only need basic fleet operations.
+### What `install` writes
 
-**What `install` does:**
-- Copies the binary to `~/.apra-fleet/bin/`
-- Installs hooks and scripts to `~/.apra-fleet/`
-- Registers the fleet server with Claude Code
-- Configures a status bar showing fleet member activity
-- (With `--skill`) Installs the PM skill to `~/.claude/skills/pm/`
+| Path | What it is |
+|------|-----------|
+| `~/.apra-fleet/bin/apra-fleet[.exe]` | The fleet binary |
+| `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
+| `~/.apra-fleet/scripts/` | Helper scripts |
+| `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
+| `~/.claude/skills/pm/` | PM orchestration skill |
 
-### 3. Load the server in Claude Code
+The install also registers the MCP server (`claude mcp add apra-fleet`) and configures a status bar icon showing fleet member activity.
+
+### What `install` does NOT do
+
+- No system-level changes (no `/usr/local`, no PATH modification, no admin/sudo required)
+- No network calls beyond `claude mcp add` (the binary stays local)
+- No background services or daemons — the fleet server starts on-demand when Claude Code connects to the MCP server
+
+### The `--skill` flag
+
+By default, `install` writes both the fleet and PM skills. Use `--skill` to control exactly which skills are installed:
+
+| Flag | Skills installed |
+|------|----------------|
+| `install` (no flag) | fleet + pm (default) |
+| `install --skill all` | fleet + pm |
+| `install --skill fleet` | fleet only |
+| `install --skill pm` | fleet + pm (pm depends on fleet) |
+| `install --skill none` | neither |
+| `install --no-skill` | neither (same as `--skill none`) |
+
+### How to uninstall
+
+Remove the files fleet wrote, then deregister the MCP server:
+
+```bash
+# macOS / Linux
+rm -rf ~/.apra-fleet ~/.claude/skills/fleet ~/.claude/skills/pm
+claude mcp remove apra-fleet --scope user
+```
+
+```powershell
+# Windows (PowerShell)
+Remove-Item -Recurse -Force $env:USERPROFILE\.apra-fleet, $env:USERPROFILE\.claude\skills\fleet, $env:USERPROFILE\.claude\skills\pm
+claude mcp remove apra-fleet --scope user
+```
+
+### Load the server in Claude Code
 
 Start or restart Claude Code, then type:
 

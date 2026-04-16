@@ -42,7 +42,7 @@ The optional Project Manager skill goes beyond simple task dispatch:
 - **Verification checkpoints** — agents pause at defined points for review
 - **Progress tracking** — state synced via git (`PLAN.md`, `progress.json`, `feedback.md`)
 
-Install it with `--skill` during setup. See [`skills/pm/SKILL.md`](skills/pm/SKILL.md) for details.
+Installed by default — both the fleet and PM skills are written on `apra-fleet install`. See [`skills/pm/SKILL.md`](skills/pm/SKILL.md) for details.
 
 ### Provider recommendations
 
@@ -62,17 +62,17 @@ Copy-paste the one-liner for your platform:
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
 ```
 
 **Windows (x64)** — run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install --skill
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install
 ```
 
 Then load in Claude Code:
