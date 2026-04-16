@@ -1,3 +1,7 @@
+<!-- llm-context: This guide covers apra-fleet's AWS EC2 integration — auto start/stop, GPU-aware idle detection, long-running tasks, cost tracking, and custom workload detection. Consult when a user asks about cloud instances, GPU workloads, cost management, or task monitoring. -->
+<!-- keywords: AWS, EC2, cloud, GPU, nvidia-smi, idle detection, auto stop, cost tracking, long-running task, monitor_task, cloud_control -->
+<!-- see-also: user-guide.md (general setup), architecture.md (how fleet manages members) -->
+
 # Cloud Compute Guide
 
 ## 1. Overview

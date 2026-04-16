@@ -7,48 +7,90 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 
-Coordinate AI coding agents across every machine in your network — from a single conversation.
+AI agents that write code, review each other's work, and coordinate across your machines — from a single conversation.
 
-**Apra Fleet** is an open-source **MCP server** for **LLM orchestration** and **agentic workflow** automation. It enables **multi-agent systems** where **autonomous agents** coordinate across machines via SSH. Built for developers using Claude Code, Cursor, Copilot, Windsurf, and other AI coding assistants. Supports **agent memory** persistence, **remote execution**, and cloud compute.
+**Apra Fleet** is an open-source **MCP server** that pairs AI coding agents into **doer-reviewer loops** for higher quality code, and orchestrates them across machines via SSH when you need distributed power. Works with Claude Code, Gemini, Codex and other AI coding assistants.
 
-## Why
+## What you get
 
-You're working with an AI coding agent and you want to:
+### Doer-reviewer loops — two agents, one quality bar
+
+Pair two agents so one writes code while the other reviews it. The built-in Project Manager orchestrates the handoff with structured checkpoints — no manual coordination needed. This works on a **single machine** (two local agents) or across machines.
+
+```
+You:   "Pair local-1 and local-2. local-1 builds the auth module, local-2 reviews."
+Fleet: Doer writes code → pauses at checkpoint → Reviewer validates → feedback loop → done.
+```
+
+Every change gets a second pair of eyes before you even look at it.
+
+### Multi-machine orchestration — your infrastructure, one conversation
+
+When a single machine isn't enough, Fleet coordinates agents across every machine in your network via SSH. No dashboards, no orchestration YAML — just conversation.
 
 - Run your test suite on Linux while you develop on macOS
-- Have one agent build the frontend, another the backend, and a third running tests — all in parallel
+- Have one agent build the frontend, another the backend, a third running tests — all in parallel
 - Spin up isolated workspaces on the same machine without them stepping on each other
 - Use a beefy cloud VM for compilation while coding from your laptop
-- Coordinate autonomous agents across your entire infrastructure — one conversation, zero context-switching
 
-Apra Fleet makes all of this a conversation. No dashboards, no orchestration YAML — just tell your agent what you want and it happens.
+### PM Skill — structured multi-step workflows
 
-Apra Fleet is the missing orchestration layer between your AI coding assistant and your infrastructure.
+The optional Project Manager skill goes beyond simple task dispatch:
 
-## How it works
+- **Planning** — breaks work into steps, gets your approval before execution
+- **Doer-reviewer loops** — pairs agents for write-then-review workflows
+- **Verification checkpoints** — agents pause at defined points for review
+- **Progress tracking** — state synced via git (`PLAN.md`, `progress.json`, `feedback.md`)
 
-Apra Fleet is an MCP server that agentic coding systems connect to. It manages a registry of members (machines with an AI coding agent installed) and provides tools to register them, send files, execute prompts, and check status. Remote members connect via SSH. Local members run as isolated child processes on the same machine.
+Install it with `--skill` during setup. See [`skills/pm/SKILL.md`](skills/pm/SKILL.md) for details.
+
+### Provider recommendations
+
+Fleet members can run different LLM backends. Mix and match based on the role:
+
+| Role | Recommended | Why |
+|------|-------------|-----|
+| **PM (orchestrator)** | Claude (Opus or Sonnet) | Most thoroughly tested for planning and multi-step orchestration |
+| **Doer** | Any provider | Claude Sonnet, Gemini Flash, Codex, Copilot — mix freely |
+| **Reviewer** | Premium tier models | Catches subtle issues that smaller models miss |
+
+See [`docs/provider-matrix.md`](docs/provider-matrix.md) for the full capability comparison.
 
 ## Quick start
 
-See the [User Guide](docs/user-guide.md) for step-by-step install and usage instructions.
+Copy-paste the one-liner for your platform:
 
-**TL;DR:**
-
+**macOS (Apple Silicon)**
 ```bash
-# Download the binary for your platform from GitHub Releases
-# https://github.com/Apra-Labs/apra-fleet/releases
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
 
-# Install (registers MCP server, hooks, statusline, and optionally the PM skill)
-./apra-fleet install --skill
+**Linux (x64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
 
-# Load in Claude Code
+**Windows (x64)** — run in PowerShell:
+```powershell
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install --skill
+```
+
+Then load in Claude Code:
+```
 /mcp
 ```
 
-Then just talk to Claude:
+**Single machine — start here.** No remote servers needed:
+
+> "Register a local member called `doer`. Register another called `reviewer`. Pair them."
+
+**Remote machines — add when ready:**
 
 > "Register 192.168.1.10 as `build-server`. Username is akhil, use password auth, work folder `/home/akhil/projects/myapp`."
+
+## How it works
+
+Apra Fleet is an MCP server that agentic coding systems connect to. It manages a registry of **members** (machines with an AI coding agent installed) and provides tools to register them, send files, execute prompts, and check status. Remote members connect via SSH. Local members run as isolated child processes on the same machine.
 
 ## Tools
 
@@ -64,19 +106,18 @@ Then just talk to Claude:
 | `execute_command` | Run a shell command directly on a member (no Claude CLI needed) |
 | `reset_session` | Clear session ID so the next prompt starts fresh |
 | `send_files` | Upload local files to a remote member via SFTP |
-| `provision_auth` | Deploy OAuth credentials or an API key to a member |
+| `receive_files` | Download files from a member's work folder |
+| `provision_llm_auth` | Deploy OAuth credentials or an API key to a member |
 | `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
 | `cloud_control` | Start, stop, or check status of cloud compute instances |
 | `monitor_task` | Monitor long-running tasks on cloud members |
+| `compose_permissions` | Generate and deliver provider-native permission config |
 | `update_llm_cli` | Update or install AI coding agent CLI on members |
 | `shutdown_server` | Gracefully shut down the MCP server |
-
-## PM Skill
-
-Apra Fleet ships with an optional Project Manager skill that orchestrates multi-step work across members — planning, doer-reviewer loops, verification checkpoints, and deployment. Install it with `--skill` during setup. See `skills/pm/SKILL.md` for details.
+| `version` | Report server version |
 
 ## Git Authentication
 
@@ -86,7 +127,7 @@ Fleet can provision scoped, short-lived tokens to members — so each member get
 
 **Access levels:** `read`, `push`, `admin`, `issues`, `full`.
 
-See `docs/design-git-auth.md` for the full design.
+See [`docs/design-git-auth.md`](docs/design-git-auth.md) for the full design.
 
 ## Secure Password Entry
 
@@ -97,7 +138,7 @@ When registering a remote member with password authentication, you don't need to
 - Headless or unsupported environments get a manual command fallback
 - Supports password rotation via `update_member`
 
-See `docs/adr-oob-password.md` for the design rationale.
+See [`docs/adr-oob-password.md`](docs/adr-oob-password.md) for the design rationale.
 
 ## Cloud Compute
 
@@ -109,7 +150,59 @@ Fleet members can run on cloud instances (AWS EC2) that start and stop automatic
 - **Cost tracking** — real-time cost estimates based on instance type and uptime, with warnings for high spend
 - **Custom workload detection** — define a shell command to signal busy/idle for arbitrary workloads (CPU training, downloads, etc.)
 
-See `docs/cloud-compute.md` for setup and configuration details.
+See [`docs/cloud-compute.md`](docs/cloud-compute.md) for setup and configuration details.
+
+## FAQ
+
+<details>
+<summary><strong>Do I need to install apra-fleet on every device?</strong></summary>
+
+No. apra-fleet only needs to be installed on the device where **you** interact with it. All members are registered and managed from that single installation. Remote machines just need SSH access.
+</details>
+
+<details>
+<summary><strong>Does apra-fleet only work with Claude?</strong></summary>
+
+No. Fleet supports Claude and Gemini today, with Codex support in development. We recommend Claude as the PM's LLM provider for the best experience — it is the most thoroughly tested for planning and orchestration workflows. Gemini works well for members, especially when you want a different LLM perspective during review.
+</details>
+
+<details>
+<summary><strong>What if I only have one machine?</strong></summary>
+
+Fleet works great on a single machine. Use the Simple Sprint pattern with a single member, or register two local members (doer + reviewer) that run as isolated child processes. No remote servers needed.
+</details>
+
+<details>
+<summary><strong>Why use separate folders for doer and reviewer?</strong></summary>
+
+Agents can misbehave when they have too much context. A separate reviewer workspace provides an unbiased perspective that tends to identify more problems. Using different environments for review also validates whether the committed work can be built and run independently.
+</details>
+
+<details>
+<summary><strong>Does using fleet increase my LLM token usage?</strong></summary>
+
+No — fleet actively reduces token usage through three mechanisms: (1) selecting the right model tier based on task complexity, routing simple tasks to lighter models; (2) preferring shell commands via `execute_command` (zero tokens) over full agent prompts where possible; (3) smart conversation management that decides whether to resume existing sessions (leveraging cached context) or start fresh.
+</details>
+
+<details>
+<summary><strong>How does fleet safeguard my passwords and credentials?</strong></summary>
+
+Three layers: (1) out-of-band collection — passwords are entered via a shell prompt outside the conversation, so the LLM never sees them; (2) encryption at rest — stored credentials are encrypted locally, never plaintext in config files; (3) passwordless migration — fleet encourages key-based SSH auth to reduce password handling.
+</details>
+
+<details>
+<summary><strong>Is apra-fleet limited to software development?</strong></summary>
+
+No. Fleet is a general-purpose remote operations platform. Use cases include remote product support, simultaneous log analysis across machines, patch distribution, infrastructure automation, and even profiling and market research.
+</details>
+
+<details>
+<summary><strong>How does apra-fleet relate to Google's A2A protocol?</strong></summary>
+
+They're architecturally distinct and largely complementary. A2A requires each agent to run a persistent HTTP server and enables autonomous agent-to-agent delegation. Fleet requires only SSH access and uses a human-orchestrated hub-and-spoke model where the PM decides the workflow. Fleet could eventually expose members as A2A-compatible agents while preserving its SSH-based transport.
+</details>
+
+See the full [FAQ](docs/FAQ.md) for all questions, or browse the [FAQ discussions](https://github.com/Apra-Labs/apra-fleet/discussions/127).
 
 ## Development
 
