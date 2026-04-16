@@ -44,9 +44,9 @@
     {
       "id": 4,
       "title": "Final Acceptance",
-      "status": "pending",
+      "status": "done",
       "tasks": [],
-      "verify": { "id": "VERIFY FINAL", "status": "pending" }
+      "verify": { "id": "VERIFY FINAL", "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "661 passed, 3 skipped, 0 failed (42 files, 30.80s)", "notes": "All sprint deliverables confirmed:\n  • --skill defaults to all when not provided\n  • --no-skill and --skill none both work\n  • --force flag bypasses busy check\n  • install --help prints help, does NOT install\n  • statusline clears after last member removed\n  • claude resume uses -c not -r\n  • Codex config.toml quoting fixed\n  • llms.txt present + CI llms-full.txt job\n  • CONTRIBUTING.md has For AI Agents section\n  • User guide documents --skill options\n  Final validation: synced with origin/main, build + test suite all green." }
     }
   ]
 }
