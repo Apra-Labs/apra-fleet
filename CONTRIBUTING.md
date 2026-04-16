@@ -74,6 +74,58 @@ Examples:
 - **No unnecessary abstractions:** Prefer simple, direct code over premature generalization.
 - **Error handling:** Only handle errors at real system boundaries (user input, SSH, external APIs). Don't add fallbacks for scenarios that can't happen.
 
+## For AI Agents
+
+If you are an AI agent (or a human using an AI agent) contributing to this project, this section covers the patterns and conventions that matter most.
+
+### Dev-mode install
+
+Build and install from source without touching the packaged binary:
+
+```bash
+npm run build && node dist/index.js install
+```
+
+This registers the MCP server from your local `dist/` build. Skill files are read from `skills/` on disk — no rebuild needed to iterate on them.
+
+### File map
+
+| Path | What it contains |
+|------|-----------------|
+| `src/` | TypeScript source for the MCP server, CLI commands, and providers |
+| `skills/fleet/` | Fleet skill — tools for managing members, tasks, and files |
+| `skills/pm/` | PM skill — orchestration patterns, doer-reviewer loop, deploy flows |
+| `hooks/` | Shell hooks that run on Claude Code events (statusline, pre-push, etc.) |
+| `CLAUDE.md` | Role-specific instructions (not committed — each agent has its own) |
+| `AGENTS.md` | Shared project context for all agents |
+
+### Testing skill changes
+
+Skills are Markdown files — edits take effect immediately without a rebuild. After editing `skills/fleet/` or `skills/pm/`:
+
+1. Save the file.
+2. In Claude Code, run `/mcp` to reload the MCP server.
+3. The updated skill content is live.
+
+Run `npm test` before committing to catch any regressions in the TypeScript layer.
+
+### Doer-reviewer loop
+
+The PM agent delegates tasks to doer members and assigns a separate reviewer. Code is never self-reviewed. When implementing multi-step work:
+
+- The PM reads the plan (typically `PLAN.md`) and delegates one task at a time.
+- Each doer commits and marks the task done in `progress.json`.
+- A reviewer member inspects the diff before the PM proceeds.
+
+### Sprint branch naming
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Feature sprint | `feat/<desc>` | `feat/install-ux-and-docs` |
+| Sprint (generic) | `sprint/<desc>` | `sprint/q2-hardening` |
+
+Agent-driven work always happens on a sprint branch — never directly on `main`.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE) that covers this project.
