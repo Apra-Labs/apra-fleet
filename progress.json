@@ -3,8 +3,9 @@
   "branch": "feat/install-ux-and-docs",
   "updated": "2026-04-16",
   "verifyResults": {
-    "VERIFY 1": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "641 passed, 3 skipped, 0 failed (41 files, 31s)", "notes": "Ran npm run build + npm test after rebase onto origin/feat/install-ux-and-docs (preserved 2 upstream review commits). Full suite green." },
-    "VERIFY 2": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "661 passed, 3 skipped, 0 failed (42 files, 34s)", "notes": "npm run build + npm test after rebase onto origin/main. All Phase 2 tasks done. Pushed to origin/feat/install-ux-and-docs." }
+    "VERIFY 1": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "641 passed, 3 skipped, 0 failed (41 files, 31s)", "notes": "Ran npm run build + npm test after rebase onto origin/feat/install-ux-and-docs. Full suite green." },
+    "VERIFY 2": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "661 passed, 3 skipped, 0 failed (42 files)", "notes": "All 3 Phase 2 tasks done. pgrep -x exact-name match per NOTE 2. --help guard at top of runInstall(). Pushed to origin." },
+    "VERIFY 3": { "status": "passed", "date": "2026-04-16", "build": "tsc clean", "tests": "661 passed, 3 skipped, 0 failed (42 files)", "notes": "llms.txt + llms-full.txt + gen-llms-full.mjs committed. CI release job updated. CONTRIBUTING.md For AI agents section added. user-guide.md install section updated (--skill default=all, What writes/does not/uninstall). README one-liners updated." }
   },
   "phases": [
     {
@@ -12,33 +13,33 @@
       "title": "Bug Fixes",
       "status": "done",
       "tasks": [
-        { "id": "1.1", "title": "Diagnose & fix Codex config.toml quoting + silent provider fallback (#115)", "tier": "premium", "status": "done", "commit": "d2571a3", "notes": "Added throw on unknown provider string (getProvider) + TOML validity test. Original reporter's malformed bytes likely from raw PowerShell here-string — composePermissionConfig path retained (per NOTE 1) since root cause couldn't be reproduced with mocked fs; deferred to actual Windows install smoke test." },
-        { "id": "1.2", "title": "Fix statusline not clearing after remove_member (#39)", "tier": "standard", "status": "done", "commit": "75c7239", "notes": "writeStatusline() now clears statusline.txt and resets statusline-state.json on zero agents. Added tests/statusline.test.ts using APRA_FLEET_DATA_DIR to sandbox real fs." },
-        { "id": "1.3", "title": "Switch claude resume from -r <id> to -c (#108)", "tier": "standard", "status": "done", "commit": "387a08c", "notes": "ClaudeProvider.buildPromptCommand emits ' -c' when sessionId is present; buildResumeFlag helper retained for Gemini. Tests updated in tests/providers.test.ts." }
+        { "id": "1.1", "title": "Diagnose & fix Codex config.toml quoting + silent provider fallback (#115)", "tier": "premium", "status": "done", "commit": "d2571a3" },
+        { "id": "1.2", "title": "Fix statusline not clearing after remove_member (#39)", "tier": "standard", "status": "done", "commit": "75c7239" },
+        { "id": "1.3", "title": "Switch claude resume from -r <id> to -c (#108)", "tier": "standard", "status": "done", "commit": "387a08c" }
       ],
-      "verify": { "id": "VERIFY 1", "status": "passed", "date": "2026-04-16", "notes": "Build clean (tsc), 641 tests passed / 3 skipped / 0 failed after rebase onto origin. Pushed to origin/feat/install-ux-and-docs." }
+      "verify": { "id": "VERIFY 1", "status": "passed" }
     },
     {
       "id": 2,
       "title": "Install UX",
       "status": "done",
       "tasks": [
-        { "id": "2.1", "title": "--skill default = all, add none/--no-skill (#139)", "tier": "standard", "status": "done", "commit": "d3b4ab1", "notes": "Default (no flag) = all; supports all|fleet|pm|none values; --no-skill synonym for none; bare --skill = all (backwards-compat); unknown --skill=X errors; 4 new matrix tests in tests/install-multi-provider.test.ts." },
-        { "id": "2.2", "title": "--force flag + busy prompt (#96)", "tier": "standard", "status": "done", "commit": "fb02e83", "notes": "isApraFleetRunning uses pgrep -x (exact name, per NOTE 2) on Linux/macOS; tasklist on Windows. killApraFleet uses pkill -x / taskkill /F /IM. Guard fires only in SEA mode. --force kills server + waits 500ms; appends restart note to success message. Unknown flags now error. _setSeaOverride/_setManifestOverride exported for test isolation. 14 tests in tests/install-force.test.ts." },
-        { "id": "2.3", "title": "--help/-h guard in install command (#142)", "tier": "cheap", "status": "done", "commit": "b53bad2", "notes": "Early exit at top of runInstall before any side effects. Prints install-specific usage and exits 0. 2 tests verify no writeFileSync calls." }
+        { "id": "2.1", "title": "--skill default = all, add none/--no-skill (#139)", "tier": "standard", "status": "done", "commit": "d3b4ab1" },
+        { "id": "2.2", "title": "--force flag + busy prompt (#96)", "tier": "standard", "status": "done", "commit": "fb02e83", "notes": "pgrep -x exact-name match per NOTE 2" },
+        { "id": "2.3", "title": "--help/-h guard in install command (#142)", "tier": "cheap", "status": "done", "commit": "b53bad2" }
       ],
-      "verify": { "id": "VERIFY 2", "status": "passed", "date": "2026-04-16", "notes": "npm run build (tsc clean) + npm test: 661 passed / 3 skipped / 0 failed (42 files). Pushed to origin/feat/install-ux-and-docs." }
+      "verify": { "id": "VERIFY 2", "status": "passed" }
     },
     {
       "id": 3,
       "title": "Documentation & CI",
-      "status": "pending",
+      "status": "done",
       "tasks": [
-        { "id": "3.1", "title": "llms.txt + CI llms-full.txt generation (#134)", "tier": "standard", "status": "pending" },
-        { "id": "3.2", "title": "CONTRIBUTING.md For AI agents section (#140)", "tier": "cheap", "status": "pending" },
-        { "id": "3.3", "title": "User guide --skill explainer (#136, blocked on 2.1)", "tier": "standard", "status": "pending" }
+        { "id": "3.1", "title": "llms.txt + CI llms-full.txt generation (#134)", "tier": "standard", "status": "done", "commit": "3dd5814" },
+        { "id": "3.2", "title": "CONTRIBUTING.md For AI agents section (#140)", "tier": "cheap", "status": "done", "commit": "4f089cc" },
+        { "id": "3.3", "title": "User guide --skill explainer (#136, blocked on 2.1)", "tier": "standard", "status": "done", "commit": "8bfbb78" }
       ],
-      "verify": { "id": "VERIFY 3", "status": "pending" }
+      "verify": { "id": "VERIFY 3", "status": "passed" }
     },
     {
       "id": 4,
