@@ -187,7 +187,7 @@ No. Fleet is a general-purpose remote operations platform. Use cases include rem
 They're architecturally distinct and largely complementary. A2A requires each agent to run a persistent HTTP server and enables autonomous agent-to-agent delegation. Fleet requires only SSH access and uses a human-orchestrated hub-and-spoke model where the PM decides the workflow. Fleet could eventually expose members as A2A-compatible agents while preserving its SSH-based transport.
 </details>
 
-See the full [FAQ index](https://github.com/Apra-Labs/apra-fleet/discussions/127) for more questions and answers.
+See the full [FAQ](docs/FAQ.md) for all questions, or browse the [FAQ discussions](https://github.com/Apra-Labs/apra-fleet/discussions/127).
 
 ## Development
 

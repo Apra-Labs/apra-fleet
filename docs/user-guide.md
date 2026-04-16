@@ -6,18 +6,32 @@ Apra Fleet lets you control AI coding agents on multiple machines from a single 
 
 ## Install
 
-### 1. Download the binary
+### One-liner install
 
-Apra Labs members: Go to [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases) and download the binary for your platform:
-If you were invited to a shared drive, lookinside the installers folder
+**macOS (Apple Silicon)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
+
+**Linux (x64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
+
+**Windows (x64)** — run in PowerShell:
+```powershell
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install --skill
+```
+
+### Manual install
+
+Download the binary for your platform from [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases):
 
 - `apra-fleet-linux-x64` — Linux (x86_64)
 - `apra-fleet-darwin-arm64` — macOS (Apple Silicon)
 - `apra-fleet-win-x64.exe` — Windows
 
-### 2. Run the installer
-
-The binary is self-installing. Run it with `install` to set everything up:
+Then run the installer:
 
 ```bash
 # macOS / Linux
@@ -145,7 +159,7 @@ Fleet automatically uses the correct env var name per provider.
 - Gemini responses may silently truncate at ~8K tokens. Split large tasks into smaller units.
 - Copilot requires a paid GitHub Copilot subscription (Pro/Business/Enterprise).
 
-See `docs/provider-matrix.md` for the full comparison table.
+See [`provider-matrix.md`](provider-matrix.md) for the full comparison table.
 
 ### Provider Recommendations
 
