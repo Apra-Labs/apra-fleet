@@ -46,16 +46,25 @@ Install it with `--skill` during setup. See [`skills/pm/SKILL.md`](skills/pm/SKI
 
 ## Quick start
 
-**Prerequisites:** Node.js 20+ or download a binary for your platform.
+Copy-paste the one-liner for your platform:
 
+**macOS (Apple Silicon)**
 ```bash
-# Download the binary for your platform from GitHub Releases
-# https://github.com/Apra-Labs/apra-fleet/releases
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
 
-# Install (registers MCP server, hooks, statusline, and optionally the PM skill)
-./apra-fleet install --skill
+**Linux (x64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+```
 
-# Load in Claude Code
+**Windows (x64)** — run in PowerShell:
+```powershell
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install --skill
+```
+
+Then load in Claude Code:
+```
 /mcp
 ```
 
