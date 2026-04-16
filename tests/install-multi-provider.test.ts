@@ -546,6 +546,74 @@ describe('runInstall multi-provider', () => {
     exitSpy.mockRestore();
   });
 
+  it('bare install (no flags) defaults to all — installs fleet + pm skills', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('skills') && ps.includes('pm')) {
+        return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+      }
+      return [];
+    });
+
+    await runInstall([]);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(fleetSkillsDir),
+      expect.any(Object)
+    );
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(pmSkillsDir),
+      expect.any(Object)
+    );
+  });
+
+  it('--skill none skips both fleet and pm skills', async () => {
+    await runInstall(['--skill', 'none']);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    const fleetMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(fleetSkillsDir)
+    );
+    const pmMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(pmSkillsDir)
+    );
+    expect(fleetMkdir).toBeUndefined();
+    expect(pmMkdir).toBeUndefined();
+  });
+
+  it('--skill=none (equals form) skips both fleet and pm skills', async () => {
+    await runInstall(['--skill=none']);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    const fleetMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(fleetSkillsDir)
+    );
+    const pmMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(pmSkillsDir)
+    );
+    expect(fleetMkdir).toBeUndefined();
+    expect(pmMkdir).toBeUndefined();
+  });
+
+  it('--no-skill skips both fleet and pm skills', async () => {
+    await runInstall(['--no-skill']);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    const fleetMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(fleetSkillsDir)
+    );
+    const pmMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(pmSkillsDir)
+    );
+    expect(fleetMkdir).toBeUndefined();
+    expect(pmMkdir).toBeUndefined();
+  });
+
   it('fleet skill is installed before pm skill (fleet-before-pm order)', async () => {
     vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
       const ps = p.toString();

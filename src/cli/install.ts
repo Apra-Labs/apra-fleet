@@ -328,29 +328,34 @@ export async function runInstall(args: string[]): Promise<void> {
 
   const paths = getProviderInstallConfig(llm);
 
-  // Parse --skill flag: accepts no value (→ all), or all|fleet|pm
+  // Parse --skill flag: default (no flag) = all; accepts all|fleet|pm|none; --no-skill = synonym for none
   type SkillMode = 'none' | 'all' | 'fleet' | 'pm';
-  let skillMode: SkillMode = 'none';
+  let skillMode: SkillMode = 'all';
   const skillEqualArg = args.find(a => a.startsWith('--skill='));
   if (skillEqualArg) {
     const val = skillEqualArg.split('=')[1];
-    if (val === 'all' || val === 'fleet' || val === 'pm') {
+    if (val === 'all' || val === 'fleet' || val === 'pm' || val === 'none') {
       skillMode = val;
     } else {
-      console.error(`Error: --skill value must be one of: all, fleet, pm (got "${val}")`);
+      console.error(`Error: --skill value must be one of: all, fleet, pm, none (got "${val}")`);
       process.exit(1);
     }
   } else {
     const skillIdx = args.indexOf('--skill');
     if (skillIdx >= 0) {
       const nextArg = args[skillIdx + 1];
-      if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm')) {
+      if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm' || nextArg === 'none')) {
         skillMode = nextArg;
       } else {
-        // --skill with no value → install both
+        // --skill with no value → install both (backwards-compat)
         skillMode = 'all';
       }
     }
+  }
+
+  // --no-skill is a synonym for --skill none
+  if (args.includes('--no-skill')) {
+    skillMode = 'none';
   }
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
@@ -478,7 +483,7 @@ export async function runInstall(args: string[]): Promise<void> {
   }
 
   if (!installFleet && !installPm) {
-    console.log(`  Skipping skills (use --skill [all|fleet|pm] to install)`);
+    console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
   // Finalize permissions
