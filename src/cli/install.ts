@@ -86,7 +86,12 @@ function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig 
 }
 
 // Detect SEA mode
+let _seaOverride: boolean | null = null;
+/** Override isSea() result — for tests only. Pass null to restore default. */
+export function _setSeaOverride(v: boolean | null): void { _seaOverride = v; }
+
 function isSea(): boolean {
+  if (_seaOverride !== null) return _seaOverride;
   try {
     const sea = require('node:sea');
     return sea.isSea();
@@ -158,7 +163,12 @@ function buildDevManifest(root: string): AssetManifest {
   return { version: vf.version, hooks, scripts, skills, fleetSkills };
 }
 
+let _manifestOverride: AssetManifest | null = null;
+/** Inject a manifest for tests — avoids SEA asset extraction. Pass null to restore default. */
+export function _setManifestOverride(m: AssetManifest | null): void { _manifestOverride = m; }
+
 function loadManifest(): AssetManifest {
+  if (_manifestOverride !== null) return _manifestOverride;
   if (isSea()) {
     return JSON.parse(getSeaAsset('manifest.json'));
   }
@@ -307,6 +317,30 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
   execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
 }
 
+export function isApraFleetRunning(): boolean {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH', { encoding: 'utf-8', stdio: 'pipe' });
+      return out.includes('apra-fleet.exe');
+    } else {
+      // -x = exact name match; avoids matching the installer process itself (NOTE 2)
+      execSync('pgrep -x apra-fleet', { stdio: 'ignore' });
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}
+
+export function killApraFleet(): void {
+  if (process.platform === 'win32') {
+    execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
+  } else {
+    // -x = exact name match
+    execSync('pkill -x apra-fleet', { stdio: 'ignore' });
+  }
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // Parse --llm flag
   let llm: LlmProvider = 'claude';
@@ -358,12 +392,48 @@ export async function runInstall(args: string[]): Promise<void> {
     skillMode = 'none';
   }
 
+  // Parse --force flag
+  const force = args.includes('--force');
+
+  // Reject unknown flags to catch typos early
+  const knownFlagPrefixes = ['--llm=', '--skill='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--help', '-h']);
+  for (const a of args) {
+    if (knownFlagExact.has(a)) continue;
+    if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
+    if (!a.startsWith('-')) continue; // non-flag positional (e.g. value token for --skill)
+    console.error(`Error: Unknown option "${a}". Run apra-fleet install --help for usage.`);
+    process.exit(1);
+  }
+
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const totalSteps = (installFleet && installPm) ? 7 : installFleet ? 6 : installPm ? 7 : 5;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
+  }
+
+  // --- Running-process guard (SEA mode only — dev mode runs via node, not the binary) ---
+  if (isSea() && isApraFleetRunning()) {
+    if (!force) {
+      const killHint = process.platform === 'win32'
+        ? '    taskkill /F /IM apra-fleet.exe'
+        : '    pkill -x apra-fleet';
+      console.error(`
+Error: apra-fleet is currently running. Stop the server before installing.
+
+  Run with --force to stop it automatically:
+    apra-fleet install --force
+
+  Or stop it manually:
+${killHint}
+`);
+      process.exit(1);
+    }
+    killApraFleet();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    console.log('  Stopped running server.');
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
@@ -491,6 +561,7 @@ export async function runInstall(args: string[]): Promise<void> {
 
   // --- Done ---
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
+  const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
@@ -498,6 +569,6 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
 
-${instructions}
+${instructions}${forceNote}
 `);
 }
