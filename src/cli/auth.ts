@@ -1,7 +1,4 @@
 import net from 'node:net';
-// @inquirer/password v5.x: masks input with '*' by default.
-// No built-in reveal toggle exists in this version — input stays masked throughout.
-import password from '@inquirer/password';
 import { getSocketPath } from '../services/auth-socket.js';
 import { secureInput } from '../utils/secure-input.js';
 
@@ -31,7 +28,7 @@ export async function runAuth(args: string[]): Promise<void> {
   let inputValue: string;
   try {
     const prompt = isConfirm ? '  Type "yes" to allow network access: ' : isApiKey ? '  API key: ' : '  Password: ';
-    password = await secureInput({ prompt });
+    inputValue = await secureInput({ prompt });
   } catch {
     console.error('Cancelled.');
     process.exit(1);
@@ -39,12 +36,12 @@ export async function runAuth(args: string[]): Promise<void> {
   }
 
   if (isConfirm) {
-    if (password.toLowerCase() !== 'yes') {
+    if (inputValue.toLowerCase() !== 'yes') {
       console.error('  ✗ Confirmation not received. Aborting.');
       process.exit(1);
       return;
     }
-  } else if (!password) {
+  } else if (!inputValue) {
     console.error(isApiKey ? '  ✗ Empty API key. Aborting.' : '  ✗ Empty password. Aborting.');
     process.exit(1);
   }
