@@ -9,7 +9,7 @@
     {
       "id": 1,
       "title": "Bug Fixes",
-      "status": "pending",
+      "status": "done",
       "tasks": [
         { "id": "1.1", "title": "Diagnose & fix Codex config.toml quoting + silent provider fallback (#115)", "tier": "premium", "status": "done", "commit": "d2571a3", "notes": "Added throw on unknown provider string (getProvider) + TOML validity test. Original reporter's malformed bytes likely from raw PowerShell here-string — composePermissionConfig path retained (per NOTE 1) since root cause couldn't be reproduced with mocked fs; deferred to actual Windows install smoke test." },
         { "id": "1.2", "title": "Fix statusline not clearing after remove_member (#39)", "tier": "standard", "status": "done", "commit": "75c7239", "notes": "writeStatusline() now clears statusline.txt and resets statusline-state.json on zero agents. Added tests/statusline.test.ts using APRA_FLEET_DATA_DIR to sandbox real fs." },
@@ -22,7 +22,7 @@
       "title": "Install UX",
       "status": "pending",
       "tasks": [
-        { "id": "2.1", "title": "--skill default = all, add none/--no-skill (#139)", "tier": "standard", "status": "pending" },
+        { "id": "2.1", "title": "--skill default = all, add none/--no-skill (#139)", "tier": "standard", "status": "done", "commit": "d3b4ab1", "notes": "Default (no flag) = all; supports all|fleet|pm|none values; --no-skill synonym for none; bare --skill = all (backwards-compat); unknown --skill=X errors; full matrix test in tests/install-multi-provider.test.ts." },
         { "id": "2.2", "title": "--force flag + busy prompt (#96)", "tier": "standard", "status": "pending" },
         { "id": "2.3", "title": "--help/-h guard in install command (#142)", "tier": "cheap", "status": "pending" }
       ],
