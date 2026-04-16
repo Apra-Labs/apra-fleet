@@ -12,6 +12,7 @@
 - #140 — CONTRIBUTING.md: add "For AI agents" section
 - #136 — User guide: install `--skill` explainer (depends on #139)
 - #134 — `llms.txt` + CI-generated `llms-full.txt`
+- #142 — `install --help` executes install instead of printing help
 
 ## Risk Register
 | Risk | Mitigation |
@@ -120,10 +121,19 @@ Order matters: #139 refactors the `--skill` parser; #96 adds a pre-check before 
 - **Blocks:** None (depends on 2.1's arg-parser shape — do 2.1 first).
 - **Tier:** standard
 
+### Task 2.3 — `--help` / `-h` guard in install command (#142)
+- **Files:** whichever file contains the install command entry point (likely `src/cli/install.ts`)
+- **What:**
+  1. At the very top of the install command handler, before any file writes, config reads, or process detection, check if `--help` or `-h` is present in the args. If so, print usage text and exit 0.
+- **Done:** `apra-fleet install --help` and `apra-fleet install -h` print help and exit with no side effects; existing tests pass; new test added.
+- **Blocks:** None.
+- **Tier:** cheap
+
 ### VERIFY 2 — Install UX landed
 - [ ] Skill matrix test green.
 - [ ] Force-flag tests green.
 - [ ] Manual smoke on Windows: (a) `apra-fleet install` with no server running → normal install; (b) run server via `node dist/index.js` in a second terminal, then `apra-fleet install` → error prompt; (c) `apra-fleet install --force` → kills server, completes install.
+- [ ] `apra-fleet install --help` and `-h` print help and exit 0 with no side effects.
 - [ ] `apra-fleet install --help` output matches requirements table.
 
 ---
