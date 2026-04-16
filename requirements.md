@@ -37,9 +37,19 @@ Original report: after de-registering a member, the status icon under Claude inp
 
 ---
 
-### Phase 2 — Install Improvements (Issues #96, #139)
+### Phase 2 — Install Improvements (Issues #142, #96, #139)
 
-Both touch `install.ts` — do in the same phase to avoid merge conflicts.
+All three touch the install command — do in the same phase to avoid merge conflicts.
+
+#### #142 — `--help` / `-h` executes install instead of printing help (CRITICAL)
+Running `apra-fleet install --help` performs the full install and modifies the user's global Claude settings. Reported in the wild — destructive side effect.
+
+Fix: check for `--help` / `-h` before any install logic runs. Print usage text and exit with code 0. Must be the **first** thing checked in the install command handler — before any file writes, config reads, or process detection. Apply consistently to all subcommands.
+
+Acceptance criteria:
+- `apra-fleet install --help` prints help and exits without modifying any files
+- `apra-fleet install -h` same
+- No side effects (no config writes, no process detection) when `--help` is passed
 
 #### #96 — `--force` flag + busy/running prompt
 On Windows the binary is locked while running as an MCP server. Fix:
@@ -155,6 +165,11 @@ Deliverables:
 
 ---
 
+#### cherry-pick `0b9c2f7` — provider-agnostic package.json description
+Cherry-pick commit `0b9c2f7` from `feat/oob-improvements` onto the sprint branch. Changes `package.json` description from `"MCP server for coordinating Claude Code members across machines via SSH"` to `"MCP server for orchestrating multiple agentic AI instances like Claude, Gemini and others (called 'members') across machines via SSH"`. No conflict expected — this is the only change in that commit.
+
+---
+
 ## Out of Scope
 - #27 (broader Codex multi-provider support) — #115 fixes only the TOML quoting and fallback; full Codex testing is separate
 - #95 (MCP entry already exists error on reinstall) — different root cause from #96
@@ -172,6 +187,7 @@ Deliverables:
 - [ ] Fleet server errors (does not silently fallback) when provider config cannot be parsed
 - [ ] `claude -c` used for session resume; session IDs still captured and stored
 - [ ] Statusline icon confirmed cleared after `remove_member` (test or smoke-test evidence)
+- [ ] `apra-fleet install --help` / `-h` prints help and exits — no side effects
 - [ ] `apra-fleet install` (no flags) installs MCP + fleet skill + PM skill
 - [ ] `apra-fleet install --skill fleet/pm/all/none` all work correctly
 - [ ] `apra-fleet install --no-skill` installs MCP only

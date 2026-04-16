@@ -207,3 +207,56 @@ Two low-severity NOTEs for the doer — neither blocks kickoff:
 One plan-hygiene note (deferred, not required for this sprint): restate the "never commit CLAUDE.md / permissions.json / sprint-control files" requirement in a header-level constraints section so each doer sees it without re-reading requirements.md.
 
 Proceed to execution.
+
+---
+
+## Re-review — Task 2.3 (#142) addition
+
+- **Reviewer:** fleet-rev
+- **Date:** 2026-04-16
+- **Verdict:** APPROVED
+
+Re-reviewed the PLAN.md update from commit `f1a9d01` which adds Task 2.3 (#142 — `install --help` executes install instead of printing help) to Phase 2, along with the matching requirements.md update.
+
+### 1. Clear done criteria — PASS (one soft bullet)
+
+Task 2.3 Done: "`apra-fleet install --help` and `apra-fleet install -h` print help and exit with no side effects; existing tests pass; new test added."
+
+The first clause is behavioral and test-verifiable. "New test added" is softer — it doesn't specify the assertions (e.g. "asserts no `fs.writeFile` and no `execSync` call when args include `--help`"). Acceptable for a cheap task; VERIFY 2's new checkbox ("`apra-fleet install --help` and `-h` print help and exit 0 with no side effects") tightens the phase-gate.
+
+### 2. Placement before VERIFY checkpoint — PASS
+
+Task 2.3 sits at PLAN.md:124, immediately before VERIFY 2 at line 132. VERIFY 2 was updated in the same commit to add the `--help` / `-h` no-side-effects checkbox — phase-gate evidence is aligned with the new task. Placement is correct.
+
+Task 2.3 sits after 2.2 in the plan but is structurally independent of both 2.1 (arg-parser refactor) and 2.2 (force/busy prompt). The Phase 2 preamble ("Order matters: #139 refactors the `--skill` parser; #96 adds a pre-check before binary copy") does not need updating because 2.3 is a guard at the top of the handler — it does not touch the parser or the process-detection code, so implementation order among the three is flexible. Runtime order is enforced by task 2.3 step 1 ("At the very top of the install command handler").
+
+### 3. Tier assignment (cheap) — PASS
+
+Correct. The change is a single-digit LoC guard (arg scan + usage print + `process.exit(0)`) plus a mocked-fs test. Matches the `cheap` tier used for pure doc task 3.2. No diagnostics, no multi-file refactor, no provider-layer reasoning.
+
+### 4. Guard ordering — PASS
+
+Task 2.3 step 1: "At the very top of the install command handler, before any file writes, config reads, or process detection." This correctly precedes:
+- 2.1's `--skill` parsing (so no skill-dir writes before help short-circuits)
+- 2.2's `pgrep`/`tasklist` probe (so no process detection before help short-circuits)
+- The existing binary-copy step in `runInstall`
+
+Matches requirements §#142 verbatim ("Must be the **first** thing checked in the install command handler"). The guard is before all side-effectful work.
+
+### Minor findings (non-blocking)
+
+1. **Soft file target.** Task 2.3 Files field reads "whichever file contains the install command entry point (likely `src/cli/install.ts`)." Every other task in the plan names exact files. A quick grep would confirm the entry point. Cheap to tighten; not blocking since the doer will grep anyway.
+
+2. **Scope narrowing vs. requirements.** Requirements §#142 ends with "Apply consistently to all subcommands." Task 2.3 only covers the `install` subcommand. The requirements' own acceptance criteria are scoped to `install --help` / `install -h`, so the task matches what will be verified, but the broader "all subcommands" directive is dropped silently. Flag for the doer: if other subcommands have side effects, reuse the guard pattern (a small `hasHelpFlag(args)` helper would make this natural). Not blocking for this sprint.
+
+3. **Test shape not specified.** "New test added" could be tightened to "asserts no write to mocked `fs` and no call to `execSync` when args include `--help` or `-h`, and asserts exit code 0." Would give the doer an exact target and the reviewer an exact assertion to grep.
+
+### Other plan-level check
+
+VERIFY FINAL (Phase 4) should also include the new acceptance-criteria checkbox ("`apra-fleet install --help` / `-h` prints help and exits — no side effects"). Currently only VERIFY 2 has it; the requirements.md acceptance list was updated to include it (line +190) but PLAN.md's VERIFY FINAL section was not. Recommend adding one line to Phase 4 for end-of-sprint audit completeness. Trivial edit, non-blocking.
+
+The requirements diff also adds the `cherry-pick 0b9c2f7` section (line +168). This is already landed on the branch as commit `6e48ece` (flagged in the original review, section 10). The plan correctly does not re-list it as a task. Consistent.
+
+### Verdict
+
+**APPROVED** — proceed with Task 2.3 as written. The three minor findings above are doer-side tightenings, not plan defects. Recommend the one VERIFY FINAL mirror-edit as a low-effort plan-hygiene improvement.
