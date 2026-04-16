@@ -614,6 +614,34 @@ describe('runInstall multi-provider', () => {
     expect(pmMkdir).toBeUndefined();
   });
 
+  // --help / -h guard tests (#142)
+
+  it('--help prints usage and exits 0 with no side effects', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['--help'])).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain('apra-fleet install');
+    // No file writes should have occurred
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it('-h prints usage and exits 0 with no side effects', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['-h'])).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
   it('fleet skill is installed before pm skill (fleet-before-pm order)', async () => {
     vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
       const ps = p.toString();
