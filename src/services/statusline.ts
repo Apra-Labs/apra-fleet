@@ -39,7 +39,17 @@ function saveState(state: Record<string, string>): void {
 export function writeStatusline(overrides?: Map<string, string>): void {
   try {
     const agents = getAllAgents();
-    if (agents.length === 0) return;
+    if (agents.length === 0) {
+      // #39: clear statusline + per-agent state when last member is removed,
+      // otherwise the stale icon lingers under Claude's input.
+      if (fs.existsSync(STATUSLINE_PATH)) {
+        fs.writeFileSync(STATUSLINE_PATH, '\n', { mode: 0o600 });
+      }
+      if (fs.existsSync(STATE_PATH)) {
+        fs.writeFileSync(STATE_PATH, '{}', { mode: 0o600 });
+      }
+      return;
+    }
 
     const saved = loadState();
 
