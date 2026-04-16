@@ -55,119 +55,155 @@ This PR adds a first-run onboarding experience (ASCII banner + getting started g
 
 **APPROVED.** The implementation is well-designed, thoroughly tested, security-conscious, and clean. The three-channel delivery strategy with injection defense is a thoughtful solution to the real problem of delivering verbatim content through an LLM intermediary.
 
-# Plan Review — Install UX, Bug Fixes & Docs
+# Install UX, Bug Fixes & Docs — Plan Review
 
-- **Reviewer:** fleet-rev
-- **Date:** 2026-04-16
-- **Verdict:** APPROVED
+**Reviewer:** fleet-rev
+**Date:** 2026-04-16 00:56:23-0400
+**Verdict:** APPROVED
+
+> See the recent git history of this file to understand the context of this review.
 
 ---
 
 ## 1. Clear done criteria per task — PASS
 
-Every task has a `Done:` block with verifiable bullets. The criteria are mostly behavioral and testable:
+Every task carries a `Done:` block whose bullets are verifiable by test, grep, or file-byte inspection:
 
-- 1.1: TOML round-trips through `smol-toml.parse`; `getProvider('nonsense')` throws; matrix test passes.
-- 1.2: New test passes; manual smoke step documented.
-- 1.3: Asserted Claude command contains ` -c` and no `--resume`.
-- 2.1: Eight-row matrix test green; `--help` reflects defaults.
-- 2.2: Busy-server error path, `--force` kill path, and restart-reminder message all covered.
-- 3.1: `llms.txt` present; generator idempotent; CI commits on tag push.
-- 3.2: Section added; dev-mode command verified locally.
-- 3.3: Install section updated; no stray `--skill` in one-liner examples.
+- **1.1**: "config.toml parses cleanly with smol-toml.parse"; `getProvider('nonsense')` throws; existing Codex matrix cases still green.
+- **1.2**: Register → writeStatusline → remove → file-empty assertion in a new test.
+- **1.3**: Claude command asserts ` -c` present AND `--resume` absent when sessionId supplied.
+- **2.1**: Eight-row matrix; `--help` reflects table.
+- **2.2**: Busy-server error block shown; `--force` issues kill; final message includes restart reminder.
+- **3.1**: `llms.txt` + `llms-full.txt` present; generator idempotent; CI commits on tag push.
+- **3.2**: Section present, dev-mode command test-run.
+- **3.3**: No stray `--skill` in example commands; paths grep-verified against `install.ts`.
 
-Minor: Task 1.1's first Done bullet ("running against a mocked home") is softer than the others — acceptable because the task is explicitly a diagnostic, and its escalation path is documented.
+Task 1.1's Done is softer than the others because it is explicitly a diagnostic ("reproduce first, then fix") — the softness is deliberate and the Blocks clause names the escalation path. Acceptable.
 
-## 2. Cohesion / coupling — PASS
+## 2. High cohesion within tasks, low coupling between — PASS
 
-Phases are semantically cohesive (bugs → install UX → docs/CI). Cross-phase coupling is minimal and made explicit: 3.3 blocks on 2.1; 2.1 must land before 2.2 (shared arg parser). Within-phase coupling (both #96 and #139 touching `install.ts`) is called out in the risk register with an explicit sequencing mitigation. No drive-by coupling across phases.
+Phase boundaries are semantic: bugs → install UX → docs/CI. Cross-phase coupling is minimal and explicit: 3.3 blocks on 2.1; 2.1 sequences before 2.2 since both touch `install.ts`. Within Phase 1, the three bugs are independent — different files, different test files. No drive-by cross-cutting.
+
+The one real coupling (#96 + #139 both editing `runInstall`) is resolved by explicit sequencing on the same branch, with the arg-parser refactor first. Risk register row 7 restates this.
 
 ## 3. Abstractions in earliest tasks — PASS
 
-Task 1.1 is a diagnostic audit, not a framework. The plan explicitly reuses existing machinery (`smol-toml.stringify`, `buildResumeFlag`, `writeStatusline`, `paths.*` constants, `execute-prompt.writePromptFile` as a template for Windows TOML write). No new abstractions introduced on speculation; no "utility layer" tasks. The riskiest bug (#115) gets an audit before any refactor — the right shape.
+No new abstractions introduced speculatively. Tasks reuse existing machinery:
+- `smol-toml.stringify` already exists in `writeConfig` (install.ts:39–42); 1.1 consolidates rather than adds.
+- `buildResumeFlag` stays for Gemini; 1.3 only changes Claude's caller (claude.ts:40 → switch to `-c`).
+- `writeStatusline` at statusline.ts:42 gets a one-line fix, not a rewrite.
+- `paths.*` constants in `install.ts` are reused, not re-derived, by 3.3's doc update.
 
-## 4. Riskiest assumption in Task 1 — PASS
+The riskiest work (#115) is a diagnostic, not a framework.
 
-The risk register's first row names it directly: "#115 TOML bug root cause unclear from the report alone (`model = \gpt-5.3-codex` does not obviously map to any existing write path)." Task 1.1 mitigates by requiring reproduction on Windows before code changes, and the task's Blocks clause defines an escalation path if reproduction fails with mocked `fs`. This is the single biggest unknown in the sprint and it is treated as such.
+## 4. Riskiest assumption validated in Task 1 — PASS
 
-## 5. DRY reuse — PASS
+Risk register row 1 names the unknown directly: the reporter's `model = \gpt-5.3-codex` output does not obviously map to any current writer. `writeConfig` at install.ts:36–45 uses `smol-toml.stringify`, which would not emit that form — so either a different writer produced it, the reporter saw an older build, or smol-toml misbehaves on a specific input. Task 1.1 requires Windows reproduction before code change, and Blocks escalates if mocked `fs` cannot reproduce.
 
-- 1.1 consolidates rather than duplicates: "Route `config.toml` writes through `smol-toml.stringify` consistently" — removes the parallel PowerShell `Set-Content` path.
-- 1.3 keeps `buildResumeFlag` for Gemini rather than forking a Claude-specific helper.
-- 2.1 extends the existing `install-multi-provider.test.ts` matrix rather than creating a new test file.
-- 3.1 references existing docs rather than rewriting them.
-- 3.3 cross-checks paths against `install.ts` constants before documenting — prevents drift.
+Task 1.2 applies the same discipline to #39 — write a failing test first; if it passes on main, close the issue without a patch. This protects against wasted work on an already-fixed bug.
 
-No task reinvents an existing helper.
+## 5. Later tasks reuse early abstractions (DRY) — PASS
 
-## 6. Phase structure with VERIFY checkpoints — PASS
+- Task 2.2 builds on 2.1's arg parser rather than forking its own.
+- Task 3.3 consumes 2.1's new default behavior; does not re-derive it.
+- Task 3.1's `scripts/gen-llms-full.mjs` reads the five docs listed in `llms.txt` — single source of truth.
+- Task 3.3 grep-verifies paths against `install.ts` constants rather than hand-writing them.
 
-Four checkpoints: VERIFY 1, 2, 3, FINAL. Each has concrete checkboxes with grep-able or runnable verification (e.g., "Grep confirms no remaining `--resume` emission in Claude provider code"). VERIFY FINAL re-walks the requirements acceptance criteria in order, which gives a clean audit trail. Checkpoints are positioned at phase boundaries, not mid-task.
+No helper is reinvented.
 
-## 7. Session completability — PASS (with one watch-item)
+## 6. 2–3 work tasks per phase with VERIFY checkpoints — PASS
 
-Tier tagging is present (`premium` / `standard` / `cheap`) and aligns with task scope. Tasks 1.2, 1.3, 2.1, 2.2, 3.1, 3.3 each fit comfortably in one session. 3.2 is a cheap doc task.
+Four checkpoints:
+- **VERIFY 1**: three tests green, build passes, Codex config round-trips, statusline smoke, grep for `--resume`.
+- **VERIFY 2**: matrix test green, force test green, Windows three-step manual smoke, `--help` match.
+- **VERIFY 3**: `llms.txt`/`llms-full.txt` committed, generator idempotent, CONTRIBUTING section present, user-guide examples clean.
+- **VERIFY FINAL**: 13-item walk of requirements acceptance criteria.
 
-Watch-item: Task 1.1 is the largest — audit + fix + provider-error-path + tests + Windows repro — and is correctly tagged `premium`. If the Windows reproduction path has to be deferred (per the Blocks clause), the fix portion is still session-scoped. Acceptable.
+Checkboxes are concrete (grep-able, runnable) — not aspirational. Phase sizes are 3/2/3 work tasks; none exceeds the "3 tasks then verify" ceiling.
 
-## 8. Dependency order — PASS
+## 7. Each task completable in one session — PASS (Task 1.1 is the watch-item)
 
-- Bugs (Phase 1) → Install UX (Phase 2) → Docs (Phase 3) is the right order because Phase 3 documents Phase 2's new defaults.
-- Within Phase 2: 2.1 before 2.2 is explicit and justified (arg-parser refactor first, force-check on top).
-- 3.3 blocks on 2.1, stated at the top of the task.
-- 3.1 and 3.2 have no dependencies and can run in parallel with Phase 1/2.
+Tasks 1.2 (1 file + 1 test), 1.3 (2 providers + 1 test file), 3.2 (doc section), 3.3 (doc edits) are cheap/standard. Tier tagging aligns.
 
-No circular or implicit dependencies.
+Task 1.1 is the largest: audit six writers, fix the broken path, change `getProvider` contract, update two test files, and reproduce on Windows. Tagged `premium` correctly. If Windows reproduction is blocked, the TypeScript fix portion still fits in a session. Acceptable.
+
+## 8. Dependencies satisfied in order — PASS
+
+- Bugs → install UX → docs reflects the actual dependency graph (docs describe new installer behavior).
+- 2.1 → 2.2 is explicit (arg-parser before busy-check).
+- 3.3 blocks on 2.1 (new defaults must ship first).
+- 3.1, 3.2 are independent and could run in parallel with Phase 1 or 2 — plan does not forbid it.
+
+I also verified one requirement line the plan is silent on: the `cherry-pick 0b9c2f7` item from requirements.md §cherry-pick is already landed as commit `6e48ece` on this branch. The plan's silence is correct, not an omission.
 
 ## 9. Vague tasks — PASS
 
-Tasks cite concrete file paths, line numbers (`src/services/statusline.ts:42`, `execute-prompt.ts:140-144`), function names (`writeConfig`, `mergeCodexConfig`, `deliverConfigFile`), exact commands (`taskkill /F /IM apra-fleet.exe`, `pgrep -f apra-fleet`), and exact flag values. Task 1.1's "Likely candidates" language is appropriate for a diagnostic — it names two specific hypotheses rather than hand-waving. Task 3.2's file map enumerates the directories to cover. No task reads as "investigate X and improve it."
+The plan cites:
+- Line numbers: `src/services/statusline.ts:42`, `src/providers/claude.ts` buildPromptCommand, `execute-prompt.ts:140-144`.
+- Function names: `writeConfig`, `mergeCodexConfig`, `writeDefaultModel`, `mergeHooksConfig`, `configureStatusline`, `mergePermissions`, `deliverConfigFile`, `buildResumeFlag`, `touchAgent`.
+- Exact commands: `taskkill /F /IM apra-fleet.exe`, `pgrep -f apra-fleet`, `pkill -f apra-fleet`, `claude mcp add --scope user`.
+- Concrete flag values: `--skill all|fleet|pm|none`, `--no-skill`, bare `--skill` → `all`.
+- Test-matrix enumeration (Task 2.1: 8 rows).
+
+Task 1.1 uses "Likely candidates: (a)…(b)…" which is appropriate diagnostic language. No task reads as "investigate X."
+
+**NOTE — small scope ambiguity in 1.1.** Step 2 says "Route `config.toml` writes through `smol-toml.stringify` consistently (fix `deliverConfigFile` to stringify structured data rather than pass raw strings through PowerShell Set-Content)." But `composePermissionConfig` for Codex (codex.ts:136–149) returns a pre-built TOML string, not structured data — so "stringify structured data" would require changing that contract too. The doer will hit this mid-audit and need to choose between (a) refactoring `composePermissionConfig` to return an object, or (b) keeping the raw-string path but fixing the Windows writer (e.g. base64 PowerShell, as `execute-prompt.writePromptFile` does per the plan's own hint). This is a small judgment call, not a blocker, because step 2 also provides the (b) alternative. Flagging so the doer does not spend time trying to force (a) if reproduction points at the Windows writer.
 
 ## 10. Hidden dependencies — PASS
 
-Verified the one potentially-missing item: the requirements § `cherry-pick 0b9c2f7` is already landed on this branch as commit `6e48ece` ("chore: make package.json description provider-agnostic"). The plan's silence on it is correct, not an omission.
+Explicit dependencies surfaced:
+- Windows host for #115 reproduction (risk row 1, task 1.1 Blocks).
+- `parseResponse` + `touchAgent(agent.id, parsed.sessionId)` must stay intact when switching Claude resume to `-c` (risk row 3, task 1.3 step 3). Verified at `execute-prompt.ts:137` — the stale-session retry path at lines 140-144 is acknowledged.
+- `--skill` backwards-compat: bare `--skill` → `all` (risk row 5, task 2.1 step 1).
+- Release job tag-gating for `llms-full.txt` regeneration (risk row 6, task 3.1 step 4). Verified that `.github/workflows/ci.yml:226` gates the release job on `startsWith(github.ref, 'refs/tags/v')`.
 
-Other dependencies surfaced explicitly:
-- Windows host for #115 reproduction (risk register row 1, task 1.1 Blocks).
-- `parseResponse`/`touchAgent` must stay intact when switching to `-c` (risk register row 3, task 1.3 step 3).
-- `--skill` backwards-compat: bare `--skill` → `all` (risk register row 5, task 2.1 step 1).
-- `release` job tag-gating for `llms-full.txt` regeneration (risk register row 6, task 3.1 step 4).
+**NOTE — one implicit dependency worth calling out.** Task 2.2's `pgrep -f apra-fleet` / `pkill -f apra-fleet` pattern will, in SEA mode, match the *currently running installer process itself* (the installer is the apra-fleet binary). Risk register row 4 names this ("Scope kill to exact binary name … exact full path match with `pkill -f`; verify with unit test") but the task body (step 1/step 2) still specifies the loose `pgrep -f apra-fleet` form. Result: unmitigated, the busy-check always fires on SEA installs, and `--force` would kill the installer mid-install. Mitigation is required during implementation — use `pgrep -x apra-fleet` (exact process name) or `pgrep -f apra-fleet | grep -v "^$$\$"` (exclude self PID), or match on the installed path `~/.apra-fleet/bin/apra-fleet` rather than the bare token. Step 4's "mock execSync" tests cannot catch this — an integration check (spawn a decoy process, run the detection function with the installer's own PID in the environment) is worth adding.
 
-No constraint from requirements (merge-freeze files list, `release` job reuse) is missed.
+Not a blocker because the risk register does acknowledge the mitigation intent; raising as a NOTE so the doer tightens the pattern rather than copy-pasting `pgrep -f apra-fleet` verbatim.
 
 ## 11. Risk register — PASS
 
-Seven rows, each with a specific mitigation that maps to a task or step. Risks are concrete (not "general complexity") and include:
-- Reproduction unknown (#115)
-- Possible already-fixed bug (#39) — mitigated by write-test-first policy
-- Regression surface (#108 session capture)
-- Friendly-fire in process-kill (#96) — mitigated by exact-name matching and mocked test
-- Backwards-compat of `--skill` default change (#139)
-- Docs drift / bloat in `llms-full.txt`
-- Merge conflict between parallel install.ts features — mitigated by explicit sequencing
+Seven rows, each with a concrete mitigation mapped to a task or step. Risks are specific:
+- #115 reproduction unknown — mitigated by audit-first.
+- #39 may already be fixed — mitigated by failing-test-first.
+- #108 session-ID capture regression — mitigated by "keep parseResponse unchanged."
+- #96 process-kill friendly-fire — mitigated by exact-name matching.
+- #139 backwards-compat — mitigated by bare `--skill` = `all`.
+- `llms-full.txt` bloat — mitigated by five-doc allow-list.
+- `install.ts` merge conflict — mitigated by in-branch sequencing.
 
-Each row names the mitigating task. This is a high-quality register.
+Not included but low-severity:
+- **Legacy `llmProvider` values.** The change in 1.1 step 3 from `providers[llmProvider ?? 'claude']` (current behavior: returns Claude for any unknown value) to "throw for unknown string" could error on registrations with a stale `llmProvider` string like `'anthropic'`. Plan step 3 preserves `undefined`/`null` → claude, which covers the migration case for old agents without the field; but if any agent was ever registered with a typo'd provider name, it would now fail. Mitigation: the same audit can log a one-time migration warning on load, or the throw message can name both the offending value and "run update_member to fix." Low priority because provider values have always been validated at register_member time.
+- **CI race on `main` push** (Task 3.1 step 4): the existing version-bump step at `ci.yml:286-298` already does `git fetch origin main && git checkout main && … git push origin main`. Appending the `llms-full.txt` regeneration to the same commit inherits the same race window; plan does not add a new risk. Acceptable.
+
+I consider the register complete. Adding the two observations above via this review, per review-check-11 instructions.
 
 ## 12. Alignment with requirements intent — PASS
 
-All eight issues in scope are addressed in order. Requirements-level constraints honored:
+All eight scoped issues are addressed and requirement-level constraints honored:
 
-- "Both #96 and #139 touch `install.ts` — must be done in the same phase" → Phase 2 does exactly this.
+- "Both #96 and #139 touch `install.ts` — must be done in the same phase" → Phase 2 does exactly that.
 - "#136 depends on #139 shipping first" → 3.3 blocks on 2.1.
-- "All doc changes must be verified against actual code behavior" → 3.3 step 3 requires grep-verification against `install.ts` constants; 3.1 step 1 verifies doc files exist before referencing; 3.2 verifies `package.json` scripts before writing install command.
-- "`llms-full.txt` CI step: the existing `release` job" → 3.1 step 4 modifies the existing `release` job, does not add a workflow.
-- "Never commit CLAUDE.md, permissions.json, or progress control files" — not restated in plan; low risk since no task writes those files, but worth flagging to doers.
-- Acceptance criteria in requirements map 1:1 to VERIFY FINAL checkboxes.
-- Out-of-scope items (#27, #95, PR #128) not touched by any task.
+- "All doc changes must be verified against actual code behavior — no speculative documentation" → 3.1 step 1 verifies the five docs exist; 3.2 step 1 verifies `package.json` scripts; 3.3 step 3 grep-verifies paths against `install.ts` constants.
+- "`llms-full.txt` CI step: the existing `release` job in `.github/workflows/ci.yml` is the target; add a step, do not create a new workflow" → 3.1 step 4 amends the existing job.
+- "Never commit CLAUDE.md, permissions.json, or progress control files" — not restated in plan body. Low risk because no task touches those files, but worth restating as a header-level constraint for the doer.
+- Out-of-scope items (#27, #95, PR #128) are untouched by any task.
+- Acceptance criteria (13 items) map 1:1 to VERIFY FINAL.
 
-Intent alignment is tight.
+Intent and scope alignment is tight. The plan solves the right problem — not a "technically clean" adjacent problem.
 
 ---
 
-## Verdict
+## Summary
 
-**APPROVED**
+**APPROVED.** Twelve checks pass. The plan is specific (line numbers, function names, exact flags and commands), phased sensibly (bugs → install UX → docs), and reuse-oriented (extends `install-multi-provider.test.ts`, reuses `smol-toml.stringify`, preserves `buildResumeFlag` for Gemini). The risk register is high-quality with mitigations mapped to tasks.
 
-The plan is specific, phased, and well-risk-managed. Diagnostic-first on the riskiest issue (#115), reuse-over-refactor across the board, and VERIFY checkpoints aligned with requirements acceptance criteria. Minor watch-items (Task 1.1 depends on Windows reproduction access; "do not commit CLAUDE.md / permissions.json" constraint not restated in plan body) are low-severity and do not block kickoff.
+Two low-severity NOTEs for the doer — neither blocks kickoff:
+
+1. **Task 1.1 step 2 scope.** "Route through smol-toml.stringify" collides with Codex's `composePermissionConfig` contract that returns a raw TOML string. Step 2 also offers a simpler alternative (base64-encoded PowerShell for the Windows writer, matching `execute-prompt.writePromptFile`). Pick after reproduction points at a specific writer; do not force an upstream `composePermissionConfig` refactor pre-emptively.
+
+2. **Task 2.2 pgrep/pkill pattern.** Risk row 4 calls for exact-name matching; task body still shows loose `pgrep -f apra-fleet` / `pkill -f apra-fleet`. In SEA mode this will match the installer itself — causing always-busy false positives and self-kill on `--force`. Tighten to `pgrep -x apra-fleet` or exclude current PID, and add an integration test that runs the detection under the installer's own process.
+
+One plan-hygiene note (deferred, not required for this sprint): restate the "never commit CLAUDE.md / permissions.json / sprint-control files" requirement in a header-level constraints section so each doer sees it without re-reading requirements.md.
 
 Proceed to execution.
