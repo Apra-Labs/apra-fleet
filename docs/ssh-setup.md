@@ -1,3 +1,7 @@
+<!-- llm-context: Step-by-step guide for enabling SSH on remote machines so they can be registered as fleet members. Covers Linux (OpenSSH), macOS, and Windows (OpenSSH Server). Consult when a user can't connect to a remote member or needs to set up SSH for the first time. -->
+<!-- keywords: SSH, setup, OpenSSH, Linux, macOS, Windows, sshd, firewall, key auth, remote member, connectivity -->
+<!-- see-also: user-guide.md (member registration after SSH is ready), adr-oob-password.md (password handling) -->
+
 # SSH Server Setup for Fleet Members
 
 Enable SSH on remote machines so they can be registered with `register_member`.
