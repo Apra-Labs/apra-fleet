@@ -30,6 +30,7 @@ Establish `readme.md` as the single source of truth. All other doc files either 
 ### Task 1.2 — Update CI and llms.txt to stop referencing `docs/user-guide.md`
 - **Tier:** cheap
 - **Files:** `scripts/gen-llms-full.mjs`, `llms.txt`
+- **Note:** Requirements refers to updating `ci.yml` — on inspection, `ci.yml` only invokes `scripts/gen-llms-full.mjs`; the file reference is inside the script, not the workflow. This task correctly targets the script directly.
 - **What:**
   1. In `scripts/gen-llms-full.mjs`: replace `path: 'docs/user-guide.md'` with `path: 'readme.md'`; update title/desc to match
   2. In `llms.txt`: replace the `docs/user-guide.md` link with `readme.md`
@@ -59,7 +60,18 @@ Establish `readme.md` as the single source of truth. All other doc files either 
   - **PM Skill:** init/plan/pair commands table
   - **Troubleshooting:** troubleshooting section
   Use `<details>` collapsibles for long setup blocks. Do not duplicate content already present.
-- **Done:** `readme.md` is a comprehensive reference covering everything `docs/user-guide.md` had
+- **Done:** All of the following sections are present and complete in `readme.md`:
+  - Manual install steps + what install writes table + what it does NOT do
+  - `--skill` flag options documented
+  - Uninstall instructions
+  - Local vs remote member registration detail
+  - Non-Claude provider registration (Gemini, Codex, Copilot)
+  - SSH key migration steps
+  - run-prompt, run-command, send-files, check-status usage examples
+  - Multi-provider fleet setup: auth provisioning per provider, CLI install, capabilities/limits
+  - Git auth: GitHub App setup (Apra-Labs + custom), Bitbucket, Azure DevOps
+  - PM Skill: init/plan/pair commands table
+  - Troubleshooting section
 - **Risks:** readme.md gets long — mitigated by `<details>` collapsibles
 
 ### Task 2.2 — Delete `docs/user-guide.md` and fix all references
@@ -67,10 +79,11 @@ Establish `readme.md` as the single source of truth. All other doc files either 
 - **Files:** `docs/user-guide.md` (delete), plus all files referencing it
 - **What:**
   1. Delete `docs/user-guide.md`
-  2. Run: `grep -r "user-guide" . --include="*.md" --include="*.txt" --include="*.json" --include="*.yml" --include="*.ts" --include="*.js"`
+  2. Run: `grep -ri "user-guide\|userguide" . --include="*.md" --include="*.txt" --include="*.json" --include="*.yml" --include="*.ts" --include="*.js"`
   3. Update every reference found — point to `readme.md` or the relevant section
+     - Known false positive: `src/services/cloud/aws.ts` contains an AWS external URL that includes "user-guide" — this is a third-party URL, do not modify it
   4. Commit deletion + reference fixes
-- **Done:** grep returns zero results in tracked source (excluding PM project docs)
+- **Done:** grep (excluding the AWS URL in `src/services/cloud/aws.ts` and PM project docs) returns zero results in tracked source
 - **Risks:** References in already-regenerated `llms-full.txt` — handled by Task 1.2
 
 ### Task 2.3 — Rewrite `CLAUDE.md` as thin wrapper
@@ -97,5 +110,5 @@ Establish `readme.md` as the single source of truth. All other doc files either 
 - [ ] `CLAUDE.md` under 30 lines, points to readme.md
 - [ ] `AGENTS.md` under 30 lines, points to readme.md
 - [ ] `docs/user-guide.md` does not exist
-- [ ] `grep -ri "user-guide"` returns no results in tracked source
+- [ ] `grep -ri "user-guide\|userguide"` returns no results in tracked source (AWS URL in `src/services/cloud/aws.ts` is an expected exclusion)
 - [ ] Push to origin before stopping
