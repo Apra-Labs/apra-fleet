@@ -235,28 +235,45 @@ Apra Fleet is an MCP server that agentic coding systems connect to. It manages a
 
 ## Tools
 
+### Member registry
+
 | Tool | Description |
 |------|-------------|
 | `register_member` | Register a machine as a fleet member (local or remote via SSH) |
-| `remove_member` | Unregister a fleet member |
 | `update_member` | Update a member's registration (rename, change host, folder, auth, git access) |
+| `remove_member` | Unregister a fleet member |
 | `list_members` | List all registered fleet members |
 | `member_detail` | Deep-dive status for a single member |
 | `fleet_status` | Overview status of all members |
-| `execute_prompt` | Run a Claude prompt on a member (supports session resume) |
-| `execute_command` | Run a shell command directly on a member (no Claude CLI needed) |
-| `reset_session` | Clear session ID so the next prompt starts fresh |
-| `send_files` | Upload local files to a remote member via SFTP |
+
+### Work dispatch
+
+| Tool | Description |
+|------|-------------|
+| `execute_prompt` | Run an AI prompt on a member (supports session resume) |
+| `execute_command` | Run a shell command directly on a member (no AI CLI needed) |
+| `reset_session` | Clear session ID so the next prompt starts a fresh conversation |
+| `send_files` | Upload local files to a member via SFTP |
 | `receive_files` | Download files from a member's work folder |
+| `monitor_task` | Poll the status of a long-running background command |
+
+### Auth & credentials
+
+| Tool | Description |
+|------|-------------|
 | `provision_llm_auth` | Deploy OAuth credentials or an API key to a member |
-| `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
+| `compose_permissions` | Generate and deliver provider-native permission config |
+| `setup_ssh_key` | Generate an SSH key pair and migrate from password to key auth |
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
+
+### Infrastructure
+
+| Tool | Description |
+|------|-------------|
 | `cloud_control` | Start, stop, or check status of cloud compute instances |
-| `monitor_task` | Monitor long-running tasks on cloud members |
-| `compose_permissions` | Generate and deliver provider-native permission config |
-| `update_llm_cli` | Update or install AI coding agent CLI on members |
+| `update_llm_cli` | Update or install the AI coding agent CLI on a member |
 | `shutdown_server` | Gracefully shut down the MCP server |
 | `version` | Report server version |
 
