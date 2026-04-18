@@ -1,35 +1,71 @@
-# Doc Consolidation — Plan Re-Review
+# Doc Consolidation — Implementation Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-18 12:45:00+00:00
+**Date:** 2026-04-18 13:15:30+05:30
 **Verdict:** APPROVED
 
-> See the recent git history of this file to understand the context of this review.
-
 ---
 
-## Prior findings (CHANGES NEEDED — 3 items)
+## 1. readme.md — 13-section checklist
 
-### Finding 1: Task 2.1 done criteria too subjective — RESOLVED
+| # | Section | Status | Notes |
+|---|---------|--------|-------|
+| 1 | Manual install + what-writes table + what-NOT-do | PASS | Lines 91–131, three `<details>` blocks |
+| 2 | `--skill` flag options | PASS | Lines 133–147, full flag table |
+| 3 | Uninstall instructions | PASS | Lines 149–166, macOS/Linux + Windows |
+| 4 | Local vs remote member registration | PASS | Lines 168–205, separate subsections |
+| 5 | Non-Claude provider registration | PASS | Lines 188–196, Gemini/Codex/Copilot examples |
+| 6 | SSH key migration steps | PASS | Lines 198–205 |
+| 7 | run-prompt, run-command, send-files, check-status | PASS | Lines 207–230, all four with examples |
+| 8 | Multi-provider fleet setup | PASS | Lines 263–309, auth/CLI/capabilities |
+| 9 | Git auth (GitHub App + PAT, Bitbucket, Azure DevOps) | PASS | Lines 311–394, five `<details>` blocks |
+| 10 | PM Skill commands table | PASS | Lines 419–451 |
+| 11 | Troubleshooting | PASS | Lines 453–471, five items |
+| 12 | `<details>` collapsibles for long blocks | PASS | Used throughout (install, git auth, FAQ, mix-and-match) |
+| 13 | No duplicated content | PASS | Each section covers distinct ground |
 
-The subjective "readme.md is a comprehensive reference covering everything docs/user-guide.md had" has been replaced with an explicit 13-item checklist (PLAN.md lines 63–74) that enumerates every section that must be present: manual install steps, --skill flags, uninstall, local vs remote registration, non-Claude providers, SSH key migration, usage examples, multi-provider setup, Git auth (GitHub App, Bitbucket, Azure DevOps), PM Skill commands table, and troubleshooting. Each item is verifiable by inspection. The checklist correctly mirrors the "What" block above it.
+**Result: 13/13 PASS** — readme.md is comprehensive and well-structured at 539 lines.
 
-### Finding 2: Task 2.2 grep pattern incomplete — RESOLVED
+## 2. docs/user-guide.md deleted
 
-The grep command (PLAN.md line 82) now uses `"user-guide\|userguide"` with `-i` flag, covering both naming conventions. The AWS URL false positive in `src/services/cloud/aws.ts` is documented as a known exclusion in both the "What" section (line 84) and the "Done" criteria (line 86). VERIFY 2 (line 113) also updated to match. The exclusion is correctly scoped — it names the specific file and explains why.
+PASS — file does not exist.
 
-### Finding 3: Task 1.2 missing deviation note — RESOLVED
+## 3. scripts/gen-llms-full.mjs
 
-A new "Note" field (PLAN.md line 33) explains: *"Requirements refers to updating `ci.yml` — on inspection, `ci.yml` only invokes `scripts/gen-llms-full.mjs`; the file reference is inside the script, not the workflow."* This gives an executor the context needed to understand the deviation without having to re-derive it.
+PASS — references `path: 'readme.md'` (line 22), no mention of `docs/user-guide.md`.
 
----
+## 4. llms.txt
 
-## Regression check
+PASS — links to `readme.md` (line 9), no mention of `docs/user-guide.md`.
 
-The three changes are surgical additions — no task was reordered, no scope was changed, no dependency was altered. Phase structure, risk register, VERIFY checkpoints, and all previously-passing checks remain intact. No new issues introduced.
+## 5. CLAUDE.md
+
+PASS — 18 lines, under the 30-line limit. Opens with directive to read `readme.md`. Contains dev commands and conventions. No duplicated readme content.
+
+## 6. AGENTS.md
+
+PASS — 19 lines. Same structure as CLAUDE.md with an additional architecture link. No duplicated readme content.
+
+## 7. Stale references
+
+PASS — `grep -ri "user-guide\|userguide"` returns hits only in:
+- `.fleet-task.md` — task description (not source)
+- `PLAN.md`, `progress.json`, `feedback.md` — plan/review artifacts (not source)
+- `src/services/cloud/aws.ts` — AWS external URL (expected exclusion)
+
+No stale references in source docs, scripts, or config.
+
+## 8. Build and tests
+
+PASS — `npm run build` succeeded (clean tsc). `npm test` passed: 44 test files, 748 passed, 4 skipped, 0 failures.
 
 ---
 
 ## Summary
 
-All three CHANGES NEEDED items from the prior review have been addressed precisely. The plan is ready for execution: phasing is sound, CI safety gate is in place before deletion, done criteria are verifiable, grep patterns are complete with documented exclusions, and the requirements deviation is explained.
+All 8 review items pass. The doc consolidation is complete:
+- `readme.md` is the single source of truth, covering all 13 required sections
+- `docs/user-guide.md` is deleted with no stale references
+- `CLAUDE.md` and `AGENTS.md` are thin wrappers pointing to `readme.md`
+- `llms.txt` and `gen-llms-full.mjs` reference the correct file
+- Build and tests are green
