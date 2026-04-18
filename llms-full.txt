@@ -238,28 +238,45 @@ Apra Fleet is an MCP server that agentic coding systems connect to. It manages a
 
 ## Tools
 
+### Member registry
+
 | Tool | Description |
 |------|-------------|
 | `register_member` | Register a machine as a fleet member (local or remote via SSH) |
-| `remove_member` | Unregister a fleet member |
 | `update_member` | Update a member's registration (rename, change host, folder, auth, git access) |
+| `remove_member` | Unregister a fleet member |
 | `list_members` | List all registered fleet members |
 | `member_detail` | Deep-dive status for a single member |
 | `fleet_status` | Overview status of all members |
-| `execute_prompt` | Run a Claude prompt on a member (supports session resume) |
-| `execute_command` | Run a shell command directly on a member (no Claude CLI needed) |
-| `reset_session` | Clear session ID so the next prompt starts fresh |
-| `send_files` | Upload local files to a remote member via SFTP |
+
+### Work dispatch
+
+| Tool | Description |
+|------|-------------|
+| `execute_prompt` | Run an AI prompt on a member (supports session resume) |
+| `execute_command` | Run a shell command directly on a member (no AI CLI needed) |
+| `reset_session` | Clear session ID so the next prompt starts a fresh conversation |
+| `send_files` | Upload local files to a member via SFTP |
 | `receive_files` | Download files from a member's work folder |
+| `monitor_task` | Poll the status of a long-running background command |
+
+### Auth & credentials
+
+| Tool | Description |
+|------|-------------|
 | `provision_llm_auth` | Deploy OAuth credentials or an API key to a member |
-| `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
+| `compose_permissions` | Generate and deliver provider-native permission config |
+| `setup_ssh_key` | Generate an SSH key pair and migrate from password to key auth |
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
+
+### Infrastructure
+
+| Tool | Description |
+|------|-------------|
 | `cloud_control` | Start, stop, or check status of cloud compute instances |
-| `monitor_task` | Monitor long-running tasks on cloud members |
-| `compose_permissions` | Generate and deliver provider-native permission config |
-| `update_llm_cli` | Update or install AI coding agent CLI on members |
+| `update_llm_cli` | Update or install the AI coding agent CLI on a member |
 | `shutdown_server` | Gracefully shut down the MCP server |
 | `version` | Report server version |
 
@@ -545,7 +562,7 @@ Apache 2.0 — see [LICENSE](LICENSE) for the full text.
   <doc title="Vocabulary" desc="Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.">
 <!-- llm-context: Defines the terminology used throughout apra-fleet — member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
 <!-- keywords: vocabulary, terminology, member, fleet, PM, doer, reviewer, provider, session, agent, orchestrator -->
-<!-- see-also: architecture.md (how these concepts relate), ../readme.md (practical usage) -->
+<!-- see-also: architecture.md (how these concepts relate), ../README.md (practical usage) -->
 
 # Fleet Vocabulary
 
@@ -607,7 +624,7 @@ Members with different **providers** are interchangeable from the PM's perspecti
   <doc title="Provider Matrix" desc="Which LLM providers are supported, their capabilities, and how to configure them.">
 <!-- llm-context: This is the reference table comparing LLM provider capabilities in apra-fleet (Claude, Gemini, Codex, Copilot). Consult when a user asks which provider supports a feature, what the limitations are, or which provider to choose for a role (PM, doer, reviewer). -->
 <!-- keywords: provider, Claude, Gemini, Codex, Copilot, capabilities, max_turns, timeout, permissions, NDJSON, truncation, comparison -->
-<!-- see-also: ../readme.md (provider setup instructions), FAQ.md (common provider questions) -->
+<!-- see-also: ../README.md (provider setup instructions), FAQ.md (common provider questions) -->
 
 # Provider Matrix
 
@@ -723,7 +740,7 @@ When the PM sends task harness files via `send_files`, it renames `tpl-agent.md`
 
 <!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge — fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
 <!-- keywords: install, setup, single machine, local, provider, Claude, Gemini, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
-<!-- see-also: ../readme.md (getting started), architecture.md (how it works), provider-matrix.md (provider capabilities) -->
+<!-- see-also: ../README.md (getting started), architecture.md (how it works), provider-matrix.md (provider capabilities) -->
 
 > **For AI agents:** The FAQ is maintained as GitHub Discussions — one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file — follow the link.
 
@@ -741,13 +758,13 @@ Topics covered:
 
 ---
 
-**Related docs:** [Readme](../readme.md) | [Architecture](architecture.md) | [Cloud Compute](cloud-compute.md) | [Provider Matrix](provider-matrix.md)
+**Related docs:** [Readme](../README.md) | [Architecture](architecture.md) | [Cloud Compute](cloud-compute.md) | [Provider Matrix](provider-matrix.md)
   </doc>
 
   <doc title="Architecture" desc="How the fleet hub, MCP server, and members interact at a system level.">
 <!-- llm-context: This document explains the internal architecture of apra-fleet — the MCP server, member registry, SSH transport, session management, and how tools are dispatched. Read this when a user asks how fleet works under the hood, or when debugging connectivity or session issues. -->
 <!-- keywords: MCP server, member registry, SSH, transport, session, tool dispatch, child process, local member, remote member, architecture -->
-<!-- see-also: ../readme.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
+<!-- see-also: ../README.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
 
 # Architecture
 
