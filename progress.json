@@ -2,95 +2,13 @@
   "sprint": "Doc Consolidation — Single Source of Truth",
   "branch": "feat/install-ux-and-docs",
   "tasks": [
-    {
-      "id": "1.1",
-      "name": "Audit content overlap",
-      "phase": 1,
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "Read-only: map overlap between readme.md, docs/user-guide.md, CLAUDE.md, AGENTS.md"
-    },
-    {
-      "id": "1.2",
-      "name": "Update CI and llms.txt to stop referencing docs/user-guide.md",
-      "phase": 1,
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "Update gen-llms-full.mjs + llms.txt to use readme.md; regenerate llms-full.txt"
-    },
-    {
-      "id": "V1",
-      "name": "VERIFY 1",
-      "phase": 1,
-      "type": "verify",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "gen-llms-full.mjs runs; no user-guide refs in llms.txt or script"
-    },
-    {
-      "id": "2.1",
-      "name": "Absorb docs/user-guide.md into readme.md",
-      "phase": 2,
-      "type": "work",
-      "status": "pending",
-      "tier": "standard",
-      "notes": "Merge missing content: detailed install, multi-provider, git auth, PM commands, troubleshooting"
-    },
-    {
-      "id": "2.2",
-      "name": "Delete docs/user-guide.md and fix all references",
-      "phase": 2,
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "Delete file; grep and fix all 14 files referencing user-guide"
-    },
-    {
-      "id": "V2",
-      "name": "VERIFY 2",
-      "phase": 2,
-      "type": "verify",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "No broken refs; readme comprehensive; build+test pass"
-    },
-    {
-      "id": "3.1",
-      "name": "Rewrite CLAUDE.md as thin wrapper",
-      "phase": 3,
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "Under 30 lines; directive to read readme.md + dev commands only"
-    },
-    {
-      "id": "3.2",
-      "name": "Rewrite AGENTS.md as thin wrapper",
-      "phase": 3,
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "Under 30 lines; directive to read readme.md + dev commands only"
-    },
-    {
-      "id": "3.3",
-      "name": "Final verification",
-      "phase": 3,
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "Full checklist: build, test, gen-llms-full, no stale refs, line counts"
-    },
-    {
-      "id": "V3",
-      "name": "VERIFY 3 (Final)",
-      "phase": 3,
-      "type": "verify",
-      "status": "pending",
-      "tier": "cheap",
-      "notes": "All checks pass; branch clean; ready for PR"
-    }
+    { "id": "1.1", "name": "Audit content overlap", "phase": 1, "type": "work", "status": "pending", "tier": "cheap", "notes": "Read-only: map overlap between readme.md, docs/user-guide.md, CLAUDE.md, AGENTS.md" },
+    { "id": "1.2", "name": "Update CI and llms.txt to stop referencing docs/user-guide.md", "phase": 1, "type": "work", "status": "pending", "tier": "cheap", "notes": "Update gen-llms-full.mjs + llms.txt to use readme.md; regenerate llms-full.txt" },
+    { "id": "V1", "name": "VERIFY 1", "phase": 1, "type": "verify", "status": "pending", "tier": "cheap", "notes": "gen-llms-full.mjs runs; no user-guide refs in llms.txt or script; push to origin" },
+    { "id": "2.1", "name": "Absorb docs/user-guide.md into readme.md", "phase": 2, "type": "work", "status": "pending", "tier": "standard", "notes": "Merge missing content: detailed install, multi-provider, git auth, PM commands, troubleshooting" },
+    { "id": "2.2", "name": "Delete docs/user-guide.md and fix all references", "phase": 2, "type": "work", "status": "pending", "tier": "cheap", "notes": "Delete file; grep and fix all files referencing user-guide" },
+    { "id": "2.3", "name": "Rewrite CLAUDE.md as thin wrapper", "phase": 2, "type": "work", "status": "pending", "tier": "cheap", "notes": "Under 30 lines; directive to read readme.md + dev commands only" },
+    { "id": "2.4", "name": "Rewrite AGENTS.md as thin wrapper", "phase": 2, "type": "work", "status": "pending", "tier": "cheap", "notes": "Under 30 lines; directive to read readme.md + dev commands only" },
+    { "id": "V2", "name": "VERIFY 2 (Final)", "phase": 2, "type": "verify", "status": "pending", "tier": "cheap", "notes": "build+test pass; gen-llms-full runs; readme comprehensive; CLAUDE.md+AGENTS.md <30 lines; no stale refs; push to origin" }
   ]
 }
