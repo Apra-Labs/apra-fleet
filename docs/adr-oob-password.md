@@ -1,6 +1,6 @@
 <!-- llm-context: Architecture Decision Record for how fleet collects passwords securely outside the LLM conversation. Covers the Unix domain socket approach, AES-256-GCM encryption, and cross-platform terminal support. Read when a user asks about password security or credential handling. -->
 <!-- keywords: password, credential, security, out-of-band, OOB, encryption, AES-256-GCM, terminal, Unix domain socket -->
-<!-- see-also: ../readme.md (SSH key migration), FAQ.md (credential security question) -->
+<!-- see-also: ../README.md (SSH key migration), FAQ.md (credential security question) -->
 
 # ADR: Out-of-Band Password Collection via Unix Domain Socket
 

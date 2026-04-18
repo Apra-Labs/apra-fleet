@@ -1,6 +1,6 @@
 <!-- llm-context: This is the reference table comparing LLM provider capabilities in apra-fleet (Claude, Gemini, Codex, Copilot). Consult when a user asks which provider supports a feature, what the limitations are, or which provider to choose for a role (PM, doer, reviewer). -->
 <!-- keywords: provider, Claude, Gemini, Codex, Copilot, capabilities, max_turns, timeout, permissions, NDJSON, truncation, comparison -->
-<!-- see-also: ../readme.md (provider setup instructions), FAQ.md (common provider questions) -->
+<!-- see-also: ../README.md (provider setup instructions), FAQ.md (common provider questions) -->
 
 # Provider Matrix
 

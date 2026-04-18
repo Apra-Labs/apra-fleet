@@ -6,7 +6,7 @@ Apra Fleet is a multi-agent orchestration layer that lets a PM agent delegate wo
 
 ## Docs
 
-- [Readme](readme.md): Installation, configuration, member registration, and day-to-day usage for operators.
+- [Readme](README.md): Installation, configuration, member registration, and day-to-day usage for operators.
 - [Vocabulary](docs/vocabulary.md): Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.
 - [Provider Matrix](docs/provider-matrix.md): Which LLM providers are supported, their capabilities, and how to configure them.
 - [FAQ](docs/FAQ.md): Common questions about setup, troubleshooting, and the doer-reviewer loop.

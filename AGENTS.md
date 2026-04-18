@@ -1,6 +1,6 @@
 # Apra Fleet — Agent Context
 
-Read `readme.md` in this repo for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
+Read `README.md` in this repo for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
 
 ## Dev commands
 

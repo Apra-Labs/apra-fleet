@@ -19,7 +19,7 @@ const root = join(__dirname, '..');
 
 const docs = [
   {
-    path: 'readme.md',
+    path: 'README.md',
     title: 'Readme',
     desc: 'Installation, configuration, member registration, and day-to-day usage for operators.',
   },
