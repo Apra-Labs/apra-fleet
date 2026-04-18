@@ -27,7 +27,7 @@ const platform = process.platform;
 const arch = process.arch;
 const platformMap = { win32: 'win', darwin: 'darwin', linux: 'linux' };
 const ext = platform === 'win32' ? '.exe' : '';
-const binaryName = `apra-fleet-${platformMap[platform] || platform}-${arch}${ext}`;
+const binaryName = `apra-fleet-installer-${platformMap[platform] || platform}-${arch}${ext}`;
 const outputBinary = join(distDir, binaryName);
 
 console.log(`Packaging SEA binary: ${binaryName}`);

@@ -21,15 +21,15 @@ mkdir -p /tmp/fleet-deploy
 cd /tmp/fleet-deploy
 
 # From CI artifact (branch build)
-gh run download <run-id> --repo Apra-Labs/apra-fleet -n apra-fleet-win-x64.exe
+gh run download <run-id> --repo Apra-Labs/apra-fleet -n apra-fleet-installer-win-x64.exe
 
 # Or from release
-gh release download <tag> --repo Apra-Labs/apra-fleet -p "apra-fleet-win-x64.exe" -D /tmp/fleet-deploy
+gh release download <tag> --repo Apra-Labs/apra-fleet -p "apra-fleet-installer-win-x64.exe" -D /tmp/fleet-deploy
 ```
 
 ### 3. Install
 ```bash
-/tmp/fleet-deploy/apra-fleet-win-x64.exe install --skill
+/tmp/fleet-deploy/apra-fleet-installer-win-x64.exe install --skill
 ```
 This handles shutdown, binary replacement, skill installation, and restart in one step.
 
@@ -48,6 +48,6 @@ cp ~/.apra-fleet/bin/apra-fleet.exe.bak ~/.apra-fleet/bin/apra-fleet.exe
 ## Platform binaries
 | Platform | Artifact name |
 |----------|--------------|
-| Windows x64 | `apra-fleet-win-x64.exe` |
-| Linux x64 | `apra-fleet-linux-x64` |
-| macOS ARM | `apra-fleet-darwin-arm64` |
+| Windows x64 | `apra-fleet-installer-win-x64.exe` |
+| Linux x64 | `apra-fleet-installer-linux-x64` |
+| macOS ARM | `apra-fleet-installer-darwin-arm64` |
