@@ -114,7 +114,7 @@ User: "Build frontend on member-a, backend on member-b, run tests on member-c"
 
 ## Links
 
-- [User Guide](docs/user-guide.md)
+- [Readme](readme.md)
 - [Architecture](docs/architecture.md)
 - [Cloud Compute](docs/cloud-compute.md)
 - [Contributing](CONTRIBUTING.md)

@@ -1,6 +1,6 @@
 <!-- llm-context: Design doc for fleet's git authentication system — scoped token provisioning via GitHub Apps, PATs, Bitbucket, and Azure DevOps. Read when a user asks how to give members git access, how tokens are scoped, or how credentials are managed. -->
 <!-- keywords: git auth, GitHub App, PAT, Bitbucket, Azure DevOps, token, scope, provision, revoke, credential, push, pull, clone -->
-<!-- see-also: user-guide.md (step-by-step git auth setup), design-vcs-auth-onboarding.md (onboarding flow) -->
+<!-- see-also: ../readme.md (step-by-step git auth setup), design-vcs-auth-onboarding.md (onboarding flow) -->
 
 # Design: Git Authentication for Fleet Members
 

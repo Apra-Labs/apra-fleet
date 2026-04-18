@@ -2,7 +2,7 @@
 
 <!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge — fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
 <!-- keywords: install, setup, single machine, local, provider, Claude, Gemini, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
-<!-- see-also: user-guide.md (getting started), architecture.md (how it works), provider-matrix.md (provider capabilities) -->
+<!-- see-also: ../readme.md (getting started), architecture.md (how it works), provider-matrix.md (provider capabilities) -->
 
 > **For AI agents:** The FAQ is maintained as GitHub Discussions — one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file — follow the link.
 
@@ -20,4 +20,4 @@ Topics covered:
 
 ---
 
-**Related docs:** [User Guide](user-guide.md) | [Architecture](architecture.md) | [Cloud Compute](cloud-compute.md) | [Provider Matrix](provider-matrix.md)
+**Related docs:** [Readme](../readme.md) | [Architecture](architecture.md) | [Cloud Compute](cloud-compute.md) | [Provider Matrix](provider-matrix.md)
