@@ -317,23 +317,3 @@ jobs:
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
 
-      - name: Bump version.json via PR
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          NEXT=$(node -e "const [ma,mi,pa]='${TAG}'.split('.');console.log([ma,mi,parseInt(pa)+1].join('.'))")
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout -b "chore/bump-version-${NEXT}" origin/main
-          node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('version.json','utf-8'));v.version='${NEXT}';fs.writeFileSync('version.json',JSON.stringify(v,null,2)+'\n')"
-          git add version.json
-          git commit -m "chore: bump version to ${NEXT}"
-          git push origin "chore/bump-version-${NEXT}"
-          gh pr create \
-            --title "chore: bump version to ${NEXT}" \
-            --body "Automated post-release version bump v${TAG} → v${NEXT}." \
-            --base main \
-            --head "chore/bump-version-${NEXT}"
