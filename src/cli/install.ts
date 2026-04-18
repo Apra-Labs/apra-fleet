@@ -320,10 +320,15 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
 export function isApraFleetRunning(): boolean {
   try {
     if (process.platform === 'win32') {
-      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH', { encoding: 'utf-8', stdio: 'pipe' });
-      return out.includes('apra-fleet.exe');
+      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe' });
+      const currentPid = process.pid.toString();
+      // Each CSV line: "apra-fleet.exe","<PID>","..." — exclude the current installer process
+      return out.split('\n').some(line => {
+        const match = line.match(/"apra-fleet\.exe","(\d+)"/);
+        return match !== null && match[1] !== currentPid;
+      });
     } else {
-      // -x = exact name match; avoids matching the installer process itself (NOTE 2)
+      // -x = exact name match; pgrep excludes the calling process by default (NOTE 2)
       execSync('pgrep -x apra-fleet', { stdio: 'ignore' });
       return true;
     }

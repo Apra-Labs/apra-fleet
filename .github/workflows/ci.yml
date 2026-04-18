@@ -109,11 +109,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            binary: apra-fleet-linux-x64
+            binary: apra-fleet-installer-linux-x64
           - os: macos-latest
-            binary: apra-fleet-darwin-arm64
+            binary: apra-fleet-installer-darwin-arm64
           - os: windows-latest
-            binary: apra-fleet-win-x64.exe
+            binary: apra-fleet-installer-win-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -191,7 +191,7 @@ jobs:
       - name: Download Windows binary
         uses: actions/download-artifact@v4
         with:
-          name: apra-fleet-win-x64.exe
+          name: apra-fleet-installer-win-x64.exe
           path: to-sign
 
       - name: Azure Login (OIDC)
@@ -216,8 +216,8 @@ jobs:
       - name: Upload signed binary
         uses: actions/upload-artifact@v4
         with:
-          name: apra-fleet-win-x64.exe
-          path: to-sign/apra-fleet-win-x64.exe
+          name: apra-fleet-installer-win-x64.exe
+          path: to-sign/apra-fleet-installer-win-x64.exe
           retention-days: 30
           overwrite: true
 
@@ -311,9 +311,9 @@ jobs:
         with:
           files: |
             ${{ env.TARBALL_NAME }}
-            release-binaries/apra-fleet-linux-x64
-            release-binaries/apra-fleet-darwin-arm64
-            release-binaries/apra-fleet-win-x64.exe
+            release-binaries/apra-fleet-installer-linux-x64
+            release-binaries/apra-fleet-installer-darwin-arm64
+            release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
 
       - name: Bump version.json via PR
