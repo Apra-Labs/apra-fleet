@@ -48,8 +48,8 @@ function makeFsMock() {
 function mockServerRunning() {
   vi.mocked(execSync).mockImplementation((cmd: any) => {
     const c = cmd.toString();
-    if (c === 'pgrep -x apra-fleet') return 'apra-fleet' as any;
-    if (c.startsWith('tasklist')) return 'apra-fleet.exe  1234 Console' as any;
+    if (c === 'pgrep -x apra-fleet') return '5678\n' as any;
+    if (c.startsWith('tasklist')) return '"apra-fleet.exe","5678","Console","1","14,000 K"\n' as any;
     return '' as any;
   });
 }
@@ -146,7 +146,7 @@ describe('install --force (#96)', () => {
     const killCalls: string[] = [];
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
-      if (c.startsWith('tasklist')) return 'apra-fleet.exe  1234' as any;
+      if (c.startsWith('tasklist')) return '"apra-fleet.exe","5678","Console","1","14,000 K"\n' as any;
       if (c.startsWith('taskkill')) { killCalls.push(c); return '' as any; }
       return '' as any;
     });
@@ -208,27 +208,39 @@ describe('isApraFleetRunning / killApraFleet helpers (#96)', () => {
     Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
   });
 
-  it('isApraFleetRunning returns true when pgrep -x exits 0 (Linux)', () => {
+  it('isApraFleetRunning returns true when pgrep finds a different PID (Linux)', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-    vi.mocked(execSync).mockImplementation(() => '' as any);
+    vi.mocked(execSync).mockReturnValue('5678\n' as any);
     expect(isApraFleetRunning()).toBe(true);
   });
 
-  it('isApraFleetRunning returns false when pgrep -x exits non-zero (Linux)', () => {
+  it('isApraFleetRunning returns false when pgrep finds only the current PID (Linux)', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    vi.mocked(execSync).mockReturnValue(`${process.pid}\n` as any);
+    expect(isApraFleetRunning()).toBe(false);
+  });
+
+  it('isApraFleetRunning returns false when pgrep exits non-zero (Linux)', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     vi.mocked(execSync).mockImplementation(() => { throw Object.assign(new Error('no match'), { status: 1 }); });
     expect(isApraFleetRunning()).toBe(false);
   });
 
-  it('isApraFleetRunning returns true when tasklist output contains apra-fleet.exe (Windows)', () => {
+  it('isApraFleetRunning returns true when tasklist CSV contains a different PID (Windows)', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-    vi.mocked(execSync).mockReturnValue('apra-fleet.exe  1234 Console' as any);
+    vi.mocked(execSync).mockReturnValue('"apra-fleet.exe","5678","Console","1","14,000 K"' as any);
     expect(isApraFleetRunning()).toBe(true);
   });
 
-  it('isApraFleetRunning returns false when tasklist output does not contain apra-fleet.exe (Windows)', () => {
+  it('isApraFleetRunning returns false when tasklist CSV contains only the current PID (Windows)', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-    vi.mocked(execSync).mockReturnValue('No tasks are running which match the specified criteria.' as any);
+    vi.mocked(execSync).mockReturnValue(`"apra-fleet.exe","${process.pid}","Console","1","14,000 K"` as any);
+    expect(isApraFleetRunning()).toBe(false);
+  });
+
+  it('isApraFleetRunning returns false when tasklist finds no match (Windows)', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    vi.mocked(execSync).mockReturnValue('INFO: No tasks are running which match the specified criteria.' as any);
     expect(isApraFleetRunning()).toBe(false);
   });
 

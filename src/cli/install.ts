@@ -328,9 +328,11 @@ export function isApraFleetRunning(): boolean {
         return match !== null && match[1] !== currentPid;
       });
     } else {
-      // -x = exact name match; pgrep excludes the calling process by default (NOTE 2)
-      execSync('pgrep -x apra-fleet', { stdio: 'ignore' });
-      return true;
+      // -x = exact name match; installer is apra-fleet-installer-* so won't match;
+      // exclude current PID to handle self-update (installed apra-fleet binary running install)
+      const out = execSync('pgrep -x apra-fleet', { encoding: 'utf-8', stdio: 'pipe' });
+      const currentPid = process.pid.toString();
+      return out.split('\n').some(line => line.trim() !== '' && line.trim() !== currentPid);
     }
   } catch {
     return false;
