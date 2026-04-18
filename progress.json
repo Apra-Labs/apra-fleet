@@ -2,7 +2,7 @@
   "sprint": "Doc Consolidation — Single Source of Truth",
   "branch": "feat/install-ux-and-docs",
   "tasks": [
-    { "id": "1.1", "name": "Audit content overlap", "phase": 1, "type": "work", "status": "pending", "tier": "cheap", "notes": "Read-only: map overlap between readme.md, docs/user-guide.md, CLAUDE.md, AGENTS.md" },
+    { "id": "1.1", "name": "Audit content overlap", "phase": 1, "type": "work", "status": "completed", "tier": "cheap", "notes": "Overlap map: user-guide.md has 20 sections missing from readme.md — manual install, what-writes table, what-NOT-do, --skill flag table, uninstall, local/remote registration detail, non-Claude providers, SSH key migration, run-prompt/command/send-files/check-status examples, multi-provider auth, CLI install, capabilities/limits, mix-and-match example, GitHub App (Apra Labs + custom + PAT), Bitbucket, Azure DevOps, PM commands table, troubleshooting. AGENTS.md links to user-guide.md (to fix in 2.2). CLAUDE.md is currently plan-execution context; Task 2.3 rewrites it as thin wrapper." },
     { "id": "1.2", "name": "Update CI and llms.txt to stop referencing docs/user-guide.md", "phase": 1, "type": "work", "status": "pending", "tier": "cheap", "notes": "Update gen-llms-full.mjs + llms.txt to use readme.md; regenerate llms-full.txt" },
     { "id": "V1", "name": "VERIFY 1", "phase": 1, "type": "verify", "status": "pending", "tier": "cheap", "notes": "gen-llms-full.mjs runs; no user-guide refs in llms.txt or script; push to origin" },
     { "id": "2.1", "name": "Absorb docs/user-guide.md into readme.md", "phase": 2, "type": "work", "status": "pending", "tier": "standard", "notes": "Merge missing content: detailed install, multi-provider, git auth, PM commands, troubleshooting" },
