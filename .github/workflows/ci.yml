@@ -221,6 +221,38 @@ jobs:
           retention-days: 30
           overwrite: true
 
+  update-llms-full:
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Regenerate llms-full.txt
+        run: node scripts/gen-llms-full.mjs
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add llms-full.txt
+          git diff --cached --quiet || git commit -m "chore: regenerate llms-full.txt [skip ci]"
+          git push origin main
+
   release:
     needs: [package, build-binary, sign-windows]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -283,7 +315,7 @@ jobs:
             release-binaries/apra-fleet-win-x64.exe
           generate_release_notes: true
 
-      - name: Bump version.json and regenerate llms-full.txt
+      - name: Bump version.json
         shell: bash
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
@@ -293,7 +325,6 @@ jobs:
           git fetch origin main
           git checkout main
           node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('version.json','utf-8'));v.version='${NEXT}';fs.writeFileSync('version.json',JSON.stringify(v,null,2)+'\n')"
-          node scripts/gen-llms-full.mjs
-          git add version.json llms-full.txt
-          git commit -m "chore: bump version to ${NEXT} + regenerate llms-full.txt [skip ci]"
+          git add version.json
+          git commit -m "chore: bump version to ${NEXT} [skip ci]"
           git push origin main
