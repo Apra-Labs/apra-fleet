@@ -65,17 +65,17 @@ Copy-paste the one-liner for your platform:
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
 ```
 
 **Windows (x64)** — run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
 ```
 
 Then load in Claude Code:
@@ -96,19 +96,23 @@ Then load in Claude Code:
 
 Download the binary for your platform from [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases):
 
-- `apra-fleet-linux-x64` — Linux (x86_64)
-- `apra-fleet-darwin-arm64` — macOS (Apple Silicon)
-- `apra-fleet-win-x64.exe` — Windows
+- `apra-fleet-installer-linux-x64` — Linux (x86_64)
+- `apra-fleet-installer-darwin-arm64` — macOS (Apple Silicon)
+- `apra-fleet-installer-win-x64.exe` — Windows
 
 Then run the installer:
 
 ```bash
-# macOS / Linux
-chmod +x apra-fleet-darwin-arm64
-./apra-fleet-darwin-arm64 install
+# macOS (Apple Silicon)
+chmod +x apra-fleet-installer-darwin-arm64 && ./apra-fleet-installer-darwin-arm64 install
 
+# Linux (x64)
+chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 install
+```
+
+```powershell
 # Windows
-apra-fleet-win-x64.exe install
+.\apra-fleet-installer-win-x64.exe install
 ```
 
 </details>
