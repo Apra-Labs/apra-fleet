@@ -11,6 +11,9 @@ const FLEET_BASE = path.join(home, '.apra-fleet');
 const BIN_DIR = path.join(FLEET_BASE, 'bin');
 const HOOKS_DIR = path.join(FLEET_BASE, 'hooks');
 const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
+// NOTE: install NEVER writes to the data directory (~/.apra-fleet/data/).
+// Registry (registry.json) and onboarding state (onboarding.json) live there and
+// must not be touched by reinstalls or upgrades — see onboarding.ts upgrade detection.
 
 interface ProviderInstallConfig {
   configDir: string;

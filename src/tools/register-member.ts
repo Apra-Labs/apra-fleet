@@ -19,13 +19,13 @@ export const registerMemberSchema = z.object({
     .regex(/^[a-zA-Z0-9._-]+$/, 'Only letters, numbers, dots, dashes, and underscores')
     .describe('Human-friendly name for this member (worker) (e.g. "web-server")'),
   member_type: z.enum(['local', 'remote']).default('remote').describe('Member type: "local" for same machine, "remote" for SSH (default: "remote")'),
-  host: z.string().optional().describe('IP address or hostname of the remote machine (required for non-cloud remote members; optional for cloud members — auto-resolved from AWS when running)'),
+  host: z.string().regex(/^[^<>\n\r]+$/, 'host must not contain angle brackets or newlines').optional().describe('IP address or hostname of the remote machine (required for non-cloud remote members; optional for cloud members — auto-resolved from AWS when running)'),
   port: z.number().default(22).describe('SSH port (default: 22, remote members only)'),
   username: z.string().optional().describe('SSH username (required for remote members)'),
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
   password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
-  work_folder: z.string().describe('Working directory on the target machine'),
+  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   // Cloud fields

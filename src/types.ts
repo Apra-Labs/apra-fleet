@@ -57,3 +57,10 @@ export interface SSHExecResult {
   stderr: string;
   code: number;
 }
+
+export interface OnboardingState {
+  bannerShown: boolean;
+  firstMemberRegistered: boolean;
+  firstPromptExecuted: boolean;
+  multiMemberNudgeShown: boolean;
+}
