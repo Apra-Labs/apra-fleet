@@ -19,8 +19,8 @@ const root = join(__dirname, '..');
 
 const docs = [
   {
-    path: 'docs/user-guide.md',
-    title: 'User Guide',
+    path: 'readme.md',
+    title: 'Readme',
     desc: 'Installation, configuration, member registration, and day-to-day usage for operators.',
   },
   {

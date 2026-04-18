@@ -1,316 +1,228 @@
 <project title="Apra Fleet" summary="AI-managed fleet orchestration for Claude Code — run, update, and coordinate multiple Claude Code agents from a single hub.">
   <docs>
-  <doc title="User Guide" desc="Installation, configuration, member registration, and day-to-day usage for operators.">
-<!-- llm-context: This is the primary getting-started guide for apra-fleet. It covers installation, member registration (local and remote), multi-provider setup, git authentication, and the PM skill with doer-reviewer workflows. When a user asks "how do I..." about fleet, this is the first doc to consult. -->
-<!-- keywords: install, setup, register, member, local, remote, SSH, provider, Claude, Gemini, Codex, Copilot, git auth, GitHub App, PAT, Bitbucket, Azure DevOps, PM, doer, reviewer, pair, troubleshooting -->
-<!-- see-also: FAQ.md (common questions), architecture.md (how it works internally), cloud-compute.md (EC2 integration), provider-matrix.md (provider capabilities) -->
+  <doc title="Readme" desc="Installation, configuration, member registration, and day-to-day usage for operators.">
+# Apra Fleet
 
-# User Guide
+[![CI](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5+-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
+[![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 
-## What is Apra Fleet?
+AI agents that write code, review each other's work, and coordinate across your machines — from a single conversation.
 
-Apra Fleet lets you control AI coding agents on multiple machines from a single conversation. Register your machines once, then tell Claude to run prompts, execute commands, or send files to any of them — local or remote. Members can run different LLM backends (Claude, Gemini, Codex, Copilot) and be mixed freely within a single fleet.
+**Apra Fleet** is an open-source **MCP server** that pairs AI coding agents into **doer-reviewer loops** for higher quality code, and orchestrates them across machines via SSH when you need distributed power. Works with Claude Code, Gemini, Codex and other AI coding assistants.
 
-## Install
+## What you get
 
-### One-liner install
+### Doer-reviewer loops — two agents, one quality bar
+
+Pair two agents so one writes code while the other reviews it. The built-in Project Manager orchestrates the handoff with structured checkpoints — no manual coordination needed. This works on a **single machine** (two local agents) or across machines.
+
+```
+You:   "Pair local-1 and local-2. local-1 builds the auth module, local-2 reviews."
+Fleet: Doer writes code → pauses at checkpoint → Reviewer validates → feedback loop → done.
+```
+
+Every change gets a second pair of eyes before you even look at it.
+
+### Multi-machine orchestration — your infrastructure, one conversation
+
+When a single machine isn't enough, Fleet coordinates agents across every machine in your network via SSH. No dashboards, no orchestration YAML — just conversation.
+
+- Run your test suite on Linux while you develop on macOS
+- Have one agent build the frontend, another the backend, a third running tests — all in parallel
+- Spin up isolated workspaces on the same machine without them stepping on each other
+- Use a beefy cloud VM for compilation while coding from your laptop
+
+### PM Skill — structured multi-step workflows
+
+The optional Project Manager skill goes beyond simple task dispatch:
+
+- **Planning** — breaks work into steps, gets your approval before execution
+- **Doer-reviewer loops** — pairs agents for write-then-review workflows
+- **Verification checkpoints** — agents pause at defined points for review
+- **Progress tracking** — state synced via git (`PLAN.md`, `progress.json`, `feedback.md`)
+
+Installed by default — both the fleet and PM skills are written on `apra-fleet install`. See [`skills/pm/SKILL.md`](skills/pm/SKILL.md) for details.
+
+### Provider recommendations
+
+Fleet members can run different LLM backends. Mix and match based on the role:
+
+| Role | Recommended | Why |
+|------|-------------|-----|
+| **PM (orchestrator)** | Claude (Opus or Sonnet) | Most thoroughly tested for planning and multi-step orchestration |
+| **Doer** | Any provider | Claude Sonnet, Gemini Flash, Codex, Copilot — mix freely |
+| **Reviewer** | Premium tier models | Catches subtle issues that smaller models miss |
+
+See [`docs/provider-matrix.md`](docs/provider-matrix.md) for the full capability comparison.
+
+## Quick start
+
+Copy-paste the one-liner for your platform:
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-darwin-arm64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install --skill
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-linux-x64 -o apra-fleet && chmod +x apra-fleet && ./apra-fleet install
 ```
 
 **Windows (x64)** — run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install --skill
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-win-x64.exe -OutFile apra-fleet.exe; .\apra-fleet.exe install
 ```
 
-### Manual install
-
-Download the binary for your platform from [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases):
-
-- `apra-fleet-linux-x64` — Linux (x86_64)
-- `apra-fleet-darwin-arm64` — macOS (Apple Silicon)
-- `apra-fleet-win-x64.exe` — Windows
-
-Then run the installer:
-
-```bash
-# macOS / Linux
-chmod +x apra-fleet-darwin-arm64
-./apra-fleet-darwin-arm64 install --skill
-
-# Windows
-apra-fleet-win-x64.exe install --skill
-```
-
-The `--skill` flag installs the PM (Project Manager) skill, which adds orchestration capabilities for multi-step projects. Omit it if you only need basic fleet operations.
-
-**What `install` does:**
-- Copies the binary to `~/.apra-fleet/bin/`
-- Installs hooks and scripts to `~/.apra-fleet/`
-- Registers the fleet server with Claude Code
-- Configures a status bar showing fleet member activity
-- (With `--skill`) Installs the PM skill to `~/.claude/skills/pm/`
-
-### 3. Load the server in Claude Code
-
-Start or restart Claude Code, then type:
-
+Then load in Claude Code:
 ```
 /mcp
 ```
 
-You should see `apra-fleet` listed as a connected server.
+**Single machine — start here.** No remote servers needed:
 
-## Register your first member
+> "Register a local member called `doer`. Register another called `reviewer`. Pair them."
 
-A "member" is any machine (or workspace) that fleet manages. There are two types:
+**Remote machines — add when ready:**
 
-### Local member (same machine)
+> "Register 192.168.1.10 as `build-server`. Username is akhil, use password auth, work folder `/home/akhil/projects/myapp`."
 
-Just tell Claude:
+## How it works
 
-> "Register a local member called `my-project` working in `C:\Users\me\projects\myapp`."
+Apra Fleet is an MCP server that agentic coding systems connect to. It manages a registry of **members** (machines with an AI coding agent installed) and provides tools to register them, send files, execute prompts, and check status. Remote members connect via SSH. Local members run as isolated child processes on the same machine.
 
-No SSH needed — it runs as a child process on your machine.
+## Tools
 
-### Remote member (another machine via SSH)
+| Tool | Description |
+|------|-------------|
+| `register_member` | Register a machine as a fleet member (local or remote via SSH) |
+| `remove_member` | Unregister a fleet member |
+| `update_member` | Update a member's registration (rename, change host, folder, auth, git access) |
+| `list_members` | List all registered fleet members |
+| `member_detail` | Deep-dive status for a single member |
+| `fleet_status` | Overview status of all members |
+| `execute_prompt` | Run a Claude prompt on a member (supports session resume) |
+| `execute_command` | Run a shell command directly on a member (no Claude CLI needed) |
+| `reset_session` | Clear session ID so the next prompt starts fresh |
+| `send_files` | Upload local files to a remote member via SFTP |
+| `receive_files` | Download files from a member's work folder |
+| `provision_llm_auth` | Deploy OAuth credentials or an API key to a member |
+| `setup_ssh_key` | Generate SSH key pair and migrate from password to key auth |
+| `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
+| `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
+| `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
+| `cloud_control` | Start, stop, or check status of cloud compute instances |
+| `monitor_task` | Monitor long-running tasks on cloud members |
+| `compose_permissions` | Generate and deliver provider-native permission config |
+| `update_llm_cli` | Update or install AI coding agent CLI on members |
+| `shutdown_server` | Gracefully shut down the MCP server |
+| `version` | Report server version |
 
-You need SSH access to the remote machine. Tell Claude:
+## Git Authentication
 
-> "Register 192.168.1.10 as `build-server`. Username is akhil, password is mypass, work folder `/home/akhil/projects/myapp`."
+Fleet can provision scoped, short-lived tokens to members — so each member gets only the git access it needs.
 
-Fleet will test connectivity, detect the OS, and check if the LLM CLI is installed. If it isn't installed, you can say:
+**Supported providers:** GitHub (App or PAT), Bitbucket (API token), Azure DevOps (PAT).
 
-> "Install Claude Code on build-server."
+**Access levels:** `read`, `push`, `admin`, `issues`, `full`.
 
-### Registering with a non-Claude provider
+See [`docs/design-git-auth.md`](docs/design-git-auth.md) for the full design.
 
-Specify the `llm_provider` when registering:
+## Secure Password Entry
 
-> "Register `gemini-worker` at 192.168.1.11 as a Gemini member. Work folder `/home/user/work`, username user, password pass."
+When registering a remote member with password authentication, you don't need to pass the password inline. Apra Fleet opens a separate terminal window for password entry so credentials never appear in chat history or logs.
 
-Or tell Claude directly:
+- Password is encrypted immediately with AES-256-GCM and never stored in plaintext
+- Works on macOS (Terminal.app), Windows (cmd), and Linux (gnome-terminal/xterm)
+- Headless or unsupported environments get a manual command fallback
+- Supports password rotation via `update_member`
 
-> "Register a Codex member called `codex-dev` locally, work folder `C:\Users\me\codex-project`."
+See [`docs/adr-oob-password.md`](docs/adr-oob-password.md) for the design rationale.
 
-Supported values: `claude` (default), `gemini`, `codex`, `copilot`.
+## Cloud Compute
 
-### SSH key auth
+Fleet members can run on cloud instances (AWS EC2) that start and stop automatically based on demand. When you send a prompt to a cloud member, Apra Fleet starts the instance, waits for SSH, re-provisions credentials, and executes the work. When the member goes idle, it stops the instance to save costs.
 
-After registering a remote member with a password, migrate to key-based auth:
+- **Auto start/stop** — instances start on demand and stop after a configurable idle timeout
+- **GPU-aware idle detection** — monitors GPU utilization via `nvidia-smi` so GPU workloads keep instances alive
+- **Long-running tasks** — a task wrapper script survives SSH disconnects, supports retry with restart commands, and tracks status
+- **Cost tracking** — real-time cost estimates based on instance type and uptime, with warnings for high spend
+- **Custom workload detection** — define a shell command to signal busy/idle for arbitrary workloads (CPU training, downloads, etc.)
 
-> "Set up SSH key auth for build-server."
+See [`docs/cloud-compute.md`](docs/cloud-compute.md) for setup and configuration details.
 
-This generates a key pair, deploys it, verifies it works, then removes the password from storage.
+## FAQ
 
-## Using fleet members
+<details>
+<summary><strong>Do I need to install apra-fleet on every device?</strong></summary>
 
-### Run a prompt on a member
+No. apra-fleet only needs to be installed on the device where **you** interact with it. All members are registered and managed from that single installation. Remote machines just need SSH access.
+</details>
 
-> "On build-server, run the test suite and fix any failures."
+<details>
+<summary><strong>Does apra-fleet only work with Claude?</strong></summary>
 
-The prompt is sent to the member's LLM CLI instance, which has full access to the code in its work folder. The correct CLI is selected automatically based on the member's provider.
+No. Fleet supports Claude and Gemini today, with Codex support in development. We recommend Claude as the PM's LLM provider for the best experience — it is the most thoroughly tested for planning and orchestration workflows. Gemini works well for members, especially when you want a different LLM perspective during review.
+</details>
 
-### Run a command on a member
+<details>
+<summary><strong>What if I only have one machine?</strong></summary>
 
-> "Run `git status` on build-server."
+Fleet works great on a single machine. Use the Simple Sprint pattern with a single member, or register two local members (doer + reviewer) that run as isolated child processes. No remote servers needed.
+</details>
 
-Direct shell commands without starting a Claude session — useful for quick checks.
+<details>
+<summary><strong>Why use separate folders for doer and reviewer?</strong></summary>
 
-### Send files to a member
+Agents can misbehave when they have too much context. A separate reviewer workspace provides an unbiased perspective that tends to identify more problems. Using different environments for review also validates whether the committed work can be built and run independently.
+</details>
 
-> "Send `config.json` and `deploy.sh` to build-server."
+<details>
+<summary><strong>Does using fleet increase my LLM token usage?</strong></summary>
 
-Uploads files via SFTP to the member's work folder.
+No — fleet actively reduces token usage through three mechanisms: (1) selecting the right model tier based on task complexity, routing simple tasks to lighter models; (2) preferring shell commands via `execute_command` (zero tokens) over full agent prompts where possible; (3) smart conversation management that decides whether to resume existing sessions (leveraging cached context) or start fresh.
+</details>
 
-### Check status
+<details>
+<summary><strong>How does fleet safeguard my passwords and credentials?</strong></summary>
 
-> "Show me fleet status."
+Three layers: (1) out-of-band collection — passwords are entered via a shell prompt outside the conversation, so the LLM never sees them; (2) encryption at rest — stored credentials are encrypted locally, never plaintext in config files; (3) passwordless migration — fleet encourages key-based SSH auth to reduce password handling.
+</details>
 
-Shows all members, their status (online/offline), and last activity.
+<details>
+<summary><strong>Is apra-fleet limited to software development?</strong></summary>
 
-## Multi-Provider Fleets
+No. Fleet is a general-purpose remote operations platform. Use cases include remote product support, simultaneous log analysis across machines, patch distribution, infrastructure automation, and even profiling and market research.
+</details>
 
-### Provisioning auth for non-Claude members
+<details>
+<summary><strong>How does apra-fleet relate to Google's A2A protocol?</strong></summary>
 
-Non-Claude members require an API key — OAuth credential copy is Claude-only.
+They're architecturally distinct and largely complementary. A2A requires each agent to run a persistent HTTP server and enables autonomous agent-to-agent delegation. Fleet requires only SSH access and uses a human-orchestrated hub-and-spoke model where the PM decides the workflow. Fleet could eventually expose members as A2A-compatible agents while preserving its SSH-based transport.
+</details>
 
-| Provider | What to say |
-|----------|-------------|
-| Gemini | "Provision auth for gemini-worker with API key GEMINI_API_KEY_VALUE" |
-| Codex | "Provision auth for codex-dev with API key OPENAI_API_KEY_VALUE" |
-| Copilot | "Provision auth for copilot-member with API key COPILOT_GITHUB_TOKEN_VALUE" |
+See the full [FAQ](docs/FAQ.md) for all questions, or browse the [FAQ discussions](https://github.com/Apra-Labs/apra-fleet/discussions/127).
 
-Fleet automatically uses the correct env var name per provider.
+## Development
 
-### Installing CLIs on members
-
-> "Install the Gemini CLI on gemini-worker."
-
-> "Update all members' CLIs."
-
-`update_llm_cli` uses the correct install/update command per provider.
-
-### Provider capabilities and limits
-
-- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_ms` to bound execution.
-- Fine-grained permission control (`compose_permissions`) is Claude-only. Other providers use all-or-nothing skip-permissions flags.
-- Codex output uses NDJSON internally — fleet handles this transparently.
-- Gemini responses may silently truncate at ~8K tokens. Split large tasks into smaller units.
-- Copilot requires a paid GitHub Copilot subscription (Pro/Business/Enterprise).
-
-See [`provider-matrix.md`](provider-matrix.md) for the full comparison table.
-
-### Provider Recommendations
-
-These are recommendations, not restrictions — your choice is final.
-
-| Role | Recommended | Notes |
-|------|-------------|-------|
-| **Orchestrator (PM)** | Claude (Opus or Sonnet) | Gemini lacks background agents — every `execute_prompt` blocks, serializing all fleet operations. This negates the core value of parallel dispatch. |
-| **Doer** | Any provider | Claude Sonnet, Gemini Flash, Codex, Copilot — mix freely. Multiple members of any provider are supported. |
-| **Reviewer** | Highest-tier models (use premium tier) | Highest review quality; catches subtle issues that smaller models miss. |
-
-### Mix-and-match example
-
-A fleet can have members on different providers for different purposes:
-
+```bash
+npm install && npm run build   # Build from source
+npm test                       # Unit tests (vitest)
+npm run build:binary           # Build single-executable binary
+node dist/index.js install     # Dev-mode install (registers MCP, hooks, statusline)
 ```
-dev1     — Claude (standard)  — main implementation work
-dev2     — Gemini            — tasks needing 1M context or Google Search
-review1  — Claude (premium)  — code review
-codex1   — Codex             — structured extraction tasks
-```
 
-All members use the same fleet tools — the PM dispatches to whichever member fits the task.
+## Roadmap
 
-## Git authentication
+See [ROADMAP.md](ROADMAP.md) for planned features and good-first-issue ideas for contributors.
 
-By default, remote members can't push/pull from your repositories. Fleet provisions scoped credentials so each member gets only the access it needs.
+## License
 
-### GitHub
-
-**Apra Labs members:**
-
-The `apra-fleet-git` app is already installed on the Apra-Labs org. Two steps:
-
-1. **Ensure your repo is added:** Go to `https://github.com/organizations/Apra-Labs/settings/installations` → `apra-fleet-git` → Configure → select your repositories. (Ask an org admin if you don't have access.)
-2. **Download the private key:** [apra-fleet-git.pem](https://drive.google.com/file/d/1evUnHsDpv6ZaHyiHoRv-ElQc6vjaWYHd/view?usp=drive_link) (Apra Labs internal — requires org access)
-3. **Register the app on your fleet instance (once per machine):** "Set up git auth with app ID 3001109, installation ID 113837928, and private key at ~/Downloads/apra-fleet-git.pem." This only needs to happen once — after that, any member can be provisioned.
-
-Then provision any member:
-
-> "Provision git auth for build-server with push access to Apra-Labs/my-repo."
-
-Skip the "Option A" setup below — it's for creating your own app.
-
-**Option A: GitHub App (recommended for orgs)**
-
-Setting up your own GitHub App (skip this if using the Apra-Labs app above):
-
-1. Go to `https://github.com/organizations/{your-org}/settings/apps` → New GitHub App
-2. Name it (e.g. "fleet-git"), set Homepage URL to anything
-3. Under Permissions, grant: **Contents** (Read & Write), **Pull Requests** (Read & Write), **Actions** (Read) — add more as needed
-4. Create the app, then **Generate a private key** (downloads a `.pem` file)
-5. **Install the app** on your org and select which repos it can access
-6. Note the **App ID** (from the app's settings page) and **Installation ID** (from the URL after installing: `https://github.com/settings/installations/{installation_id}`)
-
-Then tell Claude:
-
-> "Set up git auth with app ID 12345, installation ID 67890, and private key at ~/my-app.pem."
-
-Now you can provision any member:
-
-> "Provision git auth for build-server with push access to Apra-Labs/my-repo."
-
-Tokens expire after 1 hour and are re-minted automatically.
-
-**Option B: Personal Access Token (simpler, for personal repos)**
-
-1. Go to `https://github.com/settings/tokens` → Generate new token
-2. Select scopes: `repo` for full access, or fine-grained per-repo tokens
-
-Then tell Claude:
-
-> "Provision GitHub PAT auth for build-server. Token is ghp_xxxxx."
-
-### Bitbucket
-
-1. Go to Atlassian account → **App passwords** → Create app password
-2. Grant permissions: Repository Read/Write, Pull Request Read/Write
-
-Then:
-
-> "Provision Bitbucket auth for build-server. Email is me@example.com, workspace is my-team, token is xxxx."
-
-### Azure DevOps
-
-1. Go to `https://dev.azure.com/{org}/_usersSettings/tokens` → New Token
-2. Grant scopes: Code (Read & Write), Pull Request Threads (Read & Write)
-
-Then:
-
-> "Provision Azure DevOps auth for build-server. Org URL is https://dev.azure.com/my-org, token is xxxx."
-
-## PM Skill (Project Manager)
-
-If you installed with `--skill`, you have access to the PM — an orchestration layer for multi-step projects.
-
-### Initialize a project
-
-> "/pm init my-project"
-
-Creates a project folder with templates for status tracking, requirements, design docs, and deployment steps.
-
-### Plan and execute
-
-> "/pm plan Implement user authentication with OAuth2"
-
-The PM writes requirements, dispatches a member to generate an implementation plan, runs it through a review cycle, then executes it phase by phase with verification checkpoints.
-
-### Doer-reviewer loop
-
-> "/pm pair frontend-dev frontend-reviewer"
-
-Pairs two members — one builds, one reviews. The PM handles git transport between them, sends context docs to the reviewer, and iterates until the reviewer approves.
-
-### Key PM commands
-
-| Command | What it does |
-|---------|-------------|
-| `/pm init <project>` | Create project folder with templates |
-| `/pm plan <requirement>` | Generate an implementation plan |
-| `/pm start <member> <plan>` | Send task harness and kick off execution |
-| `/pm status <member>` | Check progress |
-| `/pm resume <member>` | Resume after a verification checkpoint |
-| `/pm pair <member> <member>` | Pair doer and reviewer |
-| `/pm deploy <member>` | Run deployment steps |
-
-## Troubleshooting
-
-**Member shows as offline?**
-- Check if the machine is reachable: `ping <ip>`
-- For remote members, verify SSH: `ssh user@host "echo ok"`
-- Auth issue? Re-provision: "Provision auth for build-server"
-
-**Permission denied on a member?**
-- Fleet can configure member permissions. Say: "Grant build-server permission to run npm install"
-
-**Can't push workflow files or merge PRs from a member?**
-- Minted tokens may lack CI/CD permissions. Run these operations from your main Claude Code session instead — it has your full git credentials.
-
-**Empty response from a member?**
-- Usually an expired auth token. Say: "Provision auth for build-server"
-
-**Member blew past a checkpoint?**
-- Check what actually happened: "Run `cat progress.json` on build-server"
+Apache 2.0 — see [LICENSE](LICENSE) for the full text.
   </doc>
 
   <doc title="Vocabulary" desc="Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.">
