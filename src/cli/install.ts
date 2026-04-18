@@ -86,7 +86,12 @@ function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig 
 }
 
 // Detect SEA mode
+let _seaOverride: boolean | null = null;
+/** Override isSea() result — for tests only. Pass null to restore default. */
+export function _setSeaOverride(v: boolean | null): void { _seaOverride = v; }
+
 function isSea(): boolean {
+  if (_seaOverride !== null) return _seaOverride;
   try {
     const sea = require('node:sea');
     return sea.isSea();
@@ -158,7 +163,12 @@ function buildDevManifest(root: string): AssetManifest {
   return { version: vf.version, hooks, scripts, skills, fleetSkills };
 }
 
+let _manifestOverride: AssetManifest | null = null;
+/** Inject a manifest for tests — avoids SEA asset extraction. Pass null to restore default. */
+export function _setManifestOverride(m: AssetManifest | null): void { _manifestOverride = m; }
+
 function loadManifest(): AssetManifest {
+  if (_manifestOverride !== null) return _manifestOverride;
   if (isSea()) {
     return JSON.parse(getSeaAsset('manifest.json'));
   }
@@ -307,7 +317,49 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
   execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
 }
 
+export function isApraFleetRunning(): boolean {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH', { encoding: 'utf-8', stdio: 'pipe' });
+      return out.includes('apra-fleet.exe');
+    } else {
+      // -x = exact name match; avoids matching the installer process itself (NOTE 2)
+      execSync('pgrep -x apra-fleet', { stdio: 'ignore' });
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}
+
+export function killApraFleet(): void {
+  if (process.platform === 'win32') {
+    execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
+  } else {
+    // -x = exact name match
+    execSync('pkill -x apra-fleet', { stdio: 'ignore' });
+  }
+}
+
 export async function runInstall(args: string[]): Promise<void> {
+  // --help / -h guard — must come first, before any side effects (#142)
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`apra-fleet install
+
+Usage:
+  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet install --skill all       Same as bare install (all skills)
+  apra-fleet install --skill fleet     Install fleet skill only
+  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill none      Skip skill installation
+  apra-fleet install --no-skill        Same as --skill none
+  apra-fleet install --force           Stop a running server, then install
+  apra-fleet install --llm <provider>  Install for a specific LLM provider (claude, gemini, codex, copilot)
+  apra-fleet install --help            Show this help`);
+    process.exit(0);
+    return;
+  }
+
   // Parse --llm flag
   let llm: LlmProvider = 'claude';
   const llmArg = args.find(a => a.startsWith('--llm='));
@@ -328,29 +380,48 @@ export async function runInstall(args: string[]): Promise<void> {
 
   const paths = getProviderInstallConfig(llm);
 
-  // Parse --skill flag: accepts no value (→ all), or all|fleet|pm
+  // Parse --skill flag: default (no flag) = all; accepts all|fleet|pm|none; --no-skill = synonym for none
   type SkillMode = 'none' | 'all' | 'fleet' | 'pm';
-  let skillMode: SkillMode = 'none';
+  let skillMode: SkillMode = 'all';
   const skillEqualArg = args.find(a => a.startsWith('--skill='));
   if (skillEqualArg) {
     const val = skillEqualArg.split('=')[1];
-    if (val === 'all' || val === 'fleet' || val === 'pm') {
+    if (val === 'all' || val === 'fleet' || val === 'pm' || val === 'none') {
       skillMode = val;
     } else {
-      console.error(`Error: --skill value must be one of: all, fleet, pm (got "${val}")`);
+      console.error(`Error: --skill value must be one of: all, fleet, pm, none (got "${val}")`);
       process.exit(1);
     }
   } else {
     const skillIdx = args.indexOf('--skill');
     if (skillIdx >= 0) {
       const nextArg = args[skillIdx + 1];
-      if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm')) {
+      if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm' || nextArg === 'none')) {
         skillMode = nextArg;
       } else {
-        // --skill with no value → install both
+        // --skill with no value → install both (backwards-compat)
         skillMode = 'all';
       }
     }
+  }
+
+  // --no-skill is a synonym for --skill none
+  if (args.includes('--no-skill')) {
+    skillMode = 'none';
+  }
+
+  // Parse --force flag
+  const force = args.includes('--force');
+
+  // Reject unknown flags to catch typos early
+  const knownFlagPrefixes = ['--llm=', '--skill='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--help', '-h']);
+  for (const a of args) {
+    if (knownFlagExact.has(a)) continue;
+    if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
+    if (!a.startsWith('-')) continue; // non-flag positional (e.g. value token for --skill)
+    console.error(`Error: Unknown option "${a}". Run apra-fleet install --help for usage.`);
+    process.exit(1);
   }
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
@@ -359,6 +430,28 @@ export async function runInstall(args: string[]): Promise<void> {
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
+  }
+
+  // --- Running-process guard (SEA mode only — dev mode runs via node, not the binary) ---
+  if (isSea() && isApraFleetRunning()) {
+    if (!force) {
+      const killHint = process.platform === 'win32'
+        ? '    taskkill /F /IM apra-fleet.exe'
+        : '    pkill -x apra-fleet';
+      console.error(`
+Error: apra-fleet is currently running. Stop the server before installing.
+
+  Run with --force to stop it automatically:
+    apra-fleet install --force
+
+  Or stop it manually:
+${killHint}
+`);
+      process.exit(1);
+    }
+    killApraFleet();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    console.log('  Stopped running server.');
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);
@@ -478,7 +571,7 @@ export async function runInstall(args: string[]): Promise<void> {
   }
 
   if (!installFleet && !installPm) {
-    console.log(`  Skipping skills (use --skill [all|fleet|pm] to install)`);
+    console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
   // Finalize permissions
@@ -486,6 +579,7 @@ export async function runInstall(args: string[]): Promise<void> {
 
   // --- Done ---
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
+  const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
@@ -493,6 +587,6 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
 
-${instructions}
+${instructions}${forceNote}
 `);
 }

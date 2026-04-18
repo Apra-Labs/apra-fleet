@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { parse as parseToml } from 'smol-toml';
 import { runInstall } from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
@@ -375,6 +376,29 @@ describe('runInstall multi-provider', () => {
     expect(defaultModelWrite![1].toString()).toContain('gpt-5.4');
   });
 
+  it('Codex config.toml is valid TOML — every scalar string is properly double-quoted (#115)', async () => {
+    await runInstall(['--llm', 'codex']);
+
+    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(codexConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const finalContent = writes.at(-1)![1].toString();
+
+    // Regression guard for #115: no bare/backslash-prefixed scalars like `model = \gpt-5.3-codex`.
+    // Every `key = value` scalar must either be quoted, a boolean, a number, a table, or an array.
+    expect(finalContent).not.toMatch(/=\s*\\/);
+    expect(finalContent).toMatch(/defaultModel\s*=\s*"gpt-5\.4"/);
+
+    // Parsing back with smol-toml must succeed and round-trip defaultModel.
+    const parsed = parseToml(finalContent) as any;
+    expect(parsed.defaultModel).toBe('gpt-5.4');
+    // mcp_servers.apra-fleet.command should be a plain string (proper TOML string literal).
+    expect(typeof parsed.mcp_servers['apra-fleet'].command).toBe('string');
+    expect(Array.isArray(parsed.mcp_servers['apra-fleet'].args)).toBe(true);
+  });
+
   it('writes defaultModel for Copilot (claude-sonnet-4-5) to settings.json', async () => {
     await runInstall(['--llm', 'copilot']);
 
@@ -520,6 +544,102 @@ describe('runInstall multi-provider', () => {
     await expect(runInstall(['--skill=invalid'])).rejects.toThrow('exit');
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
+  });
+
+  it('bare install (no flags) defaults to all — installs fleet + pm skills', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('skills') && ps.includes('pm')) {
+        return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+      }
+      return [];
+    });
+
+    await runInstall([]);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(fleetSkillsDir),
+      expect.any(Object)
+    );
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(pmSkillsDir),
+      expect.any(Object)
+    );
+  });
+
+  it('--skill none skips both fleet and pm skills', async () => {
+    await runInstall(['--skill', 'none']);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    const fleetMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(fleetSkillsDir)
+    );
+    const pmMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(pmSkillsDir)
+    );
+    expect(fleetMkdir).toBeUndefined();
+    expect(pmMkdir).toBeUndefined();
+  });
+
+  it('--skill=none (equals form) skips both fleet and pm skills', async () => {
+    await runInstall(['--skill=none']);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    const fleetMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(fleetSkillsDir)
+    );
+    const pmMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(pmSkillsDir)
+    );
+    expect(fleetMkdir).toBeUndefined();
+    expect(pmMkdir).toBeUndefined();
+  });
+
+  it('--no-skill skips both fleet and pm skills', async () => {
+    await runInstall(['--no-skill']);
+
+    const fleetSkillsDir = path.join(mockHome, '.claude', 'skills', 'fleet');
+    const pmSkillsDir = path.join(mockHome, '.claude', 'skills', 'pm');
+    const fleetMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(fleetSkillsDir)
+    );
+    const pmMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+      c[0].toString().includes(pmSkillsDir)
+    );
+    expect(fleetMkdir).toBeUndefined();
+    expect(pmMkdir).toBeUndefined();
+  });
+
+  // --help / -h guard tests (#142)
+
+  it('--help prints usage and exits 0 with no side effects', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['--help'])).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain('apra-fleet install');
+    // No file writes should have occurred
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it('-h prints usage and exits 0 with no side effects', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['-h'])).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
   });
 
   it('fleet skill is installed before pm skill (fleet-before-pm order)', async () => {

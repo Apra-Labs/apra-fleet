@@ -1,6 +1,6 @@
 <!-- llm-context: Defines the terminology used throughout apra-fleet — member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
 <!-- keywords: vocabulary, terminology, member, fleet, PM, doer, reviewer, provider, session, agent, orchestrator -->
-<!-- see-also: architecture.md (how these concepts relate), user-guide.md (practical usage) -->
+<!-- see-also: architecture.md (how these concepts relate), ../readme.md (practical usage) -->
 
 # Fleet Vocabulary
 

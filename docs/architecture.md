@@ -1,6 +1,6 @@
 <!-- llm-context: This document explains the internal architecture of apra-fleet — the MCP server, member registry, SSH transport, session management, and how tools are dispatched. Read this when a user asks how fleet works under the hood, or when debugging connectivity or session issues. -->
 <!-- keywords: MCP server, member registry, SSH, transport, session, tool dispatch, child process, local member, remote member, architecture -->
-<!-- see-also: user-guide.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
+<!-- see-also: ../readme.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
 
 # Architecture
 

@@ -1,7 +1,7 @@
 {
   "name": "apra-fleet",
   "version": "0.1.4",
-  "description": "MCP server for coordinating Claude Code members across machines via SSH",
+  "description": "MCP server for orchestrating multiple agentic AI instances like Claude, Gemini and others (called 'members') across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
   "repository": {

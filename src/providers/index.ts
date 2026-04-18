@@ -13,7 +13,14 @@ const providers: Record<LlmProvider, ProviderAdapter> = {
 };
 
 export function getProvider(llmProvider?: LlmProvider | null): ProviderAdapter {
-  return providers[llmProvider ?? 'claude'];
+  if (!llmProvider) return providers['claude'];
+  const adapter = providers[llmProvider];
+  if (!adapter) {
+    throw new TypeError(
+      `Unknown LLM provider "${llmProvider}". Supported: ${Object.keys(providers).join(', ')}`
+    );
+  }
+  return adapter;
 }
 
 export type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';

@@ -64,9 +64,17 @@ describe('ClaudeProvider', () => {
     expect(cmd).not.toContain('--dangerously-skip-permissions');
   });
 
-  it('builds prompt command with session resume', () => {
+  it('builds prompt command with session resume using -c (#108)', () => {
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'sess-abc' });
-    expect(cmd).toContain('--resume "sess-abc"');
+    expect(cmd).toMatch(/\s-c(\s|$)/);
+    expect(cmd).not.toContain('--resume');
+    expect(cmd).not.toContain('sess-abc');
+  });
+
+  it('builds prompt command without sessionId emits neither -c nor --resume', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS });
+    expect(cmd).not.toMatch(/\s-c(\s|$)/);
+    expect(cmd).not.toContain('--resume');
   });
 
   it('builds prompt command with dangerously skip permissions', () => {
@@ -124,8 +132,8 @@ describe('ClaudeProvider', () => {
     expect(p.supportsMaxTurns()).toBe(true);
   });
 
-  it('resumeFlag with sessionId includes ID', () => {
-    expect(p.resumeFlag('ses-1')).toBe('--resume "ses-1"');
+  it('resumeFlag with sessionId returns -c (#108)', () => {
+    expect(p.resumeFlag('ses-1')).toBe('-c');
   });
 
   it('resumeFlag without sessionId returns empty string', () => {
@@ -550,6 +558,23 @@ describe('getProvider factory', () => {
   it('returns singleton instances (same object reference)', () => {
     expect(getProvider('claude')).toBe(getProvider('claude'));
     expect(getProvider('gemini')).toBe(getProvider('gemini'));
+  });
+
+  it('throws TypeError for unknown provider strings (no silent fallback)', () => {
+    // Cast to bypass TS — registry JSON could yield arbitrary strings at runtime
+    expect(() => getProvider('bogus' as any)).toThrow(TypeError);
+    expect(() => getProvider('bogus' as any)).toThrow(/Unknown LLM provider "bogus"/);
+  });
+
+  it('error message lists supported providers', () => {
+    try {
+      getProvider('nonsense' as any);
+    } catch (e: any) {
+      expect(e.message).toMatch(/claude/);
+      expect(e.message).toMatch(/gemini/);
+      expect(e.message).toMatch(/codex/);
+      expect(e.message).toMatch(/copilot/);
+    }
   });
 });
 
