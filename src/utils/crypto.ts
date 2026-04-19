@@ -38,13 +38,13 @@ void getOrCreateSalt;
 
 /**
  * Get or create a per-installation random AES-256-GCM key.
- * The key is stored in ~/.apra-fleet/data/key (32 random bytes, raw binary, mode 0o600).
+ * The key is stored in ~/.apra-fleet/data/salt (32 random bytes, hex-encoded, mode 0o600).
  * On first run a fresh random key is generated; subsequent runs load from file.
  */
 function getOrCreateKey(): Buffer {
   try {
-    if (fs.existsSync(KEY_PATH)) {
-      return fs.readFileSync(KEY_PATH);
+    if (fs.existsSync(SALT_PATH)) {
+      return Buffer.from(fs.readFileSync(SALT_PATH, 'utf-8').trim(), 'hex');
     }
   } catch {
     // Fall through to create new key
@@ -54,7 +54,7 @@ function getOrCreateKey(): Buffer {
     fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
   }
   const key = crypto.randomBytes(KEY_LENGTH);
-  fs.writeFileSync(KEY_PATH, key, { mode: 0o600 });
+  fs.writeFileSync(SALT_PATH, key.toString('hex'), { mode: 0o600 });
 
   // Migration: if credentials.json already exists, it was encrypted with the
   // old deriveKey() scheme and cannot be decrypted with the new random key.
