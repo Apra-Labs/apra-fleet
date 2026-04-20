@@ -207,12 +207,14 @@ async function collectOobInput(
   mode: 'password' | 'api-key' | 'confirm',
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
 ): Promise<{ password?: string; fallback?: string }> {
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
 
-  const extraArgs = mode === 'api-key' ? ['--api-key'] : mode === 'confirm' ? ['--confirm'] : [];
+  const modeArgs = mode === 'api-key' ? ['--api-key'] : mode === 'confirm' ? ['--confirm'] : [];
+  const promptArgs = _opts?.prompt ? ['--prompt', _opts.prompt] : [];
+  const extraArgs = [...modeArgs, ...promptArgs];
   const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
 
   const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
@@ -303,7 +305,7 @@ export async function collectOobPassword(
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
 ): Promise<{ password?: string; fallback?: string }> {
   return collectOobInput('api-key', memberName, toolName, _opts);
 }

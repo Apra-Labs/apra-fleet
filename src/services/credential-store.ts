@@ -140,17 +140,19 @@ export function credentialList(): CredentialMeta[] {
 }
 
 export function credentialDelete(name: string): boolean {
+  // Remove from both tiers unconditionally (M1)
+  let found = false;
   if (sessionStore.has(name)) {
     sessionStore.delete(name);
-    return true;
+    found = true;
   }
   const file = loadCredentialFile();
   if (name in file.credentials) {
     delete file.credentials[name];
     saveCredentialFile(file);
-    return true;
+    found = true;
   }
-  return false;
+  return found;
 }
 
 /**

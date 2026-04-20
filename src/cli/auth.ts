@@ -1,11 +1,14 @@
 import net from 'node:net';
+import readline from 'node:readline';
 import { getSocketPath } from '../services/auth-socket.js';
 import { secureInput } from '../utils/secure-input.js';
 
 export async function runAuth(args: string[]): Promise<void> {
   const isApiKey = args.includes('--api-key');
   const isConfirm = args.includes('--confirm');
-  const memberName = args.find(a => !a.startsWith('--'));
+  const promptIdx = args.indexOf('--prompt');
+  const customPrompt = promptIdx !== -1 ? args[promptIdx + 1] : undefined;
+  const memberName = args.find((a, i) => !a.startsWith('--') && i !== promptIdx + 1);
 
   if (!memberName) {
     console.error('Usage: apra-fleet auth [--api-key|--confirm] <member-name>');
@@ -27,8 +30,21 @@ export async function runAuth(args: string[]): Promise<void> {
 
   let inputValue: string;
   try {
-    const prompt = isConfirm ? '  Type "yes" to allow network access: ' : isApiKey ? '  Secure Value: ' : '  Password: ';
-    inputValue = await secureInput({ prompt });
+    if (isConfirm) {
+      // Use plain visible input for confirmation prompt so user can see what they type (M2)
+      inputValue = await new Promise<string>((resolve, reject) => {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        rl.question('  Type "yes" to allow network access: ', (answer) => {
+          rl.close();
+          resolve(answer);
+        });
+        rl.on('close', () => resolve(''));
+        rl.on('error', reject);
+      });
+    } else {
+      const prompt = customPrompt ?? (isApiKey ? '  Secure Value: ' : '  Password: ');
+      inputValue = await secureInput({ prompt });
+    }
   } catch {
     console.error('Cancelled.');
     process.exit(1);
@@ -69,7 +85,7 @@ export async function runAuth(args: string[]): Promise<void> {
         if (resp.ok) {
           const successMsg = isConfirm
             ? '\n  ✓ Confirmed. You can close this window.\n'
-            : isApiKey ? '\n  ✓ API key received. You can close this window.\n' : '\n  ✓ Password received. You can close this window.\n';
+            : isApiKey ? '\n  ✓ Secure value received. You can close this window.\n' : '\n  ✓ Password received. You can close this window.\n';
           console.error(successMsg);
           resolve();
         } else {

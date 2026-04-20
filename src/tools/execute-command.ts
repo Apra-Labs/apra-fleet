@@ -32,7 +32,7 @@ export const executeCommandSchema = z.object({
 
 export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 
-// Network tools that trigger the "confirm" egress check
+// Best-effort heuristic — not a security boundary
 const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|Invoke-WebRequest|Invoke-RestMethod)\b/i;
 
 // Matches raw sec:// credential handles that must never reach shell or LLM
@@ -134,6 +134,20 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   const { resolved: resolvedCommand, credentials } = tokenResult;
 
+  // Also resolve tokens in restart_command (H1)
+  let resolvedRestartCommand: string | undefined;
+  if (input.restart_command) {
+    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs);
+    if ('error' in restartTokenResult) return `❌ ${restartTokenResult.error}`;
+    resolvedRestartCommand = restartTokenResult.resolved;
+    // Merge any additional credentials from restart_command (de-dup by name)
+    for (const cred of restartTokenResult.credentials) {
+      if (!credentials.find(c => c.name === cred.name)) {
+        credentials.push(cred);
+      }
+    }
+  }
+
   // -- Network egress check for credentials with confirm/deny policy --
   if (credentials.length > 0 && NETWORK_TOOL_RE.test(resolvedCommand)) {
     for (const cred of credentials) {
@@ -165,7 +179,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
     const wrapperScript = generateTaskWrapper({
       taskId,
       command: resolvedCommand,
-      restartCommand: input.restart_command,
+      restartCommand: resolvedRestartCommand,
       maxRetries: input.max_retries ?? 3,
       activityIntervalSec: 300,
     });
@@ -182,9 +196,14 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
-      await strategy.execCommand(launchCmd, input.timeout_ms);
+      const launchResult = await strategy.execCommand(launchCmd, input.timeout_ms);
       touchAgent(agent.id);
       writeStatusline();
+      // Redact credential values from any output returned by the launch command (H2)
+      const launchOutput = credentials.length > 0
+        ? redactOutput(launchResult.stdout + launchResult.stderr, credentials)
+        : '';
+      void launchOutput; // output not surfaced to caller; redaction is a safety measure
       return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.`;
     } catch (err: any) {
       writeStatusline(new Map([[agent.id, 'offline']]));

@@ -15,7 +15,7 @@ export const credentialStoreSetSchema = z.object({
 export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 
 export async function credentialStoreSet(input: CredentialStoreSetInput): Promise<string> {
-  const oob = await collectOobApiKey(input.name, 'credential_store_set');
+  const oob = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
   if (oob.fallback) return oob.fallback;
   if (!oob.password) return '❌ No credential received.';
 
