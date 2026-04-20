@@ -66,3 +66,30 @@ Issue: The regex only matches a hardcoded set of network tool names. An LLM coul
 Suggestion: Document that this is a best-effort heuristic, not a security boundary. Consider whether an allowlist approach or a more robust detection method is warranted for the `deny` policy.
 
 **Doer:** fixed in commit c14255b — replaced the old inline comment on the `NETWORK_TOOL_RE` line with `// Best-effort heuristic — not a security boundary`.
+
+## Re-review
+
+**Verdict: APPROVED**
+
+All 9 findings from the initial review have been properly addressed in commits c14255b, bfcaceb, and 3b199a2. Verified via `git diff origin/main...HEAD` and `npm test` (45 test files, 766 tests passed, 4 skipped).
+
+### Finding-by-finding verification
+
+| # | Severity | Finding | Status | Notes |
+|---|----------|---------|--------|-------|
+| H1 | HIGH | `restart_command` not resolved for `{{secure.NAME}}` | ✅ Fixed | `resolveSecureTokens()` called on `restart_command`; credentials merged into main list for redaction/egress (execute-command.ts:141-150) |
+| H2 | HIGH | Long-running task output not redacted | ✅ Fixed | `redactOutput()` applied to launch output; `registerTaskCredentials()`/`getTaskCredentials()` added to credential-store.ts so `monitor_task` redacts log tail via task-scoped registry (monitor-task.ts:69-74) |
+| M1 | MED | `credentialDelete` only removes from one tier | ✅ Fixed | Both session and persistent tiers attempted unconditionally; returns `true` if either was found (credential-store.ts:137-148) |
+| M2 | MED | `--confirm` mode uses masked input | ✅ Fixed | Plain `readline.createInterface` used for confirmation prompt; `secureInput()` reserved for password/key entry (auth.ts:38-45) |
+| M3 | MED | `input.prompt` defined but never used | ✅ Fixed | Threaded through `collectOobApiKey` opts → `collectOobInput` → `--prompt` CLI arg; auth.ts reads it and passes to `secureInput()` |
+| M4 | MED | No tests for credential store / token resolution / redaction / egress | ✅ Fixed | 16 tests in `credential-store-and-execute.test.ts` covering round-trip, token substitution, redaction (stdout + stderr), restart_command resolution, and all three egress policies |
+| L1 | LOW | Dead code: `KEY_PATH`, `SALT_LENGTH`, `getOrCreateSalt` | ✅ Fixed | All removed from crypto.ts; `getOrCreateKey()` is the sole key provider |
+| L2 | LOW | "API key" in success message | ✅ Fixed | Changed to "Secure value received. You can close this window." |
+| L3 | LOW | `NETWORK_TOOL_RE` blocklist comment | ✅ Fixed | Comment now reads "Best-effort heuristic — not a security boundary" |
+
+### New issues introduced by fixes
+
+None identified. The implementation is clean and consistent. Minor observations (not blocking):
+
+- `taskCredentials` Map in credential-store.ts grows but is never cleaned up after task completion. Acceptable for current usage patterns — would only matter for very long-lived server sessions with many tasks.
+- `void launchOutput` in execute-command.ts computes a redacted string then discards it. The comment explains this is a defense-in-depth safety measure, which is reasonable.
