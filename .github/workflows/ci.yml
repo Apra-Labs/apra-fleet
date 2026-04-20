@@ -254,6 +254,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add llms-full.txt
+          if [[ "${{ github.head_ref }}" == "main" ]]; then
+            echo "Refusing to push auto-commit to main (protected branch)."
+            exit 0
+          fi
           git diff --cached --quiet || (
             git commit -m "chore: regenerate llms-full.txt" &&
             git push origin HEAD:${{ github.head_ref }} || echo "Branch no longer exists — skipping push."
