@@ -140,3 +140,56 @@ Tests properly set up and tear down credentials via `credentialSet`/`credentialD
 - **Code duplication (non-blocking):** Token resolution logic is now inlined in three places (`register-member.ts`, `provision-auth.ts`, `provision-vcs-auth.ts`). `provision-vcs-auth.ts` at least extracts `resolveSecureField()`, but the other two inline the pattern. Consider extracting a shared utility in a follow-up.
 
 **Status:** ✅ No edge cases missed. Duplication is a minor style observation, not blocking.
+
+## update-member Review
+
+**Scope:** Commit d78343f — `feat(update-member): resolve {{secure.NAME}} tokens in password field`
+
+**Verdict: APPROVED**
+
+All tests pass: 45 test files, 774 tests passed, 4 skipped.
+
+### Findings
+
+#### 1. Token resolution pattern matches register-member.ts
+
+The implementation at `update-member.ts:82-97` is a line-for-line match of the pattern in `register-member.ts:62-77`:
+- Same `TOKEN_RE` regex (`/\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g`) created fresh inside the `if` block (no stale `lastIndex`)
+- Same `Set<string>` for unique token names
+- Same `credentialResolve()` call with early-return error on missing credential
+- Same `replaceAll` substitution loop
+
+Only difference: error message says "Member was NOT updated" vs "Member was NOT registered" — correct and intentional.
+
+**Status:** ✅ Exact pattern match.
+
+#### 2. OOB fallback logic
+
+The OOB condition at line 106 now checks `!resolvedPassword` instead of `!input.password`. This is correct:
+- If the user passes `{{secure.X}}` as a password, it resolves to plaintext → `resolvedPassword` is truthy → OOB is skipped → password flows to `encryptPassword()` at line 125. Correct.
+- If the user passes no password and is switching to password auth or rotating, `resolvedPassword` is `undefined` → OOB fires. Correct.
+- If the user passes a literal password, behavior is unchanged. Correct.
+
+**Status:** ✅ OOB fallback logic is correct.
+
+#### 3. No credential leakage
+
+- `resolvedPassword` only flows to `encryptPassword()` (line 125), which returns the encrypted form stored in the registry.
+- The return message at the end of the function references `friendlyName`, not the password value.
+- The `input.password` raw token string is never logged or returned — only `resolvedPassword` is used, and only for encryption.
+
+**Status:** ✅ No leakage — resolved values never appear in output or logs.
+
+#### 4. Test quality
+
+Two new tests added:
+- **Happy path** (`tests/update-member.test.ts:82-96`): Creates a password-auth agent, sets a credential, passes `{{secure.<name>}}` as password, asserts update succeeds. Properly cleans up credential in `finally` block.
+- **Error path** (`tests/update-member.test.ts:98-109`): Passes `{{secure.nonexistent_cred}}` and asserts the `❌ Credential "nonexistent_cred" not found` error with "Member was NOT updated".
+
+Both tests validate the core behavior. The happy path doesn't assert that the stored encrypted password matches `encryptPassword('mysecretpass')`, but the round-trip through the credential store and token resolution is implicitly validated by the absence of error. Acceptable coverage.
+
+**Status:** ✅ Good coverage of happy and error paths.
+
+#### 5. Code duplication (non-blocking observation)
+
+This is now the fourth inline copy of the token resolution pattern (joining `register-member.ts`, `provision-auth.ts`, and `provision-vcs-auth.ts`). The case for extracting a shared `resolveSecureTokens(field)` utility is growing stronger. Not blocking.
