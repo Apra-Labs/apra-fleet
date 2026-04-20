@@ -93,3 +93,50 @@ None identified. The implementation is clean and consistent. Minor observations 
 
 - `taskCredentials` Map in credential-store.ts grows but is never cleaned up after task completion. Acceptable for current usage patterns — would only matter for very long-lived server sessions with many tasks.
 - `void launchOutput` in execute-command.ts computes a redacted string then discards it. The comment explains this is a defense-in-depth safety measure, which is reasonable.
+
+## Final Review
+
+**Scope:** Commit 47a6fcd — `feat: resolve {{secure.NAME}} tokens in provision-vcs-auth and provision-auth`
+
+**Verdict: APPROVED**
+
+All tests pass: 45 test files, 772 tests passed, 4 skipped.
+
+### Findings
+
+#### 1. Correctness of token resolution
+
+Both tools follow the same pattern as `register-member.ts`:
+- Regex scan with `TOKEN_RE` (`/\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g`)
+- Collect unique names into a `Set`
+- Resolve each via `credentialResolve(name)`
+- `replaceAll` to substitute tokens with plaintext
+
+`provision-vcs-auth.ts` extracts a reusable `resolveSecureField()` helper and correctly resets `TOKEN_RE.lastIndex = 0` since the regex is module-scoped. `provision-auth.ts` creates `TOKEN_RE` fresh inside the `if` block, so no stale `lastIndex` issue. Both return clear error messages referencing the missing credential name when resolution fails.
+
+**Status:** ✅ Correct — consistent with established pattern.
+
+#### 2. No credential leakage
+
+- `provision-auth.ts`: Resolved key flows to `provisionApiKey()` which passes it to `setEnv()` commands, encrypts it via `encryptPassword()`, and stores the encrypted form. Return messages never include the plaintext value.
+- `provision-vcs-auth.ts`: Resolved values flow through `buildCredentials()` to provider deploy functions. Error messages only reference credential names, not values.
+
+**Status:** ✅ No leakage — resolved values are never returned in output or logged.
+
+#### 3. Test quality
+
+New tests cover:
+- **provision-auth:** Happy path (`{{secure.MY_API_KEY}}` → resolved → "API key provisioned"), error path (missing `NONEXISTENT_KEY` → `❌` error with credential name)
+- **provision-vcs-auth:** Happy paths for all three providers (GitHub PAT, Bitbucket `api_token`, Azure DevOps `pat`), plus error path for missing credential
+
+Tests properly set up and tear down credentials via `credentialSet`/`credentialDelete`.
+
+**Status:** ✅ Good coverage of happy and error paths across all providers.
+
+#### 4. Edge cases and observations
+
+- **Multiple tokens in one field:** Handled correctly — `Set` collects unique names, `replaceAll` substitutes each.
+- **Partial token (e.g. `prefix-{{secure.X}}-suffix`):** Works — `replaceAll` replaces the token portion only.
+- **Code duplication (non-blocking):** Token resolution logic is now inlined in three places (`register-member.ts`, `provision-auth.ts`, `provision-vcs-auth.ts`). `provision-vcs-auth.ts` at least extracts `resolveSecureField()`, but the other two inline the pattern. Consider extracting a shared utility in a follow-up.
+
+**Status:** ✅ No edge cases missed. Duplication is a minor style observation, not blocking.
