@@ -7,6 +7,7 @@ import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
+import { credentialResolve } from '../services/credential-store.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -23,7 +24,7 @@ export const registerMemberSchema = z.object({
   port: z.number().default(22).describe('SSH port (default: 22, remote members only)'),
   username: z.string().optional().describe('SSH username (required for remote members)'),
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
-  password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
+  password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
   work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
@@ -56,6 +57,24 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
+  }
+
+  // Resolve {{secure.NAME}} tokens in password field
+  let resolvedPassword = input.password;
+  if (resolvedPassword) {
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    let match: RegExpExecArray | null;
+    let resolved = resolvedPassword;
+    const tokenNames = new Set<string>();
+    while ((match = TOKEN_RE.exec(resolvedPassword)) !== null) {
+      tokenNames.add(match[1]);
+    }
+    for (const name of tokenNames) {
+      const entry = credentialResolve(name);
+      if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT registered.`;
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+    }
+    resolvedPassword = resolved;
   }
 
   // Out-of-band password collection for remote password auth without inline password
@@ -130,7 +149,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     port: isLocal ? undefined : input.port,
     username: isLocal ? undefined : input.username,
     authType: isLocal ? undefined : (input.auth_type ?? (isCloud ? 'key' : undefined)),
-    encryptedPassword: preEncryptedPassword ?? ((!isLocal && input.password) ? encryptPassword(input.password) : undefined),
+    encryptedPassword: preEncryptedPassword ?? ((!isLocal && resolvedPassword) ? encryptPassword(resolvedPassword) : undefined),
     keyPath: isLocal ? undefined : input.key_path,
     workFolder: input.work_folder,
     createdAt: new Date().toISOString(),

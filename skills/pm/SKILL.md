@@ -61,6 +61,39 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 12. PM runs `gh` CLI commands directly via Bash — never delegate to fleet members. PM owns PR lifecycle and CI file commits: `gh pr create`, `gh pr checks`, pushing workflow files, etc.
 13. Always read referenced sub-documents (doer-reviewer.md, fleet skill sub-docs, etc.) before executing PM commands.
 
+## Secrets & Credentials
+
+**Never pass raw secrets in `execute_prompt` prompts.** Prompt text is part of the LLM conversation and will appear in logs and chat history. Use the credential store instead.
+
+**Before dispatching a member that needs API keys or tokens:**
+
+1. Call `credential_store_set` OOB for each required secret — Fleet prompts for the value in a separate terminal, keeping it out of the conversation entirely
+2. Pass `sec://NAME` handles in the task prompt — reference the credential by name only (e.g. `"authenticate using credential github_pat"`)
+3. The member uses `{{secure.NAME}}` in its own `execute_command` calls — Fleet resolves the value server-side and redacts it from output before the LLM sees it
+
+`{{secure.NAME}}` tokens are resolved ONLY in `execute_command` and specific MCP tool params (`register_member`, `update_member`, `provision_vcs_auth`, `provision_auth`). They do NOT work in `execute_prompt` — the LLM must never see secret values. In `execute_prompt` prompts, reference the credential by NAME only (e.g. `"authenticate using credential github_pat"`) — the member then uses `{{secure.github_pat}}` in their `execute_command` calls.
+
+**Example workflow — member that needs to authenticate to GitHub:**
+
+```
+# PM: store the PAT before dispatch (OOB prompt — never in chat)
+credential_store_set  name=github_pat
+
+# PM: include in the task prompt sent via execute_prompt — reference by name only:
+"When you need to push code or call the GitHub API, authenticate using credential github_pat."
+
+# Member: resolves and uses the secret in execute_command
+execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+# Output seen by LLM: https://token:[REDACTED:github_pat]@github.com/Org/Repo.git
+```
+
+**Rotating credentials mid-sprint:** `credential_store_delete name=<NAME>` then `credential_store_set name=<NAME>` — no re-provisioning or member restart required.
+
+> ⚠️ **`{{secure.NAME}}` only resolves in specific credential fields** (listed above).
+> Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the
+> token string through literally — the secret will NOT be injected, and the raw handle name
+> will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
+
 ## Sub-documents
 
 - `single-pair-sprint.md` — full sprint lifecycle: requirements, planning, execution loop, monitoring, completion, recovery

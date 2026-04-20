@@ -36,6 +36,16 @@ export function escapeWindowsArg(s: string): string {
 }
 
 /**
+ * Escape a string for safe use as a PowerShell single-quoted string literal.
+ * Single-quoted strings in PowerShell are fully literal — no variable expansion.
+ * Internal single quotes are escaped by doubling them: ' → ''
+ * Returns the value wrapped in single quotes.
+ */
+export function escapePowerShellArg(s: string): string {
+  return "'" + s.replace(/'/g, "''") + "'";
+}
+
+/**
  * Escape batch (cmd.exe) metacharacters for safe use in .bat file content.
  * Escapes: & | > < ^ % by prefixing each with ^.
  */

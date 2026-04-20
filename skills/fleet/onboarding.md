@@ -61,3 +61,27 @@ Add to the member's status file:
 - Auth: Bitbucket API token (verified)
 - Skills: bitbucket-devops (installed)
 ```
+
+## Pre-loading credentials before dispatch
+
+If the task you are about to dispatch requires an API key, token, or password (e.g., calling an external API, pushing to a private registry, authenticating to a third-party service), store it in the credential store **before** dispatching the member.
+
+**Why:** `execute_prompt` prompts are visible in the LLM conversation. Passing raw secrets there exposes them in logs and chat history. The credential store keeps the plaintext out of the LLM entirely.
+
+**Steps:**
+1. Call `credential_store_set` with a descriptive name (e.g., `github_pat`, `npm_token`, `openai_key`) — Fleet opens an OOB terminal prompt for the value
+2. Pass the `sec://NAME` handle in the task prompt — reference by name only (e.g. `"authenticate using credential github_pat"`). The secret value is only injected server-side when `{{secure.NAME}}` appears in an `execute_command` call — never in AI prompt text.
+3. The member uses `{{secure.NAME}}` in `execute_command` — Fleet resolves the value server-side and redacts it from output before the LLM sees it
+
+**Example — dispatching a member that needs to push code to GitHub:**
+
+```
+# PM stores the token before dispatch
+credential_store_set  name=github_pat
+
+# PM includes in the task prompt — reference by name only:
+"When pushing code to GitHub, authenticate using credential github_pat."
+
+# Member uses it in a command transparently
+execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+```

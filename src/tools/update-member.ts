@@ -3,6 +3,7 @@ import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services
 import { encryptPassword } from '../utils/crypto.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { collectOobPassword } from '../services/auth-socket.js';
+import { credentialResolve } from '../services/credential-store.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import type { Agent } from '../types.js';
@@ -21,7 +22,7 @@ export const updateMemberSchema = z.object({
   port: z.number().optional().describe('New SSH port (remote members only)'),
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
-  password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
+  password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   rotate_password: z.boolean().optional().describe(
     'Trigger secure out-of-band password re-entry for a member already using password auth. '
     + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'
@@ -78,13 +79,31 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return `❌ Invalid icon "${input.icon}". Use a named alias (e.g., blue-circle, red-square, green-square) or a valid emoji.`;
   }
 
+  // Resolve {{secure.NAME}} tokens in password field
+  let resolvedPassword = input.password;
+  if (resolvedPassword) {
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    let match: RegExpExecArray | null;
+    let resolved = resolvedPassword;
+    const tokenNames = new Set<string>();
+    while ((match = TOKEN_RE.exec(resolvedPassword)) !== null) {
+      tokenNames.add(match[1]);
+    }
+    for (const name of tokenNames) {
+      const entry = credentialResolve(name);
+      if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT updated.`;
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+    }
+    resolvedPassword = resolved;
+  }
+
   // Out-of-band password collection:
   // - switchingToPassword: changing from key → password auth without inline password
   // - rotatingPassword: explicit secure rotation on a member already using password auth
   let preEncryptedPassword: string | undefined;
   const switchingToPassword = input.auth_type === 'password' && existing.authType !== 'password';
   const rotatingPassword = !!input.rotate_password && existing.authType === 'password';
-  if ((switchingToPassword || rotatingPassword) && !input.password && existing.agentType === 'remote') {
+  if ((switchingToPassword || rotatingPassword) && !resolvedPassword && existing.agentType === 'remote') {
     const oob = await collectOobPassword(existing.friendlyName, 'update_member');
     if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
     preEncryptedPassword = oob.password;
@@ -102,8 +121,8 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.auth_type) updates.authType = input.auth_type;
   if (preEncryptedPassword) {
     updates.encryptedPassword = preEncryptedPassword;
-  } else if (input.password) {
-    updates.encryptedPassword = encryptPassword(input.password);
+  } else if (resolvedPassword) {
+    updates.encryptedPassword = encryptPassword(resolvedPassword);
   }
   if (input.key_path) updates.keyPath = input.key_path;
   if (input.work_folder) updates.workFolder = input.work_folder;

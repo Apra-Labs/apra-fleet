@@ -26,6 +26,10 @@ Tasks with type "verify" are checkpoints. When you reach one:
 - Before creating a branch: `git fetch origin && git checkout origin/{{base_branch}}`
 - Before pushing a PR or at PM's request: `git fetch origin && git rebase origin/{{base_branch}}`, rerun tests after rebase
 
+## Secrets & API Keys
+
+If this task requires secrets, API keys, or tokens (e.g., external API calls, private registry pushes, third-party service authentication), check whether the PM has pre-loaded them via the credential store before you start. Use `{{secure.NAME}}` tokens only in `execute_command` — never in prompts or log messages. Fleet resolves and redacts them automatically in commands. Do not ask for raw secret values in conversation; if a required `sec://NAME` handle is missing, report it as a blocker so the PM can store it OOB.
+
 ## Rules
 - ONE task at a time, then commit, then continue
 - After every commit: run fast/unit tests. If they fail, fix before moving to the next task.

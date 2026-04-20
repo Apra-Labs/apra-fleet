@@ -274,6 +274,9 @@ Apra Fleet is an MCP server that agentic coding systems connect to. It manages a
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
+| `credential_store_set` | Store a secret credential for use in commands (entered OOB — never in chat) |
+| `credential_store_list` | List stored credential names (values are never returned) |
+| `credential_store_delete` | Delete a stored credential |
 
 ### Infrastructure
 
@@ -283,6 +286,41 @@ Apra Fleet is an MCP server that agentic coding systems connect to. It manages a
 | `update_llm_cli` | Update or install the AI coding agent CLI on a member |
 | `shutdown_server` | Gracefully shut down the MCP server |
 | `version` | Report server version |
+
+## Secure Credentials
+
+Secrets never enter the LLM conversation or logs. Fleet's credential store keeps plaintext isolated: you enter it once in a separate terminal window, it's encrypted at rest, and commands receive it as a resolved value — never as readable text.
+
+**Three-step workflow:**
+
+```
+# 1. Store once — Fleet opens an OOB terminal prompt, never asks in chat
+credential_store_set  name=github_pat
+
+# 2. Use in execute_command — {{secure.NAME}} is resolved only in commands, never in prompts
+execute_command  command="curl -H 'Authorization: Bearer {{secure.github_pat}}' https://api.github.com/user"
+
+# 3. Output is automatically redacted before it reaches the LLM
+# Output: Authorization: Bearer [REDACTED:github_pat]
+```
+
+**Tools that support `{{secure.NAME}}` token substitution:**
+
+- `execute_command` — shell commands on any member
+- `register_member` — SSH password field during registration
+- `update_member` — updating stored member passwords
+- `provision_vcs_auth` — VCS token fields (GitHub PAT, Bitbucket token, Azure DevOps PAT)
+- `provision_auth` — LLM API key fields
+
+`execute_prompt` does **not** support `{{secure.NAME}}` — secrets must never be passed to LLM prompts. In `execute_prompt`, reference credentials by name only (e.g. `"authenticate using credential github_pat"`); the member resolves the token in its own `execute_command` calls.
+
+**Credential store tools:**
+
+| Tool | What it does |
+|------|-------------|
+| `credential_store_set` | Prompt for a secret OOB and store it encrypted under a name |
+| `credential_store_list` | List stored credential names — values are never returned |
+| `credential_store_delete` | Remove a stored credential by name |
 
 ## Multi-Provider Fleets
 

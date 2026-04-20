@@ -204,16 +204,18 @@ type OobLaunchFn = (
  * Launches a terminal, then races a password waiter against a cancellation signal.
  */
 async function collectOobInput(
-  mode: 'password' | 'api-key',
+  mode: 'password' | 'api-key' | 'confirm',
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
 ): Promise<{ password?: string; fallback?: string }> {
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
 
-  const extraArgs = mode === 'api-key' ? ['--api-key'] : [];
-  const inputType = mode === 'api-key' ? 'API key' : 'Password';
+  const modeArgs = mode === 'api-key' ? ['--api-key'] : mode === 'confirm' ? ['--confirm'] : [];
+  const promptArgs = _opts?.prompt ? ['--prompt', _opts.prompt] : [];
+  const extraArgs = [...modeArgs, ...promptArgs];
+  const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
 
   const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
   const cancelledMessage = `❌ Password entry cancelled. Call ${toolName} again to retry.`;
@@ -303,11 +305,24 @@ export async function collectOobPassword(
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
 ): Promise<{ password?: string; fallback?: string }> {
   return collectOobInput('api-key', memberName, toolName, _opts);
 }
 
+
+/**
+ * Prompt the user out-of-band to confirm a network-egress operation.
+ * Returns true if the user confirmed, false if they cancelled or timed out.
+ */
+export async function collectOobConfirm(
+  credentialName: string,
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+): Promise<{ confirmed: boolean; terminalUnavailable: boolean }> {
+  const result = await collectOobInput('confirm', credentialName, 'execute_command', _opts);
+  if (result.fallback) return { confirmed: false, terminalUnavailable: true };
+  return { confirmed: Boolean(result.password), terminalUnavailable: false };
+}
 
 /**
  * Resolve the command to invoke this binary's `auth` subcommand.

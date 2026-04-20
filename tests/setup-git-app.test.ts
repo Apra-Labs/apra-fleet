@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { FLEET_DIR } from './test-helpers.js';
+import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { setupGitApp } from '../src/tools/setup-git-app.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 const STORED_KEY_PATH = path.join(FLEET_DIR, 'github-app.pem');
@@ -152,5 +153,43 @@ describe('setupGitApp', () => {
     } finally {
       fs.unlinkSync(tmpFile);
     }
+  });
+
+  // --- {{secure.NAME}} token resolution ---
+
+  it('resolves {{secure.NAME}} in private_key_path to PEM content and deletes temp file', async () => {
+    credentialSet('TEST_PEM', testPrivateKey, false, 'allow');
+    mockVerify.mockResolvedValue({ ok: true, appName: 'fleet-app', orgName: 'TestOrg' });
+
+    const tmpBefore = fs.readdirSync(os.tmpdir()).filter(
+      f => f.startsWith('apra-fleet-gitapp-') && f.endsWith('.pem'),
+    );
+
+    const result = await setupGitApp({
+      app_id: '12345',
+      private_key_path: '{{secure.TEST_PEM}}',
+      installation_id: 99999,
+    });
+
+    expect(result).toContain('✅');
+    expect(result).toContain('fleet-app');
+    expect(result).toContain('TestOrg');
+
+    const tmpAfter = fs.readdirSync(os.tmpdir()).filter(
+      f => f.startsWith('apra-fleet-gitapp-') && f.endsWith('.pem'),
+    );
+    expect(tmpAfter.length).toBe(tmpBefore.length);
+
+    credentialDelete('TEST_PEM');
+  });
+
+  it('returns error when {{secure.NAME}} credential is not found for private_key_path', async () => {
+    const result = await setupGitApp({
+      app_id: '12345',
+      private_key_path: '{{secure.NONEXISTENT_PEM}}',
+      installation_id: 99999,
+    });
+    expect(result).toContain('❌');
+    expect(result).toContain('NONEXISTENT_PEM');
   });
 });

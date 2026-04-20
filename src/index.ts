@@ -75,6 +75,9 @@ async function startServer() {
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
   const { versionSchema, version } = await import('./tools/version.js');
+  const { credentialStoreSetSchema, credentialStoreSet } = await import('./tools/credential-store-set.js');
+  const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
+  const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
 
@@ -183,6 +186,10 @@ async function startServer() {
   // --- Cloud Control ---
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. Start waits until the member is ready; stop is immediate.', cloudControlSchema.shape, wrapTool('cloud_control', (input) => cloudControl(input as any)));
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Optionally stop the cloud instance automatically when the task completes.', monitorTaskSchema.shape, wrapTool('monitor_task', (input) => monitorTask(input as any)));
+  // --- Credential Store ---
+  server.tool('credential_store_set', 'Collect a secret from the user out-of-band and store it. Returns a handle (sec://NAME) and scope. Use {{secure.NAME}} tokens in execute_command to inject the value.', credentialStoreSetSchema.shape, wrapTool('credential_store_set', (input) => credentialStoreSet(input as any)));
+  server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
+  server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

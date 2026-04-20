@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
+import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 import { provisionAuth } from '../src/tools/provision-auth.js';
 import type { SSHExecResult } from '../src/types.js';
+
+const mockCollectOobApiKey = vi.fn<(memberName: string, toolName: string, opts?: any) => Promise<{ password?: string; fallback?: string }>>();
+
+vi.mock('../src/services/auth-socket.js', () => ({
+  collectOobApiKey: (memberName: string, toolName: string, opts?: any) => mockCollectOobApiKey(memberName, toolName, opts),
+}));
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn<() => Promise<{ ok: boolean; latencyMs: number; error?: string }>>();
@@ -134,6 +142,46 @@ describe('provisionAuth', () => {
     const result = await provisionAuth({ member_id: agent.id });
     expect(result).toContain('OAuth credentials for claude deployed');
     expect(result).toContain('auto-refresh');
+  });
+
+  // --- {{secure.NAME}} token resolution ---
+
+  it('resolves {{secure.NAME}} token in api_key field', async () => {
+    const agent = makeTestAgent({ friendlyName: 'secure-key-agent' });
+    addAgent(agent);
+    credentialSet('MY_API_KEY', 'sk-ant-api03-RESOLVED', { network_policy: 'allow' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionAuth({ member_id: agent.id, api_key: '{{secure.MY_API_KEY}}' });
+    expect(result).toContain('API key provisioned');
+    credentialDelete('MY_API_KEY');
+  });
+
+  it('returns error when {{secure.NAME}} token is missing in api_key field', async () => {
+    const agent = makeTestAgent({ friendlyName: 'missing-secure-agent' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+
+    const result = await provisionAuth({ member_id: agent.id, api_key: '{{secure.NONEXISTENT_KEY}}' });
+    expect(result).toContain('❌');
+    expect(result).toContain('NONEXISTENT_KEY');
+    expect(result).toContain('not found');
+  });
+
+  it('prompts OOB when api_key is absent for non-OAuth provider', async () => {
+    const agent = makeTestAgent({ friendlyName: 'codex-agent', llmProvider: 'codex' });
+    addAgent(agent);
+    mockCollectOobApiKey.mockResolvedValueOnce({ password: encryptPassword('sk-openai-oob-collected') });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionAuth({ member_id: agent.id });
+    expect(result).toContain('API key provisioned');
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith(
+      'codex-agent', 'provision_llm_auth',
+      expect.objectContaining({ prompt: 'Enter API key for codex on codex-agent' }),
+    );
   });
 
   it('deploys with near-expiry warning when token is close to expiry', async () => {

@@ -57,6 +57,25 @@ git ls-remote https://github.com/{owner}/{repo}.git HEAD
 gh api /user
 ```
 
+## Storing tokens for reuse
+
+After provisioning VCS auth, you can also store the token in the credential store so members can use it directly in `execute_command` calls — for example, when calling the GitHub REST API or authenticating git operations that bypass the configured remote URL.
+
+**Store a GitHub PAT for reuse:**
+
+```
+credential_store_set  name=github_pat
+```
+
+**Use it in a command on a member:**
+
+```
+execute_command  command="curl -H 'Authorization: Bearer {{secure.github_pat}}' https://api.github.com/user"
+execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+```
+
+The token is resolved server-side and redacted in output (`[REDACTED:github_pat]`) — it never appears in the LLM conversation or command logs.
+
 ## Troubleshooting
 
 | Symptom | Fix |

@@ -27,6 +27,39 @@ describe('executePrompt', () => {
     vi.useRealTimers();
   });
 
+  it('rejects prompt containing {{secure.NAME}} token without executing', async () => {
+    const agent = makeTestAgent({ friendlyName: 'secure-guard' });
+    addAgent(agent);
+
+    const result = await executePrompt({ member_id: agent.id, prompt: 'use {{secure.github_pat}} to auth', resume: false, timeout_ms: 5000 });
+    expect(result).toContain('{{secure.NAME}} token');
+    expect(result).toContain('execute_command');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects prompt with {{secure.NAME}} token regardless of surrounding text', async () => {
+    const agent = makeTestAgent({ friendlyName: 'secure-guard-2' });
+    addAgent(agent);
+
+    const result = await executePrompt({ member_id: agent.id, prompt: 'auth with {{secure.my_token_123}} please', resume: false, timeout_ms: 5000 });
+    expect(result).toContain('{{secure.NAME}} token');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('allows prompt without {{secure.NAME}} token', async () => {
+    const agent = makeTestAgent({ friendlyName: 'secure-allow' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-ok' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: agent.id, prompt: 'authenticate using credential github_pat', resume: false, timeout_ms: 5000 });
+    expect(result).toContain('ok');
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
   it('parses JSON response and returns result + session_id', async () => {
     const agent = makeTestAgent({ friendlyName: 'ok-agent' });
     addAgent(agent);

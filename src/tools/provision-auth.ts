@@ -9,6 +9,7 @@ import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
+import { credentialResolve } from '../services/credential-store.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
@@ -18,7 +19,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
-    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead.`
+    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secure.NAME}} token — value is resolved from the credential store before use.`
   ),
 });
 
@@ -240,7 +241,17 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
 
   // Flow B: API key is provided directly
   if (input.api_key) {
-    return provisionApiKey(agent, input.api_key, provider);
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    const tokenNames = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = TOKEN_RE.exec(input.api_key)) !== null) tokenNames.add(match[1]);
+    let resolvedKey = input.api_key;
+    for (const name of tokenNames) {
+      const entry = credentialResolve(name);
+      if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first.`;
+      resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+    }
+    return provisionApiKey(agent, resolvedKey, provider);
   }
 
   // Flow A: OAuth credentials copy
@@ -249,7 +260,9 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   }
 
   // Fallback: OOB key collection for non-OAuth or non-copyable providers
-  const oob = await collectOobApiKey(agent.friendlyName, 'provision_llm_auth');
+  const oob = await collectOobApiKey(agent.friendlyName, 'provision_llm_auth', {
+    prompt: `Enter API key for ${provider.name} on ${agent.friendlyName}`,
+  });
   if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
   return provisionApiKey(agent, decryptPassword(oob.password!), provider);
 }
