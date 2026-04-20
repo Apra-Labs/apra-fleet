@@ -9,6 +9,7 @@ import { escapeDoubleQuoted } from '../utils/shell-escape.js';
 import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
+import { credentialResolve } from '../services/credential-store.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
@@ -240,7 +241,17 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
 
   // Flow B: API key is provided directly
   if (input.api_key) {
-    return provisionApiKey(agent, input.api_key, provider);
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    const tokenNames = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = TOKEN_RE.exec(input.api_key)) !== null) tokenNames.add(match[1]);
+    let resolvedKey = input.api_key;
+    for (const name of tokenNames) {
+      const entry = credentialResolve(name);
+      if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first.`;
+      resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+    }
+    return provisionApiKey(agent, resolvedKey, provider);
   }
 
   // Flow A: OAuth credentials copy

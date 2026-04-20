@@ -4,11 +4,28 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
+import { credentialResolve } from '../services/credential-store.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
+
+const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+
+function resolveSecureField(value: string): { resolved: string } | { error: string } {
+  const tokenNames = new Set<string>();
+  let match: RegExpExecArray | null;
+  TOKEN_RE.lastIndex = 0;
+  while ((match = TOKEN_RE.exec(value)) !== null) tokenNames.add(match[1]);
+  let resolved = value;
+  for (const name of tokenNames) {
+    const entry = credentialResolve(name);
+    if (!entry) return { error: `Credential "${name}" not found. Run credential_store_set first.` };
+    resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+  }
+  return { resolved };
+}
 
 const providers: Record<string, VcsProviderService> = {
   'github': githubProvider,
@@ -69,7 +86,17 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
 
   const service = providers[input.provider];
 
-  const creds = buildCredentials(input);
+  // Resolve {{secure.NAME}} tokens in credential fields
+  const resolvedInput = { ...input };
+  for (const field of ['token', 'api_token', 'pat'] as const) {
+    if (resolvedInput[field]) {
+      const r = resolveSecureField(resolvedInput[field]!);
+      if ('error' in r) return `❌ ${r.error}`;
+      resolvedInput[field] = r.resolved;
+    }
+  }
+
+  const creds = buildCredentials(resolvedInput);
   if (typeof creds === 'string') return `❌ ${creds}`;
 
   const strategy = getStrategy(agent);

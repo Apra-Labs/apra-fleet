@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, FLEET_DIR } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
+import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import type { SSHExecResult } from '../src/types.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
@@ -215,6 +216,66 @@ describe('provisionVcsAuth', () => {
     const updated = getAgent(agent.id)!;
     expect(updated.vcsProvider).toBe('bitbucket');
     expect(updated.vcsTokenExpiresAt).toBeUndefined();
+  });
+
+  // --- {{secure.NAME}} token resolution ---
+
+  it('resolves {{secure.NAME}} token in github pat token field', async () => {
+    const agent = makeTestAgent({ friendlyName: 'gh-secure-token' });
+    addAgent(agent);
+    credentialSet('GH_PAT', 'ghp_resolved_token', { network_policy: 'allow' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: agent.id, provider: 'github',
+      github_mode: 'pat', token: '{{secure.GH_PAT}}',
+    });
+    expect(result).toContain('✅');
+    credentialDelete('GH_PAT');
+  });
+
+  it('returns error when {{secure.NAME}} token is missing in github pat field', async () => {
+    const agent = makeTestAgent({ friendlyName: 'gh-missing-secure' });
+    addAgent(agent);
+
+    const result = await provisionVcsAuth({
+      member_id: agent.id, provider: 'github',
+      github_mode: 'pat', token: '{{secure.MISSING_CRED}}',
+    });
+    expect(result).toContain('❌');
+    expect(result).toContain('MISSING_CRED');
+    expect(result).toContain('not found');
+  });
+
+  it('resolves {{secure.NAME}} token in bitbucket api_token field', async () => {
+    const agent = makeTestAgent({ friendlyName: 'bb-secure-token' });
+    addAgent(agent);
+    credentialSet('BB_TOKEN', 'ATBB_secure_value', { network_policy: 'allow' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: agent.id, provider: 'bitbucket',
+      email: 'dev@co.com', api_token: '{{secure.BB_TOKEN}}', workspace: 'ws',
+    });
+    expect(result).toContain('✅');
+    credentialDelete('BB_TOKEN');
+  });
+
+  it('resolves {{secure.NAME}} token in azure-devops pat field', async () => {
+    const agent = makeTestAgent({ friendlyName: 'az-secure-token' });
+    addAgent(agent);
+    credentialSet('AZ_PAT', 'az_resolved_pat', { network_policy: 'allow' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: agent.id, provider: 'azure-devops',
+      org_url: 'https://dev.azure.com/myorg', pat: '{{secure.AZ_PAT}}',
+    });
+    expect(result).toContain('✅');
+    credentialDelete('AZ_PAT');
   });
 
   it('reports deploy failure from provider', async () => {
