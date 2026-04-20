@@ -155,6 +155,22 @@ export function credentialDelete(name: string): boolean {
   return found;
 }
 
+// ---------------------------------------------------------------------------
+// Task-scoped credential registry for long-running task output redaction (H2)
+// ---------------------------------------------------------------------------
+interface TaskCredential { name: string; plaintext: string; }
+const taskCredentials = new Map<string, TaskCredential[]>();
+
+export function registerTaskCredentials(taskId: string, credentials: { name: string; plaintext: string }[]): void {
+  if (credentials.length > 0) {
+    taskCredentials.set(taskId, credentials.map(c => ({ name: c.name, plaintext: c.plaintext })));
+  }
+}
+
+export function getTaskCredentials(taskId: string): TaskCredential[] {
+  return taskCredentials.get(taskId) ?? [];
+}
+
 /**
  * Resolve a credential name to its plaintext value.
  * Persistent store takes precedence over session store.

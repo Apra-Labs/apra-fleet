@@ -9,7 +9,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
-import { credentialResolve } from '../services/credential-store.js';
+import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import type { Agent } from '../types.js';
 
@@ -176,6 +176,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
       : '';
 
     const taskId = 'task-' + Date.now().toString(36);
+    registerTaskCredentials(taskId, credentials);
     const wrapperScript = generateTaskWrapper({
       taskId,
       command: resolvedCommand,

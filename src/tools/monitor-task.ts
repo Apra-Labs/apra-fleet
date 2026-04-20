@@ -5,6 +5,7 @@ import { getAgentOS } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
+import { getTaskCredentials } from '../services/credential-store.js';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import type { Agent } from '../types.js';
 
@@ -65,9 +66,15 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
     gpuUtilization = parseGpuUtilization(gpuResult.value.stdout);
   }
 
-  const logTail = logResult.status === 'fulfilled'
+  const rawLogTail = logResult.status === 'fulfilled'
     ? logResult.value.stdout.trim()
     : '';
+
+  const taskCreds = getTaskCredentials(input.task_id);
+  const logTail = taskCreds.reduce(
+    (out, c) => c.plaintext.length > 0 ? out.replaceAll(c.plaintext, `[REDACTED:${c.name}]`) : out,
+    rawLogTail,
+  );
 
   const taskStatus = String(statusData.status ?? 'unknown');
   const isCompleted = taskStatus === 'completed' || taskStatus === 'failed';
