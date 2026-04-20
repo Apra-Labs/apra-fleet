@@ -7,6 +7,7 @@ import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
+import { credentialResolve } from '../services/credential-store.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -56,6 +57,24 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
+  }
+
+  // Resolve {{secure.NAME}} tokens in password field
+  let resolvedPassword = input.password;
+  if (resolvedPassword) {
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    let match: RegExpExecArray | null;
+    let resolved = resolvedPassword;
+    const tokenNames = new Set<string>();
+    while ((match = TOKEN_RE.exec(resolvedPassword)) !== null) {
+      tokenNames.add(match[1]);
+    }
+    for (const name of tokenNames) {
+      const entry = credentialResolve(name);
+      if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT registered.`;
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+    }
+    resolvedPassword = resolved;
   }
 
   // Out-of-band password collection for remote password auth without inline password
@@ -130,7 +149,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     port: isLocal ? undefined : input.port,
     username: isLocal ? undefined : input.username,
     authType: isLocal ? undefined : (input.auth_type ?? (isCloud ? 'key' : undefined)),
-    encryptedPassword: preEncryptedPassword ?? ((!isLocal && input.password) ? encryptPassword(input.password) : undefined),
+    encryptedPassword: preEncryptedPassword ?? ((!isLocal && resolvedPassword) ? encryptPassword(resolvedPassword) : undefined),
     keyPath: isLocal ? undefined : input.key_path,
     workFolder: input.work_folder,
     createdAt: new Date().toISOString(),
