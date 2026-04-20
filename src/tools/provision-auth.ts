@@ -260,7 +260,9 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   }
 
   // Fallback: OOB key collection for non-OAuth or non-copyable providers
-  const oob = await collectOobApiKey(agent.friendlyName, 'provision_llm_auth');
+  const oob = await collectOobApiKey(agent.friendlyName, 'provision_llm_auth', {
+    prompt: `Enter API key for ${provider.name} on ${agent.friendlyName}`,
+  });
   if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
   return provisionApiKey(agent, decryptPassword(oob.password!), provider);
 }

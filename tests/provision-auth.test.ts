@@ -2,8 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 import { provisionAuth } from '../src/tools/provision-auth.js';
 import type { SSHExecResult } from '../src/types.js';
+
+const mockCollectOobApiKey = vi.fn<(memberName: string, toolName: string, opts?: any) => Promise<{ password?: string; fallback?: string }>>();
+
+vi.mock('../src/services/auth-socket.js', () => ({
+  collectOobApiKey: (memberName: string, toolName: string, opts?: any) => mockCollectOobApiKey(memberName, toolName, opts),
+}));
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn<() => Promise<{ ok: boolean; latencyMs: number; error?: string }>>();
@@ -160,6 +167,21 @@ describe('provisionAuth', () => {
     expect(result).toContain('❌');
     expect(result).toContain('NONEXISTENT_KEY');
     expect(result).toContain('not found');
+  });
+
+  it('prompts OOB when api_key is absent for non-OAuth provider', async () => {
+    const agent = makeTestAgent({ friendlyName: 'codex-agent', llmProvider: 'codex' });
+    addAgent(agent);
+    mockCollectOobApiKey.mockResolvedValueOnce({ password: encryptPassword('sk-openai-oob-collected') });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionAuth({ member_id: agent.id });
+    expect(result).toContain('API key provisioned');
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith(
+      'codex-agent', 'provision_llm_auth',
+      expect.objectContaining({ prompt: 'Enter API key for codex on codex-agent' }),
+    );
   });
 
   it('deploys with near-expiry warning when token is close to expiry', async () => {

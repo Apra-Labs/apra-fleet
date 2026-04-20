@@ -5,6 +5,8 @@ import { getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-help
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import { credentialResolve } from '../services/credential-store.js';
+import { collectOobApiKey } from '../services/auth-socket.js';
+import { decryptPassword } from '../utils/crypto.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
@@ -94,6 +96,29 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
       if ('error' in r) return `❌ ${r.error}`;
       resolvedInput[field] = r.resolved;
     }
+  }
+
+  // OOB fallback for absent credential fields
+  if (resolvedInput.provider === 'github' && (resolvedInput.github_mode ?? 'github-app') === 'pat' && resolvedInput.token === undefined) {
+    const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
+      prompt: `Enter GitHub personal access token for ${agent.friendlyName}`,
+    });
+    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
+    resolvedInput.token = decryptPassword(oob.password!);
+  }
+  if (resolvedInput.provider === 'bitbucket' && resolvedInput.api_token === undefined) {
+    const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
+      prompt: `Enter Bitbucket API token for ${agent.friendlyName}`,
+    });
+    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
+    resolvedInput.api_token = decryptPassword(oob.password!);
+  }
+  if (resolvedInput.provider === 'azure-devops' && resolvedInput.pat === undefined && resolvedInput.token === undefined) {
+    const oob = await collectOobApiKey(agent.friendlyName, 'provision_vcs_auth', {
+      prompt: `Enter Azure DevOps personal access token for ${agent.friendlyName}`,
+    });
+    if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
+    resolvedInput.pat = decryptPassword(oob.password!);
   }
 
   const creds = buildCredentials(resolvedInput);

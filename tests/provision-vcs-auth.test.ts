@@ -5,9 +5,16 @@ import os from 'node:os';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, FLEET_DIR } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { encryptPassword } from '../src/utils/crypto.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import type { SSHExecResult } from '../src/types.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
+
+const mockCollectOobApiKey = vi.fn<(memberName: string, toolName: string, opts?: any) => Promise<{ password?: string; fallback?: string }>>();
+
+vi.mock('../src/services/auth-socket.js', () => ({
+  collectOobApiKey: (memberName: string, toolName: string, opts?: any) => mockCollectOobApiKey(memberName, toolName, opts),
+}));
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn<() => Promise<{ ok: boolean; latencyMs: number; error?: string }>>();
@@ -47,6 +54,7 @@ describe('provisionVcsAuth', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
+    mockCollectOobApiKey.mockResolvedValue({ fallback: '❌ OOB cancelled in test.' });
     if (fs.existsSync(GIT_CONFIG_PATH)) {
       gitConfigBackup = fs.readFileSync(GIT_CONFIG_PATH, 'utf-8');
     }
@@ -82,12 +90,11 @@ describe('provisionVcsAuth', () => {
 
   // --- Bitbucket ---
 
-  it('bitbucket: fails when required fields are missing', async () => {
+  it('bitbucket: OOB cancellation returns error when api_token is absent', async () => {
     const agent = makeTestAgent({ friendlyName: 'bb-missing' });
     addAgent(agent);
     const result = await provisionVcsAuth({ member_id: agent.id, provider: 'bitbucket' });
     expect(result).toContain('❌');
-    expect(result).toContain('email');
   });
 
   it('bitbucket: deploys credentials successfully', async () => {
@@ -107,12 +114,11 @@ describe('provisionVcsAuth', () => {
 
   // --- Azure DevOps ---
 
-  it('azure-devops: fails when required fields are missing', async () => {
+  it('azure-devops: OOB cancellation returns error when pat is absent', async () => {
     const agent = makeTestAgent({ friendlyName: 'az-missing' });
     addAgent(agent);
     const result = await provisionVcsAuth({ member_id: agent.id, provider: 'azure-devops' });
     expect(result).toContain('❌');
-    expect(result).toContain('org_url');
   });
 
   it('azure-devops: deploys credentials successfully', async () => {
@@ -158,14 +164,13 @@ describe('provisionVcsAuth', () => {
     expect(result).toContain('PAT');
   });
 
-  it('github: pat mode fails without token', async () => {
+  it('github: pat mode OOB cancellation returns error when token is absent', async () => {
     const agent = makeTestAgent({ friendlyName: 'gh-pat-notoken' });
     addAgent(agent);
     const result = await provisionVcsAuth({
       member_id: agent.id, provider: 'github', github_mode: 'pat',
     });
     expect(result).toContain('❌');
-    expect(result).toContain('token');
   });
 
   it('github: github-app mode deploys successfully', async () => {
@@ -276,6 +281,61 @@ describe('provisionVcsAuth', () => {
     });
     expect(result).toContain('✅');
     credentialDelete('AZ_PAT');
+  });
+
+  // --- OOB fallback tests ---
+
+  it('github: pat mode prompts OOB when token is absent', async () => {
+    const agent = makeTestAgent({ friendlyName: 'gh-oob' });
+    addAgent(agent);
+    mockCollectOobApiKey.mockResolvedValueOnce({ password: encryptPassword('ghp_oob_collected') });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: agent.id, provider: 'github', github_mode: 'pat',
+    });
+    expect(result).toContain('✅');
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith(
+      'gh-oob', 'provision_vcs_auth',
+      expect.objectContaining({ prompt: 'Enter GitHub personal access token for gh-oob' }),
+    );
+  });
+
+  it('bitbucket: prompts OOB when api_token is absent', async () => {
+    const agent = makeTestAgent({ friendlyName: 'bb-oob' });
+    addAgent(agent);
+    mockCollectOobApiKey.mockResolvedValueOnce({ password: encryptPassword('ATBB_oob_token') });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: agent.id, provider: 'bitbucket',
+      email: 'dev@co.com', workspace: 'my-ws',
+    });
+    expect(result).toContain('✅');
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith(
+      'bb-oob', 'provision_vcs_auth',
+      expect.objectContaining({ prompt: 'Enter Bitbucket API token for bb-oob' }),
+    );
+  });
+
+  it('azure-devops: prompts OOB when pat is absent', async () => {
+    const agent = makeTestAgent({ friendlyName: 'az-oob' });
+    addAgent(agent);
+    mockCollectOobApiKey.mockResolvedValueOnce({ password: encryptPassword('az_oob_pat') });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionVcsAuth({
+      member_id: agent.id, provider: 'azure-devops',
+      org_url: 'https://dev.azure.com/myorg',
+    });
+    expect(result).toContain('✅');
+    expect(mockCollectOobApiKey).toHaveBeenCalledWith(
+      'az-oob', 'provision_vcs_auth',
+      expect.objectContaining({ prompt: 'Enter Azure DevOps personal access token for az-oob' }),
+    );
   });
 
   it('reports deploy failure from provider', async () => {
