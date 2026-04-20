@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
+import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 
 describe('updateMember', () => {
   beforeEach(() => {
@@ -77,6 +78,35 @@ describe('updateMember', () => {
     // Updating friendly_name on a local member — no collision check needed
     const result = await updateMember({ member_id: local.id, friendly_name: 'new-name' });
     expect(result).toContain('Member "new-name" updated.');
+  });
+
+  it('resolves {{secure.NAME}} token in password field', async () => {
+    const agent = makeTestAgent({ authType: 'password' });
+    addAgent(agent);
+
+    const credName = `test-cred-${Date.now()}`;
+    credentialSet(credName, 'mysecretpass');
+    try {
+      const result = await updateMember({
+        member_id: agent.id,
+        password: `{{secure.${credName}}}`,
+      });
+      expect(result).toContain('Member "test-agent" updated.');
+    } finally {
+      credentialDelete(credName);
+    }
+  });
+
+  it('returns error when {{secure.NAME}} token references missing credential', async () => {
+    const agent = makeTestAgent({ authType: 'password' });
+    addAgent(agent);
+
+    const result = await updateMember({
+      member_id: agent.id,
+      password: '{{secure.nonexistent_cred}}',
+    });
+    expect(result).toContain('❌ Credential "nonexistent_cred" not found.');
+    expect(result).toContain('Member was NOT updated.');
   });
 
   it('does not warn when updating a cloud member', async () => {
