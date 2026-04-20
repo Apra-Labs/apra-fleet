@@ -31,6 +31,9 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `update_llm_cli` | Update the LLM CLI on a member |
 | `cloud_control` | Manage cloud infrastructure for members |
 | `shutdown_server` | Shut down a remote member's server |
+| `credential_store_set` | Store a secret credential for use in commands (entered OOB — never in chat) |
+| `credential_store_list` | List stored credential names (values are never returned) |
+| `credential_store_delete` | Delete a stored credential by name |
 
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
@@ -39,6 +42,20 @@ See sub-documents for detailed usage:
 - `troubleshooting.md` — fleet tool troubleshooting by symptom
 - `skill-matrix.md` — skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md` — VCS auth provisioning per provider
+
+## Secure Credentials
+
+The `{{secure.NAME}}` pattern lets you reference stored secrets in any command without ever exposing plaintext to the LLM or logs.
+
+**How it works:**
+1. Store a secret with `credential_store_set` — Fleet opens an OOB terminal prompt, so the value never appears in chat
+2. Reference it as `{{secure.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, or `provision_auth`
+3. Fleet resolves the token server-side before execution; output containing the plaintext is redacted to `[REDACTED:NAME]` before results reach the LLM
+
+**When to use:**
+- Any API key, token, or password that a member needs in a shell command
+- Rotating credentials: `credential_store_delete` then `credential_store_set` — no re-provisioning required
+- Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
 ## Member Identification
 

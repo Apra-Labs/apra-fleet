@@ -46,6 +46,25 @@ git ls-remote https://dev.azure.com/{org}/{project}/_git/{repo} HEAD
 | TF400813: Resource not available | Verify org URL matches `https://dev.azure.com/{org}` |
 | Clone prompts for password | Re-run `provision_vcs_auth` |
 
+## Storing tokens for reuse
+
+After provisioning VCS auth, you can store the Azure DevOps PAT in the credential store for direct use in `execute_command` — for example, calling the Azure DevOps REST API or authenticating git operations manually.
+
+**Store an Azure DevOps PAT for reuse:**
+
+```
+credential_store_set  name=azdevops_pat
+```
+
+**Use it in a command on a member:**
+
+```
+execute_command  command="curl -sf -u :{{secure.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
+execute_command  command="git remote set-url origin https://token:{{secure.azdevops_pat}}@dev.azure.com/{org}/{project}/_git/{repo}"
+```
+
+The token is resolved server-side and redacted in output (`[REDACTED:azdevops_pat]`) — it never appears in the LLM conversation or command logs.
+
 ## Notes
 
 - PAT expiration: default 30 days, max 1 year

@@ -26,6 +26,17 @@ Email **contact@apralabs.com** with:
 
 We will coordinate disclosure timing with you and credit reporters in release notes unless you prefer to remain anonymous.
 
+## Credential Handling
+
+Fleet is designed so that secrets never enter the LLM conversation or appear in logs. The following controls are in place:
+
+- **Encryption at rest** — credentials stored via `credential_store_set` are encrypted with AES-256-GCM. Plaintext is never written to disk or config files.
+- **Out-of-band collection** — secret values are always collected via a separate terminal window (OOB prompt), not through the chat interface. The LLM never sees the value during input.
+- **LLM context isolation** — `{{secure.NAME}}` tokens are resolved server-side, after the LLM has finished generating the command. The plaintext value is substituted at execution time, not during prompt construction.
+- **Output redaction** — any command output that contains a stored credential's plaintext value is automatically redacted to `[REDACTED:NAME]` before the result is returned to the LLM. This applies to stdout, stderr, and structured output.
+- **Network egress policy** — each credential can be assigned an egress policy (`allow`, `confirm`, `deny`) controlling whether it can be sent to external hosts. The server enforces this before executing commands that would transmit the resolved value over the network.
+- **No value retrieval** — `credential_store_list` returns credential names only. There is no API to retrieve stored plaintext — secrets are write-once from the credential store's perspective.
+
 ## Out of Scope
 
 The following are not considered security vulnerabilities for this project:

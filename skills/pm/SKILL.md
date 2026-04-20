@@ -61,6 +61,33 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 12. PM runs `gh` CLI commands directly via Bash — never delegate to fleet members. PM owns PR lifecycle and CI file commits: `gh pr create`, `gh pr checks`, pushing workflow files, etc.
 13. Always read referenced sub-documents (doer-reviewer.md, fleet skill sub-docs, etc.) before executing PM commands.
 
+## Secrets & Credentials
+
+**Never pass raw secrets in `execute_prompt` prompts.** Prompt text is part of the LLM conversation and will appear in logs and chat history. Use the credential store instead.
+
+**Before dispatching a member that needs API keys or tokens:**
+
+1. Call `credential_store_set` OOB for each required secret — Fleet prompts for the value in a separate terminal, keeping it out of the conversation entirely
+2. Pass `sec://NAME` handles in the task prompt, or instruct the member to reference `{{secure.NAME}}` directly in `execute_command` calls
+3. Fleet resolves the token server-side and redacts plaintext from output before the LLM sees it
+
+**Example workflow — member that needs to authenticate to GitHub:**
+
+```
+# PM: store the PAT before dispatch (OOB prompt — never in chat)
+credential_store_set  name=github_pat
+
+# PM: include in the task prompt sent via execute_prompt:
+"When you need to push code or call the GitHub API, use {{secure.github_pat}} as the auth token.
+ Example: git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+
+# Member: uses it transparently in execute_command
+execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+# Output seen by LLM: https://token:[REDACTED:github_pat]@github.com/Org/Repo.git
+```
+
+**Rotating credentials mid-sprint:** `credential_store_delete name=<NAME>` then `credential_store_set name=<NAME>` — no re-provisioning or member restart required.
+
 ## Sub-documents
 
 - `single-pair-sprint.md` — full sprint lifecycle: requirements, planning, execution loop, monitoring, completion, recovery
