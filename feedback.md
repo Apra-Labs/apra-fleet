@@ -288,3 +288,55 @@ States: "Use `{{secure.NAME}}` tokens only in `execute_command` — never in pro
 ### Summary
 
 No issues found. The security guard is correct, complete, and well-tested. Documentation consistently and accurately documents the `execute_prompt` restriction. The distinction between `sec://NAME` handles (safe name references) and `{{secure.NAME}}` tokens (resolved server-side, never in prompts) is maintained throughout.
+
+## Features A & E Review
+
+**Scope:**
+- Commit 28232a7 (+ fabec56) — `feat(A): OOB fallback for provision_vcs_auth and provision_auth`
+- Commit 75bdcf9 — `feat(E): resolve {{secure.NAME}} tokens as PEM content in setup_git_app`
+
+All tests pass: 45 test files, 783 tests passed, 4 skipped.
+
+### Feature A — OOB Fallback for provision_vcs_auth and provision_auth
+
+**Verdict: APPROVED**
+
+#### Checklist
+
+| # | Check | Status | Notes |
+|---|-------|--------|-------|
+| 1 | OOB only fires when credential field is absent (not empty string) | ✅ | All checks use `=== undefined` — empty string does NOT trigger OOB |
+| 2 | `{{secure.NAME}}` resolution runs first — OOB is fallback only | ✅ | Secure token resolution block (lines 93-99) precedes OOB block (lines 101-122) in `provision-vcs-auth.ts`; same ordering in `provision-auth.ts` |
+| 3 | OOB uses `collectOobApiKey()` (not `collectOobPassword()`) | ✅ | All call sites use `collectOobApiKey` with custom prompt text |
+| 4 | Resolved/collected value never returned in tool output or logs | ✅ | Values flow to `decryptPassword()` → credential deployment; no logging or return |
+| 5 | Tests cover: token resolution path, OOB path, plain inline value path | ✅ | OOB tests for all three VCS providers + provision_auth; token resolution covered in prior commits; plain inline tested by existing passing tests |
+| 6 | Behaviour consistent across all three VCS providers | ✅ | Same pattern: check `undefined` → `collectOobApiKey` with provider-specific prompt → `decryptPassword` → assign |
+
+#### Observations (non-blocking)
+
+- **GitHub PAT gating:** OOB only fires when `github_mode === 'pat'` (defaults to `'github-app'`). Correct — GitHub App mode doesn't use a PAT token.
+- **Azure DevOps checks both `pat` and `token`:** `resolvedInput.pat === undefined && resolvedInput.token === undefined`. This covers the case where Azure DevOps accepts `token` as an alias, which is consistent with `buildCredentials()` behavior.
+- **OOB prompt messages:** All match the spec from TechNote A exactly.
+
+### Feature E — {{secure.NAME}} in setup_git_app private_key_path
+
+**Verdict: APPROVED**
+
+#### Checklist
+
+| # | Check | Status | Notes |
+|---|-------|--------|-------|
+| 1 | Detection of PEM content vs file path is reliable | ✅ | `resolved.startsWith('-----BEGIN')` — standard PEM header; no false positives for file paths |
+| 2 | Temp file deleted in `finally` block | ✅ | `finally { if (tempKeyPath) { try { fs.unlinkSync(tempKeyPath); } catch { } } }` — unconditional cleanup survives exceptions |
+| 3 | Temp file uses random suffix | ✅ | `crypto.randomBytes(8).toString('hex')` — 16 hex chars, collision-resistant |
+| 4 | PEM content never in log/return/error | ✅ | Return messages contain only app name, org, installation ID, stored path. Error messages reference credential name only |
+| 5 | Existing file-path flow unchanged | ✅ | When no `{{secure.NAME}}` token detected, `keyPath = input.private_key_path` — passes straight to `loadPrivateKey()` as before |
+| 6 | Test: secure token → PEM content → setup succeeds → temp file gone | ✅ | Test at line 157 verifies success, correct app/org in output, and temp file count unchanged |
+| 7 | Test: plain file path still works | ✅ | All existing tests pass unchanged (no token → no temp file path) |
+
+#### Observations (non-blocking)
+
+- **Temp file mode 0o600:** Written with restrictive permissions before any validation occurs. Good defense-in-depth.
+- **`credentialResolve` returns `{ plaintext }` directly:** No intermediate storage of the PEM content beyond the temp file. Clean.
+- **Token regex is module-scoped but non-global:** `TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/` (no `g` flag) — used with `.exec()` for a single match. Correct since only one token is expected in the `private_key_path` field.
+- **No OOB fallback (by design):** TechNote E explicitly states OOB is not added here. The implementation correctly does not include an OOB path — if no token and no valid file path, the existing error from `loadPrivateKey()` surfaces. Correct.
