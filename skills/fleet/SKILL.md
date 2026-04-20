@@ -58,7 +58,7 @@ The `{{secure.NAME}}` pattern lets you reference stored secrets in any command w
 - Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
 > ⚠️ **`{{secure.NAME}}` only resolves in specific credential fields** (listed above).
-> Using it in any other parameter (e.g. a command argument, a prompt, a path) will pass the
+> Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the
 > token string through literally — the secret will NOT be injected, and the raw handle name
 > will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
 
