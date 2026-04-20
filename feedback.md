@@ -193,3 +193,98 @@ Both tests validate the core behavior. The happy path doesn't assert that the st
 #### 5. Code duplication (non-blocking observation)
 
 This is now the fourth inline copy of the token resolution pattern (joining `register-member.ts`, `provision-auth.ts`, and `provision-vcs-auth.ts`). The case for extracting a shared `resolveSecureTokens(field)` utility is growing stronger. Not blocking.
+
+## Security Guard & Docs Review
+
+**Scope:** Commits 3fff4f4 (docs) and ffba73f (security guard + doc fixes)
+
+**Verdict: APPROVED**
+
+All tests pass: 45 test files, 777 tests passed, 4 skipped.
+
+### Security Guard — `src/tools/execute-prompt.ts`
+
+#### 1. Regex correctness
+
+`SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/` — correct and complete. Matches the same `[a-zA-Z0-9_]{1,64}` character class used by `TOKEN_RE` in `execute-command.ts`, `register-member.ts`, `update-member.ts`, `provision-auth.ts`, and `provision-vcs-auth.ts`. The non-global flag is appropriate here since we only need a boolean match, not extraction.
+
+**Status:** ✅ Correct.
+
+#### 2. Field coverage
+
+The guard at line 88 checks `input.prompt` only. This is the only user-supplied string field that flows to the LLM — `resume` is boolean, `timeout_ms` and `max_turns` are numbers, `model` is a tier/ID string that never reaches the LLM context, and `member_id`/`member_name` are identifiers. No other string fields carry user content.
+
+**Status:** ✅ Complete — `input.prompt` is the only field that needs guarding.
+
+#### 3. Error message quality
+
+The error string is: `"error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead."`
+
+Clear, actionable, and names the correct alternative. Returns as a plain string (not thrown), consistent with other early-return error patterns in this codebase.
+
+**Status:** ✅ Clear and actionable.
+
+#### 4. Test quality
+
+Three security guard tests in `tests/execute-prompt.test.ts`:
+
+| Test | What it validates |
+|------|-------------------|
+| `rejects prompt containing {{secure.NAME}} token without executing` (line 30) | Token in prompt → error returned, `mockExecCommand` never called |
+| `rejects prompt with {{secure.NAME}} token regardless of surrounding text` (line 40) | Token embedded mid-string → same rejection |
+| `allows prompt without {{secure.NAME}} token` (line 49) | Clean prompt → passes through to execution |
+
+All three are meaningful. The second test is important — it verifies the regex matches tokens embedded in longer strings, not just bare tokens. The third confirms the guard doesn't false-positive on benign prompts (including one that references a credential by name: `"authenticate using credential github_pat"`).
+
+**Status:** ✅ Good coverage.
+
+#### 5. `sec://NAME` handles correctly allowed
+
+The guard only matches `{{secure.NAME}}` tokens via `SECURE_TOKEN_RE`. There is no `sec://` check in `execute-prompt.ts` — handles pass through untouched. This is correct per the TechNote: `sec://NAME` handles are safe references (just names, not values) and should not be rejected in prompts.
+
+**Status:** ✅ Correct — handles are allowed through as designed.
+
+### Documentation Review
+
+#### README.md (Secure Credentials section)
+
+Lines 297–312 are correct and clear:
+- Shows `{{secure.NAME}}` usage only in `execute_command` examples
+- Explicitly lists the 5 tools that support token substitution
+- States: `execute_prompt` does **not** support `{{secure.NAME}}` — with correct guidance to reference by name only
+
+**Status:** ✅ No issues.
+
+#### SECURITY.md (Credential Handling section)
+
+Lines 33–38 correctly describe the security properties: encryption at rest, OOB collection, LLM context isolation, output redaction, egress policy, no value retrieval. Does not mention `execute_prompt` explicitly, but the "LLM context isolation" bullet accurately describes the server-side resolution boundary.
+
+**Status:** ✅ No issues.
+
+#### skills/fleet/SKILL.md, auth-github.md, auth-bitbucket.md, auth-azdevops.md, troubleshooting.md
+
+All correctly show `{{secure.NAME}}` only in `execute_command` contexts. Auth guides demonstrate the correct pattern: store credential → reference by name in prompt → member uses `{{secure.NAME}}` in commands. No incorrect implications.
+
+**Status:** ✅ No issues.
+
+#### skills/fleet/onboarding.md (line 73)
+
+Uses `sec://NAME` handle terminology: "Pass the `sec://NAME` handle in the task prompt — reference by name only". The sentence then correctly clarifies that `{{secure.NAME}}` is only injected in `execute_command`. The `sec://NAME` reference is accurate — this is the handle returned by `credential_store_set` (see `credential-store-set.ts:25`). The sentence does not imply `{{secure.NAME}}` works in `execute_prompt`.
+
+**Status:** ✅ Acceptable — `sec://NAME` is the actual return value from `credential_store_set`, used here as a reference identifier.
+
+#### skills/pm/SKILL.md (line 71)
+
+Same pattern as onboarding.md: "Pass `sec://NAME` handles in the task prompt — reference the credential by name only". Followed by line 72 clarifying `{{secure.NAME}}` is used in `execute_command` by the member. Consistent and correct.
+
+**Status:** ✅ No issues.
+
+#### skills/pm/tpl-doer.md (line 31)
+
+States: "Use `{{secure.NAME}}` tokens only in `execute_command` — never in prompts or log messages." This is the clearest and most direct statement of the restriction. Also mentions `sec://NAME` handles in a "report as blocker" context, which is correct — the doer should escalate missing handles rather than trying to obtain secrets.
+
+**Status:** ✅ No issues.
+
+### Summary
+
+No issues found. The security guard is correct, complete, and well-tested. Documentation consistently and accurately documents the `execute_prompt` restriction. The distinction between `sec://NAME` handles (safe name references) and `{{secure.NAME}}` tokens (resolved server-side, never in prompts) is maintained throughout.
