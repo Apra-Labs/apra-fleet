@@ -297,7 +297,7 @@ Secrets never enter the LLM conversation or logs. Fleet's credential store keeps
 # 1. Store once — Fleet opens an OOB terminal prompt, never asks in chat
 credential_store_set  name=github_pat
 
-# 2. Use anywhere — reference by {{secure.NAME}} in any command
+# 2. Use in execute_command — {{secure.NAME}} is resolved only in commands, never in prompts
 execute_command  command="curl -H 'Authorization: Bearer {{secure.github_pat}}' https://api.github.com/user"
 
 # 3. Output is automatically redacted before it reaches the LLM
@@ -311,6 +311,8 @@ execute_command  command="curl -H 'Authorization: Bearer {{secure.github_pat}}' 
 - `update_member` — updating stored member passwords
 - `provision_vcs_auth` — VCS token fields (GitHub PAT, Bitbucket token, Azure DevOps PAT)
 - `provision_auth` — LLM API key fields
+
+`execute_prompt` does **not** support `{{secure.NAME}}` — secrets must never be passed to LLM prompts. In `execute_prompt`, reference credentials by name only (e.g. `"authenticate using credential github_pat"`); the member resolves the token in its own `execute_command` calls.
 
 **Credential store tools:**
 
