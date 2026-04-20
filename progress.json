@@ -1,9 +1,0 @@
-{
-  "tasks": [
-    {"id": "A1", "title": "provision_vcs_auth OOB fallback", "status": "completed", "notes": "Committed in afed739, 60f9fdd"},
-    {"id": "A2", "title": "provision_auth OOB fallback", "status": "completed", "notes": "Committed in afed739, 60f9fdd"},
-    {"id": "E1", "title": "setup_git_app secure token to PEM content", "status": "completed", "notes": "Committed in 75bdcf9"},
-    {"id": "E2", "title": "Tests for Feature E", "status": "completed", "notes": "Committed in 75bdcf9"},
-    {"id": "E3", "title": "Rebase, build, test, push", "status": "completed", "notes": "Build clean, 784 tests pass, pushed"}
-  ]
-}
