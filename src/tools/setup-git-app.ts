@@ -13,7 +13,7 @@ const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/;
 
 export const setupGitAppSchema = z.object({
   app_id: z.string().regex(/^\d+$/, 'App ID must be numeric').describe('The GitHub App ID (numeric string)'),
-  private_key_path: z.string().describe('Path to the GitHub App private key (.pem) file'),
+  private_key_path: z.string().describe('Path to the GitHub App private key (.pem) file. Supports {{secure.NAME}} token — if the resolved value starts with -----BEGIN it is treated as PEM key content directly (no file needed).'),
   installation_id: z.number().describe('The GitHub App installation ID for your organization'),
 });
 

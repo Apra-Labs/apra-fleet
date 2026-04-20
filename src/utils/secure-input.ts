@@ -34,7 +34,7 @@ export async function secureInput(opts: SecureInputOptions): Promise<string> {
         mask: '*',
         validate: (v: string) => {
           if (v.length === 0 && !allowEmpty) {
-            return 'Empty password not allowed. Please try again.';
+            return 'Value must not be empty. Please try again.';
           }
           return true;
         },

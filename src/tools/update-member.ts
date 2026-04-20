@@ -22,7 +22,7 @@ export const updateMemberSchema = z.object({
   port: z.number().optional().describe('New SSH port (remote members only)'),
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
-  password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window.'),
+  password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   rotate_password: z.boolean().optional().describe(
     'Trigger secure out-of-band password re-entry for a member already using password auth. '
     + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'

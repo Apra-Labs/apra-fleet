@@ -89,6 +89,11 @@ execute_command  command="git remote set-url origin https://token:{{secure.githu
 
 **Rotating credentials mid-sprint:** `credential_store_delete name=<NAME>` then `credential_store_set name=<NAME>` — no re-provisioning or member restart required.
 
+> ⚠️ **`{{secure.NAME}}` only resolves in specific credential fields** (listed above).
+> Using it in any other parameter (e.g. a command argument, a prompt, a path) will pass the
+> token string through literally — the secret will NOT be injected, and the raw handle name
+> will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
+
 ## Sub-documents
 
 - `single-pair-sprint.md` — full sprint lifecycle: requirements, planning, execution loop, monitoring, completion, recovery

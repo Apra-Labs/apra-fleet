@@ -57,6 +57,11 @@ The `{{secure.NAME}}` pattern lets you reference stored secrets in any command w
 - Rotating credentials: `credential_store_delete` then `credential_store_set` — no re-provisioning required
 - Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
+> ⚠️ **`{{secure.NAME}}` only resolves in specific credential fields** (listed above).
+> Using it in any other parameter (e.g. a command argument, a prompt, a path) will pass the
+> token string through literally — the secret will NOT be injected, and the raw handle name
+> will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
+
 ## Member Identification
 
 All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify a member. `member_id` takes precedence when both are provided.

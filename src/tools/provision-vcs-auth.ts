@@ -41,18 +41,18 @@ export const provisionVcsAuthSchema = z.object({
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
-  token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT)'),
+  token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('GitHub App access level override'),
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
 
   // Bitbucket fields
   email: z.string().optional().describe('Bitbucket account email'),
-  api_token: z.string().optional().describe('Bitbucket API token'),
+  api_token: z.string().optional().describe('Bitbucket API token. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   workspace: z.string().optional().describe('Bitbucket workspace slug'),
 
   // Azure DevOps fields
   org_url: z.string().optional().describe('Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)'),
-  pat: z.string().optional().describe('Azure DevOps personal access token'),
+  pat: z.string().optional().describe('Azure DevOps personal access token. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
 });
 
 export type ProvisionVcsAuthInput = z.infer<typeof provisionVcsAuthSchema>;

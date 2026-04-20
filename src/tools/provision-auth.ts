@@ -19,7 +19,7 @@ import type { ProviderAdapter } from '../providers/index.js';
 export const provisionAuthSchema = z.object({
   ...memberIdentifier,
   api_key: z.string().optional().describe(
-    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead.`
+    `Your AI provider API key. If omitted, your local OAuth session is copied to the member instead. Supports {{secure.NAME}} token — value is resolved from the credential store before use.`
   ),
 });
 
