@@ -82,7 +82,13 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   }
 }
 
+const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
+
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
+  if (SECURE_TOKEN_RE.test(input.prompt)) {
+    return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
+  }
+
   const promptFileName = `.fleet-task.md`;
 
   const agentOrError = resolveMember(input.member_id, input.member_name);

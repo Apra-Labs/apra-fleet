@@ -70,8 +70,8 @@ If the task you are about to dispatch requires an API key, token, or password (e
 
 **Steps:**
 1. Call `credential_store_set` with a descriptive name (e.g., `github_pat`, `npm_token`, `openai_key`) — Fleet opens an OOB terminal prompt for the value
-2. Pass the `sec://NAME` handle in the task prompt, or tell the member to use `{{secure.NAME}}` in its commands
-3. The member uses it in `execute_command` — Fleet resolves the value server-side and redacts it from output before the LLM sees it
+2. Pass the `sec://NAME` handle in the task prompt — reference by name only (e.g. `"authenticate using credential github_pat"`). The secret value is only injected server-side when `{{secure.NAME}}` appears in an `execute_command` call — never in AI prompt text.
+3. The member uses `{{secure.NAME}}` in `execute_command` — Fleet resolves the value server-side and redacts it from output before the LLM sees it
 
 **Example — dispatching a member that needs to push code to GitHub:**
 
@@ -79,9 +79,8 @@ If the task you are about to dispatch requires an API key, token, or password (e
 # PM stores the token before dispatch
 credential_store_set  name=github_pat
 
-# PM includes in the task prompt:
-"Use {{secure.github_pat}} as the password when git push prompts for credentials,
- or set it via: git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+# PM includes in the task prompt — reference by name only:
+"When pushing code to GitHub, authenticate using credential github_pat."
 
 # Member uses it in a command transparently
 execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"

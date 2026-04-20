@@ -68,8 +68,10 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 **Before dispatching a member that needs API keys or tokens:**
 
 1. Call `credential_store_set` OOB for each required secret — Fleet prompts for the value in a separate terminal, keeping it out of the conversation entirely
-2. Pass `sec://NAME` handles in the task prompt, or instruct the member to reference `{{secure.NAME}}` directly in `execute_command` calls
-3. Fleet resolves the token server-side and redacts plaintext from output before the LLM sees it
+2. Pass `sec://NAME` handles in the task prompt — reference the credential by name only (e.g. `"authenticate using credential github_pat"`)
+3. The member uses `{{secure.NAME}}` in its own `execute_command` calls — Fleet resolves the value server-side and redacts it from output before the LLM sees it
+
+`{{secure.NAME}}` tokens are resolved ONLY in `execute_command` and specific MCP tool params (`register_member`, `update_member`, `provision_vcs_auth`, `provision_auth`). They do NOT work in `execute_prompt` — the LLM must never see secret values. In `execute_prompt` prompts, reference the credential by NAME only (e.g. `"authenticate using credential github_pat"`) — the member then uses `{{secure.github_pat}}` in their `execute_command` calls.
 
 **Example workflow — member that needs to authenticate to GitHub:**
 
@@ -77,11 +79,10 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 # PM: store the PAT before dispatch (OOB prompt — never in chat)
 credential_store_set  name=github_pat
 
-# PM: include in the task prompt sent via execute_prompt:
-"When you need to push code or call the GitHub API, use {{secure.github_pat}} as the auth token.
- Example: git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+# PM: include in the task prompt sent via execute_prompt — reference by name only:
+"When you need to push code or call the GitHub API, authenticate using credential github_pat."
 
-# Member: uses it transparently in execute_command
+# Member: resolves and uses the secret in execute_command
 execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
 # Output seen by LLM: https://token:[REDACTED:github_pat]@github.com/Org/Repo.git
 ```

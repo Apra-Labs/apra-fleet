@@ -28,7 +28,7 @@ Tasks with type "verify" are checkpoints. When you reach one:
 
 ## Secrets & API Keys
 
-If this task requires secrets, API keys, or tokens (e.g., external API calls, private registry pushes, third-party service authentication), check whether the PM has pre-loaded them via the credential store before you start. Stored credentials are referenced as `{{secure.NAME}}` in `execute_command` calls — Fleet resolves and redacts them automatically. Do not ask for raw secret values in conversation; if a required `sec://NAME` handle is missing, report it as a blocker so the PM can store it OOB.
+If this task requires secrets, API keys, or tokens (e.g., external API calls, private registry pushes, third-party service authentication), check whether the PM has pre-loaded them via the credential store before you start. Use `{{secure.NAME}}` tokens only in `execute_command` — never in prompts or log messages. Fleet resolves and redacts them automatically in commands. Do not ask for raw secret values in conversation; if a required `sec://NAME` handle is missing, report it as a blocker so the PM can store it OOB.
 
 ## Rules
 - ONE task at a time, then commit, then continue
