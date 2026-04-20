@@ -18,7 +18,7 @@ export async function runAuth(args: string[]): Promise<void> {
     console.error(`  Credential: ${memberName}\n`);
     console.error(`  A command using this credential is about to access the network.\n`);
   } else if (isApiKey) {
-    console.error(`\napra-fleet — Enter API key\n`);
+    console.error(`\napra-fleet — Enter Secure Value\n`);
     console.error(`  Member: ${memberName}\n`);
   } else {
     console.error(`\napra-fleet — Enter SSH password\n`);
@@ -27,7 +27,7 @@ export async function runAuth(args: string[]): Promise<void> {
 
   let inputValue: string;
   try {
-    const prompt = isConfirm ? '  Type "yes" to allow network access: ' : isApiKey ? '  API key: ' : '  Password: ';
+    const prompt = isConfirm ? '  Type "yes" to allow network access: ' : isApiKey ? '  Secure Value: ' : '  Password: ';
     inputValue = await secureInput({ prompt });
   } catch {
     console.error('Cancelled.');
