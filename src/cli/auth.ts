@@ -22,7 +22,7 @@ export async function runAuth(args: string[]): Promise<void> {
     console.error(`  A command using this credential is about to access the network.\n`);
   } else if (isApiKey) {
     console.error(`\napra-fleet — Enter Secure Value\n`);
-    console.error(`  Member: ${memberName}\n`);
+    console.error(`  Enter secure value for: ${memberName}\n`);
   } else {
     console.error(`\napra-fleet — Enter SSH password\n`);
     console.error(`  Member: ${memberName}\n`);
