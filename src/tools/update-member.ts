@@ -39,7 +39,7 @@ export const updateMemberSchema = z.object({
   cloud_region: z.string().optional().describe('AWS region for the cloud instance'),
   cloud_profile: z.string().optional().describe('AWS CLI profile name'),
   cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
-  cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
+  cloud_activity_command: z.string().optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
   llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().describe('Change the LLM provider for this member.'),
 });
 

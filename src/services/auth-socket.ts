@@ -448,7 +448,7 @@ export function launchAuthTerminal(
       // Linux: find available terminal emulator. Most support an execute flag.
       const terminal = findLinuxTerminal();
       if (!terminal) {
-        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}`;
+        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
       }
       if (terminal === 'gnome-terminal') {
         child = spawn(terminal, ['--', ...fullArgs], { detached: true, stdio: 'ignore' });
@@ -467,6 +467,6 @@ export function launchAuthTerminal(
 
     return 'launched';
   } catch (err: any) {
-    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}`;
+    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
   }
 }
