@@ -259,14 +259,26 @@ async function collectOobInput(
     if (raceResult === null) {
       // This case should not be hit if passwordPromise always wins on success,
       // but as a safeguard, we wait for the password again.
-      return { password: await passwordPromise };
+      const pw = await passwordPromise;
+      pendingRequests.delete(memberName);
+      return { password: pw };
     }
 
     // Handle the fallback case from the cancellation promise
     if (typeof raceResult === 'object' && raceResult?.fallback) {
+      // Clean up stale state so a retry can launch a fresh terminal.
+      // Without this, hasPendingAuth() returns true on the next call,
+      // the re-entrant path skips launchAuthTerminal, and the call hangs.
+      const waiter = passwordWaiters.get(memberName);
+      if (waiter) {
+        clearTimeout(waiter.timer);
+        passwordWaiters.delete(memberName);
+      }
+      pendingRequests.delete(memberName);
       return raceResult;
     }
 
+    pendingRequests.delete(memberName);
     return { password: raceResult as string };
   } catch (err: any) {
     // Clean up the pending request if the user cancelled.
@@ -436,7 +448,7 @@ export function launchAuthTerminal(
       // Linux: find available terminal emulator. Most support an execute flag.
       const terminal = findLinuxTerminal();
       if (!terminal) {
-        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}`;
+        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
       }
       if (terminal === 'gnome-terminal') {
         child = spawn(terminal, ['--', ...fullArgs], { detached: true, stdio: 'ignore' });
@@ -455,6 +467,6 @@ export function launchAuthTerminal(
 
     return 'launched';
   } catch (err: any) {
-    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}`;
+    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
   }
 }

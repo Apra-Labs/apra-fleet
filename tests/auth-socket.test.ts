@@ -415,6 +415,54 @@ describe('auth-socket', () => {
         expect(result.fallback).toContain('provision_llm_auth');
       }
     });
+
+    it('Bug 1: cleans up stale state after fallback so retry launches a fresh terminal', async () => {
+      // First call: terminal cannot be launched (fallback path)
+      const launchFn = vi.fn().mockReturnValue('fallback:No terminal available');
+      const result1 = await collectOobApiKey('retry-cred', 'credential_store_set', { launchFn });
+      expect('fallback' in result1).toBe(true);
+
+      // pendingRequests must be cleared so hasPendingAuth returns false on retry
+      expect(hasPendingAuth('retry-cred')).toBe(false);
+
+      // Second call: should launch a fresh terminal (not hit the re-entrant guard)
+      const launchFn2 = vi.fn().mockReturnValue('launched');
+      const result2Promise = collectOobApiKey('retry-cred', 'credential_store_set', { launchFn: launchFn2, waitTimeoutMs: 500 });
+      await new Promise(r => setTimeout(r, 50));
+      await sendPassword(getSocketPath(), 'retry-cred', 'new-secret');
+      const result2 = await result2Promise;
+
+      expect(launchFn2).toHaveBeenCalledOnce();
+      expect('password' in result2).toBe(true);
+    });
+
+    it('Bug 1: cleans up stale state after cancel so retry launches a fresh terminal', async () => {
+      // First call: terminal is launched but user cancels (onExit called with non-zero)
+      let capturedOnExit: ((code: number | null) => void) | undefined;
+      const launchFn1 = vi.fn().mockImplementation((_name: string, _args: string[], onExit: (code: number | null) => void) => {
+        capturedOnExit = onExit;
+        return 'launched';
+      });
+      const result1Promise = collectOobApiKey('cancel-cred', 'credential_store_set', { launchFn: launchFn1, waitTimeoutMs: 5000 });
+      // Wait for launchFn to be called (happens after ensureAuthSocket, which may retry on Windows)
+      await vi.waitFor(() => { if (!capturedOnExit) throw new Error('launch not yet called'); }, { timeout: 2000 });
+      capturedOnExit!(1); // simulate user closing the terminal
+      const result1 = await result1Promise;
+      expect('fallback' in result1).toBe(true);
+
+      // pendingRequests must be cleared
+      expect(hasPendingAuth('cancel-cred')).toBe(false);
+
+      // Second call: should launch a fresh terminal
+      const launchFn2 = vi.fn().mockReturnValue('launched');
+      const result2Promise = collectOobApiKey('cancel-cred', 'credential_store_set', { launchFn: launchFn2, waitTimeoutMs: 500 });
+      await new Promise(r => setTimeout(r, 50));
+      await sendPassword(getSocketPath(), 'cancel-cred', 'retry-secret');
+      const result2 = await result2Promise;
+
+      expect(launchFn2).toHaveBeenCalledOnce();
+      expect('password' in result2).toBe(true);
+    });
   });
 });
 

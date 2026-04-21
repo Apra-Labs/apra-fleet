@@ -120,6 +120,11 @@ interface AssetManifest {
   fleetSkills: Record<string, string>;
 }
 
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 // Find project root — works for both tsc (dist/cli/install.js) and esbuild (dist/sea-bundle.cjs)
 function findProjectRoot(): string {
   let dir = __dirname;
