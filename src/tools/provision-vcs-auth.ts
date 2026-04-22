@@ -10,6 +10,7 @@ import { decryptPassword } from '../utils/crypto.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
+import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 
@@ -124,6 +125,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   const creds = buildCredentials(resolvedInput);
   if (typeof creds === 'string') return `❌ ${creds}`;
 
+  // Cancel any existing credential cleanup timer before re-provisioning
+  cancelCredentialCleanup(agent.id);
+
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
   if (!conn.ok) return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
@@ -149,6 +153,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     vcsProvider: input.provider,
     vcsTokenExpiresAt: deployResult.metadata?.expiresAt,
   });
+
+  // Schedule auto-cleanup when token expires
+  scheduleCredentialCleanup(agent.id, deployResult.metadata?.expiresAt);
 
   // Best-effort connectivity test
   let connectivity;
