@@ -117,7 +117,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow } }];
+    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } } }];
   }
 
   supportsOAuthCopy(): boolean {

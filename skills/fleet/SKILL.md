@@ -119,6 +119,16 @@ Icons are auto-assigned by the server and returned in `register_member` / `list_
 
 To override, use `update_member` with the icon parameter.
 
+## Update Notices
+
+`fleet_status` output may include a one-line update notice at the top when a newer release of apra-fleet is available:
+
+```
+ℹ️ apra-fleet v0.1.8 is available (installed: v0.1.7). Run `/pm deploy apra-fleet` to update.
+```
+
+When you see this notice, surface it to the user verbatim before the rest of the status output. Do not suppress or paraphrase it. In JSON format the notice appears as an `updateAvailable` object with `latest` and `installed` fields — surface it the same way.
+
 ## Provider Awareness
 
 | Concern | How to handle |

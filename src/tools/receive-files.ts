@@ -5,6 +5,7 @@ import { touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
+import { isContainedInWorkFolder } from '../utils/platform.js';
 import type { Agent } from '../types.js';
 
 export const receiveFilesSchema = z.object({
@@ -33,8 +34,6 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
   }
 
   // Path security: verify each remote_path stays within work_folder
-  const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
-  const normalizedWorkFolder = workFolderPosix.replace(/\/$/, '');
   for (const remotePath of input.remote_paths) {
     if (remotePath.includes('\0')) {
       return `⛔ Invalid remote_path: null bytes are not allowed.`;
@@ -46,8 +45,7 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
         return `remote_path "${remotePath}" resolves outside member work_folder — read blocked`;
       }
     } else {
-      const resolved = path.posix.resolve(workFolderPosix, remotePath.replace(/\\/g, '/'));
-      if (resolved !== normalizedWorkFolder && !resolved.startsWith(normalizedWorkFolder + '/')) {
+      if (!isContainedInWorkFolder(agent.workFolder, remotePath)) {
         return `remote_path "${remotePath}" resolves outside member work_folder — read blocked`;
       }
     }

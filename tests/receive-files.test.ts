@@ -92,4 +92,51 @@ describe('receiveFiles', () => {
 
     expect(result).toContain('null bytes are not allowed');
   });
+
+  describe('Windows remote member path validation (#146)', () => {
+    let winAgent: any;
+
+    beforeEach(() => {
+      winAgent = makeTestAgent({ workFolder: 'C:\\Users\\aUser\\ODM' });
+      (resolveMember as vi.Mock).mockImplementation((id: any) => {
+        if (id === localAgent.id) return localAgent;
+        if (id === remoteAgent.id) return remoteAgent;
+        if (id === winAgent.id) return winAgent;
+        return 'Member not found';
+      });
+      vi.spyOn(sftp, 'downloadViaSFTP').mockResolvedValue({ success: ['net.log'], failed: [] });
+    });
+
+    it.each([
+      ['backslash relative', 'build\\logs\\net.log'],
+      ['forward slash relative', 'build/logs/net.log'],
+      ['filename only', 'net.log'],
+      ['absolute Windows path inside workFolder', 'C:\\Users\\aUser\\ODM\\net.log'],
+    ])('accepts %s', async (_label, remotePath) => {
+      const result = await receiveFiles({
+        member_id: winAgent.id,
+        remote_paths: [remotePath],
+        local_dest_dir: tmpDir,
+      });
+      expect(result).not.toContain('resolves outside member work_folder');
+    });
+
+    it('rejects path outside Windows workFolder', async () => {
+      const result = await receiveFiles({
+        member_id: winAgent.id,
+        remote_paths: ['..\\escape.txt'],
+        local_dest_dir: tmpDir,
+      });
+      expect(result).toContain('resolves outside member work_folder');
+    });
+
+    it('rejects absolute Windows path outside workFolder', async () => {
+      const result = await receiveFiles({
+        member_id: winAgent.id,
+        remote_paths: ['C:\\Users\\other\\secret.txt'],
+        local_dest_dir: tmpDir,
+      });
+      expect(result).toContain('resolves outside member work_folder');
+    });
+  });
 });
