@@ -5,6 +5,7 @@ import { touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
+import { isContainedInWorkFolder } from '../utils/platform.js';
 import type { Agent } from '../types.js';
 
 export const sendFilesSchema = z.object({
@@ -44,13 +45,13 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
       }
       resolvedPath = resolved;
     } else {
-      const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
-      const normalizedWorkFolder = workFolderPosix.replace(/\/$/, '');
-      const resolved = path.posix.resolve(workFolderPosix, input.dest_subdir.replace(/\\/g, '/'));
-      if (resolved !== normalizedWorkFolder && !resolved.startsWith(normalizedWorkFolder + '/')) {
+      if (!isContainedInWorkFolder(agent.workFolder, input.dest_subdir)) {
         return 'dest_subdir resolves outside member work_folder — write blocked';
       }
-      resolvedPath = resolved;
+      const normWorkFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/$/, '');
+      const normSubdir = input.dest_subdir.replace(/\\/g, '/');
+      const isAbsolute = /^[A-Za-z]:/.test(normSubdir) || normSubdir.startsWith('/');
+      resolvedPath = isAbsolute ? normSubdir : `${normWorkFolder}/${normSubdir}`;
     }
   }
 
