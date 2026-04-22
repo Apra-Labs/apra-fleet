@@ -56,7 +56,7 @@ Traces the complete PM workflow for a Gemini member. Each step is marked with it
 | Instruction file named `GEMINI.md` | ✅ | `GeminiProvider.instructionFileName = 'GEMINI.md'` |
 | `execute_prompt` uses `gemini -p "..."` | ✅ | `GeminiProvider.buildPromptCommand()` produces Gemini CLI invocation |
 | `--output-format json` flag applied | ✅ | `GeminiProvider.jsonOutputFlag()` |
-| `--model <tier>` resolved from `cheap`/`standard`/`premium` | ✅ | `modelTiers()` maps: `cheap→gemini-3.1-flash-lite-preview`, `standard→gemini-3-flash-preview`, `premium→gemini-3.1-pro-preview` |
+| `--model <tier>` resolved from `cheap`/`standard`/`premium` | ✅ | `modelTiers()` maps: `cheap→gemini-2.5-flash`, `standard/premium→gemini-2.5-pro` |
 | `max_turns` parameter | ⚠️ | `GeminiProvider.supportsMaxTurns()` returns false — Gemini CLI has no equivalent flag. Sessions rely on Gemini's own turn management. **Mitigation:** PM's retry limit (3×) and PM's cycle limit still apply. |
 | Response parsed correctly | ✅ | `GeminiProvider.parseResponse()` extracts `response` or `result` field from JSON |
 

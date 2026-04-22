@@ -286,7 +286,7 @@ function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
 
 const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'claude-sonnet-4-6',
-  gemini: 'gemini-3-flash-preview',
+  gemini: 'gemini-2.5-pro',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
 };
