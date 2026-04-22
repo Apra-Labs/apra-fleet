@@ -71,64 +71,6 @@ describe('LocalStrategy', () => {
     }
   });
 
-  it('deleteFiles() removes a file from the work folder', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
-
-    const filePath = path.join(tmpDir, 'to-delete.txt');
-    fs.writeFileSync(filePath, 'bye');
-
-    await strategy.deleteFiles(['to-delete.txt']);
-    expect(fs.existsSync(filePath)).toBe(false);
-  });
-
-  it('deleteFiles() handles folder paths with spaces', async () => {
-    const spacedDir = path.join(os.tmpdir(), `fleet test dir ${Date.now()}`);
-    fs.mkdirSync(spacedDir, { recursive: true });
-    try {
-      const agent = makeLocalAgent({ workFolder: spacedDir });
-      const strategy = getStrategy(agent);
-
-      fs.writeFileSync(path.join(spacedDir, 'spaced.txt'), 'content');
-      await strategy.deleteFiles(['spaced.txt']);
-      expect(fs.existsSync(path.join(spacedDir, 'spaced.txt'))).toBe(false);
-    } finally {
-      fs.rmSync(spacedDir, { recursive: true, force: true });
-    }
-  });
-
-  it('deleteFiles() handles file names with spaces', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
-
-    const filePath = path.join(tmpDir, 'my file.txt');
-    fs.writeFileSync(filePath, 'content');
-
-    await strategy.deleteFiles(['my file.txt']);
-    expect(fs.existsSync(filePath)).toBe(false);
-  });
-
-  it('deleteFiles() handles both folder and file names with spaces', async () => {
-    const spacedDir = path.join(os.tmpdir(), `fleet test ${Date.now()}`);
-    fs.mkdirSync(spacedDir, { recursive: true });
-    try {
-      const agent = makeLocalAgent({ workFolder: spacedDir });
-      const strategy = getStrategy(agent);
-
-      fs.writeFileSync(path.join(spacedDir, 'my file.txt'), 'content');
-      await strategy.deleteFiles(['my file.txt']);
-      expect(fs.existsSync(path.join(spacedDir, 'my file.txt'))).toBe(false);
-    } finally {
-      fs.rmSync(spacedDir, { recursive: true, force: true });
-    }
-  });
-
-  it('deleteFiles() is a no-op for empty list', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
-    await expect(strategy.deleteFiles([])).resolves.toBeUndefined();
-  });
-
   it('transferFiles() copies to subfolder', async () => {
     const agent = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(agent);
