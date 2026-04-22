@@ -1,0 +1,24 @@
+{
+  "sprint": "10-issue-blitz",
+  "branch": "sprint/10-issue-blitz",
+  "baseline": {
+    "testFiles": 45,
+    "tests": 786,
+    "skipped": 3
+  },
+  "tasks": [
+    { "id": "T1.1", "issue": 167, "description": "ESM __dirname shim in compose-permissions", "status": "pending", "notes": "" },
+    { "id": "T1.2", "issue": 146, "description": "receive_files Windows path rejection", "status": "pending", "notes": "" },
+    { "id": "T1.3", "issue": 144, "description": "SSH usernames with spaces", "status": "pending", "notes": "" },
+    { "id": "T1.4", "issue": 150, "description": "SSH error messages + hook gating", "status": "pending", "notes": "" },
+    { "id": "V1", "issue": null, "description": "Phase 1 verification checkpoint", "status": "pending", "type": "verify", "notes": "" },
+    { "id": "T2.1", "issue": 70, "description": "send_files basename collision detection", "status": "pending", "notes": "" },
+    { "id": "T2.2", "issue": 8, "description": "Stale task directory cleanup", "status": "pending", "notes": "" },
+    { "id": "T2.3", "issue": 69, "description": "Auto-remove credential helper after expiry", "status": "pending", "notes": "" },
+    { "id": "T2.4", "issue": 72, "description": "Full decommissioning for remove_member", "status": "pending", "notes": "" },
+    { "id": "V2", "issue": null, "description": "Phase 2 verification checkpoint", "status": "pending", "type": "verify", "notes": "" },
+    { "id": "T3.1", "issue": 151, "description": "Local members skip fleet-mcp", "status": "pending", "notes": "" },
+    { "id": "T3.2", "issue": 161, "description": "Release update notification in fleet_status", "status": "pending", "notes": "" },
+    { "id": "V3", "issue": null, "description": "Final verification checkpoint", "status": "pending", "type": "verify", "notes": "" }
+  ]
+}
