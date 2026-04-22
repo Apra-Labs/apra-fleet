@@ -9,6 +9,8 @@ on:
       - 'llms-full.txt'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'llms-full.txt'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
