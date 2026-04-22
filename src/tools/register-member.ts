@@ -22,7 +22,7 @@ export const registerMemberSchema = z.object({
   member_type: z.enum(['local', 'remote']).default('remote').describe('Member type: "local" for same machine, "remote" for SSH (default: "remote")'),
   host: z.string().regex(/^[^<>\n\r]+$/, 'host must not contain angle brackets or newlines').optional().describe('IP address or hostname of the remote machine (required for non-cloud remote members; optional for cloud members — auto-resolved from AWS when running)'),
   port: z.number().default(22).describe('SSH port (default: 22, remote members only)'),
-  username: z.string().optional().describe('SSH username (required for remote members)'),
+  username: z.string().optional().describe('SSH username (required for remote members). Spaces are allowed (e.g. "tester tester" on Windows) — passed directly to SSH, never shell-interpolated.'),
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
   password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
