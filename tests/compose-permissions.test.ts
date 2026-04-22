@@ -346,6 +346,44 @@ describe('composePermissions — no llmProvider defaults to Claude', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #151 — fleet-mcp disabled in member config
+// ---------------------------------------------------------------------------
+
+describe('composePermissions — fleet-mcp disabled in member config (#151)', () => {
+  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (proactive)', async () => {
+    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(agent);
+    mockExecCommand.mockResolvedValue(OK);
+
+    await composePermissions({ member_id: agent.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+    expect(writeCmd).toContain('mcpServers');
+    expect(writeCmd).toContain('apra-fleet');
+    expect(writeCmd).toContain('"disabled":');
+  });
+
+  it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (reactive grant)', async () => {
+    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(agent);
+
+    const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write'] } });
+    mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue(OK);
+
+    await composePermissions({ member_id: agent.id, role: 'doer', grant: ['Bash(npm:*)'] });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+    expect(writeCmd).toContain('mcpServers');
+    expect(writeCmd).toContain('apra-fleet');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Fresh/empty permissions.json — no crash (#88)
 // ---------------------------------------------------------------------------
 
