@@ -85,16 +85,16 @@ export class GeminiProvider implements ProviderAdapter {
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
     return {
-      cheap: 'gemini-2.5-flash',
-      standard: 'gemini-2.5-pro',
-      premium: 'gemini-3-pro-preview',
+      cheap: 'gemini-3.1-flash-lite-preview',
+      standard: 'gemini-3-flash-preview',
+      premium: 'gemini-3.1-pro-preview',
     };
   }
 
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
-    if (tier === 'cheap') return 'gemini-2.5-flash';
-    if (tier === 'premium') return 'gemini-3-pro-preview';
-    return 'gemini-2.5-pro';
+    if (tier === 'cheap') return 'gemini-3.1-flash-lite-preview';
+    if (tier === 'premium') return 'gemini-3.1-pro-preview';
+    return 'gemini-3-flash-preview';
   }
 
   modelFlag(model: string): string {
