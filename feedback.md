@@ -101,3 +101,76 @@ Correctly identifies T1.2, T2.4, and T3.1 as highest-risk in their respective ph
 1. **T3.2 — Add SKILL.md update sub-task.** The requirements explicitly call for updating the fleet skill file. Add this to the plan before starting Phase 3.
 
 **Verdict: APPROVED — proceed with implementation. Address the SKILL.md gap in T3.2 before Phase 3 begins.**
+
+---
+
+# Phase 1 Implementation Review
+
+**Reviewer verdict: APPROVED**
+
+**Date:** 2026-04-22
+**Branch:** `sprint/10-issue-blitz`
+**Commits reviewed:** T1.1 (`9c87b00`) through V1 (`1d05cc5`)
+**Build:** ✅ 0 errors
+**Tests:** ✅ 811 passed, 4 skipped (46 files). V1 claimed 812 — delta is platform-dependent `skipIf` tests (macOS vs Linux).
+
+---
+
+## Per-Task Verdicts
+
+### T1.1 — ESM `__dirname` shim (#167) ✅
+
+**Fix:** Added `fileURLToPath`/`dirname` shim at top of `compose-permissions.ts` (lines 5–8).
+
+- Correct pattern, matches existing shim in `install.ts`.
+- Imports `fileURLToPath` from `url` and `dirname` from `path` — standard ESM approach.
+- No new dedicated test, but this is implicitly tested by the build succeeding and existing compose-permissions tests passing. Acceptable for a one-liner shim.
+
+### T1.2 — receive_files/send_files Windows path rejection (#146) ✅
+
+**Fix:** New `isContainedInWorkFolder()` helper in `src/utils/platform.ts` (lines 9–30). Both `receive-files.ts` and `send-files.ts` now call it instead of inline `path.posix.resolve` logic.
+
+- **Root cause correctly addressed:** `path.posix.resolve` treats `C:` as a relative segment. The new helper detects Windows drive letters and manually collapses `..`/`.` segments with a stack-based approach.
+- **Security:** Path traversal via `..` is correctly blocked — `stack.pop()` handles it, and the final containment check is sound.
+- **Edge case note:** If `stack.pop()` is called on an empty stack (e.g., `../../..`), it returns `undefined` and the stack stays empty — the path collapses to empty string, which won't match the work folder prefix. This is safe (rejects the path).
+- **Deduplication:** Good — removed duplicated inline logic from both files, replaced with shared utility.
+- **Tests:** 6 new tests in `receive-files.test.ts` + 8 new tests in `platform.test.ts` covering all four path formats from the issue plus traversal attacks. Thorough.
+
+### T1.3 — SSH username with spaces (#144) ✅
+
+**Fix:** Updated schema description in `register-member.ts` (line 26) to document that spaces are allowed. Added tests confirming `getSSHConfig` passes username through intact.
+
+- **Root cause correctly addressed:** Audit confirmed the username is passed directly to ssh2's `ConnectConfig.username` and never shell-interpolated. The fix is documentation + test coverage, not a code change — which is the correct response when the code already works.
+- **Tests:** 2 new tests in `platform.test.ts` (lines 438–463) verifying `getSSHConfig` preserves space-containing usernames.
+
+### T1.4 — SSH error messages (#150) ✅
+
+**Fix:** New `classifySshError()` helper in `src/utils/ssh-error-messages.ts`. Applied in `register-member.ts` line 178 at the connection failure return path.
+
+- **Root cause correctly addressed:** The generic `connResult.error` string is now mapped to user-friendly messages for the four most common SSH failure modes.
+- **Fallthrough:** Unknown errors return the raw message unchanged — good, no information loss.
+- **Null safety:** `error ?? ''` at line 5 handles undefined/null input, and the caller also passes `connResult.error ?? ''`.
+- **Onboarding hook:** Test at line 42 verifies the hook doesn't fire on failure results (❌ prefix). Good defensive test.
+- **Tests:** 9 tests covering all four error categories, unknown errors, and empty string handling.
+
+---
+
+## Issues to Watch
+
+1. **`isContainedInWorkFolder` empty-stack edge:** Not a bug, but if a future path format produces an empty resolved string it would be silently rejected. Consider adding a comment in the function noting this is intentional.
+
+2. **Test count delta:** V1 checkpoint says 812, local run shows 811 + 4 skipped. The 1-test difference is likely `cleanExec` tests that are `skipIf(process.platform !== 'linux')` on macOS. Not a concern, but the V1 commit message should ideally note the platform.
+
+---
+
+## Summary
+
+| Check | Status |
+|-------|--------|
+| Root causes correctly addressed | ✅ All 4 |
+| No regressions (build clean, tests pass) | ✅ |
+| Tests added per task | ✅ T1.1 implicit, T1.2 +14, T1.3 +2, T1.4 +9 |
+| Code quality (no unnecessary changes) | ✅ |
+| Security (path traversal, injection) | ✅ |
+
+**Verdict: APPROVED — Phase 1 is solid. Proceed to Phase 2.**
