@@ -1,24 +1,20 @@
 {
   "sprint": "10-issue-blitz",
   "branch": "sprint/10-issue-blitz",
-  "baseline": {
-    "testFiles": 45,
-    "tests": 786,
-    "skipped": 3
-  },
+  "updatedAt": "2026-04-22",
   "tasks": [
-    { "id": "T1.1", "issue": 167, "description": "ESM __dirname shim in compose-permissions", "status": "pending", "notes": "" },
-    { "id": "T1.2", "issue": 146, "description": "receive_files Windows path rejection", "status": "pending", "notes": "" },
-    { "id": "T1.3", "issue": 144, "description": "SSH usernames with spaces", "status": "pending", "notes": "" },
-    { "id": "T1.4", "issue": 150, "description": "SSH error messages + hook gating", "status": "pending", "notes": "" },
-    { "id": "V1", "issue": null, "description": "Phase 1 verification checkpoint", "status": "pending", "type": "verify", "notes": "" },
-    { "id": "T2.1", "issue": 70, "description": "send_files basename collision detection", "status": "pending", "notes": "" },
-    { "id": "T2.2", "issue": 8, "description": "Stale task directory cleanup", "status": "pending", "notes": "" },
-    { "id": "T2.3", "issue": 69, "description": "Auto-remove credential helper after expiry", "status": "pending", "notes": "" },
-    { "id": "T2.4", "issue": 72, "description": "Full decommissioning for remove_member", "status": "pending", "notes": "" },
-    { "id": "V2", "issue": null, "description": "Phase 2 verification checkpoint", "status": "pending", "type": "verify", "notes": "" },
-    { "id": "T3.1", "issue": 151, "description": "Local members skip fleet-mcp", "status": "pending", "notes": "" },
-    { "id": "T3.2", "issue": 161, "description": "Release update notification in fleet_status", "status": "pending", "notes": "" },
-    { "id": "V3", "issue": null, "description": "Final verification checkpoint", "status": "pending", "type": "verify", "notes": "" }
+    { "id": "T1.1", "issue": "#167", "description": "ESM __dirname shim in compose-permissions", "phase": 1, "type": "task", "status": "completed", "notes": "Added fileURLToPath/dirname shim at top of compose-permissions.ts. Mirrors install.ts pattern." },
+    { "id": "T1.2", "issue": "#146", "description": "receive_files Windows path rejection", "phase": 1, "type": "task", "status": "completed", "notes": "Added isContainedInWorkFolder() to platform.ts. Handles Windows drive-letter paths without path.posix.resolve. Both receive-files.ts and send-files.ts updated. 6 new tests added." },
+    { "id": "T1.3", "issue": "#144", "description": "SSH usernames with spaces", "phase": 1, "type": "task", "status": "completed", "notes": "Audit confirmed agent.username never shell-interpolated. Added schema docs noting spaces allowed. Added getSSHConfig and isContainedInWorkFolder unit tests." },
+    { "id": "T1.4", "issue": "#150", "description": "SSH error messages + hook gating", "phase": 1, "type": "task", "status": "completed", "notes": "Created classifySshError() helper in ssh-error-messages.ts. Applied in registerMember(). Onboarding hook already gated on ✅ prefix. Added 9 unit tests." },
+    { "id": "V1",   "issue": "—",    "description": "Phase 1 verification checkpoint",  "phase": 1, "type": "verify", "status": "completed", "notes": "Build: 0 errors. Tests: 812 passed (46 files), 3 skipped. Baseline was 786 tests / 45 files. Each issue added ≥1 new test. Pushed to origin." },
+    { "id": "T2.1", "issue": "#70",  "description": "send_files basename collision detection", "phase": 2, "type": "task", "status": "pending" },
+    { "id": "T2.2", "issue": "#8",   "description": "Stale task directory cleanup", "phase": 2, "type": "task", "status": "pending" },
+    { "id": "T2.3", "issue": "#69",  "description": "Auto-remove credential helper after expiry", "phase": 2, "type": "task", "status": "pending" },
+    { "id": "T2.4", "issue": "#72",  "description": "Full decommissioning for remove_member", "phase": 2, "type": "task", "status": "pending" },
+    { "id": "V2",   "issue": "—",    "description": "Phase 2 verification checkpoint", "phase": 2, "type": "verify", "status": "pending" },
+    { "id": "T3.1", "issue": "#151", "description": "Local members skip fleet-mcp", "phase": 3, "type": "task", "status": "pending" },
+    { "id": "T3.2", "issue": "#161", "description": "Release update notification in fleet_status", "phase": 3, "type": "task", "status": "pending" },
+    { "id": "V3",   "issue": "—",    "description": "Final verification checkpoint", "phase": 3, "type": "verify", "status": "pending" }
   ]
 }
