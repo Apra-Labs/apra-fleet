@@ -1,7 +1,7 @@
 {
   "sprint": "10-issue-blitz",
   "branch": "sprint/10-issue-blitz",
-  "updatedAt": "2026-04-22",
+  "updatedAt": "2026-04-22T02:55:00Z",
   "tasks": [
     { "id": "T1.1", "issue": "#167", "description": "ESM __dirname shim in compose-permissions", "phase": 1, "type": "task", "status": "completed", "notes": "Added fileURLToPath/dirname shim at top of compose-permissions.ts. Mirrors install.ts pattern." },
     { "id": "T1.2", "issue": "#146", "description": "receive_files Windows path rejection", "phase": 1, "type": "task", "status": "completed", "notes": "Added isContainedInWorkFolder() to platform.ts. Handles Windows drive-letter paths without path.posix.resolve. Both receive-files.ts and send-files.ts updated. 6 new tests added." },
@@ -13,8 +13,8 @@
     { "id": "T2.3", "issue": "#69",  "description": "Auto-remove credential helper after expiry", "phase": 2, "type": "task", "status": "completed", "notes": "Created src/services/credential-cleanup.ts with 55-min default TTL timer (unref'd). scheduleCredentialCleanup() called after deploy in provision-vcs-auth.ts; cancelCredentialCleanup() called in remove-member.ts. 8 unit tests added." },
     { "id": "T2.4", "issue": "#72",  "description": "Full decommissioning for remove_member", "phase": 2, "type": "task", "status": "completed", "notes": "remove-member.ts: busy-check (readMemberStatus), cancelCredentialCleanup, VCS revoke, SSH authorized_keys removal, local key cleanup. statusline.ts: added readMemberStatus export. 9 unit tests added." },
     { "id": "V2",   "issue": "—",    "description": "Phase 2 verification checkpoint", "phase": 2, "type": "verify", "status": "completed", "notes": "Build: 0 errors. Tests: 846 passed (50 files), 3 skipped. Baseline was 812 tests / 46 files. Phase 2 added 34 new tests across 4 new test files. Pushed to origin." },
-    { "id": "T3.1", "issue": "#151", "description": "Local members skip fleet-mcp", "phase": 3, "type": "task", "status": "pending" },
-    { "id": "T3.2", "issue": "#161", "description": "Release update notification in fleet_status", "phase": 3, "type": "task", "status": "pending" },
-    { "id": "V3",   "issue": "—",    "description": "Final verification checkpoint", "phase": 3, "type": "verify", "status": "pending" }
+    { "id": "T3.1", "issue": "#151", "description": "Local members skip fleet-mcp", "phase": 3, "type": "task", "status": "completed", "notes": "ClaudeProvider.composePermissionConfig() now includes mcpServers.apra-fleet.disabled=true in every settings.local.json delivered to members. 2 new tests in compose-permissions.test.ts." },
+    { "id": "T3.2", "issue": "#161", "description": "Release update notification in fleet_status", "phase": 3, "type": "task", "status": "completed", "notes": "Created src/services/update-check.ts with fire-and-forget GitHub API fetch (5s timeout, silent on failure). fleet_status prepends one-line notice when newer stable release available; JSON format adds updateAvailable object. Pre-release tags ignored. SKILL.md updated. 10 new tests in update-check.test.ts." },
+    { "id": "V3",   "issue": "—",    "description": "Final verification checkpoint", "phase": 3, "type": "verify", "status": "completed", "notes": "Build: 0 errors. Tests: 858 passed (51 files), 3 skipped. Phase 2 baseline was 846. Phase 3 added 12 new tests. Pushed to origin." }
   ]
 }
