@@ -13,6 +13,7 @@ import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { collectOobPassword } from '../services/auth-socket.js';
+import { classifySshError } from '../utils/ssh-error-messages.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -174,7 +175,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       if (isCloud) {
         warnings.push(`SSH connectivity check failed: ${connResult.error}. Update host via update_member when the instance starts.`);
       } else {
-        return `❌ Failed to connect to ${target} — ${connResult.error}\nMember was NOT registered.`;
+        return `❌ Failed to connect to ${target} — ${classifySshError(connResult.error ?? '')}\nMember was NOT registered.`;
       }
     }
 
