@@ -349,7 +349,7 @@ describe('runInstall multi-provider', () => {
     expect(parsed.defaultModel).toBe('claude-sonnet-4-6');
   });
 
-  it('writes defaultModel for Gemini (gemini-2.5-pro) to settings.json', async () => {
+  it('writes defaultModel for Gemini (gemini-3-flash-preview) to settings.json', async () => {
     await runInstall(['--llm', 'gemini']);
 
     const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
@@ -360,7 +360,7 @@ describe('runInstall multi-provider', () => {
     const defaultModelWrite = writes.find(c => c[1].toString().includes('"defaultModel"'));
     expect(defaultModelWrite).toBeDefined();
     const parsed = JSON.parse(defaultModelWrite![1].toString());
-    expect(parsed.defaultModel).toBe('gemini-2.5-pro');
+    expect(parsed.defaultModel).toBe('gemini-3-flash-preview');
   });
 
   it('writes defaultModel for Codex (gpt-5.4) to config.toml', async () => {
