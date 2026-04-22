@@ -124,8 +124,9 @@ export class GeminiProvider implements ProviderAdapter {
     // TODO (Task 2.1): read existing settings.json via cmds.readRemoteJson before merging,
     //   so that oauth-personal and other user settings are preserved.
     const mode = role === 'doer' ? 'auto_edit' : 'default';
-    // For now, carry only the mode field; caller is responsible for merging with existing content.
-    const settings: Record<string, unknown> = { mode };
+    // mcp.excluded suppresses fleet-mcp for members (confirmed via experiment: project-level
+    // .gemini/settings.json mcp.excluded overrides global mcpServers registration).
+    const settings: Record<string, unknown> = { mode, mcp: { excluded: ['apra-fleet'] } };
 
     // fleet.toml: policy rules
     let toml = `[policy]\nmode = "${mode}"\ndescription = "Fleet ${role} permissions"\n`;

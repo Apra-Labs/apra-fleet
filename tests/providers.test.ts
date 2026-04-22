@@ -300,6 +300,20 @@ describe('GeminiProvider', () => {
     expect(p.supportsOAuthCopy()).toBe(false);
     expect(p.supportsApiKey()).toBe(true);
   });
+
+  it('composePermissionConfig includes mcp.excluded to suppress fleet-mcp (#151)', () => {
+    const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
+    const mcp = settings.mcp as Record<string, unknown>;
+    expect(mcp).toBeDefined();
+    expect(mcp.excluded).toContain('apra-fleet');
+  });
+
+  it('composePermissionConfig suppresses fleet-mcp for reviewer too (#151)', () => {
+    const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
+    const mcp = settings.mcp as Record<string, unknown>;
+    expect(mcp).toBeDefined();
+    expect(mcp.excluded).toContain('apra-fleet');
+  });
 });
 
 // ─── CodexProvider ────────────────────────────────────────────────────────────
