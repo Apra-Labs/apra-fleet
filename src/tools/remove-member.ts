@@ -7,11 +7,23 @@ import { getProvider } from '../providers/index.js';
 import { getAgentOS } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
-import { writeStatusline } from '../services/statusline.js';
+import { writeStatusline, readMemberStatus } from '../services/statusline.js';
+import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
+import { githubProvider } from '../services/vcs/github.js';
+import { bitbucketProvider } from '../services/vcs/bitbucket.js';
+import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
+import type { VcsProviderService } from '../services/vcs/types.js';
+
+const vcsProviders: Record<string, VcsProviderService> = {
+  github: githubProvider,
+  bitbucket: bitbucketProvider,
+  'azure-devops': azureDevOpsProvider,
+};
 
 export const removeMemberSchema = z.object({
   ...memberIdentifier,
+  force: z.boolean().optional().default(false).describe('Remove even if the member is currently busy'),
 });
 
 export type RemoveMemberInput = z.infer<typeof removeMemberSchema>;
@@ -21,8 +33,17 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
 
+  // Idle check: block if the member is currently running a task
+  const currentStatus = readMemberStatus(agent.id);
+  if (currentStatus === 'busy' && !input.force) {
+    return `⛔ Member "${agent.friendlyName}" is currently busy. Wait for the task to complete or set force=true to remove anyway.`;
+  }
+
   const strategy = getStrategy(agent);
   const warnings: string[] = [];
+
+  // Cancel any pending credential cleanup timer
+  cancelCredentialCleanup(agent.id);
 
   // Best-effort: clear auth credentials from the member before removing
   // Skip for local members — their credentials belong to the host machine
@@ -31,6 +52,10 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
       const conn = await strategy.testConnection();
       if (conn.ok) {
         const cmds = getOsCommands(getAgentOS(agent));
+        const exec = async (cmd: string) => {
+          const r = await strategy.execCommand(cmd, 15000);
+          return r.stdout;
+        };
         const provider = getProvider(agent.llmProvider);
 
         // Remove credentials files for any provider that uses them
@@ -42,6 +67,31 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         // Remove the provider's API key env var from shell profiles
         for (const cmd of cmds.unsetEnv(provider.authEnvVar)) {
           await strategy.execCommand(cmd, 10000).catch(() => {});
+        }
+
+        // VCS auth revoke: remove git credential helper if a VCS provider is configured
+        if (agent.vcsProvider) {
+          const vcsService = vcsProviders[agent.vcsProvider];
+          if (vcsService) {
+            await vcsService.revoke(agent, cmds, exec).catch(() => {});
+          }
+        }
+
+        // SSH key removal: remove fleet public key from remote authorized_keys
+        if (agent.keyPath) {
+          const pubKeyPath = `${agent.keyPath}.pub`;
+          try {
+            const pubKey = fs.readFileSync(pubKeyPath, 'utf-8').trim();
+            // Use the key type + base64 portion to match (ignore trailing comment)
+            const parts = pubKey.split(/\s+/);
+            const keyMatch = parts.slice(0, 2).join(' ');
+            // Escape forward slashes for sed delimiter
+            const escapedKey = keyMatch.replace(/\//g, '\\/');
+            await strategy.execCommand(
+              `sed -i '/${escapedKey}/d' ~/.ssh/authorized_keys`,
+              10000,
+            ).catch(() => {});
+          } catch { /* pub key file not found — skip */ }
         }
       } else {
         warnings.push('Member was offline — could not clear auth credentials');
@@ -82,4 +132,3 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
   return `Failed to remove member "${agent.id}".`;
 }
-
