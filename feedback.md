@@ -174,3 +174,93 @@ Correctly identifies T1.2, T2.4, and T3.1 as highest-risk in their respective ph
 | Security (path traversal, injection) | ✅ |
 
 **Verdict: APPROVED — Phase 1 is solid. Proceed to Phase 2.**
+
+---
+
+# Phase 2 Implementation Review
+
+**Reviewer verdict: APPROVED**
+
+**Date:** 2026-04-22
+**Branch:** `sprint/10-issue-blitz`
+**Commits reviewed:** T2.1 (`f1b8263`) through V2 (`3eec3f0`)
+**Build:** ✅ 0 errors
+**Tests:** ✅ 845 passed, 4 skipped (50 files). Up from 812 Phase 1 baseline (+33 tests).
+
+---
+
+## Per-Task Verdicts
+
+### T2.1 — send_files basename collision detection (#70) ✅
+
+**Fix:** Pre-flight `Map`-based collision check in `send-files.ts` (lines 58–70). Returns a descriptive error listing which files share a basename before any transfer begins.
+
+- **Root cause correctly addressed:** `sftp.ts` uses `path.basename(localPath)` as the remote filename, so two files with the same basename would silently overwrite each other. The check runs before `getStrategy()` / `transferFiles()`, so no network call is wasted.
+- **Implementation:** Clean — O(n) scan with a Map, collects all collision pairs, returns early with a clear error message. Does not block the case where all basenames are unique.
+- **Tests:** 4 new tests in `send-files-collision.test.ts` covering: two-file collision, three-file with one collision pair, unique basenames allowed, single file allowed. Good coverage.
+
+### T2.2 — Stale task directory cleanup (#8) ✅
+
+**Fix:** New `src/services/task-cleanup.ts` with `cleanupStaleTasks()` (startup sweep) and `scheduleTaskCleanup()` (per-task timer). Hooked into `index.ts` startup via `void cleanupStaleTasks()`.
+
+- **Root cause correctly addressed:** `task-wrapper.ts` creates directories under `~/.fleet-tasks/` but never cleans them up.
+- **Design:** Two-tier retention — completed tasks default to 1 hour (`FLEET_TASK_RETENTION_HOURS_SUCCESS`), failed/unknown tasks default to 168 hours / 7 days (`FLEET_TASK_RETENTION_HOURS`). Configurable via env vars.
+- **PID guard:** Correctly skips directories with a live PID (`process.kill(pid, 0)` check). This prevents cleaning up running tasks.
+- **Age reference:** Uses `status.json.updated` timestamp when available, falls back to directory mtime. Sound approach.
+- **`void` call:** Startup invocation is fire-and-forget (`void cleanupStaleTasks()`), which is correct — cleanup failure shouldn't block server start.
+- **`scheduleTaskCleanup` timer:** Uses `.unref()` so the timer doesn't keep the process alive. Good.
+- **Tests:** 10 tests (8 for `cleanupStaleTasks`, 2 for `scheduleTaskCleanup`) covering both retention windows, live PID skip, missing status.json fallback, env var override, non-existent directory, and timer-based scheduled cleanup. Thorough.
+
+### T2.3 — Credential helper TTL auto-cleanup (#69) ✅
+
+**Fix:** New `src/services/credential-cleanup.ts` with `scheduleCredentialCleanup()` / `cancelCredentialCleanup()`. Integrated into `provision-vcs-auth.ts` — cancels any existing timer before re-provisioning, then schedules cleanup based on `expiresAt` metadata.
+
+- **Root cause correctly addressed:** After VCS auth provisioning, the credential helper remains on the remote member indefinitely even after the token expires.
+- **Design:** Timer map keyed by agent ID. Default TTL is 55 minutes (matches typical 1-hour GitHub token TTL minus 5-minute safety margin). When `expiresAt` is provided, uses the exact expiry time.
+- **Re-provision safety:** `cancelCredentialCleanup` is called at the top of `provisionVcsAuth` before any work, and new timer is scheduled after successful provisioning. This correctly handles token refresh without double-revoking.
+- **Error handling:** Timer callback is wrapped in try/catch with silent failure — appropriate for best-effort cleanup.
+- **`_getCleanupTimers()` export:** Test-only accessor. Prefixed with `_` to signal internal use. Acceptable.
+- **Tests:** 10 tests covering default TTL scheduling, custom `expiresAt`, revoke invocation on timer fire, no-op when agent has no vcsProvider, silent error handling, timer replacement on re-provision, multi-agent independence, cancellation, and cancellation of non-existent agent. Excellent coverage.
+
+### T2.4 — Full decommissioning protocol for remove_member (#72) ✅
+
+**Fix:** Extended `remove-member.ts` with: (1) busy-member guard via `readMemberStatus`, (2) `cancelCredentialCleanup` before removal, (3) VCS auth revoke via provider service, (4) SSH authorized_keys cleanup, (5) new `force` parameter to override busy check.
+
+- **Root cause correctly addressed:** `remove_member` previously only cleared LLM credentials but left VCS auth, SSH keys, and credential cleanup timers dangling.
+- **Busy guard:** Reads statusline state; blocks removal if member is `busy` unless `force=true`. Correct UX — prevents accidentally killing in-flight tasks.
+- **VCS revoke:** Calls `vcsService.revoke()` with `.catch(() => {})` — best-effort, doesn't block removal on revoke failure. Correct.
+- **SSH key cleanup:** Reads the fleet public key, extracts type+base64, and uses `sed -i` to remove the matching line from `authorized_keys`. Wrapped in try/catch for missing pubkey file. Correct approach.
+- **`readMemberStatus` addition:** Small helper in `statusline.ts` — reads persisted state, defaults to `'idle'`. Clean.
+- **Integration with T2.3:** Calls `cancelCredentialCleanup` to clear any pending timer. Correct dependency chain.
+- **Tests:** 10 tests covering busy-block, force-override, idle-allow, cancelCredentialCleanup invocation, VCS revoke for remote members, local member skip, no-vcsProvider skip, keyPath-undefined skip, offline member warning, and revoke-error resilience. Comprehensive.
+
+---
+
+## Cross-Cutting Observations
+
+1. **Dependency chain respected:** T2.4 correctly depends on T2.3 (`cancelCredentialCleanup`, `credential-cleanup.ts`). Execution order T2.1 → T2.2 → T2.3 → T2.4 is sound.
+2. **No regressions:** All 845 tests pass. No existing test files were modified.
+3. **Error boundaries:** All four tasks use best-effort patterns (try/catch, `.catch(() => {})`) for cleanup operations, ensuring that failures in cleanup don't cascade.
+4. **Consistent mocking patterns:** All new test files follow the established project pattern with `vi.mock`, `backupAndResetRegistry`/`restoreRegistry`, and `makeTestAgent`.
+
+---
+
+## Issues to Watch
+
+1. **`sed -i` portability (T2.4):** The `sed -i '/.../d'` command in authorized_keys cleanup uses GNU sed syntax. On BSD/macOS remotes, `sed -i` requires `sed -i ''`. Since this targets remote members (likely Linux), it's acceptable, but worth noting if macOS remotes are ever supported.
+2. **Timer accumulation (T2.3):** If many agents are provisioned and never removed, the timer map grows. Not a practical concern at fleet scale, but `cleanupTimers` has no upper bound. Fine for now.
+
+---
+
+## Summary
+
+| Check | Status |
+|-------|--------|
+| Root causes correctly addressed | ✅ All 4 |
+| No regressions (build clean, tests pass) | ✅ 845 tests (+33 from Phase 1) |
+| Tests added per task | ✅ T2.1 +4, T2.2 +10, T2.3 +10, T2.4 +10 |
+| Code quality (no unnecessary changes) | ✅ |
+| Cross-task dependencies correct | ✅ T2.4 → T2.3 |
+| Security (cleanup, auth revoke) | ✅ |
+
+**Verdict: APPROVED — Phase 2 is solid. Proceed to Phase 3.**
