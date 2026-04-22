@@ -10,6 +10,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning } from '../services/cloud/cost.js';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
+import { getUpdateNotice } from '../services/update-check.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -212,12 +213,24 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   }
   writeStatusline(statusOverrides);
 
+  const updateNotice = getUpdateNotice();
+
   if (format === 'json') {
-    return JSON.stringify({ version: serverVersion, summary: { total: rows.length, online, offline: rows.length - online }, members: rows });
+    const payload: Record<string, unknown> = {
+      version: serverVersion,
+      summary: { total: rows.length, online, offline: rows.length - online },
+      members: rows,
+    };
+    if (updateNotice) {
+      const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
+      if (m) payload.updateAvailable = { latest: m[1], installed: m[2] };
+    }
+    return JSON.stringify(payload);
   }
 
   // Compact: 1 summary line + 1 line per member, multiple fields per line
-  let t = `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
+  let t = updateNotice ? `${updateNotice}\n` : '';
+  t += `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
   t += rows.map(r => {
     const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
     return `${r.icon} ${r.name}(${st})`;
