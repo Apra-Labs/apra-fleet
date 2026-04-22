@@ -42,11 +42,11 @@ Used by the PM for model escalation (`cheap → mid → premium`).
 
 | Tier | Purpose | Claude | Gemini | OpenAI Codex | Copilot |
 |------|---------|--------|--------|--------------|---------|
-| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-2.5-flash` | `gpt-5.4-mini` | `claude-haiku-4-5` |
-| **mid** | Construction, code, config | `sonnet` | `gemini-2.5-pro` | `gpt-5.4` | `claude-sonnet-4-5` |
-| **premium** | Planning, review, architecture | `opus` | `gemini-2.5-pro` (no separate tier) | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
+| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-3.1-flash-lite-preview` | `gpt-5.4-mini` | `claude-haiku-4-5` |
+| **mid** | Construction, code, config | `sonnet` | `gemini-3-flash-preview` | `gpt-5.4` | `claude-sonnet-4-5` |
+| **premium** | Planning, review, architecture | `opus` | `gemini-3.1-pro-preview` | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
 
-**Note:** Gemini and Codex currently lack a distinct premium tier beyond their best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
+**Note:** Codex currently lacks a distinct premium tier beyond its best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
 
 ---
 
