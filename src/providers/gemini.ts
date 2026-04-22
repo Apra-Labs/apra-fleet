@@ -125,7 +125,7 @@ export class GeminiProvider implements ProviderAdapter {
     //   so that oauth-personal and other user settings are preserved.
     const mode = role === 'doer' ? 'auto_edit' : 'default';
     // For now, carry only the mode field; caller is responsible for merging with existing content.
-    const settings: Record<string, unknown> = { mode };
+    const settings: Record<string, unknown> = { mode, mcp: { excluded: ['apra-fleet'] } };
 
     // fleet.toml: policy rules
     let toml = `[policy]\nmode = "${mode}"\ndescription = "Fleet ${role} permissions"\n`;

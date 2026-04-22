@@ -177,6 +177,18 @@ describe('ClaudeProvider', () => {
     expect(p.supportsOAuthCopy()).toBe(true);
     expect(p.supportsApiKey()).toBe(true);
   });
+
+  it('composePermissionConfig disables fleet-mcp for doer (#151)', () => {
+    const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
+    const mcpServers = settings.mcpServers as Record<string, unknown>;
+    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  });
+
+  it('composePermissionConfig disables fleet-mcp for reviewer (#151)', () => {
+    const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
+    const mcpServers = settings.mcpServers as Record<string, unknown>;
+    expect(mcpServers?.['apra-fleet']).toMatchObject({ disabled: true });
+  });
 });
 
 // ─── GeminiProvider ───────────────────────────────────────────────────────────
@@ -299,6 +311,20 @@ describe('GeminiProvider', () => {
   it('does not support OAuth copy, supports API key', () => {
     expect(p.supportsOAuthCopy()).toBe(false);
     expect(p.supportsApiKey()).toBe(true);
+  });
+
+  it('composePermissionConfig suppresses fleet-mcp via mcp.excluded for doer (#151)', () => {
+    const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
+    const mcp = settings.mcp as Record<string, unknown>;
+    expect(Array.isArray(mcp?.excluded)).toBe(true);
+    expect((mcp.excluded as string[]).includes('apra-fleet')).toBe(true);
+  });
+
+  it('composePermissionConfig suppresses fleet-mcp via mcp.excluded for reviewer (#151)', () => {
+    const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
+    const mcp = settings.mcp as Record<string, unknown>;
+    expect(Array.isArray(mcp?.excluded)).toBe(true);
+    expect((mcp.excluded as string[]).includes('apra-fleet')).toBe(true);
   });
 });
 
