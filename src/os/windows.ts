@@ -118,7 +118,7 @@ export class WindowsCommands implements OsCommands {
     if (model) {
       cmd += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
-    return cmd;
+    return pidWrapWindows(cmd);
   }
 
   // --- Filesystem ---

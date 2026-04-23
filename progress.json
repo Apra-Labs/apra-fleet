@@ -9,8 +9,8 @@
       "title": "Validate PID-capture shell wrapper on Unix and Windows",
       "issue": "#147",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "pidWrapUnix/pidWrapWindows helpers + unit tests in tests/unit/pid-wrapper.test.ts. Committed c35aa77."
     },
     {
       "id": "T2",
@@ -18,8 +18,8 @@
       "title": "Add killPid to OsCommands interface + implementations",
       "issue": "#147",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "killPid(pid) added to OsCommands interface, LinuxCommands (kill -9), WindowsCommands (taskkill /F /T). MacOSCommands inherits from Linux. activePid added to Agent type. getStoredPid/setStoredPid/clearStoredPid in agent-helpers.ts. All tests pass."
     },
     {
       "id": "T3",

@@ -115,10 +115,13 @@ export class LinuxCommands implements OsCommands {
     // Provider command starts with `cd "folder" && <cli> ...`
     // Inject PATH prepend after the cd so the binary is findable
     const cdPrefix = `cd "${escapedFolder}" && `;
+    let innerCmd: string;
     if (providerCmd.startsWith(cdPrefix)) {
-      return `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
+      innerCmd = `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
+    } else {
+      innerCmd = `${CLI_PATH}${providerCmd}`;
     }
-    return `${CLI_PATH}${providerCmd}`;
+    return pidWrapUnix(innerCmd);
   }
 
   // --- Filesystem ---
