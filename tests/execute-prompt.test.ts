@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
-import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getStoredPid, setAgentStopped, isAgentStopped, clearAgentStopped } from '../src/utils/agent-helpers.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number) => Promise<SSHExecResult>>();
@@ -435,5 +435,79 @@ describe('kill-before-retry (T5)', () => {
 
     // Kill call must use 5000ms timeout, not the full 300000ms prompt timeout
     expect(mockExecCommand.mock.calls[0][1]).toBe(5000);
+  });
+});
+
+describe('stopped flag (T9)', () => {
+  let agentId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (agentId) {
+      clearStoredPid(agentId);
+      clearAgentStopped(agentId);
+    }
+  });
+
+  it('returns stopped error and clears flag when agent is stopped', async () => {
+    const agent = makeTestAgent({ friendlyName: 'was-stopped' });
+    agentId = agent.id;
+    addAgent(agent);
+    setAgentStopped(agentId);
+
+    const result = await executePrompt({ member_id: agentId, prompt: 'hi', resume: false, timeout_ms: 5000 });
+
+    expect(result).toContain('stopped');
+    expect(result).toContain('was-stopped');
+    // No kill or prompt commands should have been called
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    // Flag cleared so next call will proceed
+    expect(isAgentStopped(agentId)).toBe(false);
+  });
+
+  it('proceeds normally after stopped flag is cleared', async () => {
+    const agent = makeTestAgent({ friendlyName: 'resuming' });
+    agentId = agent.id;
+    addAgent(agent);
+
+    // First call: stopped → clears flag + returns error
+    setAgentStopped(agentId);
+    await executePrompt({ member_id: agentId, prompt: 'first', resume: false, timeout_ms: 5000 });
+    expect(isAgentStopped(agentId)).toBe(false);
+
+    // Second call: flag cleared, executes normally
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'resumed', session_id: 's-res' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: agentId, prompt: 'second', resume: false, timeout_ms: 5000 });
+
+    expect(result).toContain('resumed');
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not set stopped flag on its own — fresh agents proceed normally', async () => {
+    const agent = makeTestAgent({ friendlyName: 'fresh-agent' });
+    agentId = agent.id;
+    addAgent(agent);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok', session_id: 's-fresh' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: agentId, prompt: 'hi', resume: false, timeout_ms: 5000 });
+
+    expect(result).toContain('ok');
+    expect(isAgentStopped(agentId)).toBe(false);
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });
