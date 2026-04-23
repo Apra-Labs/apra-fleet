@@ -27,8 +27,8 @@
       "title": "Wrap provider commands with PID-announcing shell wrapper",
       "issue": "#147",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "buildAgentPromptCommand in linux.ts and windows.ts already call pidWrapUnix/pidWrapWindows (done in T1). Added FLEET_PID assertions to platform.test.ts to formally close T3."
     },
     {
       "id": "V1",
