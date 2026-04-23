@@ -241,6 +241,12 @@ export class LinuxCommands implements OsCommands {
     return `git -C "${escapeDoubleQuoted(folder)}" branch --show-current 2>/dev/null || true`;
   }
 
+  // --- Process management ---
+
+  killPid(pid: number): string {
+    return `kill -9 ${pid}`;
+  }
+
   // --- GPU activity ---
 
   gpuProcessCheck(): string {
