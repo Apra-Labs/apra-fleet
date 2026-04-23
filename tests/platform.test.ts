@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { detectOS } from '../src/utils/platform.js';
+import { detectOS, isContainedInWorkFolder } from '../src/utils/platform.js';
+import { getSSHConfig } from '../src/services/ssh.js';
 import { getOsCommands } from '../src/os/index.js';
 import type { OsCommands } from '../src/os/index.js';
 import { getProvider } from '../src/providers/index.js';
@@ -387,6 +388,77 @@ describe('OsCommands via getOsCommands', () => {
         delete process.env.__FLEET_TEST_MARKER__;
       }
     });
+  });
+});
+
+describe('isContainedInWorkFolder', () => {
+  it('accepts POSIX relative paths', () => {
+    expect(isContainedInWorkFolder('/remote/work', 'file.txt')).toBe(true);
+    expect(isContainedInWorkFolder('/remote/work', 'sub/file.txt')).toBe(true);
+  });
+
+  it('accepts POSIX absolute path inside workFolder', () => {
+    expect(isContainedInWorkFolder('/remote/work', '/remote/work/file.txt')).toBe(true);
+  });
+
+  it('rejects POSIX path escaping via ..', () => {
+    expect(isContainedInWorkFolder('/remote/work', '../escape.txt')).toBe(false);
+    expect(isContainedInWorkFolder('/remote/work', '/etc/passwd')).toBe(false);
+  });
+
+  describe('Windows remote workFolder (#146)', () => {
+    const winFolder = 'C:\\Users\\aUser\\ODM';
+
+    it('accepts backslash relative path', () => {
+      expect(isContainedInWorkFolder(winFolder, 'build\\logs\\net.log')).toBe(true);
+    });
+
+    it('accepts forward slash relative path', () => {
+      expect(isContainedInWorkFolder(winFolder, 'build/logs/net.log')).toBe(true);
+    });
+
+    it('accepts filename only', () => {
+      expect(isContainedInWorkFolder(winFolder, 'net.log')).toBe(true);
+    });
+
+    it('accepts absolute Windows path inside workFolder', () => {
+      expect(isContainedInWorkFolder(winFolder, 'C:\\Users\\aUser\\ODM\\net.log')).toBe(true);
+    });
+
+    it('rejects path escaping via ..', () => {
+      expect(isContainedInWorkFolder(winFolder, '..\\escape.txt')).toBe(false);
+    });
+
+    it('rejects absolute Windows path outside workFolder', () => {
+      expect(isContainedInWorkFolder(winFolder, 'C:\\Users\\other\\secret.txt')).toBe(false);
+    });
+  });
+});
+
+describe('SSH username with spaces (#144)', () => {
+  it('getSSHConfig passes username with spaces intact', () => {
+    const agent: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'tester tester',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    // Must not throw and must preserve the space-containing username
+    const config = getSSHConfig(agent);
+    expect(config.username).toBe('tester tester');
+  });
+
+  it('getSSHConfig passes username without spaces intact', () => {
+    const agent: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'normaluser',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    const config = getSSHConfig(agent);
+    expect(config.username).toBe('normaluser');
   });
 });
 
