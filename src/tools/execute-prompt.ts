@@ -14,6 +14,8 @@ import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
+import { clearStoredPid } from '../utils/agent-helpers.js';
+import { tryKillPid } from '../utils/pid-helpers.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -132,6 +134,9 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const timeoutMs = input.timeout_ms ?? 300000;
 
+  // Kill any leftover session from a previous (possibly zombie) execute_prompt call
+  await tryKillPid(agent.id, strategy, cmds);
+
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
 
@@ -144,6 +149,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
+      await tryKillPid(agent.id, strategy, cmds);
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs);
       parsed = provider.parseResponse(result);
@@ -151,6 +157,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
+      await tryKillPid(agent.id, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs);
@@ -163,6 +170,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     // Update session ID and last used
     touchAgent(agent.id, parsed.sessionId); // T7: idle manager resets its timer via touchAgent
+    clearStoredPid(agent.id);
 
     if (parsed.usage) {
       const prev = agent.tokenUsage ?? { input: 0, output: 0 };

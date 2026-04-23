@@ -53,8 +53,8 @@
       "title": "Kill stored PID before retries and at start of new executePrompt",
       "issue": "#147",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "tryKillPid() in src/utils/pid-helpers.ts. executePrompt kills stored PID before writePromptFile, before each retry, and clears PID on success. 4 unit tests added to execute-prompt.test.ts (kill-before-retry describe). Build clean, 903 tests pass."
     },
     {
       "id": "V2",
