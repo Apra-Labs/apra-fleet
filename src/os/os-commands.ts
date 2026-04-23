@@ -55,6 +55,9 @@ export interface OsCommands {
   // --- Prompt building ---
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string;
 
+  // --- Process management ---
+  killPid(pid: number): string;
+
   // --- Git ---
   gitCurrentBranch(folder: string): string;
 

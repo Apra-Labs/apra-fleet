@@ -66,6 +66,26 @@ export function checkVcsTokenExpiry(agent: Agent, now: Date = new Date()): strin
   return null;
 }
 
+// In-memory PID store — transient, lives only for the server process lifetime.
+// PIDs are OS-level resources; persisting them to disk would leave stale entries
+// across restarts, so an in-memory map is the right storage layer here.
+const _activePids = new Map<string, number>();
+
+/** Return the stored PID for an agent, or undefined if none is recorded. */
+export function getStoredPid(agentId: string): number | undefined {
+  return _activePids.get(agentId);
+}
+
+/** Record the active PID for an agent (called after the process is spawned). */
+export function setStoredPid(agentId: string, pid: number): void {
+  _activePids.set(agentId, pid);
+}
+
+/** Remove the stored PID for an agent (called after kill or successful completion). */
+export function clearStoredPid(agentId: string): void {
+  _activePids.delete(agentId);
+}
+
 /**
  * Touch an agent's lastUsed timestamp and optionally update its sessionId.
  */

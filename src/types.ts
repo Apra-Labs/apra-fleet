@@ -28,6 +28,7 @@ export interface Agent {
   encryptedEnvVars?: Record<string, string>;  // envVarName -> encrypted value
   lastBranch?: string;
   tokenUsage?: { input: number; output: number };
+  activePid?: number;
 }
 
 export interface GitHubAppConfig {

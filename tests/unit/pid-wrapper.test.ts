@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { pidWrapUnix } from '../../src/os/linux.js';
 import { pidWrapWindows } from '../../src/os/windows.js';
+import { LinuxCommands } from '../../src/os/linux.js';
+import { WindowsCommands } from '../../src/os/windows.js';
 
 // ─── pidWrapUnix (string structure) ──────────────────────────────────────────
 
@@ -101,6 +103,32 @@ describe('pidWrapUnix execution', () => {
     const cmd = pidWrapUnix('bash -c "exit 7"');
     const result = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(7);
+  });
+});
+
+// ─── killPid string tests ─────────────────────────────────────────────────────
+
+describe('LinuxCommands.killPid', () => {
+  const cmds = new LinuxCommands();
+
+  it('returns kill -9 command with the given PID', () => {
+    expect(cmds.killPid(1234)).toBe('kill -9 1234');
+  });
+
+  it('works for PID 1', () => {
+    expect(cmds.killPid(1)).toBe('kill -9 1');
+  });
+});
+
+describe('WindowsCommands.killPid', () => {
+  const cmds = new WindowsCommands();
+
+  it('returns taskkill command with force and tree flags', () => {
+    expect(cmds.killPid(5678)).toBe('taskkill /F /T /PID 5678');
+  });
+
+  it('includes /T to terminate child processes', () => {
+    expect(cmds.killPid(100)).toContain('/T');
   });
 });
 

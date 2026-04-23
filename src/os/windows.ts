@@ -270,6 +270,12 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `git -C "${escapeWindowsArg(folder)}" branch --show-current 2>/dev/null || true`;
   }
 
+  // --- Process management ---
+
+  killPid(pid: number): string {
+    return `taskkill /F /T /PID ${pid}`;
+  }
+
   // --- GPU activity ---
 
   gpuProcessCheck(): string {
