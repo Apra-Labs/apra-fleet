@@ -61,8 +61,8 @@
       "phase": 2,
       "title": "VERIFY: Phase 2 — PID Kill-Before-Retry",
       "type": "verify",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "npm run build: clean. npm test: 53 test files, 903 passed, 7 skipped (platform-conditional), 0 failures. T4 extractAndStorePid verified (7 unit tests). T5 tryKillPid verified (4 unit tests). All existing tests pass."
     },
     {
       "id": "T6",
