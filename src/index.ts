@@ -80,6 +80,7 @@ async function startServer() {
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
+  const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
   const { checkForUpdate } = await import('./services/update-check.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
@@ -197,6 +198,7 @@ async function startServer() {
   await server.connect(transport);
 
   idleManager.start();
+  void cleanupStaleTasks();
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');

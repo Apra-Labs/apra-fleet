@@ -55,6 +55,22 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
     }
   }
 
+  // Pre-flight: detect basename collisions that would silently overwrite files
+  const seen = new Map<string, string>();
+  const collisionLines: string[] = [];
+  for (const p of input.local_paths) {
+    const bn = path.basename(p);
+    const first = seen.get(bn);
+    if (first !== undefined) {
+      collisionLines.push(`  ${bn}: "${first}" and "${p}"`);
+    } else {
+      seen.set(bn, p);
+    }
+  }
+  if (collisionLines.length > 0) {
+    return `⛔ Basename collision: these files share a name and would overwrite each other at destination:\n${collisionLines.join('\n')}`;
+  }
+
   const strategy = getStrategy(agent);
 
   writeStatusline(new Map([[agent.id, 'busy']]));

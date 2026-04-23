@@ -30,6 +30,11 @@ function saveState(state: Record<string, string>): void {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state), { mode: 0o600 });
 }
 
+/** Return the last-known status for an agent (defaults to 'idle'). */
+export function readMemberStatus(agentId: string): string {
+  return loadState()[agentId] ?? 'idle';
+}
+
 /**
  * Update the statusline file.
  * - Overrides are merged into the persisted state (not a full reset).
