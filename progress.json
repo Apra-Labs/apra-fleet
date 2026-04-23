@@ -35,8 +35,8 @@
       "phase": 1,
       "title": "VERIFY: Phase 1 — PID Capture Foundation",
       "type": "verify",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "npm run build: clean. npm test: 52 test files, 889 passed, 7 skipped (platform-conditional), 0 failures. pidWrapUnix/pidWrapWindows verified on Windows (string tests always run, execution tests run on host platform). killPid commands correct. Agent.activePid compiles. PID store helpers tested. buildAgentPromptCommand output contains FLEET_PID wrapper for all providers."
     },
     {
       "id": "T4",
