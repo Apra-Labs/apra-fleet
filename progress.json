@@ -1,0 +1,172 @@
+{
+  "sprint": "Sprint 1: Session Lifecycle + OOB Auth Fix",
+  "branch": "sprint/session-lifecycle-oob-fix",
+  "issues": ["#147", "#160", "#148", "#106"],
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": 1,
+      "title": "Validate PID-capture shell wrapper on Unix and Windows",
+      "issue": "#147",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T2",
+      "phase": 1,
+      "title": "Add killPid to OsCommands interface + implementations",
+      "issue": "#147",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T3",
+      "phase": 1,
+      "title": "Wrap provider commands with PID-announcing shell wrapper",
+      "issue": "#147",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V1",
+      "phase": 1,
+      "title": "VERIFY: Phase 1 — PID Capture Foundation",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T4",
+      "phase": 2,
+      "title": "Stream stdout in execCommand and parse PID line",
+      "issue": "#147",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T5",
+      "phase": 2,
+      "title": "Kill stored PID before retries and at start of new executePrompt",
+      "issue": "#147",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V2",
+      "phase": 2,
+      "title": "VERIFY: Phase 2 — PID Kill-Before-Retry",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T6",
+      "phase": 3,
+      "title": "Implement rolling inactivity timer in stream watchdog",
+      "issue": "#160",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T7",
+      "phase": 3,
+      "title": "Update execute_prompt schema description and pass max_total_ms",
+      "issue": "#160",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V3",
+      "phase": 3,
+      "title": "VERIFY: Phase 3 — Activity-Aware Timeout",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T8",
+      "phase": 4,
+      "title": "Add stop_agent tool to fleet-mcp server",
+      "issue": "#148",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T9",
+      "phase": 4,
+      "title": "Prevent stopped agents from re-dispatching",
+      "issue": "#148",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V4",
+      "phase": 4,
+      "title": "VERIFY: Phase 4 — Background Agent Cancellation",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T10",
+      "phase": 5,
+      "title": "Add display-presence detection helpers",
+      "issue": "#106",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T11",
+      "phase": 5,
+      "title": "Skip GUI terminal on headless, show actionable instructions",
+      "issue": "#106",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V5",
+      "phase": 5,
+      "title": "VERIFY: Phase 5 — OOB Auth Fix",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T12",
+      "phase": 6,
+      "title": "Integration test — PID lifecycle",
+      "issue": "#147",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T13",
+      "phase": 6,
+      "title": "Integration test — inactivity timeout + cancellation + OOB fallback",
+      "issue": "#160, #148, #106",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V6",
+      "phase": 6,
+      "title": "VERIFY: Phase 6 — Integration Tests + Final",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}
