@@ -123,20 +123,45 @@ export async function connectWithTOFU(agent: Agent): Promise<{ client: Client; w
 export async function execCommand(
   agent: Agent,
   command: string,
-  timeoutMs: number = 30000
+  timeoutMs: number = 30000,
+  maxTotalMs?: number
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
   resetIdleTimer(poolKey(agent));
 
   return new Promise<SSHExecResult>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`Command timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    let settled = false;
+    function settle(fn: () => void) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(inactivityTimer);
+      if (maxTotalTimer) clearTimeout(maxTotalTimer);
+      fn();
+    }
+
+    // Rolling inactivity timer — resets on each stdout/stderr data event
+    let inactivityTimer: ReturnType<typeof setTimeout>;
+    function resetInactivityTimer() {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
+      }, timeoutMs);
+      inactivityTimer.unref();
+    }
+    resetInactivityTimer();
+
+    // Hard ceiling — never reset regardless of activity
+    let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
+    if (maxTotalMs !== undefined) {
+      maxTotalTimer = setTimeout(() => {
+        settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
+      }, maxTotalMs);
+      maxTotalTimer.unref();
+    }
 
     client.exec(command, (err, stream) => {
       if (err) {
-        clearTimeout(timer);
-        reject(err);
+        settle(() => reject(err));
         return;
       }
 
@@ -153,6 +178,7 @@ export async function execCommand(
       let stderrSpillPath: string | null = null;
 
       stream.on('data', (data: Buffer) => {
+        resetInactivityTimer();
         stdoutLen += data.length;
         if (stdoutLen <= MAX_OUTPUT_BYTES) {
           stdout += data.toString();
@@ -166,6 +192,7 @@ export async function execCommand(
         }
       });
       stream.stderr.on('data', (data: Buffer) => {
+        resetInactivityTimer();
         stderrLen += data.length;
         if (stderrLen <= MAX_OUTPUT_BYTES) {
           stderr += data.toString();
@@ -179,7 +206,6 @@ export async function execCommand(
         }
       });
       stream.on('close', (code: number) => {
-        clearTimeout(timer);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
@@ -191,13 +217,12 @@ export async function execCommand(
         if (warning) {
           stderr = `⚠️ ${warning}\n${stderr}`;
         }
-        resolve({ stdout, stderr, code: code ?? 0 });
+        settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
       });
       stream.on('error', (err: Error) => {
-        clearTimeout(timer);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
-        reject(err);
+        settle(() => reject(err));
       });
     });
   });
