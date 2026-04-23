@@ -5,6 +5,16 @@ import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
 const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
+/**
+ * Wrap a PowerShell command string with PID capture.
+ * Emits FLEET_PID:<pid> (the current PowerShell session's PID) synchronously
+ * to stdout before the inner command executes. The session PID is the killable
+ * handle: `taskkill /F /T /PID <pid>` terminates it and all child processes.
+ */
+export function pidWrapWindows(cmd: string): string {
+  return `Write-Output "FLEET_PID:$PID"; ${cmd}`;
+}
+
 // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
 const MEMINFO_CMD = [
   'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class MI{[DllImport("kernel32.dll")]public static extern bool GlobalMemoryStatusEx(ref MS m);[StructLayout(LayoutKind.Sequential)]public struct MS{public uint dwLength;public uint dwMemoryLoad;public ulong ullTotalPhys;public ulong ullAvailPhys;public ulong ullTotalPageFile;public ulong ullAvailPageFile;public ulong ullTotalVirtual;public ulong ullAvailVirtual;public ulong ullAvailExtendedVirtual;}}\'',

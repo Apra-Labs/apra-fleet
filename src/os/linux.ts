@@ -5,6 +5,16 @@ import { escapeShellArg } from '../utils/shell-escape.js';
 
 const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
 
+/**
+ * Wrap a bash command string with PID capture.
+ * Backgrounds the command in a subshell, emits FLEET_PID:<pid> to stdout
+ * immediately (before the inner command produces any output), then waits
+ * for the subshell and propagates its exit code.
+ */
+export function pidWrapUnix(cmd: string): string {
+  return `{ ${cmd}; } & _fleet_pid=$!; printf 'FLEET_PID:%s\\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?`;
+}
+
 /** Replace leading ~ with $HOME so paths expand correctly inside double-quoted shell strings. */
 function expandHome(p: string): string {
   return p.startsWith('~/') ? `$HOME/${p.slice(2)}` : p === '~' ? '$HOME' : p;
