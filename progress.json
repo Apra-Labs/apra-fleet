@@ -44,8 +44,8 @@
       "title": "Stream stdout in execCommand and parse PID line",
       "issue": "#147",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "extractAndStorePid() in strategy.ts post-processes SSHExecResult from both RemoteStrategy and LocalStrategy. Scans stdout for FLEET_PID:<pid> line, calls setStoredPid, strips the line. 7 unit tests in tests/unit/pid-extraction.test.ts. Build clean, 899 tests pass."
     },
     {
       "id": "T5",

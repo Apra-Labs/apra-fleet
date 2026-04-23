@@ -5,8 +5,22 @@ import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, setStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
+
+/**
+ * Scan stdout for a FLEET_PID:<pid> line, store the PID, and strip the line.
+ * The PID wrapper always emits this as the first stdout line before LLM output.
+ */
+export function extractAndStorePid(agentId: string, result: SSHExecResult): SSHExecResult {
+  const lines = result.stdout.split('\n');
+  const idx = lines.findIndex(l => /^FLEET_PID:\d+\r?$/.test(l));
+  if (idx === -1) return result;
+  const pid = parseInt(lines[idx].replace(/\r$/, '').slice('FLEET_PID:'.length), 10);
+  setStoredPid(agentId, pid);
+  lines.splice(idx, 1);
+  return { ...result, stdout: lines.join('\n') };
+}
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
@@ -26,7 +40,8 @@ class RemoteStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
   async execCommand(command: string, timeoutMs = 30000): Promise<SSHExecResult> {
-    return sshExecCommand(this.agent, command, timeoutMs);
+    const result = await sshExecCommand(this.agent, command, timeoutMs);
+    return extractAndStorePid(this.agent.id, result);
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
@@ -66,8 +81,8 @@ class RemoteStrategy implements AgentStrategy {
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  execCommand(command: string, timeoutMs = 30000): Promise<SSHExecResult> {
-    return new Promise<SSHExecResult>((resolve, reject) => {
+  async execCommand(command: string, timeoutMs = 30000): Promise<SSHExecResult> {
+    const result = await new Promise<SSHExecResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error(`Command timed out after ${timeoutMs}ms`));
       }, timeoutMs);
@@ -94,6 +109,7 @@ class LocalStrategy implements AgentStrategy {
       });
       child.stdin?.end();
     });
+    return extractAndStorePid(this.agent.id, result);
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
