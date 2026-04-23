@@ -11,6 +11,9 @@ import {
   cleanupAuthSocket,
   collectOobPassword,
   collectOobApiKey,
+  hasGraphicalDisplay,
+  hasInteractiveDesktop,
+  launchAuthTerminal,
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
@@ -462,6 +465,89 @@ describe('auth-socket', () => {
 
       expect(launchFn2).toHaveBeenCalledOnce();
       expect('password' in result2).toBe(true);
+    });
+  });
+
+  describe('hasGraphicalDisplay', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('returns false when DISPLAY and WAYLAND_DISPLAY are both unset', () => {
+      vi.stubEnv('DISPLAY', '');
+      vi.stubEnv('WAYLAND_DISPLAY', '');
+      expect(hasGraphicalDisplay()).toBe(false);
+    });
+
+    it('returns true when DISPLAY is set', () => {
+      vi.stubEnv('DISPLAY', ':0');
+      vi.stubEnv('WAYLAND_DISPLAY', '');
+      expect(hasGraphicalDisplay()).toBe(true);
+    });
+
+    it('returns true when WAYLAND_DISPLAY is set', () => {
+      vi.stubEnv('DISPLAY', '');
+      vi.stubEnv('WAYLAND_DISPLAY', 'wayland-0');
+      expect(hasGraphicalDisplay()).toBe(true);
+    });
+  });
+
+  describe('hasInteractiveDesktop', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('returns false when SESSIONNAME is not Console', () => {
+      vi.stubEnv('SESSIONNAME', 'RDP-Tcp#0');
+      expect(hasInteractiveDesktop()).toBe(false);
+    });
+
+    it('returns false when SESSIONNAME is unset', () => {
+      vi.stubEnv('SESSIONNAME', '');
+      expect(hasInteractiveDesktop()).toBe(false);
+    });
+
+    it('returns true when SESSIONNAME is Console', () => {
+      vi.stubEnv('SESSIONNAME', 'Console');
+      expect(hasInteractiveDesktop()).toBe(true);
+    });
+  });
+
+  describe('launchAuthTerminal — headless fallback', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('returns fallback with member name on Linux when DISPLAY is unset', () => {
+      if (process.platform !== 'linux') return;
+      vi.stubEnv('DISPLAY', '');
+      vi.stubEnv('WAYLAND_DISPLAY', '');
+      const onExit = vi.fn();
+      const result = launchAuthTerminal('my-member', [], onExit);
+      expect(result).toMatch(/^fallback:/);
+      expect(result).toContain('! apra-fleet auth my-member');
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('returns fallback with member name on Windows when SESSIONNAME is not Console', () => {
+      if (process.platform !== 'win32') return;
+      vi.stubEnv('SESSIONNAME', 'RDP-Tcp#0');
+      const onExit = vi.fn();
+      const result = launchAuthTerminal('my-member', [], onExit);
+      expect(result).toMatch(/^fallback:/);
+      expect(result).toContain('! apra-fleet auth my-member');
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('returns fallback with actual member name substituted (not a placeholder)', () => {
+      if (process.platform !== 'linux') return;
+      vi.stubEnv('DISPLAY', '');
+      vi.stubEnv('WAYLAND_DISPLAY', '');
+      const onExit = vi.fn();
+      const result = launchAuthTerminal('worker-42', [], onExit);
+      expect(result).toContain('worker-42');
+      expect(result).not.toContain('<name>');
+      expect(result).not.toContain('<member>');
     });
   });
 });
