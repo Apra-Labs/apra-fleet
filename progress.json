@@ -87,8 +87,8 @@
       "phase": 3,
       "title": "VERIFY: Phase 3 — Activity-Aware Timeout",
       "type": "verify",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Approved per .fleet-task.md. T6 rolling inactivity timer verified (3 unit tests). T7 max_total_ms schema and pass-through verified. All tests pass."
     },
     {
       "id": "T8",
@@ -96,8 +96,8 @@
       "title": "Add stop_agent tool to fleet-mcp server",
       "issue": "#148",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "stop-agent.ts created. Resolves member, calls tryKillPid, sets stopped flag via setAgentStopped, clears PID. Registered in index.ts under Agent Lifecycle section. 5 unit tests in tests/stop-agent.test.ts. Committed 0370402."
     },
     {
       "id": "T9",
@@ -105,16 +105,16 @@
       "title": "Prevent stopped agents from re-dispatching",
       "issue": "#148",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "isAgentStopped/setAgentStopped/clearAgentStopped added to agent-helpers.ts. executePrompt checks isAgentStopped early, returns error and clears flag (so next explicit call proceeds). 3 unit tests in execute-prompt.test.ts. Committed e9021bb."
     },
     {
       "id": "V4",
       "phase": 4,
       "title": "VERIFY: Phase 4 — Background Agent Cancellation",
       "type": "verify",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "npm run build: clean. npm test: 55 test files, 914 passed, 7 skipped (platform-conditional), 0 failures. stop_agent kills PID + sets stopped flag (5 unit tests). executePrompt stopped-flag guard surfaces error once then clears (3 unit tests). No regressions."
     },
     {
       "id": "T10",
