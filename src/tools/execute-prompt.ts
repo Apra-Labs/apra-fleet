@@ -24,7 +24,8 @@ export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
-  timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
+  timeout_ms: z.number().default(300000).describe('Inactivity timeout in milliseconds — the command is killed after this many ms without any stdout/stderr output (default: 5 minutes)'),
+  max_total_ms: z.number().optional().describe('Hard ceiling in milliseconds — the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   dangerously_skip_permissions: z.boolean().default(false).describe('Run with --dangerously-skip-permissions so the member can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names — the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
@@ -133,6 +134,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   });
 
   const timeoutMs = input.timeout_ms ?? 300000;
+  const maxTotalMs = input.max_total_ms;
 
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
   await tryKillPid(agent.id, strategy, cmds);
@@ -144,14 +146,14 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    let result = await strategy.execCommand(claudeCmd, timeoutMs);
+    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs);
     let parsed = provider.parseResponse(result);
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
       await tryKillPid(agent.id, strategy, cmds);
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs);
       parsed = provider.parseResponse(result);
     }
 
@@ -160,7 +162,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
       await tryKillPid(agent.id, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs);
       parsed = provider.parseResponse(result);
     }
 
@@ -169,7 +171,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     }
 
     // Update session ID and last used
-    touchAgent(agent.id, parsed.sessionId); // T7: idle manager resets its timer via touchAgent
+    touchAgent(agent.id, parsed.sessionId);
     clearStoredPid(agent.id);
 
     if (parsed.usage) {
