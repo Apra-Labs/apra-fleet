@@ -122,8 +122,8 @@
       "title": "Add display-presence detection helpers",
       "issue": "#106",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "hasGraphicalDisplay() checks $DISPLAY/$WAYLAND_DISPLAY. hasInteractiveDesktop() checks SESSIONNAME=Console. Both exported from auth-socket.ts. 6 unit tests. Committed 9da5a57."
     },
     {
       "id": "T11",
@@ -131,16 +131,16 @@
       "title": "Skip GUI terminal on headless, show actionable instructions",
       "issue": "#106",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "launchAuthTerminal checks hasInteractiveDesktop() on win32 and hasGraphicalDisplay() on linux before attempting GUI terminal. Returns fallback: with '! apra-fleet auth <memberName>' and no misleading cancelled error. 3 unit tests. Committed 9da5a57."
     },
     {
       "id": "V5",
       "phase": 5,
       "title": "VERIFY: Phase 5 — OOB Auth Fix",
       "type": "verify",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "npm run build: clean. npm test: 55 test files, 923 passed, 7 skipped (platform-conditional), 0 failures. hasGraphicalDisplay/hasInteractiveDesktop verified (6 unit tests). Headless fallback includes member name, no cancelled error (3 unit tests). GUI path unchanged. Pushed to origin/sprint/session-lifecycle-oob-fix."
     },
     {
       "id": "T12",
