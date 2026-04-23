@@ -70,8 +70,8 @@
       "title": "Implement rolling inactivity timer in stream watchdog",
       "issue": "#160",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Rolling inactivity timer in ssh.ts execCommand (resets on stdout/stderr data events). LocalStrategy migrated from exec to spawn in strategy.ts for streaming. max_total_ms hard ceiling added. 3 unit tests in tests/unit/inactivity-timer.test.ts. Build clean, 906 tests pass."
     },
     {
       "id": "T7",
@@ -79,8 +79,8 @@
       "title": "Update execute_prompt schema description and pass max_total_ms",
       "issue": "#160",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "timeout_ms description updated to 'inactivity timeout'. max_total_ms optional param added to schema. Both passed through to all 3 strategy.execCommand calls (main + stale-session retry + server-error retry). Build clean, all tests pass."
     },
     {
       "id": "V3",
