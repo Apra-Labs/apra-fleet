@@ -356,6 +356,22 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
 }
 
 /**
+ * Returns true when a graphical display is available on Linux/BSD.
+ * Checks $DISPLAY (X11) and $WAYLAND_DISPLAY (Wayland).
+ */
+export function hasGraphicalDisplay(): boolean {
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
+/**
+ * Returns true when running on an interactive Windows desktop session.
+ * SSH and headless service sessions have SESSIONNAME !== 'Console'.
+ */
+export function hasInteractiveDesktop(): boolean {
+  return process.env.SESSIONNAME === 'Console';
+}
+
+/**
  * Detect available terminal emulator on Linux.
  */
 function findLinuxTerminal(): string | null {
@@ -384,6 +400,14 @@ export function launchAuthTerminal(
 
   try {
     const platform = process.platform;
+
+    if (platform === 'win32' && !hasInteractiveDesktop()) {
+      return `fallback:No interactive desktop session detected (SSH or service context).\n\nRun this in a separate terminal:\n  ! apra-fleet auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    }
+
+    if (platform === 'linux' && !hasGraphicalDisplay()) {
+      return `fallback:No graphical display detected (SSH or headless session).\n\nRun this in a separate terminal:\n  ! apra-fleet auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    }
 
     if (platform === 'darwin') {
       // macOS: Use a complex AppleScript to wait for the window to close and get an exit code.
