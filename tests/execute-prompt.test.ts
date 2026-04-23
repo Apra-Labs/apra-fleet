@@ -5,7 +5,7 @@ import { executePrompt } from '../src/tools/execute-prompt.js';
 import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
 import type { SSHExecResult } from '../src/types.js';
 
-const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
+const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number) => Promise<SSHExecResult>>();
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({

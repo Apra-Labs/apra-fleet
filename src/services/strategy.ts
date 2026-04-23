@@ -1,4 +1,4 @@
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,7 +27,7 @@ import { execCommand as sshExecCommand, testConnection as sshTestConnection, clo
 import { uploadFiles, downloadFiles } from './file-transfer.js';
 
 export interface AgentStrategy {
-  execCommand(command: string, timeoutMs?: number): Promise<SSHExecResult>;
+  execCommand(command: string, timeoutMs?: number, maxTotalMs?: number): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult>;
   /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
@@ -39,8 +39,8 @@ export interface AgentStrategy {
 class RemoteStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  async execCommand(command: string, timeoutMs = 30000): Promise<SSHExecResult> {
-    const result = await sshExecCommand(this.agent, command, timeoutMs);
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
+    const result = await sshExecCommand(this.agent, command, timeoutMs, maxTotalMs);
     return extractAndStorePid(this.agent.id, result);
   }
 
@@ -81,32 +81,96 @@ class RemoteStrategy implements AgentStrategy {
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  async execCommand(command: string, timeoutMs = 30000): Promise<SSHExecResult> {
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`Command timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
       const cmds = getOsCommands(getAgentOS(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
-      const child = exec(wrapped, { cwd: this.agent.workFolder, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, env, shell }, (error, stdout, stderr) => {
-        clearTimeout(timer);
-        let out = stdout ?? '';
-        let err = stderr ?? '';
-        // On maxBuffer overflow, Node kills the process and sets error.code to 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
-        if (error && (error as any).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-          const spillPath = path.join(os.tmpdir(), `fleet-local-output-${uuid()}.txt`);
-          fs.writeFileSync(spillPath, out + err);
-          out = `[OUTPUT TRUNCATED — full output saved to ${spillPath}]\n${out}`;
-          resolve({ stdout: out, stderr: err, code: 1 });
-          return;
+      const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env });
+
+      let settled = false;
+      function settle(fn: () => void) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(inactivityTimer);
+        if (maxTotalTimer) clearTimeout(maxTotalTimer);
+        fn();
+      }
+
+      // Rolling inactivity timer — resets on each stdout/stderr data event
+      let inactivityTimer: ReturnType<typeof setTimeout>;
+      function resetInactivityTimer() {
+        clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(() => {
+          child.kill();
+          settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
+        }, timeoutMs);
+      }
+      resetInactivityTimer();
+
+      // Hard ceiling — never reset regardless of activity
+      let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
+      if (maxTotalMs !== undefined) {
+        maxTotalTimer = setTimeout(() => {
+          child.kill();
+          settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
+        }, maxTotalMs);
+      }
+
+      let stdout = '';
+      let stderr = '';
+      let stdoutLen = 0;
+      let stderrLen = 0;
+      let stdoutSpillStream: fs.WriteStream | null = null;
+      let stderrSpillStream: fs.WriteStream | null = null;
+      let stdoutSpillPath: string | null = null;
+      let stderrSpillPath: string | null = null;
+
+      child.stdout?.on('data', (data: Buffer) => {
+        resetInactivityTimer();
+        stdoutLen += data.length;
+        if (stdoutLen <= MAX_OUTPUT_BYTES) {
+          stdout += data.toString();
+        } else {
+          if (!stdoutSpillStream) {
+            stdoutSpillPath = path.join(os.tmpdir(), `fleet-local-stdout-${uuid()}.txt`);
+            stdoutSpillStream = fs.createWriteStream(stdoutSpillPath);
+            stdoutSpillStream.write(stdout);
+          }
+          stdoutSpillStream.write(data);
         }
-        resolve({
-          stdout: out,
-          stderr: err,
-          code: error ? (error as any).code ?? 1 : 0,
-        });
       });
+
+      child.stderr?.on('data', (data: Buffer) => {
+        resetInactivityTimer();
+        stderrLen += data.length;
+        if (stderrLen <= MAX_OUTPUT_BYTES) {
+          stderr += data.toString();
+        } else {
+          if (!stderrSpillStream) {
+            stderrSpillPath = path.join(os.tmpdir(), `fleet-local-stderr-${uuid()}.txt`);
+            stderrSpillStream = fs.createWriteStream(stderrSpillPath);
+            stderrSpillStream.write(stderr);
+          }
+          stderrSpillStream.write(data);
+        }
+      });
+
+      child.on('close', (code) => {
+        if (stdoutSpillStream) stdoutSpillStream.end();
+        if (stderrSpillStream) stderrSpillStream.end();
+        if (stdoutSpillPath) {
+          stdout = `[OUTPUT TRUNCATED — full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
+        }
+        if (stderrSpillPath) {
+          stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
+        }
+        settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
+      });
+
+      child.on('error', (err) => {
+        settle(() => reject(err));
+      });
+
       child.stdin?.end();
     });
     return extractAndStorePid(this.agent.id, result);
