@@ -1,4 +1,4 @@
-# Cumulative Review — Sprint 1 (Phase 1 + Phase 2)
+# Cumulative Review — Sprint 1 (Phases 1 + 2 + 3)
 
 **Reviewer:** Claude (sprint review agent)
 **Date:** 2026-04-23
@@ -9,72 +9,85 @@
 
 T1 (PID wrapper), T2 (killPid interface + PID store), T3 (buildAgentPromptCommand wraps all providers) — all correct and well-tested. See prior review commit `8e0d4b5` for full details.
 
-## Phase 2 Review
+## Phase 2 Recap (previously approved)
 
-### T4: extractAndStorePid — PASS
+T4 (extractAndStorePid), T5 (tryKillPid + kill-before-retry in executePrompt) — all correct and well-tested. See prior review commit `bbbac96` for full details.
 
-**Location:** `src/services/strategy.ts:15-23`
+## Phase 3 Review
 
-Implementation correctly:
-- Scans stdout line-by-line for `FLEET_PID:\d+` using `findIndex` — not just first line, handles truncation headers or other output before the PID line
-- Strips `\r` for Windows CRLF compatibility
-- Calls `setStoredPid` immediately on detection
-- Removes the PID line from stdout via `splice` so `parseResponse` never sees it
-- Returns original result object unchanged when no PID line is present (identity fast path)
-- Integrated into both `RemoteStrategy.execCommand` (line 43-44) and `LocalStrategy.execCommand` (line 84, 112) — all exec traffic goes through extraction
+### T6: Rolling inactivity timer — PASS
 
-**Test coverage:** 7 unit tests in `tests/unit/pid-extraction.test.ts` — stores PID, strips line, no-op without PID, CRLF handling, non-first-line PID, preserves stderr/code, empty stdout. Thorough.
+**SSH (`src/services/ssh.ts:123-160`):**
+- `execCommand` signature adds `maxTotalMs?: number` as 4th optional param — backward compatible
+- `resetInactivityTimer()` clears and recreates the timeout on every call. Called on both `stream.on('data')` (line 181) and `stream.stderr.on('data')` (line 195). Correct — timer resets on every data event, not just the first chunk
+- Hard ceiling timer created only when `maxTotalMs !== undefined` (line 155). Never reset. Correct
+- `settle()` clears both timers (lines 137-138). No timer leaks
+- Both timers use `.unref()` to avoid keeping the process alive
 
-### T5: tryKillPid + executePrompt integration — PASS
+**Local (`src/services/strategy.ts:84-117`):**
+- Mirrors SSH implementation. `resetInactivityTimer()` called on both `child.stdout.on('data')` (line 129) and `child.stderr.on('data')` (line 144). Correct
+- Hard ceiling timer only created when `maxTotalMs !== undefined` (line 112), never reset. Correct
+- Local strategy calls `child.kill()` before rejecting on timeout (lines 104, 114) — necessary for spawned processes. Correct
+- Minor: Local inactivity timer does not call `.unref()` (line 103) while SSH does (line 149). Not a bug since local commands are awaited, but a minor inconsistency. Non-blocking
 
-**Location:** `src/utils/pid-helpers.ts` (22 lines), `src/tools/execute-prompt.ts` (6 lines added)
+**Interface (`AgentStrategy`, line 30):** Updated to `maxTotalMs?: number` as 3rd param. `RemoteStrategy` passes it through to `sshExecCommand` (line 43). Correct.
 
-`tryKillPid`:
-- Guards on `getStoredPid` returning undefined — no-ops cleanly for agents without a stored PID
-- Clears PID from store BEFORE issuing kill — correct order to prevent double-kill if another call races
-- 5000ms timeout on kill command — sensible; won't block the prompt for long
-- Errors swallowed — kill targets may already be dead, unreachable, or the PID recycled
+**Tests (`tests/unit/inactivity-timer.test.ts`):**
+- Activity keeps alive: command outputs every 100ms with 3000ms inactivity timeout — completes normally. PASS
+- True inactivity kills: `sleep 10` with 300ms timeout — rejects with `/inactivity/`. PASS
+- Hard ceiling kills: output every 50ms (would never trigger 5000ms inactivity), `maxTotalMs=400` kills — rejects with `/max total time/`. PASS
+- All three required scenarios covered with real `LocalStrategy` (not mocks). Good integration confidence
 
-`executePrompt` integration:
-- Kill fires at TOP (line 138), before `writePromptFile` — catches zombie processes from crashed/timed-out prior calls
-- Kill fires before stale-session retry (line 152) — prevents overlapping sessions
-- Kill fires before server-error retry (line 160) — same rationale
-- `clearStoredPid` on success (line 173) — cleans up after normal completion
+### T7: max_total_ms schema + threading — PASS
 
-**Test coverage:** 4 tests in `tests/execute-prompt.test.ts` `kill-before-retry` describe block — kill issued as first execCommand call, PID cleared on success, no kill when no PID stored, kill uses short 5000ms timeout. All meaningful assertions on mock call order and arguments.
+**Schema (`src/tools/execute-prompt.ts:23-32`):**
+- `timeout_ms` description updated: "Inactivity timeout in milliseconds — the command is killed after this many ms without any stdout/stderr output". Correct
+- `max_total_ms` added as `z.number().optional()` with description: "Hard ceiling in milliseconds — the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit." Correct
+
+**Threading (`src/tools/execute-prompt.ts:136-165`):**
+- Both values extracted: `timeoutMs = input.timeout_ms ?? 300000`, `maxTotalMs = input.max_total_ms`. Correct
+- Initial call (line 149): `strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs)` — both passed. GOOD
+- Stale-session retry (line 156): `strategy.execCommand(retryCmd, timeoutMs, maxTotalMs)` — both passed. GOOD
+- Server-error retry (line 165): `strategy.execCommand(retryCmd, timeoutMs, maxTotalMs)` — both passed. GOOD
+
+**Backward compatibility:** When `max_total_ms` is not provided, `maxTotalMs` is `undefined`, which flows through to the `if (maxTotalMs !== undefined)` guard in both SSH and Local strategies, skipping hard-ceiling creation. Existing callers behave identically to before. Correct.
+
+**No regression in `execute-command.ts`:** Only passes `timeout_ms` (lines 200, 223), does not expose `max_total_ms`. `executeCommandSchema` unchanged. Correct.
 
 ### Observation (non-blocking)
 
-On the terminal failure path (line 167-168, `result.code !== 0` after all retries exhausted), the PID is not explicitly cleared. The process has already exited at that point (execCommand completed), so the stored PID is stale. This is harmless — the next `tryKillPid` at the top of a future call will attempt to kill a dead PID, fail silently, and clear it. No action needed, but worth noting for future maintainers.
+No test in `execute-prompt.test.ts` explicitly passes `max_total_ms` and asserts it reaches the mock's 3rd argument across all 3 `execCommand` calls. The threading is correct by code inspection but not test-covered. Consider adding a test for completeness in a future pass.
 
 ## Verification Checklist
 
 | # | Check | Result |
 |---|-------|--------|
-| 1 | FLEET_PID line parsed and stripped from stdout before parseResponse | PASS |
-| 2 | PID stored immediately on detection | PASS |
-| 3 | Works for both SSH (Remote) and Local strategies | PASS |
-| 4 | Kill fires at top of executePrompt, before writePromptFile | PASS |
-| 5 | Kill fires before each retry (stale session + server error) | PASS |
-| 6 | tryKillPid is non-blocking — errors swallowed | PASS |
-| 7 | PID cleared on kill and on successful completion | PASS |
-| 8 | No regression — sessions without stored PID work as before | PASS |
-| 9 | Phase 1 + Phase 2 form coherent end-to-end implementation of #147 | PASS |
+| 1 | Inactivity timer resets on every data event (not just first chunk) | PASS |
+| 2 | Hard ceiling (maxTotalMs) never resets regardless of activity | PASS |
+| 3 | Both SSH and Local strategies updated with identical semantics | PASS |
+| 4 | Tests cover: activity keeps alive, inactivity kills, hard ceiling kills | PASS |
+| 5 | `timeout_ms` schema description updated to "inactivity timeout" | PASS |
+| 6 | `max_total_ms` added as optional with no-limit default | PASS |
+| 7 | Both values threaded through ALL 3 execCommand calls (initial + 2 retries) | PASS |
+| 8 | Backward compat — callers without `max_total_ms` behave identically | PASS |
+| 9 | No regression in execute_command or existing execute_prompt tests | PASS |
 | 10 | `npm run build` clean | PASS |
-| 11 | `npm test` — 904 passed, 6 skipped (platform-gated), 0 failures | PASS |
+| 11 | `npm test` — 907 passed, 6 skipped, 0 failures | PASS |
 
-## End-to-End Coherence (Phase 1 + Phase 2)
+## End-to-End Coherence (Phases 1 + 2 + 3)
 
-The full chain for issue #147 is now complete:
+The full chain for issues #147 and #160 is now complete:
 
 1. **T1** wraps the LLM command in a PID-capture shell wrapper that emits `FLEET_PID:<pid>` as the first stdout line
 2. **T3** ensures `buildAgentPromptCommand` applies this wrapper for all providers
 3. **T4** intercepts `execCommand` output, parses the PID line, stores it, and strips it from stdout
 4. **T2** provides the `killPid` command interface and in-memory PID store
 5. **T5** uses `tryKillPid` to clean up zombie processes before new prompts and before retries
+6. **T6** replaces wall-clock timeout with rolling inactivity timer + optional hard ceiling in both SSH and Local strategies
+7. **T7** exposes both timeout controls in `executePromptSchema` and threads them through all execution paths
 
 No gaps identified. The implementation is minimal, focused, and correctly scoped.
 
 ## Verdict
 
-**APPROVED** — Phase 2 implementation is correct, well-tested, and integrates cleanly with Phase 1. The sprint's core PID lifecycle (capture → store → kill → clear) is complete and ready for V2 verification.
+**APPROVED** — Phases 1, 2, and 3 are all correct, backward-compatible, and well-tested. The sprint's session lifecycle improvements (PID capture → kill → inactivity timer → hard ceiling) form a coherent whole.
