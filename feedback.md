@@ -1,143 +1,52 @@
-# apra-fleet Sprint 2 — Final Code Review (All Phases)
+# apra-fleet Sprint 2 — Final Code Review (Re-review)
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-24 08:55:00-0400
+**Date:** 2026-04-24 09:05:00-0400
 **Verdict:** CHANGES NEEDED
 
----
-
-## Phase 1 (APPROVED — regression check only)
-
-Phase 1 tests still pass. `npm run build` exits 0. `npm test`: **980 passed, 6 skipped, 0 failures** (59 test files). `callingMember` threading verified intact: `execute-command.ts:57,76,135` passes `agent.friendlyName` to `credentialResolve()`; `provision-vcs-auth.ts:19,26,106` passes `callingMember` through `resolveSecureField()` to `credentialResolve()`. T2b wiring untouched by Phase 2 and Phase 3 commits. No regressions. **PASS.**
-
-## Phase 2 (APPROVED — regression check only)
-
-Label isolation intact. `provision-vcs-auth.ts:138` defaults label to provider name. `gitCredentialHelperWrite` constructs per-label credential files and gitconfig entries. `scope_url` used as gitconfig key. Forward-slash fix in `windows.ts` present. Legacy migration at `provision-vcs-auth.ts:156-159` intact. No Phase 2 files modified by Phase 3 commits. **PASS.**
-
-## Phase 3 Review: Unattended Mode + Deprecation (#54)
-
-### 1. Unattended persistence
-
-**PASS.** `register-member.ts:164`: `unattended: input.unattended ?? false` — correctly persists with `false` default. `update-member.ts:121`: `if (input.unattended !== undefined) updates.unattended = input.unattended` — updates only when explicitly provided, preserves existing value on unrelated updates. `types.ts:32`: `unattended?: false | 'auto' | 'dangerous'` — correct union type. Both Zod schemas validate `z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional()`. **PASS.**
-
-### 2. Provider wiring correctness
-
-**PASS (Linux/macOS). FAIL (Windows) — see blocking finding below.**
-
-- **Claude** (`claude.ts:42-46`): `'auto'` → `--permission-mode auto`; `'dangerous'` → `--dangerously-skip-permissions`; `false` → no flags. **PASS.**
-- **Codex** (`codex.ts:40-44`): `'auto'` → `--ask-for-approval auto-edit`; `'dangerous'` → `console.warn`, no flags. **PASS.**
-- **Gemini** (`gemini.ts:39-44`): Both modes → `console.warn`, no flags. **PASS.**
-- **Copilot** (`copilot.ts:43-48`): Both modes → `console.warn`, no flags. **PASS.**
-
-All warnings are clear and do NOT append CLI flags for unsupported modes. **PASS.**
-
-### 3. Deprecation correctness
-
-**PASS.**
-
-- `execute-prompt.ts:30`: `dangerously_skip_permissions` remains in schema with `DEPRECATED` description — not a breaking removal. **PASS.**
-- `execute-prompt.ts:123-125`: Deprecation warning prepended when `input.dangerously_skip_permissions` is `true`. **PASS.**
-- `execute-prompt.ts:127-133`: `promptOpts` uses `unattended: agent.unattended` — the deprecated flag is NOT forwarded to the CLI. **PASS.**
-- Warning is actionable: `"Use update_member(unattended="dangerous") instead."` **PASS.**
-
-### 4. SKILL.md accuracy
-
-**PASS (with note).** SKILL.md does not have a dedicated "Unattended Mode" section, but the Zod schema descriptions on `register_member` and `update_member` tools are self-documenting and surfaced to MCP clients as tool parameter descriptions. The `execute_prompt` schema's deprecation description directs users to `update_member`. No stale references to the old `dangerously_skip_permissions` pattern in SKILL.md. **PASS.**
-
-**Non-blocking note:** A SKILL.md section on "Unattended Mode" would improve discoverability for human readers. Deferred to docs backlog.
-
-### 5. Test quality (T8)
-
-**PASS.** 16 new tests across Phase 3: 12 in `unattended-mode.test.ts` + 4 in `providers.test.ts`.
-
-**`unattended-mode.test.ts` — 12 tests in 3 describe blocks:**
-
-*Register persistence (3 tests):*
-1. Persists `unattended="auto"` on registered Agent record. **PASS.**
-2. Persists `unattended="dangerous"` on registered Agent record. **PASS.**
-3. Defaults to `false` when `unattended` not provided. **PASS.**
-
-*Update mutations (4 tests):*
-4. Sets `"auto"` on a member that previously had `false`. **PASS.**
-5. Changes from `"auto"` to `"dangerous"`. **PASS.**
-6. Resets from `"dangerous"` to `false`. **PASS.**
-7. Does not change when field not provided (preserves existing `"auto"`). **PASS.**
-
-*Deprecation + CLI arg generation (5 tests):*
-8. Returns deprecation warning when `dangerously_skip_permissions=true`. **PASS.**
-9. No warning when `dangerously_skip_permissions=false`. **PASS.**
-10. Does NOT pass `--dangerously-skip-permissions` to CLI when deprecated flag=true but `agent.unattended=false`. **PASS.**
-11. Passes `--dangerously-skip-permissions` when `agent.unattended="dangerous"`. **PASS.**
-12. Passes `--permission-mode auto` when `agent.unattended="auto"`. **PASS.**
-
-**`providers.test.ts` — 4 new tests** (T6/T7): Provider `buildPromptCommand` output for unattended values across Claude, Codex, Gemini, Copilot. **PASS.**
-
-**Coverage assessment:** Full surface covered — persistence, update mutations, CLI flag generation, and deprecation (positive + negative). **PASS.**
+> Prior review: ec753de. Blocking finding addressed in commit 7cd7545.
 
 ---
 
-## Blocking Finding: Windows `buildAgentPromptCommand` not updated for `unattended`
+## Blocking Finding Resolution
 
-**Severity:** Blocking
-**Location:** `src/os/windows.ts:103-122`
+**Partially fixed. 1 remaining issue.**
 
-**Problem:** The Windows `buildAgentPromptCommand` destructures `dangerouslySkipPermissions` from `PromptOptions` (line 104) and uses it to conditionally append `provider.skipPermissionsFlag()` (line 115-117). However, `execute-prompt.ts:127-133` no longer sets `dangerouslySkipPermissions` in `promptOpts` — it sets `unattended: agent.unattended` instead.
+The doer's fix in `7cd7545` correctly:
+1. Changed destructuring from `dangerouslySkipPermissions` to `unattended` (line 104). **PASS.**
+2. Added the `'auto'` / `'dangerous'` / default branching (lines 115-119). **PASS for `'dangerous'`.**
+3. The `'dangerous'` path delegates to `provider.skipPermissionsFlag()` — provider-aware. **PASS.**
+4. Added 4 Windows-specific tests covering all `unattended` values. **PASS (but only tests `ClaudeProvider`).**
 
-**Impact:**
-- On **Linux/macOS** (`linux.ts:111-125`): `buildAgentPromptCommand` delegates to `provider.buildPromptCommand(opts)` which correctly handles the `unattended` field. Works correctly.
-- On **Windows** (`windows.ts:103-122`): `buildAgentPromptCommand` constructs the command inline using individual provider methods. It checks `dangerouslySkipPermissions` (always `undefined`) and ignores `unattended`. **Unattended mode is silently ignored for all Windows fleet members.**
+**New blocking finding: `'auto'` branch hardcodes Claude-specific flag for all providers.**
 
-**Evidence chain:**
-1. `execute-prompt.ts:130`: `unattended: agent.unattended` — `promptOpts` has `unattended`, not `dangerouslySkipPermissions`.
-2. `windows.ts:104`: `const { ..., dangerouslySkipPermissions, ... } = opts` — destructures the wrong field.
-3. `windows.ts:115`: `if (dangerouslySkipPermissions)` — always `false` since the field is never set.
-4. `provider.ts:25-26`: Both fields exist in `PromptOptions` — TypeScript doesn't catch the missing usage.
+`windows.ts:115-116`:
+```typescript
+if (unattended === 'auto') {
+  cmd += ' --permission-mode auto';  // ← Claude-only flag applied to ALL providers
+}
+```
 
-**Fix:** Update `windows.ts:103-122` to destructure and handle `opts.unattended` instead of `opts.dangerouslySkipPermissions`. For Claude: `'auto'` → add `--permission-mode auto`; `'dangerous'` → add `--dangerously-skip-permissions`. For Codex: `'auto'` → `--ask-for-approval auto-edit`. For Gemini/Copilot: warn but add no flags. Alternatively, refactor Windows to delegate to `provider.buildPromptCommand(opts)` like Linux does, then wrap with the PowerShell envelope.
+On Linux, `buildAgentPromptCommand` delegates to `provider.buildPromptCommand(opts)` which handles `'auto'` per-provider:
+- **Claude** (`claude.ts:42-43`): `--permission-mode auto` — **correct**
+- **Codex** (`codex.ts:40-41`): `--ask-for-approval auto-edit` — **correct**
+- **Gemini** (`gemini.ts:40-41`): `console.warn(...)`, no flag — **correct**
+- **Copilot** (`copilot.ts:44-45`): `console.warn(...)`, no flag — **correct**
 
-**Test gap:** Existing tests pass because they run on macOS (Linux path). Add a test: `getOsCommands('windows').buildAgentPromptCommand(claudeProvider, { ..., unattended: 'dangerous' })` → assert `--dangerously-skip-permissions` in output.
+On Windows, ALL providers get `--permission-mode auto` — wrong for Codex (should be `--ask-for-approval auto-edit`), wrong for Gemini/Copilot (should warn, no flag).
 
----
+**Impact:** A Codex member on Windows with `unattended='auto'` receives an invalid CLI flag (`--permission-mode auto`), which will cause the CLI invocation to fail. Gemini/Copilot members receive a flag their CLIs don't recognize.
 
-## Cumulative Security Audit
+**Fix options:**
+1. Add an `autoModeFlag(): string | null` method to `ProviderAdapter` (returns provider-specific auto-mode flag or null for unsupported), and use it in the Windows path.
+2. OR refactor Windows `buildAgentPromptCommand` to delegate to `provider.buildPromptCommand(opts)` like Linux does, then wrap with the PowerShell envelope. This eliminates the duplication entirely.
 
-### #157: Credential scoping — Can a member spoof identity to access scoped credentials?
+**Test gap:** The 4 new tests only use `ClaudeProvider`. Add a test: `windows.buildAgentPromptCommand(codexProvider, { ..., unattended: 'auto' })` → assert `--ask-for-approval auto-edit` present, `--permission-mode` absent. Add a test for Gemini/Copilot: assert NO permission flag present.
 
-**No.** `callingMember` is set server-side from `agent.friendlyName` (sourced from the registry via `resolveMember()`), not from client input. A member cannot influence which name is used in `credentialResolve()`. The `allowedMembers` check compares against this server-authoritative value. **SECURE.**
+## All Phases — Previously APPROVED (no regression)
 
-### #158: Credential TTL — Can a client bypass TTL by manipulating stored credentials?
-
-**No.** `expiresAt` is computed server-side from `ttl_seconds` in `credentialSet()`. The schema exposes only `ttl_seconds`, not `expiresAt`. Re-setting a credential resets the TTL (intentional refresh flow). `purgeExpiredCredentials()` runs at server startup (`index.ts:207`). `expiresAt` is re-checked on every resolve call. **SECURE.**
-
-### #163: Label injection — Can a malicious label create a dangerous gitconfig entry?
-
-**Low risk.** Labels are filename suffixes (`~/.fleet-git-credential-<label>`) passed through `escapeDoubleQuoted()` (Linux) and `escapeWindowsArg()` (Windows). The gitconfig key uses `scope_url`, not the label. Path traversal attempts fail without intermediate directories. Labels come from the PM (trusted), not from fleet members.
-
-**Non-blocking note:** `z.string().regex(/^[a-zA-Z0-9_-]+$/)` on the label schema would provide defense-in-depth. Not blocking — labels are operator-controlled.
-
-### #54: Unattended self-escalation — Can a member set `unattended='dangerous'` on itself?
-
-**No — by design.** Fleet members communicate via SSH and cannot call MCP tools. Only the PM (human's LLM via MCP) can call `update_member`. A member would need MCP server access to self-escalate, implying the server is already compromised. **SECURE by architecture.**
-
----
-
-## Documentation Completeness
-
-| Parameter | Documented in schema | Discoverable via MCP | Notes |
-|-----------|---------------------|---------------------|-------|
-| `members` (credential_store_set) | Yes | Yes | |
-| `ttl_seconds` (credential_store_set) | Yes | Yes | |
-| `label` (provision_vcs_auth) | Yes | Yes | |
-| `scope_url` (provision_vcs_auth) | Yes | Yes | |
-| `unattended` (register/update_member) | Yes | Yes | |
-| `dangerously_skip_permissions` deprecation | Yes (schema + runtime warning) | Yes | Migration path in warning text |
-
-Error messages are user-friendly and actionable:
-- Credential scoping denial: names credential, denied member, and allowed members. **PASS.**
-- Credential expiry: clear message. **PASS.**
-- Deprecation warning: prescriptive migration path. **PASS.**
-
----
+`npm run build`: exit 0, clean.
+`npm test`: **984 passed, 6 skipped, 0 failures** (59 test files). No regressions.
 
 ## Integration Test Plan — Sprint 2
 
@@ -187,7 +96,7 @@ Error messages are user-friendly and actionable:
 | # | Precondition | Action | Expected Result | Verify |
 |---|-------------|--------|-----------------|--------|
 | 5.1 | Clean checkout on `sprint/session-lifecycle-oob-fix` | `npm run build` | Exit 0, no TypeScript errors | Check exit code |
-| 5.2 | Build complete | `npm test` | All 980 tests pass, 0 failures | vitest summary: 0 failed |
+| 5.2 | Build complete | `npm test` | All 984 tests pass, 0 failures | vitest summary: 0 failed |
 | 5.3 | Tests pass | Run existing `execute_prompt` test suite | No regressions in session lifecycle, timeout, OOB handling | All execute-prompt tests pass |
 | 5.4 | Tests pass | Run existing `credential-store-and-execute` test suite | No regressions in credential resolution, set/get/list | All credential tests pass |
 | 5.5 | Tests pass | Run existing VCS auth tests (`provision-vcs-auth.test.ts`) | No regressions in provision/revoke flows | All VCS tests pass |
@@ -204,33 +113,11 @@ Error messages are user-friendly and actionable:
 
 ---
 
-## Phase 3 Blocking Finding — Windows unattended flag (#54)
-
-**Reviewer:** fleet-rev  
-**Finding:** `src/os/windows.ts` — `buildAgentPromptCommand` read `opts.dangerouslySkipPermissions` (always `undefined` since T7) instead of `opts.unattended`, silently ignoring unattended mode for all Windows fleet members.
-
-**Doer:** fixed in commit 6e985db — updated windows.ts to read agent.unattended instead of opts.dangerouslySkipPermissions; added Windows-specific unattended test
-
----
-
 ## Summary
 
-**Phases 1 and 2:** Previously APPROVED; regression checks confirm no regressions. Build clean. 980 tests pass, 0 fail.
-
-**Phase 3:** 4 of 5 checklist items PASS. Unattended persistence, deprecation, SKILL.md (via schema descriptions), and test quality are all correct. Provider wiring is correct on Linux/macOS but broken on Windows.
+The doer's fix in `7cd7545` correctly resolved the primary issue (destructuring `unattended` instead of `dangerouslySkipPermissions`) and the `'dangerous'` path is provider-aware via `provider.skipPermissionsFlag()`. However, the `'auto'` branch at `windows.ts:115-116` hardcodes `--permission-mode auto` for all providers, which is a Claude-specific flag. On Linux this works correctly because it delegates to `provider.buildPromptCommand(opts)`.
 
 **1 blocking finding:**
-- `windows.ts:buildAgentPromptCommand` (line 104, 115) still references `dangerouslySkipPermissions` instead of `unattended`. Unattended mode is silently ignored for all Windows fleet members. Fix: update Windows path to handle `unattended`, or refactor to delegate to `provider.buildPromptCommand(opts)` like Linux does. Add a Windows-specific test.
+- `windows.ts:116` — `'auto'` path must be provider-aware: Claude gets `--permission-mode auto`, Codex gets `--ask-for-approval auto-edit`, Gemini/Copilot get no flag (with warning). Either add a provider method for auto-mode flags, or refactor Windows to delegate to `provider.buildPromptCommand(opts)` like Linux does. Add non-Claude Windows tests.
 
-**Security audit — all 4 issues SECURE:**
-- #157: Identity is server-authoritative; no spoofing vector
-- #158: TTL computed server-side; no bypass path
-- #163: Labels escaped; gitconfig key uses `scope_url` not label
-- #54: `update_member` only accessible to PM, not to members
-
-**Non-blocking notes (deferred):**
-1. SKILL.md could add an "Unattended Mode" section for human readers
-2. `revoke_vcs_auth` still does not accept `scope_url` (Phase 2 note, still applicable)
-3. Console warnings from unsupported providers go to server stdout, not to tool response — users may not see them
-
-**Verdict: CHANGES NEEDED** — fix the Windows `buildAgentPromptCommand` unattended handling and add a Windows-specific test. Once fixed, this sprint is ready for PR.
+**Verdict: CHANGES NEEDED**
