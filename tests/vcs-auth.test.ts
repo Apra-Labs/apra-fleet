@@ -176,6 +176,89 @@ describe('Bitbucket provider', () => {
   });
 });
 
+describe('Multi-label credential isolation', () => {
+  it('deploy with different labels creates distinct credential files', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+
+    await githubProvider.deploy(
+      makeAgent(), cmds, exec,
+      { type: 'pat', token: 'ghp_work' },
+      'work-github', 'https://github.com/work-org',
+    );
+    await githubProvider.deploy(
+      makeAgent(), cmds, exec,
+      { type: 'pat', token: 'ghp_personal' },
+      'personal-github', 'https://github.com/personal',
+    );
+
+    expect(execCalls[0]).toContain('.fleet-git-credential-work-github');
+    expect(execCalls[0]).toContain('credential.https://github.com/work-org.helper');
+    expect(execCalls[1]).toContain('.fleet-git-credential-personal-github');
+    expect(execCalls[1]).toContain('credential.https://github.com/personal.helper');
+  });
+
+  it('revoke with label removes only that label file', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+
+    await githubProvider.revoke(makeAgent(), cmds, exec, 'work-github', 'https://github.com/work-org');
+
+    expect(execCalls[0]).toContain('.fleet-git-credential-work-github');
+    expect(execCalls[0]).toContain('credential.https://github.com/work-org.helper');
+    expect(execCalls[0]).not.toContain('personal-github');
+  });
+
+  it('deploy without label uses old-style credential file (backward compat)', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+
+    await bitbucketProvider.deploy(
+      makeAgent(), cmds, exec,
+      { email: 'dev@test.com', api_token: 'tok', workspace: 'ws' },
+    );
+
+    expect(execCalls[0]).toContain('.fleet-git-credential &&');
+    expect(execCalls[0]).not.toContain('.fleet-git-credential-');
+  });
+
+  it('deploy with label on bitbucket uses labeled file', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+
+    await bitbucketProvider.deploy(
+      makeAgent(), cmds, exec,
+      { email: 'dev@test.com', api_token: 'tok', workspace: 'ws' },
+      'team-bb', 'https://bitbucket.org/team',
+    );
+
+    expect(execCalls[0]).toContain('.fleet-git-credential-team-bb');
+    expect(execCalls[0]).toContain('credential.https://bitbucket.org/team.helper');
+  });
+
+  it('two providers with different labels coexist in gitconfig', async () => {
+    const execCalls: string[] = [];
+    const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
+
+    await githubProvider.deploy(
+      makeAgent(), cmds, exec,
+      { type: 'pat', token: 'ghp_test' },
+      'gh-work', 'https://github.com/org',
+    );
+    await azureDevOpsProvider.deploy(
+      makeAgent(), cmds, exec,
+      { org_url: 'https://dev.azure.com/myorg', pat: 'az-pat' },
+      'az-work', 'https://dev.azure.com/myorg',
+    );
+
+    expect(execCalls[0]).toContain('.fleet-git-credential-gh-work');
+    expect(execCalls[1]).toContain('.fleet-git-credential-az-work');
+    // Different scope URLs
+    expect(execCalls[0]).toContain('credential.https://github.com/org.helper');
+    expect(execCalls[1]).toContain('credential.https://dev.azure.com/myorg.helper');
+  });
+});
+
 describe('Azure DevOps provider', () => {
   it('deploy: writes credential helper with empty username and PAT', async () => {
     const execCalls: string[] = [];

@@ -15,9 +15,16 @@ const providers: Record<string, VcsProviderService> = {
   'azure-devops': azureDevOpsProvider,
 };
 
+const PROVIDER_HOSTS: Record<string, string> = {
+  'github': 'github.com',
+  'bitbucket': 'bitbucket.org',
+  'azure-devops': 'dev.azure.com',
+};
+
 export const revokeVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider whose credentials to revoke'),
+  label: z.string().optional().describe('Credential label to revoke (e.g. "work-github"). If omitted, revokes the default (provider-named) credential.'),
 });
 
 export type RevokeVcsAuthInput = z.infer<typeof revokeVcsAuthSchema>;
@@ -40,9 +47,13 @@ export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> 
     return result.stdout;
   };
 
+  const label = input.label ?? input.provider;
+  const host = PROVIDER_HOSTS[input.provider];
+  const scopeUrl = `https://${host}`;
+
   let result;
   try {
-    result = await service.revoke(agent, cmds, exec);
+    result = await service.revoke(agent, cmds, exec, label, scopeUrl);
   } catch (err: any) {
     return `❌ Failed to revoke ${input.provider} credentials on "${agent.friendlyName}": ${err.message}`;
   }
