@@ -217,6 +217,15 @@ Error messages are user-friendly and actionable:
 
 ---
 
+## Phase 3 Blocking Finding — Windows unattended flag (#54)
+
+**Reviewer:** fleet-rev  
+**Finding:** `src/os/windows.ts` — `buildAgentPromptCommand` read `opts.dangerouslySkipPermissions` (always `undefined` since T7) instead of `opts.unattended`, silently ignoring unattended mode for all Windows fleet members.
+
+**Doer:** fixed in commit 6e985db — updated windows.ts to read agent.unattended instead of opts.dangerouslySkipPermissions; added Windows-specific unattended test
+
+---
+
 ## Summary
 
 **Phases 1 and 2:** Previously APPROVED; regression checks confirm no regressions. Build clean. 980 tests pass, 0 fail.
