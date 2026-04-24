@@ -31,7 +31,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
+    const { folder, promptFile, sessionId, unattended, model, maxTurns } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
@@ -39,7 +39,9 @@ export class ClaudeProvider implements ProviderAdapter {
     if (sessionId) {
       cmd += ' -c';
     }
-    if (dangerouslySkipPermissions) {
+    if (unattended === 'auto') {
+      cmd += ' --permission-mode auto';
+    } else if (unattended === 'dangerous') {
       cmd += ' --dangerously-skip-permissions';
     }
     if (model) {

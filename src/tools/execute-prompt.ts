@@ -27,7 +27,7 @@ export const executePromptSchema = z.object({
   timeout_ms: z.number().default(300000).describe('Inactivity timeout in milliseconds — the command is killed after this many ms without any stdout/stderr output (default: 5 minutes)'),
   max_total_ms: z.number().optional().describe('Hard ceiling in milliseconds — the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
-  dangerously_skip_permissions: z.boolean().default(false).describe('Run with --dangerously-skip-permissions so the member can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
+  dangerously_skip_permissions: z.boolean().default(false).describe('DEPRECATED: use update_member(unattended="dangerous") instead. This field is ignored and will be removed in a future version.'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names — the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
 });
 
@@ -120,10 +120,14 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     ? (tiers[input.model as keyof typeof tiers] ?? input.model)
     : tiers.standard;
 
+  const deprecationWarning = input.dangerously_skip_permissions
+    ? '⚠️ DEPRECATION: dangerously_skip_permissions is deprecated and ignored. Use update_member(unattended="dangerous") instead.\n\n'
+    : '';
+
   const promptOpts = {
     folder: resolvedWorkFolder,
     promptFile: promptFileName,
-    dangerouslySkipPermissions: input.dangerously_skip_permissions,
+    unattended: agent.unattended,
     model: resolvedModel,
     maxTurns: input.max_turns,
   };
@@ -193,7 +197,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     writeStatusline();
 
-    let output = `📋 Response from ${agent.friendlyName}:
+    let output = `${deprecationWarning}📋 Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
     if (parsed.usage) output += `

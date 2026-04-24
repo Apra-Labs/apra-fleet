@@ -28,7 +28,7 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, unattended, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json`;
@@ -36,8 +36,11 @@ export class GeminiProvider implements ProviderAdapter {
     if (rf) {
       cmd += ` ${rf}`;
     }
-    if (dangerouslySkipPermissions) {
-      cmd += ' --yolo';
+    // Gemini CLI does not support unattended permission flags
+    if (unattended === 'auto') {
+      console.warn("WARNING: unattended='auto' is not supported for Gemini — member will run interactively");
+    } else if (unattended === 'dangerous') {
+      console.warn("WARNING: unattended='dangerous' is not supported for Gemini — member will run interactively");
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
