@@ -40,6 +40,8 @@ export interface CredentialMeta {
   scope: 'session' | 'persistent';
   network_policy: 'allow' | 'confirm' | 'deny';
   created_at: string;
+  allowedMembers: string[] | '*';
+  expiresAt?: string;
 }
 
 interface SessionEntry extends CredentialMeta {
@@ -52,6 +54,8 @@ interface PersistentRecord {
   network_policy: 'allow' | 'confirm' | 'deny';
   created_at: string;
   encryptedValue: string;
+  allowedMembers: string[] | '*';
+  expiresAt?: string;
 }
 
 interface CredentialFile {
@@ -96,16 +100,21 @@ export function credentialSet(
   plaintext: string,
   persist: boolean,
   network_policy: 'allow' | 'confirm' | 'deny',
+  allowedMembers: string[] | '*' = '*',
+  ttl_seconds?: number,
 ): CredentialMeta {
   const created_at = new Date().toISOString();
+  const expiresAt = ttl_seconds !== undefined
+    ? new Date(Date.now() + ttl_seconds * 1000).toISOString()
+    : undefined;
 
   if (persist) {
     const file = loadCredentialFile();
-    file.credentials[name] = { name, network_policy, created_at, encryptedValue: encryptPassword(plaintext) };
+    file.credentials[name] = { name, network_policy, created_at, encryptedValue: encryptPassword(plaintext), allowedMembers, expiresAt };
     saveCredentialFile(file);
     // Persistent supersedes session
     sessionStore.delete(name);
-    return { name, scope: 'persistent', network_policy, created_at };
+    return { name, scope: 'persistent', network_policy, created_at, allowedMembers, expiresAt };
   }
 
   sessionStore.set(name, {
@@ -114,21 +123,30 @@ export function credentialSet(
     network_policy,
     created_at,
     encryptedValue: sessionEncrypt(plaintext),
+    allowedMembers,
+    expiresAt,
   });
-  return { name, scope: 'session', network_policy, created_at };
+  return { name, scope: 'session', network_policy, created_at, allowedMembers, expiresAt };
 }
 
 export function credentialList(): CredentialMeta[] {
   const results: CredentialMeta[] = [];
 
   for (const entry of sessionStore.values()) {
-    results.push({ name: entry.name, scope: entry.scope, network_policy: entry.network_policy, created_at: entry.created_at });
+    results.push({ name: entry.name, scope: entry.scope, network_policy: entry.network_policy, created_at: entry.created_at, allowedMembers: entry.allowedMembers, expiresAt: entry.expiresAt });
   }
 
   const file = loadCredentialFile();
   for (const record of Object.values(file.credentials)) {
     const existing = results.findIndex(r => r.name === record.name);
-    const meta: CredentialMeta = { name: record.name, scope: 'persistent', network_policy: record.network_policy, created_at: record.created_at };
+    const meta: CredentialMeta = {
+      name: record.name,
+      scope: 'persistent',
+      network_policy: record.network_policy,
+      created_at: record.created_at,
+      allowedMembers: record.allowedMembers ?? '*',
+      expiresAt: record.expiresAt,
+    };
     if (existing !== -1) {
       results[existing] = meta;
     } else {
@@ -175,6 +193,7 @@ export function getTaskCredentials(taskId: string): TaskCredential[] {
  * Resolve a credential name to its plaintext value.
  * Persistent store takes precedence over session store.
  * Returns null if the credential does not exist.
+ * In T2a this signature is extended with scoping and TTL enforcement.
  */
 export function credentialResolve(name: string): { plaintext: string; meta: CredentialMeta } | null {
   // Persistent wins
@@ -183,7 +202,14 @@ export function credentialResolve(name: string): { plaintext: string; meta: Cred
   if (persistent) {
     return {
       plaintext: decryptPassword(persistent.encryptedValue),
-      meta: { name: persistent.name, scope: 'persistent', network_policy: persistent.network_policy, created_at: persistent.created_at },
+      meta: {
+        name: persistent.name,
+        scope: 'persistent',
+        network_policy: persistent.network_policy,
+        created_at: persistent.created_at,
+        allowedMembers: persistent.allowedMembers ?? '*',
+        expiresAt: persistent.expiresAt,
+      },
     };
   }
 
@@ -191,7 +217,14 @@ export function credentialResolve(name: string): { plaintext: string; meta: Cred
   if (session) {
     return {
       plaintext: sessionDecrypt(session.encryptedValue),
-      meta: { name: session.name, scope: 'session', network_policy: session.network_policy, created_at: session.created_at },
+      meta: {
+        name: session.name,
+        scope: 'session',
+        network_policy: session.network_policy,
+        created_at: session.created_at,
+        allowedMembers: session.allowedMembers,
+        expiresAt: session.expiresAt,
+      },
     };
   }
 
