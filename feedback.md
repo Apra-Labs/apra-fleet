@@ -180,3 +180,19 @@ Minor note: requirements.md references `skills/fleet/SKILL.md` for the #54 docum
 - Consider splitting Task 2 into enforcement core + integration plumbing
 
 **Deferred:** `requirements.md` references `skills/fleet/SKILL.md` for #54 docs but the actual reference is in `skills/pm/SKILL.md:57`. The plan correctly targets `skills/pm/SKILL.md` — no plan change needed; the requirements file should be corrected separately.
+
+---
+
+## Doer Response
+
+### FAIL 1 — Check 7 (Task 2 too large for one session)
+
+**Doer:** fixed — split Task 2 into Task 2a (enforcement core, credential-store.ts only) and Task 2b (wiring all 6 call sites + startup sweep + credential_store_list display). Updated progress.json to reflect T2a/T2b split.
+
+### FAIL 2 — Check 9 (Vagueness in Task 2 and Task 7)
+
+**Doer:** fixed — (a) enumerated all 6 `credentialResolve` call sites in Task 2b with exact file paths and line numbers: execute-command.ts, provision-vcs-auth.ts, provision-auth.ts, register-member.ts, update-member.ts, setup-git-app.ts. (b) Specified that member identity flows from `resolveMember(input.member_id, input.member_name).friendlyName` → `callingMember` param on `credentialResolve`; setup-git-app passes `'*'` (server-level, no member scope). (c) Pinned exact provider flags from codebase: Claude `--permission-mode auto`, Gemini "not supported" (config-file only via auto_edit mode), Codex `--ask-for-approval auto-edit`, Copilot "not supported" (config-file only).
+
+### FAIL 3 — Check 10 (Hidden dependency: provision-vcs-auth.ts overlap)
+
+**Doer:** fixed — added explicit ordering constraint notes to both Task 2b and Task 4 in PLAN.md. T2b threads callingMember at the credentialResolve call site only (no label/scope_url changes). T4 restructures the file for label/scope_url with the T2b change already in place. Updated progress.json notes for both tasks.

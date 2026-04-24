@@ -22,22 +22,41 @@
   - New unit tests verify: (a) `credentialSet` stores `allowedMembers` and `expiresAt`, (b) re-setting resets TTL clock, (c) omitting `members` defaults to `*`, (d) omitting `ttl_seconds` stores no `expiresAt`
 - **Blockers:** None — this is the foundation task
 
-#### Task 2: Scoping enforcement + TTL enforcement + credential_store_list update
+#### Task 2a: Enforcement core — scoping + TTL in credential-store.ts
 - **Change:**
-  1. In `src/services/credential-store.ts`: update `credentialResolve(name, callingMember?: string)` to check `allowedMembers` — if not `'*'` and `callingMember` not in the array, return an error object `{ denied: string }`. Also check `expiresAt` — if expired, delete the credential and return `{ expired: string }`.
-  2. Update all call sites of `credentialResolve` to pass the calling member identity from request context. Key call sites: `resolveSecureField` in `provision-vcs-auth.ts`, `executeCommand` credential resolution, `register-member.ts` and `update-member.ts` password field resolution.
-  3. In `src/services/credential-store.ts`: update `credentialList()` to return `allowedMembers` and `expiresAt` in `CredentialMeta`.
-  4. In `src/tools/credential-store-list.ts`: format output to show `members` and `expiresAt` columns, with computed remaining time (e.g. "2h 15m remaining").
-  5. Add startup sweep in `src/index.ts`: call a new `purgeExpiredCredentials()` function (in `credential-store.ts`) that iterates persistent credentials and deletes any where `expiresAt < now`. Pattern: reuse `cleanupStaleTasks` approach from `task-cleanup.ts`.
-- **Files:** `src/services/credential-store.ts`, `src/tools/credential-store-list.ts`, `src/tools/provision-vcs-auth.ts`, `src/tools/execute-command.ts`, `src/tools/register-member.ts`, `src/tools/update-member.ts`, `src/index.ts`
+  1. Add `allowedMembers` and `expiresAt` fields to `CredentialRecord` (they were added to `CredentialMeta`/`PersistentRecord`/`SessionEntry` in Task 1 — this task makes the resolver respect them).
+  2. Update `credentialResolve` signature: `credentialResolve(name: string, callingMember?: string)` → returns `{ plaintext, meta }` on success, `{ denied: string }` if `allowedMembers` is not `'*'` and `callingMember` is not in the array, or `{ expired: string }` if `expiresAt < now` (also deletes the expired entry).
+  3. Update `credentialList()` to include `allowedMembers` and `expiresAt` in the returned `CredentialMeta`.
+- **Files:** `src/services/credential-store.ts` only
+- **Tier:** standard
+- **Done when:**
+  - `credentialResolve('secret', 'unauthorized-member')` returns `{ denied: '...' }`
+  - `credentialResolve('expired-secret')` returns `{ expired: '...' }` and purges the entry
+  - `credentialList()` includes `allowedMembers` and `expiresAt` in metadata
+  - `npm run build` exits 0, existing credential store tests still pass
+- **Blockers:** Task 1 (schema must be in place)
+
+#### Task 2b: Wiring call sites + startup sweep + credential_store_list display
+- **Change:**
+  1. **Thread member identity through all 6 `credentialResolve` call sites.** The calling member's identity is already available in each tool via `resolveMember(input.member_id, input.member_name)` (returns the `Agent` object with `agent.friendlyName`). Pass `agent.friendlyName` as the `callingMember` parameter to `credentialResolve`. For `setup-git-app.ts` (server-level, no member context), pass `'*'` to bypass scoping (fleet operator action).
+     **Complete call-site inventory** (all files that import and call `credentialResolve`):
+     - `src/tools/execute-command.ts` — `resolveSecureTokens()` at line ~75: `credentialResolve(name)` → add `callingMember` param (agent resolved from `input.member_id`/`input.member_name`)
+     - `src/tools/provision-vcs-auth.ts` — `resolveSecureField()` at line ~26: `credentialResolve(name)` → add `callingMember` param (agent resolved from `memberIdentifier` in schema)
+     - `src/tools/provision-auth.ts` — inline resolution at line ~250: `credentialResolve(name)` → add `callingMember` param (agent resolved from `memberIdentifier` in schema)
+     - `src/tools/register-member.ts` — password resolution at line ~74: `credentialResolve(name)` → pass `input.name` (the member being registered) as `callingMember`
+     - `src/tools/update-member.ts` — password resolution at line ~93: `credentialResolve(name)` → add `callingMember` param (agent resolved from `memberIdentifier` in schema)
+     - `src/tools/setup-git-app.ts` — PEM key resolution at line ~28: `credentialResolve(tokenMatch[1])` → pass `'*'` (server-level operation, no member scoping)
+  2. In `src/tools/credential-store-list.ts`: format output to show `members` and `expiresAt` columns, with computed remaining time (e.g. "2h 15m remaining").
+  3. Add startup sweep in `src/index.ts`: call a new `purgeExpiredCredentials()` function (in `credential-store.ts`) that iterates persistent credentials and deletes any where `expiresAt < now`. Pattern: reuse `cleanupStaleTasks` approach from `src/services/task-cleanup.ts`.
+- **Ordering constraint (T2b/T4 overlap):** `src/tools/provision-vcs-auth.ts` is also modified in Task 4 (label/scope_url restructure). Task 2b MUST be completed first. Task 2b touches ONLY the `resolveSecureField` → `credentialResolve` call site to thread `callingMember`. Task 4 then restructures the file for label/scope_url — the Task 2b change will already be in place. Do not touch label/scope_url structure in Task 2b.
+- **Files:** `src/tools/execute-command.ts`, `src/tools/provision-vcs-auth.ts`, `src/tools/provision-auth.ts`, `src/tools/register-member.ts`, `src/tools/update-member.ts`, `src/tools/setup-git-app.ts`, `src/tools/credential-store-list.ts`, `src/index.ts`
 - **Tier:** premium
 - **Done when:**
-  - `credentialResolve('secret', 'unauthorized-member')` returns denied error
-  - `credentialResolve('expired-secret')` returns expired error and purges entry
+  - All 6 call sites pass `callingMember` to `credentialResolve`
   - `credential_store_list` output includes members and expiry/remaining time
   - Startup sweep removes expired credentials from `credentials.json`
-  - All existing tests pass + new tests for scoping and TTL enforcement
-- **Blockers:** Task 1 (schema must be in place)
+  - All existing tests pass + new tests for call-site wiring
+- **Blockers:** Task 2a (enforcement logic must be in place)
 
 #### Task 3: Credential scoping + TTL test coverage
 - **Change:**
@@ -52,7 +71,7 @@
 - **Files:** `tests/credential-store-and-execute.test.ts` or `tests/credential-scoping-ttl.test.ts`
 - **Tier:** standard
 - **Done when:** All new tests pass, no regressions in existing test suite
-- **Blockers:** Task 2
+- **Blockers:** Task 2b
 
 #### VERIFY: Phase 1
 - `npm run build` — must exit 0
@@ -66,6 +85,7 @@
 ### Phase 2: provision_vcs_auth Isolation (#163)
 
 #### Task 4: Per-label credential files + scope_url + forward-slash path fix
+- **Ordering constraint (T2b/T4 overlap):** `src/tools/provision-vcs-auth.ts` was modified in Task 2b (member identity threading at the `credentialResolve` call site only). Task 4 now restructures the file for label/scope_url. The Task 2b `callingMember` change is already in place — preserve it during the restructure. Do not duplicate or clobber it.
 - **Change:**
   1. Add `label` param (optional string, default: provider name) and `scope_url` param (optional string, default: `https://<host>`) to `provisionVcsAuthSchema` in `src/tools/provision-vcs-auth.ts`.
   2. In `src/os/linux.ts` and `src/os/windows.ts`: update `gitCredentialHelperWrite(host, username, token)` signature to accept an optional `label` parameter. Change credential file path from `~/.fleet-git-credential` to `~/.fleet-git-credential-<label>` (and `.bat` suffix on Windows). Use `scope_url` as the gitconfig credential key instead of `https://<host>`.
@@ -130,15 +150,22 @@
   1. In `src/tools/execute-prompt.ts`: keep `dangerously_skip_permissions` in schema but log a deprecation warning when it's passed as `true`. Ignore its value — read `agent.unattended` instead. Set `dangerouslySkipPermissions` in `promptOpts` based on `agent.unattended === 'dangerous'`. For `agent.unattended === 'auto'`, add `--permission-mode auto` (Claude) or equivalent per provider.
   2. In `src/providers/provider.ts`: add `permissionMode?: 'auto'` to `PromptOptions` (alongside existing `dangerouslySkipPermissions`).
   3. In `src/providers/claude.ts`: handle `permissionMode === 'auto'` → append `--permission-mode auto`. Keep `dangerouslySkipPermissions` → `--dangerously-skip-permissions`.
-  4. In `src/providers/gemini.ts`: handle `permissionMode === 'auto'` → append equivalent flag (e.g. `--auto-approve` or map to `--yolo` based on Gemini CLI capabilities).
-  5. Update `src/providers/codex.ts` and `src/providers/copilot.ts` similarly.
+  4. In `src/providers/gemini.ts`:
+     - `dangerouslySkipPermissions` → `--yolo` (already implemented in `skipPermissionsFlag()`)
+     - `permissionMode === 'auto'` → **not supported** as a CLI flag. Gemini CLI uses config-file-based permission control (`mode: "auto_edit"` in `.gemini/settings.json`, already handled by `composePermissionConfig`). Log a warning: "Gemini CLI does not support runtime auto-approve flag; use compose_permissions to configure auto_edit mode via settings file."
+  5. In `src/providers/codex.ts`:
+     - `dangerouslySkipPermissions` → `--sandbox danger-full-access --ask-for-approval never` (already implemented in `skipPermissionsFlag()`)
+     - `permissionMode === 'auto'` → `--ask-for-approval auto-edit` (auto-edit approval without full sandbox bypass)
+  6. In `src/providers/copilot.ts`:
+     - `dangerouslySkipPermissions` → `--allow-all-tools` (already implemented in `skipPermissionsFlag()`)
+     - `permissionMode === 'auto'` → **not supported** as a CLI flag. Copilot CLI uses config-file-based permission control (`allow-all-tools` in `.github/copilot/settings.local.json`, already handled by `composePermissionConfig`). Log a warning: "Copilot CLI does not support runtime auto-approve flag; use compose_permissions to configure permissions via settings file."
   6. In `skills/pm/SKILL.md`: replace "never pass `dangerously_skip_permissions=true` to `execute_prompt`" with guidance about `unattended` on `register_member`/`update_member`.
 - **Files:** `src/tools/execute-prompt.ts`, `src/providers/provider.ts`, `src/providers/claude.ts`, `src/providers/gemini.ts`, `src/providers/codex.ts`, `src/providers/copilot.ts`, `skills/pm/SKILL.md`
 - **Tier:** premium
 - **Done when:**
   - `execute_prompt` with `dangerously_skip_permissions=true` logs deprecation warning but does not set the flag
   - Member with `unattended: 'dangerous'` → provider gets `--dangerously-skip-permissions`
-  - Member with `unattended: 'auto'` → provider gets `--permission-mode auto` (Claude) or equivalent
+  - Member with `unattended: 'auto'` → Claude gets `--permission-mode auto`, Codex gets `--ask-for-approval auto-edit`, Gemini/Copilot log a warning (not supported as CLI flag)
   - Member with `unattended: false` (default) → no permission bypass flags
   - Provider tests updated for new flag combinations
   - SKILL.md updated
