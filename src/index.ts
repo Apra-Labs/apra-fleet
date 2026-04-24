@@ -83,6 +83,7 @@ async function startServer() {
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
   const { checkForUpdate } = await import('./services/update-check.js');
+  const { purgeExpiredCredentials } = await import('./services/credential-store.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
@@ -203,6 +204,7 @@ async function startServer() {
 
   idleManager.start();
   void cleanupStaleTasks();
+  purgeExpiredCredentials();
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');

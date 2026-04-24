@@ -54,6 +54,7 @@ interface ResolvedCredential {
 async function resolveSecureTokens(
   command: string,
   agentOs: 'windows' | 'macos' | 'linux',
+  callingMember: string,
 ): Promise<{ resolved: string; credentials: ResolvedCredential[] } | { error: string }> {
   // Refuse if raw sec:// handles appear (these should not be passed to commands)
   if (/sec:\/\/[a-zA-Z0-9_]+/.test(command)) {
@@ -72,10 +73,12 @@ async function resolveSecureTokens(
   }
 
   for (const name of tokenNames) {
-    const entry = credentialResolve(name);
+    const entry = credentialResolve(name, callingMember);
     if (!entry) {
       return { error: `Credential "${name}" not found. Run credential_store_set first.` };
     }
+    if ('denied' in entry) return { error: entry.denied };
+    if ('expired' in entry) return { error: entry.expired };
     credentials.push({ name, plaintext: entry.plaintext, network_policy: entry.meta.network_policy });
   }
 
@@ -129,7 +132,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   }
 
   // -- Resolve {{secure.NAME}} tokens --
-  const tokenResult = await resolveSecureTokens(input.command, agentOs);
+  const tokenResult = await resolveSecureTokens(input.command, agentOs, agent.friendlyName);
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
 
   const { resolved: resolvedCommand, credentials } = tokenResult;
@@ -137,7 +140,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   // Also resolve tokens in restart_command (H1)
   let resolvedRestartCommand: string | undefined;
   if (input.restart_command) {
-    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs);
+    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs, agent.friendlyName);
     if ('error' in restartTokenResult) return `❌ ${restartTokenResult.error}`;
     resolvedRestartCommand = restartTokenResult.resolved;
     // Merge any additional credentials from restart_command (de-dup by name)

@@ -192,14 +192,36 @@ export function getTaskCredentials(taskId: string): TaskCredential[] {
 /**
  * Resolve a credential name to its plaintext value.
  * Persistent store takes precedence over session store.
- * Returns null if the credential does not exist.
- * In T2a this signature is extended with scoping and TTL enforcement.
+ *
+ * Returns:
+ *   - { plaintext, meta } on success
+ *   - { denied } if callingMember is not in allowedMembers
+ *   - { expired } if the credential has passed its TTL (entry is also deleted)
+ *   - null if the credential does not exist
  */
-export function credentialResolve(name: string): { plaintext: string; meta: CredentialMeta } | null {
+export function credentialResolve(
+  name: string,
+  callingMember?: string,
+): { plaintext: string; meta: CredentialMeta } | { denied: string } | { expired: string } | null {
   // Persistent wins
   const file = loadCredentialFile();
   const persistent = file.credentials[name];
   if (persistent) {
+    const allowedMembers = persistent.allowedMembers ?? '*';
+
+    // TTL check
+    if (persistent.expiresAt && Date.now() > new Date(persistent.expiresAt).getTime()) {
+      delete file.credentials[name];
+      saveCredentialFile(file);
+      sessionStore.delete(name);
+      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
+    }
+
+    // Scoping check ('*' as callingMember is a fleet-operator bypass)
+    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
+      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
+    }
+
     return {
       plaintext: decryptPassword(persistent.encryptedValue),
       meta: {
@@ -207,7 +229,7 @@ export function credentialResolve(name: string): { plaintext: string; meta: Cred
         scope: 'persistent',
         network_policy: persistent.network_policy,
         created_at: persistent.created_at,
-        allowedMembers: persistent.allowedMembers ?? '*',
+        allowedMembers,
         expiresAt: persistent.expiresAt,
       },
     };
@@ -215,6 +237,19 @@ export function credentialResolve(name: string): { plaintext: string; meta: Cred
 
   const session = sessionStore.get(name);
   if (session) {
+    const allowedMembers = session.allowedMembers;
+
+    // TTL check
+    if (session.expiresAt && Date.now() > new Date(session.expiresAt).getTime()) {
+      sessionStore.delete(name);
+      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
+    }
+
+    // Scoping check ('*' as callingMember is a fleet-operator bypass)
+    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
+      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
+    }
+
     return {
       plaintext: sessionDecrypt(session.encryptedValue),
       meta: {
@@ -229,4 +264,35 @@ export function credentialResolve(name: string): { plaintext: string; meta: Cred
   }
 
   return null;
+}
+
+/**
+ * Purge expired credentials from the persistent store.
+ * Called at server startup to clean up stale entries.
+ */
+export function purgeExpiredCredentials(): void {
+  let file: CredentialFile;
+  try {
+    file = loadCredentialFile();
+  } catch {
+    return;
+  }
+
+  const now = Date.now();
+  let changed = false;
+  for (const [name, record] of Object.entries(file.credentials)) {
+    if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
+      delete file.credentials[name];
+      sessionStore.delete(name);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    try {
+      saveCredentialFile(file);
+    } catch {
+      // best-effort
+    }
+  }
 }

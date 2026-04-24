@@ -90,8 +90,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       tokenNames.add(match[1]);
     }
     for (const name of tokenNames) {
-      const entry = credentialResolve(name);
+      const entry = credentialResolve(name, existing.friendlyName);
       if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT updated.`;
+      if ('denied' in entry) return `❌ ${entry.denied} Member was NOT updated.`;
+      if ('expired' in entry) return `❌ ${entry.expired} Member was NOT updated.`;
       resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
     resolvedPassword = resolved;

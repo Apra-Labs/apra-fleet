@@ -71,8 +71,10 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       tokenNames.add(match[1]);
     }
     for (const name of tokenNames) {
-      const entry = credentialResolve(name);
+      const entry = credentialResolve(name, input.friendly_name);
       if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT registered.`;
+      if ('denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;
+      if ('expired' in entry) return `❌ ${entry.expired} Member was NOT registered.`;
       resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
     resolvedPassword = resolved;
