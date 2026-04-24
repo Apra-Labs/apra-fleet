@@ -69,7 +69,7 @@ At the start of every `execute_prompt` call, the fleet server kills any stored P
 
 ### Stopped flag
 
-If `stop_agent` has been called for a member, `execute_prompt` returns an error and does **not** spawn a session. The error message indicates the member was stopped by the PM. The stopped flag is cleared when `execute_prompt` is called again — the next call after a stop will spawn normally (after killing the previous PID).
+If `stop_prompt` has been called for a member, `execute_prompt` returns an error and does **not** spawn a session. The error message indicates the member was stopped by the PM. The stopped flag is cleared when `execute_prompt` is called again — the next call after a stop will spawn normally (after killing the previous PID).
 
 ---
 

@@ -4,7 +4,7 @@ Covers the design decisions behind three related features shipped in Sprint 1:
 
 - **#147** — Kill previous agent instances before a new session
 - **#160** — Activity-aware (rolling inactivity) timeout
-- **#148** — Background agent cancellation via `stop_agent`
+- **#148** — Background agent cancellation via `stop_prompt`
 
 ---
 
@@ -126,14 +126,14 @@ Same rationale as the PID store: a `stopped` flag is runtime state representing 
 
 ### Flag lifecycle
 
-1. `stop_agent` kills the stored PID and sets the flag.
+1. `stop_prompt` kills the stored PID and sets the flag.
 2. `executePrompt` checks the flag at entry. If set, it returns an error message and does **not** spawn.
 3. A fresh `executePrompt` call (after the operator has assessed the situation) clears the flag — specifically, the flag is cleared after the kill-previous-PID step at the top of `executePrompt`, before the new session starts.
 
 This design means "stopped" is a single-prompt interlock: the next explicit `execute_prompt` call clears it. This is intentional — the PM must consciously re-dispatch, which prevents misbehaving background agents from auto-recovering.
 
-### What `stop_agent` actually stops
+### What `stop_prompt` actually stops
 
-`stop_agent` kills the LLM process running **on the member machine** (the process tracked in the PID registry). It does not directly stop the local Claude Code background agent that dispatched the work. The stopped flag prevents the background agent from issuing further `execute_prompt` calls after its current in-flight call returns.
+`stop_prompt` kills the LLM process running **on the member machine** (the process tracked in the PID registry). It does not directly stop the local Claude Code background agent that dispatched the work. The stopped flag prevents the background agent from issuing further `execute_prompt` calls after its current in-flight call returns.
 
-This is sufficient for the failure cascade scenario: PM calls `stop_agent`, the LLM process on the member is killed, and the background agent's subsequent `execute_prompt` attempts are blocked by the flag.
+This is sufficient for the failure cascade scenario: PM calls `stop_prompt`, the LLM process on the member is killed, and the background agent's subsequent `execute_prompt` attempts are blocked by the flag.

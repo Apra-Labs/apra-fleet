@@ -1,4 +1,4 @@
-# `stop_agent` Tool API Reference
+# `stop_prompt` Tool API Reference
 
 Terminates the active LLM session for a fleet member and prevents further dispatches until the next explicit `execute_prompt`.
 
@@ -40,17 +40,17 @@ Either `member_id` or `member_name` must be provided.
 
 ## Effect on `execute_prompt`
 
-After `stop_agent` is called, any `execute_prompt` call for that member returns an error message indicating the member was stopped, without spawning a session.
+After `stop_prompt` is called, any `execute_prompt` call for that member returns an error message indicating the member was stopped, without spawning a session.
 
 The stopped flag is cleared automatically when the next `execute_prompt` call is made. The call that clears the flag **does** spawn normally — there is no confirmation step.
 
-This means `stop_agent` acts as a **single-prompt interlock**: the PM must explicitly re-dispatch (issue a new `execute_prompt`) to resume the member.
+This means `stop_prompt` acts as a **single-prompt interlock**: the PM must explicitly re-dispatch (issue a new `execute_prompt`) to resume the member.
 
 ---
 
 ## What This Stops
 
-`stop_agent` kills the LLM process running on the **member machine** (the process tracked in the PID registry). It does not directly terminate the local Claude Code background agent that issued the dispatches.
+`stop_prompt` kills the LLM process running on the **member machine** (the process tracked in the PID registry). It does not directly terminate the local Claude Code background agent that issued the dispatches.
 
 The stopped flag handles the background agent case indirectly: once set, the background agent's subsequent `execute_prompt` calls return errors rather than spawning new sessions, which terminates the dispatch loop.
 
@@ -58,7 +58,7 @@ The stopped flag handles the background agent case indirectly: once set, the bac
 
 ## No-op Safety
 
-Calling `stop_agent` when no session is active is safe — it simply sets the stopped flag and returns the "no active session" message. There is no error condition for a clean no-op call.
+Calling `stop_prompt` when no session is active is safe — it simply sets the stopped flag and returns the "no active session" message. There is no error condition for a clean no-op call.
 
 ---
 
