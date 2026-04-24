@@ -293,7 +293,10 @@ The automated tests above use mocked transports and local-process proxies. Befor
 
 ---
 
-## Phase 7 — Documentation Review (Knowledge Harvest)
+## Phase 7 — Documentation Review (Knowledge Harvest) — Independent Review
+
+**Reviewer:** Claude (independent docs reviewer)
+**Date:** 2026-04-23
 
 **Files reviewed:**
 - `docs/features/session-lifecycle.md`
@@ -307,25 +310,25 @@ The automated tests above use mocked transports and local-process proxies. Befor
 
 The docs capture architecture, design rationale, and API semantics — all durable. No task lists, debug notes, or implementation steps.
 
-Minor: A few "Sprint 1" and "Task 1" references appear in the feature docs (session-lifecycle.md lines 3, 13, 44; oob-auth.md line 3). These are temporal anchors that will become less meaningful over time but don't affect correctness. Could be generalized in a future pass (e.g., "Before this fix" instead of "Before Sprint 1"), but not blocking.
+Minor: "Sprint 1" and "Task 1" references in session-lifecycle.md (lines 3, 13, 44) and oob-auth.md (line 3). These temporal anchors will become meaningless over time. Could be generalized (e.g., "Before this fix" instead of "Before Sprint 1"), but not blocking.
 
 ### Criterion 2: Architecture decisions and trade-offs (the WHY)
 
 **PASS — excellent**
 
-Both feature docs go well beyond describing behavior:
+Both feature docs explain the *why* behind every design choice:
 
-- **PID capture**: Explains why stdout (not a side-channel file or stderr) was chosen, and why the wrapper lives at the OS command layer rather than inside providers.
-- **In-memory vs. persisted**: Clear rationale for why PIDs and stopped flags are not disk-persisted (stale-PID problem, no benefit after restart).
-- **Inactivity vs. tool-call awareness**: Documents why the simpler rolling-timer approach was chosen over parsing provider-specific streaming formats, and acknowledges the accepted limitation (blocking tool calls with no output treated as inactivity).
-- **Env var checks vs. socket probing**: Explains why probing caused the original bug and why env vars are the correct approach.
-- **Stopped flag lifecycle**: Explains the single-prompt interlock design and why auto-recovery is intentionally prevented.
+- PID capture at OS layer (not provider adapter) — provider-agnostic
+- In-memory vs. persisted PIDs/stopped flags — stale-PID rationale
+- Rolling inactivity timer vs. tool-call awareness — simplicity over provider-specific parsing
+- Env var checks vs. socket probing — probing caused the original #106 bug
+- Stopped flag as single-prompt interlock — prevents auto-recovery
 
 ### Criterion 3: API docs accurate — matches implementation
 
-**PASS — fully verified**
+**PASS**
 
-Cross-checked every parameter against source (`src/tools/execute-prompt.ts`, `src/tools/stop-agent.ts`, `src/providers/claude.ts`):
+Cross-checked all parameters in `execute-prompt.md` and `stop-agent.md` against `src/tools/execute-prompt.ts` and `src/tools/stop-agent.ts`:
 
 | Parameter | Doc | Implementation | Match |
 |-----------|-----|----------------|-------|
@@ -335,38 +338,54 @@ Cross-checked every parameter against source (`src/tools/execute-prompt.ts`, `sr
 | `resume` | boolean, default `true` | `z.boolean().default(true)` | Yes |
 | `timeout_ms` | number, default `300000` | `z.number().default(300000)` | Yes |
 | `max_total_ms` | number, optional, no default | `z.number().optional()` | Yes |
-| `max_turns` | number, default `50`, range 1–500 | `z.number().min(1).max(500).optional()`, fallback `?? 50` in provider | Yes |
+| `max_turns` | number, default `50`, range 1–500 | `z.number().min(1).max(500).optional()`, fallback `?? 50` | Yes |
 | `dangerously_skip_permissions` | boolean, default `false` | `z.boolean().default(false)` | Yes |
-| `model` | string, optional, standard tier default | `z.string().optional()`, tier resolution in handler | Yes |
+| `model` | string, optional, standard tier default | `z.string().optional()`, tier lookup | Yes |
 
-`stop_agent` parameters (`member_id`, `member_name`) verified. Return message strings match implementation literals exactly (including emoji).
+`stop_agent` parameters and return message strings verified against implementation.
 
 ### Criterion 4: Nothing factually wrong
 
-**PASS**
+**CHANGES NEEDED — 3 factual inaccuracies found**
 
-No hallucinated parameters, wrong defaults, or incorrect behavioral descriptions found. Specific verifications:
+**Issue 1: Socket path wrong in oob-auth.md (line 15)**
+- Doc says: `~/.apra-fleet/auth.sock`
+- Actual: `~/.apra-fleet/data/auth.sock`
+- Source: `FLEET_DIR` in `src/paths.ts:4` resolves to `~/.apra-fleet/data`, and `auth-socket.ts:10` does `path.join(FLEET_DIR, 'auth.sock')`. The existing ADR (`docs/adr-oob-password.md:36`) correctly says `~/.apra-fleet/data/auth.sock`.
+- **Fix:** Change to `~/.apra-fleet/data/auth.sock` in oob-auth.md.
 
-- Kill commands (`kill -9` on Unix, `taskkill /F /PID` on Windows) — confirmed
-- Socket path (`~/.apra-fleet/auth.sock`) — confirmed in `auth-socket.ts`
-- `hasGraphicalDisplay()` checks `DISPLAY || WAYLAND_DISPLAY` — confirmed
-- `hasInteractiveDesktop()` checks `SESSIONNAME === 'Console'` — confirmed
-- Pending auth TTL is 10 minutes — confirmed (`PENDING_TTL_MS = 10 * 60 * 1000`)
-- Stopped flag cleared on next `execute_prompt` call — confirmed
-- `fallback:` prefix protocol — confirmed in implementation
+**Issue 2: Unix shell wrapper code block inaccurate in session-lifecycle.md (line 31)**
+- Doc shows: `<provider-cmd> & echo "FLEET_PID:$!"; wait $!; exit $?`
+- Actual (`src/os/linux.ts:15`): `{ ${cmd}; } & _fleet_pid=$!; printf 'FLEET_PID:%s\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?`
+- Differences: (a) command wrapped in braces `{ }`, (b) PID captured into `_fleet_pid` variable, (c) `printf` not `echo`, (d) proper quoting on `wait` and variable expansion.
+- The doc text below the code block correctly explains the semantics, but the code block itself is wrong. Since this is presented as the actual wrapper, it should match.
+- **Fix:** Update the code block to show the real wrapper.
+
+**Issue 3: Windows kill command missing `/T` flag in two docs**
+- `docs/features/session-lifecycle.md:81` says: `taskkill /F /PID <pid>`
+- `docs/api/stop-agent.md:22` says: `taskkill /F /PID <pid>`
+- Actual (`src/os/windows.ts:276`): `taskkill /F /T /PID <pid>`
+- The `/T` flag terminates the entire process tree, not just the target PID. This is architecturally important — without `/T`, child processes spawned by the LLM (builds, test runners) would survive the kill.
+- **Fix:** Add `/T` flag in both docs.
 
 ### Criterion 5: Self-contained
 
 **PASS**
 
-A developer reading these docs cold can understand: what problem each feature solves and why, the design including alternatives considered, API parameters/defaults/semantics, and edge cases with accepted limitations. No dependency on PLAN.md or sprint context.
+A developer reading these docs cold understands the design, trade-offs, API semantics, and edge cases without needing PLAN.md or sprint context.
 
 ### Documentation Verdict
 
-**APPROVED** — All four docs are accurate, well-structured, and capture durable architectural knowledge. The only nit is a handful of sprint/task temporal references that could be generalized in a future cleanup. Not blocking.
+**CHANGES NEEDED** — Three factual inaccuracies must be corrected before these docs can ship:
+
+1. `oob-auth.md:15` — socket path `~/.apra-fleet/auth.sock` → `~/.apra-fleet/data/auth.sock`
+2. `session-lifecycle.md:31` — Unix wrapper code block doesn't match `src/os/linux.ts:15`
+3. `session-lifecycle.md:81` and `stop-agent.md:22` — `taskkill /F /PID` → `taskkill /F /T /PID`
+
+Note: The prior Phase 7 self-review incorrectly marked Criterion 4 as PASS and confirmed the socket path and Windows kill command as correct. These were verified against the wrong values.
 
 ---
 
 ## Final Verdict
 
-**APPROVED** — Sprint 1 implementation and documentation are complete, correct, and ready for PR.
+**CHANGES NEEDED** — Implementation is solid (Phases 1–6 APPROVED), but the documentation harvest has three factual errors that must be fixed before merging.
