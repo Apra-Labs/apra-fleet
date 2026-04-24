@@ -56,11 +56,12 @@ describe('pidWrapWindows string structure', () => {
     expect(out).not.toContain('FLEET_PID:$PID');
   });
 
-  it('uses Start-Process -PassThru -NoNewWindow', () => {
+  it('uses ProcessStartInfo with UseShellExecute = $false', () => {
     const out = pidWrapWindows('', 'claude', '--version');
-    expect(out).toContain('Start-Process');
-    expect(out).toContain('-PassThru');
-    expect(out).toContain('-NoNewWindow');
+    expect(out).toContain('ProcessStartInfo');
+    expect(out).toContain('UseShellExecute = $false');
+    expect(out).not.toContain('Start-Process');
+    expect(out).toContain('[System.Diagnostics.Process]::Start');
   });
 
   it('includes WaitForExit and exit code propagation', () => {
@@ -76,11 +77,11 @@ describe('pidWrapWindows string structure', () => {
     expect(out).toContain('Set-Location "C:\\work"');
   });
 
-  it('places setup commands before Start-Process', () => {
+  it('places setup commands before ProcessStartInfo', () => {
     const setup = 'Set-Location "C:\\path"; ';
     const out = pidWrapWindows(setup, 'claude', '--version');
     const setupIdx = out.indexOf('Set-Location');
-    const startIdx = out.indexOf('Start-Process');
+    const startIdx = out.indexOf('ProcessStartInfo');
     expect(setupIdx).toBeGreaterThanOrEqual(0);
     expect(startIdx).toBeGreaterThanOrEqual(0);
     expect(setupIdx).toBeLessThan(startIdx);

@@ -31,16 +31,20 @@ describe('pidWrapWindows: PID output format', () => {
 // ─── 2. Structure ─────────────────────────────────────────────────────────────
 
 describe('pidWrapWindows: structure', () => {
-  it('contains Start-Process', () => {
-    expect(pidWrapWindows('', 'claude', '--version')).toContain('Start-Process');
+  it('contains ProcessStartInfo', () => {
+    expect(pidWrapWindows('', 'claude', '--version')).toContain('ProcessStartInfo');
   });
 
-  it('contains -PassThru', () => {
-    expect(pidWrapWindows('', 'claude', '--version')).toContain('-PassThru');
+  it('contains UseShellExecute = $false', () => {
+    expect(pidWrapWindows('', 'claude', '--version')).toContain('UseShellExecute = $false');
   });
 
-  it('contains -NoNewWindow', () => {
-    expect(pidWrapWindows('', 'claude', '--version')).toContain('-NoNewWindow');
+  it('does not contain Start-Process', () => {
+    expect(pidWrapWindows('', 'claude', '--version')).not.toContain('Start-Process');
+  });
+
+  it('launches via [System.Diagnostics.Process]::Start', () => {
+    expect(pidWrapWindows('', 'claude', '--version')).toContain('[System.Diagnostics.Process]::Start');
   });
 
   it('contains WaitForExit', () => {
@@ -53,7 +57,7 @@ describe('pidWrapWindows: structure', () => {
 
   it('uses $_fleet_proc as the process variable', () => {
     const out = pidWrapWindows('', 'claude', '--version');
-    expect(out).toContain('$_fleet_proc = Start-Process');
+    expect(out).toContain('[System.Diagnostics.Process]::Start($_fleet_psi)');
   });
 });
 
@@ -118,10 +122,10 @@ describe('buildAgentPromptCommand: working directory', () => {
     expect(out).toContain('C:\\Users\\test\\project');
   });
 
-  it('Set-Location appears before Start-Process', () => {
+  it('Set-Location appears before ProcessStartInfo', () => {
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
     const setLocIdx = out.indexOf('Set-Location');
-    const startProcIdx = out.indexOf('Start-Process');
+    const startProcIdx = out.indexOf('ProcessStartInfo');
     expect(setLocIdx).toBeGreaterThanOrEqual(0);
     expect(startProcIdx).toBeGreaterThanOrEqual(0);
     expect(setLocIdx).toBeLessThan(startProcIdx);
@@ -131,19 +135,19 @@ describe('buildAgentPromptCommand: working directory', () => {
 // ─── 6. Env var setup before Start-Process ───────────────────────────────────
 
 describe('buildAgentPromptCommand: env var setup', () => {
-  it('PATH assignment appears before Start-Process', () => {
+  it('PATH assignment appears before ProcessStartInfo', () => {
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
     // CLI_PATH sets $env:Path before the process launch
     const pathIdx = out.indexOf('$env:Path');
-    const startProcIdx = out.indexOf('Start-Process');
+    const startProcIdx = out.indexOf('ProcessStartInfo');
     expect(pathIdx).toBeGreaterThanOrEqual(0);
     expect(startProcIdx).toBeGreaterThanOrEqual(0);
     expect(pathIdx).toBeLessThan(startProcIdx);
   });
 
-  it('uses Start-Process to launch the claude executable', () => {
+  it('uses ProcessStartInfo to launch the claude executable', () => {
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
-    expect(out).toContain('Start-Process');
-    expect(out).toContain('-FilePath "claude"');
+    expect(out).toContain('ProcessStartInfo');
+    expect(out).toContain('ProcessStartInfo]::new("claude"');
   });
 });

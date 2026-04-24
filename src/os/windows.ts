@@ -7,14 +7,13 @@ const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
 /**
  * Wrap PowerShell setup commands and a CLI invocation with PID capture.
- * Launches the CLI executable via Start-Process -PassThru -NoNewWindow so that
- * the emitted PID is the Claude CLI child process ID, not PowerShell's $PID.
- * stdout flows through because the child inherits the console handle (no redirect).
- * Env vars set in setupCmd are inherited automatically by Start-Process.
+ * Uses ProcessStartInfo with UseShellExecute=$false so the child process inherits
+ * the parent's file handles (including the stdout pipe fleet's Node.js set up).
+ * This works in both interactive and headless (GitHub Actions) environments.
  */
 export function pidWrapWindows(setupCmd: string, filePath: string, argList: string): string {
   const escapedArgs = argList.replace(/'/g, "''");
-  return `${setupCmd}$_fleet_proc = Start-Process -FilePath "${filePath}" -ArgumentList '${escapedArgs}' -PassThru -NoNewWindow; Write-Output "FLEET_PID:$($_fleet_proc.Id)"; $_fleet_proc.WaitForExit(); exit $_fleet_proc.ExitCode`;
+  return `${setupCmd}$_fleet_psi = [System.Diagnostics.ProcessStartInfo]::new("${filePath}", '${escapedArgs}'); $_fleet_psi.UseShellExecute = $false; $_fleet_proc = [System.Diagnostics.Process]::Start($_fleet_psi); Write-Output "FLEET_PID:$($_fleet_proc.Id)"; [Console]::Out.Flush(); $_fleet_proc.WaitForExit(); exit $_fleet_proc.ExitCode`;
 }
 
 // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
