@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { setStoredPid, clearStoredPid, getStoredPid, isAgentStopped, clearAgentStopped } from '../src/utils/agent-helpers.js';
-import { stopAgent } from '../src/tools/stop-agent.js';
+import { stopPrompt } from '../src/tools/stop-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -16,7 +16,7 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
-describe('stop_agent (T8)', () => {
+describe('stop_prompt (T8)', () => {
   let agentId: string;
 
   beforeEach(() => {
@@ -33,7 +33,7 @@ describe('stop_agent (T8)', () => {
   });
 
   it('returns not-found error for unknown member', async () => {
-    const result = await stopAgent({ member_id: 'nonexistent-id' });
+    const result = await stopPrompt({ member_id: 'nonexistent-id' });
     expect(result).toContain('not found');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
@@ -46,7 +46,7 @@ describe('stop_agent (T8)', () => {
 
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 }); // kill
 
-    const result = await stopAgent({ member_id: agentId });
+    const result = await stopPrompt({ member_id: agentId });
 
     // Kill command should have been issued
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
@@ -67,7 +67,7 @@ describe('stop_agent (T8)', () => {
     addAgent(agent);
     // no PID stored
 
-    const result = await stopAgent({ member_id: agentId });
+    const result = await stopPrompt({ member_id: agentId });
 
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(isAgentStopped(agentId)).toBe(true);
@@ -79,7 +79,7 @@ describe('stop_agent (T8)', () => {
     agentId = agent.id;
     addAgent(agent);
 
-    const result = await stopAgent({ member_name: 'name-lookup-agent' });
+    const result = await stopPrompt({ member_name: 'name-lookup-agent' });
 
     expect(result).toContain('name-lookup-agent');
     expect(isAgentStopped(agentId)).toBe(true);
@@ -93,7 +93,7 @@ describe('stop_agent (T8)', () => {
 
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
 
-    await stopAgent({ member_id: agentId });
+    await stopPrompt({ member_id: agentId });
 
     expect(mockExecCommand.mock.calls[0][1]).toBe(5000);
   });

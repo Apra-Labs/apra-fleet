@@ -3,7 +3,7 @@ import os from 'node:os';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
 import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
-import { stopAgent } from '../../src/tools/stop-agent.js';
+import { stopPrompt } from '../../src/tools/stop-prompt.js';
 import {
   getStoredPid, clearStoredPid,
   isAgentStopped, clearAgentStopped, setStoredPid,
@@ -106,7 +106,7 @@ describe('Cancellation — integration (T13)', () => {
 
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // kill
 
-    const result = await stopAgent({ member_id: agentId });
+    const result = await stopPrompt({ member_id: agentId });
 
     expect(result).toContain('stopped');
     expect(getStoredPid(agentId)).toBeUndefined();
@@ -120,7 +120,7 @@ describe('Cancellation — integration (T13)', () => {
     addAgent(agent);
     // Simulate stop_agent having already been called
     setStoredPid(agentId, 7777);
-    await stopAgent({ member_id: agentId });
+    await stopPrompt({ member_id: agentId });
     vi.clearAllMocks();
 
     const result = await executePrompt({ member_id: agentId, prompt: 'go', resume: false, timeout_ms: 5000 });
@@ -139,7 +139,7 @@ describe('Cancellation — integration (T13)', () => {
     addAgent(agent);
 
     // Trigger stopped error (sets flag via stop_agent, then executePrompt clears it)
-    await stopAgent({ member_id: agentId });
+    await stopPrompt({ member_id: agentId });
     vi.clearAllMocks();
     await executePrompt({ member_id: agentId, prompt: 'first', resume: false, timeout_ms: 5000 });
     expect(isAgentStopped(agentId)).toBe(false);

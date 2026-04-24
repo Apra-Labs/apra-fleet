@@ -87,7 +87,7 @@ export function clearStoredPid(agentId: string): void {
 }
 
 // In-memory stopped-agent flag — transient, lives only for the server process lifetime.
-// Set by stop_agent to prevent spurious re-dispatch after an explicit cancellation.
+// Set by stop_prompt to prevent spurious re-dispatch after an explicit cancellation.
 const _stoppedAgents = new Map<string, boolean>();
 
 /** Return true if the agent has been explicitly stopped by the PM. */
@@ -95,7 +95,7 @@ export function isAgentStopped(agentId: string): boolean {
   return _stoppedAgents.get(agentId) === true;
 }
 
-/** Mark an agent as stopped (called by stop_agent after killing the process). */
+/** Mark an agent as stopped (called by stop_prompt after killing the process). */
 export function setAgentStopped(agentId: string): void {
   _stoppedAgents.set(agentId, true);
 }

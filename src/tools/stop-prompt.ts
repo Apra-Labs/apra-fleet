@@ -6,13 +6,13 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 
-export const stopAgentSchema = z.object({
+export const stopPromptSchema = z.object({
   ...memberIdentifier,
 });
 
-export type StopAgentInput = z.infer<typeof stopAgentSchema>;
+export type StopPromptInput = z.infer<typeof stopPromptSchema>;
 
-export async function stopAgent(input: StopAgentInput): Promise<string> {
+export async function stopPrompt(input: StopPromptInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError;
