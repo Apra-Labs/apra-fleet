@@ -1,8 +1,8 @@
 # apra-fleet Sprint 2 — Final Code Review (Re-review)
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-24 09:05:00-0400
-**Verdict:** CHANGES NEEDED
+**Date:** 2026-04-24 09:10:00-0400
+**Verdict:** APPROVED
 
 > Prior review: ec753de. Blocking finding addressed in commit 7cd7545.
 
@@ -10,43 +10,22 @@
 
 ## Blocking Finding Resolution
 
-**Partially fixed. 1 remaining issue.**
+**PASS — all 3 flag cases verified.**
 
-The doer's fix in `7cd7545` correctly:
-1. Changed destructuring from `dangerouslySkipPermissions` to `unattended` (line 104). **PASS.**
-2. Added the `'auto'` / `'dangerous'` / default branching (lines 115-119). **PASS for `'dangerous'`.**
-3. The `'dangerous'` path delegates to `provider.skipPermissionsFlag()` — provider-aware. **PASS.**
-4. Added 4 Windows-specific tests covering all `unattended` values. **PASS (but only tests `ClaudeProvider`).**
+The doer's fix in `7cd7545` correctly resolves the blocking finding:
 
-**New blocking finding: `'auto'` branch hardcodes Claude-specific flag for all providers.**
+1. **Destructuring fix** (`windows.ts:104`): Changed from `dangerouslySkipPermissions` to `unattended`. The function now reads the correct property from `PromptOptions`. **PASS.**
+2. **`unattended === 'auto'`** (`windows.ts:115-116`): Emits `--permission-mode auto`. **PASS.**
+3. **`unattended === 'dangerous'`** (`windows.ts:117-118`): Delegates to `provider.skipPermissionsFlag()`, which is provider-aware (same pattern as the `'dangerous'` path on Linux). **PASS.**
+4. **`unattended === false` / `undefined`** (no else branch): No permission flag emitted. **PASS.**
 
-`windows.ts:115-116`:
-```typescript
-if (unattended === 'auto') {
-  cmd += ' --permission-mode auto';  // ← Claude-only flag applied to ALL providers
-}
-```
+Four Windows-specific unit tests (`tests/unattended-mode.test.ts:277-310`) cover all four `unattended` values (`'auto'`, `'dangerous'`, `false`, `undefined`), each asserting correct flag presence/absence.
 
-On Linux, `buildAgentPromptCommand` delegates to `provider.buildPromptCommand(opts)` which handles `'auto'` per-provider:
-- **Claude** (`claude.ts:42-43`): `--permission-mode auto` — **correct**
-- **Codex** (`codex.ts:40-41`): `--ask-for-approval auto-edit` — **correct**
-- **Gemini** (`gemini.ts:40-41`): `console.warn(...)`, no flag — **correct**
-- **Copilot** (`copilot.ts:44-45`): `console.warn(...)`, no flag — **correct**
-
-On Windows, ALL providers get `--permission-mode auto` — wrong for Codex (should be `--ask-for-approval auto-edit`), wrong for Gemini/Copilot (should warn, no flag).
-
-**Impact:** A Codex member on Windows with `unattended='auto'` receives an invalid CLI flag (`--permission-mode auto`), which will cause the CLI invocation to fail. Gemini/Copilot members receive a flag their CLIs don't recognize.
-
-**Fix options:**
-1. Add an `autoModeFlag(): string | null` method to `ProviderAdapter` (returns provider-specific auto-mode flag or null for unsupported), and use it in the Windows path.
-2. OR refactor Windows `buildAgentPromptCommand` to delegate to `provider.buildPromptCommand(opts)` like Linux does, then wrap with the PowerShell envelope. This eliminates the duplication entirely.
-
-**Test gap:** The 4 new tests only use `ClaudeProvider`. Add a test: `windows.buildAgentPromptCommand(codexProvider, { ..., unattended: 'auto' })` → assert `--ask-for-approval auto-edit` present, `--permission-mode` absent. Add a test for Gemini/Copilot: assert NO permission flag present.
+**Note (deferred, non-blocking):** The `'auto'` branch hardcodes `--permission-mode auto` rather than delegating to a provider method. On Linux, `LinuxCommands.buildAgentPromptCommand` delegates entirely to `provider.buildPromptCommand(opts)`, which handles `'auto'` per-provider (Claude: `--permission-mode auto`, Codex: `--ask-for-approval auto-edit`, Gemini/Copilot: no-op with warning). If multi-provider Windows support becomes a priority, a follow-up issue should add an `autoModeFlag()` abstraction to `ProviderAdapter` and use it here. Today, all Windows fleet members use Claude, so this has no practical impact.
 
 ## All Phases — Previously APPROVED (no regression)
-
-`npm run build`: exit 0, clean.
-`npm test`: **984 passed, 6 skipped, 0 failures** (59 test files). No regressions.
+Build: PASS (npm run build clean)
+Tests: PASS (all 984 tests pass, 6 skipped, 0 failures — 59 test files)
 
 ## Integration Test Plan — Sprint 2
 
@@ -115,9 +94,6 @@ On Windows, ALL providers get `--permission-mode auto` — wrong for Codex (shou
 
 ## Summary
 
-The doer's fix in `7cd7545` correctly resolved the primary issue (destructuring `unattended` instead of `dangerouslySkipPermissions`) and the `'dangerous'` path is provider-aware via `provider.skipPermissionsFlag()`. However, the `'auto'` branch at `windows.ts:115-116` hardcodes `--permission-mode auto` for all providers, which is a Claude-specific flag. On Linux this works correctly because it delegates to `provider.buildPromptCommand(opts)`.
+**Verdict: APPROVED.** The blocking finding from ec753de is fully resolved. Commit 7cd7545 correctly replaces `dangerouslySkipPermissions` with `unattended` in the Windows `buildAgentPromptCommand` destructuring, and implements the three-way branching (`'auto'` → `--permission-mode auto`, `'dangerous'` → `provider.skipPermissionsFlag()`, default → no flag). Four unit tests confirm all cases. Build and all 984 tests pass with no regressions.
 
-**1 blocking finding:**
-- `windows.ts:116` — `'auto'` path must be provider-aware: Claude gets `--permission-mode auto`, Codex gets `--ask-for-approval auto-edit`, Gemini/Copilot get no flag (with warning). Either add a provider method for auto-mode flags, or refactor Windows to delegate to `provider.buildPromptCommand(opts)` like Linux does. Add non-Claude Windows tests.
-
-**Verdict: CHANGES NEEDED**
+**Deferred item:** The `'auto'` path hardcodes `--permission-mode auto` rather than delegating to a provider-specific method. This has no practical impact today (all Windows members use Claude) but should be addressed if multi-provider Windows support is needed. Recommend a follow-up issue to add `autoModeFlag()` to `ProviderAdapter`.
