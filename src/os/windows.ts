@@ -101,7 +101,7 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
+    const { folder, promptFile, sessionId, unattended, model, maxTurns } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     let cmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}${provider.cliCommand(`${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`)}`;
@@ -112,7 +112,9 @@ export class WindowsCommands implements OsCommands {
       const rf = provider.resumeFlag(sessionId);
       if (rf) cmd += ` ${rf}`;
     }
-    if (dangerouslySkipPermissions) {
+    if (unattended === 'auto') {
+      cmd += ' --permission-mode auto';
+    } else if (unattended === 'dangerous') {
       cmd += ` ${provider.skipPermissionsFlag()}`;
     }
     if (model) {
