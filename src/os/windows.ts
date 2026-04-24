@@ -6,13 +6,15 @@ import { escapeBatchMetachars } from '../utils/shell-escape.js';
 const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
 /**
- * Wrap a PowerShell command string with PID capture.
- * Emits FLEET_PID:<pid> (the current PowerShell session's PID) synchronously
- * to stdout before the inner command executes. The session PID is the killable
- * handle: `taskkill /F /T /PID <pid>` terminates it and all child processes.
+ * Wrap PowerShell setup commands and a CLI invocation with PID capture.
+ * Launches the CLI executable via Start-Process -PassThru -NoNewWindow so that
+ * the emitted PID is the Claude CLI child process ID, not PowerShell's $PID.
+ * stdout flows through because the child inherits the console handle (no redirect).
+ * Env vars set in setupCmd are inherited automatically by Start-Process.
  */
-export function pidWrapWindows(cmd: string): string {
-  return `Write-Output "FLEET_PID:$PID"; ${cmd}`;
+export function pidWrapWindows(setupCmd: string, filePath: string, argList: string): string {
+  const escapedArgs = argList.replace(/'/g, "''");
+  return `${setupCmd}$_fleet_proc = Start-Process -FilePath "${filePath}" -ArgumentList '${escapedArgs}' -PassThru -NoNewWindow; Write-Output "FLEET_PID:$($_fleet_proc.Id)"; $_fleet_proc.WaitForExit(); exit $_fleet_proc.ExitCode`;
 }
 
 // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
@@ -104,23 +106,32 @@ export class WindowsCommands implements OsCommands {
     const { folder, promptFile, sessionId, unattended, model, maxTurns } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
-    let cmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}${provider.cliCommand(`${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`)}`;
+
+    // Setup: working directory + PATH so the CLI executable is resolvable
+    const setupCmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}`;
+
+    // Executable extracted from provider (e.g. "claude" from "claude <args>")
+    const filePath = provider.cliCommand('').trim();
+
+    // Build argument list (everything that follows the executable)
+    let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
     if (provider.supportsMaxTurns()) {
-      cmd += ` --max-turns ${maxTurns ?? 50}`;
+      argList += ` --max-turns ${maxTurns ?? 50}`;
     }
     if (sessionId && provider.supportsResume()) {
       const rf = provider.resumeFlag(sessionId);
-      if (rf) cmd += ` ${rf}`;
+      if (rf) argList += ` ${rf}`;
     }
     if (unattended === 'auto') {
-      cmd += ' --permission-mode auto';
+      argList += ' --permission-mode auto';
     } else if (unattended === 'dangerous') {
-      cmd += ` ${provider.skipPermissionsFlag()}`;
+      argList += ` ${provider.skipPermissionsFlag()}`;
     }
     if (model) {
-      cmd += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
+      argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
-    return pidWrapWindows(cmd);
+
+    return pidWrapWindows(setupCmd, filePath, argList);
   }
 
   // --- Filesystem ---

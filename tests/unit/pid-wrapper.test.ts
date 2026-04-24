@@ -47,26 +47,43 @@ describe('pidWrapUnix string structure', () => {
 
 describe('pidWrapWindows string structure', () => {
   it('contains FLEET_PID: marker', () => {
-    expect(pidWrapWindows('claude --version')).toContain('FLEET_PID:');
+    expect(pidWrapWindows('', 'claude', '--version')).toContain('FLEET_PID:');
   });
 
-  it('uses $PID (current PowerShell session PID)', () => {
-    expect(pidWrapWindows('claude --version')).toContain('$PID');
+  it('uses $_fleet_proc.Id (Claude CLI child PID, not PowerShell $PID)', () => {
+    const out = pidWrapWindows('', 'claude', '--version');
+    expect(out).toContain('$_fleet_proc.Id');
+    expect(out).not.toContain('FLEET_PID:$PID');
   });
 
-  it('emits PID before inner command in text order', () => {
-    const inner = 'Set-Location "C:\\path"; claude -p file';
-    const wrapped = pidWrapWindows(inner);
-    const pidIdx = wrapped.indexOf('FLEET_PID:');
-    const cmdIdx = wrapped.indexOf(inner);
-    expect(pidIdx).toBeGreaterThanOrEqual(0);
-    expect(cmdIdx).toBeGreaterThanOrEqual(0);
-    expect(pidIdx).toBeLessThan(cmdIdx);
+  it('uses Start-Process -PassThru -NoNewWindow', () => {
+    const out = pidWrapWindows('', 'claude', '--version');
+    expect(out).toContain('Start-Process');
+    expect(out).toContain('-PassThru');
+    expect(out).toContain('-NoNewWindow');
   });
 
-  it('includes the inner command verbatim', () => {
-    const inner = 'Set-Location "C:\\Users\\dev\\project"; claude -p file.md --output-format json';
-    expect(pidWrapWindows(inner)).toContain(inner);
+  it('includes WaitForExit and exit code propagation', () => {
+    const out = pidWrapWindows('', 'claude', '--version');
+    expect(out).toContain('WaitForExit');
+    expect(out).toContain('exit $_fleet_proc.ExitCode');
+  });
+
+  it('includes the filePath and argList in the output', () => {
+    const out = pidWrapWindows('Set-Location "C:\\work"; ', 'claude', '-p "task" --output-format json');
+    expect(out).toContain('claude');
+    expect(out).toContain('-p "task" --output-format json');
+    expect(out).toContain('Set-Location "C:\\work"');
+  });
+
+  it('places setup commands before Start-Process', () => {
+    const setup = 'Set-Location "C:\\path"; ';
+    const out = pidWrapWindows(setup, 'claude', '--version');
+    const setupIdx = out.indexOf('Set-Location');
+    const startIdx = out.indexOf('Start-Process');
+    expect(setupIdx).toBeGreaterThanOrEqual(0);
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(setupIdx).toBeLessThan(startIdx);
   });
 });
 
@@ -137,26 +154,28 @@ describe('WindowsCommands.killPid', () => {
 const winTest = process.platform !== 'win32' ? it.skip : it;
 
 describe('pidWrapWindows execution', () => {
-  winTest('emits FLEET_PID as first stdout line before command output', () => {
-    const cmd = pidWrapWindows('Start-Sleep -Milliseconds 50; Write-Output "hello"');
+  winTest('emits a FLEET_PID line with the child process ID', () => {
+    // Use powershell.exe as the child executable for testing
+    const cmd = pidWrapWindows('', 'powershell.exe', '-NoProfile -Command Write-Output done');
     const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', cmd], {
       encoding: 'utf8',
       timeout: 10000,
     });
     const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
-    expect(lines[0]).toMatch(/^FLEET_PID:\d+$/);
-    expect(lines[1]).toBe('hello');
+    const pidLine = lines.find(l => /^FLEET_PID:\d+$/.test(l));
+    expect(pidLine).toBeDefined();
   });
 
-  winTest('emitted PID is the current process ID (positive integer)', () => {
-    const cmd = pidWrapWindows('Write-Output "done"');
+  winTest('emitted PID is a positive integer (the child PID, not PS PID)', () => {
+    const cmd = pidWrapWindows('', 'powershell.exe', '-NoProfile -Command Write-Output done');
     const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', cmd], {
       encoding: 'utf8',
       timeout: 10000,
     });
     const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
-    expect(lines[0]).toMatch(/^FLEET_PID:\d+$/);
-    const pid = parseInt(lines[0].split(':')[1], 10);
+    const pidLine = lines.find(l => /^FLEET_PID:\d+$/.test(l));
+    expect(pidLine).toBeDefined();
+    const pid = parseInt(pidLine!.split(':')[1], 10);
     expect(pid).toBeGreaterThan(0);
   });
 });
