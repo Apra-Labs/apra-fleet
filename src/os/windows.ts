@@ -217,23 +217,27 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
     const escapedUser = escapeWindowsArg(username).replace(/'/g, "''");
     const batchToken = escapeBatchMetachars(token);
     const escapedToken = batchToken.replace(/'/g, "''");
+    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join "\`r\`n"`,
-      `Set-Content -Path "$env:USERPROFILE\\.fleet-git-credential.bat" -Value $script -NoNewline`,
-      '$gcFile = "$env:USERPROFILE\\.fleet-git-credential.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "${u}:F"',
-      `git config --global --replace-all 'credential.https://${escapedHost}.helper' ''`,
-      `git config --global --add 'credential.https://${escapedHost}.helper' "$env:USERPROFILE\\.fleet-git-credential.bat"`,
+      `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
+      `$gcFile = "$env:USERPROFILE\\${credFileName}.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "\${u}:F"`,
+      `git config --global --replace-all 'credential.${credUrl}.helper' ''`,
+      `$helperPath = "$env:USERPROFILE\\${credFileName}.bat" -replace '\\\\','/'; git config --global --add 'credential.${credUrl}.helper' $helperPath`,
     ].join('; ');
   }
 
-  gitCredentialHelperRemove(host: string): string {
+  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
-    return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.https://${escapedHost}.helper' 2>$null`;
+    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
+    return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
   }
 
   // --- SSH key deployment ---

@@ -38,9 +38,17 @@ const providers: Record<string, VcsProviderService> = {
   'azure-devops': azureDevOpsProvider,
 };
 
+const PROVIDER_HOSTS: Record<string, string> = {
+  'github': 'github.com',
+  'bitbucket': 'bitbucket.org',
+  'azure-devops': 'dev.azure.com',
+};
+
 export const provisionVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
+  label: z.string().optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
+  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>".'),
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
@@ -127,6 +135,10 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   const creds = buildCredentials(resolvedInput);
   if (typeof creds === 'string') return `❌ ${creds}`;
 
+  const label = input.label ?? input.provider;
+  const host = PROVIDER_HOSTS[input.provider];
+  const scopeUrl = input.scope_url ?? `https://${host}`;
+
   // Cancel any existing credential cleanup timer before re-provisioning
   cancelCredentialCleanup(agent.id);
 
@@ -141,9 +153,14 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     return result.stdout;
   };
 
+  // Legacy migration: remove old single-file credential helpers
+  try {
+    await exec(cmds.gitCredentialHelperRemove(host));
+  } catch { /* best-effort */ }
+
   let deployResult;
   try {
-    deployResult = await service.deploy(agent, cmds, exec, creds);
+    deployResult = await service.deploy(agent, cmds, exec, creds, label, scopeUrl);
   } catch (err: any) {
     return `❌ Failed to deploy ${input.provider} credentials on "${agent.friendlyName}": ${err.message}`;
   }

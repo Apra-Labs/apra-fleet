@@ -201,16 +201,20 @@ export class LinuxCommands implements OsCommands {
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
-    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > ~/.fleet-git-credential && chmod 600 ~/.fleet-git-credential && chmod +x ~/.fleet-git-credential && git config --global --replace-all "credential.https://${escapedHost}.helper" "" && git config --global --add "credential.https://${escapedHost}.helper" ~/.fleet-git-credential`;
+    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
+    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > ${credFile} && chmod 600 ${credFile} && chmod +x ${credFile} && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" ${credFile}`;
   }
 
-  gitCredentialHelperRemove(host: string): string {
+  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
-    return `rm -f ~/.fleet-git-credential && git config --global --unset-all "credential.https://${escapedHost}.helper" 2>/dev/null || true`;
+    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
+    return `rm -f ${credFile} && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
   }
 
   // --- SSH key deployment ---
