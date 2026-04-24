@@ -12,7 +12,7 @@ Credentials (passwords, API keys, confirmation prompts) must not pass through th
 
 ## Unix Domain Socket (UDS) Architecture
 
-The fleet server creates a socket at `~/.apra-fleet/auth.sock` (Linux/macOS) or a Windows named pipe equivalent. This is a filesystem object — any process running as the same user on the same machine can reach it.
+The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS) or a Windows named pipe equivalent. This is a filesystem object — any process running as the same user on the same machine can reach it.
 
 **Flow:**
 
