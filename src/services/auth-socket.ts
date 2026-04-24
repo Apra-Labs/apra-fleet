@@ -355,6 +355,10 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
   return { cmd: process.argv[0], args: [indexJs, 'auth', ...extra, memberName] };
 }
 
+function buildHeadlessFallback(memberName: string, reason: string): string {
+  return `fallback:${reason}\n\nRun this in a separate terminal:\n  ! apra-fleet auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+}
+
 /**
  * Returns true when a graphical display is available on Linux/BSD.
  * Checks $DISPLAY (X11) and $WAYLAND_DISPLAY (Wayland).
@@ -402,11 +406,11 @@ export function launchAuthTerminal(
     const platform = process.platform;
 
     if (platform === 'win32' && !hasInteractiveDesktop()) {
-      return `fallback:No interactive desktop session detected (SSH or service context).\n\nRun this in a separate terminal:\n  ! apra-fleet auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+      return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).');
     }
 
     if (platform === 'linux' && !hasGraphicalDisplay()) {
-      return `fallback:No graphical display detected (SSH or headless session).\n\nRun this in a separate terminal:\n  ! apra-fleet auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+      return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).');
     }
 
     if (platform === 'darwin') {
