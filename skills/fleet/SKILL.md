@@ -34,6 +34,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `credential_store_set` | Store a secret credential for use in commands (entered OOB — never in chat) |
 | `credential_store_list` | List stored credential names (values are never returned) |
 | `credential_store_delete` | Delete a stored credential by name |
+| `stop_prompt` | Stop the active execute_prompt session on a member — kills the LLM process and sets a stopped flag to prevent re-dispatch |
 
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
