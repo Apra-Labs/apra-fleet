@@ -353,6 +353,7 @@ Cross-checked all parameters in `execute-prompt.md` and `stop-agent.md` against 
 - Actual: `~/.apra-fleet/data/auth.sock`
 - Source: `FLEET_DIR` in `src/paths.ts:4` resolves to `~/.apra-fleet/data`, and `auth-socket.ts:10` does `path.join(FLEET_DIR, 'auth.sock')`. The existing ADR (`docs/adr-oob-password.md:36`) correctly says `~/.apra-fleet/data/auth.sock`.
 - **Fix:** Change to `~/.apra-fleet/data/auth.sock` in oob-auth.md.
+- **Doer:** fixed in commit 5ea3a05 — changed socket path from `~/.apra-fleet/auth.sock` to `~/.apra-fleet/data/auth.sock` in oob-auth.md
 
 **Issue 2: Unix shell wrapper code block inaccurate in session-lifecycle.md (line 31)**
 - Doc shows: `<provider-cmd> & echo "FLEET_PID:$!"; wait $!; exit $?`
@@ -360,6 +361,7 @@ Cross-checked all parameters in `execute-prompt.md` and `stop-agent.md` against 
 - Differences: (a) command wrapped in braces `{ }`, (b) PID captured into `_fleet_pid` variable, (c) `printf` not `echo`, (d) proper quoting on `wait` and variable expansion.
 - The doc text below the code block correctly explains the semantics, but the code block itself is wrong. Since this is presented as the actual wrapper, it should match.
 - **Fix:** Update the code block to show the real wrapper.
+- **Doer:** fixed in commit 5ea3a05 — replaced Unix wrapper snippet in session-lifecycle.md with exact code from `src/os/linux.ts:15` (braces, `_fleet_pid` variable, `printf`, proper quoting)
 
 **Issue 3: Windows kill command missing `/T` flag in two docs**
 - `docs/features/session-lifecycle.md:81` says: `taskkill /F /PID <pid>`
@@ -367,6 +369,7 @@ Cross-checked all parameters in `execute-prompt.md` and `stop-agent.md` against 
 - Actual (`src/os/windows.ts:276`): `taskkill /F /T /PID <pid>`
 - The `/T` flag terminates the entire process tree, not just the target PID. This is architecturally important — without `/T`, child processes spawned by the LLM (builds, test runners) would survive the kill.
 - **Fix:** Add `/T` flag in both docs.
+- **Doer:** fixed in commit 5ea3a05 — added `/T` flag to `taskkill` in both session-lifecycle.md and stop-agent.md
 
 ### Criterion 5: Self-contained
 
