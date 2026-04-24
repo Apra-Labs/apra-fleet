@@ -108,6 +108,21 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 - How to handle permission denials during execution
 - How to recompose when switching roles
 
+## execute_prompt Timeout Parameters
+
+`execute_prompt` accepts two independent timeout parameters:
+
+| Parameter | Semantics |
+|-----------|-----------|
+| `timeout_ms` | **Inactivity timeout** — the session is killed only if no stdout/stderr output arrives for this many ms. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are never killed by this timer as long as output keeps flowing. Default: 300 000 ms (5 min). |
+| `max_total_ms` | **Hard ceiling** — the session is killed after this total elapsed time regardless of activity. Optional; defaults to unlimited. |
+
+**When to use which:**
+
+- Use `timeout_ms` for normal dispatch. It extends the deadline automatically as long as the member is active, so you don't need to over-estimate how long a task takes.
+- Use `max_total_ms` only for tasks that must never run forever — CI pipelines, automated batch jobs, or any context where an unbounded runaway is unacceptable.
+- Both timers run concurrently; whichever fires first kills the process.
+
 ## Model Tiers
 
 Use model tiers: `cheap` for execution (commands, status, tests, deploys), `standard` for construction (code, config, devops), `premium` for planning, review, design, and architecture. The server resolves tiers to the appropriate model for each provider. User override always wins. When in doubt, prefer cheaper.
