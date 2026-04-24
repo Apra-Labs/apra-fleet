@@ -27,9 +27,9 @@ PID capture happens at the OS command layer (`buildAgentPromptCommand`), not ins
 
 **Unix wrapper:**
 ```bash
-<provider-cmd> & echo "FLEET_PID:$!"; wait $!; exit $?
+{ <provider-cmd>; } & _fleet_pid=$!; printf 'FLEET_PID:%s\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?
 ```
-The backgrounded process emits its PID to stdout immediately via `echo` before the LLM produces any output, then `wait` blocks until it exits and propagates its exit code.
+The backgrounded process emits its PID to stdout immediately via `printf` before the LLM produces any output, then `wait` blocks until it exits and propagates its exit code.
 
 **Windows wrapper (PowerShell):**
 ```powershell
@@ -78,7 +78,7 @@ The `activePid` field on `Agent` is a type-level remnant from early design; the 
 
 `tryKillPid` is non-blocking and swallows "process not found" errors. Kill commands:
 - Unix: `kill -9 <pid>`
-- Windows: `taskkill /F /PID <pid>`
+- Windows: `taskkill /F /T /PID <pid>`
 
 ---
 

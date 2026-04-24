@@ -19,7 +19,7 @@ Either `member_id` or `member_name` must be provided.
 
 1. **Kill active process** — if a PID is stored for the member (from a prior `execute_prompt`), issues a platform-appropriate kill command:
    - Unix: `kill -9 <pid>`
-   - Windows: `taskkill /F /PID <pid>`
+   - Windows: `taskkill /F /T /PID <pid>`
    Kill errors (e.g., process already gone) are swallowed — the operation always proceeds to step 2.
 
 2. **Set stopped flag** — marks the member as stopped in an in-memory registry. This flag prevents subsequent `execute_prompt` calls from spawning until explicitly cleared.
