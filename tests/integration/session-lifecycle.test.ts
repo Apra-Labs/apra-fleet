@@ -8,7 +8,7 @@ import {
   getStoredPid, clearStoredPid,
   isAgentStopped, clearAgentStopped, setStoredPid,
 } from '../../src/utils/agent-helpers.js';
-import { launchAuthTerminal } from '../../src/services/auth-socket.js';
+import { launchAuthTerminal, isSSHSession } from '../../src/services/auth-socket.js';
 import { getStrategy } from '../../src/services/strategy.js';
 import type { Agent, SSHExecResult } from '../../src/types.js';
 
@@ -214,5 +214,27 @@ describe('OOB SSH fallback — integration (T13)', () => {
 
     // The headless-specific fallback must not fire — interactive desktop check passed
     expect(result).not.toContain('No interactive desktop session detected');
+  });
+
+  it('returns fallback on macOS when SSH_TTY is set', () => {
+    if (process.platform !== 'darwin') return;
+    vi.stubEnv('SSH_TTY', '/dev/ttys001');
+    const onExit = vi.fn();
+
+    const result = launchAuthTerminal('my-worker', [], onExit);
+
+    expect(result).toMatch(/^fallback:/);
+    expect(result).toContain('! apra-fleet auth my-worker');
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it('isSSHSession returns true when SSH_TTY is set', () => {
+    vi.stubEnv('SSH_TTY', '/dev/ttys001');
+    expect(isSSHSession()).toBe(true);
+  });
+
+  it('isSSHSession returns false when SSH_TTY is unset', () => {
+    vi.stubEnv('SSH_TTY', '');
+    expect(isSSHSession()).toBe(false);
   });
 });

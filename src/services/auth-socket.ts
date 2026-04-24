@@ -368,6 +368,14 @@ export function hasGraphicalDisplay(): boolean {
 }
 
 /**
+ * Returns true when the process is running inside an SSH session.
+ * SSH_TTY is set by the SSH daemon on both Linux and macOS when stdin is a tty.
+ */
+export function isSSHSession(): boolean {
+  return !!process.env.SSH_TTY;
+}
+
+/**
  * Returns true when running on an interactive Windows desktop session.
  * SSH and headless service sessions have SESSIONNAME !== 'Console'.
  */
@@ -411,6 +419,10 @@ export function launchAuthTerminal(
 
     if (platform === 'linux' && !hasGraphicalDisplay()) {
       return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).');
+    }
+
+    if (platform === 'darwin' && isSSHSession()) {
+      return buildHeadlessFallback(memberName, 'SSH session detected — no terminal emulator available (SSH_TTY is set).');
     }
 
     if (platform === 'darwin') {
