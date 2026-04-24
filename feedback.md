@@ -389,6 +389,36 @@ Note: The prior Phase 7 self-review incorrectly marked Criterion 4 as PASS and c
 
 ---
 
+## Re-verification of Doc Fixes (2026-04-23)
+
+**Reviewer:** Claude Opus 4.6 (automated re-review)
+**Commit reviewed:** `5ea3a05`
+
+All three fixes from commit `5ea3a05` re-verified against source:
+
+### Issue 1: Socket path — FIXED ✓
+
+- **Doc** (`oob-auth.md:15`): `~/.apra-fleet/data/auth.sock`
+- **Source** (`src/paths.ts:4`): `FLEET_DIR` = `~/.apra-fleet/data`; (`src/services/auth-socket.ts:10`): `path.join(FLEET_DIR, 'auth.sock')` = `~/.apra-fleet/data/auth.sock`
+- **Match confirmed.**
+
+### Issue 2: Unix PID wrapper — FIXED ✓
+
+- **Doc** (`session-lifecycle.md:29-31`): `{ <provider-cmd>; } & _fleet_pid=$!; printf 'FLEET_PID:%s\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?`
+- **Source** (`src/os/linux.ts:14-15`, `pidWrapUnix`): produces `{ ${cmd}; } & _fleet_pid=$!; printf 'FLEET_PID:%s\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?`
+- **Match confirmed** — doc uses `<provider-cmd>` as placeholder for the `cmd` parameter.
+
+### Issue 3: Windows kill `/T` flag — FIXED ✓
+
+- **Doc** (`session-lifecycle.md:81`): `taskkill /F /T /PID <pid>`
+- **Doc** (`stop-agent.md:23`): `taskkill /F /T /PID <pid>`
+- **Source** (`src/os/windows.ts:275-277`, `killPid`): `taskkill /F /T /PID ${pid}`
+- **Match confirmed** — `/T` flag present in both docs and source.
+
+No new issues introduced by the fixes.
+
+---
+
 ## Final Verdict
 
-**CHANGES NEEDED** — Implementation is solid (Phases 1–6 APPROVED), but the documentation harvest has three factual errors that must be fixed before merging.
+**APPROVED** — All three factual inaccuracies fixed and verified against source. Implementation (Phases 1–6) was already approved. Documentation harvest is now accurate. Branch is ready for PR to `main`.
