@@ -12,7 +12,7 @@
     { "id": "VERIFY-2", "phase": 2, "title": "VERIFY: Phase 2", "status": "completed", "tier": "verify", "notes": "npm run build: exit 0. npm test: 963 passed, 7 skipped, 0 failed (58 test files). Multi-label coexistence verified: two labels produce distinct credential files and gitconfig entries." },
     { "id": "T6", "phase": 3, "title": "Add unattended field to Agent type + register/update_member", "status": "completed", "tier": "standard", "notes": "Added unattended field (false | 'auto' | 'dangerous') to Agent interface, registerMemberSchema, and updateMemberSchema. Wired persistence in both tools." },
     { "id": "T7", "phase": 3, "title": "Wire unattended to providers + deprecate dangerously_skip_permissions", "status": "completed", "tier": "premium", "notes": "Claude: --permission-mode auto / --dangerously-skip-permissions. Codex: --ask-for-approval auto-edit / warning. Gemini+Copilot: warnings only. execute_prompt dangerously_skip_permissions deprecated+ignored with warning. PM SKILL.md updated. Existing provider tests migrated to unattended field." },
-    { "id": "T8", "phase": 3, "title": "Unattended mode + deprecation test coverage", "status": "pending", "tier": "standard", "notes": "" },
-    { "id": "VERIFY-3", "phase": 3, "title": "VERIFY: Phase 3", "status": "pending", "tier": "verify", "notes": "" }
+    { "id": "T8", "phase": 3, "title": "Unattended mode + deprecation test coverage", "status": "completed", "tier": "standard", "notes": "16 new tests in tests/unattended-mode.test.ts: provider CLI args for all 4 providers × unattended modes, registry persistence (set/change/reset), deprecation warning presence+absence, flag not applied." },
+    { "id": "VERIFY-3", "phase": 3, "title": "VERIFY: Phase 3", "status": "completed", "tier": "verify", "notes": "npm run build: exit 0. npm test: 979 passed, 7 skipped, 0 failed (59 test files). SKILL.md no longer instructs passing dangerously_skip_permissions. Pushed to origin." }
   ]
 }
