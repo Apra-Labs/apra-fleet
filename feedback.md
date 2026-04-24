@@ -1,117 +1,92 @@
-# apra-fleet Sprint 2 — Phase 1 Code Review
+# apra-fleet Sprint 2 — Phase 2 Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-24 02:25:00-0400
-**Verdict:** APPROVED
+**Date:** 2026-04-24 03:05:00-0400
+**Verdict:** CHANGES NEEDED
 
-> See the recent git history of this file to understand the context of this review. Prior review (plan re-review): a13b61f — APPROVED. This review covers implementation commits 46cb06a (T1), 85b6c3d (T2a+T2b), cc56b2a (T3), and 5988a1b (VERIFY-1).
+> Prior review history: `git log --oneline -- feedback.md` shows Phase 1 review at bec977d (APPROVED). This review covers Phase 2 commits b8d72f0 (T4) and eab2944 (T5), plus VERIFY-2 at b24773d.
 
 ---
 
-## Phase 1 Review: Unified Credential Store (#157 + #158)
+## Phase 1 (previously APPROVED — no regressions check)
 
-### T1: Unified CredentialRecord schema + credential_store_set extensions
+**PASS.** All Phase 1 tests continue to pass — 964 total tests, 6 skipped, 0 failures across 58 test files. The credential scoping + TTL tests in `tests/credential-scoping-ttl.test.ts` all pass. No regressions detected in any existing suite.
 
-**PASS.** `CredentialMeta`, `SessionEntry`, and `PersistentRecord` all extended with `allowedMembers: string[] | '*'` and `expiresAt?: string` in `src/services/credential-store.ts`. The `credentialSet()` function accepts new `allowedMembers` (default `'*'`) and `ttl_seconds` (optional) parameters. `expiresAt` computed as `new Date(Date.now() + ttl_seconds * 1000).toISOString()` — absolute ISO timestamp, not relative. Correct.
+---
 
-`credential_store_set` tool schema (`src/tools/credential-store-set.ts`) extended with `members` (string, default `'*'`) and `ttl_seconds` (positive number, optional). Parsing logic: `input.members === '*' ? '*' : input.members.split(',').map(s => s.trim()).filter(Boolean)` — handles comma-separated names, trims whitespace, filters empty strings. Clean.
+## Phase 2 Review: provision_vcs_auth Isolation (#163)
 
-Backward compatibility: `credentialList()` applies `?? '*'` when reading `allowedMembers` from persistent records — existing `credentials.json` files without the field default to `'*'`. `expiresAt` is optional and naturally undefined for legacy entries. **PASS.**
+### 1. Label isolation — PASS
 
-### T2a: Enforcement core — scoping + TTL in credential-store.ts
+Two `provision_vcs_auth` calls with different labels produce independent files and gitconfig entries. Verified in code and tests:
 
-**PASS.** `credentialResolve()` signature updated to `credentialResolve(name: string, callingMember?: string)` with discriminated union return type: `{ plaintext, meta } | { denied } | { expired } | null`. All four return paths are clearly documented and implemented.
+- **linux.ts:204-207**: `credFile = label ? ~/.fleet-git-credential-${label} : ~/.fleet-git-credential` — each label produces a distinct file path.
+- **gitconfig entry uses `scopeUrl` as key**: `git config --global --add "credential.${credUrl}.helper" ${credFile}` — each label's `scopeUrl` creates a separate gitconfig section.
+- **Test confirmation**: `vcs-auth.test.ts` "deploy with different labels creates distinct credential files" — asserts `execCalls[0]` contains `fleet-git-credential-work-github` with `credential.https://github.com/work-org.helper`, and `execCalls[1]` contains `fleet-git-credential-personal-github` with `credential.https://github.com/personal.helper`. **PASS.**
+- **Cross-provider coexistence tested**: "two providers with different labels coexist in gitconfig" — GitHub + Azure DevOps deploy with different labels and scope URLs, verified independent. **PASS.**
+- No shared state or naming collision — each label is independently named, gitconfig keyed by distinct scope URL.
 
-**Security check order (TTL before scoping):** The code checks TTL first, then scoping. This means an expired credential returns `{ expired }` even if the caller would also be denied by scoping. This is correct behavior — an expired credential should be purged regardless of who asks for it, and returning `{ expired }` is a security rejection either way. The integration test plan's test 6.2 validates the scoping path within the TTL window (60s), so the ordering doesn't affect test correctness.
+### 2. scope_url correctness — PASS
 
-**TTL enforcement details:**
-- Comparison: `Date.now() > new Date(persistent.expiresAt).getTime()` — correct, compares epoch millis. **PASS.**
-- On expiry: persistent entry deleted from `credentials.json` + session store cleared. **PASS.** Expired entries are actively purged on access.
-- `expiresAt` stored as ISO string, compared via `new Date().getTime()` — no timezone ambiguity. **PASS.**
+- **provision-vcs-auth.ts:140**: `scopeUrl = input.scope_url ?? https://${host}` — defaults to host-level URL if not specified, allows org-scoped override.
+- **linux.ts:207**: `git config --global --replace-all "credential.${credUrl}.helper" ""` followed by `--add` — uses `scopeUrl` as the gitconfig credential URL key, not just the host.
+- **Git's most-specific-prefix-wins rule**: A `scope_url` of `https://github.com/my-org` will take priority over a broader `https://github.com` entry for any repo under `my-org`. This is correct per `git-credential` documentation.
+- **Test**: `vcs-auth.test.ts` asserts `credential.https://github.com/work-org.helper` in the command output. **PASS.**
 
-**Scoping enforcement details:**
-- Guard: `callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)`. **PASS.** Four conditions are logically correct:
-  1. `callingMember === undefined` → no enforcement (backward compat for any internal calls without member context)
-  2. `callingMember === '*'` → fleet-operator bypass (used by `setup-git-app.ts`)
-  3. `allowedMembers === '*'` → credential is unrestricted
-  4. `allowedMembers.includes(callingMember)` → member is authorized
-- Denial message includes credential name, calling member, and allowed list — matches requirements.md acceptance criteria. **PASS.**
-- Secret value (`decryptPassword`) is only accessed after both TTL and scoping checks pass. **PASS.** No early decryption before authorization.
+### 3. Forward-slash fix — PASS
 
-**Both persistent and session paths have identical TTL + scoping logic.** Verified: the session path mirrors the persistent path exactly. **PASS.**
+- **windows.ts:237**: `$helperPath = "$env:USERPROFILE\\${credFileName}.bat" -replace '\\\\','/'; git config --global --add 'credential.${credUrl}.helper' $helperPath`
+- The PowerShell `-replace '\\\\','/'` regex replaces all backslashes with forward slashes in the path before writing to gitconfig. This is correct — Windows native git and WSL git both accept forward slashes.
+- **Linux/macOS**: `linux.ts` uses `~/.fleet-git-credential-<label>` which is already forward-slash (Unix paths). No fix needed. **PASS.**
+- **No dedicated test for forward-slash on Windows.** However, the Windows path construction in the code is explicit via `-replace`. The `windows-credential-helper.test.ts` file exists but doesn't specifically test the forward-slash replacement in the Phase 2 addition. **Non-blocking** — the fix is a single PowerShell `-replace` and is straightforward.
 
-### T2b: Call-site wiring + startup sweep + credential_store_list display
+### 4. Legacy migration — PASS with one finding
 
-**All 6 call sites verified:**
+- **provision-vcs-auth.ts:156-159**: Before deploying, calls `cmds.gitCredentialHelperRemove(host)` (no label, no scopeUrl) which removes the legacy `~/.fleet-git-credential` file and the old `credential.https://<host>.helper` gitconfig entry.
+- **Best-effort**: wrapped in `try/catch { /* best-effort */ }` — if the legacy file doesn't exist, no error.
+- **Both file AND gitconfig entry removed**: `gitCredentialHelperRemove` without label/scopeUrl targets the old unnamed file path and the `https://<host>` gitconfig key. **PASS.**
+- **Windows legacy**: `windows.ts gitCredentialHelperRemove` without label targets `.fleet-git-credential.bat` (the old Windows name). **PASS.**
 
-1. **`execute-command.ts`** — `resolveSecureTokens()` now accepts `callingMember`. Called with `agent.friendlyName` where `agent` is resolved via `resolveMember(input.member_id, input.member_name)` — server-side registry lookup, not LLM-controlled. Both primary `input.command` and `input.restart_command` paths pass the member identity. New `'denied' in entry` and `'expired' in entry` checks return errors before any secret value is accessed. **PASS.**
+### 5. callingMember preservation — PASS
 
-2. **`provision-vcs-auth.ts`** — `resolveSecureField()` now accepts `callingMember`. Called with `agent.friendlyName`. Handles `denied`/`expired` returns. **PASS.**
+- **provision-vcs-auth.ts:19**: `function resolveSecureField(value: string, callingMember: string)` — T2b signature preserved.
+- **provision-vcs-auth.ts:26**: `credentialResolve(name, callingMember)` — passes member identity through.
+- **provision-vcs-auth.ts:106**: `resolveSecureField(resolvedInput[field]!, agent.friendlyName)` — calls with `agent.friendlyName` from T2b.
+- T4 restructured the file but did NOT overwrite or remove the T2b callingMember threading. **PASS.**
 
-3. **`provision-auth.ts`** — inline resolution at line ~250 passes `agent.friendlyName`. Handles `denied`/`expired` returns. **PASS.**
+### 6. revoke_vcs_auth correctness — **BLOCKING FINDING**
 
-4. **`register-member.ts`** — passes `input.friendly_name` (the member being registered) as `callingMember`. This is the correct identity for this context: when registering a member with a password that references a secure token, the credential should be scoped to allow the member being registered. The operator is implicitly authorizing the member to use that credential by including it in the registration. **PASS.**
+**File isolation: PASS.** Revoking label A correctly targets only `~/.fleet-git-credential-<labelA>` — the revoke test at `revoke-vcs-auth.test.ts:61-73` asserts `fleet-git-credential-work-gh` in the command and `not.toMatch(/fleet-git-credential[^-]/)` to confirm no old-style file is targeted. Label B's file is untouched.
 
-5. **`update-member.ts`** — passes `existing.friendlyName` (the member being updated, resolved from registry). Handles `denied`/`expired` returns with "Member was NOT updated." suffix. **PASS.**
+**Gitconfig entry removal: BUG.** `revoke-vcs-auth.ts:52` hardcodes `scopeUrl = https://${host}` — **it does NOT accept a `scope_url` parameter**. When a credential was provisioned with a custom `scope_url` (e.g., `https://github.com/my-org`), the gitconfig entry is keyed as `credential.https://github.com/my-org.helper`. But revoke tries to `--unset-all "credential.https://github.com.helper"` — which doesn't match. **The gitconfig entry is orphaned.**
 
-6. **`setup-git-app.ts`** — passes `'*'` (server-level operation, no member context). This bypasses scoping, which is correct — git app setup is a fleet operator action, not dispatched on behalf of a specific member. **PASS.**
+Concrete reproduction:
+1. `provision_vcs_auth provider=github label=work scope_url=https://github.com/my-org token=ghp_xxx`
+   → Creates gitconfig: `credential.https://github.com/my-org.helper = ~/.fleet-git-credential-work`
+2. `revoke_vcs_auth provider=github label=work`
+   → Runs: `git config --global --unset-all "credential.https://github.com.helper"` — **wrong key, no match**
+   → The file `~/.fleet-git-credential-work` IS deleted, but the gitconfig entry for `credential.https://github.com/my-org.helper` is NOT.
 
-**Security assessment: Member identity source.** Requirements.md (line 60, 72) specifies: "Member identity from server request context, not from tool caller." In all 6 call sites, the member identity comes from `resolveMember()` (server-side registry lookup using `member_id` or `member_name`) or from `existing.friendlyName` (already-resolved agent). The `member_id`/`member_name` parameters are MCP tool inputs, but they resolve against the server's internal registry — an LLM cannot forge a member identity that doesn't exist in the registry. The `friendlyName` is a server-controlled field set at registration time. **PASS — security requirement satisfied.**
+**Fix:** Add `scope_url` as an optional parameter to `revokeVcsAuthSchema` (same as `provisionVcsAuthSchema`), and use `input.scope_url ?? https://${host}` for `scopeUrl` computation (same pattern as provision). This is a one-line schema addition + one-line logic change.
 
-**Startup sweep** (`src/index.ts`): `purgeExpiredCredentials()` imported from `credential-store.ts` and called synchronously at startup alongside `cleanupStaleTasks()`. The function iterates persistent credentials, deletes expired entries, and saves. Session credentials are not swept (they don't survive restart anyway). Error handling: `try/catch` around `loadCredentialFile()` and `saveCredentialFile()` — best-effort, consistent with risk register mitigation. **PASS.**
+### 7. Test quality — PASS (7 tests)
 
-**credential_store_list display** (`src/tools/credential-store-list.ts`): Output now includes `members` (formatted as `'*'` or comma-joined names) and `expiry` (formatted as remaining time via `formatRemaining()` or `'none'`). The `formatRemaining()` function handles hours/minutes/seconds formatting and returns `'expired'` for negative remaining time. **PASS.**
+**T5 tests — `vcs-auth.test.ts` "Multi-label credential isolation" (5 tests):**
 
-**NOTE (non-blocking):** `credential_store_list` output no longer includes the raw `expiresAt` ISO timestamp — it shows computed `expiry` as "2h 15m remaining" / "expired" / "none". This is user-friendly but means the exact expiry timestamp is not visible. The `credentialList()` function still returns `expiresAt` in `CredentialMeta`, so programmatic access is preserved. Acceptable design choice.
+1. "deploy with different labels creates distinct credential files" — Two deploys, asserts each creates a unique file name and gitconfig scope URL entry. Clear, correct. **PASS.**
+2. "revoke with label removes only that label file" — Revokes `work-github`, asserts file and gitconfig key match, asserts `personal-github` not in command. **PASS.**
+3. "deploy without label uses old-style credential file (backward compat)" — Deploys without label, asserts `.fleet-git-credential &&` (no `-` suffix). **PASS.** Good backward-compat coverage.
+4. "deploy with label on bitbucket uses labeled file" — Cross-provider test with Bitbucket. **PASS.**
+5. "two providers with different labels coexist in gitconfig" — GitHub + Azure DevOps, different labels and scope URLs. Verifies independent gitconfig entries. **PASS.**
 
-### T3: Credential scoping + TTL test coverage
+**T5 tests — `revoke-vcs-auth.test.ts` (2 new tests):**
 
-**17 tests in `tests/credential-scoping-ttl.test.ts`.** Test file is new (not appended to existing test file), which is appropriate given the distinct feature scope.
+6. "revoke with label targets only that label credential file" — Asserts `fleet-git-credential-work-gh` in command and no old-style file reference. **PASS.**
+7. "revoke without label defaults to provider-named label" — Asserts `fleet-git-credential-bitbucket` in command when no label given. **PASS.**
 
-**Scoping tests (5 tests):**
-- `allows access when allowedMembers is "*"` — **PASS.** Tests the unrestricted case.
-- `allows access when callingMember is in allowedMembers list` — **PASS.** Tests multi-member list.
-- `denies access when callingMember is NOT in allowedMembers list` — **PASS.** Asserts `'denied' in result` and verifies error message includes credential name, denied member, and allowed list.
-- `bypasses scoping when callingMember is "*"` — **PASS.** Tests fleet-operator bypass.
-- `bypasses scoping when callingMember is undefined` — **PASS.** Tests backward-compat no-enforcement path.
+All 7 tests have clear assertions and cover the key isolation and backward-compat paths. No overlapping tests. **PASS.**
 
-**TTL tests (5 tests):**
-- `resolves a credential with a future TTL` — **PASS.** Uses `ttl_seconds=3600`.
-- `returns { expired } for a credential with a past TTL` — **PASS.** Uses `ttl_seconds=-1` (negative = immediately expired). Also verifies second resolve returns `null` (entry purged).
-- `returns null for a credential that never existed` — **PASS.** Baseline null check.
-- `re-setting a credential resets the TTL` — **PASS.** Sets expired, verifies expired, re-sets with valid TTL, verifies resolves. Also checks updated value.
-- `omitting ttl_seconds stores no expiresAt` — **PASS.** Verifies `meta.expiresAt` is undefined.
-
-**List metadata tests (2 tests):**
-- `includes allowedMembers and expiresAt in listed entries` — **PASS.**
-- `shows "*" for allowedMembers when credential is unrestricted` — **PASS.**
-
-**Purge tests (2 tests):**
-- `is callable without error even when no credentials exist` — **PASS.**
-- `removes expired session-tier credentials after purge` — **PASS.** (Uses inline purge via `credentialResolve`, not `purgeExpiredCredentials()` directly on session tier — this is correct since `purgeExpiredCredentials()` only targets persistent store.)
-
-**Backward compatibility (1 test):**
-- `treats missing allowedMembers as "*"` — **PASS.** Uses default `credentialSet` params.
-
-**execute_command integration tests (2 tests):**
-- `returns error when credential is not accessible to the calling member` — **PASS.** Creates scoped credential, uses agent with different `friendlyName`, asserts error and that `mockExecCommand` was NOT called (no command execution on denial). Good security assertion.
-- `executes successfully when calling member is in allowedMembers` — **PASS.**
-
-**Test quality assessment:**
-- No overlapping/redundant tests — each covers a distinct code path. **PASS.**
-- Error messages are asserted with `toContain()` checks on key fragments (name, member, allowed list). **PASS.**
-- Cleanup: each test creates uniquely-named credentials with `Date.now()` suffix and calls `credentialDelete()` in cleanup — no test pollution. **PASS.**
-- The `purgeExpiredCredentials()` function is not tested with actual persistent credentials (would require file I/O mocking). The existing test covers the no-op case and the session-tier inline purge. **NOTE (non-blocking):** A test that writes a persistent expired credential and calls `purgeExpiredCredentials()` would strengthen coverage, but the function is straightforward and tested indirectly via the `credentialResolve` expiry path. Acceptable for Phase 1.
-
-### VERIFY-1 Checkpoint
-
-- `npm run build`: **Exit 0, no errors.** **PASS.**
-- `npm test`: **957 passed, 6 skipped, 0 failed** (58 test files). **PASS.** (Test count increased from 906 baseline to 957 — net +51 tests from Sprint 1 + Phase 1 combined.)
-- No regressions in existing test suites (credential-store-and-execute, VCS auth, register/update member, execute-prompt, providers). **PASS.**
-
-### Regression check: previously approved phases
-
-Sprint 1 (Phases 1-6, knowledge harvest, doc fixes) — all previously-approved work remains intact. The `stop_prompt` import addition to `src/index.ts` is a Sprint 1 change that appears in this diff because it wasn't in `main` yet. No regressions observed. **PASS.**
+**Missing test (related to blocking finding):** No test covers revoke with a custom `scope_url` — which is why the bug in finding #6 wasn't caught.
 
 ---
 
@@ -182,19 +157,30 @@ Sprint 1 (Phases 1-6, knowledge harvest, doc fixes) — all previously-approved 
 
 ## Summary
 
-**Phase 1 is complete and correct.** All 4 tasks (T1, T2a, T2b, T3) meet their PLAN.md "done" criteria. The implementation aligns with requirements.md for both #157 (credential scoping) and #158 (credential TTL).
+### Build & Tests
+- `npm run build` (`tsc --noEmit`): **Exit 0, no errors.** PASS.
+- `npm test`: **964 passed, 6 skipped, 0 failures** (58 test files). PASS.
+- No regressions in Phase 1 tests or any other existing suite.
 
-**Security highlights — all pass:**
-- Member identity derived from server-side registry (`resolveMember().friendlyName`), not from LLM-controlled tool parameters. Cannot be forged.
-- Scoping and TTL checks execute before `decryptPassword()` / `sessionDecrypt()` — secret value never accessed on denial or expiry.
-- `setup-git-app.ts` correctly uses `'*'` bypass for fleet-operator-level operations.
-- `register-member.ts` uses `input.friendly_name` (the member being registered) — correct for the "operator is authorizing this member to use the credential" semantics.
-- All 6 call sites handle `{ denied }` and `{ expired }` discriminated union returns with early-exit error messages.
+### Blocking Finding
 
-**Build & tests:** `npm run build` exits 0. `npm test`: 957 passed, 6 skipped, 0 failures. No regressions in any existing test suite.
+**1. `revoke_vcs_auth` does not accept `scope_url` — orphans gitconfig entries for custom-scoped credentials.**
 
-**Non-blocking notes (no action required):**
-1. `credential_store_list` output shows computed remaining time instead of raw `expiresAt` timestamp. Programmatic access via `credentialList()` still returns the raw field. Acceptable UX decision.
-2. `purgeExpiredCredentials()` is not directly tested with persistent credentials (would need file I/O mocking). Covered indirectly via `credentialResolve` expiry path. Low risk given straightforward implementation.
+`revoke-vcs-auth.ts:52` hardcodes `scopeUrl = https://${host}`. When a credential was provisioned with a custom `scope_url` (e.g., `https://github.com/my-org`), the gitconfig entry is keyed as `credential.https://github.com/my-org.helper`. Revoke targets `credential.https://github.com.helper` — wrong key, no match, gitconfig entry orphaned.
 
-**Deferred from plan review:** `requirements.md` references `skills/fleet/SKILL.md` for #54 but actual reference is `skills/pm/SKILL.md:57`. Plan correctly targets the right file — requirements.md correction is separate.
+**Fix:** Add `scope_url: z.string().optional()` to `revokeVcsAuthSchema`. Change line 52 to `const scopeUrl = input.scope_url ?? https://${host}`. Add a test for revoke with custom scope_url.
+
+### Non-blocking Findings
+
+1. **No dedicated test for Windows forward-slash fix.** The `-replace '\\\\','/'` logic in `windows.ts:237` is correct but untested. The existing `windows-credential-helper.test.ts` doesn't cover the Phase 2 additions. Low risk.
+
+2. **`revoke_vcs_auth` default label vs backward compat.** When `label` is omitted, `revoke_vcs_auth` defaults to the provider name (e.g., `github`), which targets `~/.fleet-git-credential-github`. However, `provision_vcs_auth` *also* defaults label to the provider name, so the default case is consistent. For truly legacy credentials (pre-label, `~/.fleet-git-credential` without suffix), there is no revoke path — but legacy migration in `provision_vcs_auth` removes these on the next provision call, so they're transitional.
+
+### What's correct
+- Label isolation: two labels produce independent files and gitconfig entries. No shared state.
+- scope_url correctly used as gitconfig credential key for git's prefix-matching.
+- Forward-slash fix applied to Windows gitconfig values.
+- Legacy migration removes both old files and old gitconfig entries before deploying.
+- callingMember from T2b preserved through T4 restructure — `resolveSecureField` passes `agent.friendlyName` to `credentialResolve`.
+- All 3 VCS providers (GitHub, Bitbucket, Azure DevOps) updated with label/scopeUrl in both deploy and revoke.
+- 7 new tests with clear assertions covering isolation, selective revoke, backward compat, and cross-provider coexistence.
