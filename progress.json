@@ -148,8 +148,8 @@
       "title": "Integration test — PID lifecycle",
       "issue": "#147",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "tests/integration/pid-lifecycle.test.ts. Integration mock wraps mockExecCommand with real extractAndStorePid so FLEET_PID lines in stdout are stored automatically. 3 tests: (1) stored PID killed before next spawn, (2) PID cleared on success, (3) PID from failing main command killed before server-error retry. Committed 82dc6ef."
     },
     {
       "id": "T13",
@@ -157,16 +157,16 @@
       "title": "Integration test — inactivity timeout + cancellation + OOB fallback",
       "issue": "#160, #148, #106",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "tests/integration/session-lifecycle.test.ts. Smart integration mock routes local agents to real LocalStrategy (inactivity tests) and remote agents to mockExecCommand (cancellation tests). 10 tests: 3 inactivity (active output survives, silent killed, max_total_ms ceiling), 3 cancellation (stop_agent kills+flags, executePrompt surfaces error+clears, next call proceeds), 4 OOB fallback (Linux headless, Windows headless, Linux GUI path, Windows GUI path). Committed e5f3f51."
     },
     {
       "id": "V6",
       "phase": 6,
       "title": "VERIFY: Phase 6 — Integration Tests + Final",
       "type": "verify",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "npm run build: clean. npm test: 57 test files, 936 passed, 7 skipped (platform-conditional), 0 failures. All 13 integration tests pass (3 T12 + 10 T13). No regressions in 923 pre-existing tests. Pushed to origin/sprint/session-lifecycle-oob-fix."
     }
   ]
 }
