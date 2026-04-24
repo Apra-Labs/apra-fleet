@@ -1,115 +1,101 @@
 # apra-fleet Sprint 2 — Final Code Review (All Phases)
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-24 09:00:00-0400
+**Date:** 2026-04-24 08:55:00-0400
 **Verdict:** CHANGES NEEDED
 
 ---
 
 ## Phase 1 (APPROVED — regression check only)
 
-Phase 1 tests still pass. Build clean (`npm run build` exit 0). Test suite: **980 passed, 6 skipped, 0 failures** (59 test files). No regressions in credential-store, execute-command, or member lifecycle test suites.
-
-`callingMember` threading verified intact: `execute-command.ts:76` still passes `callingMember` to `credentialResolve()`, `provision-vcs-auth.ts:26` still passes `callingMember` to `credentialResolve()`. T2b wiring untouched by Phase 2 and Phase 3 commits. **PASS.**
-
----
+Phase 1 tests still pass. `npm run build` exits 0. `npm test`: **980 passed, 6 skipped, 0 failures** (59 test files). `callingMember` threading verified intact: `execute-command.ts:57,76,135` passes `agent.friendlyName` to `credentialResolve()`; `provision-vcs-auth.ts:19,26,106` passes `callingMember` through `resolveSecureField()` to `credentialResolve()`. T2b wiring untouched by Phase 2 and Phase 3 commits. No regressions. **PASS.**
 
 ## Phase 2 (APPROVED — regression check only)
 
-Label isolation intact: `gitCredentialHelperWrite` in `linux.ts` and `windows.ts` still constructs per-label credential files and gitconfig entries. `scope_url` used as gitconfig key. Forward-slash fix in windows.ts present. Legacy migration in `provision-vcs-auth.ts:156-159` intact. No Phase 2 files modified by Phase 3 commits (confirmed via `git diff 311ec5f..f87fa15 --stat`). **PASS.**
-
----
+Label isolation intact. `provision-vcs-auth.ts:138` defaults label to provider name. `gitCredentialHelperWrite` constructs per-label credential files and gitconfig entries. `scope_url` used as gitconfig key. Forward-slash fix in `windows.ts` present. Legacy migration at `provision-vcs-auth.ts:156-159` intact. No Phase 2 files modified by Phase 3 commits. **PASS.**
 
 ## Phase 3 Review: Unattended Mode + Deprecation (#54)
 
 ### 1. Unattended persistence
 
-**PASS.** `register_member` correctly writes `unattended` to the stored Agent:
-
-- `register-member.ts:162`: `unattended: input.unattended ?? false` — defaults to `false` when omitted. **PASS.**
-- `update-member.ts:121`: `if (input.unattended !== undefined) updates.unattended = input.unattended;` — updates only when explicitly provided, does not clobber existing value on unrelated updates. **PASS.**
-- `types.ts:32`: `unattended?: false | 'auto' | 'dangerous'` — type is correct. **PASS.**
-- Schema validation: both `registerMemberSchema` and `updateMemberSchema` use `z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional()` — rejects invalid values. **PASS.**
+**PASS.** `register-member.ts:164`: `unattended: input.unattended ?? false` — correctly persists with `false` default. `update-member.ts:121`: `if (input.unattended !== undefined) updates.unattended = input.unattended` — updates only when explicitly provided, preserves existing value on unrelated updates. `types.ts:32`: `unattended?: false | 'auto' | 'dangerous'` — correct union type. Both Zod schemas validate `z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional()`. **PASS.**
 
 ### 2. Provider wiring correctness
 
 **PASS (Linux/macOS). FAIL (Windows) — see blocking finding below.**
 
-**ClaudeProvider** (`claude.ts:34-41`):
-- `unattended === 'auto'` → `--permission-mode auto`. **PASS.**
-- `unattended === 'dangerous'` → `--dangerously-skip-permissions`. **PASS.**
-- `unattended === false` or omitted → no permission flags. **PASS.**
+- **Claude** (`claude.ts:42-46`): `'auto'` → `--permission-mode auto`; `'dangerous'` → `--dangerously-skip-permissions`; `false` → no flags. **PASS.**
+- **Codex** (`codex.ts:40-44`): `'auto'` → `--ask-for-approval auto-edit`; `'dangerous'` → `console.warn`, no flags. **PASS.**
+- **Gemini** (`gemini.ts:39-44`): Both modes → `console.warn`, no flags. **PASS.**
+- **Copilot** (`copilot.ts:43-48`): Both modes → `console.warn`, no flags. **PASS.**
 
-**CodexProvider** (`codex.ts:33-40`):
-- `unattended === 'auto'` → `--ask-for-approval auto-edit`. **PASS.**
-- `unattended === 'dangerous'` → `console.warn` only, no CLI flags. **PASS.**
-- Clear warning message: `"not supported for Codex"`. **PASS.**
-
-**GeminiProvider** (`gemini.ts:31-42`):
-- Both `'auto'` and `'dangerous'` → `console.warn` only, no CLI flags. **PASS.**
-- Clear warning messages. **PASS.**
-
-**CopilotProvider** (`copilot.ts:36-44`):
-- Both `'auto'` and `'dangerous'` → `console.warn` only, no CLI flags. **PASS.**
-- Clear warning messages. **PASS.**
+All warnings are clear and do NOT append CLI flags for unsupported modes. **PASS.**
 
 ### 3. Deprecation correctness
 
 **PASS.**
 
-- `execute-prompt.ts:30`: `dangerously_skip_permissions` field remains in schema with `DEPRECATED` description. Not a breaking removal. **PASS.**
-- `execute-prompt.ts:123-125`: When `input.dangerously_skip_permissions` is true, a deprecation warning string is prepended to the output. **PASS.**
-- `execute-prompt.ts:130`: `unattended: agent.unattended` is passed in `promptOpts` — the deprecated flag is NOT forwarded. **PASS.**
-- Warning text is clear and actionable: `"Use update_member(unattended="dangerous") instead."` **PASS.**
+- `execute-prompt.ts:30`: `dangerously_skip_permissions` remains in schema with `DEPRECATED` description — not a breaking removal. **PASS.**
+- `execute-prompt.ts:123-125`: Deprecation warning prepended when `input.dangerously_skip_permissions` is `true`. **PASS.**
+- `execute-prompt.ts:127-133`: `promptOpts` uses `unattended: agent.unattended` — the deprecated flag is NOT forwarded to the CLI. **PASS.**
+- Warning is actionable: `"Use update_member(unattended="dangerous") instead."` **PASS.**
 
 ### 4. SKILL.md accuracy
 
-**PASS.** Line 57 correctly describes the new pattern: `update_member(unattended='auto')` for auto-approval, `update_member(unattended='dangerous')` for full bypass. Explicitly states `dangerously_skip_permissions` is "deprecated and ignored." No stale references to the old pattern.
+**PASS (with note).** SKILL.md does not have a dedicated "Unattended Mode" section, but the Zod schema descriptions on `register_member` and `update_member` tools are self-documenting and surfaced to MCP clients as tool parameter descriptions. The `execute_prompt` schema's deprecation description directs users to `update_member`. No stale references to the old `dangerously_skip_permissions` pattern in SKILL.md. **PASS.**
+
+**Non-blocking note:** A SKILL.md section on "Unattended Mode" would improve discoverability for human readers. Deferred to docs backlog.
 
 ### 5. Test quality (T8)
 
-**PASS.** 16 tests in `tests/unattended-mode.test.ts` covering:
+**PASS.** 16 new tests across Phase 3: 12 in `unattended-mode.test.ts` + 4 in `providers.test.ts`.
 
-**Registry persistence (7 tests):**
-- `register_member` persists `'auto'`, `'dangerous'`, and defaults to `false` — 3 tests. **PASS.**
-- `update_member` sets, changes (`'auto'` → `'dangerous'`), resets (`'dangerous'` → `false`), and preserves on unrelated updates — 4 tests. **PASS.**
+**`unattended-mode.test.ts` — 12 tests in 3 describe blocks:**
 
-**Deprecation (3 tests):**
-- `dangerously_skip_permissions=true` → deprecation warning in output. **PASS.**
-- `dangerously_skip_permissions=false` → no warning. **PASS.**
-- `dangerously_skip_permissions=true` with `agent.unattended=false` → flag NOT passed to CLI. **PASS.**
+*Register persistence (3 tests):*
+1. Persists `unattended="auto"` on registered Agent record. **PASS.**
+2. Persists `unattended="dangerous"` on registered Agent record. **PASS.**
+3. Defaults to `false` when `unattended` not provided. **PASS.**
 
-**Provider CLI args (6 tests in providers.test.ts, migrated from old `dangerouslySkipPermissions` tests):**
-- Claude: `unattended='dangerous'` → `--dangerously-skip-permissions`, `unattended='auto'` → `--permission-mode auto`. **PASS.**
-- Gemini: both modes → console.warn, no flags. **PASS.**
-- Codex: `'auto'` → `--ask-for-approval auto-edit`, `'dangerous'` → console.warn. **PASS.**
-- Copilot: both modes → console.warn, no flags. **PASS.**
+*Update mutations (4 tests):*
+4. Sets `"auto"` on a member that previously had `false`. **PASS.**
+5. Changes from `"auto"` to `"dangerous"`. **PASS.**
+6. Resets from `"dangerous"` to `false`. **PASS.**
+7. Does not change when field not provided (preserves existing `"auto"`). **PASS.**
 
-**End-to-end (2 tests in unattended-mode.test.ts):**
-- `agent.unattended='dangerous'` → CLI has `--dangerously-skip-permissions`. **PASS.**
-- `agent.unattended='auto'` → CLI has `--permission-mode auto`. **PASS.**
+*Deprecation + CLI arg generation (5 tests):*
+8. Returns deprecation warning when `dangerously_skip_permissions=true`. **PASS.**
+9. No warning when `dangerously_skip_permissions=false`. **PASS.**
+10. Does NOT pass `--dangerously-skip-permissions` to CLI when deprecated flag=true but `agent.unattended=false`. **PASS.**
+11. Passes `--dangerously-skip-permissions` when `agent.unattended="dangerous"`. **PASS.**
+12. Passes `--permission-mode auto` when `agent.unattended="auto"`. **PASS.**
+
+**`providers.test.ts` — 4 new tests** (T6/T7): Provider `buildPromptCommand` output for unattended values across Claude, Codex, Gemini, Copilot. **PASS.**
+
+**Coverage assessment:** Full surface covered — persistence, update mutations, CLI flag generation, and deprecation (positive + negative). **PASS.**
 
 ---
 
-## ⛔ Blocking Finding: Windows `buildAgentPromptCommand` not updated for `unattended`
+## Blocking Finding: Windows `buildAgentPromptCommand` not updated for `unattended`
 
 **Severity:** Blocking
 **Location:** `src/os/windows.ts:103-122`
 
-**Problem:** The Windows `buildAgentPromptCommand` still destructures and checks `dangerouslySkipPermissions` from `PromptOptions` (line 104, 115), but `execute-prompt.ts` no longer passes `dangerouslySkipPermissions` in the prompt opts — it passes `unattended` instead (line 130). This means:
+**Problem:** The Windows `buildAgentPromptCommand` destructures `dangerouslySkipPermissions` from `PromptOptions` (line 104) and uses it to conditionally append `provider.skipPermissionsFlag()` (line 115-117). However, `execute-prompt.ts:127-133` no longer sets `dangerouslySkipPermissions` in `promptOpts` — it sets `unattended: agent.unattended` instead.
 
-- On **Linux/macOS**: works correctly — `buildAgentPromptCommand` delegates to `provider.buildPromptCommand(opts)` which handles `unattended`.
-- On **Windows**: broken — the method constructs the command inline and checks `dangerouslySkipPermissions` which is always `undefined`. **Unattended mode is silently ignored for all Windows fleet members.**
+**Impact:**
+- On **Linux/macOS** (`linux.ts:111-125`): `buildAgentPromptCommand` delegates to `provider.buildPromptCommand(opts)` which correctly handles the `unattended` field. Works correctly.
+- On **Windows** (`windows.ts:103-122`): `buildAgentPromptCommand` constructs the command inline using individual provider methods. It checks `dangerouslySkipPermissions` (always `undefined`) and ignores `unattended`. **Unattended mode is silently ignored for all Windows fleet members.**
 
-**Evidence:**
-- `linux.ts:114`: `const providerCmd = provider.buildPromptCommand(opts)` — delegates to provider (which handles `unattended`). ✅
-- `windows.ts:104`: `const { ..., dangerouslySkipPermissions, ... } = opts` — uses deprecated field. ❌
-- `windows.ts:115`: `if (dangerouslySkipPermissions)` — always false since the field is not set. ❌
-- `execute-prompt.ts:127-133`: `promptOpts` sets `unattended: agent.unattended` but NOT `dangerouslySkipPermissions`. ✅ (correct for providers, but breaks windows.ts)
+**Evidence chain:**
+1. `execute-prompt.ts:130`: `unattended: agent.unattended` — `promptOpts` has `unattended`, not `dangerouslySkipPermissions`.
+2. `windows.ts:104`: `const { ..., dangerouslySkipPermissions, ... } = opts` — destructures the wrong field.
+3. `windows.ts:115`: `if (dangerouslySkipPermissions)` — always `false` since the field is never set.
+4. `provider.ts:25-26`: Both fields exist in `PromptOptions` — TypeScript doesn't catch the missing usage.
 
-**Fix:** Update `windows.ts:103-122` to handle `opts.unattended` instead of `opts.dangerouslySkipPermissions`. For Claude provider: `unattended === 'auto'` → add `--permission-mode auto`, `unattended === 'dangerous'` → add `--dangerously-skip-permissions`. For other providers, the existing `provider.skipPermissionsFlag()` approach won't work cleanly since each provider has different behavior per unattended mode. The cleanest fix is to add per-provider logic similar to what the providers already do in their `buildPromptCommand()` — or better, delegate to the provider for the unattended flag portion.
+**Fix:** Update `windows.ts:103-122` to destructure and handle `opts.unattended` instead of `opts.dangerouslySkipPermissions`. For Claude: `'auto'` → add `--permission-mode auto`; `'dangerous'` → add `--dangerously-skip-permissions`. For Codex: `'auto'` → `--ask-for-approval auto-edit`. For Gemini/Copilot: warn but add no flags. Alternatively, refactor Windows to delegate to `provider.buildPromptCommand(opts)` like Linux does, then wrap with the PowerShell envelope.
 
-**Test gap:** The existing tests pass because they run on macOS (which inherits from Linux and delegates to the provider). A test with `getOsCommands('windows').buildAgentPromptCommand(claudeProvider, { ..., unattended: 'dangerous' })` would expose this bug.
+**Test gap:** Existing tests pass because they run on macOS (Linux path). Add a test: `getOsCommands('windows').buildAgentPromptCommand(claudeProvider, { ..., unattended: 'dangerous' })` → assert `--dangerously-skip-permissions` in output.
 
 ---
 
@@ -117,38 +103,39 @@ Label isolation intact: `gitCredentialHelperWrite` in `linux.ts` and `windows.ts
 
 ### #157: Credential scoping — Can a member spoof identity to access scoped credentials?
 
-**No.** The `callingMember` parameter is set by the fleet server at dispatch time, not by the member. In `execute-command.ts:76`, the calling member's `friendlyName` is passed to `credentialResolve()` — this comes from the server's in-memory registry (`agent.friendlyName`), not from any member-supplied input. A member cannot influence which name is used for scoping checks. **SECURE.**
+**No.** `callingMember` is set server-side from `agent.friendlyName` (sourced from the registry via `resolveMember()`), not from client input. A member cannot influence which name is used in `credentialResolve()`. The `allowedMembers` check compares against this server-authoritative value. **SECURE.**
 
 ### #158: Credential TTL — Can a client bypass TTL by manipulating stored credentials?
 
-**No.** `expiresAt` is computed server-side in `credential-store.ts:107-108`: `new Date(Date.now() + ttl_seconds * 1000).toISOString()`. The `credential_store_set` schema only exposes `ttl_seconds` (a number), not `expiresAt` directly. There is no API to modify `expiresAt` after creation except by re-setting the credential (which resets the TTL). Persistent credentials are stored encrypted on disk; even if the file is tampered with, `expiresAt` is re-checked on every resolve call at `credential-store.ts:213`. **SECURE.**
+**No.** `expiresAt` is computed server-side from `ttl_seconds` in `credentialSet()`. The schema exposes only `ttl_seconds`, not `expiresAt`. Re-setting a credential resets the TTL (intentional refresh flow). `purgeExpiredCredentials()` runs at server startup (`index.ts:207`). `expiresAt` is re-checked on every resolve call. **SECURE.**
 
 ### #163: Label injection — Can a malicious label create a dangerous gitconfig entry?
 
-**Low risk.** Labels are used as filename suffixes: `~/.fleet-git-credential-<label>`. The label goes through `escapeDoubleQuoted()` which escapes `"`, `$`, backtick, and `\`. Path traversal attempts (e.g., `label="../../etc/passwd"`) would result in paths like `~/.fleet-git-credential-../../etc/passwd` — the `../` segments are embedded in the filename prefix (`fleet-git-credential-..`) which doesn't exist as a directory, so the shell would fail with ENOENT. The gitconfig key uses `scope_url`, not the label, so label content doesn't appear in gitconfig entries.
+**Low risk.** Labels are filename suffixes (`~/.fleet-git-credential-<label>`) passed through `escapeDoubleQuoted()` (Linux) and `escapeWindowsArg()` (Windows). The gitconfig key uses `scope_url`, not the label. Path traversal attempts fail without intermediate directories. Labels come from the PM (trusted), not from fleet members.
 
-**Non-blocking note:** The `label` schema (`z.string().optional()`) allows any string. Adding a regex constraint like `z.string().regex(/^[a-zA-Z0-9_-]+$/)` would harden this as defense-in-depth. Not blocking because: (a) labels are set by the fleet operator/PM, not by untrusted members, and (b) path traversal fails without intermediate directories.
+**Non-blocking note:** `z.string().regex(/^[a-zA-Z0-9_-]+$/)` on the label schema would provide defense-in-depth. Not blocking — labels are operator-controlled.
 
 ### #54: Unattended self-escalation — Can a member set `unattended='dangerous'` on itself?
 
-**No — by design.** Fleet members communicate via SSH and cannot call MCP tools. Only the local MCP client (user or PM running Claude Code) can call `update_member`. A member would need access to the MCP server to self-escalate, which implies the server is already compromised. **SECURE by architecture.**
+**No — by design.** Fleet members communicate via SSH and cannot call MCP tools. Only the PM (human's LLM via MCP) can call `update_member`. A member would need MCP server access to self-escalate, implying the server is already compromised. **SECURE by architecture.**
 
 ---
 
 ## Documentation Completeness
 
-| Parameter | Documented in SKILL.md | Documented in schema | Notes |
-|-----------|----------------------|---------------------|-------|
-| `members` (credential_store_set) | Not in SKILL.md line 8 | Yes (schema description) | PM discovers via schema — acceptable |
-| `ttl_seconds` (credential_store_set) | Not in SKILL.md | Yes (schema description) | Same — acceptable |
-| `label` (provision_vcs_auth) | Not in SKILL.md | Yes (schema description) | Same |
-| `scope_url` (provision_vcs_auth) | Not in SKILL.md | Yes (schema description) | Same |
-| `unattended` (register/update_member) | Yes — SKILL.md line 57 | Yes (schema description) | Both documented. **PASS.** |
+| Parameter | Documented in schema | Discoverable via MCP | Notes |
+|-----------|---------------------|---------------------|-------|
+| `members` (credential_store_set) | Yes | Yes | |
+| `ttl_seconds` (credential_store_set) | Yes | Yes | |
+| `label` (provision_vcs_auth) | Yes | Yes | |
+| `scope_url` (provision_vcs_auth) | Yes | Yes | |
+| `unattended` (register/update_member) | Yes | Yes | |
+| `dangerously_skip_permissions` deprecation | Yes (schema + runtime warning) | Yes | Migration path in warning text |
 
 Error messages are user-friendly and actionable:
-- Credential scoping denial: `"Credential 'X' is not accessible to member 'Y'. Allowed: Z"` — names the credential, the denied member, and the allowed members. **PASS.**
-- Credential expiry: `"Credential 'X' has expired"` — clear. **PASS.**
-- Deprecation warning: `"Use update_member(unattended="dangerous") instead"` — prescriptive fix. **PASS.**
+- Credential scoping denial: names credential, denied member, and allowed members. **PASS.**
+- Credential expiry: clear message. **PASS.**
+- Deprecation warning: prescriptive migration path. **PASS.**
 
 ---
 
@@ -230,15 +217,20 @@ Error messages are user-friendly and actionable:
 
 **Phases 1 and 2:** Previously APPROVED; regression checks confirm no regressions. Build clean. 980 tests pass, 0 fail.
 
-**Phase 3:** 5 of 5 checklist items pass. Unattended persistence, provider wiring (Linux/macOS), deprecation, SKILL.md, and tests are all correct and thorough.
+**Phase 3:** 4 of 5 checklist items PASS. Unattended persistence, deprecation, SKILL.md (via schema descriptions), and test quality are all correct. Provider wiring is correct on Linux/macOS but broken on Windows.
 
 **1 blocking finding:**
-- `windows.ts:buildAgentPromptCommand` still references `dangerouslySkipPermissions` (dead code since T7), causing unattended mode to be silently ignored for Windows fleet members. Fix: replace `dangerouslySkipPermissions` check with `unattended` handling, and add a platform-specific test.
+- `windows.ts:buildAgentPromptCommand` (line 104, 115) still references `dangerouslySkipPermissions` instead of `unattended`. Unattended mode is silently ignored for all Windows fleet members. Fix: update Windows path to handle `unattended`, or refactor to delegate to `provider.buildPromptCommand(opts)` like Linux does. Add a Windows-specific test.
+
+**Security audit — all 4 issues SECURE:**
+- #157: Identity is server-authoritative; no spoofing vector
+- #158: TTL computed server-side; no bypass path
+- #163: Labels escaped; gitconfig key uses `scope_url` not label
+- #54: `update_member` only accessible to PM, not to members
 
 **Non-blocking notes (deferred):**
-1. `provision_vcs_auth` label schema accepts any string — adding regex validation (`/^[a-zA-Z0-9_-]+$/`) would harden against path-traversal as defense-in-depth.
-2. `revoke_vcs_auth` still does not accept `scope_url` — org-scoped gitconfig entries orphaned on revoke (from Phase 2 review).
-
-**Security audit:** All 4 issues (#157, #158, #163, #54) are secure. No credential spoofing, TTL bypass, label injection, or self-escalation vectors found.
+1. SKILL.md could add an "Unattended Mode" section for human readers
+2. `revoke_vcs_auth` still does not accept `scope_url` (Phase 2 note, still applicable)
+3. Console warnings from unsupported providers go to server stdout, not to tool response — users may not see them
 
 **Verdict: CHANGES NEEDED** — fix the Windows `buildAgentPromptCommand` unattended handling and add a Windows-specific test. Once fixed, this sprint is ready for PR.
