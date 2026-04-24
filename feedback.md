@@ -1,95 +1,154 @@
-# apra-fleet Sprint 2 — Phase 2 Code Review
+# apra-fleet Sprint 2 — Final Code Review (All Phases)
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-24 02:50:00-0400
-**Verdict:** APPROVED
+**Date:** 2026-04-24 09:00:00-0400
+**Verdict:** CHANGES NEEDED
 
 ---
 
-## Phase 1 (previously APPROVED — no regressions check)
+## Phase 1 (APPROVED — regression check only)
 
-Phase 1 tests still pass. Build clean (`npm run build` exit 0). Test suite: **964 passed, 6 skipped, 0 failures** (58 test files). Test count increased from 957 (Phase 1 VERIFY) to 964 — net +7 from T5 tests. No regressions in credential-store, execute-command, or member lifecycle test suites. **PASS.**
+Phase 1 tests still pass. Build clean (`npm run build` exit 0). Test suite: **980 passed, 6 skipped, 0 failures** (59 test files). No regressions in credential-store, execute-command, or member lifecycle test suites.
+
+`callingMember` threading verified intact: `execute-command.ts:76` still passes `callingMember` to `credentialResolve()`, `provision-vcs-auth.ts:26` still passes `callingMember` to `credentialResolve()`. T2b wiring untouched by Phase 2 and Phase 3 commits. **PASS.**
 
 ---
 
-## Phase 2 Review: provision_vcs_auth Isolation (#163)
+## Phase 2 (APPROVED — regression check only)
 
-### 1. Label isolation
+Label isolation intact: `gitCredentialHelperWrite` in `linux.ts` and `windows.ts` still constructs per-label credential files and gitconfig entries. `scope_url` used as gitconfig key. Forward-slash fix in windows.ts present. Legacy migration in `provision-vcs-auth.ts:156-159` intact. No Phase 2 files modified by Phase 3 commits (confirmed via `git diff 311ec5f..f87fa15 --stat`). **PASS.**
 
-**PASS.** Two `provision_vcs_auth` calls with different labels produce fully independent files and gitconfig entries. Verified at three layers:
+---
 
-- **OsCommands layer** (`linux.ts:204-211`): `gitCredentialHelperWrite` computes `credFile = label ? ~/.fleet-git-credential-<label> : ~/.fleet-git-credential`. Two different labels yield two different file paths. No shared state — each call constructs its own path and gitconfig key independently. **PASS.**
-- **Provider layer** (`github.ts:80`, `bitbucket.ts:10`, `azure-devops.ts:17`): All three providers pass `label` and `scopeUrl` through to `cmds.gitCredentialHelperWrite()`. No provider stores or caches label state. **PASS.**
-- **Tool layer** (`provision-vcs-auth.ts:138`): `const label = input.label ?? input.provider` — defaults to provider name when omitted, ensuring backward compatibility with single-label usage. **PASS.**
-- **Test layer** (`vcs-auth.test.ts:180-199`): Test deploys two labels (`work-github`, `personal-github`) and asserts distinct credential files and distinct gitconfig entries. **PASS.**
+## Phase 3 Review: Unattended Mode + Deprecation (#54)
 
-No naming collision risk: labels are used directly as filename suffixes with proper escaping via `escapeDoubleQuoted()` (Linux) and `escapeWindowsArg()` (Windows).
+### 1. Unattended persistence
 
-### 2. scope_url correctness
+**PASS.** `register_member` correctly writes `unattended` to the stored Agent:
 
-**PASS.** The gitconfig entry key is set to `scope_url`, not host-only.
+- `register-member.ts:162`: `unattended: input.unattended ?? false` — defaults to `false` when omitted. **PASS.**
+- `update-member.ts:121`: `if (input.unattended !== undefined) updates.unattended = input.unattended;` — updates only when explicitly provided, does not clobber existing value on unrelated updates. **PASS.**
+- `types.ts:32`: `unattended?: false | 'auto' | 'dangerous'` — type is correct. **PASS.**
+- Schema validation: both `registerMemberSchema` and `updateMemberSchema` use `z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional()` — rejects invalid values. **PASS.**
 
-- `linux.ts:209-210`: `credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : https://<host>`. The gitconfig command uses `credential.${credUrl}.helper` — this is the full scope URL, not just the host. **PASS.**
-- `windows.ts:226,231-232`: Same pattern — `credUrl` is the full scope URL, used as gitconfig key. **PASS.**
-- **Git's most-specific-prefix-wins rule:** When `scope_url` is `https://github.com/my-org`, git will match this credential for any repo under `github.com/my-org` but not for other orgs. A `scope_url` of `https://github.com` (the default) matches all repos on github.com. This is correct behavior — org-scoped credentials take precedence over host-scoped ones. **PASS.**
-- Default: `provision-vcs-auth.ts:140`: `input.scope_url ?? https://<host>` — when `scope_url` is omitted, the host-only URL is used, which is backward compatible. **PASS.**
+### 2. Provider wiring correctness
 
-### 3. Forward-slash fix
+**PASS (Linux/macOS). FAIL (Windows) — see blocking finding below.**
 
-**PASS.** The Windows path is written with forward slashes.
+**ClaudeProvider** (`claude.ts:34-41`):
+- `unattended === 'auto'` → `--permission-mode auto`. **PASS.**
+- `unattended === 'dangerous'` → `--dangerously-skip-permissions`. **PASS.**
+- `unattended === false` or omitted → no permission flags. **PASS.**
 
-- `windows.ts:232`: `$helperPath = "$env:USERPROFILE\\${credFileName}.bat" -replace '\\\\','/'; git config --global --add 'credential.${credUrl}.helper' $helperPath` — the `-replace '\\\\','/'` converts all backslashes to forward slashes before writing to gitconfig. This runs in PowerShell where `\\\\` is the regex pattern for a literal backslash. **PASS.**
-- Linux (`linux.ts:210`): Uses tilde expansion (`~/.fleet-git-credential-<label>`) — no backslash issue on Unix. **PASS.**
-- **Test coverage:** No dedicated unit test for the forward-slash `-replace` pattern. The `windows-credential-helper.test.ts` file tests PowerShell output correctness but does not assert forward slashes in the helper path. **NOTE (non-blocking):** This is a minor gap. The PowerShell `-replace '\\\\','/'` is a standard idiom and the generated command can be visually verified. A unit test asserting `expect(cmd).not.toMatch(/USERPROFILE.*\\\\/)` in the helper path portion would be a nice-to-have but not required for approval.
+**CodexProvider** (`codex.ts:33-40`):
+- `unattended === 'auto'` → `--ask-for-approval auto-edit`. **PASS.**
+- `unattended === 'dangerous'` → `console.warn` only, no CLI flags. **PASS.**
+- Clear warning message: `"not supported for Codex"`. **PASS.**
 
-### 4. Legacy migration
+**GeminiProvider** (`gemini.ts:31-42`):
+- Both `'auto'` and `'dangerous'` → `console.warn` only, no CLI flags. **PASS.**
+- Clear warning messages. **PASS.**
 
-**PASS.** Old credential files and gitconfig entries are cleaned up.
+**CopilotProvider** (`copilot.ts:36-44`):
+- Both `'auto'` and `'dangerous'` → `console.warn` only, no CLI flags. **PASS.**
+- Clear warning messages. **PASS.**
 
-- `provision-vcs-auth.ts:156-159`: Before deploying, calls `cmds.gitCredentialHelperRemove(host)` (no label, no scopeUrl) — this targets the old-style `~/.fleet-git-credential` file and `credential.https://<host>.helper` gitconfig entry. Wrapped in `try { ... } catch { /* best-effort */ }` — consistent with risk register mitigation (ignore ENOENT). **PASS.**
-- **Both file AND gitconfig entry removed:** `gitCredentialHelperRemove` (without label) produces `rm -f ~/.fleet-git-credential && git config --global --unset-all "credential.https://<host>.helper"` — removes both the legacy file and the legacy gitconfig entry in a single command. **PASS.**
-- **Windows legacy:** Same logic — `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat"` + `git config --global --unset-all`. **PASS.**
-- **Order:** Legacy removal happens before the new labeled deploy — no window where both old and new coexist. **PASS.**
+### 3. Deprecation correctness
 
-### 5. callingMember preservation
+**PASS.**
 
-**PASS.** The T2b `callingMember` change in `provision-vcs-auth.ts` was NOT overwritten by T4.
+- `execute-prompt.ts:30`: `dangerously_skip_permissions` field remains in schema with `DEPRECATED` description. Not a breaking removal. **PASS.**
+- `execute-prompt.ts:123-125`: When `input.dangerously_skip_permissions` is true, a deprecation warning string is prepended to the output. **PASS.**
+- `execute-prompt.ts:130`: `unattended: agent.unattended` is passed in `promptOpts` — the deprecated flag is NOT forwarded. **PASS.**
+- Warning text is clear and actionable: `"Use update_member(unattended="dangerous") instead."` **PASS.**
 
-- `provision-vcs-auth.ts:18-33`: `resolveSecureField(value, callingMember)` function still accepts `callingMember` and passes it to `credentialResolve(name, callingMember)`. **PASS.**
-- `provision-vcs-auth.ts:106`: Credential resolution calls `resolveSecureField(resolvedInput[field]!, agent.friendlyName)` — the `agent.friendlyName` (T2b change) is preserved. **PASS.**
-- Verified via diff: T4 commit (`b8d72f0`) does not modify the `resolveSecureField` function body or its call sites — it only adds `label`, `scope_url`, `PROVIDER_HOSTS`, and the legacy migration block. The T2b `callingMember` wiring is untouched. **PASS.**
+### 4. SKILL.md accuracy
 
-### 6. revoke_vcs_auth correctness
+**PASS.** Line 57 correctly describes the new pattern: `update_member(unattended='auto')` for auto-approval, `update_member(unattended='dangerous')` for full bypass. Explicitly states `dangerously_skip_permissions` is "deprecated and ignored." No stale references to the old pattern.
 
-**PASS with one non-blocking note.**
+### 5. Test quality (T8)
 
-- **Label-specific file removal:** `revoke-vcs-auth.ts:50`: `const label = input.label ?? input.provider` — defaults to provider name, matching the provision default. The label is passed to `service.revoke(agent, cmds, exec, label, scopeUrl)` which calls `gitCredentialHelperRemove(HOST, label, scopeUrl)`. This removes only `~/.fleet-git-credential-<label>` and `credential.<scopeUrl>.helper`. Other labels' files and gitconfig entries are completely untouched. **PASS.**
-- **gitconfig entry removal precision:** `gitCredentialHelperRemove` uses `--unset-all "credential.<scopeUrl>.helper"` — this targets the exact URL key, not a glob. Two labels with different scope URLs produce different gitconfig keys, so revoking one does not affect the other. **PASS.**
-- **Backward compat (no label):** When label is omitted, defaults to provider name (e.g., `github`). This means `revoke_vcs_auth provider=github` removes `~/.fleet-git-credential-github` and `credential.https://github.com.helper` — correct for the default provision case. **PASS.**
-- **Test coverage:** `revoke-vcs-auth.test.ts` has two new tests: (1) revoke with explicit label asserts only that label's file is in the rm command, (2) revoke without label defaults to provider-named label. Both assert the correct credential file name appears in the exec'd command. **PASS.**
+**PASS.** 16 tests in `tests/unattended-mode.test.ts` covering:
 
-**NOTE (non-blocking — design concern for future iteration):** `revoke_vcs_auth` does not accept a `scope_url` parameter — it hardcodes `scopeUrl = https://<host>` (line 52). This means if a credential was provisioned with a custom `scope_url` (e.g., `https://github.com/my-org`), the revoke will attempt to unset `credential.https://github.com.helper` instead of `credential.https://github.com/my-org.helper`, leaving the org-scoped gitconfig entry orphaned. The credential *file* is still correctly removed (it's label-based), but the gitconfig entry persists. This is a future enhancement opportunity — adding `scope_url` to `revokeVcsAuthSchema` would close this gap. Not blocking because: (a) the PLAN.md Task 5 spec does not call for `scope_url` on revoke, (b) the default case (no custom scope_url) works correctly, and (c) an orphaned gitconfig entry pointing to a deleted credential file is harmless (git will skip it).
+**Registry persistence (7 tests):**
+- `register_member` persists `'auto'`, `'dangerous'`, and defaults to `false` — 3 tests. **PASS.**
+- `update_member` sets, changes (`'auto'` → `'dangerous'`), resets (`'dangerous'` → `false`), and preserves on unrelated updates — 4 tests. **PASS.**
 
-### 7. Test quality
+**Deprecation (3 tests):**
+- `dangerously_skip_permissions=true` → deprecation warning in output. **PASS.**
+- `dangerously_skip_permissions=false` → no warning. **PASS.**
+- `dangerously_skip_permissions=true` with `agent.unattended=false` → flag NOT passed to CLI. **PASS.**
 
-**PASS.** 7 new tests across two files cover the multi-label isolation and selective revocation paths.
+**Provider CLI args (6 tests in providers.test.ts, migrated from old `dangerouslySkipPermissions` tests):**
+- Claude: `unattended='dangerous'` → `--dangerously-skip-permissions`, `unattended='auto'` → `--permission-mode auto`. **PASS.**
+- Gemini: both modes → console.warn, no flags. **PASS.**
+- Codex: `'auto'` → `--ask-for-approval auto-edit`, `'dangerous'` → console.warn. **PASS.**
+- Copilot: both modes → console.warn, no flags. **PASS.**
 
-**`tests/vcs-auth.test.ts` — 5 new tests in "Multi-label credential isolation" describe block:**
-1. `deploy with different labels creates distinct credential files` — deploys two GitHub PAT labels, asserts distinct file names and distinct gitconfig scope URL entries. **PASS.**
-2. `revoke with label removes only that label file` — revokes one label, asserts correct file and scope URL, asserts other label not mentioned. **PASS.**
-3. `deploy without label uses old-style credential file (backward compat)` — deploys Bitbucket with no label, asserts `.fleet-git-credential &&` (not `.fleet-git-credential-`). Good use of negative assertion to verify no accidental labeling. **PASS.**
-4. `deploy with label on bitbucket uses labeled file` — cross-provider label test (not just GitHub). Asserts both file name and scope URL. **PASS.**
-5. `two providers with different labels coexist in gitconfig` — deploys GitHub + Azure DevOps with different labels, asserts distinct files and distinct scope URLs. Cross-provider coexistence test — tests that labels don't collide across providers. **PASS.**
+**End-to-end (2 tests in unattended-mode.test.ts):**
+- `agent.unattended='dangerous'` → CLI has `--dangerously-skip-permissions`. **PASS.**
+- `agent.unattended='auto'` → CLI has `--permission-mode auto`. **PASS.**
 
-**`tests/revoke-vcs-auth.test.ts` — 2 new tests:**
-6. `revoke with label targets only that label credential file` — full integration test through `revokeVcsAuth()` tool function. Asserts exec'd command contains label-specific file name and does NOT match the old unlabeled pattern. **PASS.**
-7. `revoke without label defaults to provider-named label` — verifies the default label is the provider name. **PASS.**
+---
 
-**Test quality assessment:**
-- Clear, focused assertions — each test verifies a single behavior. **PASS.**
-- Negative assertions used appropriately (e.g., `not.toContain('.fleet-git-credential-')` to verify no labeling when label is omitted). **PASS.**
-- Cross-provider coverage (GitHub, Bitbucket, Azure DevOps all represented). **PASS.**
-- Provider-level tests (vcs-auth.test.ts) and tool-level tests (revoke-vcs-auth.test.ts) cover different layers. **PASS.**
+## ⛔ Blocking Finding: Windows `buildAgentPromptCommand` not updated for `unattended`
+
+**Severity:** Blocking
+**Location:** `src/os/windows.ts:103-122`
+
+**Problem:** The Windows `buildAgentPromptCommand` still destructures and checks `dangerouslySkipPermissions` from `PromptOptions` (line 104, 115), but `execute-prompt.ts` no longer passes `dangerouslySkipPermissions` in the prompt opts — it passes `unattended` instead (line 130). This means:
+
+- On **Linux/macOS**: works correctly — `buildAgentPromptCommand` delegates to `provider.buildPromptCommand(opts)` which handles `unattended`.
+- On **Windows**: broken — the method constructs the command inline and checks `dangerouslySkipPermissions` which is always `undefined`. **Unattended mode is silently ignored for all Windows fleet members.**
+
+**Evidence:**
+- `linux.ts:114`: `const providerCmd = provider.buildPromptCommand(opts)` — delegates to provider (which handles `unattended`). ✅
+- `windows.ts:104`: `const { ..., dangerouslySkipPermissions, ... } = opts` — uses deprecated field. ❌
+- `windows.ts:115`: `if (dangerouslySkipPermissions)` — always false since the field is not set. ❌
+- `execute-prompt.ts:127-133`: `promptOpts` sets `unattended: agent.unattended` but NOT `dangerouslySkipPermissions`. ✅ (correct for providers, but breaks windows.ts)
+
+**Fix:** Update `windows.ts:103-122` to handle `opts.unattended` instead of `opts.dangerouslySkipPermissions`. For Claude provider: `unattended === 'auto'` → add `--permission-mode auto`, `unattended === 'dangerous'` → add `--dangerously-skip-permissions`. For other providers, the existing `provider.skipPermissionsFlag()` approach won't work cleanly since each provider has different behavior per unattended mode. The cleanest fix is to add per-provider logic similar to what the providers already do in their `buildPromptCommand()` — or better, delegate to the provider for the unattended flag portion.
+
+**Test gap:** The existing tests pass because they run on macOS (which inherits from Linux and delegates to the provider). A test with `getOsCommands('windows').buildAgentPromptCommand(claudeProvider, { ..., unattended: 'dangerous' })` would expose this bug.
+
+---
+
+## Cumulative Security Audit
+
+### #157: Credential scoping — Can a member spoof identity to access scoped credentials?
+
+**No.** The `callingMember` parameter is set by the fleet server at dispatch time, not by the member. In `execute-command.ts:76`, the calling member's `friendlyName` is passed to `credentialResolve()` — this comes from the server's in-memory registry (`agent.friendlyName`), not from any member-supplied input. A member cannot influence which name is used for scoping checks. **SECURE.**
+
+### #158: Credential TTL — Can a client bypass TTL by manipulating stored credentials?
+
+**No.** `expiresAt` is computed server-side in `credential-store.ts:107-108`: `new Date(Date.now() + ttl_seconds * 1000).toISOString()`. The `credential_store_set` schema only exposes `ttl_seconds` (a number), not `expiresAt` directly. There is no API to modify `expiresAt` after creation except by re-setting the credential (which resets the TTL). Persistent credentials are stored encrypted on disk; even if the file is tampered with, `expiresAt` is re-checked on every resolve call at `credential-store.ts:213`. **SECURE.**
+
+### #163: Label injection — Can a malicious label create a dangerous gitconfig entry?
+
+**Low risk.** Labels are used as filename suffixes: `~/.fleet-git-credential-<label>`. The label goes through `escapeDoubleQuoted()` which escapes `"`, `$`, backtick, and `\`. Path traversal attempts (e.g., `label="../../etc/passwd"`) would result in paths like `~/.fleet-git-credential-../../etc/passwd` — the `../` segments are embedded in the filename prefix (`fleet-git-credential-..`) which doesn't exist as a directory, so the shell would fail with ENOENT. The gitconfig key uses `scope_url`, not the label, so label content doesn't appear in gitconfig entries.
+
+**Non-blocking note:** The `label` schema (`z.string().optional()`) allows any string. Adding a regex constraint like `z.string().regex(/^[a-zA-Z0-9_-]+$/)` would harden this as defense-in-depth. Not blocking because: (a) labels are set by the fleet operator/PM, not by untrusted members, and (b) path traversal fails without intermediate directories.
+
+### #54: Unattended self-escalation — Can a member set `unattended='dangerous'` on itself?
+
+**No — by design.** Fleet members communicate via SSH and cannot call MCP tools. Only the local MCP client (user or PM running Claude Code) can call `update_member`. A member would need access to the MCP server to self-escalate, which implies the server is already compromised. **SECURE by architecture.**
+
+---
+
+## Documentation Completeness
+
+| Parameter | Documented in SKILL.md | Documented in schema | Notes |
+|-----------|----------------------|---------------------|-------|
+| `members` (credential_store_set) | Not in SKILL.md line 8 | Yes (schema description) | PM discovers via schema — acceptable |
+| `ttl_seconds` (credential_store_set) | Not in SKILL.md | Yes (schema description) | Same — acceptable |
+| `label` (provision_vcs_auth) | Not in SKILL.md | Yes (schema description) | Same |
+| `scope_url` (provision_vcs_auth) | Not in SKILL.md | Yes (schema description) | Same |
+| `unattended` (register/update_member) | Yes — SKILL.md line 57 | Yes (schema description) | Both documented. **PASS.** |
+
+Error messages are user-friendly and actionable:
+- Credential scoping denial: `"Credential 'X' is not accessible to member 'Y'. Allowed: Z"` — names the credential, the denied member, and the allowed members. **PASS.**
+- Credential expiry: `"Credential 'X' has expired"` — clear. **PASS.**
+- Deprecation warning: `"Use update_member(unattended="dangerous") instead"` — prescriptive fix. **PASS.**
 
 ---
 
@@ -125,7 +184,7 @@ No naming collision risk: labels are used directly as filename suffixes with pro
 | 3.3 | Windows/WSL environment or mock simulating bash-on-Windows | `provision_vcs_auth` with any label | gitconfig credential helper path uses forward slashes only | Read `.gitconfig`; assert no backslash in credential helper path value |
 | 3.4 | Legacy `~/.fleet-git-credential` or `~/.fleet-git-credential.bat` exists from pre-sprint install | `provision_vcs_auth member=fleet-dev provider=github label=new-setup token=ghp_new` | Legacy files detected and removed; new per-label file created | `ls ~/.fleet-git-credential` and `ls ~/.fleet-git-credential.bat` both return "not found"; `~/.fleet-git-credential-new-setup` exists |
 
-### 4. dangerously_skip_permissions Removal (#54)
+### 4. Unattended Mode (#54)
 
 | # | Precondition | Action | Expected Result | Verify |
 |---|-------------|--------|-----------------|--------|
@@ -141,7 +200,7 @@ No naming collision risk: labels are used directly as filename suffixes with pro
 | # | Precondition | Action | Expected Result | Verify |
 |---|-------------|--------|-----------------|--------|
 | 5.1 | Clean checkout on `sprint/session-lifecycle-oob-fix` | `npm run build` | Exit 0, no TypeScript errors | Check exit code |
-| 5.2 | Build complete | `npm test` | All 906+ tests pass, 0 failures | vitest summary: 0 failed |
+| 5.2 | Build complete | `npm test` | All 980 tests pass, 0 failures | vitest summary: 0 failed |
 | 5.3 | Tests pass | Run existing `execute_prompt` test suite | No regressions in session lifecycle, timeout, OOB handling | All execute-prompt tests pass |
 | 5.4 | Tests pass | Run existing `credential-store-and-execute` test suite | No regressions in credential resolution, set/get/list | All credential tests pass |
 | 5.5 | Tests pass | Run existing VCS auth tests (`provision-vcs-auth.test.ts`) | No regressions in provision/revoke flows | All VCS tests pass |
@@ -160,19 +219,17 @@ No naming collision risk: labels are used directly as filename suffixes with pro
 
 ## Summary
 
-**Phase 2 is complete and correct.** Both tasks (T4, T5) meet their PLAN.md "done" criteria. The implementation aligns with the #163 requirements for per-label VCS credential file isolation.
+**Phases 1 and 2:** Previously APPROVED; regression checks confirm no regressions. Build clean. 980 tests pass, 0 fail.
 
-**Checklist results — all 7 items PASS:**
-1. Label isolation — distinct files, distinct gitconfig entries, no shared state
-2. scope_url correctness — full URL used as gitconfig key, most-specific-prefix-wins works
-3. Forward-slash fix — Windows `-replace '\\\\','/'` applied before writing gitconfig
-4. Legacy migration — old unnamed files AND gitconfig entries removed before deploying new labeled credentials
-5. callingMember preservation — T2b `agent.friendlyName` wiring untouched by T4 restructure
-6. revoke_vcs_auth correctness — label-specific removal, other labels untouched
-7. Test quality — 7 tests across two files, covering isolation, selective revoke, backward compat, cross-provider coexistence
+**Phase 3:** 5 of 5 checklist items pass. Unattended persistence, provider wiring (Linux/macOS), deprecation, SKILL.md, and tests are all correct and thorough.
 
-**Non-blocking notes (no action required):**
-1. `revoke_vcs_auth` does not accept `scope_url` — if a custom scope_url was used during provision, the gitconfig entry won't be cleaned up on revoke (file removal still works). Future enhancement opportunity; harmless since orphaned gitconfig entries pointing to deleted credential files are skipped by git.
-2. No dedicated unit test for the Windows forward-slash `-replace` pattern. The pattern is standard PowerShell and visually verifiable from the generated command string. Nice-to-have, not required.
+**1 blocking finding:**
+- `windows.ts:buildAgentPromptCommand` still references `dangerouslySkipPermissions` (dead code since T7), causing unattended mode to be silently ignored for Windows fleet members. Fix: replace `dangerouslySkipPermissions` check with `unattended` handling, and add a platform-specific test.
 
-**Build & tests:** `npm run build` exits 0. `npm test`: 964 passed, 6 skipped, 0 failures (58 test files). No regressions.
+**Non-blocking notes (deferred):**
+1. `provision_vcs_auth` label schema accepts any string — adding regex validation (`/^[a-zA-Z0-9_-]+$/`) would harden against path-traversal as defense-in-depth.
+2. `revoke_vcs_auth` still does not accept `scope_url` — org-scoped gitconfig entries orphaned on revoke (from Phase 2 review).
+
+**Security audit:** All 4 issues (#157, #158, #163, #54) are secure. No credential spoofing, TTL bypass, label injection, or self-escalation vectors found.
+
+**Verdict: CHANGES NEEDED** — fix the Windows `buildAgentPromptCommand` unattended handling and add a Windows-specific test. Once fixed, this sprint is ready for PR.
