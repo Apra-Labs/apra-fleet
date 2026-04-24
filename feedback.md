@@ -293,8 +293,80 @@ The automated tests above use mocked transports and local-process proxies. Befor
 
 ---
 
-## Verdict
+## Phase 7 — Documentation Review (Knowledge Harvest)
 
-**APPROVED** — All 6 phases are correct, backward-compatible, well-tested, and security-reviewed. The sprint delivers a complete session lifecycle: PID capture → kill-before-retry → inactivity-aware timeout → hard ceiling → explicit stop/cancel → headless-safe auth fallback. Build is clean, 937 tests pass.
+**Files reviewed:**
+- `docs/features/session-lifecycle.md`
+- `docs/features/oob-auth.md`
+- `docs/api/execute-prompt.md`
+- `docs/api/stop-agent.md`
 
-Ready for PR and merge to main.
+### Criterion 1: Only durable knowledge — no rotting content
+
+**PASS (minor note)**
+
+The docs capture architecture, design rationale, and API semantics — all durable. No task lists, debug notes, or implementation steps.
+
+Minor: A few "Sprint 1" and "Task 1" references appear in the feature docs (session-lifecycle.md lines 3, 13, 44; oob-auth.md line 3). These are temporal anchors that will become less meaningful over time but don't affect correctness. Could be generalized in a future pass (e.g., "Before this fix" instead of "Before Sprint 1"), but not blocking.
+
+### Criterion 2: Architecture decisions and trade-offs (the WHY)
+
+**PASS — excellent**
+
+Both feature docs go well beyond describing behavior:
+
+- **PID capture**: Explains why stdout (not a side-channel file or stderr) was chosen, and why the wrapper lives at the OS command layer rather than inside providers.
+- **In-memory vs. persisted**: Clear rationale for why PIDs and stopped flags are not disk-persisted (stale-PID problem, no benefit after restart).
+- **Inactivity vs. tool-call awareness**: Documents why the simpler rolling-timer approach was chosen over parsing provider-specific streaming formats, and acknowledges the accepted limitation (blocking tool calls with no output treated as inactivity).
+- **Env var checks vs. socket probing**: Explains why probing caused the original bug and why env vars are the correct approach.
+- **Stopped flag lifecycle**: Explains the single-prompt interlock design and why auto-recovery is intentionally prevented.
+
+### Criterion 3: API docs accurate — matches implementation
+
+**PASS — fully verified**
+
+Cross-checked every parameter against source (`src/tools/execute-prompt.ts`, `src/tools/stop-agent.ts`, `src/providers/claude.ts`):
+
+| Parameter | Doc | Implementation | Match |
+|-----------|-----|----------------|-------|
+| `member_id` | string, one-of | `z.string().optional()` | Yes |
+| `member_name` | string, one-of | `z.string().optional()` | Yes |
+| `prompt` | string, required | `z.string()` | Yes |
+| `resume` | boolean, default `true` | `z.boolean().default(true)` | Yes |
+| `timeout_ms` | number, default `300000` | `z.number().default(300000)` | Yes |
+| `max_total_ms` | number, optional, no default | `z.number().optional()` | Yes |
+| `max_turns` | number, default `50`, range 1–500 | `z.number().min(1).max(500).optional()`, fallback `?? 50` in provider | Yes |
+| `dangerously_skip_permissions` | boolean, default `false` | `z.boolean().default(false)` | Yes |
+| `model` | string, optional, standard tier default | `z.string().optional()`, tier resolution in handler | Yes |
+
+`stop_agent` parameters (`member_id`, `member_name`) verified. Return message strings match implementation literals exactly (including emoji).
+
+### Criterion 4: Nothing factually wrong
+
+**PASS**
+
+No hallucinated parameters, wrong defaults, or incorrect behavioral descriptions found. Specific verifications:
+
+- Kill commands (`kill -9` on Unix, `taskkill /F /PID` on Windows) — confirmed
+- Socket path (`~/.apra-fleet/auth.sock`) — confirmed in `auth-socket.ts`
+- `hasGraphicalDisplay()` checks `DISPLAY || WAYLAND_DISPLAY` — confirmed
+- `hasInteractiveDesktop()` checks `SESSIONNAME === 'Console'` — confirmed
+- Pending auth TTL is 10 minutes — confirmed (`PENDING_TTL_MS = 10 * 60 * 1000`)
+- Stopped flag cleared on next `execute_prompt` call — confirmed
+- `fallback:` prefix protocol — confirmed in implementation
+
+### Criterion 5: Self-contained
+
+**PASS**
+
+A developer reading these docs cold can understand: what problem each feature solves and why, the design including alternatives considered, API parameters/defaults/semantics, and edge cases with accepted limitations. No dependency on PLAN.md or sprint context.
+
+### Documentation Verdict
+
+**APPROVED** — All four docs are accurate, well-structured, and capture durable architectural knowledge. The only nit is a handful of sprint/task temporal references that could be generalized in a future cleanup. Not blocking.
+
+---
+
+## Final Verdict
+
+**APPROVED** — Sprint 1 implementation and documentation are complete, correct, and ready for PR.
