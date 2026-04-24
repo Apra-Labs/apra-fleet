@@ -1,10 +1,10 @@
-# Sprint 2 — Plan Review
+# Sprint 2 — Plan Review (Re-review)
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-24 01:28:29-0400
-**Verdict:** CHANGES NEEDED
+**Date:** 2026-04-24 02:15:00-0400
+**Verdict:** APPROVED
 
-> See the recent git history of this file to understand the context of this review.
+> Prior review: 4df354d. Doer addressed findings in commit 3b43283.
 
 ---
 
@@ -12,86 +12,90 @@
 
 ### 1. Does every task have clear "done" criteria?
 
-**PASS.** All 8 tasks include a "Done when" section with verifiable exit conditions. Task 1 specifies four discrete unit test assertions (stores `allowedMembers`/`expiresAt`, re-set resets TTL, defaults to `*`, omitting `ttl_seconds` stores no `expiresAt`). Task 2 specifies observable behaviors: resolution rejection, expiry error + purge, list output format, startup sweep. Tasks 3-8 follow the same pattern. The VERIFY checkpoints are consistent across all three phases: build, full test suite, manual check, push, stop. No task leaves the implementer guessing what "done" looks like.
+**PASS.** Unchanged from prior review. All tasks (including the new T2a/T2b split) have verifiable exit conditions. T2a specifies three observable behaviors: scoped resolution rejection, expired credential purge, and `credentialList()` metadata inclusion. T2b specifies four: all 6 call sites pass `callingMember`, list output includes members/expiry, startup sweep removes expired credentials, and all existing tests pass with new wiring tests.
 
 ### 2. High cohesion within each task, low coupling between tasks?
 
-**PASS.** Phase 1 groups credential schema definition (Task 1), enforcement + integration (Task 2), and test coverage (Task 3) — all centered on `credential-store.ts` and its direct consumers. Phase 2 isolates VCS auth file isolation changes. Phase 3 isolates the permission model migration. Cross-phase coupling is minimal: the only shared file between phases is `provision-vcs-auth.ts` (touched by both Task 2 and Task 4 — see Check 10 for the problem this creates). Within each phase, tasks follow a clean vertical slice: schema/type first, enforcement/wiring second, tests third.
+**PASS.** The T2 split improved this. T2a is now purely `credential-store.ts` — enforcement logic in a single file. T2b is integration plumbing: threading `callingMember` through 6 call sites, adding startup sweep, and formatting list output. The two concerns are cleanly separated. The T2a → T2b dependency is explicit and correct. Cross-phase coupling via `provision-vcs-auth.ts` (T2b/T4) is now explicitly acknowledged with ordering constraints in both tasks.
 
 ### 3. Are key abstractions and shared interfaces in the earliest tasks?
 
-**PASS.** Task 1 defines the unified `CredentialMeta` extensions (`allowedMembers: string[] | '*'` and `expiresAt?: string`) and the `credentialSet()` signature changes — these are the foundation that Tasks 2 and 3 build on. Task 4 defines the `label` parameter and per-label file naming convention before Task 5 builds revocation on top. Task 6 defines `Agent.unattended` on the type system before Task 7 wires it into provider dispatch. The pattern is consistent: abstraction → enforcement → tests.
+**PASS.** Unchanged. T1 defines schema, T2a defines enforcement API (`credentialResolve` with `callingMember` parameter), T2b wires it through consumers. The abstraction-first pattern is preserved.
 
 ### 4. Is the riskiest assumption validated in Task 1?
 
-**PASS.** The riskiest assumption is backward compatibility of the credential store schema change. Users have existing `credentials.json` files with no `allowedMembers` or `expiresAt` fields. Task 1 explicitly addresses this with load-time defaults: "existing `credentials.json` files without `allowedMembers`/`expiresAt` default to `allowedMembers: '*'` and no expiry on load." The done criteria include "existing credential store tests still pass," which forces validation of this assumption before any enforcement code is written. This is the right ordering — a schema migration that silently breaks existing credentials would be catastrophic.
+**PASS.** Unchanged. Backward compatibility of credential store schema migration is validated in T1 before enforcement code is written.
 
 ### 5. Later tasks reuse early abstractions (DRY)?
 
-**PASS.** Task 2 reuses the `allowedMembers` and `expiresAt` fields from Task 1's schema for enforcement logic. Task 3 tests enforcement using the schema from Task 1 and the logic from Task 2. Task 5 reuses Task 4's `label` parameter infrastructure for revocation. Task 7 reads the `Agent.unattended` field defined in Task 6. The startup sweep in Task 2 explicitly says "reuse `cleanupStaleTasks` pattern from `task-cleanup.ts`" — referencing existing codebase patterns rather than reinventing. No task duplicates what a prior task provided.
+**PASS.** Unchanged. T2a's `credentialResolve(name, callingMember)` signature is what T2b wires into all 6 call sites. T2b's startup sweep reuses `cleanupStaleTasks` pattern.
 
 ### 6. 2-3 work tasks per phase, then a VERIFY checkpoint?
 
-**PASS.** Phase 1: 3 tasks (1, 2, 3) + VERIFY. Phase 2: 2 tasks (4, 5) + VERIFY. Phase 3: 3 tasks (6, 7, 8) + VERIFY. All within the prescribed 2-3 range. Each VERIFY checkpoint includes the same four gates: build, test suite, manual verification, push, and stop — providing consistent quality gates across phases.
+**PASS with note.** Phase 1 now has 4 work tasks (T1, T2a, T2b, T3) — technically exceeding the 2-3 guideline. However, this is a direct result of the reviewer-recommended T2 split. T2a is a small, focused task (single file) that could arguably be part of T1 if the guideline were strict. The alternative — moving T2b or T3 to Phase 2 — would create worse coupling (credential enforcement half-wired). Phase 2 (2 tasks) and Phase 3 (3 tasks) remain within bounds. VERIFY checkpoints are unchanged. Acceptable deviation.
 
 ### 7. Each task completable in one session?
 
-**FAIL.** Task 2 is overloaded. It touches 7 files (`credential-store.ts`, `credential-store-list.ts`, `provision-vcs-auth.ts`, `execute-command.ts`, `register-member.ts`, `update-member.ts`, `index.ts`) with 5 distinct change items spanning:
-- Core enforcement logic (scoping check + TTL check in `credentialResolve`)
-- Call-site audit and update across 4+ consumer files
-- New `purgeExpiredCredentials()` function
-- Startup sweep integration in `index.ts`
-- `credential_store_list` output formatting
+**PASS.** Previously FAIL — Task 2 was overloaded (7 files, 5 concerns).
 
-These are two distinct concerns: (a) the enforcement logic inside `credential-store.ts`, and (b) the integration plumbing across all consumer files. If the implementer hits an issue threading member identity through one call site, the entire task blocks — including the unrelated list formatting and startup sweep work.
+**What changed:** Task 2 split into:
+- **T2a** (enforcement core): `credential-store.ts` only. Three changes: `credentialResolve` signature update, scoping check, TTL check. Single file, high cohesion. Completable in one session.
+- **T2b** (wiring): 8 files, but the changes are formulaic — each call site gets the same `callingMember` parameter threading. Plus startup sweep (small) and list formatting (small). Tier correctly set to `premium` to acknowledge breadth. The work is mechanical, not conceptually challenging.
 
-Task 4 also touches 8 files across OS layers (`linux.ts`, `windows.ts`, `os-commands.ts`), VCS providers (`github.ts`, `bitbucket.ts`, `azure-devops.ts`), tool schema, and types. However, the OS and provider changes are formulaic (same signature change replicated across implementations), so Task 4 is borderline acceptable.
-
-**Recommendation:** Split Task 2 into:
-- **Task 2a:** Scoping + TTL enforcement in `credential-store.ts` — add member check and expiry check to `credentialResolve`, add `purgeExpiredCredentials()`.
-- **Task 2b:** Call-site wiring + startup sweep + list formatting — update all `credentialResolve` consumers to pass `callingMember`, wire `purgeExpiredCredentials()` into `index.ts` startup, format `credential_store_list` output.
+Both sub-tasks are completable in one session. T4 (8 files across OS/VCS layers) remains borderline acceptable — same formulaic pattern across implementations.
 
 ### 8. Dependencies satisfied in order?
 
-**PASS.** Task 1 → Task 2 → Task 3 (schema → enforcement → tests). Task 4 → Task 5 (provision with label → revoke by label). Task 6 → Task 7 → Task 8 (type definition → provider wiring → tests). The plan correctly notes that Phases 2 and 3 have no blockers on Phase 1, enabling potential parallelism. No circular dependencies exist.
+**PASS.** Unchanged, plus: the new T1 → T2a → T2b → T3 chain is correctly ordered. T2b explicitly requires T2a (enforcement logic must exist before wiring call sites). The T2b → T4 ordering constraint is also correctly stated.
 
 ### 9. Any vague tasks that two developers would interpret differently?
 
-**FAIL.** Two areas of ambiguity would produce different implementations:
+**PASS.** Previously FAIL — two areas of ambiguity.
 
-**Task 2, item 2:** "Update all call sites of `credentialResolve` to pass the calling member identity from request context." I verified the codebase — `credentialResolve` is called in **6** consumer files: `execute-command.ts`, `register-member.ts`, `update-member.ts`, `provision-vcs-auth.ts`, `setup-git-app.ts` (line 28), and `provision-auth.ts` (line 250). The plan's file list omits `setup-git-app.ts` and `provision-auth.ts`. A developer following the file list literally would leave two call sites without member identity checks — creating a scoping bypass where credentials intended for one member are accessible through `setup-git-app` or `provision-auth` by any member.
+**What changed:**
 
-Additionally, "from request context" is unspecified as a mechanism. Does the implementer add a `callingMember: string` parameter to `credentialResolve`? Use a context object? Read from a global/singleton? Two developers would wire this differently, producing incompatible implementations.
+**(a) Call-site enumeration:** Task 2b now lists all 6 `credentialResolve` call sites with exact file paths and line numbers:
+- `execute-command.ts` (line ~75)
+- `provision-vcs-auth.ts` (line ~26)
+- `provision-auth.ts` (line ~250)
+- `register-member.ts` (line ~74)
+- `update-member.ts` (line ~93)
+- `setup-git-app.ts` (line ~28)
 
-**Task 7, item 4:** "In `src/providers/gemini.ts`: handle `permissionMode === 'auto'` → append equivalent flag (e.g. `--auto-approve` or map to `--yolo` based on Gemini CLI capabilities)." I verified the codebase — Gemini currently uses `--yolo` for full bypass (`gemini.ts:40`). But `--yolo` is the full-bypass equivalent of `dangerouslySkipPermissions`, not an auto-approve middle ground. The plan does not specify whether Gemini even supports an `auto` mode. Similar ambiguity exists for Codex and Copilot, which currently have `dangerouslySkipPermissions` handling but no auto-mode equivalent.
+I verified these against the codebase — all 6 match exactly. No call sites are missing.
 
-**Recommendations:**
-- Task 2: Enumerate all 6 call sites explicitly. Specify the member identity propagation mechanism (e.g., "add `callingMember: string` parameter to `credentialResolve`; obtain from `input.member` at each tool handler call site").
-- Task 7: Pin down the exact flag for each provider. If Gemini/Codex/Copilot don't support an `auto` mode, say so explicitly and state the fallback behavior (e.g., "fall back to interactive/no-flag when `unattended: 'auto'` is set for a non-Claude provider").
+**(b) Member identity mechanism:** Now concrete: "`resolveMember(input.member_id, input.member_name).friendlyName` → `callingMember` param on `credentialResolve`." For `setup-git-app.ts` (server-level, no member context): pass `'*'` to bypass scoping. Two developers would implement this identically.
+
+**(c) Provider auto-mode flags:** Now pinned with exact values from the codebase:
+- Claude: `--permission-mode auto`
+- Codex: `--ask-for-approval auto-edit`
+- Gemini: **not supported** as CLI flag (config-file only via `auto_edit` mode in `.gemini/settings.json`). Log warning.
+- Copilot: **not supported** as CLI flag (config-file only). Log warning.
+
+I verified: Gemini's `gemini.ts:126` confirms `auto_edit` is config-file-based. Codex's `--ask-for-approval` flag exists in the codebase. Claude's `--permission-mode` is standard. No ambiguity remains.
 
 ### 10. Any hidden dependencies between tasks?
 
-**FAIL.** Two hidden dependencies exist:
+**PASS.** Previously FAIL — two hidden dependencies.
 
-**Shared file conflict:** `provision-vcs-auth.ts` is modified in Task 2 (updating `resolveSecureField` / `credentialResolve` call site to pass member identity) and in Task 4 (structural rewrite: adding `label` and `scope_url` params, restructuring the `provisionVcsAuth()` function). If the implementer completes Phase 1 then starts Phase 2, Task 4's structural changes to `provision-vcs-auth.ts` will conflict with Task 2's changes in the same file. The plan does not acknowledge this overlap or specify which portions of the file each task touches. The mitigation is straightforward (Task 2's change is limited to the `credentialResolve` call inside `resolveSecureField`, which Task 4 does not modify), but this should be stated explicitly.
+**What changed:**
 
-**Missing call sites as unlisted dependencies:** `setup-git-app.ts` and `provision-auth.ts` both import and call `credentialResolve` (verified at `setup-git-app.ts:28` and `provision-auth.ts:250`). These files are absent from Task 2's file list. A developer following the plan would not modify them, leaving scoping enforcement incomplete. Any credential resolved through these paths would bypass member access checks entirely — a security gap that contradicts the sprint's goal of hardening the trust model.
+**(a) T2b/T4 `provision-vcs-auth.ts` overlap:** Both tasks now carry explicit ordering constraints:
+- T2b: "Task 2b MUST be completed first. Task 2b touches ONLY the `resolveSecureField` → `credentialResolve` call site to thread `callingMember`. Do not touch label/scope_url structure in Task 2b."
+- T4: "Task 2b's `callingMember` change is already in place — preserve it during the restructure. Do not duplicate or clobber it."
+- `progress.json` T2b and T4 notes both reference the overlap.
 
-**Recommendations:**
-- Add `setup-git-app.ts` and `provision-auth.ts` to Task 2's file list and change items.
-- Add a note to Task 4 acknowledging the `provision-vcs-auth.ts` overlap with Task 2, specifying that Task 2 only touches the `credentialResolve` call in `resolveSecureField`, while Task 4 restructures the surrounding provisioning logic.
+The constraint is stated in three places (PLAN.md T2b, PLAN.md T4, progress.json). A developer cannot miss this.
+
+**(b) Missing call sites:** `setup-git-app.ts` and `provision-auth.ts` are now explicitly listed in T2b's call-site inventory (items 6 and 3 respectively). The security bypass risk identified in the prior review is fully mitigated.
 
 ### 11. Does the plan include a risk register?
 
-**PASS with gap.** The risk register identifies 8 risks with concrete mitigations: schema migration backward compat (load-time defaults), caller identity unavailability (fail-closed), VCS signature breakage (same-task update), legacy file races (ignore ENOENT), provider flag gaps (document support matrix), deprecation breakage (warning-only), TTL mid-task deletion (resolution-time-only check), and Windows path fix (forward slashes accepted by native git).
-
-The mitigations are actionable rather than generic — "fail-closed (require member identity) rather than fail-open" is a design decision, not a platitude. However, the register misses one risk directly exposed by Check 10: **incomplete call-site audit leading to scoping bypass**. The `credentialResolve` function is called in files not listed in the plan, meaning a developer following the plan would leave unenforced code paths. The mitigation is simple ("exhaustive grep for `credentialResolve` before implementation; fail-closed: require `callingMember` parameter"), but its absence from the register means it won't be systematically checked.
+**PASS.** Unchanged from prior review. 8 risks with concrete mitigations. The prior gap (incomplete call-site audit risk) is now mitigated by design — T2b exhaustively enumerates all call sites, making an incomplete audit impossible if the plan is followed.
 
 ### 12. Does the plan align with requirements.md intent?
 
-**PASS.** The plan addresses all four issues (#157, #158, #163, #54) and follows the phasing recommended in requirements.md (Phase 1: unified credential schema + scoping + TTL; Phase 2: VCS isolation; Phase 3: permission model). The unified credential record schema matches the `CredentialRecord` interface specified in requirements.md's "Shared Credential Store Architecture" section. All acceptance criteria from requirements.md are traceable to specific plan tasks and done criteria.
-
-Minor note: requirements.md references `skills/fleet/SKILL.md` for the #54 documentation update, but the actual `dangerously_skip_permissions` reference lives in `skills/pm/SKILL.md` line 57 (verified). The plan correctly targets `skills/pm/SKILL.md`. This is a requirements.md inaccuracy, not a plan defect — but the implementer should verify both files and update whichever contains the reference.
+**PASS.** Unchanged. All four issues (#157, #158, #163, #54) addressed. Phasing matches requirements.md recommendation. The T2 split does not change requirements alignment — it's an implementation structure change, not a scope change.
 
 ---
 
@@ -162,37 +166,16 @@ Minor note: requirements.md references `skills/fleet/SKILL.md` for the #54 docum
 
 ## Summary
 
-**3 of 12 checks failed:**
+**12 of 12 checks pass.** All three previously-failed checks are resolved:
 
-1. **Check 7 (Session size):** Task 2 bundles enforcement logic, call-site wiring across 6+ consumer files, a new `purgeExpiredCredentials()` function, startup sweep integration, and list output formatting into a single task touching 7 files. Recommend splitting into enforcement core (Task 2a: `credential-store.ts` only) and integration plumbing (Task 2b: consumer files + `index.ts` startup + list formatting).
+1. **Check 7 (Task size):** Task 2 split into T2a (enforcement core, `credential-store.ts` only) and T2b (wiring 6 call sites + startup sweep + list display). Both are completable in one session. T2a has high cohesion (single file); T2b is mechanical integration work correctly tiered as premium.
 
-2. **Check 9 (Vagueness):** Task 2 does not enumerate all `credentialResolve` call sites — `setup-git-app.ts:28` and `provision-auth.ts:250` are confirmed call sites missing from the plan's file list. The member identity propagation mechanism ("from request context") is unspecified. Task 7 leaves Gemini/Codex/Copilot auto-mode flag names unresolved — Gemini uses `--yolo` for full bypass but has no documented `auto` equivalent; the plan should state the definitive flag or document the fallback.
+2. **Check 9 (Vagueness):** All 6 `credentialResolve` call sites enumerated with file paths and line numbers — verified against codebase, all match. Member identity mechanism is concrete: `resolveMember().friendlyName` → `callingMember` param, with `'*'` for server-level `setup-git-app.ts`. Provider auto-mode flags pinned: Claude `--permission-mode auto`, Codex `--ask-for-approval auto-edit`, Gemini/Copilot explicitly marked "not supported" with warning-log fallback.
 
-3. **Check 10 (Hidden dependencies):** `provision-vcs-auth.ts` is modified by both Task 2 (call-site scoping update) and Task 4 (structural rewrite for label/scope_url) with no acknowledgment of overlap. Two `credentialResolve` call sites (`setup-git-app.ts`, `provision-auth.ts`) are unlisted, meaning a developer following the file lists would leave scoping enforcement incomplete — a security bypass that directly contradicts the sprint's hardening goal.
+3. **Check 10 (Hidden dependencies):** T2b/T4 `provision-vcs-auth.ts` overlap explicitly acknowledged in both tasks with ordering constraint ("T2b MUST be completed first") and scope boundaries ("T2b touches ONLY the `credentialResolve` call site"). Mirrored in `progress.json` notes.
 
-**What passed:** Done criteria (1), cohesion/coupling (2), early abstractions (3), risk-first validation (4), DRY reuse (5), phase structure (6), dependency ordering (8), risk register (11, with minor gap), and requirements alignment (12).
+**Minor note (non-blocking):** Phase 1 now has 4 work tasks (T1, T2a, T2b, T3) — slightly above the 2-3 guideline. This is an acceptable deviation caused by the reviewer-recommended split; the alternative would create worse coupling.
 
-**Required changes before implementation:**
-- Add `src/tools/setup-git-app.ts` and `src/tools/provision-auth.ts` to Task 2's file list and change items
-- Specify the member identity propagation mechanism in Task 2 (e.g., add `callingMember: string` parameter to `credentialResolve`)
-- Acknowledge `provision-vcs-auth.ts` overlap between Task 2 and Task 4; specify which portions each task touches
-- Pin down provider CLI flags in Task 7 or add explicit research subtask; document fallback for providers without `auto` mode
-- Consider splitting Task 2 into enforcement core + integration plumbing
+**Integration test plan:** Complete and intact — 6 sections, 28 test cases covering credential scoping, TTL, VCS isolation, permission mode migration, regressions, and combined defence-in-depth. No changes needed from the plan revisions (tests target final behavior, not task structure).
 
-**Deferred:** `requirements.md` references `skills/fleet/SKILL.md` for #54 docs but the actual reference is in `skills/pm/SKILL.md:57`. The plan correctly targets `skills/pm/SKILL.md` — no plan change needed; the requirements file should be corrected separately.
-
----
-
-## Doer Response
-
-### FAIL 1 — Check 7 (Task 2 too large for one session)
-
-**Doer:** fixed — split Task 2 into Task 2a (enforcement core, credential-store.ts only) and Task 2b (wiring all 6 call sites + startup sweep + credential_store_list display). Updated progress.json to reflect T2a/T2b split.
-
-### FAIL 2 — Check 9 (Vagueness in Task 2 and Task 7)
-
-**Doer:** fixed — (a) enumerated all 6 `credentialResolve` call sites in Task 2b with exact file paths and line numbers: execute-command.ts, provision-vcs-auth.ts, provision-auth.ts, register-member.ts, update-member.ts, setup-git-app.ts. (b) Specified that member identity flows from `resolveMember(input.member_id, input.member_name).friendlyName` → `callingMember` param on `credentialResolve`; setup-git-app passes `'*'` (server-level, no member scope). (c) Pinned exact provider flags from codebase: Claude `--permission-mode auto`, Gemini "not supported" (config-file only via auto_edit mode), Codex `--ask-for-approval auto-edit`, Copilot "not supported" (config-file only).
-
-### FAIL 3 — Check 10 (Hidden dependency: provision-vcs-auth.ts overlap)
-
-**Doer:** fixed — added explicit ordering constraint notes to both Task 2b and Task 4 in PLAN.md. T2b threads callingMember at the credentialResolve call site only (no label/scope_url changes). T4 restructures the file for label/scope_url with the T2b change already in place. Updated progress.json notes for both tasks.
+**Deferred from prior review:** `requirements.md` references `skills/fleet/SKILL.md` for #54 but actual reference is `skills/pm/SKILL.md:57`. Plan correctly targets the right file — requirements.md correction is separate.
