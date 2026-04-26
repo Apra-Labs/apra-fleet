@@ -206,6 +206,7 @@ export class LinuxCommands implements OsCommands {
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
     const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > ${credFile} && chmod 600 ${credFile} && chmod +x ${credFile} && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" ${credFile}`;
   }
@@ -213,6 +214,7 @@ export class LinuxCommands implements OsCommands {
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `rm -f ${credFile} && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
   }
