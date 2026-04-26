@@ -22,7 +22,6 @@ export interface PromptOptions {
   folder: string;
   promptFile: string;
   sessionId?: string;
-  dangerouslySkipPermissions?: boolean;
   unattended?: false | 'auto' | 'dangerous';
   model?: string;
   maxTurns?: number;
