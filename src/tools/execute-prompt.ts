@@ -87,6 +87,8 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
 
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
 
+const inFlightAgents = new Set<string>();
+
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
@@ -102,6 +104,11 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   } catch (err: any) {
     return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
+
+  if (inFlightAgents.has(agent.id)) {
+    return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
+  }
+  inFlightAgents.add(agent.id);
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
   const resolvedWorkFolder = resolveTilde(agent.workFolder);
@@ -143,6 +150,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   // If agent was explicitly stopped, surface the error once and clear the flag.
   // The next execute_prompt call will proceed normally.
   if (isAgentStopped(agent.id)) {
+    inFlightAgents.delete(agent.id);
     clearAgentStopped(agent.id);
     return `⛔ Agent "${agent.friendlyName}" was stopped by the PM. Stopped flag cleared — call execute_prompt again to resume.`;
   }
@@ -211,6 +219,7 @@ session: ${parsed.sessionId}`;
     writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
+    inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
 }
