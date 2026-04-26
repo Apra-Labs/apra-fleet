@@ -101,9 +101,10 @@ class LocalStrategy implements AgentStrategy {
       function resetInactivityTimer() {
         clearTimeout(inactivityTimer);
         inactivityTimer = setTimeout(() => {
-          child.kill();
+          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
           settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
         }, timeoutMs);
+        inactivityTimer.unref();
       }
       resetInactivityTimer();
 
@@ -111,9 +112,10 @@ class LocalStrategy implements AgentStrategy {
       let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
       if (maxTotalMs !== undefined) {
         maxTotalTimer = setTimeout(() => {
-          child.kill();
+          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
           settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
         }, maxTotalMs);
+        maxTotalTimer.unref();
       }
 
       let stdout = '';
