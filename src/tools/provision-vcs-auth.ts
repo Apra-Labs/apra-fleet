@@ -11,6 +11,7 @@ import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
+import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 
@@ -38,16 +39,10 @@ const providers: Record<string, VcsProviderService> = {
   'azure-devops': azureDevOpsProvider,
 };
 
-const PROVIDER_HOSTS: Record<string, string> = {
-  'github': 'github.com',
-  'bitbucket': 'bitbucket.org',
-  'azure-devops': 'dev.azure.com',
-};
-
 export const provisionVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
-  label: z.string().optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
+  label: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
   scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>".'),
 
   // GitHub fields
