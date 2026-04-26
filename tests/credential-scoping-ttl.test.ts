@@ -56,7 +56,13 @@ vi.mock('../src/services/auth-socket.js', () => ({
 
 describe('credentialResolve: member scoping', () => {
   afterEach(() => {
-    // cleanup any credentials created in tests
+    // Purge any credentials left over from a failed or partial test run.
+    // Each test also deletes its own credential, but this catches leaks.
+    for (const entry of credentialList()) {
+      if (/^(scope_star_|scope_in_|scope_deny_|scope_bypass_|scope_undef_)/.test(entry.name)) {
+        credentialDelete(entry.name);
+      }
+    }
   });
 
   it('allows access when allowedMembers is "*"', () => {
