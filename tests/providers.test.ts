@@ -229,20 +229,17 @@ describe('GeminiProvider', () => {
     expect(cmd).toContain('--resume "any-id"');
   });
 
-  it('logs warning for unattended=auto (not supported)', () => {
+  it('unattended=auto does not add a flag and does not warn (handled by settings file)', () => {
     const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
     expect(cmd).not.toContain('--yolo');
-    expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Gemini'));
+    expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 
-  it('logs warning for unattended=dangerous (not supported)', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('unattended=dangerous adds --yolo flag', () => {
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
-    expect(cmd).not.toContain('--yolo');
-    expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Gemini'));
-    spy.mockRestore();
+    expect(cmd).toContain('--yolo');
   });
 
   it('builds prompt command with model', () => {
@@ -384,12 +381,10 @@ describe('CodexProvider', () => {
     expect(cmd).toContain('--ask-for-approval auto-edit');
   });
 
-  it('logs warning for unattended=dangerous (not supported)', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('unattended=dangerous adds skip-permissions flags', () => {
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
-    expect(cmd).not.toContain('--sandbox');
-    expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Codex'));
-    spy.mockRestore();
+    expect(cmd).toContain('--sandbox danger-full-access');
+    expect(cmd).toContain('--ask-for-approval never');
   });
 
   it('does not support maxTurns', () => {

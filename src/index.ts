@@ -79,6 +79,7 @@ async function startServer() {
   const { credentialStoreSetSchema, credentialStoreSet } = await import('./tools/credential-store-set.js');
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
+  const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -197,6 +198,7 @@ async function startServer() {
   server.tool('credential_store_set', 'Collect a secret from the user out-of-band and store it. Returns a handle (sec://NAME) and scope. Use {{secure.NAME}} tokens in execute_command to inject the value.', credentialStoreSetSchema.shape, wrapTool('credential_store_set', (input) => credentialStoreSet(input as any)));
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
+  server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

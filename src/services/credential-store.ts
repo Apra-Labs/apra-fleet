@@ -266,6 +266,70 @@ export function credentialResolve(
   return null;
 }
 
+export interface CredentialUpdatePatch {
+  members?: string;
+  expiresAt?: number | null;
+  network_policy?: 'allow' | 'confirm' | 'deny';
+}
+
+export interface CredentialUpdateResult {
+  members: string;
+  network_policy: 'allow' | 'confirm' | 'deny';
+  expiresAt?: number;
+}
+
+function membersToAllowed(members: string): string[] | '*' {
+  return members === '*' ? '*' : members.split(',').map(m => m.trim()).filter(Boolean);
+}
+
+function allowedToMembers(allowed: string[] | '*'): string {
+  return allowed === '*' ? '*' : allowed.join(',');
+}
+
+export function credentialUpdate(name: string, patch: CredentialUpdatePatch): CredentialUpdateResult | null {
+  const file = loadCredentialFile();
+  const persistent = file.credentials[name];
+  if (persistent) {
+    if (patch.members !== undefined) {
+      persistent.allowedMembers = membersToAllowed(patch.members);
+    }
+    if (patch.network_policy !== undefined) {
+      persistent.network_policy = patch.network_policy;
+    }
+    if (patch.expiresAt !== undefined) {
+      persistent.expiresAt = patch.expiresAt === null ? undefined : new Date(patch.expiresAt).toISOString();
+    }
+    file.credentials[name] = persistent;
+    saveCredentialFile(file);
+    return {
+      members: allowedToMembers(persistent.allowedMembers),
+      network_policy: persistent.network_policy,
+      expiresAt: persistent.expiresAt ? new Date(persistent.expiresAt).getTime() : undefined,
+    };
+  }
+
+  const session = sessionStore.get(name);
+  if (session) {
+    if (patch.members !== undefined) {
+      session.allowedMembers = membersToAllowed(patch.members);
+    }
+    if (patch.network_policy !== undefined) {
+      session.network_policy = patch.network_policy;
+    }
+    if (patch.expiresAt !== undefined) {
+      session.expiresAt = patch.expiresAt === null ? undefined : new Date(patch.expiresAt).toISOString();
+    }
+    sessionStore.set(name, session);
+    return {
+      members: allowedToMembers(session.allowedMembers),
+      network_policy: session.network_policy,
+      expiresAt: session.expiresAt ? new Date(session.expiresAt).getTime() : undefined,
+    };
+  }
+
+  return null;
+}
+
 /**
  * Purge expired credentials from the persistent store.
  * Called at server startup to clean up stale entries.

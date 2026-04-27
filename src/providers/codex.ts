@@ -40,7 +40,7 @@ export class CodexProvider implements ProviderAdapter {
     if (unattended === 'auto') {
       cmd += ' --ask-for-approval auto-edit';
     } else if (unattended === 'dangerous') {
-      console.warn("WARNING: unattended='dangerous' is not supported for Codex — member will run interactively");
+      cmd += ` ${this.skipPermissionsFlag()}`;
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;

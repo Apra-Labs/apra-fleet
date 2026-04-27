@@ -36,11 +36,8 @@ export class GeminiProvider implements ProviderAdapter {
     if (rf) {
       cmd += ` ${rf}`;
     }
-    // Gemini CLI does not support unattended permission flags
-    if (unattended === 'auto') {
-      console.warn("WARNING: unattended='auto' is not supported for Gemini — member will run interactively");
-    } else if (unattended === 'dangerous') {
-      console.warn("WARNING: unattended='dangerous' is not supported for Gemini — member will run interactively");
+    if (unattended === 'dangerous') {
+      cmd += ` ${this.skipPermissionsFlag()}`;
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
