@@ -14,4 +14,4 @@
    - `planned.json` — immutable plan copy (saved after plan is APPROVED in Phase 2 — not at init time)
 4. Add project row to projects.md
 
-All project artifacts live in `<project>/` — never scattered outside it.
+All project artifacts live in `<project>/` — see Core Rule 2 in SKILL.md for the full sandboxing requirement.

@@ -46,20 +46,21 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 ## Core Rules
 
 1. NEVER read code, diagnose bugs, or suggest fixes — assign a member.
-2. On session start: Read each active project's `status.md` to recover context and surface members that are blocked, at verify, or idle.
+2. **Project sandboxing** — The PM root (e.g. `C:\akhil\apra-fleet-projects`) contains one subfolder per project. Every artifact for a project — `status.md`, `requirements.md`, `design.md`, `backlog.md`, `deploy.md`, `planned.json`, `permissions.json`, PLAN.md, progress.json, feedback.md — lives inside `<project>/` and nowhere else. Never create or write project files in the PM root itself, a sibling project folder, the skill folder, or any other location. If you find yourself about to write outside `<project>/`, stop and put the file in the right folder first.
+3. On session start: Read each active project's `status.md` to recover context and surface members that are blocked, at verify, or idle.
    - Update `status.md` whenever a dispatch completes or a member reports back — not just at phase boundaries
    - Local files are the source of truth — never rely on memory across sessions
-3. Before dispatch: Verify member has required tools: `execute_command → which <tool>` or `<tool> --version`.
-4. If a member can finish in one session (1-3 steps), use ad-hoc `execute_prompt`. Otherwise use the task harness.
-5. NEVER let members sit idle — after planning, immediately start execution. At verify checkpoints, immediately dispatch reviews.
-6. During execution: keep going until stuck or done — don't wait for the user. At checkpoints, filter the member's questions: resolve what you can, only escalate genuine ambiguities. During planning: escalate tough calls (ambiguous requirements, risky trade-offs, architectural decisions).
-7. When executing a sequence of fleet calls — any combination of `send_files`, `execute_command`, `execute_prompt`, `receive_files` — club them into a single background Agent rather than issuing individual calls or multiple background agents.
-8. For unattended execution, use `update_member(unattended='auto')` for safer auto-approval or `update_member(unattended='dangerous')` for full permission bypass. Always compose and deliver permissions via `compose_permissions` before dispatch (see fleet skill `permissions.md`). Do NOT pass `dangerously_skip_permissions` to `execute_prompt` — it is deprecated and ignored.
-9. During a sprint, PLAN.md, progress.json, and feedback.md must be committed and pushed by the member at every turn — these are the living state of the sprint. Only the agent context file stays uncommitted. See context-file.md and doer-reviewer.md for details.
-10. Definition of done includes security audit and docs — ensure both are covered when adding tools/features.
-11. At sprint completion: raise a PR, verify CI is green — do NOT merge. Merge is the user's decision.
-12. PM runs `gh` CLI commands directly via Bash — never delegate to fleet members. PM owns PR lifecycle and CI file commits: `gh pr create`, `gh pr checks`, pushing workflow files, etc.
-13. Always read referenced sub-documents (doer-reviewer.md, fleet skill sub-docs, etc.) before executing PM commands.
+4. Before dispatch: Verify member has required tools: `execute_command → which <tool>` or `<tool> --version`.
+5. If a member can finish in one session (1-3 steps), use ad-hoc `execute_prompt`. Otherwise use the task harness.
+6. NEVER let members sit idle — after planning, immediately start execution. At verify checkpoints, immediately dispatch reviews.
+7. During execution: keep going until stuck or done — don't wait for the user. At checkpoints, filter the member's questions: resolve what you can, only escalate genuine ambiguities. During planning: escalate tough calls (ambiguous requirements, risky trade-offs, architectural decisions).
+8. When executing a sequence of fleet calls — any combination of `send_files`, `execute_command`, `execute_prompt`, `receive_files` — club them into a single background Agent rather than issuing individual calls or multiple background agents.
+9. For unattended execution, use `update_member(unattended='auto')` for safer auto-approval or `update_member(unattended='dangerous')` for full permission bypass. Always compose and deliver permissions via `compose_permissions` before dispatch (see fleet skill `permissions.md`). Do NOT pass `dangerously_skip_permissions` to `execute_prompt` — it is deprecated and ignored.
+10. During a sprint, PLAN.md, progress.json, and feedback.md must be committed and pushed by the member at every turn — these are the living state of the sprint. Only the agent context file stays uncommitted. See context-file.md and doer-reviewer.md for details.
+11. Definition of done includes security audit and docs — ensure both are covered when adding tools/features.
+12. At sprint completion: raise a PR, verify CI is green — do NOT merge. Merge is the user's decision.
+13. PM runs `gh` CLI commands directly via Bash — never delegate to fleet members. PM owns PR lifecycle and CI file commits: `gh pr create`, `gh pr checks`, pushing workflow files, etc.
+14. Always read referenced sub-documents (doer-reviewer.md, fleet skill sub-docs, etc.) before executing PM commands.
 
 ## Secrets & Credentials
 
