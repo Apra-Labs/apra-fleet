@@ -35,6 +35,11 @@ Rules:
   - When the PM creates progress.json from the plan, it copies each task's tier into `tasks[i].tier`
   - During dispatch, the PM reads `tasks[i].tier` and passes `model: <tier>` to `execute_prompt` for doer dispatches
   - **Constraint:** Reviewer dispatches always use `model: premium` regardless of the task tier — this is not configurable by the planner
+- **Monotonically non-decreasing tiers within a phase:** Within a phase, order tasks from cheapest to most expensive tier (cheap → standard → premium). Never downgrade mid-phase. If a cheap task logically follows a premium task, place it in a new phase.
+  ```
+  cheap → cheap → standard → standard → premium → VERIFY  ✅
+  cheap → standard → cheap → VERIFY  ❌  (downgrade — split into two phases)
+  ```
 
 ### PHASE 2 — FRONT-LOAD FOUNDATIONS
 
@@ -60,6 +65,7 @@ Check your draft against these failure modes:
 - Wrong ordering — could the riskiest assumption be validated earlier?
 - Missing "done" criteria — how does the member know the task is complete?
 - Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?
+- Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point.
 
 ### PHASE 4 — REFINE
 
