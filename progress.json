@@ -143,14 +143,14 @@
           "id": "T10",
           "type": "work",
           "title": "Test suite audit — remove dead, overlapping, irrelevant tests",
-          "status": "pending",
+          "status": "completed",
           "subtasks": [
-            { "id": "T10.1", "title": "Audit priority test files", "status": "pending" },
-            { "id": "T10.2", "title": "Audit remaining test files", "status": "pending" },
-            { "id": "T10.3", "title": "Execute deletions and consolidations", "status": "pending" },
-            { "id": "T10.4", "title": "Validate and report", "status": "pending" }
+            { "id": "T10.1", "title": "Audit priority test files", "status": "completed" },
+            { "id": "T10.2", "title": "Audit remaining test files", "status": "completed" },
+            { "id": "T10.3", "title": "Execute deletions and consolidations", "status": "completed" },
+            { "id": "T10.4", "title": "Validate and report", "status": "completed" }
           ],
-          "notes": ""
+          "notes": "Audited all 61 test files. Deletions: (1) unit/inactivity-timer.test.ts deleted — 3 tests exact duplicate of session-lifecycle.test.ts 'Inactivity timer' describe block; (2) 'WindowsCommands.buildAgentPromptCommand: unattended flag' describe block removed from unattended-mode.test.ts — 4 tests exact duplicate of windows-pid-wrap.test.ts section 4 'buildAgentPromptCommand: unattended modes'; (3) 4 duplicate 'pidWrapWindows string structure' tests removed from unit/pid-wrapper.test.ts — FLEET_PID marker, $_fleet_proc.Id, ProcessStartInfo/UseShellExecute, WaitForExit/ExitCode all covered by windows-pid-wrap.test.ts sections 1-2. Net reduction: 11 tests (1020→1009). No security boundary tests deleted. No coverage gaps found."
         },
         {
           "id": "V5",

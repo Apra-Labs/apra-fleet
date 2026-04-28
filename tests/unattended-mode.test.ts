@@ -5,9 +5,6 @@ import { registerMember } from '../src/tools/register-member.js';
 import { updateMember } from '../src/tools/update-member.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
-import { WindowsCommands } from '../src/os/windows.js';
-import { ClaudeProvider } from '../src/providers/claude.js';
-import type { PromptOptions } from '../src/providers/provider.js';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -272,39 +269,3 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
   });
 });
 
-// ─── WindowsCommands.buildAgentPromptCommand: unattended flag ─────────────────
-
-describe('WindowsCommands.buildAgentPromptCommand: unattended flag', () => {
-  const provider = new ClaudeProvider();
-  const windows = new WindowsCommands();
-
-  const baseOpts: PromptOptions = {
-    folder: 'C:\\Users\\test\\project',
-    promptFile: '.fleet-task.md',
-    maxTurns: 50,
-  };
-
-  it('adds --permission-mode auto when unattended="auto"', () => {
-    const cmd = windows.buildAgentPromptCommand(provider, { ...baseOpts, unattended: 'auto' });
-    expect(cmd).toContain('--permission-mode auto');
-    expect(cmd).not.toContain('--dangerously-skip-permissions');
-  });
-
-  it('adds --dangerously-skip-permissions when unattended="dangerous"', () => {
-    const cmd = windows.buildAgentPromptCommand(provider, { ...baseOpts, unattended: 'dangerous' });
-    expect(cmd).toContain('--dangerously-skip-permissions');
-    expect(cmd).not.toContain('--permission-mode auto');
-  });
-
-  it('adds no permission flag when unattended=false', () => {
-    const cmd = windows.buildAgentPromptCommand(provider, { ...baseOpts, unattended: false });
-    expect(cmd).not.toContain('--permission-mode');
-    expect(cmd).not.toContain('--dangerously-skip-permissions');
-  });
-
-  it('adds no permission flag when unattended is undefined', () => {
-    const cmd = windows.buildAgentPromptCommand(provider, { ...baseOpts });
-    expect(cmd).not.toContain('--permission-mode');
-    expect(cmd).not.toContain('--dangerously-skip-permissions');
-  });
-});

@@ -46,30 +46,6 @@ describe('pidWrapUnix string structure', () => {
 // ─── pidWrapWindows (string structure) ───────────────────────────────────────
 
 describe('pidWrapWindows string structure', () => {
-  it('contains FLEET_PID: marker', () => {
-    expect(pidWrapWindows('', 'claude', '--version')).toContain('FLEET_PID:');
-  });
-
-  it('uses $_fleet_proc.Id (Claude CLI child PID, not PowerShell $PID)', () => {
-    const out = pidWrapWindows('', 'claude', '--version');
-    expect(out).toContain('$_fleet_proc.Id');
-    expect(out).not.toContain('FLEET_PID:$PID');
-  });
-
-  it('uses ProcessStartInfo with UseShellExecute = $false', () => {
-    const out = pidWrapWindows('', 'claude', '--version');
-    expect(out).toContain('ProcessStartInfo');
-    expect(out).toContain('UseShellExecute = $false');
-    expect(out).not.toContain('Start-Process');
-    expect(out).toContain('[System.Diagnostics.Process]::Start');
-  });
-
-  it('includes WaitForExit and exit code propagation', () => {
-    const out = pidWrapWindows('', 'claude', '--version');
-    expect(out).toContain('WaitForExit');
-    expect(out).toContain('exit $_fleet_proc.ExitCode');
-  });
-
   it('includes the filePath and argList in the output', () => {
     const out = pidWrapWindows('Set-Location "C:\\work"; ', 'claude', '-p "task" --output-format json');
     expect(out).toContain('claude');
