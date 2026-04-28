@@ -6,6 +6,7 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
+import { setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -176,19 +177,31 @@ export async function execCommand(
       let stderrSpillStream: fs.WriteStream | null = null;
       let stdoutSpillPath: string | null = null;
       let stderrSpillPath: string | null = null;
+      let pidExtracted = false;
 
       stream.on('data', (data: Buffer) => {
         resetInactivityTimer();
+        let chunk = data.toString();
+        if (!pidExtracted) {
+          const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
+          if (m) {
+            const pid = parseInt(m[1], 10);
+            setStoredPid(agent.id, pid);
+            console.error(`[fleet] stored PID ${pid} for agent ${agent.id}`);
+            chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
+            pidExtracted = true;
+          }
+        }
         stdoutLen += data.length;
         if (stdoutLen <= MAX_OUTPUT_BYTES) {
-          stdout += data.toString();
+          stdout += chunk;
         } else {
           if (!stdoutSpillStream) {
             stdoutSpillPath = path.join(os.tmpdir(), `fleet-stdout-${uuid()}.txt`);
             stdoutSpillStream = fs.createWriteStream(stdoutSpillPath);
             stdoutSpillStream.write(stdout);
           }
-          stdoutSpillStream.write(data);
+          stdoutSpillStream.write(chunk);
         }
       });
       stream.stderr.on('data', (data: Buffer) => {
@@ -206,6 +219,7 @@ export async function execCommand(
         }
       });
       stream.on('close', (code: number) => {
+        clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
@@ -220,6 +234,7 @@ export async function execCommand(
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
       });
       stream.on('error', (err: Error) => {
+        clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         settle(() => reject(err));

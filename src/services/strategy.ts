@@ -5,7 +5,7 @@ import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, setStoredPid } from '../utils/agent-helpers.js';
+import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
 
 /**
@@ -40,8 +40,7 @@ class RemoteStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
   async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
-    const result = await sshExecCommand(this.agent, command, timeoutMs, maxTotalMs);
-    return extractAndStorePid(this.agent.id, result);
+    return sshExecCommand(this.agent, command, timeoutMs, maxTotalMs);
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
@@ -82,6 +81,7 @@ class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
   async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
+    let pidExtracted = false;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
       const cmds = getOsCommands(getAgentOS(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
@@ -129,16 +129,27 @@ class LocalStrategy implements AgentStrategy {
 
       child.stdout?.on('data', (data: Buffer) => {
         resetInactivityTimer();
+        let chunk = data.toString();
+        if (!pidExtracted) {
+          const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
+          if (m) {
+            const pid = parseInt(m[1], 10);
+            setStoredPid(this.agent.id, pid);
+            console.error(`[fleet] stored PID ${pid} for agent ${this.agent.id}`);
+            chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
+            pidExtracted = true;
+          }
+        }
         stdoutLen += data.length;
         if (stdoutLen <= MAX_OUTPUT_BYTES) {
-          stdout += data.toString();
+          stdout += chunk;
         } else {
           if (!stdoutSpillStream) {
             stdoutSpillPath = path.join(os.tmpdir(), `fleet-local-stdout-${uuid()}.txt`);
             stdoutSpillStream = fs.createWriteStream(stdoutSpillPath);
             stdoutSpillStream.write(stdout);
           }
-          stdoutSpillStream.write(data);
+          stdoutSpillStream.write(chunk);
         }
       });
 
@@ -158,6 +169,7 @@ class LocalStrategy implements AgentStrategy {
       });
 
       child.on('close', (code) => {
+        clearStoredPid(this.agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
@@ -170,12 +182,13 @@ class LocalStrategy implements AgentStrategy {
       });
 
       child.on('error', (err) => {
+        clearStoredPid(this.agent.id);
         settle(() => reject(err));
       });
 
       child.stdin?.end();
     });
-    return extractAndStorePid(this.agent.id, result);
+    return result;
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {

@@ -11,13 +11,13 @@
           "id": "T7",
           "type": "work",
           "title": "stop_prompt broken — PID stored after process exits",
-          "status": "pending",
+          "status": "completed",
           "subtasks": [
-            { "id": "T7.1", "title": "LocalStrategy streaming PID extraction", "status": "pending" },
-            { "id": "T7.2", "title": "RemoteStrategy streaming PID extraction", "status": "pending" },
-            { "id": "T7.3", "title": "Verify clearStoredPid on exit", "status": "pending" }
+            { "id": "T7.1", "title": "LocalStrategy streaming PID extraction", "status": "completed" },
+            { "id": "T7.2", "title": "RemoteStrategy streaming PID extraction", "status": "completed" },
+            { "id": "T7.3", "title": "Verify clearStoredPid on exit", "status": "completed" }
           ],
-          "notes": ""
+          "notes": "PID now extracted in stdout data handlers (strategy.ts + ssh.ts). clearStoredPid called in close/error handlers. extractAndStorePid still exported for unit tests. 1019 tests pass."
         },
         {
           "id": "T8",
