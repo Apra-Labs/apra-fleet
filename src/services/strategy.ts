@@ -88,7 +88,7 @@ class LocalStrategy implements AgentStrategy {
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
       if (child.pid !== undefined) {
-        logLine('execute_command', `agent=${this.agent.friendlyName} PID=${child.pid} (local)`);
+        logLine('execute_command', `agent=${this.agent.friendlyName} PID=${child.pid} (local)`, this.agent.id);
       }
 
       let settled = false;
@@ -139,7 +139,7 @@ class LocalStrategy implements AgentStrategy {
           if (m) {
             const pid = parseInt(m[1], 10);
             setStoredPid(this.agent.id, pid);
-            logLine('execute_prompt', `agent=${this.agent.friendlyName} LLM_PID=${pid} (local)`);
+            logLine('execute_prompt', `agent=${this.agent.friendlyName} LLM_PID=${pid} (local)`, this.agent.id);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
             pidExtracted = true;
           }

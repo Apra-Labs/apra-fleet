@@ -130,7 +130,7 @@ export async function execCommand(
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
   resetIdleTimer(poolKey(agent));
-  logLine('execute_command', `agent=${agent.friendlyName} host=${agent.host} (ssh)`);
+  logLine('execute_command', `agent=${agent.friendlyName} host=${agent.host} (ssh)`, agent.id);
 
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
@@ -189,7 +189,7 @@ export async function execCommand(
           if (m) {
             const pid = parseInt(m[1], 10);
             setStoredPid(agent.id, pid);
-            logLine('execute_prompt', `agent=${agent.friendlyName} LLM_PID=${pid} (ssh:${agent.host})`);
+            logLine('execute_prompt', `agent=${agent.friendlyName} LLM_PID=${pid} (ssh:${agent.host})`, agent.id);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
             pidExtracted = true;
           }
