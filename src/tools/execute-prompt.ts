@@ -162,7 +162,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
 
-  logLine('execute_prompt', `agent=${agent.friendlyName} prompt="${truncateForLog(maskSecrets(input.prompt))}"`);
+  logLine('execute_prompt', `agent=${agent.friendlyName} prompt="${truncateForLog(maskSecrets(input.prompt))}"`, agent.id);
   const _epStartTime = Date.now();
 
   // Mark agent as busy in statusline
@@ -225,7 +225,7 @@ session: ${parsed.sessionId}`;
     writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
-    logLine('execute_prompt', `agent=${agent.friendlyName} exit=${_epExitCode} elapsed=${Date.now() - _epStartTime}ms`);
+    logLine('execute_prompt', `agent=${agent.friendlyName} exit=${_epExitCode} elapsed=${Date.now() - _epStartTime}ms`, agent.id);
     inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }

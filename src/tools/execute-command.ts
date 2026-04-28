@@ -172,7 +172,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   const folder = resolveTilde(input.run_from ?? agent.workFolder);
 
-  logLine('execute_command', `agent=${agent.friendlyName} cmd="${truncateForLog(maskSecrets(input.command))}"`);
+  logLine('execute_command', `agent=${agent.friendlyName} cmd="${truncateForLog(maskSecrets(input.command))}"`, agent.id);
 
   // -- Long-running background task path --
   if (input.long_running) {
