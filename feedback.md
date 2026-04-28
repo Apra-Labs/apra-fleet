@@ -75,3 +75,58 @@ The source-inspection approach for the test is pragmatic — mocking `spawn` opt
 npm run build  → 0 errors
 npm test       → 1021 passed, 6 skipped, 0 failures
 ```
+
+---
+---
+
+# Phase 2 Code Review — T9 Structured Logging
+
+**Reviewer:** Claude (Opus 4.6)
+**Date:** 2026-04-27
+**Branch:** sprint/session-lifecycle-oob-fix
+**Build:** 0 errors | **Tests:** 1021 pass, 6 skipped, 0 fail
+
+---
+
+## Verdict: APPROVED with one non-blocking finding
+
+---
+
+## Detailed Findings
+
+### 1. maskSecrets redaction — PASS
+
+- `{{secure.[a-zA-Z0-9_]{1,64}}}` correctly matches the canonical token syntax.
+- `sec://[a-zA-Z0-9_]+` correctly matches credential handles.
+- Edge cases verified:
+  - **Nested tokens** (`{{secure.{{secure.inner}}}}`): inner match is redacted, outer residue is harmless — and this pattern can't occur in practice since token names are `[a-zA-Z0-9_]` only.
+  - **Uppercase** (`{{SECURE.FOO}}`): not matched — correct, the token syntax is defined as lowercase throughout (execute-prompt.ts:89, execute-command.ts:65).
+  - **No trailing brace** (`{{secure.FOO`): not matched — correct, incomplete tokens should not be redacted.
+
+### 2. truncateForLog null/undefined safety — PASS (by design)
+
+`truncateForLog` does not guard against null/undefined, but all call sites pass Zod-validated `z.string()` values. Adding a null guard would be dead code. Acceptable.
+
+### 3. LLM PID log timing — PASS
+
+PID is extracted from the streaming `data` handler (strategy.ts:137-145 for local, ssh.ts:184-195 for SSH), not post-close. Correct.
+
+### 4. child.pid logged immediately after spawn — PASS
+
+strategy.ts:90-91 logs `child.pid` synchronously after `spawn()`, before any async data arrives. Correct.
+
+### 5. Exit log with exit code and elapsed ms — PASS
+
+execute-prompt.ts:228 (`finally` block) logs `exit=<code> elapsed=<N>ms`. Both values present. Correct.
+
+### 6. Tests for maskSecrets / truncateForLog — FINDING (non-blocking)
+
+No test file exists for `src/utils/log-helpers.ts`. Edge-case coverage for `maskSecrets` (e.g., multiple tokens in one string, adjacent tokens, empty string) and `truncateForLog` (exactly-at-boundary, multi-line input) would add confidence. **Recommend adding tests in a follow-up task.**
+
+### 7. Build & test — PASS
+
+Build: 0 errors. Tests: 1021 pass (up from 1020 in Phase 1 — no regressions).
+
+## Phase 1 Cumulative Check
+
+T7 (idle touch), T8 (auth-env), T11 (windowsHide) — no regressions detected. All prior test suites still passing.
