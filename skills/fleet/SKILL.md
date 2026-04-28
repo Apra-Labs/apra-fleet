@@ -189,10 +189,16 @@ Configured via `register_member` or `update_member` with the `unattended` parame
 | `'auto'` | Trust the permissions config written by `compose_permissions` — auto-approves tools in the allow list |
 | `'dangerous'` | Skip all permission checks globally, bypassing the allow list |
 
-`unattended='auto'` does not add any CLI flag. Auto-approval is delivered via config files
-written by `compose_permissions` — call it before every dispatch. `'dangerous'` adds a
-provider-specific skip-all flag (`--dangerously-skip-permissions` on Claude, `--yolo` on
-Gemini, `--sandbox danger-full-access --ask-for-approval never` on Codex).
+Per-provider flag behaviour:
+
+| Provider | `'auto'` flag | `'dangerous'` flag |
+|----------|--------------|-------------------|
+| Claude | `--permission-mode auto` | `--dangerously-skip-permissions` |
+| Gemini | None (config-file only via `compose_permissions`) | `--yolo` |
+| Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
+| Copilot | ⚠️ Not supported — warns and runs interactively | ⚠️ Not supported |
+
+Auto-approval is delivered via config files written by `compose_permissions` — call it before every dispatch.
 
 **Prefer `auto` + `compose_permissions` over `dangerous`** — `auto` scopes approval to the
 explicitly listed tools; `dangerous` bypasses all checks globally.
