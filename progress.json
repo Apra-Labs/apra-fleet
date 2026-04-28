@@ -41,8 +41,8 @@
       "title": "VERIFY: Phase 1 — Plan Templates",
       "type": "verify",
       "tier": "premium",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "All checks pass: (1) zero instances of '2-3 work tasks' count rule across all files, (2) cohesion rule in plan-prompt.md and tpl-plan.md with matching wording, (3) monotonic tier constraint in plan-prompt.md, tpl-plan.md, and tpl-reviewer-plan.md, (4) tpl-reviewer-plan.md has both checklist items. No inconsistencies found."
     },
     {
       "id": "T5",
