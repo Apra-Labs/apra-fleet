@@ -1,0 +1,81 @@
+{
+  "project": "apra-fleet #182 — Tier-Aware Dispatch",
+  "branch": "feat/tier-aware-dispatch",
+  "base_branch": "main",
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": 1,
+      "title": "Replace count rule with cohesion rule in plan-prompt.md",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T2",
+      "phase": 1,
+      "title": "Add monotonic tier constraint to plan-prompt.md",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T3",
+      "phase": 1,
+      "title": "Add cohesion rule and monotonic tier constraint to tpl-plan.md",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T4",
+      "phase": 1,
+      "title": "Update tpl-reviewer-plan.md checklist",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V1",
+      "phase": 1,
+      "title": "VERIFY: Phase 1 — Plan Templates",
+      "type": "verify",
+      "tier": "premium",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T5",
+      "phase": 2,
+      "title": "Per-task dispatch algorithm in single-pair-sprint.md",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T6",
+      "phase": 2,
+      "title": "Data-driven resume and tier-based dispatch in doer-reviewer.md",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T7",
+      "phase": 2,
+      "title": "Cross-file consistency sweep",
+      "tier": "premium",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V2",
+      "phase": 2,
+      "title": "VERIFY: Phase 2 — Dispatch & Resume",
+      "type": "verify",
+      "tier": "premium",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}
