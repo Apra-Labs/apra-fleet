@@ -83,15 +83,16 @@
 |---|---|
 | **Description** | Replace every `console.error`, `console.warn`, and `console.log` call in `src/` (except `log-helpers.ts` itself) with the appropriate `logLine()` call. Guidelines by file: |
 | | **`src/index.ts`** — CLI dispatch lines (`--version`, `--help`) use stdout intentionally; keep `console.log` for those. Replace the `.catch` `console.error` calls with `logLine('cli', ...)`. |
-| | **`src/cli/install.ts`** — This is a CLI installer that writes progress to stdout for the user. Keep `console.log` for user-facing output. Replace `console.error` and `console.warn` with `logLine()`. |
 | | **`src/cli/auth.ts`** — CLI auth UI writes to stderr for user interaction. Keep `console.error` for user-facing prompts. Replace any purely diagnostic/error logging with `logLine()`. |
 | | **`src/smoke-test.ts`** — Test harness; keep `console.log` (it's a standalone script, not server code). |
-| | **`src/providers/copilot.ts`** — Replace `console.warn` with `logLine('copilot', ..., memberId)` at warn level. |
+| | **`src/providers/copilot.ts`** — Replace `console.warn` with `logLine('copilot', ...)` at warn level. **Note:** `buildPromptCommand()` and `permissionModeAutoFlag()` are `ProviderAdapter` interface methods — they receive no agent parameter, so `memberId` is unavailable; omit the third argument entirely for these call sites. |
+| | **Doer:** fixed — copilot.ts logLine calls omit memberId because ProviderAdapter methods have no agent parameter |
 | | **`src/services/auth-socket.ts`** — Replace `console.error` with `logLine('auth_socket', ...)`. |
 | | **`src/utils/crypto.ts`** — Replace `console.warn` with `logLine('crypto', ...)` at warn level. |
-| | **Decision:** CLI-facing `console.log`/`console.error` in `index.ts`, `install.ts`, `auth.ts`, and `smoke-test.ts` that are user-visible output (not diagnostic logging) should be **kept**. The acceptance criteria "zero direct console.* calls except log-helpers.ts" applies to server-side code; CLI scripts that run outside the MCP server context are exempt when the output is intentional user communication. Document any kept calls with a brief inline comment. |
-| **Files** | `src/providers/copilot.ts`, `src/services/auth-socket.ts`, `src/utils/crypto.ts`, `src/index.ts` (partial), `src/cli/install.ts` (partial), `src/cli/auth.ts` (partial) |
+| | **Decision:** CLI-facing `console.log`/`console.error` in `index.ts`, `install.ts`, `auth.ts`, and `smoke-test.ts` that are user-visible output (not diagnostic logging) should be **kept**. The acceptance criteria "zero direct console.* calls except log-helpers.ts" applies to server-side code; CLI scripts that run outside the MCP server context are exempt when the output is intentional user communication. Document any kept calls with a brief inline comment. **`install.ts` is fully exempt** — all 20 console.* calls are CLI installer output and `APRA_FLEET_DATA_DIR` may not yet exist when it runs; treat it identically to `auth.ts`, `smoke-test.ts`, and `index.ts` (no changes). |
+| **Files** | `src/providers/copilot.ts`, `src/services/auth-socket.ts`, `src/utils/crypto.ts`, `src/index.ts` (partial), `src/cli/auth.ts` (partial) |
 | **Done criteria** | `grep -rn "console\.\(error\|warn\|log\)" src/ --include="*.ts"` returns only: (1) `log-helpers.ts` internal call, (2) CLI user-facing output in `index.ts`/`install.ts`/`auth.ts`/`smoke-test.ts` — each justified. All replaced calls use appropriate log level. |
+| **Doer:** fixed — install.ts removed from T4 migration; all its console.* calls are CLI user-facing output and it is fully exempt (same as auth.ts, smoke-test.ts, index.ts) | |
 
 ### T5: Tests
 
@@ -146,6 +147,8 @@
 | **CLI scripts (`install.ts`, `auth.ts`) break if `logLine()` tries to write before data dir exists** | Medium — install fails | Low | CLI scripts run outside the MCP server context. If `logLine()` is called from CLI code, guard the file write (try/catch, skip file write if data dir unavailable). Or keep CLI-specific `console.*` calls as-is. |
 | **Existing tests mock `console.error` and break when `logLine()` format changes** | Low — test failures | Medium | Audit existing test mocks in T5; update assertions to match new format. |
 | **Log rotation under pino-roll leaves stale handles on Windows** | Low — file locking issues | Low | Test rotation on Windows during V2. pino-roll uses rename-based rotation which should work, but verify. |
+| **pino-roll worker thread compatibility with SEA binary build** | High — binary may fail to start or silently drop logs | Medium | pino uses `worker_threads` for its async transport; Node.js Single Executable Application (SEA) packaging may not bundle or resolve the worker thread correctly. **Mitigation:** run `npm run build:binary` as part of the T2 verification step and confirm the binary starts and writes a JSONL log line before proceeding. If incompatible, fall back to the synchronous `fs.appendFileSync` fallback already described in V1. |
+| **Doer:** fixed — SEA binary / pino-roll worker thread risk added | | | |
 
 ---
 
