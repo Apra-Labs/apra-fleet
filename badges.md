@@ -2,7 +2,7 @@
 
 ## Security
 
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/apra-labs-apra-fleet-badge.png)](https://mseep.ai/app/apra-labs-apra-fleet)
+[![Verified on MseeP](https://mseep.net/pr/apra-labs-apra-fleet-badge.png)](https://mseep.ai/app/75cd01df-cec7-48ca-b1a8-755e00baba52)
 
 Third-party security and trust validation by [MseeP.ai](https://mseep.ai/app/apra-labs-apra-fleet).
 
