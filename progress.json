@@ -32,8 +32,8 @@
       "phase": 1,
       "title": "Update tpl-reviewer-plan.md checklist",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Replaced item 6 with two new items: cohesion boundary check and monotonic tier check. Renumbered subsequent items 7→8 through 12→13."
     },
     {
       "id": "V1",
