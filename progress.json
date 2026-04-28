@@ -109,8 +109,8 @@
           "id": "T4",
           "type": "work",
           "title": "Remove Gemini mechanic from doer-reviewer.md",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Replaced Gemini-specific implementation detail with cross-reference: 'For provider-specific unattended flag behaviour, see the fleet SKILL.md unattended modes section.'"
         },
         {
           "id": "T5",
