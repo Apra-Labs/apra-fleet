@@ -27,11 +27,18 @@
           "notes": "Added permissionModeAutoFlag(): string|null to ProviderAdapter interface. Claude→'--permission-mode auto', Gemini→null, Codex→'--ask-for-approval auto-edit', Copilot→null+warning. windows.ts now delegates. 1019 tests pass."
         },
         {
+          "id": "T11",
+          "type": "work",
+          "title": "windowsHide:true to suppress cmd.exe flashes on Windows local members",
+          "status": "completed",
+          "notes": "Added windowsHide:true to spawn options in LocalStrategy.execCommand. Test added in strategy.test.ts using source inspection (ESM namespace not configurable for vi.spyOn). 11 strategy tests pass."
+        },
+        {
           "id": "V1",
           "type": "verify",
           "title": "Verify Phase 1",
           "status": "completed",
-          "notes": "npm run build: 0 errors. npm test: 61 test files, 1019 passed, 7 skipped, 0 failures. Pushed to origin. PID extraction in data handlers confirmed. windows.ts delegates auto flag confirmed."
+          "notes": "npm run build: 0 errors. npm test: 61 test files, 1020 passed, 7 skipped, 0 failures. T7: PID in data handlers confirmed. T8: windows.ts delegates auto flag confirmed. T11: windowsHide:true in spawn confirmed. Pushed to origin."
         }
       ]
     },
