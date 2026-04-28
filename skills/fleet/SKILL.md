@@ -34,6 +34,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `credential_store_set` | Store a secret credential for use in commands (entered OOB — never in chat) |
 | `credential_store_list` | List stored credential names (values are never returned) |
 | `credential_store_delete` | Delete a stored credential by name |
+| `credential_store_update` | Update credential metadata (members, TTL, network policy) without re-entering the secret |
 | `stop_prompt` | Kill the active LLM process on a member and set a one-shot error gate.<br><br>**One-shot error gate:** The next `execute_prompt` call to this member returns a "stopped by PM" error and clears the gate. All subsequent dispatches proceed normally. No manual clearing needed.<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled mid-execution. After stopping, re-dispatch with `resume=false` — the session state after a kill is unreliable.<br><br>**Note:** The stopped flag is in-memory only — it does not persist across server restarts. |
 
 See sub-documents for detailed usage:
