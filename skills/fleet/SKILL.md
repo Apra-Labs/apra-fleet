@@ -240,52 +240,8 @@ When you see this notice, surface it to the user verbatim before the rest of the
 
 ## Fleet Logs
 
-The fleet server writes structured JSONL logs to `APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log` on every `logLine()`, `logWarn()`, and `logError()` call. One JSON object per line.
-
-### Log file location
-
-```
-$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log
-```
-
-`<pid>` is the server process ID. The `pid` field in each log line matches the filename and is also emitted by `execute_prompt` in its output footer for correlation.
-
-### JSONL fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `ts` | ISO 8601 string | Timestamp of the log event |
-| `pid` | number | Server process ID |
-| `level` | string | `"info"`, `"warn"`, or `"error"` |
-| `tag` | string | Tool or subsystem name (e.g. `"execute_prompt"`, `"execute_command"`, `"auth_socket"`) |
-| `member_id` | string | Member UUID — present when the event is associated with a specific member |
-| `msg` | string | Log message; `{{secure.*}}` tokens are redacted to `[REDACTED]` before writing |
-
-Example line:
-
-```json
-{"pid":12345,"level":"info","tag":"execute_prompt","member_id":"abc-uuid","msg":"dispatching prompt to member","ts":"2026-04-28T10:00:00.000Z"}
-```
-
-### Reading logs
+The fleet server writes structured JSONL logs to `APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log`. Use `jq` to read them:
 
 ```bash
-# Tail the active log
-tail -f "$APRA_FLEET_DATA_DIR/logs/fleet-$(pgrep -n apra-fleet).log"
-
-# Pretty-print with jq
 cat "$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log" | jq '.'
-
-# Filter by member
-cat "$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log" | jq 'select(.member_id == "<uuid>")'
-
-# Filter errors only
-cat "$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log" | jq 'select(.level == "error")'
-
-# Filter by tool/tag
-cat "$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log" | jq 'select(.tag == "execute_command")'
 ```
-
-### Rotation behaviour
-
-`pino-roll` rotates by size: each log file is capped at **10 MB** and at most **3 rotated files** are kept. When the active file reaches 10 MB, it is renamed with a numeric suffix and a new file is opened. Older rotated files beyond the 3-file limit are deleted automatically.
