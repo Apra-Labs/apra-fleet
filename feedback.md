@@ -44,10 +44,10 @@ No stale pino references — **PASS**. Log path uses `APRA_FLEET_DATA_DIR/logs/f
 - `npm test` — 61 test files, 1016 passed, 6 skipped, 0 failed — **PASS**
 
 ### CI
-Latest run (25080363280): ubuntu ✅, macos ✅, windows in-progress (build passed, tests running). Previous failure (25079910412) was from old test code before rewrite in 668fd79 — resolved.
+Run 25080363280: build-and-test ubuntu ✅, macos ✅, windows ✅. All three platforms green. Binary build jobs cancelled by higher-priority queued run (not a test failure). Previous failure (25079910412) was old test code before rewrite in 668fd79 — resolved.
 
 ---
 
 ## Summary
 
-All review criteria pass. The pino transport has been fully replaced with `fs.createWriteStream` for SEA compatibility. No pino residue in source, tests, skills, or dependencies. Field order, lazy init, masking, and console output all verified. Documentation trimmed to essentials. Build and full test suite green. CI green on ubuntu/macos; windows completing.
+All review criteria pass. The pino transport has been fully replaced with `fs.createWriteStream` for SEA compatibility. No pino residue in source, tests, skills, or dependencies. Field order, lazy init, masking, and console output all verified. Documentation trimmed to essentials. Build and full test suite green. CI green on all three platforms (ubuntu, macos, windows).
