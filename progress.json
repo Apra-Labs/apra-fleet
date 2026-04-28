@@ -10,7 +10,7 @@
         { "id": "T1", "name": "Remove feedback-skills.md", "status": "completed", "notes": "Deleted feedback-skills.md from repo root. Committed 9efcd8c." },
         { "id": "T2", "name": "Add pino + pino-roll; create JSONL logger in log-helpers.ts", "status": "completed", "notes": "Installed pino + pino-roll. Lazy-init logger in log-helpers.ts with mkdirSync, pino-roll transport (10m/3 files), maskSecrets applied, console.error kept, logWarn/logError variants added. Committed 513fdbd." },
         { "id": "T3", "name": "Thread memberId through tool handlers", "status": "completed", "notes": "Threaded agent.id as memberId into all logLine() calls in execute-prompt.ts, execute-command.ts, ssh.ts, strategy.ts. Added new logLine() calls with memberId to stop-prompt.ts, provision-vcs-auth.ts, revoke-vcs-auth.ts. Committed d73974a." },
-        { "id": "V1", "name": "Build + Test Checkpoint", "type": "verify", "status": "pending", "notes": "" }
+        { "id": "V1", "name": "Build + Test Checkpoint", "type": "verify", "status": "completed", "notes": "Phase 1 approved by PM. Build and tests confirmed passing." }
       ]
     },
     {

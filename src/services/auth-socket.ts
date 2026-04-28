@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
+import { logError } from '../utils/log-helpers.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -470,7 +471,7 @@ export function launchAuthTerminal(
             }
           });
           child.on('error', (err) => {
-            console.error('Failed to launch osascript for auth:', err);
+            logError('auth_socket', `Failed to launch osascript for auth: ${err.message}`);
             onExit(1);
           });
         } catch (e) {
@@ -500,7 +501,7 @@ export function launchAuthTerminal(
 
     child.on('close', onExit);
     child.on('error', (err) => {
-      console.error(`Failed to launch terminal for ${memberName}: `, err);
+      logError('auth_socket', `Failed to launch terminal for ${memberName}: ${err.message}`);
       onExit(1); // Treat spawn error as a non-zero exit.
     });
     child.unref();
