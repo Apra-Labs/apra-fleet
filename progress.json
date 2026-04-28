@@ -24,8 +24,8 @@
       "phase": 1,
       "title": "Add cohesion rule and monotonic tier constraint to tpl-plan.md",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Added Phase Sizing Rules section with cohesion rule and monotonic tier constraint. Wording matches plan-prompt.md."
     },
     {
       "id": "T4",
