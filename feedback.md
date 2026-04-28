@@ -212,3 +212,81 @@ npm test       → 1021 passed, 6 skipped, 0 failures
 ## Final Verdict: **APPROVED**
 
 All six checks pass. Phase 3 is clean.
+
+---
+---
+
+# Phase 4 Review — T4, T5, T6 (Docs & Shell Quoting)
+
+**Reviewer:** Claude (Opus 4.6)  
+**Date:** 2026-04-27  
+**Branch:** sprint/session-lifecycle-oob-fix  
+**Scope:** T4 (SKILL.md cross-ref), T5 (doer-reviewer.md formatting), T6 (credFile quoting)  
+**Build:** 0 errors | **Tests:** 1021 passed, 6 skipped, 0 failures
+
+---
+
+## Verdict: APPROVED — 0 blocking, 0 advisory
+
+---
+
+## Checklist
+
+### T4: Gemini-specific mechanic replaced with SKILL.md cross-reference
+
+Commit `b45f6c9` replaced the inline Gemini auto-approval detail with:
+> *For provider-specific unattended flag behaviour, see the fleet SKILL.md unattended modes section.*
+
+**Verification:** SKILL.md contains an "Unattended Execution Modes" section (lines 183–209) with a per-provider flag table covering Gemini's config-file-only behaviour. Cross-reference is accurate and the doc reads cleanly without the removed detail.
+
+**Verdict:** ✅ Pass.
+
+### T5: Sub-bullet indentation and line split in doer-reviewer.md
+
+Commit `1180f0c` fixed two formatting issues under checklist item 4:
+1. Three sub-bullets changed from flush-left dashes to 3-space-indented sub-bullets
+2. Long concatenated line split into two distinct items (unattended flag preference vs. context-file reference)
+
+**Verification:** Current file at `skills/pm/doer-reviewer.md` renders correctly. All content preserved — no words lost in the split. Indentation properly indicates sub-bullets under item 4.
+
+**Verdict:** ✅ Pass.
+
+### T6: `${credFile}` double-quoting in linux.ts shell strings
+
+Commits `307d35d` and `cd89686` quote all `${credFile}` occurrences and update the test assertion.
+
+| Location | Function | Shell command | Quoted |
+|----------|----------|---------------|--------|
+| linux.ts:211 | `gitCredentialHelperWrite` | `> "${credFile}"` | ✅ |
+| linux.ts:211 | `gitCredentialHelperWrite` | `chmod 600 "${credFile}"` | ✅ |
+| linux.ts:211 | `gitCredentialHelperWrite` | `chmod +x "${credFile}"` | ✅ |
+| linux.ts:211 | `gitCredentialHelperWrite` | `"credential.${credUrl}.helper" "${credFile}"` | ✅ |
+| linux.ts:219 | `gitCredentialHelperRemove` | `rm -f "${credFile}"` | ✅ |
+
+Test assertion in `vcs-auth.test.ts:221` updated from `.fleet-git-credential &&` to `.fleet-git-credential" &&` to match the quoted output.
+
+**Verdict:** ✅ All 5 shell interpolation sites quoted. Test assertion matches.
+
+### Build & Test
+
+```
+npm run build  → 0 errors
+npm test       → 1021 passed, 6 skipped, 0 failures
+```
+
+**Verdict:** ✅ Pass.
+
+### Cumulative Regression Check (Phases 1–3)
+
+- Phase 1 (T7: PID extraction, T8: unattended flag delegation, T11: windowsHide) — no regressions.
+- Phase 2 (T9: structured logging) — no regressions.
+- Phase 3 (T1: provider flag table, T2: credential_store_update, T3: Copilot note) — no regressions.
+- All 1021 tests pass (up from 1020 in Phase 1, consistent since Phase 2).
+
+**Verdict:** ✅ No regressions.
+
+---
+
+## Final Verdict: **APPROVED**
+
+All checks pass. Phase 4 is clean.
