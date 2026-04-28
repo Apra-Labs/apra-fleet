@@ -124,7 +124,7 @@
           "type": "work",
           "title": "Quote credFile in linux.ts shell commands",
           "status": "completed",
-          "notes": "Quoted all ${credFile} occurrences in shell strings: line 211 (> credFile, chmod 600, chmod +x, git config --add) and line 219 (rm -f). Defense-in-depth against paths with spaces."
+          "notes": "Quoted all ${credFile} occurrences in shell strings: line 211 (> credFile, chmod 600, chmod +x, git config --add) and line 219 (rm -f). Defense-in-depth against paths with spaces. Updated vcs-auth.test.ts assertion from '.fleet-git-credential &&' to '.fleet-git-credential\" &&' to match quoted output."
         },
         {
           "id": "V4",

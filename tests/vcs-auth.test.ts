@@ -218,7 +218,7 @@ describe('Multi-label credential isolation', () => {
       { email: 'dev@test.com', api_token: 'tok', workspace: 'ws' },
     );
 
-    expect(execCalls[0]).toContain('.fleet-git-credential &&');
+    expect(execCalls[0]).toContain('.fleet-git-credential" &&');
     expect(execCalls[0]).not.toContain('.fleet-git-credential-');
   });
 
