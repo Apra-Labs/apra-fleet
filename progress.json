@@ -8,8 +8,8 @@
       "phase": 1,
       "title": "Replace count rule with cohesion rule in plan-prompt.md",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Replaced 3 instances: line 27 DRAFT rule, line 62 SELF-CRITIQUE failure mode, line 69 REFINE bullet. All now reference cohesion boundaries instead of task counts."
     },
     {
       "id": "T2",
