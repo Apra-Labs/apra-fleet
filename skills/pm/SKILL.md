@@ -39,7 +39,7 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 - `/pm start <member>` — Begin Phase 3 execution. Before dispatch: complete doer-reviewer.md setup checklist and pre-flight checks. Plan must be APPROVED (planned.json exists in `<project>/`). Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution.
 - `/pm status <member>` — Check progress.json and git log
 - `/pm resume <member>` — Resume after a verification checkpoint
-- `/pm deploy <member>` — Run `<project>/deploy.md` steps via `execute_command`, then verify
+- `/pm deploy <member>` — Execute the project's deployment runbook. First, `receive_files` to pull `deploy.md` from the repo root or `docs/` folder via any available member. If it doesn't exist in the repo, create a copy locally from `tpl-deploy.md`, fill in the project's deploy and verify steps, then `send_files` to the doer's repo root and have them commit it before proceeding. Once deploy.md is in place, execute each step via `execute_command` on the target member, then run the Verify section to confirm the deploy succeeded.
 - `/pm recover <project>` — After PM restart: inspect each member's state and present recovery options. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md depending on sprint type.
 - `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, then raise the PR. See cleanup.md.
 
