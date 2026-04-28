@@ -17,14 +17,14 @@
             { "id": "T7.2", "title": "RemoteStrategy streaming PID extraction", "status": "completed" },
             { "id": "T7.3", "title": "Verify clearStoredPid on exit", "status": "completed" }
           ],
-          "notes": "PID now extracted in stdout data handlers (strategy.ts + ssh.ts). clearStoredPid called in close/error handlers. extractAndStorePid still exported for unit tests. 1019 tests pass."
+          "notes": "PID now extracted in stdout data handlers (strategy.ts + ssh.ts). clearStoredPid called in close/error handlers. extractAndStorePid still exported for unit tests and integration mocks. 1019 tests pass."
         },
         {
           "id": "T8",
           "type": "work",
           "title": "windows.ts hardcodes Claude flag for all providers",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Added permissionModeAutoFlag(): string|null to ProviderAdapter interface. Claude→'--permission-mode auto', Gemini→null, Codex→'--ask-for-approval auto-edit', Copilot→null+warning. windows.ts now delegates. 1019 tests pass."
         },
         {
           "id": "V1",

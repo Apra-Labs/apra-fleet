@@ -122,7 +122,8 @@ export class WindowsCommands implements OsCommands {
       if (rf) argList += ` ${rf}`;
     }
     if (unattended === 'auto') {
-      argList += ' --permission-mode auto';
+      const autoFlag = provider.permissionModeAutoFlag();
+      if (autoFlag) argList += ` ${autoFlag}`;
     } else if (unattended === 'dangerous') {
       argList += ` ${provider.skipPermissionsFlag()}`;
     }

@@ -49,6 +49,10 @@ export class GeminiProvider implements ProviderAdapter {
     return '--yolo';
   }
 
+  permissionModeAutoFlag(): string | null {
+    return null;
+  }
+
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
     try {

@@ -52,6 +52,10 @@ export class CodexProvider implements ProviderAdapter {
     return '--sandbox danger-full-access --ask-for-approval never';
   }
 
+  permissionModeAutoFlag(): string | null {
+    return '--ask-for-approval auto-edit';
+  }
+
   /**
    * Codex emits NDJSON: one JSON event per state change.
    * Parse all events, extract final result from last meaningful event.

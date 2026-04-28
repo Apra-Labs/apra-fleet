@@ -56,6 +56,11 @@ export class CopilotProvider implements ProviderAdapter {
     return '--allow-all-tools';
   }
 
+  permissionModeAutoFlag(): string | null {
+    console.warn("WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
+    return null;
+  }
+
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
     try {

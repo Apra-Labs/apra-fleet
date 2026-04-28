@@ -54,6 +54,10 @@ export class ClaudeProvider implements ProviderAdapter {
     return '--dangerously-skip-permissions';
   }
 
+  permissionModeAutoFlag(): string | null {
+    return '--permission-mode auto';
+  }
+
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
     try {

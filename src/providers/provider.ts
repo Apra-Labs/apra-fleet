@@ -53,6 +53,8 @@ export interface ProviderAdapter {
 
   // Permission bypass flag
   skipPermissionsFlag(): string;
+  /** Returns the CLI flag for unattended='auto', or null if the provider does not support it. */
+  permissionModeAutoFlag(): string | null;
 
   // Response parsing
   parseResponse(result: SSHExecResult): ParsedResponse;
