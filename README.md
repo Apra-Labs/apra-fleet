@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/apra-labs-apra-fleet-badge.png)](https://mseep.ai/app/apra-labs-apra-fleet)
+
 # Apra Fleet
 
 [![CI](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml)
