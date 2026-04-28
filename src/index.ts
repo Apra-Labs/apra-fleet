@@ -205,6 +205,9 @@ async function startServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
+  const { FLEET_DIR } = await import('./paths.js');
+  logLine('startup', `apra-fleet ${serverVersion} started — FLEET_DIR=${FLEET_DIR}`);
+
   idleManager.start();
   void cleanupStaleTasks();
   purgeExpiredCredentials();

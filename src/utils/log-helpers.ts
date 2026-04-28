@@ -1,43 +1,30 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import pino from 'pino';
 import { FLEET_DIR } from '../paths.js';
 
-let _logger: pino.Logger | null = null;
+let _stream: fs.WriteStream | null = null;
 
-function getLogger(): pino.Logger | null {
-  if (_logger) return _logger;
+function getStream(): fs.WriteStream | null {
+  if (_stream) return _stream;
   try {
     const logsDir = path.join(FLEET_DIR, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
     const logFile = path.join(logsDir, `fleet-${process.pid}.log`);
-    const transport = pino.transport({
-      target: 'pino-roll',
-      options: { file: logFile, size: '10m', limit: { count: 3 } },
-    });
-    _logger = pino(
-      {
-        level: 'trace',
-        timestamp: () => `,"ts":"${new Date().toISOString()}"`,
-        formatters: {
-          level(label) { return { level: label }; },
-          bindings(b) { return { pid: b.pid }; },
-        },
-      },
-      transport,
-    );
+    _stream = fs.createWriteStream(logFile, { flags: 'a' });
   } catch {
-    // file logging unavailable (e.g. data dir not yet created during install)
+    // data dir not available
   }
-  return _logger;
+  return _stream;
 }
 
 function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: string, memberId?: string): void {
-  const logger = getLogger();
-  if (!logger) return;
-  const fields: Record<string, string> = { tag };
-  if (memberId !== undefined) fields.member_id = memberId;
-  logger[level](fields, maskedMsg);
+  const stream = getStream();
+  if (!stream) return;
+  const line: Record<string, unknown> = { ts: new Date().toISOString(), level, tag };
+  if (memberId !== undefined) line.member_id = memberId;
+  line.msg = maskedMsg;
+  line.pid = process.pid;
+  stream.write(JSON.stringify(line) + '\n');
 }
 
 export function logLine(tag: string, msg: string, memberId?: string): void {
