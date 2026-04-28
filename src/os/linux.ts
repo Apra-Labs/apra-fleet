@@ -5,6 +5,16 @@ import { escapeShellArg } from '../utils/shell-escape.js';
 
 const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
 
+/**
+ * Wrap a bash command string with PID capture.
+ * Backgrounds the command in a subshell, emits FLEET_PID:<pid> to stdout
+ * immediately (before the inner command produces any output), then waits
+ * for the subshell and propagates its exit code.
+ */
+export function pidWrapUnix(cmd: string): string {
+  return `{ ${cmd}; } & _fleet_pid=$!; printf 'FLEET_PID:%s\\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?`;
+}
+
 /** Replace leading ~ with $HOME so paths expand correctly inside double-quoted shell strings. */
 function expandHome(p: string): string {
   return p.startsWith('~/') ? `$HOME/${p.slice(2)}` : p === '~' ? '$HOME' : p;
@@ -105,10 +115,13 @@ export class LinuxCommands implements OsCommands {
     // Provider command starts with `cd "folder" && <cli> ...`
     // Inject PATH prepend after the cd so the binary is findable
     const cdPrefix = `cd "${escapedFolder}" && `;
+    let innerCmd: string;
     if (providerCmd.startsWith(cdPrefix)) {
-      return `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
+      innerCmd = `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
+    } else {
+      innerCmd = `${CLI_PATH}${providerCmd}`;
     }
-    return `${CLI_PATH}${providerCmd}`;
+    return pidWrapUnix(innerCmd);
   }
 
   // --- Filesystem ---
@@ -188,16 +201,22 @@ export class LinuxCommands implements OsCommands {
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
-    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > ~/.fleet-git-credential && chmod 600 ~/.fleet-git-credential && chmod +x ~/.fleet-git-credential && git config --global --replace-all "credential.https://${escapedHost}.helper" "" && git config --global --add "credential.https://${escapedHost}.helper" ~/.fleet-git-credential`;
+    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
+    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
+    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}" && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" "${credFile}"`;
   }
 
-  gitCredentialHelperRemove(host: string): string {
+  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
-    return `rm -f ~/.fleet-git-credential && git config --global --unset-all "credential.https://${escapedHost}.helper" 2>/dev/null || true`;
+    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
+    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
+    return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
   }
 
   // --- SSH key deployment ---
@@ -229,6 +248,12 @@ export class LinuxCommands implements OsCommands {
 
   gitCurrentBranch(folder: string): string {
     return `git -C "${escapeDoubleQuoted(folder)}" branch --show-current 2>/dev/null || true`;
+  }
+
+  // --- Process management ---
+
+  killPid(pid: number): string {
+    return `kill -9 ${pid}`;
   }
 
   // --- GPU activity ---

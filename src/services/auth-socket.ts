@@ -355,6 +355,34 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
   return { cmd: process.argv[0], args: [indexJs, 'auth', ...extra, memberName] };
 }
 
+function buildHeadlessFallback(memberName: string, reason: string): string {
+  return `fallback:${reason}\n\nRun this in a separate terminal:\n  ! apra-fleet auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+}
+
+/**
+ * Returns true when a graphical display is available on Linux/BSD.
+ * Checks $DISPLAY (X11) and $WAYLAND_DISPLAY (Wayland).
+ */
+export function hasGraphicalDisplay(): boolean {
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
+/**
+ * Returns true when the process is running inside an SSH session.
+ * SSH_TTY is set by the SSH daemon on both Linux and macOS when stdin is a tty.
+ */
+export function isSSHSession(): boolean {
+  return !!process.env.SSH_TTY;
+}
+
+/**
+ * Returns true when running on an interactive Windows desktop session.
+ * SSH and headless service sessions have SESSIONNAME !== 'Console'.
+ */
+export function hasInteractiveDesktop(): boolean {
+  return process.env.SESSIONNAME === 'Console';
+}
+
 /**
  * Detect available terminal emulator on Linux.
  */
@@ -384,6 +412,18 @@ export function launchAuthTerminal(
 
   try {
     const platform = process.platform;
+
+    if (platform === 'win32' && !hasInteractiveDesktop()) {
+      return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).');
+    }
+
+    if (platform === 'linux' && !hasGraphicalDisplay()) {
+      return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).');
+    }
+
+    if (platform === 'darwin' && isSSHSession()) {
+      return buildHeadlessFallback(memberName, 'SSH session detected — no terminal emulator available (SSH_TTY is set).');
+    }
 
     if (platform === 'darwin') {
       // macOS: Use a complex AppleScript to wait for the window to close and get an exit code.

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { getAgentOrFail, getAgentOS, touchAgent, checkVcsTokenExpiry } from '../src/utils/agent-helpers.js';
+import { getAgentOrFail, getAgentOS, touchAgent, checkVcsTokenExpiry, getStoredPid, setStoredPid, clearStoredPid } from '../src/utils/agent-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import type { Agent } from '../src/types.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
@@ -98,5 +98,36 @@ describe('checkVcsTokenExpiry', () => {
     const result = checkVcsTokenExpiry(agent, now);
     expect(result).toContain('1 minute');
     expect(result).not.toContain('1 minutes');
+  });
+});
+
+describe('PID store helpers', () => {
+  const id = 'pid-test-agent';
+
+  afterEach(() => clearStoredPid(id));
+
+  it('returns undefined when no PID is stored', () => {
+    expect(getStoredPid(id)).toBeUndefined();
+  });
+
+  it('stores and retrieves a PID', () => {
+    setStoredPid(id, 12345);
+    expect(getStoredPid(id)).toBe(12345);
+  });
+
+  it('overwrites a previously stored PID', () => {
+    setStoredPid(id, 100);
+    setStoredPid(id, 200);
+    expect(getStoredPid(id)).toBe(200);
+  });
+
+  it('clears a stored PID', () => {
+    setStoredPid(id, 9999);
+    clearStoredPid(id);
+    expect(getStoredPid(id)).toBeUndefined();
+  });
+
+  it('clearStoredPid is a no-op when no PID exists', () => {
+    expect(() => clearStoredPid('nonexistent-agent')).not.toThrow();
   });
 });

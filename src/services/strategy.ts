@@ -1,19 +1,34 @@
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
+import { logLine } from '../utils/log-helpers.js';
+
+/**
+ * Scan stdout for a FLEET_PID:<pid> line, store the PID, and strip the line.
+ * The PID wrapper always emits this as the first stdout line before LLM output.
+ */
+export function extractAndStorePid(agentId: string, result: SSHExecResult): SSHExecResult {
+  const lines = result.stdout.split('\n');
+  const idx = lines.findIndex(l => /^FLEET_PID:\d+\r?$/.test(l));
+  if (idx === -1) return result;
+  const pid = parseInt(lines[idx].replace(/\r$/, '').slice('FLEET_PID:'.length), 10);
+  setStoredPid(agentId, pid);
+  lines.splice(idx, 1);
+  return { ...result, stdout: lines.join('\n') };
+}
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles, downloadFiles } from './file-transfer.js';
 
 export interface AgentStrategy {
-  execCommand(command: string, timeoutMs?: number): Promise<SSHExecResult>;
+  execCommand(command: string, timeoutMs?: number, maxTotalMs?: number): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult>;
   /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
@@ -25,8 +40,8 @@ export interface AgentStrategy {
 class RemoteStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  async execCommand(command: string, timeoutMs = 30000): Promise<SSHExecResult> {
-    return sshExecCommand(this.agent, command, timeoutMs);
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
+    return sshExecCommand(this.agent, command, timeoutMs, maxTotalMs);
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
@@ -66,34 +81,118 @@ class RemoteStrategy implements AgentStrategy {
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  execCommand(command: string, timeoutMs = 30000): Promise<SSHExecResult> {
-    return new Promise<SSHExecResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`Command timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
+    let pidExtracted = false;
+    const result = await new Promise<SSHExecResult>((resolve, reject) => {
       const cmds = getOsCommands(getAgentOS(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
-      const child = exec(wrapped, { cwd: this.agent.workFolder, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, env, shell }, (error, stdout, stderr) => {
-        clearTimeout(timer);
-        let out = stdout ?? '';
-        let err = stderr ?? '';
-        // On maxBuffer overflow, Node kills the process and sets error.code to 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
-        if (error && (error as any).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-          const spillPath = path.join(os.tmpdir(), `fleet-local-output-${uuid()}.txt`);
-          fs.writeFileSync(spillPath, out + err);
-          out = `[OUTPUT TRUNCATED — full output saved to ${spillPath}]\n${out}`;
-          resolve({ stdout: out, stderr: err, code: 1 });
-          return;
+      const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
+      if (child.pid !== undefined) {
+        logLine('execute_command', `agent=${this.agent.friendlyName} PID=${child.pid} (local)`);
+      }
+
+      let settled = false;
+      function settle(fn: () => void) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(inactivityTimer);
+        if (maxTotalTimer) clearTimeout(maxTotalTimer);
+        fn();
+      }
+
+      // Rolling inactivity timer — resets on each stdout/stderr data event
+      let inactivityTimer: ReturnType<typeof setTimeout>;
+      function resetInactivityTimer() {
+        clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(() => {
+          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
+          settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
+        }, timeoutMs);
+        inactivityTimer.unref();
+      }
+      resetInactivityTimer();
+
+      // Hard ceiling — never reset regardless of activity
+      let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
+      if (maxTotalMs !== undefined) {
+        maxTotalTimer = setTimeout(() => {
+          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
+          settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
+        }, maxTotalMs);
+        maxTotalTimer.unref();
+      }
+
+      let stdout = '';
+      let stderr = '';
+      let stdoutLen = 0;
+      let stderrLen = 0;
+      let stdoutSpillStream: fs.WriteStream | null = null;
+      let stderrSpillStream: fs.WriteStream | null = null;
+      let stdoutSpillPath: string | null = null;
+      let stderrSpillPath: string | null = null;
+
+      child.stdout?.on('data', (data: Buffer) => {
+        resetInactivityTimer();
+        let chunk = data.toString();
+        if (!pidExtracted) {
+          const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
+          if (m) {
+            const pid = parseInt(m[1], 10);
+            setStoredPid(this.agent.id, pid);
+            logLine('execute_prompt', `agent=${this.agent.friendlyName} LLM_PID=${pid} (local)`);
+            chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
+            pidExtracted = true;
+          }
         }
-        resolve({
-          stdout: out,
-          stderr: err,
-          code: error ? (error as any).code ?? 1 : 0,
-        });
+        stdoutLen += data.length;
+        if (stdoutLen <= MAX_OUTPUT_BYTES) {
+          stdout += chunk;
+        } else {
+          if (!stdoutSpillStream) {
+            stdoutSpillPath = path.join(os.tmpdir(), `fleet-local-stdout-${uuid()}.txt`);
+            stdoutSpillStream = fs.createWriteStream(stdoutSpillPath);
+            stdoutSpillStream.write(stdout);
+          }
+          stdoutSpillStream.write(chunk);
+        }
       });
+
+      child.stderr?.on('data', (data: Buffer) => {
+        resetInactivityTimer();
+        stderrLen += data.length;
+        if (stderrLen <= MAX_OUTPUT_BYTES) {
+          stderr += data.toString();
+        } else {
+          if (!stderrSpillStream) {
+            stderrSpillPath = path.join(os.tmpdir(), `fleet-local-stderr-${uuid()}.txt`);
+            stderrSpillStream = fs.createWriteStream(stderrSpillPath);
+            stderrSpillStream.write(stderr);
+          }
+          stderrSpillStream.write(data);
+        }
+      });
+
+      child.on('close', (code) => {
+        clearStoredPid(this.agent.id);
+        if (stdoutSpillStream) stdoutSpillStream.end();
+        if (stderrSpillStream) stderrSpillStream.end();
+        if (stdoutSpillPath) {
+          stdout = `[OUTPUT TRUNCATED — full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
+        }
+        if (stderrSpillPath) {
+          stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
+        }
+        settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
+      });
+
+      child.on('error', (err) => {
+        clearStoredPid(this.agent.id);
+        settle(() => reject(err));
+      });
+
       child.stdin?.end();
     });
+    return result;
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {

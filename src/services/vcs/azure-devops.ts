@@ -14,9 +14,9 @@ function extractOrg(orgUrl: string): string {
 }
 
 export const azureDevOpsProvider: VcsProviderService = {
-  async deploy(_agent, cmds, exec, credentials) {
+  async deploy(_agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as AzureDevOpsCredentials;
-    await exec(cmds.gitCredentialHelperWrite(HOST, '', creds.pat));
+    await exec(cmds.gitCredentialHelperWrite(HOST, '', creds.pat, label, scopeUrl));
     return {
       success: true,
       message: 'Azure DevOps credentials deployed',
@@ -24,8 +24,8 @@ export const azureDevOpsProvider: VcsProviderService = {
     };
   },
 
-  async revoke(_agent, cmds, exec) {
-    await exec(cmds.gitCredentialHelperRemove(HOST));
+  async revoke(_agent, cmds, exec, label?, scopeUrl?) {
+    await exec(cmds.gitCredentialHelperRemove(HOST, label, scopeUrl));
     return { success: true, message: 'Azure DevOps credentials revoked' };
   },
 

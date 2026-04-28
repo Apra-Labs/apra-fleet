@@ -68,6 +68,8 @@ export interface VcsProviderService {
     cmds: OsCommands,
     exec: (cmd: string) => Promise<string>,
     credentials: unknown,
+    label?: string,
+    scopeUrl?: string,
   ): Promise<VcsDeployResult>;
 
   /** Remove deployed credentials and git config from the agent. */
@@ -75,6 +77,8 @@ export interface VcsProviderService {
     agent: Agent,
     cmds: OsCommands,
     exec: (cmd: string) => Promise<string>,
+    label?: string,
+    scopeUrl?: string,
   ): Promise<VcsDeployResult>;
 
   /** Lightweight connectivity check (API call or git ls-remote). */

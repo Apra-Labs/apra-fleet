@@ -28,7 +28,7 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, unattended, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json`;
@@ -36,8 +36,8 @@ export class GeminiProvider implements ProviderAdapter {
     if (rf) {
       cmd += ` ${rf}`;
     }
-    if (dangerouslySkipPermissions) {
-      cmd += ' --yolo';
+    if (unattended === 'dangerous') {
+      cmd += ` ${this.skipPermissionsFlag()}`;
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
@@ -47,6 +47,10 @@ export class GeminiProvider implements ProviderAdapter {
 
   skipPermissionsFlag(): string {
     return '--yolo';
+  }
+
+  permissionModeAutoFlag(): string | null {
+    return null;
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {

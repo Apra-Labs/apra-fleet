@@ -58,6 +58,33 @@ describe('revokeVcsAuth', () => {
     });
   }
 
+  it('revoke with label targets only that label credential file', async () => {
+    const agent = makeTestAgent({ friendlyName: 'label-revoke' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await revokeVcsAuth({ member_id: agent.id, provider: 'github', label: 'work-gh' });
+    expect(result).toContain('✅');
+
+    const cmd = mockExecCommand.mock.calls[0][0];
+    expect(cmd).toContain('fleet-git-credential-work-gh');
+    expect(cmd).not.toMatch(/fleet-git-credential[^-]/);
+  });
+
+  it('revoke without label defaults to provider-named label', async () => {
+    const agent = makeTestAgent({ friendlyName: 'default-label' });
+    addAgent(agent);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await revokeVcsAuth({ member_id: agent.id, provider: 'bitbucket' });
+    expect(result).toContain('✅');
+
+    const cmd = mockExecCommand.mock.calls[0][0];
+    expect(cmd).toContain('fleet-git-credential-bitbucket');
+  });
+
   it('handles exec failure gracefully', async () => {
     const agent = makeTestAgent({ friendlyName: 'fail-revoke' });
     addAgent(agent);

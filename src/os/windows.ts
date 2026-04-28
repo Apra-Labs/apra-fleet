@@ -5,6 +5,17 @@ import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
 const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
 
+/**
+ * Wrap PowerShell setup commands and a CLI invocation with PID capture.
+ * Uses ProcessStartInfo with UseShellExecute=$false so the child process inherits
+ * the parent's file handles (including the stdout pipe fleet's Node.js set up).
+ * This works in both interactive and headless (GitHub Actions) environments.
+ */
+export function pidWrapWindows(setupCmd: string, filePath: string, argList: string): string {
+  const escapedArgs = argList.replace(/'/g, "''");
+  return `${setupCmd}$_fleet_psi = [System.Diagnostics.ProcessStartInfo]::new("${filePath}", '${escapedArgs}'); $_fleet_psi.UseShellExecute = $false; $_fleet_proc = [System.Diagnostics.Process]::Start($_fleet_psi); Write-Output "FLEET_PID:$($_fleet_proc.Id)"; [Console]::Out.Flush(); $_fleet_proc.WaitForExit(); exit $_fleet_proc.ExitCode`;
+}
+
 // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
 const MEMINFO_CMD = [
   'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class MI{[DllImport("kernel32.dll")]public static extern bool GlobalMemoryStatusEx(ref MS m);[StructLayout(LayoutKind.Sequential)]public struct MS{public uint dwLength;public uint dwMemoryLoad;public ulong ullTotalPhys;public ulong ullAvailPhys;public ulong ullTotalPageFile;public ulong ullAvailPageFile;public ulong ullTotalVirtual;public ulong ullAvailVirtual;public ulong ullAvailExtendedVirtual;}}\'',
@@ -91,24 +102,36 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model, maxTurns } = opts;
+    const { folder, promptFile, sessionId, unattended, model, maxTurns } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
-    let cmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}${provider.cliCommand(`${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`)}`;
+
+    // Setup: working directory + PATH so the CLI executable is resolvable
+    const setupCmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}`;
+
+    // Executable extracted from provider (e.g. "claude" from "claude <args>")
+    const filePath = provider.cliCommand('').trim();
+
+    // Build argument list (everything that follows the executable)
+    let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
     if (provider.supportsMaxTurns()) {
-      cmd += ` --max-turns ${maxTurns ?? 50}`;
+      argList += ` --max-turns ${maxTurns ?? 50}`;
     }
     if (sessionId && provider.supportsResume()) {
       const rf = provider.resumeFlag(sessionId);
-      if (rf) cmd += ` ${rf}`;
+      if (rf) argList += ` ${rf}`;
     }
-    if (dangerouslySkipPermissions) {
-      cmd += ` ${provider.skipPermissionsFlag()}`;
+    if (unattended === 'auto') {
+      const autoFlag = provider.permissionModeAutoFlag();
+      if (autoFlag) argList += ` ${autoFlag}`;
+    } else if (unattended === 'dangerous') {
+      argList += ` ${provider.skipPermissionsFlag()}`;
     }
     if (model) {
-      cmd += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
+      argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
-    return cmd;
+
+    return pidWrapWindows(setupCmd, filePath, argList);
   }
 
   // --- Filesystem ---
@@ -207,23 +230,29 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
     const escapedUser = escapeWindowsArg(username).replace(/'/g, "''");
     const batchToken = escapeBatchMetachars(token);
     const escapedToken = batchToken.replace(/'/g, "''");
+    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
+    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join "\`r\`n"`,
-      `Set-Content -Path "$env:USERPROFILE\\.fleet-git-credential.bat" -Value $script -NoNewline`,
-      '$gcFile = "$env:USERPROFILE\\.fleet-git-credential.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "${u}:F"',
-      `git config --global --replace-all 'credential.https://${escapedHost}.helper' ''`,
-      `git config --global --add 'credential.https://${escapedHost}.helper' "$env:USERPROFILE\\.fleet-git-credential.bat"`,
+      `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
+      `$gcFile = "$env:USERPROFILE\\${credFileName}.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "\${u}:F"`,
+      `git config --global --replace-all 'credential.${credUrl}.helper' ''`,
+      `$helperPath = "$env:USERPROFILE\\${credFileName}.bat" -replace '\\\\','/'; git config --global --add 'credential.${credUrl}.helper' $helperPath`,
     ].join('; ');
   }
 
-  gitCredentialHelperRemove(host: string): string {
+  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
-    return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.https://${escapedHost}.helper' 2>$null`;
+    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
+    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
+    return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
   }
 
   // --- SSH key deployment ---
@@ -258,6 +287,12 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
 
   gitCurrentBranch(folder: string): string {
     return `git -C "${escapeWindowsArg(folder)}" branch --show-current 2>/dev/null || true`;
+  }
+
+  // --- Process management ---
+
+  killPid(pid: number): string {
+    return `taskkill /F /T /PID ${pid}`;
   }
 
   // --- GPU activity ---

@@ -129,6 +129,16 @@ describe('LocalStrategy', () => {
     await expect(strategy.deleteFiles([])).resolves.toBeUndefined();
   });
 
+  it('execCommand() passes windowsHide:true to spawn to suppress cmd.exe flashes on Windows', async () => {
+    // ESM namespace is not configurable, so we verify the option via source inspection.
+    // This directly asserts the fix is present in LocalStrategy.execCommand.
+    const src = await fs.promises.readFile(
+      new URL('../src/services/strategy.ts', import.meta.url),
+      'utf-8'
+    );
+    expect(src).toMatch(/windowsHide:\s*true/);
+  });
+
   it('transferFiles() copies to subfolder', async () => {
     const agent = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(agent);

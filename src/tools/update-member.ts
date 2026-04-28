@@ -41,6 +41,7 @@ export const updateMemberSchema = z.object({
   cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
   cloud_activity_command: z.string().optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
   llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().describe('Change the LLM provider for this member.'),
+  unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -90,8 +91,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       tokenNames.add(match[1]);
     }
     for (const name of tokenNames) {
-      const entry = credentialResolve(name);
+      const entry = credentialResolve(name, existing.friendlyName);
       if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT updated.`;
+      if ('denied' in entry) return `❌ ${entry.denied} Member was NOT updated.`;
+      if ('expired' in entry) return `❌ ${entry.expired} Member was NOT updated.`;
       resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
     resolvedPassword = resolved;
@@ -115,6 +118,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (resolvedIcon) updates.icon = resolvedIcon;
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
+  if (input.unattended !== undefined) updates.unattended = input.unattended;
   if (input.host) updates.host = input.host;
   if (input.port) updates.port = input.port;
   if (input.username) updates.username = input.username;

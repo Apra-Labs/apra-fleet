@@ -136,6 +136,13 @@ describe('OsCommands via getOsCommands', () => {
         const cmd = windows.buildAgentPromptCommand(claudeProvider, opts);
         expect(cmd).toContain('--max-turns 50');
       });
+
+      for (const [name, cmds] of all) {
+        it(`${name}: buildAgentPromptCommand wraps command with PID-capture shell wrapper`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(cmd).toContain('FLEET_PID:');
+        });
+      }
     });
   });
 

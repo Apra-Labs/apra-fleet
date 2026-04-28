@@ -16,6 +16,8 @@ async function deployAppToken(
   cmds: OsCommands,
   exec: (cmd: string) => Promise<string>,
   creds: GitHubAppCredentials,
+  label?: string,
+  scopeUrl?: string,
 ): Promise<VcsDeployResult> {
   const ghApp = getGitHubApp();
   if (!ghApp) return { success: false, message: 'GitHub App not configured. Run setup_git_app first.' };
@@ -43,7 +45,7 @@ async function deployAppToken(
     return { success: false, message: `Token mint failed: ${err.message}` };
   }
 
-  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token));
+  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl));
 
   return {
     success: true,
@@ -63,8 +65,10 @@ async function deployPat(
   cmds: OsCommands,
   exec: (cmd: string) => Promise<string>,
   token: string,
+  label?: string,
+  scopeUrl?: string,
 ): Promise<VcsDeployResult> {
-  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token));
+  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl));
   return {
     success: true,
     message: 'GitHub PAT credentials deployed',
@@ -73,15 +77,15 @@ async function deployPat(
 }
 
 export const githubProvider: VcsProviderService = {
-  async deploy(agent, cmds, exec, credentials) {
+  async deploy(agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as GitHubCredentials;
     return creds.type === 'github-app'
-      ? deployAppToken(agent, cmds, exec, creds)
-      : deployPat(cmds, exec, creds.token);
+      ? deployAppToken(agent, cmds, exec, creds, label, scopeUrl)
+      : deployPat(cmds, exec, creds.token, label, scopeUrl);
   },
 
-  async revoke(_agent, cmds, exec) {
-    await exec(cmds.gitCredentialHelperRemove(HOST));
+  async revoke(_agent, cmds, exec, label?, scopeUrl?) {
+    await exec(cmds.gitCredentialHelperRemove(HOST, label, scopeUrl));
     return { success: true, message: 'GitHub credentials revoked' };
   },
 

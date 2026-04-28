@@ -40,8 +40,8 @@ export interface OsCommands {
   envPrefix(name: string, value: string): string;
 
   // --- Git credential helper ---
-  gitCredentialHelperWrite(host: string, username: string, token: string): string;
-  gitCredentialHelperRemove(host: string): string;
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;
+  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string;
 
   // --- SSH key deployment ---
   deploySSHPublicKey(publicKeyLine: string): string[];
@@ -54,6 +54,9 @@ export interface OsCommands {
 
   // --- Prompt building ---
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string;
+
+  // --- Process management ---
+  killPid(pid: number): string;
 
   // --- Git ---
   gitCurrentBranch(folder: string): string;

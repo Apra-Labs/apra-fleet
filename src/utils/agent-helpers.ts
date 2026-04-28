@@ -66,6 +66,45 @@ export function checkVcsTokenExpiry(agent: Agent, now: Date = new Date()): strin
   return null;
 }
 
+// In-memory PID store — transient, lives only for the server process lifetime.
+// PIDs are OS-level resources; persisting them to disk would leave stale entries
+// across restarts, so an in-memory map is the right storage layer here.
+const _activePids = new Map<string, number>();
+
+/** Return the stored PID for an agent, or undefined if none is recorded. */
+export function getStoredPid(agentId: string): number | undefined {
+  return _activePids.get(agentId);
+}
+
+/** Record the active PID for an agent (called after the process is spawned). */
+export function setStoredPid(agentId: string, pid: number): void {
+  _activePids.set(agentId, pid);
+}
+
+/** Remove the stored PID for an agent (called after kill or successful completion). */
+export function clearStoredPid(agentId: string): void {
+  _activePids.delete(agentId);
+}
+
+// In-memory stopped-agent flag — transient, lives only for the server process lifetime.
+// Set by stop_prompt to prevent spurious re-dispatch after an explicit cancellation.
+const _stoppedAgents = new Map<string, boolean>();
+
+/** Return true if the agent has been explicitly stopped by the PM. */
+export function isAgentStopped(agentId: string): boolean {
+  return _stoppedAgents.get(agentId) === true;
+}
+
+/** Mark an agent as stopped (called by stop_prompt after killing the process). */
+export function setAgentStopped(agentId: string): void {
+  _stoppedAgents.set(agentId, true);
+}
+
+/** Clear the stopped flag (called at the start of a fresh execute_prompt). */
+export function clearAgentStopped(agentId: string): void {
+  _stoppedAgents.delete(agentId);
+}
+
 /**
  * Touch an agent's lastUsed timestamp and optionally update its sessionId.
  */

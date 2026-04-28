@@ -6,6 +6,8 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
+import { setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { logLine } from '../utils/log-helpers.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -123,20 +125,46 @@ export async function connectWithTOFU(agent: Agent): Promise<{ client: Client; w
 export async function execCommand(
   agent: Agent,
   command: string,
-  timeoutMs: number = 30000
+  timeoutMs: number = 30000,
+  maxTotalMs?: number
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
   resetIdleTimer(poolKey(agent));
+  logLine('execute_command', `agent=${agent.friendlyName} host=${agent.host} (ssh)`);
 
   return new Promise<SSHExecResult>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`Command timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    let settled = false;
+    function settle(fn: () => void) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(inactivityTimer);
+      if (maxTotalTimer) clearTimeout(maxTotalTimer);
+      fn();
+    }
+
+    // Rolling inactivity timer — resets on each stdout/stderr data event
+    let inactivityTimer: ReturnType<typeof setTimeout>;
+    function resetInactivityTimer() {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
+      }, timeoutMs);
+      inactivityTimer.unref();
+    }
+    resetInactivityTimer();
+
+    // Hard ceiling — never reset regardless of activity
+    let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
+    if (maxTotalMs !== undefined) {
+      maxTotalTimer = setTimeout(() => {
+        settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
+      }, maxTotalMs);
+      maxTotalTimer.unref();
+    }
 
     client.exec(command, (err, stream) => {
       if (err) {
-        clearTimeout(timer);
-        reject(err);
+        settle(() => reject(err));
         return;
       }
 
@@ -151,21 +179,35 @@ export async function execCommand(
       let stderrSpillStream: fs.WriteStream | null = null;
       let stdoutSpillPath: string | null = null;
       let stderrSpillPath: string | null = null;
+      let pidExtracted = false;
 
       stream.on('data', (data: Buffer) => {
+        resetInactivityTimer();
+        let chunk = data.toString();
+        if (!pidExtracted) {
+          const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
+          if (m) {
+            const pid = parseInt(m[1], 10);
+            setStoredPid(agent.id, pid);
+            logLine('execute_prompt', `agent=${agent.friendlyName} LLM_PID=${pid} (ssh:${agent.host})`);
+            chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
+            pidExtracted = true;
+          }
+        }
         stdoutLen += data.length;
         if (stdoutLen <= MAX_OUTPUT_BYTES) {
-          stdout += data.toString();
+          stdout += chunk;
         } else {
           if (!stdoutSpillStream) {
             stdoutSpillPath = path.join(os.tmpdir(), `fleet-stdout-${uuid()}.txt`);
             stdoutSpillStream = fs.createWriteStream(stdoutSpillPath);
             stdoutSpillStream.write(stdout);
           }
-          stdoutSpillStream.write(data);
+          stdoutSpillStream.write(chunk);
         }
       });
       stream.stderr.on('data', (data: Buffer) => {
+        resetInactivityTimer();
         stderrLen += data.length;
         if (stderrLen <= MAX_OUTPUT_BYTES) {
           stderr += data.toString();
@@ -179,7 +221,7 @@ export async function execCommand(
         }
       });
       stream.on('close', (code: number) => {
-        clearTimeout(timer);
+        clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
@@ -191,13 +233,13 @@ export async function execCommand(
         if (warning) {
           stderr = `⚠️ ${warning}\n${stderr}`;
         }
-        resolve({ stdout, stderr, code: code ?? 0 });
+        settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
       });
       stream.on('error', (err: Error) => {
-        clearTimeout(timer);
+        clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
-        reject(err);
+        settle(() => reject(err));
       });
     });
   });

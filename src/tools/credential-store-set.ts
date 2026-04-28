@@ -10,6 +10,12 @@ export const credentialStoreSetSchema = z.object({
   network_policy: z.enum(['allow', 'confirm', 'deny']).default('confirm').describe(
     'Network egress policy: "allow" = always proceed, "confirm" = prompt before network commands, "deny" = block network commands'
   ),
+  members: z.string().default('*').describe(
+    'Comma-separated list of member friendly names allowed to use this credential, or "*" for all members (default: "*")'
+  ),
+  ttl_seconds: z.number().positive().optional().describe(
+    'Time-to-live in seconds. If set, the credential expires after this many seconds and is automatically purged.'
+  ),
 });
 
 export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
@@ -20,7 +26,10 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
   if (!oob.password) return '❌ No credential received.';
 
   const plaintext = decryptPassword(oob.password);
-  const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy);
+  const allowedMembers: string[] | '*' = input.members === '*'
+    ? '*'
+    : input.members.split(',').map(s => s.trim()).filter(Boolean);
+  const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy, allowedMembers, input.ttl_seconds);
 
   return JSON.stringify({ handle: `sec://${meta.name}`, scope: meta.scope });
 }

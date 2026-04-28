@@ -25,8 +25,10 @@ export async function setupGitApp(input: SetupGitAppInput): Promise<string> {
   let tempKeyPath: string | undefined;
   const tokenMatch = TOKEN_RE.exec(input.private_key_path);
   if (tokenMatch) {
-    const entry = credentialResolve(tokenMatch[1]);
+    const entry = credentialResolve(tokenMatch[1], '*');
     if (!entry) return `❌ Credential "${tokenMatch[1]}" not found. Run credential_store_set first.`;
+    if ('denied' in entry) return `❌ ${entry.denied}`;
+    if ('expired' in entry) return `❌ ${entry.expired}`;
     const resolved = entry.plaintext;
     if (resolved.startsWith('-----BEGIN')) {
       tempKeyPath = path.join(os.tmpdir(), `apra-fleet-gitapp-${crypto.randomBytes(8).toString('hex')}.pem`);

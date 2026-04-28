@@ -40,6 +40,7 @@ export const registerMemberSchema = z.object({
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
   llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
+  unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false (default) = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -71,8 +72,10 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       tokenNames.add(match[1]);
     }
     for (const name of tokenNames) {
-      const entry = credentialResolve(name);
+      const entry = credentialResolve(name, input.friendly_name);
       if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT registered.`;
+      if ('denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;
+      if ('expired' in entry) return `❌ ${entry.expired} Member was NOT registered.`;
       resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
     resolvedPassword = resolved;
@@ -158,6 +161,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     gitRepos: input.git_repos,
     cloud: cloudConfig,
     llmProvider: input.llm_provider ?? 'claude',
+    unattended: input.unattended ?? false,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---

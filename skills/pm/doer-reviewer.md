@@ -5,7 +5,11 @@
 1. Record pair in `<project>/status.md`. Multiple pairs per project is normal.
 2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color.
 3. Compose and deliver permissions per `permissions.md` (fleet skill) for each member's role.
-4. Send the role-specific agent context file via `send_files` before dispatch. See `context-file.md` for provider filename lookup and role templates. Planning and plan review are dispatched as inline prompts — no agent context file needed for those phases.
+4. Send the role-specific agent context file via `send_files` before dispatch.
+   - Call `compose_permissions` before every dispatch regardless of unattended mode.
+   - For provider-specific unattended flag behaviour, see the fleet SKILL.md unattended modes section.
+   - Prefer `unattended='auto'` over `'dangerous'` — `auto` scopes bypass to explicitly listed operations; `dangerous` skips all checks globally.
+   - See `context-file.md` for provider filename lookup and role templates. Planning and plan review are dispatched as inline prompts — no agent context file needed for those phases.
 
 **Model tier check:** Dispatch reviews with the costliest model tier available (`model=premium` where supported). Doers use `model=standard` by default unless the task tier specifies otherwise. User override always wins. 
 
@@ -58,6 +62,8 @@ Verify reviewer is at the correct commit before starting review:
 | Initial review dispatch | `false` |
 | Re-review after CHANGES NEEDED + doer fixes | `true` |
 | Role switch (doer → reviewer, or reviewer → doer) | `false` |
+| After `stop_prompt` cancellation | `false` | Session state unreliable after kill; start fresh |
+| After session timed out mid-grant | `true` | Fleet auto-recovers (stale-session retry), but member restarts without prior context |
 
 **Note:** A role switch always requires sending the new agent context file before dispatch. Never resume across a role switch.
 
@@ -85,7 +91,20 @@ Verify reviewer is at the correct commit before starting review:
 
 Compose and deliver permissions per `permissions.md` (fleet skill). Recompose when switching roles (e.g. doer↔reviewer). Each provider gets its native permission config — `compose_permissions` handles the format automatically.
 
-**Mid-sprint denial:** If a member is blocked by a permission denial, call `compose_permissions` with `grant: [<denied permission>]` and `project_folder` — this grants the missing permission, delivers the updated config, and appends to the ledger so future phases and sprints start with it already included. Then resume the member with `resume=true`. Never bypass by running the denied command yourself via `execute_command`.
+**Mid-sprint denial:** If a member is blocked by a permission denial, call `compose_permissions` with `grant: [<denied permission>]` and `project_folder` — this grants the missing permission, delivers the updated config, and appends to the ledger so future phases and sprints start with it already included. Then resume the member with `resume=true`. Never bypass by running the denied
+command yourself via `execute_command`. Act on the grant promptly — the inactivity
+timer (transport-level, applies to all providers) fires on stdout silence. If it fires
+while you are composing permissions, `resume=true` still succeeds via stale-session
+auto-recovery, but the member restarts without its in-progress context.
+
+**Cancelling a running session:** Use `stop_prompt` when a member is working on the wrong
+thing, stuck in a loop, or dispatched with incorrect instructions. The one-shot error gate
+fires on the next dispatch then self-clears — no manual cleanup needed. Always follow with
+`resume=false` to start a clean session.
+
+Note: `stop_prompt` (a fleet MCP tool) kills the member's LLM process. This is distinct from
+stopping a background orchestration sub-task within the PM's own session — the latter mechanism
+is harness-dependent and not a fleet concept.
 
 ## PM responsibilities
 

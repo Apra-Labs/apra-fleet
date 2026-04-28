@@ -21,7 +21,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `execute_prompt` | Dispatch a prompt to a member's LLM agent |
 | `send_files` | Push files from local to a member's work folder |
 | `receive_files` | Pull files from a member's work folder |
-| `monitor_task` | Check status of a long-running background command on a cloud member (cloud members only) |
+| `monitor_task` | Check status of a long-running background task on any member. The `auto_stop` parameter and GPU utilization polling are cloud-only features. |
 | `compose_permissions` | Generate and deliver provider-native permission config |
 | `provision_llm_auth` | Provision authentication for a member |
 | `provision_vcs_auth` | Provision VCS credentials (GitHub, Bitbucket, Azure DevOps) |
@@ -34,6 +34,8 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `credential_store_set` | Store a secret credential for use in commands (entered OOB — never in chat) |
 | `credential_store_list` | List stored credential names (values are never returned) |
 | `credential_store_delete` | Delete a stored credential by name |
+| `credential_store_update` | Update credential metadata (members, TTL, network policy) without re-entering the secret |
+| `stop_prompt` | Kill the active LLM process on a member and set a one-shot error gate.<br><br>**One-shot error gate:** The next `execute_prompt` call to this member returns a "stopped by PM" error and clears the gate. All subsequent dispatches proceed normally. No manual clearing needed.<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled mid-execution. After stopping, re-dispatch with `resume=false` — the session state after a kill is unreliable.<br><br>**Note:** The stopped flag is in-memory only — it does not persist across server restarts. |
 
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
@@ -62,6 +64,26 @@ The `{{secure.NAME}}` pattern lets you reference stored secrets in any command w
 > token string through literally — the secret will NOT be injected, and the raw handle name
 > will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
 
+**Access control (scoping):** Credentials can be scoped to specific members.
+- `members="*"` (default) — all members can access the credential
+- `members="alice,bob"` — only those members can access it
+- Scoping is enforced at resolve time — a member outside the allowed set receives an access-denied error
+- **Updating scope or metadata:** Use `credential_store_update` to change `members`, `ttl_seconds`, or `network_policy` without re-entering the secret. Use `credential_store_set` again only if you need to change the secret value (triggers OOB re-entry).
+
+**TTL (time-to-live):** Set `ttl_seconds` to auto-expire a credential. Expired credentials
+are rejected at resolve time with a clear error (not silently empty).
+
+Example: `credential_store_set  name=ci_token  ttl_seconds=3600`
+
+**Network egress policy:** Attach a network policy to a credential to control outbound
+network access for commands that use it:
+
+| Policy | Behaviour |
+|--------|-----------|
+| `'allow'` (default) | No restriction |
+| `'deny'` | Commands invoking network tools (curl, wget, ssh, git push, etc.) are blocked |
+| `'confirm'` | OOB prompt before the network call is allowed |
+
 ## Member Identification
 
 All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify a member. `member_id` takes precedence when both are provided.
@@ -76,6 +98,14 @@ All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify
 - **`execute_prompt`** — always wrap in a background Agent: `Agent(run_in_background=true)`. No exceptions.
 - **`execute_command`** — any command that may take several seconds must be wrapped in a background Agent. Short reads (`cat`, `git status`, `echo`) can be called inline. Always use bash syntax — Git Bash is universally available on developer machines. Never use PowerShell or cmd.exe syntax, even on Windows members.
 - **`send_files` / `receive_files`** — transfers exceeding 1MB must use a background Agent.
+
+**Concurrent dispatch guard:** Only one `execute_prompt` can be in-flight per member at a time (enforced server-side). A second concurrent dispatch returns immediately with:
+
+```
+❌ execute_prompt is already running for "<member-name>"
+```
+
+Use `stop_prompt` to cancel the in-flight session before re-dispatching.
 
 ## Pre-dispatch Checks
 
@@ -106,6 +136,77 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 - How to compose and deliver permissions before dispatching work
 - How to handle permission denials during execution
 - How to recompose when switching roles
+
+## execute_prompt Timeout Parameters
+
+`execute_prompt` accepts two independent timeout parameters:
+
+| Parameter | Semantics |
+|-----------|-----------|
+| `timeout_ms` | **Inactivity timeout** — the session is killed only if no stdout/stderr output arrives for this many ms. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are never killed by this timer as long as output keeps flowing. Default: 300 000 ms (5 min). |
+| `max_total_ms` | **Hard ceiling** — the session is killed after this total elapsed time regardless of activity. Optional; defaults to unlimited. |
+
+**When to use which:**
+
+- Use `timeout_ms` for normal dispatch. It extends the deadline automatically as long as the member is active, so you don't need to over-estimate how long a task takes.
+- Use `max_total_ms` only for tasks that must never run forever — CI pipelines, automated batch jobs, or any context where an unbounded runaway is unacceptable.
+- Both timers run concurrently; whichever fires first kills the process.
+
+## execute_prompt: Session Resume
+
+The `resume` parameter controls whether a prior session is continued:
+
+| Value | Behaviour |
+|-------|-----------|
+| `true` (default) | If a session ID is stored for this member, continues it. If none exists, starts fresh. |
+| `false` | Always starts a fresh session — ignores any stored session ID. |
+
+`resume` is boolean only. There is no way to target a specific session ID by value.
+The tool always resumes the most recently stored session for that member.
+
+**Automatic stale-session recovery:** If `resume=true` and the stored session has expired
+or the provider returns an error, `execute_prompt` retries once automatically with a fresh
+session. This recovery is transparent — no caller intervention required.
+
+**Provider support:**
+
+| Provider | Session resume | Notes |
+|----------|---------------|-------|
+| Claude | ✅ Full | `claude --resume <sessionId>` |
+| Gemini | ✅ Full | Native session support |
+| Codex | ⚠️ Partial | `resume` command supported |
+| Copilot | ❌ None | Always starts fresh regardless of `resume` value |
+
+Session IDs are parsed from `execute_prompt` output and stored server-side per member.
+The output footer contains: `session: <sessionId>` when the provider supports it.
+
+## Unattended Execution Modes
+
+Configured via `register_member` or `update_member` with the `unattended` parameter:
+
+| Mode | Behaviour |
+|------|-----------|
+| `false` (default) | Interactive — member prompts for permission approvals |
+| `'auto'` | Trust the permissions config written by `compose_permissions` — auto-approves tools in the allow list |
+| `'dangerous'` | Skip all permission checks globally, bypassing the allow list |
+
+Per-provider flag behaviour:
+
+| Provider | `'auto'` flag | `'dangerous'` flag |
+|----------|--------------|-------------------|
+| Claude | `--permission-mode auto` | `--dangerously-skip-permissions` |
+| Gemini | None (config-file only via `compose_permissions`) | `--yolo` |
+| Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
+| Copilot | ⚠️ Not supported — warns and runs interactively | ⚠️ Not supported |
+
+Auto-approval is delivered via config files written by `compose_permissions` — call it before every dispatch.
+
+**Prefer `auto` + `compose_permissions` over `dangerous`** — `auto` scopes approval to the
+explicitly listed tools; `dangerous` bypasses all checks globally.
+
+**Always call `compose_permissions` before dispatch regardless of unattended mode.**
+The permissions config file must be delivered to the member's work folder before the CLI
+starts — `compose_permissions` does this for all providers.
 
 ## Model Tiers
 

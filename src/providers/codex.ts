@@ -30,15 +30,17 @@ export class CodexProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, unattended, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     let cmd = `cd "${escapedFolder}" && codex exec "${instruction}" --json`;
     if (sessionId) {
       cmd += ' resume';
     }
-    if (dangerouslySkipPermissions) {
-      cmd += ' --sandbox danger-full-access --ask-for-approval never';
+    if (unattended === 'auto') {
+      cmd += ' --ask-for-approval auto-edit';
+    } else if (unattended === 'dangerous') {
+      cmd += ` ${this.skipPermissionsFlag()}`;
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
@@ -48,6 +50,10 @@ export class CodexProvider implements ProviderAdapter {
 
   skipPermissionsFlag(): string {
     return '--sandbox danger-full-access --ask-for-approval never';
+  }
+
+  permissionModeAutoFlag(): string | null {
+    return '--ask-for-approval auto-edit';
   }
 
   /**

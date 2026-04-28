@@ -40,6 +40,8 @@ export interface CredentialMeta {
   scope: 'session' | 'persistent';
   network_policy: 'allow' | 'confirm' | 'deny';
   created_at: string;
+  allowedMembers: string[] | '*';
+  expiresAt?: string;
 }
 
 interface SessionEntry extends CredentialMeta {
@@ -52,6 +54,8 @@ interface PersistentRecord {
   network_policy: 'allow' | 'confirm' | 'deny';
   created_at: string;
   encryptedValue: string;
+  allowedMembers: string[] | '*';
+  expiresAt?: string;
 }
 
 interface CredentialFile {
@@ -96,16 +100,21 @@ export function credentialSet(
   plaintext: string,
   persist: boolean,
   network_policy: 'allow' | 'confirm' | 'deny',
+  allowedMembers: string[] | '*' = '*',
+  ttl_seconds?: number,
 ): CredentialMeta {
   const created_at = new Date().toISOString();
+  const expiresAt = ttl_seconds !== undefined
+    ? new Date(Date.now() + ttl_seconds * 1000).toISOString()
+    : undefined;
 
   if (persist) {
     const file = loadCredentialFile();
-    file.credentials[name] = { name, network_policy, created_at, encryptedValue: encryptPassword(plaintext) };
+    file.credentials[name] = { name, network_policy, created_at, encryptedValue: encryptPassword(plaintext), allowedMembers, expiresAt };
     saveCredentialFile(file);
     // Persistent supersedes session
     sessionStore.delete(name);
-    return { name, scope: 'persistent', network_policy, created_at };
+    return { name, scope: 'persistent', network_policy, created_at, allowedMembers, expiresAt };
   }
 
   sessionStore.set(name, {
@@ -114,21 +123,30 @@ export function credentialSet(
     network_policy,
     created_at,
     encryptedValue: sessionEncrypt(plaintext),
+    allowedMembers,
+    expiresAt,
   });
-  return { name, scope: 'session', network_policy, created_at };
+  return { name, scope: 'session', network_policy, created_at, allowedMembers, expiresAt };
 }
 
 export function credentialList(): CredentialMeta[] {
   const results: CredentialMeta[] = [];
 
   for (const entry of sessionStore.values()) {
-    results.push({ name: entry.name, scope: entry.scope, network_policy: entry.network_policy, created_at: entry.created_at });
+    results.push({ name: entry.name, scope: entry.scope, network_policy: entry.network_policy, created_at: entry.created_at, allowedMembers: entry.allowedMembers, expiresAt: entry.expiresAt });
   }
 
   const file = loadCredentialFile();
   for (const record of Object.values(file.credentials)) {
     const existing = results.findIndex(r => r.name === record.name);
-    const meta: CredentialMeta = { name: record.name, scope: 'persistent', network_policy: record.network_policy, created_at: record.created_at };
+    const meta: CredentialMeta = {
+      name: record.name,
+      scope: 'persistent',
+      network_policy: record.network_policy,
+      created_at: record.created_at,
+      allowedMembers: record.allowedMembers ?? '*',
+      expiresAt: record.expiresAt,
+    };
     if (existing !== -1) {
       results[existing] = meta;
     } else {
@@ -174,26 +192,171 @@ export function getTaskCredentials(taskId: string): TaskCredential[] {
 /**
  * Resolve a credential name to its plaintext value.
  * Persistent store takes precedence over session store.
- * Returns null if the credential does not exist.
+ *
+ * Returns:
+ *   - { plaintext, meta } on success
+ *   - { denied } if callingMember is not in allowedMembers
+ *   - { expired } if the credential has passed its TTL (entry is also deleted)
+ *   - null if the credential does not exist
  */
-export function credentialResolve(name: string): { plaintext: string; meta: CredentialMeta } | null {
+export function credentialResolve(
+  name: string,
+  callingMember?: string,
+): { plaintext: string; meta: CredentialMeta } | { denied: string } | { expired: string } | null {
   // Persistent wins
   const file = loadCredentialFile();
   const persistent = file.credentials[name];
   if (persistent) {
+    const allowedMembers = persistent.allowedMembers ?? '*';
+
+    // TTL check
+    if (persistent.expiresAt && Date.now() > new Date(persistent.expiresAt).getTime()) {
+      delete file.credentials[name];
+      saveCredentialFile(file);
+      sessionStore.delete(name);
+      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
+    }
+
+    // Scoping check ('*' as callingMember is a fleet-operator bypass)
+    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
+      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
+    }
+
     return {
       plaintext: decryptPassword(persistent.encryptedValue),
-      meta: { name: persistent.name, scope: 'persistent', network_policy: persistent.network_policy, created_at: persistent.created_at },
+      meta: {
+        name: persistent.name,
+        scope: 'persistent',
+        network_policy: persistent.network_policy,
+        created_at: persistent.created_at,
+        allowedMembers,
+        expiresAt: persistent.expiresAt,
+      },
     };
   }
 
   const session = sessionStore.get(name);
   if (session) {
+    const allowedMembers = session.allowedMembers;
+
+    // TTL check
+    if (session.expiresAt && Date.now() > new Date(session.expiresAt).getTime()) {
+      sessionStore.delete(name);
+      return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
+    }
+
+    // Scoping check ('*' as callingMember is a fleet-operator bypass)
+    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
+      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
+    }
+
     return {
       plaintext: sessionDecrypt(session.encryptedValue),
-      meta: { name: session.name, scope: 'session', network_policy: session.network_policy, created_at: session.created_at },
+      meta: {
+        name: session.name,
+        scope: 'session',
+        network_policy: session.network_policy,
+        created_at: session.created_at,
+        allowedMembers: session.allowedMembers,
+        expiresAt: session.expiresAt,
+      },
     };
   }
 
   return null;
+}
+
+export interface CredentialUpdatePatch {
+  members?: string;
+  expiresAt?: number | null;
+  network_policy?: 'allow' | 'confirm' | 'deny';
+}
+
+export interface CredentialUpdateResult {
+  members: string;
+  network_policy: 'allow' | 'confirm' | 'deny';
+  expiresAt?: number;
+}
+
+function membersToAllowed(members: string): string[] | '*' {
+  return members === '*' ? '*' : members.split(',').map(m => m.trim()).filter(Boolean);
+}
+
+function allowedToMembers(allowed: string[] | '*'): string {
+  return allowed === '*' ? '*' : allowed.join(',');
+}
+
+export function credentialUpdate(name: string, patch: CredentialUpdatePatch): CredentialUpdateResult | null {
+  const file = loadCredentialFile();
+  const persistent = file.credentials[name];
+  if (persistent) {
+    if (patch.members !== undefined) {
+      persistent.allowedMembers = membersToAllowed(patch.members);
+    }
+    if (patch.network_policy !== undefined) {
+      persistent.network_policy = patch.network_policy;
+    }
+    if (patch.expiresAt !== undefined) {
+      persistent.expiresAt = patch.expiresAt === null ? undefined : new Date(patch.expiresAt).toISOString();
+    }
+    file.credentials[name] = persistent;
+    saveCredentialFile(file);
+    return {
+      members: allowedToMembers(persistent.allowedMembers),
+      network_policy: persistent.network_policy,
+      expiresAt: persistent.expiresAt ? new Date(persistent.expiresAt).getTime() : undefined,
+    };
+  }
+
+  const session = sessionStore.get(name);
+  if (session) {
+    if (patch.members !== undefined) {
+      session.allowedMembers = membersToAllowed(patch.members);
+    }
+    if (patch.network_policy !== undefined) {
+      session.network_policy = patch.network_policy;
+    }
+    if (patch.expiresAt !== undefined) {
+      session.expiresAt = patch.expiresAt === null ? undefined : new Date(patch.expiresAt).toISOString();
+    }
+    sessionStore.set(name, session);
+    return {
+      members: allowedToMembers(session.allowedMembers),
+      network_policy: session.network_policy,
+      expiresAt: session.expiresAt ? new Date(session.expiresAt).getTime() : undefined,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Purge expired credentials from the persistent store.
+ * Called at server startup to clean up stale entries.
+ */
+export function purgeExpiredCredentials(): void {
+  let file: CredentialFile;
+  try {
+    file = loadCredentialFile();
+  } catch {
+    return;
+  }
+
+  const now = Date.now();
+  let changed = false;
+  for (const [name, record] of Object.entries(file.credentials)) {
+    if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
+      delete file.credentials[name];
+      sessionStore.delete(name);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    try {
+      saveCredentialFile(file);
+    } catch {
+      // best-effort
+    }
+  }
 }

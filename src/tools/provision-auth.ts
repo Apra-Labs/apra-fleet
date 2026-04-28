@@ -247,8 +247,10 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     while ((match = TOKEN_RE.exec(input.api_key)) !== null) tokenNames.add(match[1]);
     let resolvedKey = input.api_key;
     for (const name of tokenNames) {
-      const entry = credentialResolve(name);
+      const entry = credentialResolve(name, agent.friendlyName);
       if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first.`;
+      if ('denied' in entry) return `❌ ${entry.denied}`;
+      if ('expired' in entry) return `❌ ${entry.expired}`;
       resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
     return provisionApiKey(agent, resolvedKey, provider);

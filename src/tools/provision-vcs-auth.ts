@@ -11,20 +11,23 @@ import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
+import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 
 const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
 
-function resolveSecureField(value: string): { resolved: string } | { error: string } {
+function resolveSecureField(value: string, callingMember: string): { resolved: string } | { error: string } {
   const tokenNames = new Set<string>();
   let match: RegExpExecArray | null;
   TOKEN_RE.lastIndex = 0;
   while ((match = TOKEN_RE.exec(value)) !== null) tokenNames.add(match[1]);
   let resolved = value;
   for (const name of tokenNames) {
-    const entry = credentialResolve(name);
+    const entry = credentialResolve(name, callingMember);
     if (!entry) return { error: `Credential "${name}" not found. Run credential_store_set first.` };
+    if ('denied' in entry) return { error: entry.denied };
+    if ('expired' in entry) return { error: entry.expired };
     resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
   }
   return { resolved };
@@ -39,6 +42,8 @@ const providers: Record<string, VcsProviderService> = {
 export const provisionVcsAuthSchema = z.object({
   ...memberIdentifier,
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
+  label: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
+  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>".'),
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
@@ -93,7 +98,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   const resolvedInput = { ...input };
   for (const field of ['token', 'api_token', 'pat'] as const) {
     if (resolvedInput[field]) {
-      const r = resolveSecureField(resolvedInput[field]!);
+      const r = resolveSecureField(resolvedInput[field]!, agent.friendlyName);
       if ('error' in r) return `❌ ${r.error}`;
       resolvedInput[field] = r.resolved;
     }
@@ -125,6 +130,10 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   const creds = buildCredentials(resolvedInput);
   if (typeof creds === 'string') return `❌ ${creds}`;
 
+  const label = input.label ?? input.provider;
+  const host = PROVIDER_HOSTS[input.provider];
+  const scopeUrl = input.scope_url ?? `https://${host}`;
+
   // Cancel any existing credential cleanup timer before re-provisioning
   cancelCredentialCleanup(agent.id);
 
@@ -139,9 +148,14 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
     return result.stdout;
   };
 
+  // Legacy migration: remove old single-file credential helpers
+  try {
+    await exec(cmds.gitCredentialHelperRemove(host));
+  } catch { /* best-effort */ }
+
   let deployResult;
   try {
-    deployResult = await service.deploy(agent, cmds, exec, creds);
+    deployResult = await service.deploy(agent, cmds, exec, creds, label, scopeUrl);
   } catch (err: any) {
     return `❌ Failed to deploy ${input.provider} credentials on "${agent.friendlyName}": ${err.message}`;
   }

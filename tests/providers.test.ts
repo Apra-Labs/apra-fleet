@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { GeminiProvider } from '../src/providers/gemini.js';
 import { CodexProvider } from '../src/providers/codex.js';
@@ -77,9 +77,14 @@ describe('ClaudeProvider', () => {
     expect(cmd).not.toContain('--resume');
   });
 
-  it('builds prompt command with dangerously skip permissions', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, dangerouslySkipPermissions: true });
+  it('builds prompt command with unattended=dangerous', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
     expect(cmd).toContain('--dangerously-skip-permissions');
+  });
+
+  it('builds prompt command with unattended=auto', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
+    expect(cmd).toContain('--permission-mode auto');
   });
 
   it('builds prompt command with model', () => {
@@ -224,8 +229,16 @@ describe('GeminiProvider', () => {
     expect(cmd).toContain('--resume "any-id"');
   });
 
-  it('builds prompt command with skip permissions', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, dangerouslySkipPermissions: true });
+  it('unattended=auto does not add a flag and does not warn (handled by settings file)', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
+    expect(cmd).not.toContain('--yolo');
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('unattended=dangerous adds --yolo flag', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
     expect(cmd).toContain('--yolo');
   });
 
@@ -363,8 +376,13 @@ describe('CodexProvider', () => {
     expect(cmd).toContain('resume');
   });
 
-  it('builds prompt command with skip permissions', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, dangerouslySkipPermissions: true });
+  it('builds prompt command with unattended=auto', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
+    expect(cmd).toContain('--ask-for-approval auto-edit');
+  });
+
+  it('unattended=dangerous adds skip-permissions flags', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
     expect(cmd).toContain('--sandbox danger-full-access');
     expect(cmd).toContain('--ask-for-approval never');
   });
@@ -471,9 +489,20 @@ describe('CopilotProvider', () => {
     expect(cmd).toContain('--continue');
   });
 
-  it('builds prompt command with skip permissions', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, dangerouslySkipPermissions: true });
-    expect(cmd).toContain('--allow-all-tools');
+  it('logs warning for unattended=auto (not supported)', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
+    expect(cmd).not.toContain('--allow-all-tools');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Copilot'));
+    spy.mockRestore();
+  });
+
+  it('logs warning for unattended=dangerous (not supported)', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
+    expect(cmd).not.toContain('--allow-all-tools');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Copilot'));
+    spy.mockRestore();
   });
 
   it('builds prompt command with model', () => {

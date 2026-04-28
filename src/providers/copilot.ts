@@ -33,15 +33,18 @@ export class CopilotProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, dangerouslySkipPermissions, model } = opts;
+    const { folder, promptFile, sessionId, unattended, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     let cmd = `cd "${escapedFolder}" && copilot -p "${instruction}" --format json`;
     if (sessionId) {
       cmd += ' --continue';
     }
-    if (dangerouslySkipPermissions) {
-      cmd += ' --allow-all-tools';
+    // Copilot CLI does not support unattended permission flags
+    if (unattended === 'auto') {
+      console.warn("WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
+    } else if (unattended === 'dangerous') {
+      console.warn("WARNING: unattended='dangerous' is not supported for Copilot — member will run interactively");
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
@@ -51,6 +54,11 @@ export class CopilotProvider implements ProviderAdapter {
 
   skipPermissionsFlag(): string {
     return '--allow-all-tools';
+  }
+
+  permissionModeAutoFlag(): string | null {
+    console.warn("WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
+    return null;
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {

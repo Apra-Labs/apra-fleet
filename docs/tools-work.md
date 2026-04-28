@@ -40,7 +40,8 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 | `member_id` | string | yes | UUID of the target member |
 | `prompt` | string | yes | The prompt text to send to the LLM agent |
 | `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
-| `timeout_ms` | number | no | Default: 300000 (5 minutes). Max time to wait for the agent's response |
+| `timeout_ms` | number | no | Default: 300000 (5 min). **Inactivity timeout** — resets on every output chunk; kills the session only when silent for this many ms |
+| `max_total_ms` | number | no | Default: none. **Hard ceiling** — kills the session after this total elapsed time regardless of activity |
 | `dangerously_skip_permissions` | boolean | no | Default: `false`. Passes the provider's skip-permissions flag so the agent can execute tools without interactive approval |
 | `model` | string | no | Model to use. Pass a tier name (`premium`, `standard`, `cheap`) or a provider-specific model ID. Defaults to `standard` tier when omitted. |
 
@@ -123,4 +124,28 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 | Run a build or test script | `execute_command` |
 | Ask Claude to analyze code, write code, or reason about a task | `execute_prompt` |
 | Tasks requiring multi-step reasoning or tool use | `execute_prompt` |
+
+## stop_prompt
+
+Terminates the active LLM session on a member and prevents further `execute_prompt` dispatches until the next explicit call.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `member_id` | string | one of | UUID of the target member |
+| `member_name` | string | one of | Friendly name of the target member |
+
+**What it does:**
+
+1. Kills the LLM process PID stored for the member (if any) using a platform-appropriate kill command (`kill -9` on Unix, `taskkill /F /T /PID` on Windows). Kill errors (e.g., process already gone) are swallowed.
+2. Sets a stopped flag on the member in the in-memory registry — subsequent `execute_prompt` calls return an error and do not spawn, until the next `execute_prompt` explicitly clears the flag.
+3. Returns a human-readable status message.
+
+**Output:** A status string indicating whether a running process was killed or the member was already idle.
+
+**Behavior details:**
+- Calling `stop_prompt` with no active session is a safe no-op — it sets the stopped flag and returns normally.
+- The stopped flag acts as a **single-prompt interlock**: the PM must explicitly re-dispatch (issue a new `execute_prompt`) to resume the member after a stop.
+- `stop_prompt` kills the LLM process on the **member machine** (the PID tracked by the fleet server). It does not directly terminate the local background Agent that issued the dispatch — but the stopped flag causes that Agent's next `execute_prompt` call to fail, which ends the dispatch loop.
 

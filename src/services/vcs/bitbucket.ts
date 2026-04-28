@@ -7,9 +7,9 @@ import type { VcsProviderService, VcsDeployResult, BitbucketCredentials } from '
 const HOST = 'bitbucket.org';
 
 export const bitbucketProvider: VcsProviderService = {
-  async deploy(_agent, cmds, exec, credentials) {
+  async deploy(_agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as BitbucketCredentials;
-    await exec(cmds.gitCredentialHelperWrite(HOST, creds.email, creds.api_token));
+    await exec(cmds.gitCredentialHelperWrite(HOST, creds.email, creds.api_token, label, scopeUrl));
     return {
       success: true,
       message: 'Bitbucket credentials deployed',
@@ -17,8 +17,8 @@ export const bitbucketProvider: VcsProviderService = {
     };
   },
 
-  async revoke(_agent, cmds, exec) {
-    await exec(cmds.gitCredentialHelperRemove(HOST));
+  async revoke(_agent, cmds, exec, label?, scopeUrl?) {
+    await exec(cmds.gitCredentialHelperRemove(HOST, label, scopeUrl));
     return { success: true, message: 'Bitbucket credentials revoked' };
   },
 

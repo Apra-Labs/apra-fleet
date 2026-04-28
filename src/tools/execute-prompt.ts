@@ -14,6 +14,9 @@ import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
+import { clearStoredPid, isAgentStopped, clearAgentStopped } from '../utils/agent-helpers.js';
+import { tryKillPid } from '../utils/pid-helpers.js';
+import { logLine, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -22,9 +25,10 @@ export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
-  timeout_ms: z.number().default(300000).describe('Timeout in milliseconds (default: 5 minutes)'),
+  timeout_ms: z.number().default(300000).describe('Inactivity timeout in milliseconds — the command is killed after this many ms without any stdout/stderr output (default: 5 minutes)'),
+  max_total_ms: z.number().optional().describe('Hard ceiling in milliseconds — the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
-  dangerously_skip_permissions: z.boolean().default(false).describe('Run with --dangerously-skip-permissions so the member can execute tools without interactive approval. Only enable for unattended/trusted workloads.'),
+  dangerously_skip_permissions: z.boolean().default(false).describe('DEPRECATED: use update_member(unattended="dangerous") instead. This field is ignored and will be removed in a future version.'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names — the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
 });
 
@@ -84,6 +88,8 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
 
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
 
+const inFlightAgents = new Set<string>();
+
 export async function executePrompt(input: ExecutePromptInput): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
@@ -99,6 +105,11 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   } catch (err: any) {
     return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
+
+  if (inFlightAgents.has(agent.id)) {
+    return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
+  }
+  inFlightAgents.add(agent.id);
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
   const resolvedWorkFolder = resolveTilde(agent.workFolder);
@@ -117,10 +128,14 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     ? (tiers[input.model as keyof typeof tiers] ?? input.model)
     : tiers.standard;
 
+  const deprecationWarning = input.dangerously_skip_permissions
+    ? '⚠️ DEPRECATION: dangerously_skip_permissions is deprecated and ignored. Use update_member(unattended="dangerous") instead.\n\n'
+    : '';
+
   const promptOpts = {
     folder: resolvedWorkFolder,
     promptFile: promptFileName,
-    dangerouslySkipPermissions: input.dangerously_skip_permissions,
+    unattended: agent.unattended,
     model: resolvedModel,
     maxTurns: input.max_turns,
   };
@@ -131,38 +146,58 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   });
 
   const timeoutMs = input.timeout_ms ?? 300000;
+  const maxTotalMs = input.max_total_ms;
+
+  // If agent was explicitly stopped, surface the error once and clear the flag.
+  // The next execute_prompt call will proceed normally.
+  if (isAgentStopped(agent.id)) {
+    inFlightAgents.delete(agent.id);
+    clearAgentStopped(agent.id);
+    return `⛔ Agent "${agent.friendlyName}" was stopped by the PM. Stopped flag cleared — call execute_prompt again to resume.`;
+  }
+
+  // Kill any leftover session from a previous (possibly zombie) execute_prompt call
+  await tryKillPid(agent.id, strategy, cmds);
 
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
 
+  logLine('execute_prompt', `agent=${agent.friendlyName} prompt="${truncateForLog(maskSecrets(input.prompt))}"`);
+  const _epStartTime = Date.now();
+
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
 
+  let _epExitCode: number | 'error' = 'error';
   try {
-    let result = await strategy.execCommand(claudeCmd, timeoutMs);
+    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs);
     let parsed = provider.parseResponse(result);
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
+      await tryKillPid(agent.id, strategy, cmds);
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs);
       parsed = provider.parseResponse(result);
     }
 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
+      await tryKillPid(agent.id, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs);
       parsed = provider.parseResponse(result);
     }
 
+    _epExitCode = result.code;
     if (result.code !== 0) {
       return buildFailureMessage(agent.friendlyName, result, provider);
     }
 
     // Update session ID and last used
-    touchAgent(agent.id, parsed.sessionId); // T7: idle manager resets its timer via touchAgent
+    touchAgent(agent.id, parsed.sessionId);
+    clearStoredPid(agent.id);
 
     if (parsed.usage) {
       const prev = agent.tokenUsage ?? { input: 0, output: 0 };
@@ -176,7 +211,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
     writeStatusline();
 
-    let output = `📋 Response from ${agent.friendlyName}:
+    let output = `${deprecationWarning}📋 Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
     if (parsed.usage) output += `
@@ -190,6 +225,8 @@ session: ${parsed.sessionId}`;
     writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
+    logLine('execute_prompt', `agent=${agent.friendlyName} exit=${_epExitCode} elapsed=${Date.now() - _epStartTime}ms`);
+    inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
 }
