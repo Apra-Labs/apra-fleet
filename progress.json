@@ -123,8 +123,8 @@
           "id": "T6",
           "type": "work",
           "title": "Quote credFile in linux.ts shell commands",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Quoted all ${credFile} occurrences in shell strings: line 211 (> credFile, chmod 600, chmod +x, git config --add) and line 219 (rm -f). Defense-in-depth against paths with spaces."
         },
         {
           "id": "V4",
