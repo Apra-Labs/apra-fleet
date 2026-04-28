@@ -1,0 +1,34 @@
+{
+  "sprint": "pino-logging",
+  "issue": "#201",
+  "branch": "feat/pino-logging",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Foundation",
+      "tasks": [
+        { "id": "T1", "name": "Remove feedback-skills.md", "status": "completed", "notes": "Deleted feedback-skills.md from repo root. Committed 9efcd8c." },
+        { "id": "T2", "name": "Add pino + pino-roll; create JSONL logger in log-helpers.ts", "status": "completed", "notes": "Installed pino + pino-roll. Lazy-init logger in log-helpers.ts with mkdirSync, pino-roll transport (10m/3 files), maskSecrets applied, console.error kept, logWarn/logError variants added. Committed 513fdbd." },
+        { "id": "T3", "name": "Thread memberId through tool handlers", "status": "completed", "notes": "Threaded agent.id as memberId into all logLine() calls in execute-prompt.ts, execute-command.ts, ssh.ts, strategy.ts. Added new logLine() calls with memberId to stop-prompt.ts, provision-vcs-auth.ts, revoke-vcs-auth.ts. Committed d73974a." },
+        { "id": "V1", "name": "Build + Test Checkpoint", "type": "verify", "status": "pending", "notes": "" }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Audit + Tests",
+      "tasks": [
+        { "id": "T4", "name": "Full console.* audit — replace all direct calls with logLine()", "status": "pending", "notes": "" },
+        { "id": "T5", "name": "Tests for new logLine() behaviour + pino JSONL output", "status": "pending", "notes": "" },
+        { "id": "V2", "name": "Build + Test Checkpoint", "type": "verify", "status": "pending", "notes": "" }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "Docs",
+      "tasks": [
+        { "id": "T6", "name": "Documentation updates (SKILL.md Fleet Logs, troubleshooting.md)", "status": "pending", "notes": "" },
+        { "id": "V3", "name": "Final Checkpoint", "type": "verify", "status": "pending", "notes": "" }
+      ]
+    }
+  ]
+}
