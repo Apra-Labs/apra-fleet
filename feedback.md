@@ -130,3 +130,85 @@ Build: 0 errors. Tests: 1021 pass (up from 1020 in Phase 1 — no regressions).
 ## Phase 1 Cumulative Check
 
 T7 (idle touch), T8 (auth-env), T11 (windowsHide) — no regressions detected. All prior test suites still passing.
+
+---
+---
+
+# Phase 3 Review — T1, T2, T3 (Skill Docs)
+
+**Reviewer:** Claude (Opus 4.6)  
+**Date:** 2026-04-27  
+**Branch:** sprint/session-lifecycle-oob-fix  
+**Scope:** T1, T2, T3 — skills/fleet/SKILL.md changes  
+**Build:** 0 errors | **Tests:** 1021 passed, 6 skipped, 0 failures
+
+---
+
+## Verdict: APPROVED — 0 blocking, 0 advisory
+
+---
+
+## Checklist
+
+### T1: Per-provider flag table (SKILL.md:193–200)
+
+| Provider | Doc claim (`'auto'`) | Source code | Match |
+|----------|---------------------|-------------|-------|
+| Claude | `--permission-mode auto` | claude.ts:43 `cmd += ' --permission-mode auto'` | ✅ |
+| Gemini | None (config-file only) | gemini.ts:54 `permissionModeAutoFlag(): null` | ✅ |
+| Codex | `--ask-for-approval auto-edit` | codex.ts:41 `cmd += ' --ask-for-approval auto-edit'` | ✅ |
+| Copilot | ⚠️ Not supported — warns | copilot.ts:44–45 warns + runs interactively | ✅ |
+
+| Provider | Doc claim (`'dangerous'`) | Source code | Match |
+|----------|--------------------------|-------------|-------|
+| Claude | `--dangerously-skip-permissions` | claude.ts:45, :53 | ✅ |
+| Gemini | `--yolo` | gemini.ts:49 | ✅ |
+| Codex | `--sandbox danger-full-access --ask-for-approval never` | codex.ts:52 | ✅ |
+| Copilot | ⚠️ Not supported | copilot.ts:46–47 warns + runs interactively | ✅ |
+
+**Verdict:** All eight cells verified against source. No factual errors.
+
+### T2: `credential_store_update` in Core Fleet Tools table
+
+Present at SKILL.md:37 with description: *"Update credential metadata (members, TTL, network policy) without re-entering the secret"*
+
+Source (src/index.ts:201): *"Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret."*
+
+**Verdict:** ✅ Accurate description, consistent with source.
+
+### T3: Copilot unattended support clearly communicated
+
+- Provider flag table (line 200): both `'auto'` and `'dangerous'` columns show "⚠️ Not supported"
+- Session resume table (line 178): Copilot shows "❌ None"
+- Source confirms: copilot.ts:43–48 warns for both modes, never appends a CLI flag
+
+**Verdict:** ✅ Clear and unambiguous. The table row is sufficient — no standalone note needed.
+
+### T4: Factual errors
+
+Reviewed all Phase 3 changes (commits 5d49a1a, 7f60fce, cd1df24). No factual errors found. The Gemini row correctly notes config-file-only auto-approval. The `credential_store_update` description in the Secure Credentials section (line 71) is also consistent with the tools table entry.
+
+**Verdict:** ✅ No factual errors.
+
+### T5: Build & test
+
+```
+npm run build  → 0 errors
+npm test       → 1021 passed, 6 skipped, 0 failures
+```
+
+**Verdict:** ✅ Pass.
+
+### T6: Cumulative regression check (Phases 1 & 2)
+
+- Phase 1 (T7: PID extraction fix, T8: unattended flag delegation, T11: windowsHide) — no regressions; all related tests pass.
+- Phase 2 (T9: structured logging) — no regressions; logging tests pass.
+- SKILL.md sections from prior work (session resume, stop_prompt, timeout params, secure credentials, dispatch rules) remain intact and unmodified by Phase 3.
+
+**Verdict:** ✅ No regressions.
+
+---
+
+## Final Verdict: **APPROVED**
+
+All six checks pass. Phase 3 is clean.
