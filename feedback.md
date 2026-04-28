@@ -1,153 +1,141 @@
-# Review: Skill File Improvements (commit 947bdf7)
+# apra-fleet Sprint 3 — Plan Review
 
-**Branch:** `sprint/session-lifecycle-oob-fix`
-**Reviewed:** 2026-04-27
-**Scope:** 3 files — skills/fleet/SKILL.md, skills/fleet/troubleshooting.md, skills/pm/doer-reviewer.md
-**Verdict:** REQUEST CHANGES — 1 blocking (factual inaccuracy), 2 non-blocking
-
----
-
-## 1. Accuracy — Verified Against Source Code
-
-### 1a. stop_prompt one-shot error gate (SKILL.md:37) — ACCURATE ✅
-
-Verified against `src/utils/agent-helpers.ts:89-106` and `src/tools/execute-prompt.ts:150-156`:
-- `_stoppedAgents` is a `Map<string, boolean>` — in-memory only ✅
-- `clearAgentStopped()` called immediately after returning the error ✅ (one-shot)
-- Comment on line 89 confirms: "transient, lives only for the server process lifetime" ✅
-
-### 1b-1e. Credential scoping, TTL, network policy, update (SKILL.md:66-84) — ACCURATE ✅
-
-- `credential_store_update` exists at `src/tools/credential-store-update.ts`, accepts `members`, `ttl_seconds`, `network_policy` ✅
-- Registered as MCP tool in `src/index.ts:201` (commit 08d0273) ✅
-- TTL rejection at resolve time (not silent): confirmed in credential store resolve logic ✅
-
-### 1f. Concurrent dispatch guard (SKILL.md:101-107) — ACCURATE ✅
-
-Verified `src/tools/execute-prompt.ts:90,108-111`:
-- `inFlightAgents` is `Set<string>` at module level ✅
-- Error message matches doc: `execute_prompt is already running for "<member-name>"` ✅
-
-### 1g. Session resume (SKILL.md:154-180) — ACCURATE ✅
-
-Verified `src/tools/execute-prompt.ts:26,144,171-177`:
-- `resume` is boolean-only in schema (`.default(true)`) ✅
-- Stale-session retry: on error with sessionId, kills process and retries fresh ✅
-- Provider table verified:
-  - Claude: `supportsResume()=true`, uses `--resume` / `-c` flag ✅
-  - Gemini: `supportsResume()=true`, uses `--resume` ✅
-  - Codex: `supportsResume()=true` but `parseResponse()` returns `sessionId: undefined` — partial ✅
-  - Copilot: `parseResponse()` returns `sessionId: undefined`, `--continue` with no ID — effectively none ✅
-
-### ❌ BLOCKING: Unattended modes (SKILL.md:192) — INACCURATE
-
-**SKILL.md line 192 states:**
-> `unattended='auto'` does not add any CLI flag.
-
-**Verified against source — this is wrong for 2 of 4 providers:**
-
-| Provider | `'auto'` behaviour | Source |
-|----------|--------------------|--------|
-| Claude | Adds `--permission-mode auto` | `claude.ts:42-43` |
-| Gemini | No flag added (config-file only) | `gemini.ts:39` — only handles `'dangerous'` |
-| Codex | Adds `--ask-for-approval auto-edit` | `codex.ts:40-41` |
-| Copilot | Warns "not supported", no flag | `copilot.ts:44-45` |
-
-The blanket claim "does not add any CLI flag" is only true for Gemini. Claude and Codex both add provider-specific auto-approval flags. Additionally, Copilot's lack of unattended support is not mentioned at all.
-
-**Fix:** Replace the blanket statement with a provider table, e.g.:
-
-```markdown
-`unattended='auto'` behaviour is provider-specific:
-
-| Provider | `'auto'` flag | `'dangerous'` flag |
-|----------|--------------|-------------------|
-| Claude | `--permission-mode auto` | `--dangerously-skip-permissions` |
-| Gemini | None (config-file only via `compose_permissions`) | `--yolo` |
-| Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
-| Copilot | ⚠️ Not supported (runs interactively) | ⚠️ Not supported (runs interactively) |
-```
-
-### 2a. Timeout troubleshooting split (troubleshooting.md:6-7) — ACCURATE ✅
-
-Verified against `src/services/strategy.ts:99-119`:
-- Inactivity timer resets on stdout/stderr data events (lines 131, 146: `resetInactivityTimer()`) ✅
-- Default 300000ms: `src/tools/execute-prompt.ts:42` ✅
-- max_total_ms never resets (lines 113-119) ✅
-- Both transport-level (in strategy.ts, not provider-specific) ✅
-
-### 3a-3d. doer-reviewer.md additions — ACCURATE ✅
-
-- Resume rules for stop_prompt and timeout-mid-grant are correct per the mechanics ✅
-- Inactivity timer warning in mid-sprint denial section is factually accurate ✅
-- stop_prompt vs PM sub-task distinction is a useful clarification ✅
+**Reviewer:** fleet-rev
+**Date:** 2026-04-27 12:00:00+00:00
+**Verdict:** APPROVED
 
 ---
 
-## 2. Completeness
+## 1. Done Criteria (Check 1)
 
-### Missing from tools table: `credential_store_update`
-
-SKILL.md Core Fleet Tools table (lines 34-36) lists `credential_store_set`, `credential_store_list`, `credential_store_delete` but **not** `credential_store_update`. The tool is referenced in prose (line 70) and exists in the codebase (commit 08d0273, registered in `src/index.ts:201`).
-
-**Fix:** Add row to tools table:
-```
-| `credential_store_update` | Update credential metadata (members, TTL, network policy) without re-entering the secret |
-```
-
-### Feedback file not found
-
-`skill-improvement-feedback.md` referenced in `.fleet-task.md` does not exist in the repo, git history, or work folder. I verified completeness by mapping each diff hunk to an inferred feedback item (1a-1g, 2a, 3a-3d) and cross-checking against source code directly.
+Every task (T1–T10) has explicit, measurable done criteria. T7 specifies PID logged to stderr, cleared on exit, build passes, existing tests pass. T8 specifies all 4 providers implement `permissionModeAutoFlag()`. T9 specifies stderr-only logging, secret masking, 80-char truncation. T10 specifies 0 failures after audit, no security boundary test deletions, and an audit report. **PASS.**
 
 ---
 
-## 3. Layering
+## 2. Cohesion and Coupling (Check 2)
 
-### Mostly clean
-
-- **SKILL.md** contains tool mechanics only (stop_prompt gate, resume semantics, unattended flags, timeout parameters, credential scoping, concurrent guard) ✅
-- **doer-reviewer.md** contains orchestration patterns (when to resume, how to handle denials, when to cancel) ✅
-- **troubleshooting.md** contains symptom→action mappings with mechanic context ✅
-
-### Minor bleed (advisory)
-
-**doer-reviewer.md:10** — "For Gemini members, auto-approval is delivered entirely by `compose_permissions` (no CLI flag is added for `auto` mode)" is a provider-specific mechanic. The orchestration pattern ("compose thoroughly before dispatch") is appropriate for the PM doc, but the flag implementation detail belongs in SKILL.md's unattended section.
-
-This is partially moot — once the SKILL.md unattended section gets the provider table fix (blocking item above), the Gemini detail in doer-reviewer.md could be simplified to a cross-reference.
+Each task is tightly scoped: T7 is PID streaming extraction only, T8 is provider flag abstraction only, T9 is structured logging only, T1–T3 are documentation, T4–T6 are advisory cleanups, T10 is test refactoring. Cross-task coupling is minimal and explicit (T9 hooks into T7's data handler, T4 cross-references T1). **PASS.**
 
 ---
 
-## 4. Consistency
+## 3. Key Abstractions First (Check 3)
 
-- stop_prompt description in SKILL.md (one-shot gate, resume=false after kill) is consistent with doer-reviewer.md Resume Rule table entry ("Session state unreliable after kill; start fresh") ✅
-- Timeout description in SKILL.md matches troubleshooting.md expanded rows ✅
-- Credential scoping prose references `credential_store_update` which exists in code ✅
-- Model tier names (cheap/standard/premium) consistent across SKILL.md and doer-reviewer.md safeguards ✅
+Phase 1 front-loads the two critical code bugs: T7 (streaming PID — the foundation for stop_prompt and T9's PID logging) and T8 (`permissionModeAutoFlag()` — shared interface used by windows.ts). Both create abstractions reused later. **PASS.**
 
 ---
 
-## 5. Correctness of #191 Reference
+## 4. Riskiest Assumption First (Check 4)
 
-SKILL.md:70 references `credential_store_update` — tool was implemented in commit 08d0273 (`feat(#191,#192): credential_store_update tool`). The description ("change members, ttl_seconds, or network_policy without re-entering the secret") matches the tool's schema in `src/tools/credential-store-update.ts`. ✅
+T7 is correctly identified as the riskiest task (modifying the streaming data path could break stdout buffering or spill-file logic) and is placed first in Phase 1. Risk #1 in the register explicitly addresses this. **PASS.**
 
 ---
 
-## 6. Formatting (advisory)
+## 5. DRY — Later Tasks Reuse Early Abstractions (Check 5)
 
-**doer-reviewer.md:8-11** — Lines 9-11 are intended as sub-bullets under item 4 but are formatted as top-level dashes. Line 11 also concatenates two unrelated instructions: the `unattended` preference and the `context-file.md` / planning-phase note. These should be separate items or properly indented.
+T9 (Phase 2) reuses T7's streaming `on('data')` handler for PID logging. T4 (Phase 4) simplifies to a cross-reference once T1 (Phase 3) adds the provider table. T3 is potentially covered by T1's warning icons. Good reuse chain. **PASS.**
+
+---
+
+## 6. Phase Structure — 2-3 Work Tasks + VERIFY (Check 6)
+
+| Phase | Work Tasks | Verify |
+|-------|-----------|--------|
+| 1 | T7, T8 (2) | V1 |
+| 2 | T9 (1) | V2 |
+| 3 | T1, T2, T3 (3) | V3 |
+| 4 | T4, T5, T6 (3) | V4 |
+| 5 | T10 (1) | V5 |
+
+Phases 2 and 5 have only 1 work task each. This is justified — T9 has 3 sub-tasks touching 4 files and depends on Phase 1 completion; T10 is a full test audit with 4 sub-tasks across 62 test files. Both warrant their own phase boundaries. **PASS.**
+
+---
+
+## 7. Session-Sized Tasks (Check 7)
+
+All tasks are right-sized for a single session. T7 has 3 focused sub-tasks (LocalStrategy, RemoteStrategy, clearStoredPid). T9 has 3 sub-tasks (helper, execute_prompt, execute_command). T10 is the largest but has 4 ordered sub-tasks that gate each other — audit before delete. None require multi-session state. **PASS.**
+
+---
+
+## 8. Dependency Order (Check 8)
+
+- T9 depends on T7's streaming data handler → Phase 2 after Phase 1. ✅
+- T4 depends on T1's provider table → Phase 4 after Phase 3. ✅
+- T10 runs last (Phase 5) so all code changes are stable before audit. ✅
+- No circular dependencies. **PASS.**
+
+---
+
+## 9. Ambiguity Check (Check 9)
+
+One **NOTE**: T10.1 lists `vcs-isolation.test.ts` as a priority file, but this file does not exist in the repository (verified via search). This is a phantom reference — the doer will waste time looking for it. Should be removed or replaced with the actual VCS test file name.
+
+All other tasks are unambiguous. T7.1's code sample is specific enough that any developer would implement the same logic. T8 names all 4 providers and their return values. **PASS with NOTE.**
+
+---
+
+## 10. Hidden Dependencies (Check 10)
+
+No hidden dependencies found. The explicit dependency T9→T7 (logging hooks into the streaming data path) is correctly documented in Phase 2's header: "Depends on T7 (PID streaming) being complete." T4→T1 is acknowledged in T4's fix description. **PASS.**
+
+---
+
+## 11. Risk Register (Check 11)
+
+5 risks identified with impact, likelihood, and mitigation. Covers the key concerns: stdout buffering corruption (R1), interface breaking change (R2), security test deletion (R3), stdout/stderr contamination (R4), and PID race condition (R5). R5's mitigation is pragmatic — if the process exits before PID capture, stop_prompt is unnecessary anyway.
+
+No additional risks identified. **PASS.**
+
+---
+
+## 12. Alignment with Requirements (Check 12)
+
+All 10 requirements from `requirements.md` are addressed:
+
+| Req | Plan Task | Aligned? |
+|-----|-----------|----------|
+| T1 (SKILL.md provider table) | Phase 3, T1 | ✅ |
+| T2 (credential_store_update in tools table) | Phase 3, T2 | ✅ |
+| T3 (Copilot unattended limitation) | Phase 3, T3 | ✅ |
+| T4 (Gemini mechanic removal) | Phase 4, T4 | ✅ |
+| T5 (Sub-bullet formatting) | Phase 4, T5 | ✅ |
+| T6 (Quote credFile) | Phase 4, T6 | ✅ |
+| T7 (PID stored after exit) | Phase 1, T7 | ✅ |
+| T8 (Hardcoded Claude flag) | Phase 1, T8 | ✅ |
+| T9 (Structured logging) | Phase 2, T9 | ✅ |
+| T10 (Test audit) | Phase 5, T10 | ✅ |
+
+**PASS.**
+
+---
+
+## Special Attention Items
+
+### T7 — PID Extraction from Stdout Data Stream
+
+**PASS.** The plan explicitly specifies streaming extraction in `child.stdout.on('data')` with a `pidExtracted` flag and regex match on each chunk. The code sample at T7.1 shows `setStoredPid()` called inside the data handler, not after promise resolution. The plan also covers RemoteStrategy (T7.2) and clearStoredPid on exit (T7.3).
+
+Verified against current code: `extractAndStorePid()` is indeed called at `strategy.ts:178` after the promise resolves (post-close), and the `child.stdout.on('data')` handler at lines 130–143 currently does no PID extraction. The plan correctly identifies the bug and proposes the right fix location.
+
+### T8 — All 4 Providers Implement `permissionModeAutoFlag()`
+
+**PASS.** Plan specifies: Claude returns `'--permission-mode auto'`, Gemini returns `null`, Codex returns `'--ask-for-approval auto-edit'`, Copilot returns `null` + logs warning. `windows.ts` calls the method instead of hardcoding. All 4 providers are named. Verified that `permissionModeAutoFlag()` does not yet exist in `provider.ts` and that `windows.ts:124-125` currently hardcodes `--permission-mode auto`.
+
+### T9 — Secure Ref Masking Before Logging
+
+**PASS.** T9.1 explicitly defines `maskSecrets(text: string)` that replaces `{{secure.*}}` and `sec://...` patterns with `[REDACTED]`. Masking is specified as part of the log helper layer, applied before any text reaches `console.error`. The 80-char truncation provides a secondary defense against credential leakage in long prompts.
+
+### T10 — Security Boundary Tests Must Not Be Deleted
+
+**PASS.** T10.3 explicitly states: "Do NOT delete sole security boundary tests." The classification criteria in the requirements and plan both specify security boundary tests (credential scoping, TTL rejection, label injection, member identity) as unconditional keeps. Risk #3 in the register addresses this with a specific mitigation: "grep for tested function, confirm other tests exist."
 
 ---
 
 ## Summary
 
-| Finding | Severity | File:Line |
-|---------|----------|-----------|
-| `'auto'` does not add any CLI flag — wrong for Claude and Codex | **BLOCKING** | SKILL.md:192 |
-| `credential_store_update` missing from tools table | Non-blocking | SKILL.md:34-36 |
-| Copilot unattended unsupported not mentioned | Non-blocking | SKILL.md:182-202 |
-| Gemini-specific mechanic in PM doc (minor layering bleed) | Advisory | doer-reviewer.md:10 |
-| Sub-bullet formatting under setup checklist item 4 | Advisory | doer-reviewer.md:8-11 |
+**Verdict: APPROVED.**
 
----
+The plan is well-structured, correctly prioritises the critical bugs in Phase 1, and addresses all 10 requirements. All 12 review checks pass. The four special-attention items (T7 streaming PID, T8 provider abstraction, T9 secret masking, T10 security test preservation) are all correctly handled.
 
-REQUEST CHANGES
+**1 NOTE (non-blocking):** T10.1 lists `vcs-isolation.test.ts` as a priority audit target, but this file does not exist in the repository. The doer should skip this reference or identify the correct VCS-related test file during the audit.
+
+No blocking changes required. Plan is ready for execution.
