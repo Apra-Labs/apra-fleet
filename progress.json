@@ -16,8 +16,8 @@
       "phase": 1,
       "title": "Add monotonic tier constraint to plan-prompt.md",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Added monotonic tier constraint with examples after tier assignment block. Added tier downgrade failure mode to SELF-CRITIQUE section."
     },
     {
       "id": "T3",
