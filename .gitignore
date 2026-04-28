@@ -14,3 +14,4 @@ materials/*
 # CLAUDE.md is already tracked (git add -f was used), so this entry only prevents
 # new untracked CLAUDE.md files from being accidentally staged — it does not untrack the existing file.
 CLAUDE.md
+CLAUDE.md

@@ -11,7 +11,7 @@
    - Prefer `unattended='auto'` over `'dangerous'` — `auto` scopes bypass to explicitly listed operations; `dangerous` skips all checks globally.
    - See `context-file.md` for provider filename lookup and role templates. Planning and plan review are dispatched as inline prompts — no agent context file needed for those phases.
 
-**Model tier check:** Dispatch reviews with the costliest model tier available (`model=premium` where supported). Doers use `model=standard` by default unless the task tier specifies otherwise. User override always wins. 
+**Model tier check:** Dispatch reviews at `model=premium`. For doers, PM reads `tasks[i].tier` from `planned.json` and passes `model: <tier>` to `execute_prompt` — no hardcoded default. User override always wins.
 
 ## Pre-flight Checks
 
@@ -32,8 +32,8 @@ Verify reviewer is at the correct commit before starting review:
 1. Doer works, commits and pushes deliverables at every turn → STOPS at every VERIFY checkpoint
 
    **Doer session rules:**
-   - **Start of each new phase:** use `resume=false`
-   - **Within a phase:** resume is allowed
+   - **New phase (`nextTask.phase !== lastDispatchedPhase`):** use `resume=false`
+   - **Same phase (`nextTask.phase === lastDispatchedPhase`):** use `resume=true`
 
 2. **PM handles git transport via `execute_command`** — never delegate to prompts:
    - Dev side: `git push origin <branch>` — verify push succeeded
@@ -54,6 +54,17 @@ Verify reviewer is at the correct commit before starting review:
 7. **Sprint completion** — See cleanup.md.
 
 ## Resume Rule
+
+**Doer dispatches** — resume is derived from `planned.json` phase numbers via `lastDispatchedPhase` in `status.md`, not manually reasoned:
+
+| Condition | resume |
+|-----------|--------|
+| `nextTask.phase === lastDispatchedPhase` | `true` |
+| `nextTask.phase !== lastDispatchedPhase` (new phase) | `false` |
+| After reviewer CHANGES NEEDED → doer fix | `true` |
+| Role switch (doer ↔ reviewer) | `false` |
+
+**All dispatches:**
 
 | Dispatch | resume |
 |----------|--------|
