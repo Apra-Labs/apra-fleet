@@ -75,22 +75,22 @@
           "id": "T1",
           "type": "work",
           "title": "SKILL.md unattended='auto' provider table",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Replaced blanket 'auto does not add any CLI flag' statement with a 4-row provider table (Claude/Gemini/Codex/Copilot) covering both 'auto' and 'dangerous' flags."
         },
         {
           "id": "T2",
           "type": "work",
           "title": "Add credential_store_update to SKILL.md tools table",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Added credential_store_update row after credential_store_delete in the Core Fleet Tools table."
         },
         {
           "id": "T3",
           "type": "work",
           "title": "Document Copilot unattended limitation in SKILL.md",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Copilot row in T1 table already carries '⚠️ Not supported — warns and runs interactively' for both auto and dangerous modes. Standalone callout not needed — table entry is unambiguous."
         },
         {
           "id": "V3",
