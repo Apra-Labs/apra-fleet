@@ -26,8 +26,8 @@
       "id": "phase-3",
       "name": "Docs",
       "tasks": [
-        { "id": "T6", "name": "Documentation updates (SKILL.md Fleet Logs, troubleshooting.md)", "status": "pending", "notes": "" },
-        { "id": "V3", "name": "Final Checkpoint", "type": "verify", "status": "pending", "notes": "" }
+        { "id": "T6", "name": "Documentation updates (SKILL.md Fleet Logs, troubleshooting.md)", "status": "completed", "notes": "Added Fleet Logs section to SKILL.md (log path, JSONL fields, jq/cat examples, rotation behaviour). Added troubleshooting row for tool execution issues referencing log file. Committed f10c5cf." },
+        { "id": "V3", "name": "Final Checkpoint", "type": "verify", "status": "completed", "notes": "npm run build: 0 errors. npm test: 1016 passed, 7 skipped, 0 failed (61 test files). All acceptance criteria from requirements.md met." }
       ]
     }
   ]
