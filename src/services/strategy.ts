@@ -7,7 +7,6 @@ import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
-import { logLine } from '../utils/log-helpers.js';
 
 /**
  * Scan stdout for a FLEET_PID:<pid> line, store the PID, and strip the line.
@@ -87,9 +86,6 @@ class LocalStrategy implements AgentStrategy {
       const cmds = getOsCommands(getAgentOS(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
-      if (child.pid !== undefined) {
-        logLine('execute_command', `agent=${this.agent.friendlyName} PID=${child.pid} (local)`, this.agent.id);
-      }
 
       let settled = false;
       function settle(fn: () => void) {
@@ -139,7 +135,6 @@ class LocalStrategy implements AgentStrategy {
           if (m) {
             const pid = parseInt(m[1], 10);
             setStoredPid(this.agent.id, pid);
-            logLine('execute_prompt', `agent=${this.agent.friendlyName} LLM_PID=${pid} (local)`, this.agent.id);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
             pidExtracted = true;
           }

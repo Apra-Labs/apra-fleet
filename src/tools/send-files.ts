@@ -6,6 +6,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { isContainedInWorkFolder } from '../utils/platform.js';
+import { logLine, logError } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export const sendFilesSchema = z.object({
@@ -73,6 +74,9 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
 
   const strategy = getStrategy(agent);
 
+  const dest = resolvedPath ?? agent.workFolder;
+  logLine('send_files', `${input.local_paths.length} file(s) → ${dest}`, agent.id, agent.friendlyName);
+
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
@@ -101,6 +105,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
     return output;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
+    logError('send_files', err.message, agent.id, agent.friendlyName);
     return `Failed to upload files to "${agent.friendlyName}": ${err.message}`;
   }
 }

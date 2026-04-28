@@ -181,7 +181,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   }
 
   touchAgent(agent.id);
-  logLine('provision_vcs_auth', `agent=${agent.friendlyName} provider=${input.provider}`, agent.id);
+  logLine('provision_vcs_auth', `provider=${input.provider}`, agent.id, agent.friendlyName);
 
   const meta = deployResult.metadata
     ? Object.entries(deployResult.metadata).map(([k, v]) => `  ${k}: ${v}`).join('\n')

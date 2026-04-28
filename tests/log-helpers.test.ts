@@ -51,21 +51,22 @@ describe('log-helpers', () => {
 
     const lines = parsedLines();
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ level: 'info', tag: 'mytag', msg: 'hello world', pid: process.pid });
+    expect(lines[0]).toMatchObject({ level: 'info', tag: 'mytag', msg: 'hello world' });
+    expect(lines[0]).not.toHaveProperty('pid');
     expect(typeof lines[0].ts).toBe('string');
     expect((lines[0].ts as string)).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it('field order: ts, level, tag, msg, pid (no member_id when omitted)', async () => {
+  it('field order: ts, level, tag, msg (no mid/mem/pid when omitted)', async () => {
     const { logLine } = await import('../src/utils/log-helpers.js');
     logLine('tag', 'msg');
 
     const lines = parsedLines();
     expect(lines).toHaveLength(1);
-    expect(Object.keys(lines[0])).toEqual(['ts', 'level', 'tag', 'msg', 'pid']);
+    expect(Object.keys(lines[0])).toEqual(['ts', 'level', 'tag', 'msg']);
   });
 
-  it('includes member_id between tag and msg when provided; omits when not', async () => {
+  it('includes mid between tag and msg when memberId provided; omits when not', async () => {
     const { logLine } = await import('../src/utils/log-helpers.js');
     logLine('tag', 'with member', 'member-uuid-123');
     logLine('tag', 'without member');
@@ -73,11 +74,22 @@ describe('log-helpers', () => {
     const lines = parsedLines();
     expect(lines).toHaveLength(2);
 
-    expect(Object.keys(lines[0])).toEqual(['ts', 'level', 'tag', 'member_id', 'msg', 'pid']);
-    expect(lines[0].member_id).toBe('member-uuid-123');
+    expect(Object.keys(lines[0])).toEqual(['ts', 'level', 'tag', 'mid', 'msg']);
+    expect(lines[0].mid).toBe('member-uuid-123');
 
-    expect(Object.keys(lines[1])).toEqual(['ts', 'level', 'tag', 'msg', 'pid']);
-    expect(lines[1]).not.toHaveProperty('member_id');
+    expect(Object.keys(lines[1])).toEqual(['ts', 'level', 'tag', 'msg']);
+    expect(lines[1]).not.toHaveProperty('mid');
+  });
+
+  it('includes mem field when memberName provided as 4th arg', async () => {
+    const { logLine } = await import('../src/utils/log-helpers.js');
+    logLine('tag', 'with name', 'member-uuid-123', 'MyMember');
+
+    const lines = parsedLines();
+    expect(lines).toHaveLength(1);
+    expect(Object.keys(lines[0])).toEqual(['ts', 'level', 'tag', 'mid', 'mem', 'msg']);
+    expect(lines[0].mid).toBe('member-uuid-123');
+    expect(lines[0].mem).toBe('MyMember');
   });
 
   it('applies maskSecrets() — {{secure.MY_KEY}} is written as [REDACTED]', async () => {

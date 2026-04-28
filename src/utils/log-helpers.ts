@@ -17,32 +17,32 @@ function getStream(): fs.WriteStream | null {
   return _stream;
 }
 
-function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: string, memberId?: string): void {
+function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: string, memberId?: string, memberName?: string): void {
   const stream = getStream();
   if (!stream) return;
   const line: Record<string, unknown> = { ts: new Date().toISOString(), level, tag };
-  if (memberId !== undefined) line.member_id = memberId;
+  if (memberId !== undefined) line.mid = memberId;
+  if (memberName !== undefined) line.mem = memberName;
   line.msg = maskedMsg;
-  line.pid = process.pid;
   stream.write(JSON.stringify(line) + '\n');
 }
 
-export function logLine(tag: string, msg: string, memberId?: string): void {
+export function logLine(tag: string, msg: string, memberId?: string, memberName?: string): void {
   const maskedMsg = maskSecrets(msg);
   console.error(`[fleet] ${tag} ${maskedMsg}`);
-  writeLog('info', tag, maskedMsg, memberId);
+  writeLog('info', tag, maskedMsg, memberId, memberName);
 }
 
-export function logWarn(tag: string, msg: string, memberId?: string): void {
+export function logWarn(tag: string, msg: string, memberId?: string, memberName?: string): void {
   const maskedMsg = maskSecrets(msg);
   console.error(`[fleet:warn] ${tag} ${maskedMsg}`);
-  writeLog('warn', tag, maskedMsg, memberId);
+  writeLog('warn', tag, maskedMsg, memberId, memberName);
 }
 
-export function logError(tag: string, msg: string, memberId?: string): void {
+export function logError(tag: string, msg: string, memberId?: string, memberName?: string): void {
   const maskedMsg = maskSecrets(msg);
   console.error(`[fleet:error] ${tag} ${maskedMsg}`);
-  writeLog('error', tag, maskedMsg, memberId);
+  writeLog('error', tag, maskedMsg, memberId, memberName);
 }
 
 export function maskSecrets(text: string): string {

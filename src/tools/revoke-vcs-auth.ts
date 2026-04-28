@@ -56,7 +56,7 @@ export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> 
   }
 
   touchAgent(agent.id);
-  logLine('revoke_vcs_auth', `agent=${agent.friendlyName} provider=${input.provider}`, agent.id);
+  logLine('revoke_vcs_auth', `provider=${input.provider}`, agent.id, agent.friendlyName);
 
   return result.success
     ? `✅ ${result.message} on "${agent.friendlyName}"`
