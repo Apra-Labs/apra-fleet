@@ -1,0 +1,158 @@
+{
+  "sprint": "session-lifecycle-oob-fix",
+  "branch": "sprint/session-lifecycle-oob-fix",
+  "created": "2026-04-27",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Critical Code Bugs",
+      "tasks": [
+        {
+          "id": "T7",
+          "type": "work",
+          "title": "stop_prompt broken — PID stored after process exits",
+          "status": "pending",
+          "subtasks": [
+            { "id": "T7.1", "title": "LocalStrategy streaming PID extraction", "status": "pending" },
+            { "id": "T7.2", "title": "RemoteStrategy streaming PID extraction", "status": "pending" },
+            { "id": "T7.3", "title": "Verify clearStoredPid on exit", "status": "pending" }
+          ],
+          "notes": ""
+        },
+        {
+          "id": "T8",
+          "type": "work",
+          "title": "windows.ts hardcodes Claude flag for all providers",
+          "status": "pending",
+          "notes": ""
+        },
+        {
+          "id": "V1",
+          "type": "verify",
+          "title": "Verify Phase 1",
+          "status": "pending",
+          "notes": ""
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Structured Logging",
+      "tasks": [
+        {
+          "id": "T9",
+          "type": "work",
+          "title": "Structured logging for execute_prompt and execute_command",
+          "status": "pending",
+          "subtasks": [
+            { "id": "T9.1", "title": "Log helper + credential masking", "status": "pending" },
+            { "id": "T9.2", "title": "execute_prompt logging", "status": "pending" },
+            { "id": "T9.3", "title": "execute_command logging", "status": "pending" }
+          ],
+          "notes": ""
+        },
+        {
+          "id": "V2",
+          "type": "verify",
+          "title": "Verify Phase 2",
+          "status": "pending",
+          "notes": ""
+        }
+      ]
+    },
+    {
+      "id": "phase-3",
+      "name": "Skill Docs",
+      "tasks": [
+        {
+          "id": "T1",
+          "type": "work",
+          "title": "SKILL.md unattended='auto' provider table",
+          "status": "pending",
+          "notes": ""
+        },
+        {
+          "id": "T2",
+          "type": "work",
+          "title": "Add credential_store_update to SKILL.md tools table",
+          "status": "pending",
+          "notes": ""
+        },
+        {
+          "id": "T3",
+          "type": "work",
+          "title": "Document Copilot unattended limitation in SKILL.md",
+          "status": "pending",
+          "notes": ""
+        },
+        {
+          "id": "V3",
+          "type": "verify",
+          "title": "Verify Phase 3",
+          "status": "pending",
+          "notes": ""
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "name": "Advisory Cleanups",
+      "tasks": [
+        {
+          "id": "T4",
+          "type": "work",
+          "title": "Remove Gemini mechanic from doer-reviewer.md",
+          "status": "pending",
+          "notes": ""
+        },
+        {
+          "id": "T5",
+          "type": "work",
+          "title": "Fix sub-bullet formatting in doer-reviewer.md",
+          "status": "pending",
+          "notes": ""
+        },
+        {
+          "id": "T6",
+          "type": "work",
+          "title": "Quote credFile in linux.ts shell commands",
+          "status": "pending",
+          "notes": ""
+        },
+        {
+          "id": "V4",
+          "type": "verify",
+          "title": "Verify Phase 4",
+          "status": "pending",
+          "notes": ""
+        }
+      ]
+    },
+    {
+      "id": "phase-5",
+      "name": "Test Suite Audit",
+      "tasks": [
+        {
+          "id": "T10",
+          "type": "work",
+          "title": "Test suite audit — remove dead, overlapping, irrelevant tests",
+          "status": "pending",
+          "subtasks": [
+            { "id": "T10.1", "title": "Audit priority test files", "status": "pending" },
+            { "id": "T10.2", "title": "Audit remaining test files", "status": "pending" },
+            { "id": "T10.3", "title": "Execute deletions and consolidations", "status": "pending" },
+            { "id": "T10.4", "title": "Validate and report", "status": "pending" }
+          ],
+          "notes": ""
+        },
+        {
+          "id": "V5",
+          "type": "verify",
+          "title": "Verify Phase 5",
+          "status": "pending",
+          "notes": ""
+        }
+      ]
+    }
+  ]
+}
