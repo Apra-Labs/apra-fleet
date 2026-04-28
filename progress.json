@@ -116,8 +116,8 @@
           "id": "T5",
           "type": "work",
           "title": "Fix sub-bullet formatting in doer-reviewer.md",
-          "status": "pending",
-          "notes": ""
+          "status": "completed",
+          "notes": "Indented lines 9-11 as sub-bullets under checklist item 4 (added 3-space indent). Split former line 11 into two items: unattended mode preference, and context-file lookup / inline prompts note."
         },
         {
           "id": "T6",

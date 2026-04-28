@@ -6,9 +6,10 @@
 2. Override icons via `update_member` — doer gets circle, reviewer gets square, same color.
 3. Compose and deliver permissions per `permissions.md` (fleet skill) for each member's role.
 4. Send the role-specific agent context file via `send_files` before dispatch.
-- Call `compose_permissions` before every dispatch regardless of unattended mode.
-- For provider-specific unattended flag behaviour, see the fleet SKILL.md unattended modes section.
-- Prefer `unattended='auto'` over `'dangerous'` — `auto` scopes bypass to explicitly listed operations; `dangerous` skips all checks globally. See `context-file.md` for provider filename lookup and role templates. Planning and plan review are dispatched as inline prompts — no agent context file needed for those phases.
+   - Call `compose_permissions` before every dispatch regardless of unattended mode.
+   - For provider-specific unattended flag behaviour, see the fleet SKILL.md unattended modes section.
+   - Prefer `unattended='auto'` over `'dangerous'` — `auto` scopes bypass to explicitly listed operations; `dangerous` skips all checks globally.
+   - See `context-file.md` for provider filename lookup and role templates. Planning and plan review are dispatched as inline prompts — no agent context file needed for those phases.
 
 **Model tier check:** Dispatch reviews with the costliest model tier available (`model=premium` where supported). Doers use `model=standard` by default unless the task tier specifies otherwise. User override always wins. 
 
