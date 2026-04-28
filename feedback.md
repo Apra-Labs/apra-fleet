@@ -1,82 +1,59 @@
-# #201 Log Schema Polish — Delta Review
+# #182 Tier-Aware Dispatch — Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-28
-**Scope:** Commits `b0c8720` and `5a3e73f` on `feat/pino-logging` (after approved `0661640`)
+**Date:** 2026-04-28 12:00:00+00:00
 **Verdict:** APPROVED
 
 ---
 
-## Commits reviewed
+## Phase 1 Review (T1–T4)
 
-- `b0c8720` feat(logging): polish log schema — drop pid, add mem, cmd as msg, send/recv coverage, error logging
-- `5a3e73f` feat(logging): fault-tolerance, windows no-window fixes, pm cleanup guidance
+### T1: Replace count rule with cohesion rule in plan-prompt.md — PASS
 
----
+All three instances of the count-based rule have been replaced:
 
-## 1. Log schema polish
+1. **Line 27 (DRAFT rules):** "2-3 work tasks per phase, then a VERIFY checkpoint" replaced with the full cohesion rule: "Phase boundaries by cohesion, not count — a phase is a coherent unit of work that produces a reviewable, testable increment..." — matches requirements.md section 1 verbatim. PASS.
+2. **Line 67 (SELF-CRITIQUE):** "Checkpoints too far apart — more than 3 work tasks without a VERIFY?" replaced with "Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?" — correctly reframes the failure mode in cohesion terms. PASS.
+3. **Line 75 (REFINE):** "VERIFY checkpoint every 2-3 work tasks" replaced with "VERIFY checkpoint at the natural completion boundary of each cohesive phase" — consistent with the cohesion model. PASS.
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `pid` removed from JSON lines | PASS | `line.pid` deleted from `writeLog`; only `process.pid` remains in log filename (correct) |
-| `member_id` renamed to `mid` | PASS | `line.mid = memberId` |
-| `mem` field added | PASS | Passed as 4th param `memberName` rather than resolved inside `writeLog` — avoids circular dependency on agent registry. Sound trade-off. |
-| `agent=xxx` prefix removed from all msg strings | PASS | Grep confirms zero `agent=` in `src/tools/` or `src/services/` log calls |
-| `execute_command` msg is raw command (80 char truncated) | PASS | `truncateForLog(maskSecrets(input.command))` |
-| `execute_prompt` msg is raw prompt (80 char truncated) | PASS | `truncateForLog(maskSecrets(input.prompt))` |
-| `send_files` emits log entries | PASS | `logLine` on entry + `logError` in catch |
-| `receive_files` emits log entries | PASS | `logLine` on entry + `logError` in catch |
-| `logError` added in catch blocks | PASS | execute-command, execute-prompt, send-files, receive-files |
-| Useless PID/host log lines removed from strategy.ts | PASS | 2 `logLine` calls + import removed |
-| Useless PID/host log lines removed from ssh.ts | PASS | 2 `logLine` calls + import removed |
+Grep for "2-3 work tasks" and "more than 3 work tasks" across all 5 PM skill files returns zero matches. The count-based rule is fully eradicated.
 
-## 2. Fault tolerance
+### T2: Add monotonic tier constraint to plan-prompt.md — PASS
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `writeLog` body in try/catch | PASS | Entire body wrapped, `catch { /* ignore */ }` |
-| `maskSecrets()` try/catch | PASS | Returns original `text` on error — correct fallback |
-| `console.error()` calls each wrapped | PASS | All 3 functions (logLine, logWarn, logError) wrapped individually |
+- **Lines 38–42 (DRAFT rules):** The monotonic tier constraint is added as a new rule bullet with the exact wording from requirements.md section 2, including both the `checkmark` and `cross` examples. Placed correctly after the tier assignment block. PASS.
+- **Line 68 (SELF-CRITIQUE):** "Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point." — correctly adds the corresponding failure mode. PASS.
 
-## 3. Windows flash fix
+### T3: Add cohesion rule and monotonic tier constraint to tpl-plan.md — PASS
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `CreateNoWindow = $true` in `pidWrapWindows` | PASS | Inserted between `UseShellExecute` and `Process::Start` |
-| `windowsHide: true` in `getCleanEnv` execSync | PASS | Added to options object |
+- **Lines 56–64:** A new "Phase Sizing Rules" section is added between Risk Register and Notes. Contains:
+  - Cohesion rule with wording consistent with plan-prompt.md (minor expected capitalization difference: sentence-initial "A" vs mid-sentence "a" after a dash). PASS.
+  - Monotonic tier constraint with identical wording and examples as plan-prompt.md. PASS.
 
-## 4. Skill update (`skills/pm/context-file.md`)
+### T4: Update tpl-reviewer-plan.md checklist — PASS
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `rm -f` replaced with cleanup.md reference | PASS | Clear warning against plain `rm -f` / `git rm -f` |
-| Mid-sprint recovery procedure added | PASS | 5-step `git rm --cached` + `git checkout origin/<base_branch>` recovery |
+- **Item 6:** Replaced "2-3 work tasks per phase, then a VERIFY checkpoint?" with "Are phase boundaries drawn at cohesion boundaries — each phase is a coherent unit producing a reviewable, testable increment (tasks share a data model, code path, or design decision)?" PASS.
+- **Item 7:** New item added: "Are tiers monotonically non-decreasing within each phase (cheap → standard → premium, never downgrading mid-phase)?" PASS.
+- **Items 8–13:** Correctly renumbered from the original 7–12. PASS.
+- No reference to "2-3" task count remains. PASS.
 
-## 5. Tests
+### V1: Cross-file consistency — PASS
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `npm test` | PASS | 61 files, 1017 passed, 6 skipped, 0 failed |
+| Check | Result |
+|-------|--------|
+| Zero instances of "2-3 work tasks" count rule across all files | PASS — grep returns 0 matches |
+| Cohesion rule in both plan-prompt.md and tpl-plan.md | PASS — wording matches (modulo expected casing) |
+| Monotonic tier constraint in plan-prompt.md, tpl-plan.md, and tpl-reviewer-plan.md | PASS — identical substance in all three |
+| tpl-reviewer-plan.md has both new checklist items | PASS — items 6 (cohesion) and 7 (tier ordering) |
+| No contradictions between the 3 files | PASS — all files reinforce the same model |
 
-## 6. Specific task checks
+### CI Status — NOTE
 
-- **Remaining `agent=` prefixes in log msgs?** None found.
-- **Remaining `pid` fields in log output?** None. Only `process.pid` in log filename.
-- **Tool handlers with NO log coverage?** Core operational tools (execute-command, execute-prompt, send-files, receive-files, stop-prompt, provision-vcs-auth, revoke-vcs-auth) all have logging. Admin/introspection tools (cloud-control, credential-store-*, register-member, etc.) lack logging but are low-frequency — out of scope for this delta.
-- **Catch blocks silently swallowing errors?** Three minor cases noted below as nits; none blocking.
-
-## Nits (non-blocking)
-
-1. **`execute-command.ts:215`** — long-running task launch `catch` has no `logError`, while the regular exec catch at line 245 does. Error is returned to the caller so it's observable, but a `logError` here would keep the log file complete.
-
-2. **`provision-vcs-auth.ts:160`** and **`revoke-vcs-auth.ts:54`** — both catch blocks return error strings but don't call `logError`. These tools import `logLine` and emit success logs, so failures create a gap where errors are only visible in the MCP response, not the log file.
-
-3. **`execute-command.ts:119`** — `ensureCloudReady` catch returns error string without `logError`. Minor since it's a pre-execution guard.
-
-All three are non-blocking because errors are surfaced to the caller.
+No CI runs exist for this branch. This is a markdown-only sprint with no build or test suite, so there is nothing to gate on. Not a blocker.
 
 ---
 
 ## Summary
 
-All review criteria pass. The log schema is clean and consistent: `pid` gone, `mid`/`mem` in place, `agent=` prefixes stripped, raw command/prompt as the `msg`. Fault-tolerance wrapping is thorough. Windows flash fix covers both process start and env detection. Skill update adds important safety guidance against destructive `rm -f` on tracked project files. All 1017 tests green.
+All four Phase 1 tasks (T1–T4) and the V1 verification pass without issues. The count-based "2-3 work tasks per phase" rule is fully removed from all files. The cohesion rule and monotonic tier constraint are present and consistent across plan-prompt.md, tpl-plan.md, and tpl-reviewer-plan.md. The reviewer checklist has both new items. No contradictions found between any files.
+
+Phase 2 (T5–T7, V2) remains pending — those tasks modify single-pair-sprint.md and doer-reviewer.md, which are untouched in this phase as expected.
