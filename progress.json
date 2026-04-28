@@ -50,13 +50,13 @@
           "id": "T9",
           "type": "work",
           "title": "Structured logging for execute_prompt and execute_command",
-          "status": "pending",
+          "status": "completed",
           "subtasks": [
-            { "id": "T9.1", "title": "Log helper + credential masking", "status": "pending" },
-            { "id": "T9.2", "title": "execute_prompt logging", "status": "pending" },
-            { "id": "T9.3", "title": "execute_command logging", "status": "pending" }
+            { "id": "T9.1", "title": "Log helper + credential masking", "status": "completed" },
+            { "id": "T9.2", "title": "execute_prompt logging", "status": "completed" },
+            { "id": "T9.3", "title": "execute_command logging", "status": "completed" }
           ],
-          "notes": ""
+          "notes": "Added src/utils/log-helpers.ts with logLine/maskSecrets/truncateForLog. execute-prompt.ts: entry+exit logs (exit code + elapsed ms). execute-command.ts: entry log. strategy.ts: local child.pid log, updated LLM_PID log to execute_prompt format. ssh.ts: host log + updated LLM_PID log. All via console.error. 1020 tests pass."
         },
         {
           "id": "V2",

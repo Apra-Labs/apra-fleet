@@ -11,6 +11,7 @@ import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
+import { logLine, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -170,6 +171,8 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   }
 
   const folder = resolveTilde(input.run_from ?? agent.workFolder);
+
+  logLine('execute_command', `agent=${agent.friendlyName} cmd="${truncateForLog(maskSecrets(input.command))}"`);
 
   // -- Long-running background task path --
   if (input.long_running) {

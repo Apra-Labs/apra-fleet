@@ -7,6 +7,7 @@ import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
 import { setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { logLine } from '../utils/log-helpers.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -129,6 +130,7 @@ export async function execCommand(
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
   resetIdleTimer(poolKey(agent));
+  logLine('execute_command', `agent=${agent.friendlyName} host=${agent.host} (ssh)`);
 
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
@@ -187,7 +189,7 @@ export async function execCommand(
           if (m) {
             const pid = parseInt(m[1], 10);
             setStoredPid(agent.id, pid);
-            console.error(`[fleet] stored PID ${pid} for agent ${agent.id}`);
+            logLine('execute_prompt', `agent=${agent.friendlyName} LLM_PID=${pid} (ssh:${agent.host})`);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
             pidExtracted = true;
           }

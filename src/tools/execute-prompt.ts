@@ -16,6 +16,7 @@ import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid, isAgentStopped, clearAgentStopped } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
+import { logLine, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -161,9 +162,13 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
 
+  logLine('execute_prompt', `agent=${agent.friendlyName} prompt="${truncateForLog(maskSecrets(input.prompt))}"`);
+  const _epStartTime = Date.now();
+
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
 
+  let _epExitCode: number | 'error' = 'error';
   try {
     let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs);
     let parsed = provider.parseResponse(result);
@@ -185,6 +190,7 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
       parsed = provider.parseResponse(result);
     }
 
+    _epExitCode = result.code;
     if (result.code !== 0) {
       return buildFailureMessage(agent.friendlyName, result, provider);
     }
@@ -219,6 +225,7 @@ session: ${parsed.sessionId}`;
     writeStatusline(new Map([[agent.id, 'offline']]));
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
+    logLine('execute_prompt', `agent=${agent.friendlyName} exit=${_epExitCode} elapsed=${Date.now() - _epStartTime}ms`);
     inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
