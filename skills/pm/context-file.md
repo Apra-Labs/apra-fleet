@@ -27,4 +27,13 @@ Use `member_detail` → `llmProvider` to determine the correct target filename:
 - Send to member via `send_files` to the member's `work_folder` root before dispatch
 - Never commit to git — on first send, add the Agent Context File filename to the member's `.gitignore` via `execute_command → echo '<filename>' >> .gitignore` (`.fleet-task.md` is covered by onboarding Step 7)
 - On role switch (doer ↔ reviewer): send the new context file before dispatch
-- Remove before merge: `rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT-INSTRUCTIONS.md` (part of pre-merge cleanup — see doer-reviewer.md)
+- Remove before merge: use the cleanup command in `cleanup.md` — it restores the file from `origin/<base_branch>` if it existed there before the sprint (project deliverable), and only deletes it if it was a pure sprint artifact. **Never use plain `rm -f` or `git rm -f`** on these files — you will silently wipe a tracked project file.
+
+**If the agent context file was accidentally committed mid-sprint**, recover with:
+```bash
+git rm --cached CLAUDE.md          # un-track without deleting from disk
+git checkout origin/<base_branch> -- CLAUDE.md   # restore the project original
+git add CLAUDE.md
+git commit -m "fix: restore project CLAUDE.md, un-track agent context file"
+git push
+```

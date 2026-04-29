@@ -18,37 +18,43 @@ function getStream(): fs.WriteStream | null {
 }
 
 function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: string, memberId?: string, memberName?: string): void {
-  const stream = getStream();
-  if (!stream) return;
-  const line: Record<string, unknown> = { ts: new Date().toISOString(), level, tag };
-  if (memberId !== undefined) line.mid = memberId;
-  if (memberName !== undefined) line.mem = memberName;
-  line.msg = maskedMsg;
-  stream.write(JSON.stringify(line) + '\n');
+  try {
+    const stream = getStream();
+    if (!stream) return;
+    const line: Record<string, unknown> = { ts: new Date().toISOString(), level, tag };
+    if (memberId !== undefined) line.mid = memberId;
+    if (memberName !== undefined) line.mem = memberName;
+    line.msg = maskedMsg;
+    stream.write(JSON.stringify(line) + '\n');
+  } catch { /* ignore */ }
 }
 
 export function logLine(tag: string, msg: string, memberId?: string, memberName?: string): void {
   const maskedMsg = maskSecrets(msg);
-  console.error(`[fleet] ${tag} ${maskedMsg}`);
+  try { console.error(`[fleet] ${tag} ${maskedMsg}`); } catch { /* ignore */ }
   writeLog('info', tag, maskedMsg, memberId, memberName);
 }
 
 export function logWarn(tag: string, msg: string, memberId?: string, memberName?: string): void {
   const maskedMsg = maskSecrets(msg);
-  console.error(`[fleet:warn] ${tag} ${maskedMsg}`);
+  try { console.error(`[fleet:warn] ${tag} ${maskedMsg}`); } catch { /* ignore */ }
   writeLog('warn', tag, maskedMsg, memberId, memberName);
 }
 
 export function logError(tag: string, msg: string, memberId?: string, memberName?: string): void {
   const maskedMsg = maskSecrets(msg);
-  console.error(`[fleet:error] ${tag} ${maskedMsg}`);
+  try { console.error(`[fleet:error] ${tag} ${maskedMsg}`); } catch { /* ignore */ }
   writeLog('error', tag, maskedMsg, memberId, memberName);
 }
 
 export function maskSecrets(text: string): string {
-  return text
-    .replace(/\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/g, '[REDACTED]')
-    .replace(/sec:\/\/[a-zA-Z0-9_]+/g, '[REDACTED]');
+  try {
+    return text
+      .replace(/\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/g, '[REDACTED]')
+      .replace(/sec:\/\/[a-zA-Z0-9_]+/g, '[REDACTED]');
+  } catch {
+    return text;
+  }
 }
 
 export function truncateForLog(text: string, maxLen = 80): string {
