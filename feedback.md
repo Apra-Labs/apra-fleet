@@ -3,7 +3,7 @@
 **Reviewer:** fleet-rev
 **Date:** 2026-04-28
 **Scope:** Commits `b0c8720` and `5a3e73f` on `feat/pino-logging` (after approved `0661640`)
-**Verdict:** APPROVED (with one nit)
+**Verdict:** APPROVED
 
 ---
 
@@ -18,19 +18,17 @@
 
 | Item | Status | Notes |
 |------|--------|-------|
-| `pid` removed from JSON lines | PASS | `line.pid` deleted from `writeLog` |
+| `pid` removed from JSON lines | PASS | `line.pid` deleted from `writeLog`; only `process.pid` remains in log filename (correct) |
 | `member_id` renamed to `mid` | PASS | `line.mid = memberId` |
-| `mem` field added | PASS | Passed as 4th param `memberName` — differs from task spec ("resolved inside writeLog") but avoids circular dependency on registry. Pragmatic choice. |
-| `agent=xxx` prefix removed from all msg strings | PASS | Cleaned in execute-command, execute-prompt, stop-prompt, provision-vcs-auth, revoke-vcs-auth |
+| `mem` field added | PASS | Passed as 4th param `memberName` rather than resolved inside `writeLog` — avoids circular dependency on agent registry. Sound trade-off. |
+| `agent=xxx` prefix removed from all msg strings | PASS | Grep confirms zero `agent=` in `src/tools/` or `src/services/` log calls |
 | `execute_command` msg is raw command (80 char truncated) | PASS | `truncateForLog(maskSecrets(input.command))` |
 | `execute_prompt` msg is raw prompt (80 char truncated) | PASS | `truncateForLog(maskSecrets(input.prompt))` |
-| `send_files` emits log entries | PASS | `logLine` + `logError` |
-| `receive_files` emits log entries | PASS | `logLine` + `logError` |
+| `send_files` emits log entries | PASS | `logLine` on entry + `logError` in catch |
+| `receive_files` emits log entries | PASS | `logLine` on entry + `logError` in catch |
 | `logError` added in catch blocks | PASS | execute-command, execute-prompt, send-files, receive-files |
-| Useless PID/host log lines removed from strategy.ts | PASS | 2 `logLine` calls removed, `logLine` import removed |
-| Useless PID/host log lines removed from ssh.ts | PASS | 2 `logLine` calls removed, `logLine` import removed |
-
-Remaining `agent=` prefixes: **none** — `grep -r 'agent=' src/tools/` confirms all cleaned.
+| Useless PID/host log lines removed from strategy.ts | PASS | 2 `logLine` calls + import removed |
+| Useless PID/host log lines removed from ssh.ts | PASS | 2 `logLine` calls + import removed |
 
 ## 2. Fault tolerance
 
@@ -38,43 +36,47 @@ Remaining `agent=` prefixes: **none** — `grep -r 'agent=' src/tools/` confirms
 |------|--------|-------|
 | `writeLog` body in try/catch | PASS | Entire body wrapped, `catch { /* ignore */ }` |
 | `maskSecrets()` try/catch | PASS | Returns original `text` on error — correct fallback |
-| `console.error()` calls each wrapped in try/catch | PASS | All 3 functions (logLine, logWarn, logError) wrapped individually |
+| `console.error()` calls each wrapped | PASS | All 3 functions (logLine, logWarn, logError) wrapped individually |
 
 ## 3. Windows flash fix
 
 | Item | Status | Notes |
 |------|--------|-------|
-| `$_fleet_psi.CreateNoWindow = $true` in `pidWrapWindows` | PASS | Added between `UseShellExecute` and `Process::Start` |
+| `CreateNoWindow = $true` in `pidWrapWindows` | PASS | Inserted between `UseShellExecute` and `Process::Start` |
 | `windowsHide: true` in `getCleanEnv` execSync | PASS | Added to options object |
 
 ## 4. Skill update (`skills/pm/context-file.md`)
 
 | Item | Status | Notes |
 |------|--------|-------|
-| `rm -f` replaced with cleanup.md reference | PASS | Clear warning: "Never use plain `rm -f` or `git rm -f`" |
-| Mid-sprint recovery procedure added | PASS | 5-step `git rm --cached` / `git checkout origin/<base_branch>` recovery block |
+| `rm -f` replaced with cleanup.md reference | PASS | Clear warning against plain `rm -f` / `git rm -f` |
+| Mid-sprint recovery procedure added | PASS | 5-step `git rm --cached` + `git checkout origin/<base_branch>` recovery |
 
 ## 5. Tests
 
 | Item | Status | Notes |
 |------|--------|-------|
-| `npm test` all pass | PASS | 61 files, 1017 passed, 6 skipped, 0 failed |
-| `npm run build` | PASS | tsc clean |
-| Tests updated for new schema | PASS | `member_id` → `mid`, `pid` assertions removed, new `mem` field test added |
+| `npm test` | PASS | 61 files, 1017 passed, 6 skipped, 0 failed |
 
 ## 6. Specific task checks
 
-- **Remaining `agent=` prefixes in log msgs?** None. All cleaned.
-- **Remaining `pid` fields in log output?** None. Only `process.pid` in log filename (correct).
-- **Tool handlers with NO log coverage?** Many secondary tools (cloud-control, credential-store-*, register-member, etc.) still lack logging, but these are low-frequency admin operations — out of scope for this delta.
-- **Catch blocks that silently swallow errors without logging?** One nit — see below.
+- **Remaining `agent=` prefixes in log msgs?** None found.
+- **Remaining `pid` fields in log output?** None. Only `process.pid` in log filename.
+- **Tool handlers with NO log coverage?** Core operational tools (execute-command, execute-prompt, send-files, receive-files, stop-prompt, provision-vcs-auth, revoke-vcs-auth) all have logging. Admin/introspection tools (cloud-control, credential-store-*, register-member, etc.) lack logging but are low-frequency — out of scope for this delta.
+- **Catch blocks silently swallowing errors?** Three minor cases noted below as nits; none blocking.
 
-## Nit (non-blocking)
+## Nits (non-blocking)
 
-`execute-command.ts:215–217` — the long-running task launch `catch` block has no `logError`, while the regular exec catch at line 245 does. Consider adding `logError('execute_command', ...)` there for consistency. Not blocking since the error message is returned to the caller.
+1. **`execute-command.ts:215`** — long-running task launch `catch` has no `logError`, while the regular exec catch at line 245 does. Error is returned to the caller so it's observable, but a `logError` here would keep the log file complete.
+
+2. **`provision-vcs-auth.ts:160`** and **`revoke-vcs-auth.ts:54`** — both catch blocks return error strings but don't call `logError`. These tools import `logLine` and emit success logs, so failures create a gap where errors are only visible in the MCP response, not the log file.
+
+3. **`execute-command.ts:119`** — `ensureCloudReady` catch returns error string without `logError`. Minor since it's a pre-execution guard.
+
+All three are non-blocking because errors are surfaced to the caller.
 
 ---
 
 ## Summary
 
-All review criteria pass. Schema changes are clean and consistent. Fault tolerance wrapping is thorough — `writeLog`, `maskSecrets`, and all `console.error` calls are properly guarded. Windows flash fix addresses both the process start and env-detection paths. Skill update adds necessary safety guidance. Tests updated and green. The `mem` field implementation via parameter (rather than internal resolver) is a reasonable deviation that avoids a circular import — no objection.
+All review criteria pass. The log schema is clean and consistent: `pid` gone, `mid`/`mem` in place, `agent=` prefixes stripped, raw command/prompt as the `msg`. Fault-tolerance wrapping is thorough. Windows flash fix covers both process start and env detection. Skill update adds important safety guidance against destructive `rm -f` on tracked project files. All 1017 tests green.
