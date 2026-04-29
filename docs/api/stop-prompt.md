@@ -1,6 +1,6 @@
 # `stop_prompt` Tool API Reference
 
-Terminates the active LLM session for a fleet member and prevents further dispatches until the next explicit `execute_prompt`.
+Terminates the active LLM session for a fleet member.
 
 ---
 
@@ -22,9 +22,7 @@ Either `member_id` or `member_name` must be provided.
    - Windows: `taskkill /F /T /PID <pid>`
    Kill errors (e.g., process already gone) are swallowed — the operation always proceeds to step 2.
 
-2. **Set stopped flag** — marks the member as stopped in an in-memory registry. This flag prevents subsequent `execute_prompt` calls from spawning until explicitly cleared.
-
-3. **Return status** — returns a human-readable string indicating what happened.
+2. **Return status** — returns a human-readable string indicating what happened.
 
 ---
 
@@ -32,33 +30,29 @@ Either `member_id` or `member_name` must be provided.
 
 | Condition | Return message |
 |-----------|---------------|
-| Active PID found and killed | `🛑 Agent "<name>" stopped (killed PID <pid>). Next execute_prompt will require explicit intent.` |
-| No active session | `🛑 Agent "<name>" marked stopped (no active session was running). Next execute_prompt will require explicit intent.` |
+| Active PID found and killed | `🛑 Agent "<name>" stopped (killed PID <pid>).` |
+| No active session | `🛑 Agent "<name>" stopped (no active session was running).` |
 | Member not found | Error string describing the lookup failure |
 
 ---
 
 ## Effect on `execute_prompt`
 
-After `stop_prompt` is called, any `execute_prompt` call for that member returns an error message indicating the member was stopped, without spawning a session.
+After `stop_prompt` kills the process, the next `execute_prompt` call proceeds immediately — there is no interlock or error gate. The PID store is cleared by `tryKillPid`, so the next `execute_prompt` starts clean.
 
-The stopped flag is cleared automatically when the next `execute_prompt` call is made. The call that clears the flag **does** spawn normally — there is no confirmation step.
-
-This means `stop_prompt` acts as a **single-prompt interlock**: the PM must explicitly re-dispatch (issue a new `execute_prompt`) to resume the member.
+Always follow `stop_prompt` with `resume=false` to start a fresh session — the session state after a kill is unreliable.
 
 ---
 
 ## What This Stops
 
-`stop_prompt` kills the LLM process running on the **member machine** (the process tracked in the PID registry). It does not directly terminate the local Claude Code background agent that issued the dispatches.
-
-The stopped flag handles the background agent case indirectly: once set, the background agent's subsequent `execute_prompt` calls return errors rather than spawning new sessions, which terminates the dispatch loop.
+`stop_prompt` kills the LLM process running on the **member machine** (the process tracked in the PID registry). It does not directly terminate the local Claude Code background agent that issued the dispatches. The background agent's next `execute_prompt` call will proceed normally, so cancel it at the PM level if needed.
 
 ---
 
 ## No-op Safety
 
-Calling `stop_prompt` when no session is active is safe — it simply sets the stopped flag and returns the "no active session" message. There is no error condition for a clean no-op call.
+Calling `stop_prompt` when no session is active is safe — it returns the "no active session" message. There is no error condition for a clean no-op call.
 
 ---
 
@@ -72,5 +66,5 @@ Calling `stop_prompt` when no session is active is safe — it simply sets the s
 
 Response:
 ```
-🛑 Agent "dev-worker" stopped (killed PID 48291). Next execute_prompt will require explicit intent.
+🛑 Agent "dev-worker" stopped (killed PID 48291).
 ```

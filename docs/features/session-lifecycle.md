@@ -110,30 +110,10 @@ Callers that set only `timeout_s` behave identically to before (activity-based k
 
 ---
 
-## Stopped Flag Design (#148)
+## Cancellation via `stop_prompt`
 
-### Design decision
+`stop_prompt` kills the LLM process running **on the member machine** (the process tracked in the PID registry) and clears the PID store. It does not directly terminate the local Claude Code background agent that dispatched the work.
 
-The `stopped` flag is in-memory only — a `Map<string, boolean>` keyed by agent ID in `agent-helpers.ts`.
+The next `execute_prompt` call after a `stop_prompt` proceeds immediately — there is no interlock or error gate. Always follow `stop_prompt` with `resume=false` to start a fresh session, since session state after a kill is unreliable.
 
-```
-_stoppedAgents: Map<agentId → true>
-```
-
-### Why not persisted
-
-Same rationale as the PID store: a `stopped` flag is runtime state representing an operator decision made in the current session. Persisting it would cause a member to appear stuck after a fleet server restart, requiring manual intervention to clear.
-
-### Flag lifecycle
-
-1. `stop_prompt` kills the stored PID and sets the flag.
-2. `executePrompt` checks the flag at entry. If set, it returns an error message and does **not** spawn.
-3. A fresh `executePrompt` call (after the operator has assessed the situation) clears the flag — specifically, the flag is cleared after the kill-previous-PID step at the top of `executePrompt`, before the new session starts.
-
-This design means "stopped" is a single-prompt interlock: the next explicit `execute_prompt` call clears it. This is intentional — the PM must consciously re-dispatch, which prevents misbehaving background agents from auto-recovering.
-
-### What `stop_prompt` actually stops
-
-`stop_prompt` kills the LLM process running **on the member machine** (the process tracked in the PID registry). It does not directly stop the local Claude Code background agent that dispatched the work. The stopped flag prevents the background agent from issuing further `execute_prompt` calls after its current in-flight call returns.
-
-This is sufficient for the failure cascade scenario: PM calls `stop_prompt`, the LLM process on the member is killed, and the background agent's subsequent `execute_prompt` attempts are blocked by the flag.
+If the background agent is in a retry loop (stale-session or server-overload retry), the retry may still fire after the kill — whether it does depends on the exit code and error text of the killed process. In practice a kill produces empty stdout/stderr, which is not classified as a retriable error, so retries do not fire.
