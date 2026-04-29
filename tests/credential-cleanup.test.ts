@@ -53,7 +53,7 @@ import { scheduleCredentialCleanup, cancelCredentialCleanup, _getCleanupTimers }
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
-    id: 'agent-1', friendlyName: 'test', agentType: 'remote',
+    id: 'member-1', friendlyName: 'test', agentType: 'remote',
     host: '1.2.3.4', port: 22, username: 'user', authType: 'key',
     workFolder: '/home/user', createdAt: new Date().toISOString(),
     vcsProvider: 'github',
@@ -73,34 +73,34 @@ describe('scheduleCredentialCleanup', () => {
   });
 
   it('schedules a timer with default 55-minute TTL when no expiresAt', () => {
-    scheduleCredentialCleanup('agent-1');
-    expect(_getCleanupTimers().has('agent-1')).toBe(true);
+    scheduleCredentialCleanup('member-1');
+    expect(_getCleanupTimers().has('member-1')).toBe(true);
   });
 
   it('schedules timer based on expiresAt', () => {
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    scheduleCredentialCleanup('agent-1', expiresAt);
-    expect(_getCleanupTimers().has('agent-1')).toBe(true);
+    scheduleCredentialCleanup('member-1', expiresAt);
+    expect(_getCleanupTimers().has('member-1')).toBe(true);
   });
 
-  it('calls revoke when timer fires and agent has vcsProvider', async () => {
-    const agent = makeAgent();
-    mockGetAllAgents.mockReturnValue([agent]);
+  it('calls revoke when timer fires and member has vcsProvider', async () => {
+    const member = makeAgent();
+    mockGetAllAgents.mockReturnValue([member]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    scheduleCredentialCleanup('agent-1');
+    scheduleCredentialCleanup('member-1');
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
 
     expect(mockRevoke).toHaveBeenCalledOnce();
-    expect(_getCleanupTimers().has('agent-1')).toBe(false);
+    expect(_getCleanupTimers().has('member-1')).toBe(false);
   });
 
-  it('does not call revoke when agent has no vcsProvider', async () => {
+  it('does not call revoke when member has no vcsProvider', async () => {
     mockGetAllAgents.mockReturnValue([makeAgent({ vcsProvider: undefined })]);
 
-    scheduleCredentialCleanup('agent-1');
+    scheduleCredentialCleanup('member-1');
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
 
     expect(mockRevoke).not.toHaveBeenCalled();
@@ -111,28 +111,28 @@ describe('scheduleCredentialCleanup', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockRejectedValue(new Error('network error'));
 
-    scheduleCredentialCleanup('agent-1');
+    scheduleCredentialCleanup('member-1');
     await expect(vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000)).resolves.not.toThrow();
   });
 
-  it('cancels previous timer when re-provisioning same agent', () => {
-    scheduleCredentialCleanup('agent-1');
-    const timer1 = _getCleanupTimers().get('agent-1');
+  it('cancels previous timer when re-provisioning same member', () => {
+    scheduleCredentialCleanup('member-1');
+    const timer1 = _getCleanupTimers().get('member-1');
 
-    scheduleCredentialCleanup('agent-1');
-    const timer2 = _getCleanupTimers().get('agent-1');
+    scheduleCredentialCleanup('member-1');
+    const timer2 = _getCleanupTimers().get('member-1');
 
     expect(timer2).not.toBe(timer1);
     expect(_getCleanupTimers().size).toBe(1);
   });
 
   it('multiple agents have independent timers', () => {
-    scheduleCredentialCleanup('agent-1');
-    scheduleCredentialCleanup('agent-2');
+    scheduleCredentialCleanup('member-1');
+    scheduleCredentialCleanup('member-2');
 
     expect(_getCleanupTimers().size).toBe(2);
-    expect(_getCleanupTimers().has('agent-1')).toBe(true);
-    expect(_getCleanupTimers().has('agent-2')).toBe(true);
+    expect(_getCleanupTimers().has('member-1')).toBe(true);
+    expect(_getCleanupTimers().has('member-2')).toBe(true);
   });
 });
 
@@ -148,22 +148,22 @@ describe('cancelCredentialCleanup', () => {
   });
 
   it('cancels the timer and removes from map', () => {
-    scheduleCredentialCleanup('agent-1');
-    expect(_getCleanupTimers().has('agent-1')).toBe(true);
+    scheduleCredentialCleanup('member-1');
+    expect(_getCleanupTimers().has('member-1')).toBe(true);
 
-    cancelCredentialCleanup('agent-1');
-    expect(_getCleanupTimers().has('agent-1')).toBe(false);
+    cancelCredentialCleanup('member-1');
+    expect(_getCleanupTimers().has('member-1')).toBe(false);
   });
 
-  it('does not throw when cancelling non-existent agent', () => {
-    expect(() => cancelCredentialCleanup('no-such-agent')).not.toThrow();
+  it('does not throw when cancelling non-existent member', () => {
+    expect(() => cancelCredentialCleanup('no-such-member')).not.toThrow();
   });
 
   it('prevents revoke from firing after cancellation', async () => {
     mockGetAllAgents.mockReturnValue([makeAgent()]);
 
-    scheduleCredentialCleanup('agent-1');
-    cancelCredentialCleanup('agent-1');
+    scheduleCredentialCleanup('member-1');
+    cancelCredentialCleanup('member-1');
 
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
 

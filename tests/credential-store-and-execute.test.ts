@@ -35,7 +35,7 @@ vi.mock('../src/services/strategy.js', () => ({
 }));
 
 vi.mock('../src/services/cloud/lifecycle.js', () => ({
-  ensureCloudReady: vi.fn((agent: any) => Promise.resolve(agent)),
+  ensureCloudReady: vi.fn((member: any) => Promise.resolve(member)),
 }));
 
 // ---------------------------------------------------------------------------
@@ -129,14 +129,14 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     const name = `tok${Date.now()}`;
     credentialSet(name, 'mypassword', false, 'allow');
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `echo {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('Exit code: 0');
@@ -149,13 +149,13 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
   });
 
   it('returns error when {{secure.NAME}} token is not found (nonexistent_cred)', async () => {
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'echo {{secure.nonexistent_cred}}',
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('not found');
@@ -167,22 +167,22 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     const name = `restartTok${Date.now()}`;
     credentialSet(name, 'restart-secret', false, 'allow');
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'python train.py',
       long_running: true,
       restart_command: `python resume.py --token {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     // Task should launch (not error out about missing token)
     expect(result).toContain('Task launched');
 
-    // The wrapper script base64 written to the agent should contain the resolved secret
+    // The wrapper script base64 written to the member should contain the resolved secret
     const calledCmd = mockExecCommand.mock.calls[0][0] as string;
     // The script is base64-encoded; verify the launch command was invoked
     expect(calledCmd).toContain('base64');
@@ -210,15 +210,15 @@ describe('execute_command: output redaction', () => {
     const secret = 'supersecrettokenabc123';
     credentialSet(name, secret, false, 'allow');
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     // Simulate command that echoes the secret back
     mockExecCommand.mockResolvedValue({ stdout: `token=${secret}`, stderr: '', code: 0 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `echo {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     // Secret should be redacted in returned output
@@ -233,14 +233,14 @@ describe('execute_command: output redaction', () => {
     const secret = 'stderrsecretxyz';
     credentialSet(name, secret, false, 'allow');
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: `Error: bad token ${secret}`, code: 1 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `cmd {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).not.toContain(secret);
@@ -250,14 +250,14 @@ describe('execute_command: output redaction', () => {
   });
 
   it('does not alter output when no credentials are used', async () => {
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'hello world', stderr: '', code: 0 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'echo hello world',
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('hello world');
@@ -301,14 +301,14 @@ describe('execute_command: network egress policy', () => {
     const name = `egressallow${Date.now()}`;
     credentialSet(name, 'mytoken', false, 'allow');
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'fetched', stderr: '', code: 0 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `curl https://example.com --header {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(mockCollectOobConfirm).not.toHaveBeenCalled();
@@ -321,13 +321,13 @@ describe('execute_command: network egress policy', () => {
     const name = `egressdeny${Date.now()}`;
     credentialSet(name, 'mytoken', false, 'deny');
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `curl https://example.com --header {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('Blocked');
@@ -343,14 +343,14 @@ describe('execute_command: network egress policy', () => {
 
     mockCollectOobConfirm.mockResolvedValue({ confirmed: true, terminalUnavailable: false });
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'fetched', stderr: '', code: 0 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `curl https://example.com --header {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(mockCollectOobConfirm).toHaveBeenCalledWith(name);
@@ -365,13 +365,13 @@ describe('execute_command: network egress policy', () => {
 
     mockCollectOobConfirm.mockResolvedValue({ confirmed: false, terminalUnavailable: false });
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `wget https://example.com --header {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('was not confirmed');
@@ -386,13 +386,13 @@ describe('execute_command: network egress policy', () => {
 
     mockCollectOobConfirm.mockResolvedValue({ confirmed: false, terminalUnavailable: true });
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `ssh user@host --key {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('could not be confirmed');
@@ -405,15 +405,15 @@ describe('execute_command: network egress policy', () => {
     const name = `egressdenynonet${Date.now()}`;
     credentialSet(name, 'mytoken', false, 'deny');
 
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
     // Command does not contain any network tool pattern
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `echo {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     // deny only blocks when a network tool is present — pure echo is fine

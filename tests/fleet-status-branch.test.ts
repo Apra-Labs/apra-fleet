@@ -24,16 +24,16 @@ describe('fleetStatus branch display', () => {
   });
 
   it('shows cached lastBranch in compact output when set', async () => {
-    const agent = makeTestAgent({ friendlyName: 'branch-member', lastBranch: 'feature/my-branch' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'branch-member', lastBranch: 'feature/my-branch' });
+    addAgent(member);
 
     const result = await fleetStatus({ format: 'compact' });
     expect(result).toContain('branch=feature/my-branch');
   });
 
   it('omits branch from compact output when lastBranch is not set', async () => {
-    const agent = makeTestAgent({ friendlyName: 'no-branch-member' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'no-branch-member' });
+    addAgent(member);
 
     const result = await fleetStatus({ format: 'compact' });
     expect(result).not.toContain('branch=');

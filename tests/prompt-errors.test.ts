@@ -29,9 +29,9 @@ describe('isRetryable', () => {
 });
 
 describe('authErrorAdvice', () => {
-  it('includes agent name, /login, and provision_llm_auth', () => {
-    const advice = authErrorAdvice('my-agent');
-    expect(advice).toContain('my-agent');
+  it('includes member name, /login, and provision_llm_auth', () => {
+    const advice = authErrorAdvice('my-member');
+    expect(advice).toContain('my-member');
     expect(advice).toContain('/login');
     expect(advice).toContain('provision_llm_auth');
   });

@@ -33,7 +33,7 @@ vi.mock('../src/services/strategy.js', () => ({
 }));
 
 vi.mock('../src/services/cloud/lifecycle.js', () => ({
-  ensureCloudReady: vi.fn((agent: any) => Promise.resolve(agent)),
+  ensureCloudReady: vi.fn((member: any) => Promise.resolve(member)),
 }));
 
 vi.mock('../src/services/auth-socket.js', () => ({
@@ -264,13 +264,13 @@ describe('execute_command: credential scoping rejection', () => {
     credentialSet(name, 'secret', false, 'allow', ['fleet-dev']);
 
     // Use a member with a different friendlyName
-    const agent = makeTestAgent({ os: 'linux', friendlyName: 'fleet-rev' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux', friendlyName: 'fleet-rev' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `echo {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('❌');
@@ -284,14 +284,14 @@ describe('execute_command: credential scoping rejection', () => {
     const name = `cmd_allowed_${Date.now()}`;
     credentialSet(name, 'secret', false, 'allow', ['fleet-dev']);
 
-    const agent = makeTestAgent({ os: 'linux', friendlyName: 'fleet-dev' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'linux', friendlyName: 'fleet-dev' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: `echo {{secure.${name}}}`,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('Exit code: 0');

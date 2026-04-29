@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { serverVersion } from './version.js';
+import { logLine, logError } from './utils/log-helpers.js';
 
 // --- CLI dispatch (before MCP server imports to keep --version fast) ---
 const arg = process.argv[2];
@@ -31,11 +32,11 @@ if (arg === 'install') {
   // Dynamic import so MCP deps aren't loaded for install
   import('./cli/install.js')
     .then(m => m.runInstall(process.argv.slice(3)))
-    .catch(err => { console.error('Install failed:', err.message); process.exit(1); });
+    .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'auth') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
-    .catch(err => { console.error('Auth failed:', err.message); process.exit(1); });
+    .catch(err => { logError('cli', `Auth failed: ${err.message}`); process.exit(1); });
 } else {
   // Default: start MCP server
   startServer();
@@ -193,7 +194,7 @@ async function startServer() {
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Optionally stop the cloud instance automatically when the task completes.', monitorTaskSchema.shape, wrapTool('monitor_task', (input) => monitorTask(input as any)));
 
   // --- Agent Lifecycle ---
-  server.tool('stop_prompt', 'Kill the active LLM process on a member and prevent it from re-dispatching until a fresh execute_prompt clears the flag. Use when a background agent is stuck or needs to be cancelled.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
+  server.tool('stop_prompt', 'Kill the active LLM process on a member. Always call TaskStop on the dispatching background agent after calling this.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
   // --- Credential Store ---
   server.tool('credential_store_set', 'Collect a secret from the user out-of-band and store it. Returns a handle (sec://NAME) and scope. Use {{secure.NAME}} tokens in execute_command to inject the value.', credentialStoreSetSchema.shape, wrapTool('credential_store_set', (input) => credentialStoreSet(input as any)));
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
@@ -203,6 +204,9 @@ async function startServer() {
   // --- Start Server ---
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  const { FLEET_DIR } = await import('./paths.js');
+  logLine('startup', `apra-fleet ${serverVersion} started — FLEET_DIR=${FLEET_DIR}`);
 
   idleManager.start();
   void cleanupStaleTasks();

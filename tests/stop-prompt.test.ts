@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { setStoredPid, clearStoredPid, getStoredPid, isAgentStopped, clearAgentStopped } from '../src/utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
 import { stopPrompt } from '../src/tools/stop-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -17,7 +17,7 @@ vi.mock('../src/services/strategy.js', () => ({
 }));
 
 describe('stop_prompt (T8)', () => {
-  let agentId: string;
+  let memberId: string;
 
   beforeEach(() => {
     backupAndResetRegistry();
@@ -26,10 +26,7 @@ describe('stop_prompt (T8)', () => {
 
   afterEach(() => {
     restoreRegistry();
-    if (agentId) {
-      clearStoredPid(agentId);
-      clearAgentStopped(agentId);
-    }
+    if (memberId) clearStoredPid(memberId);
   });
 
   it('returns not-found error for unknown member', async () => {
@@ -38,62 +35,53 @@ describe('stop_prompt (T8)', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('kills active PID and sets stopped flag when PID is stored', async () => {
-    const agent = makeTestAgent({ friendlyName: 'kill-me' });
-    agentId = agent.id;
-    addAgent(agent);
-    setStoredPid(agentId, 9999);
+  it('kills active PID when PID is stored', async () => {
+    const member = makeTestAgent({ friendlyName: 'kill-me' });
+    memberId = member.id;
+    addAgent(member);
+    setStoredPid(memberId, 9999);
 
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 }); // kill
 
-    const result = await stopPrompt({ member_id: agentId });
+    const result = await stopPrompt({ member_id: memberId });
 
-    // Kill command should have been issued
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
     expect(mockExecCommand.mock.calls[0][0]).toContain('9999');
-
-    // PID cleared, stopped flag set
-    expect(getStoredPid(agentId)).toBeUndefined();
-    expect(isAgentStopped(agentId)).toBe(true);
-
-    // Response mentions PID
+    expect(getStoredPid(memberId)).toBeUndefined();
     expect(result).toContain('9999');
     expect(result).toContain('stopped');
   });
 
-  it('sets stopped flag even when no PID is stored', async () => {
-    const agent = makeTestAgent({ friendlyName: 'idle-agent' });
-    agentId = agent.id;
-    addAgent(agent);
-    // no PID stored
+  it('returns stopped message when no PID is stored', async () => {
+    const member = makeTestAgent({ friendlyName: 'idle-member' });
+    memberId = member.id;
+    addAgent(member);
 
-    const result = await stopPrompt({ member_id: agentId });
+    const result = await stopPrompt({ member_id: memberId });
 
     expect(mockExecCommand).not.toHaveBeenCalled();
-    expect(isAgentStopped(agentId)).toBe(true);
     expect(result).toContain('stopped');
   });
 
   it('resolves member by friendly name', async () => {
-    const agent = makeTestAgent({ friendlyName: 'name-lookup-agent' });
-    agentId = agent.id;
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'name-lookup-member' });
+    memberId = member.id;
+    addAgent(member);
 
-    const result = await stopPrompt({ member_name: 'name-lookup-agent' });
+    const result = await stopPrompt({ member_name: 'name-lookup-member' });
 
-    expect(result).toContain('name-lookup-agent');
-    expect(isAgentStopped(agentId)).toBe(true);
+    expect(result).toContain('name-lookup-member');
   });
 
   it('kill command uses 5000ms timeout', async () => {
-    const agent = makeTestAgent({ friendlyName: 'kill-timeout-agent' });
-    agentId = agent.id;
-    addAgent(agent);
-    setStoredPid(agentId, 1234);
+    const member = makeTestAgent({ friendlyName: 'kill-timeout-member' });
+    memberId = member.id;
+    addAgent(member);
+    setStoredPid(memberId, 1234);
 
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
 
-    await stopPrompt({ member_id: agentId });
+    await stopPrompt({ member_id: memberId });
 
     expect(mockExecCommand.mock.calls[0][1]).toBe(5000);
   });

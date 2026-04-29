@@ -20,8 +20,8 @@ describe('LocalStrategy', () => {
   });
 
   it('execCommand() runs command locally and returns stdout/code', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
 
     const result = await strategy.execCommand('echo hello-fleet');
     expect(result.stdout.trim()).toBe('hello-fleet');
@@ -31,8 +31,8 @@ describe('LocalStrategy', () => {
   it('execCommand() does not leak CLAUDECODE to child process', async () => {
     process.env.CLAUDECODE = 'test-leak-marker';
     try {
-      const agent = makeLocalAgent({ workFolder: tmpDir });
-      const strategy = getStrategy(agent);
+      const member = makeLocalAgent({ workFolder: tmpDir });
+      const strategy = getStrategy(member);
       const echoCmd = process.platform === 'win32'
         ? 'if ($env:CLAUDECODE) { Write-Output $env:CLAUDECODE }'
         : 'printenv CLAUDECODE || true';
@@ -44,16 +44,16 @@ describe('LocalStrategy', () => {
   });
 
   it('execCommand() returns non-zero code for failed commands', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
 
     const result = await strategy.execCommand('exit 42');
     expect(result.code).not.toBe(0);
   });
 
   it('transferFiles() copies files to target folder', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
 
     const srcFile = path.join(os.tmpdir(), `fleet-src-${Date.now()}.txt`);
     fs.writeFileSync(srcFile, 'test content');
@@ -72,8 +72,8 @@ describe('LocalStrategy', () => {
   });
 
   it('deleteFiles() removes a file from the work folder', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
 
     const filePath = path.join(tmpDir, 'to-delete.txt');
     fs.writeFileSync(filePath, 'bye');
@@ -86,8 +86,8 @@ describe('LocalStrategy', () => {
     const spacedDir = path.join(os.tmpdir(), `fleet test dir ${Date.now()}`);
     fs.mkdirSync(spacedDir, { recursive: true });
     try {
-      const agent = makeLocalAgent({ workFolder: spacedDir });
-      const strategy = getStrategy(agent);
+      const member = makeLocalAgent({ workFolder: spacedDir });
+      const strategy = getStrategy(member);
 
       fs.writeFileSync(path.join(spacedDir, 'spaced.txt'), 'content');
       await strategy.deleteFiles(['spaced.txt']);
@@ -98,8 +98,8 @@ describe('LocalStrategy', () => {
   });
 
   it('deleteFiles() handles file names with spaces', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
 
     const filePath = path.join(tmpDir, 'my file.txt');
     fs.writeFileSync(filePath, 'content');
@@ -112,8 +112,8 @@ describe('LocalStrategy', () => {
     const spacedDir = path.join(os.tmpdir(), `fleet test ${Date.now()}`);
     fs.mkdirSync(spacedDir, { recursive: true });
     try {
-      const agent = makeLocalAgent({ workFolder: spacedDir });
-      const strategy = getStrategy(agent);
+      const member = makeLocalAgent({ workFolder: spacedDir });
+      const strategy = getStrategy(member);
 
       fs.writeFileSync(path.join(spacedDir, 'my file.txt'), 'content');
       await strategy.deleteFiles(['my file.txt']);
@@ -124,8 +124,8 @@ describe('LocalStrategy', () => {
   });
 
   it('deleteFiles() is a no-op for empty list', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
     await expect(strategy.deleteFiles([])).resolves.toBeUndefined();
   });
 
@@ -140,8 +140,8 @@ describe('LocalStrategy', () => {
   });
 
   it('transferFiles() copies to subfolder', async () => {
-    const agent = makeLocalAgent({ workFolder: tmpDir });
-    const strategy = getStrategy(agent);
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
 
     const srcFile = path.join(os.tmpdir(), `fleet-src-${Date.now()}.txt`);
     fs.writeFileSync(srcFile, 'sub content');
