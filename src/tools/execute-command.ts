@@ -11,7 +11,7 @@ import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
-import { logLine, logError, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -24,7 +24,7 @@ export function resolveTilde(p: string): string {
 export const executeCommandSchema = z.object({
   ...memberIdentifier,
   command: z.string().describe('The shell command to execute'),
-  timeout_ms: z.number().default(120000).describe('Timeout in milliseconds (default: 2 minutes)'),
+  timeout_s: z.number().default(120).describe('Timeout in seconds (default: 120s / 2 minutes)'),
   run_from: z.string().optional().describe("Override directory to run from. Defaults to member's registered work folder — rarely needed."),
   long_running: z.boolean().optional().default(false).describe('Run as background task; returns task_id for use with monitor_task'),
   max_retries: z.number().int().min(0).max(10).optional().default(3).describe('Max crash retries (long_running only)'),
@@ -172,7 +172,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   const folder = resolveTilde(input.run_from ?? agent.workFolder);
 
-  logLine('execute_command', truncateForLog(maskSecrets(input.command)), agent.id, agent.friendlyName);
+  const scope = new LogScope('execute_command', truncateForLog(maskSecrets(input.command)), agent);
 
   // -- Long-running background task path --
   if (input.long_running) {
@@ -203,7 +203,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
-      const launchResult = await strategy.execCommand(launchCmd, input.timeout_ms);
+      const launchResult = await strategy.execCommand(launchCmd, input.timeout_s * 1000);
       touchAgent(agent.id);
       writeStatusline();
       // Redact credential values from any output returned by the launch command (H2)
@@ -226,7 +226,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    const result = await strategy.execCommand(wrapped, input.timeout_ms);
+    const result = await strategy.execCommand(wrapped, input.timeout_s * 1000);
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
     const parts: string[] = [];
@@ -239,12 +239,15 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
     writeStatusline();
 
+    if (result.code !== 0) scope.fail(`exit=${result.code}`);
+    else scope.ok(`exit=0`);
+
     return result.code === 0
       ? `Exit code: 0\n${output}`
       : `Exit code: ${result.code}\n${output}`;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
-    logError('execute_command', err.message, agent.id, agent.friendlyName);
+    scope.abort(err.message);
     return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
   }
 }

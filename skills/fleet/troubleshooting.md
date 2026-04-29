@@ -3,8 +3,8 @@
 | Symptom | Action |
 |---------|--------|
 | Empty response | Check auth token expiry → re-provision via `provision_vcs_auth` |
-| Timeout (inactivity) | `timeout_ms`: fires when no stdout/stderr output arrives for N ms (default 300000ms / 5 min). Applies to all members and all providers — transport-level, not provider-specific. Common cause: test runners and build tools that buffer output (npm test, vitest, cargo build) producing no output for long stretches even while active. Fix: increase `timeout_ms` to 600000–1200000ms for build/test dispatches. |
-| Timeout (total) | `max_total_ms`: fires after N ms of total elapsed time regardless of output activity. Provider-agnostic. Use for hard ceilings on long-running jobs. Set alongside `timeout_ms` when you need both a silence guard and a wall-clock cap. |
+| Timeout (inactivity) | `timeout_s`: fires when no stdout/stderr output arrives for N seconds (default 300s / 5 min). Applies to all members and all providers — transport-level, not provider-specific. Common cause: test runners and build tools that buffer output (npm test, vitest, cargo build) producing no output for long stretches even while active. Fix: increase `timeout_s` to 600–1200 for build/test dispatches. |
+| Timeout (total) | `max_total_s`: fires after N seconds of total elapsed time regardless of output activity. Provider-agnostic. Use for hard ceilings on long-running jobs. Set alongside `timeout_s` when you need both a silence guard and a wall-clock cap. |
 | Permission denied | Run `compose_permissions` for the member — it produces provider-native config. Claude: check `.claude/settings.local.json`. Gemini: check `.gemini/policies/`. Codex: check `.codex/config.toml` approval mode. Copilot: check `.github/copilot/settings.local.json`. |
 | Stuck after reset | Escalate model (cheap→standard→premium). Still stuck? Flag to user |
 | Auth error (401/403) | GitHub App: re-mint via `provision_vcs_auth`. Bitbucket/Azure DevOps: ask user for fresh token, provision, retry. See auth-*.md |

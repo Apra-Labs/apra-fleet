@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { serverVersion } from './version.js';
-import { logLine } from './utils/log-helpers.js';
+import { logLine, logError } from './utils/log-helpers.js';
 
 // --- CLI dispatch (before MCP server imports to keep --version fast) ---
 const arg = process.argv[2];
@@ -32,11 +32,11 @@ if (arg === 'install') {
   // Dynamic import so MCP deps aren't loaded for install
   import('./cli/install.js')
     .then(m => m.runInstall(process.argv.slice(3)))
-    .catch(err => { logLine('cli', `Install failed: ${err.message}`); process.exit(1); });
+    .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'auth') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
-    .catch(err => { logLine('cli', `Auth failed: ${err.message}`); process.exit(1); });
+    .catch(err => { logError('cli', `Auth failed: ${err.message}`); process.exit(1); });
 } else {
   // Default: start MCP server
   startServer();

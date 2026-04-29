@@ -17,34 +17,78 @@ function getStream(): fs.WriteStream | null {
   return _stream;
 }
 
-function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: string, memberId?: string, memberName?: string): void {
+type LogAgent = { id: string; friendlyName: string };
+
+function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: string, agent?: LogAgent, inv?: string): void {
   try {
     const stream = getStream();
     if (!stream) return;
     const line: Record<string, unknown> = { ts: new Date().toISOString(), level, tag };
-    if (memberId !== undefined) line.mid = memberId;
-    if (memberName !== undefined) line.mem = memberName;
+    if (inv !== undefined) line.inv = inv;
+    if (agent !== undefined) {
+      line.mid = agent.id;
+      if (agent.friendlyName) line.mem = agent.friendlyName;
+    }
     line.msg = maskedMsg;
     stream.write(JSON.stringify(line) + '\n');
   } catch { /* ignore */ }
 }
 
-export function logLine(tag: string, msg: string, memberId?: string, memberName?: string): void {
+export function logLine(tag: string, msg: string, agent?: LogAgent): void {
   const maskedMsg = maskSecrets(msg);
   try { console.error(`[fleet] ${tag} ${maskedMsg}`); } catch { /* ignore */ }
-  writeLog('info', tag, maskedMsg, memberId, memberName);
+  writeLog('info', tag, maskedMsg, agent);
 }
 
-export function logWarn(tag: string, msg: string, memberId?: string, memberName?: string): void {
+export function logWarn(tag: string, msg: string, agent?: LogAgent): void {
   const maskedMsg = maskSecrets(msg);
   try { console.error(`[fleet:warn] ${tag} ${maskedMsg}`); } catch { /* ignore */ }
-  writeLog('warn', tag, maskedMsg, memberId, memberName);
+  writeLog('warn', tag, maskedMsg, agent);
 }
 
-export function logError(tag: string, msg: string, memberId?: string, memberName?: string): void {
+export function logError(tag: string, msg: string, agent?: LogAgent): void {
   const maskedMsg = maskSecrets(msg);
   try { console.error(`[fleet:error] ${tag} ${maskedMsg}`); } catch { /* ignore */ }
-  writeLog('error', tag, maskedMsg, memberId, memberName);
+  writeLog('error', tag, maskedMsg, agent);
+}
+
+const LEVEL_PREFIX: Record<'info' | 'warn' | 'error', string> = {
+  info:  '[fleet]',
+  warn:  '[fleet:warn]',
+  error: '[fleet:error]',
+};
+
+export class LogScope {
+  private readonly inv: string;
+  private readonly start: number;
+  private readonly tag: string;
+  private readonly agent?: LogAgent;
+
+  constructor(tag: string, entryMsg: string, agent?: LogAgent) {
+    this.inv   = Math.random().toString(36).slice(2, 7);
+    this.start = Date.now();
+    this.tag   = tag;
+    this.agent = agent;
+    this._emit('info', entryMsg);
+  }
+
+  info(msg: string):  void { this._emit('info',  msg); }
+  warn(msg: string):  void { this._emit('warn',  msg); }
+  error(msg: string): void { this._emit('error', msg); }
+
+  ok(msg = 'done'):   void { this._exit('info',  msg); }
+  fail(msg: string):  void { this._exit('warn',  msg); }
+  abort(msg: string): void { this._exit('error', msg); }
+
+  private _emit(level: 'info' | 'warn' | 'error', msg: string): void {
+    const masked = maskSecrets(msg);
+    try { console.error(`${LEVEL_PREFIX[level]} ${this.tag} ${masked}`); } catch { /* ignore */ }
+    writeLog(level, this.tag, masked, this.agent, this.inv);
+  }
+
+  private _exit(level: 'info' | 'warn' | 'error', msg: string): void {
+    this._emit(level, `${msg} elapsed=${Date.now() - this.start}ms`);
+  }
 }
 
 export function maskSecrets(text: string): string {

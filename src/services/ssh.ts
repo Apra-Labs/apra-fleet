@@ -125,7 +125,8 @@ export async function execCommand(
   agent: Agent,
   command: string,
   timeoutMs: number = 30000,
-  maxTotalMs?: number
+  maxTotalMs?: number,
+  onPidCaptured?: (pid: number) => void
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
   resetIdleTimer(poolKey(agent));
@@ -187,6 +188,7 @@ export async function execCommand(
           if (m) {
             const pid = parseInt(m[1], 10);
             setStoredPid(agent.id, pid);
+            onPidCaptured?.(pid);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
             pidExtracted = true;
           }

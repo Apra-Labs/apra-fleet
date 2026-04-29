@@ -36,7 +36,7 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
 
 import { IdleManager } from '../src/services/cloud/idle-manager.js';
 
-// Cloud agent with lastUsed 2 hours ago
+// Cloud member with lastUsed 2 hours ago
 const cloudAgent: Agent = {
   id: 'cloud-id',
   friendlyName: 'cloud-worker',
@@ -52,7 +52,7 @@ const cloudAgent: Agent = {
   cloud: { provider: 'aws' as const, instanceId: 'i-12345678', region: 'us-east-1', idleTimeoutMin: 1 },
 };
 
-// Local agent — no cloud field, should never be checked
+// Local member — no cloud field, should never be checked
 const localAgent: Agent = {
   id: 'local-id',
   friendlyName: 'local-worker',
@@ -96,7 +96,7 @@ describe('IdleManager', () => {
       mockGetInstanceState.mockResolvedValue('running');
 
       const manager = new IdleManager();
-      manager.start(60_000); // 1 min timeout; agent was active 1s ago
+      manager.start(60_000); // 1 min timeout; member was active 1s ago
 
       await manager.checkOnce();
 
@@ -108,7 +108,7 @@ describe('IdleManager', () => {
   // --- resetTimer() ---
 
   describe('resetTimer()', () => {
-    it('prevents idle stop for an agent just touched', async () => {
+    it('prevents idle stop for an member just touched', async () => {
       // Agent lastUsed = 2h ago — would normally trigger stop at 1min timeout
       mockGetAllAgents.mockReturnValue([cloudAgent]);
       mockGetInstanceState.mockResolvedValue('running');
@@ -135,8 +135,8 @@ describe('IdleManager', () => {
       const hookFn = mockSetIdleTouchHook.mock.calls[0][0];
       hookFn(cloudAgent.id);
 
-      // Verify the hook updated lastActivity (indirectly: agent stays non-idle after hook call)
-      // We test this via the no-stop behavior: agent was 2h idle, but hook reset the timer
+      // Verify the hook updated lastActivity (indirectly: member stays non-idle after hook call)
+      // We test this via the no-stop behavior: member was 2h idle, but hook reset the timer
       manager.resetTimer(cloudAgent.id); // equivalent to what the hook does
       expect(typeof hookFn).toBe('function');
       manager.stop();
@@ -273,7 +273,7 @@ describe('IdleManager', () => {
       manager.stop();
     });
 
-    it('mutex: skips agent already being stopped by a concurrent check', async () => {
+    it('mutex: skips member already being stopped by a concurrent check', async () => {
       let resolveStop!: () => void;
       const slowStop = new Promise<void>(r => { resolveStop = r; });
 
@@ -289,7 +289,7 @@ describe('IdleManager', () => {
       const check1 = manager.checkOnce();
 
       // Drain microtask queue so check1 advances to the await stopInstance point
-      // and adds the agent to the stopping set
+      // and adds the member to the stopping set
       await new Promise(r => setImmediate(r));
 
       // Start check2 while check1 is still awaiting the slow stop

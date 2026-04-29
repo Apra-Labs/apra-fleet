@@ -66,9 +66,9 @@ describe('log-helpers', () => {
     expect(Object.keys(lines[0])).toEqual(['ts', 'level', 'tag', 'msg']);
   });
 
-  it('includes mid between tag and msg when memberId provided; omits when not', async () => {
+  it('includes mid between tag and msg when member provided; omits when not', async () => {
     const { logLine } = await import('../src/utils/log-helpers.js');
-    logLine('tag', 'with member', 'member-uuid-123');
+    logLine('tag', 'with member', { id: 'member-uuid-123', friendlyName: '' });
     logLine('tag', 'without member');
 
     const lines = parsedLines();
@@ -81,9 +81,9 @@ describe('log-helpers', () => {
     expect(lines[1]).not.toHaveProperty('mid');
   });
 
-  it('includes mem field when memberName provided as 4th arg', async () => {
+  it('includes mem field when member has a friendlyName', async () => {
     const { logLine } = await import('../src/utils/log-helpers.js');
-    logLine('tag', 'with name', 'member-uuid-123', 'MyMember');
+    logLine('tag', 'with name', { id: 'member-uuid-123', friendlyName: 'MyMember' });
 
     const lines = parsedLines();
     expect(lines).toHaveLength(1);

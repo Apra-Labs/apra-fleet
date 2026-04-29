@@ -143,13 +143,13 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 
 | Parameter | Semantics |
 |-----------|-----------|
-| `timeout_ms` | **Inactivity timeout** — the session is killed only if no stdout/stderr output arrives for this many ms. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are never killed by this timer as long as output keeps flowing. Default: 300 000 ms (5 min). |
-| `max_total_ms` | **Hard ceiling** — the session is killed after this total elapsed time regardless of activity. Optional; defaults to unlimited. |
+| `timeout_s` | **Inactivity timeout** — the session is killed only if no stdout/stderr output arrives for this many seconds. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are never killed by this timer as long as output keeps flowing. Default: 300s (5 min). |
+| `max_total_s` | **Hard ceiling** — the session is killed after this total elapsed time in seconds regardless of activity. Optional; defaults to unlimited. |
 
 **When to use which:**
 
-- Use `timeout_ms` for normal dispatch. It extends the deadline automatically as long as the member is active, so you don't need to over-estimate how long a task takes.
-- Use `max_total_ms` only for tasks that must never run forever — CI pipelines, automated batch jobs, or any context where an unbounded runaway is unacceptable.
+- Use `timeout_s` for normal dispatch. It extends the deadline automatically as long as the member is active, so you don't need to over-estimate how long a task takes.
+- Use `max_total_s` only for tasks that must never run forever — CI pipelines, automated batch jobs, or any context where an unbounded runaway is unacceptable.
 - Both timers run concurrently; whichever fires first kills the process.
 
 ## execute_prompt: Session Resume

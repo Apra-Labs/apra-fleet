@@ -12,8 +12,8 @@ Dispatches a prompt to the LLM agent running on a registered fleet member.
 | `member_name` | `string` | one of | — | Friendly name of the target member |
 | `prompt` | `string` | yes | — | The prompt to send to the LLM |
 | `resume` | `boolean` | no | `true` | Resume previous session if one exists |
-| `timeout_ms` | `number` | no | `300000` | **Inactivity timeout** in milliseconds |
-| `max_total_ms` | `number` | no | none | **Hard ceiling** in milliseconds |
+| `timeout_s` | `number` | no | `300` | **Inactivity timeout** in seconds |
+| `max_total_s` | `number` | no | none | **Hard ceiling** in seconds |
 | `max_turns` | `number` | no | `50` | Max turns for the LLM session (1–500) |
 | `dangerously_skip_permissions` | `boolean` | no | `false` | Run with `--dangerously-skip-permissions` |
 | `model` | `string` | no | standard tier | Model tier or specific model ID |
@@ -24,21 +24,21 @@ Either `member_id` or `member_name` must be provided.
 
 ## Timeout Semantics
 
-### `timeout_ms` — Inactivity Timeout
+### `timeout_s` — Inactivity Timeout
 
-`timeout_ms` is an **inactivity timeout**, not a wall-clock deadline.
+`timeout_s` is an **inactivity timeout**, not a wall-clock deadline.
 
-The timer resets every time stdout or stderr produces output. The process is killed only when no output has arrived for `timeout_ms` milliseconds — i.e., true inactivity.
+The timer resets every time stdout or stderr produces output. The process is killed only when no output has arrived for `timeout_s` seconds — i.e., true inactivity.
 
-A member actively writing code, running tests, or executing tool calls that produce output will not be killed when `timeout_ms` elapses, as long as output keeps flowing.
+A member actively writing code, running tests, or executing tool calls that produce output will not be killed when `timeout_s` elapses, as long as output keeps flowing.
 
-Default: **5 minutes** (300,000 ms).
+Default: **300s (5 minutes)**.
 
-### `max_total_ms` — Hard Ceiling (Optional)
+### `max_total_s` — Hard Ceiling (Optional)
 
-`max_total_ms` is a **hard ceiling** that is never reset regardless of activity.
+`max_total_s` is a **hard ceiling** that is never reset regardless of activity.
 
-If provided, the session is killed after `max_total_ms` total elapsed time from when `execCommand` is called, even if the member is actively producing output.
+If provided, the session is killed after `max_total_s` seconds of total elapsed time from when `execCommand` is called, even if the member is actively producing output.
 
 Use cases:
 - Preventing runaway sessions
@@ -49,8 +49,8 @@ If omitted (default), there is no total time limit.
 ### Relationship between the two timeouts
 
 Both timers run concurrently. Whichever fires first kills the process:
-- `timeout_ms` fires if there is a silence gap longer than the threshold
-- `max_total_ms` fires if the total duration exceeds the ceiling
+- `timeout_s` fires if there is a silence gap longer than the threshold
+- `max_total_s` fires if the total duration exceeds the ceiling
 
 ---
 
@@ -100,8 +100,8 @@ Returns a string containing the LLM's output. On failure, returns an error strin
 {
   "member_name": "dev-worker",
   "prompt": "Run the test suite and fix any failures",
-  "timeout_ms": 600000,
-  "max_total_ms": 3600000
+  "timeout_s": 600,
+  "max_total_s": 3600
 }
 ```
 

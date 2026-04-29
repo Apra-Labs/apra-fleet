@@ -26,7 +26,7 @@ vi.mock('../src/services/strategy.js', () => ({
 }));
 
 vi.mock('../src/services/cloud/lifecycle.js', () => ({
-  ensureCloudReady: vi.fn((agent: any) => Promise.resolve(agent)),
+  ensureCloudReady: vi.fn((member: any) => Promise.resolve(member)),
 }));
 
 // ---------------------------------------------------------------------------
@@ -44,15 +44,15 @@ describe('execute-command: long_running OS warning', () => {
     restoreRegistry();
   });
 
-  it('includes OS warning when long_running on Windows agent', async () => {
-    const agent = makeTestAgent({ os: 'windows' });
-    addAgent(agent);
+  it('includes OS warning when long_running on Windows member', async () => {
+    const member = makeTestAgent({ os: 'windows' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'python train.py',
       long_running: true,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('Note:');
@@ -60,29 +60,29 @@ describe('execute-command: long_running OS warning', () => {
     expect(result).toContain('bash wrapper');
   });
 
-  it('includes OS warning when long_running on macOS agent', async () => {
-    const agent = makeTestAgent({ os: 'macos' });
-    addAgent(agent);
+  it('includes OS warning when long_running on macOS member', async () => {
+    const member = makeTestAgent({ os: 'macos' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'python train.py',
       long_running: true,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).toContain('macos');
   });
 
   it('still launches task despite OS warning (does not block)', async () => {
-    const agent = makeTestAgent({ os: 'windows' });
-    addAgent(agent);
+    const member = makeTestAgent({ os: 'windows' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'python train.py',
       long_running: true,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     // Both warning and successful launch
@@ -90,15 +90,15 @@ describe('execute-command: long_running OS warning', () => {
     expect(result).toContain('task_id=');
   });
 
-  it('no OS warning when long_running on Linux agent', async () => {
-    const agent = makeTestAgent({ os: 'linux' });
-    addAgent(agent);
+  it('no OS warning when long_running on Linux member', async () => {
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'python train.py',
       long_running: true,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     expect(result).not.toContain('Note:');

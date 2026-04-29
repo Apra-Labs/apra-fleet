@@ -104,44 +104,44 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
 
   it('calls provisionAuth with member_id after instance starts', async () => {
     mockGetInstanceState.mockResolvedValue('stopped');
-    const agent = makeStoppedCloudAgent();
-    addAgent(agent);
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
 
     const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
-    await ensureCloudReady(agent);
+    await ensureCloudReady(member);
 
     expect(mockProvisionAuth).toHaveBeenCalledOnce();
     expect(mockProvisionAuth).toHaveBeenCalledWith(
-      expect.objectContaining({ member_id: agent.id }),
+      expect.objectContaining({ member_id: member.id }),
     );
   });
 
-  it('does NOT call provisionVcsAuth when agent has no git repos', async () => {
+  it('does NOT call provisionVcsAuth when member has no git repos', async () => {
     mockGetInstanceState.mockResolvedValue('stopped');
-    const agent = makeStoppedCloudAgent({ gitAccess: undefined, gitRepos: undefined });
-    addAgent(agent);
+    const member = makeStoppedCloudAgent({ gitAccess: undefined, gitRepos: undefined });
+    addAgent(member);
 
     const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
-    await ensureCloudReady(agent);
+    await ensureCloudReady(member);
 
     expect(mockProvisionVcsAuth).not.toHaveBeenCalled();
   });
 
-  it('calls provisionVcsAuth with gitAccess + gitRepos when agent has git repos', async () => {
+  it('calls provisionVcsAuth with gitAccess + gitRepos when member has git repos', async () => {
     mockGetInstanceState.mockResolvedValue('stopped');
-    const agent = makeStoppedCloudAgent({
+    const member = makeStoppedCloudAgent({
       gitAccess: 'push',
       gitRepos: ['Apra-Labs/apra-fleet'],
     });
-    addAgent(agent);
+    addAgent(member);
 
     const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
-    await ensureCloudReady(agent);
+    await ensureCloudReady(member);
 
     expect(mockProvisionVcsAuth).toHaveBeenCalledOnce();
     expect(mockProvisionVcsAuth).toHaveBeenCalledWith(
       expect.objectContaining({
-        member_id: agent.id,
+        member_id: member.id,
         provider: 'github',
         git_access: 'push',
         repos: ['Apra-Labs/apra-fleet'],
@@ -152,35 +152,35 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
   it('does not throw when provisionAuth fails (best-effort)', async () => {
     mockGetInstanceState.mockResolvedValue('stopped');
     mockProvisionAuth.mockRejectedValue(new Error('auth server unavailable'));
-    const agent = makeStoppedCloudAgent();
-    addAgent(agent);
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
 
     const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
     // Should not throw even though provisionAuth failed
-    await expect(ensureCloudReady(agent)).resolves.toBeDefined();
+    await expect(ensureCloudReady(member)).resolves.toBeDefined();
   });
 
   it('does not throw when provisionVcsAuth fails (best-effort)', async () => {
     mockGetInstanceState.mockResolvedValue('stopped');
     mockProvisionVcsAuth.mockRejectedValue(new Error('github app error'));
-    const agent = makeStoppedCloudAgent({
+    const member = makeStoppedCloudAgent({
       gitAccess: 'read',
       gitRepos: ['Apra-Labs/apra-fleet'],
     });
-    addAgent(agent);
+    addAgent(member);
 
     const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
-    await expect(ensureCloudReady(agent)).resolves.toBeDefined();
+    await expect(ensureCloudReady(member)).resolves.toBeDefined();
   });
 
   it('skips re-provisioning when instance is already running', async () => {
     mockGetInstanceState.mockResolvedValue('running');
     mockGetPublicIp.mockResolvedValue('1.2.3.4');
-    const agent = makeStoppedCloudAgent({ host: '1.2.3.4' });
-    addAgent(agent);
+    const member = makeStoppedCloudAgent({ host: '1.2.3.4' });
+    addAgent(member);
 
     const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
-    await ensureCloudReady(agent);
+    await ensureCloudReady(member);
 
     // No re-provisioning for already-running instances
     expect(mockProvisionAuth).not.toHaveBeenCalled();

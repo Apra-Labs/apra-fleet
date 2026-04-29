@@ -345,7 +345,7 @@ Fleet automatically uses the correct env var name per provider.
 
 ### Provider capabilities and limits
 
-- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_ms` to bound execution.
+- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_s` to bound execution.
 - Fine-grained permission control (`compose_permissions`) is Claude-only. Other providers use all-or-nothing skip-permissions flags.
 - Codex output uses NDJSON internally — fleet handles this transparently.
 - Gemini responses may silently truncate at ~8K tokens. Split large tasks into smaller units.

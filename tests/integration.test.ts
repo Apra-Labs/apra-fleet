@@ -8,8 +8,8 @@
  *
  * Usage:
  *   npm run integration                                      # all agents
- *   npm run integration -- --agents agent-lin-remote-1       # single agent
- *   npm run integration -- --agents agent-lin-remote-1,agent-mac-remote-1
+ *   npm run integration -- --agents member-lin-remote-1       # single member
+ *   npm run integration -- --agents member-lin-remote-1,member-mac-remote-1
  *   npm run integration -- --config path.json                # custom config
  *   FLEET_PASSWORD=xxx npm run integration                   # password via env var
  *
@@ -125,13 +125,13 @@ async function teardown() {
   section('1. Teardown');
 
   const agents = getAllAgents();
-  console.log(`  Found ${agents.length} existing agent(s) to remove`);
+  console.log(`  Found ${agents.length} existing member(s) to remove`);
 
   // Remove agents in parallel
   const results = await Promise.all(
-    agents.map(async agent => {
-      const result = await removeMember({ member_id: agent.id });
-      return { name: agent.friendlyName, success: result.includes('removed'), result };
+    agents.map(async member => {
+      const result = await removeMember({ member_id: member.id });
+      return { name: member.friendlyName, success: result.includes('removed'), result };
     })
   );
   for (const r of results) {
@@ -205,11 +205,11 @@ async function testAuthErrorDetection(nameToId: Map<string, string>, config: Fle
     const id = nameToId.get(ac.friendly_name);
     if (!id) { skip(`Auth detect ${ac.friendly_name} — not registered`); return; }
 
-    const result = await executePrompt({ member_id: id, prompt: 'hello', resume: false, timeout_ms: 30000 });
+    const result = await executePrompt({ member_id: id, prompt: 'hello', resume: false, timeout_s: 30 });
 
     result.includes('/login') && result.includes('provision_llm_auth')
       ? ok(`Auth error detected on ${ac.friendly_name}`)
-      : skip(`Auth detect ${ac.friendly_name} — unexpected result (agent may have residual auth)`);
+      : skip(`Auth detect ${ac.friendly_name} — unexpected result (member may have residual auth)`);
   });
   await Promise.all(tasks);
 }
@@ -329,7 +329,7 @@ async function provision(nameToId: Map<string, string>, config: FleetConfig, has
 async function testSendFileAndPrompt(nameToId: Map<string, string>, config: FleetConfig, hasCreds: boolean) {
   section('6. Send File + Prompt Validation');
 
-  // Create temp files with random numbers per agent — random values ensure
+  // Create temp files with random numbers per member — random values ensure
   // stale files from a previous run can't produce false passes.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-test-'));
   const randNum = () => Math.floor(Math.random() * 9000) + 1000; // 1000–9999
@@ -348,7 +348,7 @@ async function testSendFileAndPrompt(nameToId: Map<string, string>, config: Flee
     const tmpFile = path.join(tmpDir, fileName);
     fs.writeFileSync(tmpFile, String(num));
 
-    // Send file to agent
+    // Send file to member
     const sendResult = await sendFiles({ member_id: id, local_paths: [tmpFile] });
     sendResult.includes('uploaded') || sendResult.includes('copied')
       ? ok(`Sent ${fileName} to ${ac.friendly_name}`)
@@ -359,7 +359,7 @@ async function testSendFileAndPrompt(nameToId: Map<string, string>, config: Flee
       member_id: id,
       prompt: `Read the file ${fileName} and respond with ONLY the number inside it, nothing else.`,
       resume: false,
-      timeout_ms: 60000,
+      timeout_s: 60,
     });
 
     readResult.includes('Response from') && readResult.includes(String(num))
@@ -372,7 +372,7 @@ async function testSendFileAndPrompt(nameToId: Map<string, string>, config: Flee
       member_id: id,
       prompt: 'Double this number and respond with ONLY the result, nothing else.',
       resume: true,
-      timeout_ms: 60000,
+      timeout_s: 60,
     });
 
     doubleResult.includes('Response from') && doubleResult.includes(String(doubled))
@@ -398,7 +398,7 @@ async function testPrompts(nameToId: Map<string, string>, config: FleetConfig, h
       return;
     }
 
-    const result = await executePrompt({ member_id: id, prompt: 'respond with exactly: FLEET_OK', timeout_ms: 60000 });
+    const result = await executePrompt({ member_id: id, prompt: 'respond with exactly: FLEET_OK', timeout_s: 60 });
 
     result.includes('FLEET_OK') || result.includes('Response from')
       ? ok(`Prompt OK on ${ac.friendly_name}`)
@@ -442,7 +442,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`  Config: ${configPath} (${config.agents.length} agent${config.agents.length === 1 ? '' : 's'}${agentFilter ? ` — filtered: ${agentFilter.join(', ')}` : ''})`);
+  console.log(`  Config: ${configPath} (${config.agents.length} member${config.agents.length === 1 ? '' : 's'}${agentFilter ? ` — filtered: ${agentFilter.join(', ')}` : ''})`);
 
   const { hasCreds } = await preflight(config);
   await teardown();

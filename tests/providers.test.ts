@@ -657,8 +657,8 @@ describe('buildResumeFlag', () => {
 // ─── Backwards compatibility ──────────────────────────────────────────────────
 
 describe('backwards compatibility', () => {
-  it('agent without llmProvider uses ClaudeProvider', () => {
-    // Simulate what code does: agent.llmProvider ?? 'claude'
+  it('member without llmProvider uses ClaudeProvider', () => {
+    // Simulate what code does: member.llmProvider ?? 'claude'
     const agentLlmProvider = undefined;
     const provider = getProvider(agentLlmProvider ?? 'claude');
     expect(provider.name).toBe('claude');

@@ -14,11 +14,11 @@ describe('updateMember', () => {
   });
 
   it('warns when cloud fields are passed for a non-cloud member (local)', async () => {
-    const agent = makeTestLocalAgent();
-    addAgent(agent);
+    const member = makeTestLocalAgent();
+    addAgent(member);
 
     const result = await updateMember({
-      member_id: agent.id,
+      member_id: member.id,
       cloud_region: 'us-east-1',
     });
 
@@ -26,11 +26,11 @@ describe('updateMember', () => {
   });
 
   it('warns with multiple cloud fields (remote)', async () => {
-    const agent = makeTestAgent(); // This is a remote, non-cloud agent
-    addAgent(agent);
+    const member = makeTestAgent(); // This is a remote, non-cloud member
+    addAgent(member);
 
     const result = await updateMember({
-      member_name: agent.friendlyName,
+      member_name: member.friendlyName,
       cloud_region: 'us-west-2',
       cloud_profile: 'test-profile',
     });
@@ -39,8 +39,8 @@ describe('updateMember', () => {
   });
 
   it('rejects host change that creates a duplicate host+port+folder', async () => {
-    const agent1 = makeTestAgent({ id: 'agent-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
-    const agent2 = makeTestAgent({ id: 'agent-2', host: '10.0.0.2', port: 22, workFolder: '/srv/app' });
+    const agent1 = makeTestAgent({ id: 'member-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
+    const agent2 = makeTestAgent({ id: 'member-2', host: '10.0.0.2', port: 22, workFolder: '/srv/app' });
     addAgent(agent1);
     addAgent(agent2);
 
@@ -50,8 +50,8 @@ describe('updateMember', () => {
   });
 
   it('rejects port change that creates a duplicate host+port+folder', async () => {
-    const agent1 = makeTestAgent({ id: 'agent-1', host: '10.0.0.1', port: 2222, workFolder: '/srv/app' });
-    const agent2 = makeTestAgent({ id: 'agent-2', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
+    const agent1 = makeTestAgent({ id: 'member-1', host: '10.0.0.1', port: 2222, workFolder: '/srv/app' });
+    const agent2 = makeTestAgent({ id: 'member-2', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
     addAgent(agent1);
     addAgent(agent2);
 
@@ -61,8 +61,8 @@ describe('updateMember', () => {
   });
 
   it('allows host change when no collision exists', async () => {
-    const agent1 = makeTestAgent({ id: 'agent-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
-    const agent2 = makeTestAgent({ id: 'agent-2', host: '10.0.0.2', port: 22, workFolder: '/srv/other' });
+    const agent1 = makeTestAgent({ id: 'member-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
+    const agent2 = makeTestAgent({ id: 'member-2', host: '10.0.0.2', port: 22, workFolder: '/srv/other' });
     addAgent(agent1);
     addAgent(agent2);
 
@@ -81,14 +81,14 @@ describe('updateMember', () => {
   });
 
   it('resolves {{secure.NAME}} token in password field', async () => {
-    const agent = makeTestAgent({ authType: 'password' });
-    addAgent(agent);
+    const member = makeTestAgent({ authType: 'password' });
+    addAgent(member);
 
     const credName = `test-cred-${Date.now()}`;
     credentialSet(credName, 'mysecretpass');
     try {
       const result = await updateMember({
-        member_id: agent.id,
+        member_id: member.id,
         password: `{{secure.${credName}}}`,
       });
       expect(result).toContain('Member "test-agent" updated.');
@@ -98,11 +98,11 @@ describe('updateMember', () => {
   });
 
   it('returns error when {{secure.NAME}} token references missing credential', async () => {
-    const agent = makeTestAgent({ authType: 'password' });
-    addAgent(agent);
+    const member = makeTestAgent({ authType: 'password' });
+    addAgent(member);
 
     const result = await updateMember({
-      member_id: agent.id,
+      member_id: member.id,
       password: '{{secure.nonexistent_cred}}',
     });
     expect(result).toContain('❌ Credential "nonexistent_cred" not found.');
@@ -110,7 +110,7 @@ describe('updateMember', () => {
   });
 
   it('does not warn when updating a cloud member', async () => {
-    const agent = makeTestAgent({ // A remote agent with a cloud property
+    const member = makeTestAgent({ // A remote member with a cloud property
       cloud: {
         provider: 'aws',
         instanceId: 'i-1234567890abcdef0',
@@ -118,10 +118,10 @@ describe('updateMember', () => {
         idleTimeoutMin: 30,
       }
     });
-    addAgent(agent);
+    addAgent(member);
 
     const result = await updateMember({
-      member_id: agent.id,
+      member_id: member.id,
       cloud_region: 'eu-central-1',
     });
 
