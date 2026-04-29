@@ -35,7 +35,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `credential_store_list` | List stored credential names (values are never returned) |
 | `credential_store_delete` | Delete a stored credential by name |
 | `credential_store_update` | Update credential metadata (members, TTL, network policy) without re-entering the secret |
-| `stop_prompt` | Kill the active LLM process on a member.<br><br>**Correct cancellation sequence — order matters:**<br>1. Kill the background Agent driving the dispatch (X key or `TaskStop`) — if you skip this, the agent sees exit=1 and re-dispatches immediately<br>2. Call `stop_prompt` — kills the PID on the member<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled mid-execution. After stopping, re-dispatch with `resume=false` — session state after a kill is unreliable.<br><br>**Note:** `stop_prompt` only reaches the member process. It cannot reach the local Agent that dispatched the work — that must be killed separately first. |
+| `stop_prompt` | Kill the active LLM process on a member.<br><br>**Always cancel in this order:**<br>1. Stop the background Agent that dispatched the work (X key or `TaskStop`) — otherwise it will re-dispatch the moment the kill lands<br>2. Call `stop_prompt` to kill the process on the member<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled. Re-dispatch with `resume=false` — session state after a kill is unreliable. |
 
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
