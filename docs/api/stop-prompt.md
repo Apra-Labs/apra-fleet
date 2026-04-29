@@ -46,7 +46,7 @@ Always follow `stop_prompt` with `resume=false` to start a fresh session — the
 
 ## What This Stops
 
-`stop_prompt` kills the LLM process running on the **member machine** (the process tracked in the PID registry). It does not directly terminate the local Claude Code background agent that issued the dispatches. The background agent's next `execute_prompt` call will proceed normally, so cancel it at the PM level if needed.
+`stop_prompt` kills the LLM process running on the **member machine** (the process tracked in the PID registry). It does not directly terminate the local Claude Code background agent that issued the dispatches. Always call `TaskStop` on the dispatching agent after calling `stop_prompt` — the member process is already dead, and TaskStop prevents the agent from re-dispatching.
 
 ---
 

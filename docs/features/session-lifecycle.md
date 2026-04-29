@@ -114,6 +114,6 @@ Callers that set only `timeout_s` behave identically to before (activity-based k
 
 `stop_prompt` kills the LLM process running **on the member machine** (the process tracked in the PID registry) and clears the PID store. It does not directly terminate the local Claude Code background agent that dispatched the work.
 
-The next `execute_prompt` call after a `stop_prompt` proceeds immediately — there is no interlock or error gate. Always follow `stop_prompt` with `resume=false` to start a fresh session, since session state after a kill is unreliable.
+Always call `TaskStop` on the dispatching background agent **after** calling `stop_prompt`. The correct order matters: when TaskStop kills the local agent, the MCP connection breaks and fleet clears the PID from its registry — so calling stop_prompt after TaskStop finds `pid=none` and the member process becomes an orphan.
 
-If the background agent is in a retry loop (stale-session or server-overload retry), the retry may still fire after the kill — whether it does depends on the exit code and error text of the killed process. In practice a kill produces empty stdout/stderr, which is not classified as a retriable error, so retries do not fire.
+The next `execute_prompt` call after a `stop_prompt` proceeds immediately — there is no interlock or error gate.
