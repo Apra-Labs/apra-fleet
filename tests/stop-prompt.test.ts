@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { setStoredPid, clearStoredPid, getStoredPid, isAgentStopped, clearAgentStopped } from '../src/utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
 import { stopPrompt } from '../src/tools/stop-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -26,10 +26,7 @@ describe('stop_prompt (T8)', () => {
 
   afterEach(() => {
     restoreRegistry();
-    if (memberId) {
-      clearStoredPid(memberId);
-      clearAgentStopped(memberId);
-    }
+    if (memberId) clearStoredPid(memberId);
   });
 
   it('returns not-found error for unknown member', async () => {
@@ -38,7 +35,7 @@ describe('stop_prompt (T8)', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('kills active PID and sets stopped flag when PID is stored', async () => {
+  it('kills active PID when PID is stored', async () => {
     const member = makeTestAgent({ friendlyName: 'kill-me' });
     memberId = member.id;
     addAgent(member);
@@ -48,29 +45,21 @@ describe('stop_prompt (T8)', () => {
 
     const result = await stopPrompt({ member_id: memberId });
 
-    // Kill command should have been issued
     expect(mockExecCommand).toHaveBeenCalledTimes(1);
     expect(mockExecCommand.mock.calls[0][0]).toContain('9999');
-
-    // PID cleared, stopped flag set
     expect(getStoredPid(memberId)).toBeUndefined();
-    expect(isAgentStopped(memberId)).toBe(true);
-
-    // Response mentions PID
     expect(result).toContain('9999');
     expect(result).toContain('stopped');
   });
 
-  it('sets stopped flag even when no PID is stored', async () => {
+  it('returns stopped message when no PID is stored', async () => {
     const member = makeTestAgent({ friendlyName: 'idle-member' });
     memberId = member.id;
     addAgent(member);
-    // no PID stored
 
     const result = await stopPrompt({ member_id: memberId });
 
     expect(mockExecCommand).not.toHaveBeenCalled();
-    expect(isAgentStopped(memberId)).toBe(true);
     expect(result).toContain('stopped');
   });
 
@@ -82,7 +71,6 @@ describe('stop_prompt (T8)', () => {
     const result = await stopPrompt({ member_name: 'name-lookup-member' });
 
     expect(result).toContain('name-lookup-member');
-    expect(isAgentStopped(memberId)).toBe(true);
   });
 
   it('kill command uses 5000ms timeout', async () => {

@@ -14,7 +14,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
-import { clearStoredPid, isAgentStopped, clearAgentStopped } from '../utils/agent-helpers.js';
+import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent, SSHExecResult } from '../types.js';
@@ -147,14 +147,6 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
 
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
-
-  // If agent was explicitly stopped, surface the error once and clear the flag.
-  // The next execute_prompt call will proceed normally.
-  if (isAgentStopped(agent.id)) {
-    inFlightAgents.delete(agent.id);
-    clearAgentStopped(agent.id);
-    return `⛔ Agent "${agent.friendlyName}" was stopped by the PM. Stopped flag cleared — call execute_prompt again to resume.`;
-  }
 
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
   await tryKillPid(agent, strategy, cmds);

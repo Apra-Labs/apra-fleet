@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
-import { setStoredPid, clearStoredPid, getStoredPid, setAgentStopped, isAgentStopped, clearAgentStopped } from '../src/utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number) => Promise<SSHExecResult>>();
@@ -438,76 +438,3 @@ describe('kill-before-retry (T5)', () => {
   });
 });
 
-describe('stopped flag (T9)', () => {
-  let memberId: string;
-
-  beforeEach(() => {
-    backupAndResetRegistry();
-    vi.clearAllMocks();
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    restoreRegistry();
-    vi.useRealTimers();
-    if (memberId) {
-      clearStoredPid(memberId);
-      clearAgentStopped(memberId);
-    }
-  });
-
-  it('returns stopped error and clears flag when member is stopped', async () => {
-    const member = makeTestAgent({ friendlyName: 'was-stopped' });
-    memberId = member.id;
-    addAgent(member);
-    setAgentStopped(memberId);
-
-    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
-
-    expect(result).toContain('stopped');
-    expect(result).toContain('was-stopped');
-    // No kill or prompt commands should have been called
-    expect(mockExecCommand).not.toHaveBeenCalled();
-    // Flag cleared so next call will proceed
-    expect(isAgentStopped(memberId)).toBe(false);
-  });
-
-  it('proceeds normally after stopped flag is cleared', async () => {
-    const member = makeTestAgent({ friendlyName: 'resuming' });
-    memberId = member.id;
-    addAgent(member);
-
-    // First call: stopped → clears flag + returns error
-    setAgentStopped(memberId);
-    await executePrompt({ member_id: memberId, prompt: 'first', resume: false, timeout_s: 5 });
-    expect(isAgentStopped(memberId)).toBe(false);
-
-    // Second call: flag cleared, executes normally
-    mockExecCommand
-      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
-      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'resumed', session_id: 's-res' }), stderr: '', code: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
-
-    const result = await executePrompt({ member_id: memberId, prompt: 'second', resume: false, timeout_s: 5 });
-
-    expect(result).toContain('resumed');
-    expect(mockExecCommand).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not set stopped flag on its own — fresh agents proceed normally', async () => {
-    const member = makeTestAgent({ friendlyName: 'fresh-member' });
-    memberId = member.id;
-    addAgent(member);
-
-    mockExecCommand
-      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
-      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok', session_id: 's-fresh' }), stderr: '', code: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
-
-    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
-
-    expect(result).toContain('ok');
-    expect(isAgentStopped(memberId)).toBe(false);
-    expect(mockExecCommand).toHaveBeenCalledTimes(3);
-  });
-});

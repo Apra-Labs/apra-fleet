@@ -4,10 +4,7 @@ import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegis
 import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { stopPrompt } from '../../src/tools/stop-prompt.js';
-import {
-  getStoredPid, clearStoredPid,
-  isAgentStopped, clearAgentStopped, setStoredPid,
-} from '../../src/utils/agent-helpers.js';
+import { getStoredPid, clearStoredPid, setStoredPid } from '../../src/utils/agent-helpers.js';
 import { launchAuthTerminal, isSSHSession } from '../../src/services/auth-socket.js';
 import { getStrategy } from '../../src/services/strategy.js';
 import type { Agent, SSHExecResult } from '../../src/types.js';
@@ -79,8 +76,8 @@ describe('Inactivity timer — integration (T13)', () => {
 });
 
 // ── Cancellation ─────────────────────────────────────────────────────────────
-// Tests the stop_agent → executePrompt interaction: stopped flag set by stop_agent
-// is enforced by executePrompt, then cleared so the next call proceeds normally.
+// Tests the stop_prompt → executePrompt interaction: stop_prompt kills the PID
+// and executePrompt can be dispatched immediately after (no error gate).
 
 describe('Cancellation — integration (T13)', () => {
   let memberId: string;
@@ -92,13 +89,10 @@ describe('Cancellation — integration (T13)', () => {
 
   afterEach(() => {
     restoreRegistry();
-    if (memberId) {
-      clearStoredPid(memberId);
-      clearAgentStopped(memberId);
-    }
+    if (memberId) clearStoredPid(memberId);
   });
 
-  it('stop_agent kills stored PID and sets the stopped flag', async () => {
+  it('stop_prompt kills stored PID and clears it', async () => {
     const member = makeTestAgent({ friendlyName: 'stop-kill-member' });
     memberId = member.id;
     addAgent(member);
@@ -110,48 +104,27 @@ describe('Cancellation — integration (T13)', () => {
 
     expect(result).toContain('stopped');
     expect(getStoredPid(memberId)).toBeUndefined();
-    expect(isAgentStopped(memberId)).toBe(true);
     expect(mockExecCommand.mock.calls[0][0]).toContain('5555');
   });
 
-  it('executePrompt on a stopped member returns an error and clears the stopped flag', async () => {
-    const member = makeTestAgent({ friendlyName: 'stopped-member' });
+  it('executePrompt proceeds immediately after stop_prompt — no error gate', async () => {
+    const member = makeTestAgent({ friendlyName: 'stopped-then-resumed' });
     memberId = member.id;
     addAgent(member);
-    // Simulate stop_agent having already been called
     setStoredPid(memberId, 7777);
+
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // kill in stop_prompt
     await stopPrompt({ member_id: memberId });
     vi.clearAllMocks();
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'resumed', session_id: 's1' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
 
     const result = await executePrompt({ member_id: memberId, prompt: 'go', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('stopped');
-    expect(result).toContain('stopped-member');
-    // Stopped flag is cleared so the next call can proceed
-    expect(isAgentStopped(memberId)).toBe(false);
-    // No command should have been dispatched
-    expect(mockExecCommand).not.toHaveBeenCalled();
-  });
-
-  it('executePrompt proceeds normally after the stopped flag is cleared', async () => {
-    const member = makeTestAgent({ friendlyName: 'cleared-member' });
-    memberId = member.id;
-    addAgent(member);
-
-    // Trigger stopped error (sets flag via stop_agent, then executePrompt clears it)
-    await stopPrompt({ member_id: memberId });
-    vi.clearAllMocks();
-    await executePrompt({ member_id: memberId, prompt: 'first', resume: false, timeout_s: 5 });
-    expect(isAgentStopped(memberId)).toBe(false);
-
-    // Next call proceeds normally using the mocked remote strategy
-    mockExecCommand
-      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
-      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'back', session_id: 's1' }), stderr: '', code: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
-
-    const result = await executePrompt({ member_id: memberId, prompt: 'second', resume: false, timeout_s: 5 });
-    expect(result).toContain('back');
+    expect(result).toContain('resumed');
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });
