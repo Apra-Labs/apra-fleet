@@ -35,7 +35,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `credential_store_list` | List stored credential names (values are never returned) |
 | `credential_store_delete` | Delete a stored credential by name |
 | `credential_store_update` | Update credential metadata (members, TTL, network policy) without re-entering the secret |
-| `stop_prompt` | Kill the active LLM process on a member. **Always call `TaskStop` after calling `stop_prompt`**. |
+| `stop_prompt` | Kill the active LLM process on a member. **Always call `TaskStop` after calling `stop_prompt`**.<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled. |
 
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
