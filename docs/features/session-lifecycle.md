@@ -116,4 +116,4 @@ Callers that set only `timeout_s` behave identically to before (activity-based k
 
 Always call `TaskStop` on the dispatching background agent **after** calling `stop_prompt`.
 
-The next `execute_prompt` call after a `stop_prompt` proceeds immediately — there is no interlock or error gate.
+The next `execute_prompt` call after a `stop_prompt` proceeds immediately.

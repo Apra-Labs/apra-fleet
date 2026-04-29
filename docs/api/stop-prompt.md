@@ -38,7 +38,7 @@ Either `member_id` or `member_name` must be provided.
 
 ## Effect on `execute_prompt`
 
-After `stop_prompt` kills the process, the next `execute_prompt` call proceeds immediately — there is no interlock or error gate. The PID store is cleared by `tryKillPid`, so the next `execute_prompt` starts clean.
+After `stop_prompt` kills the process, the next `execute_prompt` call proceeds immediately.
 
 Always follow `stop_prompt` with `resume=false` to start a fresh session — the session state after a kill is unreliable.
 
