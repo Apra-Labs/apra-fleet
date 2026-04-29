@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { serverVersion } from './version.js';
+import { logLine } from './utils/log-helpers.js';
 
 // --- CLI dispatch (before MCP server imports to keep --version fast) ---
 const arg = process.argv[2];
@@ -31,11 +32,11 @@ if (arg === 'install') {
   // Dynamic import so MCP deps aren't loaded for install
   import('./cli/install.js')
     .then(m => m.runInstall(process.argv.slice(3)))
-    .catch(err => { console.error('Install failed:', err.message); process.exit(1); });
+    .catch(err => { logLine('cli', `Install failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'auth') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
-    .catch(err => { console.error('Auth failed:', err.message); process.exit(1); });
+    .catch(err => { logLine('cli', `Auth failed: ${err.message}`); process.exit(1); });
 } else {
   // Default: start MCP server
   startServer();
@@ -203,6 +204,9 @@ async function startServer() {
   // --- Start Server ---
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  const { FLEET_DIR } = await import('./paths.js');
+  logLine('startup', `apra-fleet ${serverVersion} started — FLEET_DIR=${FLEET_DIR}`);
 
   idleManager.start();
   void cleanupStaleTasks();

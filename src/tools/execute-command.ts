@@ -11,7 +11,7 @@ import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
-import { logLine, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { logLine, logError, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -172,7 +172,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   const folder = resolveTilde(input.run_from ?? agent.workFolder);
 
-  logLine('execute_command', `agent=${agent.friendlyName} cmd="${truncateForLog(maskSecrets(input.command))}"`);
+  logLine('execute_command', truncateForLog(maskSecrets(input.command)), agent.id, agent.friendlyName);
 
   // -- Long-running background task path --
   if (input.long_running) {
@@ -244,6 +244,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
       : `Exit code: ${result.code}\n${output}`;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
+    logError('execute_command', err.message, agent.id, agent.friendlyName);
     return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
   }
 }

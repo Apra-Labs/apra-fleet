@@ -5,6 +5,7 @@ import { getAgentOS } from '../utils/agent-helpers.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
+import { logLine } from '../utils/log-helpers.js';
 
 export const stopPromptSchema = z.object({
   ...memberIdentifier,
@@ -27,6 +28,7 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
 
   // Mark agent stopped to prevent re-dispatch
   setAgentStopped(agent.id);
+  logLine('stop_prompt', `pid=${pid ?? 'none'}`, agent.id, agent.friendlyName);
 
   if (pid !== undefined) {
     return `🛑 Agent "${agent.friendlyName}" stopped (killed PID ${pid}). Next execute_prompt will require explicit intent.`;

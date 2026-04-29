@@ -13,7 +13,7 @@ const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
  */
 export function pidWrapWindows(setupCmd: string, filePath: string, argList: string): string {
   const escapedArgs = argList.replace(/'/g, "''");
-  return `${setupCmd}$_fleet_psi = [System.Diagnostics.ProcessStartInfo]::new("${filePath}", '${escapedArgs}'); $_fleet_psi.UseShellExecute = $false; $_fleet_proc = [System.Diagnostics.Process]::Start($_fleet_psi); Write-Output "FLEET_PID:$($_fleet_proc.Id)"; [Console]::Out.Flush(); $_fleet_proc.WaitForExit(); exit $_fleet_proc.ExitCode`;
+  return `${setupCmd}$_fleet_psi = [System.Diagnostics.ProcessStartInfo]::new("${filePath}", '${escapedArgs}'); $_fleet_psi.UseShellExecute = $false; $_fleet_psi.CreateNoWindow = $true; $_fleet_proc = [System.Diagnostics.Process]::Start($_fleet_psi); Write-Output "FLEET_PID:$($_fleet_proc.Id)"; [Console]::Out.Flush(); $_fleet_proc.WaitForExit(); exit $_fleet_proc.ExitCode`;
 }
 
 // kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
@@ -49,7 +49,7 @@ export class WindowsCommands implements OsCommands {
       sessionBlock,
       '$a|ConvertTo-Json -Compress',
     ].join('; ');
-    const result = execSync(script, { encoding: 'utf-8', shell: 'powershell.exe' });
+    const result = execSync(script, { encoding: 'utf-8', shell: 'powershell.exe', windowsHide: true });
     this.cachedEnv = JSON.parse(result.trim());
     return this.cachedEnv!;
   }

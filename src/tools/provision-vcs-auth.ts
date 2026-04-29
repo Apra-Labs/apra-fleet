@@ -12,6 +12,7 @@ import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { scheduleCredentialCleanup, cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
+import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 
@@ -180,6 +181,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<st
   }
 
   touchAgent(agent.id);
+  logLine('provision_vcs_auth', `provider=${input.provider}`, agent.id, agent.friendlyName);
 
   const meta = deployResult.metadata
     ? Object.entries(deployResult.metadata).map(([k, v]) => `  ${k}: ${v}`).join('\n')

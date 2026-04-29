@@ -6,6 +6,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { isContainedInWorkFolder } from '../utils/platform.js';
+import { logLine, logError } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export const receiveFilesSchema = z.object({
@@ -53,6 +54,9 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
 
   const strategy = getStrategy(agent);
 
+  const pathSummary = input.remote_paths[0] ?? '';
+  logLine('receive_files', `${input.remote_paths.length} file(s) ← ${agent.friendlyName}:${pathSummary}`, agent.id, agent.friendlyName);
+
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
@@ -81,6 +85,7 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
     return output;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
+    logError('receive_files', err.message, agent.id, agent.friendlyName);
     return `Failed to download files from "${agent.friendlyName}": ${err.message}`;
   }
 }
