@@ -194,7 +194,7 @@ async function startServer() {
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Optionally stop the cloud instance automatically when the task completes.', monitorTaskSchema.shape, wrapTool('monitor_task', (input) => monitorTask(input as any)));
 
   // --- Agent Lifecycle ---
-  server.tool('stop_prompt', 'Kill the active LLM process on a member. Use when a member is hung, working on the wrong thing, or needs to be cancelled. Always call TaskStop on the dispatching background agent before calling stop_prompt — otherwise the agent re-dispatches immediately.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
+  server.tool('stop_prompt', 'Kill the active LLM process on a member. Always call TaskStop on the dispatching background agent before calling this.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
   // --- Credential Store ---
   server.tool('credential_store_set', 'Collect a secret from the user out-of-band and store it. Returns a handle (sec://NAME) and scope. Use {{secure.NAME}} tokens in execute_command to inject the value.', credentialStoreSetSchema.shape, wrapTool('credential_store_set', (input) => credentialStoreSet(input as any)));
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
