@@ -88,7 +88,11 @@ export interface ProviderAdapter {
   oauthSettingsMerge(): Record<string, unknown> | null;
   oauthEnvVarsToUnset(): string[];
 
+
   // Windows / PowerShell prompt building helpers
+  /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string;
+
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
   jsonOutputFlag(): string;
   /** Args for headless invocation with a safe literal prompt string.

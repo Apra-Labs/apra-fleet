@@ -57,7 +57,8 @@ function sftpGet(sftp: import('ssh2').SFTPWrapper, remotePath: string, localPath
 export async function uploadViaSFTP(
   agent: Agent,
   localPaths: string[],
-  destinationPath?: string
+  destinationPath?: string,
+  abortSignal?: AbortSignal
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
   const client = await getConnection(agent);
   const sftp = await getSFTP(client);
@@ -73,6 +74,7 @@ export async function uploadViaSFTP(
   const failed: { path: string; error: string }[] = [];
 
   for (const localPath of localPaths) {
+    if (abortSignal?.aborted) throw new Error('Aborted by client');
     const fileName = path.basename(localPath);
     const remotePath = `${remoteBase}/${fileName}`;
     try {
@@ -89,7 +91,8 @@ export async function uploadViaSFTP(
 export async function downloadViaSFTP(
   agent: Agent,
   remotePaths: string[],
-  localDestination: string
+  localDestination: string,
+  abortSignal?: AbortSignal
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
   const client = await getConnection(agent);
   const sftp = await getSFTP(client);
@@ -102,6 +105,7 @@ export async function downloadViaSFTP(
   const failed: { path: string; error: string }[] = [];
 
   for (const remotePath of remotePaths) {
+    if (abortSignal?.aborted) throw new Error('Aborted by client');
     const resolvedRemote = path.posix.resolve(workFolderPosix, remotePath.replace(/\\/g, '/'));
     const fileName = path.posix.basename(resolvedRemote);
     const localPath = path.join(localDestination, fileName);

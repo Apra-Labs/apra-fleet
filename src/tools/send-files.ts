@@ -21,7 +21,7 @@ export const sendFilesSchema = z.object({
 
 export type SendFilesInput = z.infer<typeof sendFilesSchema>;
 
-export async function sendFiles(input: SendFilesInput): Promise<string> {
+export async function sendFiles(input: SendFilesInput, extra?: any): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
@@ -80,7 +80,7 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    const result = await strategy.transferFiles(input.local_paths, input.dest_subdir);
+    const result = await strategy.transferFiles(input.local_paths, input.dest_subdir, extra?.signal);
 
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 

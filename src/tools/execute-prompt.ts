@@ -90,7 +90,7 @@ const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
 
 const inFlightAgents = new Set<string>();
 
-export async function executePrompt(input: ExecutePromptInput): Promise<string> {
+export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
   }
@@ -155,7 +155,15 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
+  
   const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
+
+  const abortHandler = () => {
+    scope.abort('cancelled by MCP client');
+    tryKillPid(agent, strategy, cmds).catch(() => {});
+  };
+  extra?.signal?.addEventListener('abort', abortHandler);
+
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -225,6 +233,7 @@ session: ${parsed.sessionId}`;
     _epError = err.message;
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
+    extra?.signal?.removeEventListener('abort', abortHandler);
     const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);

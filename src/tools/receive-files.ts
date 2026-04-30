@@ -24,7 +24,7 @@ export const receiveFilesSchema = z.object({
 
 export type ReceiveFilesInput = z.infer<typeof receiveFilesSchema>;
 
-export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
+export async function receiveFiles(input: ReceiveFilesInput, extra?: any): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
@@ -60,7 +60,7 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    const result = await strategy.receiveFiles(input.remote_paths, input.local_dest_dir);
+    const result = await strategy.receiveFiles(input.remote_paths, input.local_dest_dir, extra?.signal);
 
     touchAgent(agent.id);
 
