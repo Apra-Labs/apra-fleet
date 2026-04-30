@@ -243,7 +243,9 @@ When you see this notice, surface it to the user verbatim before the rest of the
 
 ## Fleet Logs
 
-The fleet server writes structured JSONL logs to `APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log`. Use `jq` to read them:
+The fleet server writes structured JSONL logs to `APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log`. Multiple fleet instances each have their own log file. **To find the correct log file for the server you are talking to, call `fleet_status` — it reports the exact log file path** (e.g. `logging: ~/.apra-fleet/data/logs/fleet-40064.log`). Never guess by listing the directory.
+
+Use `jq` to read logs:
 
 ```bash
 cat "$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log" | jq '.'
