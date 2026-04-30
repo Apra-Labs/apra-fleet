@@ -1,3 +1,5 @@
+import { defaultWindowsPidWrapper } from './windows-wrapper.js';
+export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
@@ -11,12 +13,6 @@ const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
  * the parent's file handles (including the stdout pipe fleet's Node.js set up).
  * This works in both interactive and headless (GitHub Actions) environments.
  */
-export function pidWrapWindows(setupCmd: string, filePath: string, argList: string): string {
-  const escapedArgs = argList.replace(/'/g, "''");
-  return `${setupCmd}$_fleet_psi = [System.Diagnostics.ProcessStartInfo]::new("${filePath}", '${escapedArgs}'); $_fleet_psi.UseShellExecute = $false; $_fleet_psi.CreateNoWindow = $true; $_fleet_proc = [System.Diagnostics.Process]::Start($_fleet_psi); Write-Output "FLEET_PID:$($_fleet_proc.Id)"; [Console]::Out.Flush(); $_fleet_proc.WaitForExit(); exit $_fleet_proc.ExitCode`;
-}
-
-// kernel32 GlobalMemoryStatusEx — works without admin, no WMI needed
 const MEMINFO_CMD = [
   'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class MI{[DllImport("kernel32.dll")]public static extern bool GlobalMemoryStatusEx(ref MS m);[StructLayout(LayoutKind.Sequential)]public struct MS{public uint dwLength;public uint dwMemoryLoad;public ulong ullTotalPhys;public ulong ullAvailPhys;public ulong ullTotalPageFile;public ulong ullAvailPageFile;public ulong ullTotalVirtual;public ulong ullAvailVirtual;public ulong ullAvailExtendedVirtual;}}\'',
   '$m=New-Object MI+MS',
@@ -131,7 +127,7 @@ export class WindowsCommands implements OsCommands {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
 
-    return pidWrapWindows(setupCmd, filePath, argList);
+    return provider.wrapWindowsPrompt(setupCmd, filePath, argList);
   }
 
   // --- Filesystem ---

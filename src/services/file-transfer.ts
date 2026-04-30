@@ -7,9 +7,10 @@ import { uploadViaSFTP, downloadViaSFTP } from './sftp.js';
 export async function uploadFiles(
   agent: Agent,
   localPaths: string[],
-  destinationPath?: string
+  destinationPath?: string,
+  abortSignal?: AbortSignal
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
-  return uploadViaSFTP(agent, localPaths, destinationPath);
+  return uploadViaSFTP(agent, localPaths, destinationPath, abortSignal);
 }
 
 /**
@@ -18,7 +19,8 @@ export async function uploadFiles(
 export async function downloadFiles(
   agent: Agent,
   remotePaths: string[],
-  localDestination: string
+  localDestination: string,
+  abortSignal?: AbortSignal
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
-  return downloadViaSFTP(agent, remotePaths, localDestination);
+  return downloadViaSFTP(agent, remotePaths, localDestination, abortSignal);
 }

@@ -15,8 +15,8 @@ import { uploadFiles, downloadFiles } from './file-transfer.js';
 
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void): Promise<SSHExecResult>;
-  transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult>;
-  receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult>;
+  transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult>;
+  receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
   deleteFiles(relativePaths: string[]): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
@@ -30,12 +30,12 @@ class RemoteStrategy implements AgentStrategy {
     return sshExecCommand(this.agent, command, timeoutMs, maxTotalMs, onPidCaptured);
   }
 
-  async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
-    return uploadFiles(this.agent, localPaths, destinationPath);
+  async transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult> {
+    return uploadFiles(this.agent, localPaths, destinationPath, abortSignal);
   }
 
-  async receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult> {
-    return downloadFiles(this.agent, remotePaths, localDestination);
+  async receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult> {
+    return downloadFiles(this.agent, remotePaths, localDestination, abortSignal);
   }
 
   async deleteFiles(relativePaths: string[]): Promise<void> {
@@ -178,7 +178,7 @@ class LocalStrategy implements AgentStrategy {
     return result;
   }
 
-  async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
+  async transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult> {
     const destBase = destinationPath
       ? path.resolve(this.agent.workFolder, destinationPath)
       : this.agent.workFolder;
@@ -190,6 +190,7 @@ class LocalStrategy implements AgentStrategy {
     const failed: { path: string; error: string }[] = [];
 
     for (const localPath of localPaths) {
+      if (abortSignal?.aborted) throw new Error('Aborted by client');
       const fileName = path.basename(localPath);
       const destPath = path.join(destBase, fileName);
       try {
@@ -203,13 +204,14 @@ class LocalStrategy implements AgentStrategy {
     return { success, failed };
   }
 
-  async receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult> {
+  async receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult> {
     fs.mkdirSync(localDestination, { recursive: true });
 
     const success: string[] = [];
     const failed: { path: string; error: string }[] = [];
 
     for (const remotePath of remotePaths) {
+      if (abortSignal?.aborted) throw new Error('Aborted by client');
       const srcPath = path.resolve(this.agent.workFolder, remotePath);
       const fileName = path.basename(srcPath);
       const destPath = path.join(localDestination, fileName);

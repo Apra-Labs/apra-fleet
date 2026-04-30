@@ -12,6 +12,7 @@ import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { tryKillPid } from '../utils/pid-helpers.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -110,7 +111,7 @@ function redactOutput(output: string, credentials: ResolvedCredential[]): string
   return redacted;
 }
 
-export async function executeCommand(input: ExecuteCommandInput): Promise<string> {
+export async function executeCommand(input: ExecuteCommandInput, extra?: any): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
@@ -121,8 +122,18 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   }
 
   const strategy = getStrategy(agent);
+    const scope = new LogScope('execute_command', `${truncateForLog(maskSecrets(input.command))}`, agent);
+    const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
+
   const cmds = getOsCommands(getAgentOS(agent));
   const agentOs = getAgentOS(agent);
+    const abortHandler = () => {
+      scope.abort('cancelled by MCP client');
+      tryKillPid(agent, strategy, cmds).catch(() => {});
+    };
+    extra?.signal?.addEventListener('abort', abortHandler);
+  try {
+
 
   // -- Block sec:// handles in run_from and restart_command --
   if (input.run_from && SEC_RE.test(input.run_from)) {
@@ -172,7 +183,6 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
   const folder = resolveTilde(input.run_from ?? agent.workFolder);
 
-  const scope = new LogScope('execute_command', truncateForLog(maskSecrets(input.command)), agent);
 
   // -- Long-running background task path --
   if (input.long_running) {
@@ -203,7 +213,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
 
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
-      const launchResult = await strategy.execCommand(launchCmd, input.timeout_s * 1000);
+      const launchResult = await strategy.execCommand(launchCmd, input.timeout_s * 1000, undefined, onPidCaptured);
       touchAgent(agent.id);
       writeStatusline();
       // Redact credential values from any output returned by the launch command (H2)
@@ -226,7 +236,7 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
-    const result = await strategy.execCommand(wrapped, input.timeout_s * 1000);
+    const result = await strategy.execCommand(wrapped, input.timeout_s * 1000, undefined, onPidCaptured);
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 
     const parts: string[] = [];
@@ -250,4 +260,5 @@ export async function executeCommand(input: ExecuteCommandInput): Promise<string
     scope.abort(err.message);
     return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
   }
+} finally { extra?.signal?.removeEventListener('abort', abortHandler); }
 }

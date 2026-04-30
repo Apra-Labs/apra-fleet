@@ -1,0 +1,81 @@
+{
+  "project": "apra-fleet #182 — Tier-Aware Dispatch",
+  "branch": "feat/tier-aware-dispatch",
+  "base_branch": "main",
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": 1,
+      "title": "Replace count rule with cohesion rule in plan-prompt.md",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Replaced 3 instances: line 27 DRAFT rule, line 62 SELF-CRITIQUE failure mode, line 69 REFINE bullet. All now reference cohesion boundaries instead of task counts."
+    },
+    {
+      "id": "T2",
+      "phase": 1,
+      "title": "Add monotonic tier constraint to plan-prompt.md",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Added monotonic tier constraint with examples after tier assignment block. Added tier downgrade failure mode to SELF-CRITIQUE section."
+    },
+    {
+      "id": "T3",
+      "phase": 1,
+      "title": "Add cohesion rule and monotonic tier constraint to tpl-plan.md",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Added Phase Sizing Rules section with cohesion rule and monotonic tier constraint. Wording matches plan-prompt.md."
+    },
+    {
+      "id": "T4",
+      "phase": 1,
+      "title": "Update tpl-reviewer-plan.md checklist",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Replaced item 6 with two new items: cohesion boundary check and monotonic tier check. Renumbered subsequent items 7→8 through 12→13."
+    },
+    {
+      "id": "V1",
+      "phase": 1,
+      "title": "VERIFY: Phase 1 — Plan Templates",
+      "type": "verify",
+      "tier": "premium",
+      "status": "completed",
+      "notes": "All checks pass: (1) zero instances of '2-3 work tasks' count rule across all files, (2) cohesion rule in plan-prompt.md and tpl-plan.md with matching wording, (3) monotonic tier constraint in plan-prompt.md, tpl-plan.md, and tpl-reviewer-plan.md, (4) tpl-reviewer-plan.md has both checklist items. No inconsistencies found."
+    },
+    {
+      "id": "T5",
+      "phase": 2,
+      "title": "Per-task dispatch algorithm in single-pair-sprint.md",
+      "tier": "standard",
+      "status": "completed",
+      "notes": "Added Per-Task Dispatch Algorithm section with pseudocode. Updated Execution Loop to use model=nextTask.tier. Updated Session Rules table to use phase-number comparison. Added 4-condition Data-driven resume rule table. Documented lastDispatchedPhase tracking in status.md."
+    },
+    {
+      "id": "T6",
+      "phase": 2,
+      "title": "Data-driven resume and tier-based dispatch in doer-reviewer.md",
+      "tier": "standard",
+      "status": "completed",
+      "notes": "Replaced hardcoded model=standard with tier read from planned.json. Updated doer session rules to use phase-number comparison. Added 4-condition data-driven resume rule table. Added note about derivation from planned.json phase numbers."
+    },
+    {
+      "id": "T7",
+      "phase": 2,
+      "title": "Cross-file consistency sweep",
+      "tier": "premium",
+      "status": "completed",
+      "notes": "All 6 checks pass: zero count-rule survivors, cohesion rule wording matches across plan-prompt.md/tpl-plan.md, monotonic tier constraint matches, resume rule consistent in single-pair-sprint.md/doer-reviewer.md, lastDispatchedPhase used consistently, no contradictions between any pair of files. No fixes needed."
+    },
+    {
+      "id": "V2",
+      "phase": 2,
+      "title": "VERIFY: Phase 2 — Dispatch & Resume",
+      "type": "verify",
+      "tier": "premium",
+      "status": "completed",
+      "notes": "All 7 acceptance criteria met: (1) plan-prompt.md no count rule, replaced with cohesion rule; (2) tpl-plan.md reflects cohesion rule and monotonic tier constraint; (3) tpl-reviewer-plan.md has cohesion boundary and monotonic tier checklist items; (4) single-pair-sprint.md has per-task dispatch algorithm with lastDispatchedPhase tracking; (5) doer-reviewer.md has data-driven resume derivation from planned.json phase numbers; (6) all 5 files internally consistent — no contradictions; (7) count-based '2-3 tasks' rule fully removed from all 5 files. T7 sweep confirms zero survivors."
+    }
+  ]
+}

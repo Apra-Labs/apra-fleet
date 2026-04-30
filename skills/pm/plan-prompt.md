@@ -24,7 +24,7 @@ For each task include:
 - What could block — missing dependency, unclear API, native code issue
 
 Rules:
-- 2-3 work tasks per phase, then a VERIFY checkpoint
+- **Phase boundaries by cohesion, not count** — a phase is a coherent unit of work that produces a reviewable, testable increment. Group tasks into a phase when they share a data model, code path, or design decision — splitting them would produce an incoherent intermediate state or require touching the same code twice. Place a VERIFY at the natural completion boundary of that unit, not at an arbitrary task count. Phases may have 4-5 tasks (a coherent subsystem) or just 1-2 (a genuinely isolated change).
 - Each task completable in one session, results in one commit
 - Tasks ordered so dependencies are satisfied
 - **Model tier assignment:** Assign a tier (`cheap`, `standard`, or `premium`) to every work task based on complexity:
@@ -35,6 +35,11 @@ Rules:
   - When the PM creates progress.json from the plan, it copies each task's tier into `tasks[i].tier`
   - During dispatch, the PM reads `tasks[i].tier` and passes `model: <tier>` to `execute_prompt` for doer dispatches
   - **Constraint:** Reviewer dispatches always use `model: premium` regardless of the task tier — this is not configurable by the planner
+- **Monotonically non-decreasing tiers within a phase:** Within a phase, order tasks from cheapest to most expensive tier (cheap → standard → premium). Never downgrade mid-phase. If a cheap task logically follows a premium task, place it in a new phase.
+  ```
+  cheap → cheap → standard → standard → premium → VERIFY  ✅
+  cheap → standard → cheap → VERIFY  ❌  (downgrade — split into two phases)
+  ```
 
 ### PHASE 2 — FRONT-LOAD FOUNDATIONS
 
@@ -59,14 +64,15 @@ Check your draft against these failure modes:
 - Late verification — 5+ tasks before checking if the approach works?
 - Wrong ordering — could the riskiest assumption be validated earlier?
 - Missing "done" criteria — how does the member know the task is complete?
-- Checkpoints too far apart — more than 3 work tasks without a VERIFY?
+- Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?
+- Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point.
 
 ### PHASE 4 — REFINE
 
 Rewrite incorporating critique:
 - Move risky/uncertain tasks earlier
 - Split vague tasks into specific ones
-- VERIFY checkpoint every 2-3 work tasks
+- VERIFY checkpoint at the natural completion boundary of each cohesive phase
 - Every task has clear "done" criteria
 
 ### PHASE 5 — BRANCH & COMMIT

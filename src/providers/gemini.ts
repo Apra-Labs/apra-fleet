@@ -164,11 +164,19 @@ export class GeminiProvider implements ProviderAdapter {
     return ['GEMINI_API_KEY'];
   }
 
+
+
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
+    // Gemini on Windows needs direct shell execution to resolve .cmd script wrappers reliably.
+    // We emit the current shell PID immediately to satisfy fleet's lifecycle tracking.
+    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+  }
+
   jsonOutputFlag(): string {
     return '--output-format json';
   }
 
   headlessInvocation(promptLiteral: string): string {
-    return `-p "${promptLiteral}"`;
+    return `--skip-trust -p "${promptLiteral}"`;
   }
 }

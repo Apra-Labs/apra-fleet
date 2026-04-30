@@ -70,7 +70,7 @@ describe('receiveFiles', () => {
       local_dest_dir: localDestination,
     });
 
-    expect(downloadViaSFTP).toHaveBeenCalledWith(remoteAgent, ['test.txt'], localDestination);
+    expect(downloadViaSFTP).toHaveBeenCalledWith(remoteAgent, ['test.txt'], localDestination, undefined);
   });
 
   it('Boundary violation: remote_path outside work folder', async () => {

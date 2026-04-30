@@ -45,6 +45,8 @@ describe('executeCommand', () => {
     expect(mockExecCommand).toHaveBeenCalledWith(
       expect.stringContaining('/home/user/project'),
       5000,
+      undefined,
+      expect.any(Function)
     );
   });
 
@@ -57,10 +59,14 @@ describe('executeCommand', () => {
     expect(mockExecCommand).toHaveBeenCalledWith(
       expect.stringContaining('/tmp/other'),
       5000,
+      undefined,
+      expect.any(Function)
     );
     expect(mockExecCommand).toHaveBeenCalledWith(
       expect.not.stringContaining('/home/user/project'),
       5000,
+      undefined,
+      expect.any(Function)
     );
   });
 

@@ -170,6 +170,14 @@ export class CopilotProvider implements ProviderAdapter {
     return [];
   }
 
+
+
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
+    // For native binaries on Windows, shell-based wrapping ensures reliable output redirection
+    // while still allowing for tree-based process termination via the shell PID.
+    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+  }
+
   jsonOutputFlag(): string {
     return '--format json';
   }
