@@ -358,6 +358,8 @@ export async function runInstall(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`apra-fleet install
 
+Install the apra-fleet binary, hooks, MCP server registration, and skills.
+
 Usage:
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
   apra-fleet install --skill all       Same as bare install (all skills)
@@ -365,9 +367,18 @@ Usage:
   apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
-  apra-fleet install --force           Stop a running server, then install
-  apra-fleet install --llm <provider>  Install for a specific LLM provider (claude, gemini, codex, copilot)
-  apra-fleet install --help            Show this help`);
+  apra-fleet install --force           Stop a running server before installing
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot
+  apra-fleet install --help            Show this help
+
+Options:
+  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot.
+                          Defaults to claude. Note: --llm gemini shows a warning about sequential
+                          dispatch — Gemini does not support background agents, so fleet operations
+                          run sequentially rather than in parallel.
+  --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
+  --no-skill              Alias for --skill none.
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
     process.exit(0);
     return;
   }

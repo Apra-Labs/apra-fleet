@@ -15,16 +15,19 @@ if (arg === '--help' || arg === '-h') {
   console.log(`apra-fleet ${serverVersion}
 
 Usage:
-  apra-fleet                  Start MCP server (stdio)
-  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
-  apra-fleet install --skill all       Same as bare install (all skills)
-  apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
-  apra-fleet install --skill none      Skip skill installation
-  apra-fleet install --no-skill        Same as --skill none
-  apra-fleet auth <name>      Provide password for pending registration (auto-launched)
-  apra-fleet --version        Print version
-  apra-fleet --help           Show this help`);
+  apra-fleet                           Start MCP server (stdio)
+  apra-fleet install                   Install binary, hooks, MCP server, and skills
+    --llm <provider>                   Target LLM provider: claude (default), gemini, codex, copilot
+    --skill all|fleet|pm|none          Which skills to install (default: all)
+    --no-skill                         Skip skill installation
+    --force                            Stop running server before installing
+  apra-fleet update                    Update to the latest release
+    --check                            Check for updates without installing
+  apra-fleet auth <name>               Provide password for pending member registration
+  apra-fleet --version                 Print version
+  apra-fleet --help                    Show this help
+
+Run 'apra-fleet <subcommand> --help' for detailed usage.`);
   process.exit(0);
 }
 
