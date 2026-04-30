@@ -35,7 +35,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `credential_store_list` | List stored credential names (values are never returned) |
 | `credential_store_delete` | Delete a stored credential by name |
 | `credential_store_update` | Update credential metadata (members, TTL, network policy) without re-entering the secret |
-| `stop_prompt` | Kill the active LLM process on a member and set a one-shot error gate.<br><br>**One-shot error gate:** The next `execute_prompt` call to this member returns a "stopped by PM" error and clears the gate. All subsequent dispatches proceed normally. No manual clearing needed.<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled mid-execution. After stopping, re-dispatch with `resume=false` — the session state after a kill is unreliable.<br><br>**Note:** The stopped flag is in-memory only — it does not persist across server restarts. |
+| `stop_prompt` | Kill the active LLM process on a member. **Always call `TaskStop` after calling `stop_prompt`**.<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled. |
 
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
@@ -143,13 +143,13 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 
 | Parameter | Semantics |
 |-----------|-----------|
-| `timeout_ms` | **Inactivity timeout** — the session is killed only if no stdout/stderr output arrives for this many ms. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are never killed by this timer as long as output keeps flowing. Default: 300 000 ms (5 min). |
-| `max_total_ms` | **Hard ceiling** — the session is killed after this total elapsed time regardless of activity. Optional; defaults to unlimited. |
+| `timeout_s` | **Inactivity timeout** — the session is killed only if no stdout/stderr output arrives for this many seconds. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are never killed by this timer as long as output keeps flowing. Default: 300s (5 min). |
+| `max_total_s` | **Hard ceiling** — the session is killed after this total elapsed time in seconds regardless of activity. Optional; defaults to unlimited. |
 
 **When to use which:**
 
-- Use `timeout_ms` for normal dispatch. It extends the deadline automatically as long as the member is active, so you don't need to over-estimate how long a task takes.
-- Use `max_total_ms` only for tasks that must never run forever — CI pipelines, automated batch jobs, or any context where an unbounded runaway is unacceptable.
+- Use `timeout_s` for normal dispatch. It extends the deadline automatically as long as the member is active, so you don't need to over-estimate how long a task takes.
+- Use `max_total_s` only for tasks that must never run forever — CI pipelines, automated batch jobs, or any context where an unbounded runaway is unacceptable.
 - Both timers run concurrently; whichever fires first kills the process.
 
 ## execute_prompt: Session Resume
@@ -237,3 +237,11 @@ When you see this notice, surface it to the user verbatim before the rest of the
 | **Agent context file** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT-INSTRUCTIONS.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
 | **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members |
+
+## Fleet Logs
+
+The fleet server writes structured JSONL logs to `APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log`. Use `jq` to read them:
+
+```bash
+cat "$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log" | jq '.'
+```

@@ -14,6 +14,8 @@ AI agents that write code, review each other's work, and coordinate across your 
 
 **Apra Fleet** is an open-source **MCP server** that pairs AI coding agents into **doer-reviewer loops** for higher quality code, and orchestrates them across machines via SSH when you need distributed power. Works with Claude Code, Gemini, Codex and other AI coding assistants.
 
+If apra-fleet helped you move faster with better quality, please [⭐ star this repo](https://github.com/Apra-Labs/apra-fleet) — it helps others find it.
+
 ## What you get
 
 ### Doer-reviewer loops — two agents, one quality bar
@@ -346,7 +348,7 @@ Fleet automatically uses the correct env var name per provider.
 
 ### Provider capabilities and limits
 
-- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_ms` to bound execution.
+- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_s` to bound execution.
 - Fine-grained permission control (`compose_permissions`) is Claude-only. Other providers use all-or-nothing skip-permissions flags.
 - Codex output uses NDJSON internally — fleet handles this transparently.
 - Gemini responses may silently truncate at ~8K tokens. Split large tasks into smaller units.
@@ -739,7 +741,7 @@ Known limitations when using non-Claude providers in a fleet.
 
 | Gap | Provider(s) | Impact on Fleet | Mitigation |
 |-----|------------|----------------|------------|
-| **No `--max-turns`** | Gemini, Codex, Copilot | Can't bound execution by turn count | Use `timeout_ms` as the primary execution guard. `max_turns` is Claude-only and ignored for other providers. |
+| **No `--max-turns`** | Gemini, Codex, Copilot | Can't bound execution by turn count | Use `timeout_s` as the primary execution guard. `max_turns` is Claude-only and ignored for other providers. |
 | **No server-side session ID in JSON output** | Gemini, Codex, Copilot | Can't store a session ID to pass back for `--resume` | Provider-specific approach: Claude stores `session_id` from JSON. Others use generic "resume last session" flag (`-r`, `exec resume`, `--continue`). |
 | **NDJSON vs single JSON** | Codex | Response format differs from other providers | CodexProvider parser collects NDJSON events and extracts the final result + metadata from the last event. Transparent to tool code via `provider.parseResponse()`. |
 | **OAuth credential copy doesn't work** | Gemini, Codex, Copilot | `provision_llm_auth` Flow A (copy `~/.claude/.credentials.json`) is Claude-only | For non-Claude providers: use the `api_key` parameter with the provider's env var (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`). OAuth/login must be done interactively on the member. |

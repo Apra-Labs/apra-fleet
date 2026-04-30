@@ -50,13 +50,13 @@ afterEach(() => {
 
 describe('composePermissions — Claude proactive', () => {
   it('delivers settings.local.json with JSON allow list', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
 
     // detectStacks: ls markers + *.sln/*.csproj
     mockExecCommand.mockResolvedValue(OK);
 
-    const result = await composePermissions({ member_id: agent.id, role: 'doer' });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
     expect(result).toContain('claude-doer');
     expect(result).toContain('doer');
@@ -79,11 +79,11 @@ describe('composePermissions — Claude proactive', () => {
   });
 
   it('delivers reviewer config with restricted allow list', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-reviewer', llmProvider: 'claude', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-reviewer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    const result = await composePermissions({ member_id: agent.id, role: 'reviewer' });
+    const result = await composePermissions({ member_id: member.id, role: 'reviewer' });
     expect(result).toContain('reviewer');
 
     const writes = mockExecCommand.mock.calls.map(c => c[0] as string).filter(cmd => cmd.includes('cat >'));
@@ -97,11 +97,11 @@ describe('composePermissions — Claude proactive', () => {
 
 describe('composePermissions — Gemini proactive', () => {
   it('delivers settings.json + fleet.toml for doer', async () => {
-    const agent = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    const result = await composePermissions({ member_id: agent.id, role: 'doer' });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
     expect(result).toContain('gemini-doer');
     expect(result).toContain('gemini');
@@ -129,11 +129,11 @@ describe('composePermissions — Gemini proactive', () => {
   });
 
   it('delivers default mode for reviewer', async () => {
-    const agent = makeTestAgent({ friendlyName: 'gemini-reviewer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'gemini-reviewer', llmProvider: 'gemini', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    await composePermissions({ member_id: agent.id, role: 'reviewer' });
+    await composePermissions({ member_id: member.id, role: 'reviewer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
@@ -152,11 +152,11 @@ describe('composePermissions — Gemini proactive', () => {
 
 describe('composePermissions — Codex proactive', () => {
   it('delivers config.toml with full-auto for doer', async () => {
-    const agent = makeTestAgent({ friendlyName: 'codex-doer', llmProvider: 'codex', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'codex-doer', llmProvider: 'codex', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    const result = await composePermissions({ member_id: agent.id, role: 'doer' });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
     expect(result).toContain('codex-doer');
     expect(result).toContain('codex');
@@ -174,11 +174,11 @@ describe('composePermissions — Codex proactive', () => {
   });
 
   it('delivers config.toml with suggest for reviewer', async () => {
-    const agent = makeTestAgent({ friendlyName: 'codex-reviewer', llmProvider: 'codex', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'codex-reviewer', llmProvider: 'codex', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    await composePermissions({ member_id: agent.id, role: 'reviewer' });
+    await composePermissions({ member_id: member.id, role: 'reviewer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const tomlWrite = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.codex/config.toml'))!;
@@ -192,11 +192,11 @@ describe('composePermissions — Codex proactive', () => {
 
 describe('composePermissions — Copilot proactive', () => {
   it('delivers settings.local.json with allow-all-tools for doer', async () => {
-    const agent = makeTestAgent({ friendlyName: 'copilot-doer', llmProvider: 'copilot', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'copilot-doer', llmProvider: 'copilot', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    const result = await composePermissions({ member_id: agent.id, role: 'doer' });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
     expect(result).toContain('copilot-doer');
     expect(result).toContain('copilot');
@@ -211,11 +211,11 @@ describe('composePermissions — Copilot proactive', () => {
   });
 
   it('delivers restrictive JSON for reviewer', async () => {
-    const agent = makeTestAgent({ friendlyName: 'copilot-reviewer', llmProvider: 'copilot', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'copilot-reviewer', llmProvider: 'copilot', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    await composePermissions({ member_id: agent.id, role: 'reviewer' });
+    await composePermissions({ member_id: member.id, role: 'reviewer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const jsonWrite = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.github/copilot/settings.local.json'))!;
@@ -229,8 +229,8 @@ describe('composePermissions — Copilot proactive', () => {
 
 describe('composePermissions — Claude reactive grant', () => {
   it('reads existing settings.local.json and merges new grants', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
 
     const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write', 'Bash(git:*)'] } });
     // First call is the read of existing settings.local.json
@@ -239,7 +239,7 @@ describe('composePermissions — Claude reactive grant', () => {
     mockExecCommand.mockResolvedValue(OK);
 
     const result = await composePermissions({
-      member_id: agent.id,
+      member_id: member.id,
       role: 'doer',
       grant: ['Bash(docker:*)'],
     });
@@ -261,11 +261,11 @@ describe('composePermissions — Claude reactive grant', () => {
   });
 
   it('blocks dangerous permissions', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
 
     const result = await composePermissions({
-      member_id: agent.id,
+      member_id: member.id,
       role: 'doer',
       grant: ['Bash(sudo:*)'],
     });
@@ -282,12 +282,12 @@ describe('composePermissions — Claude reactive grant', () => {
 
 describe('composePermissions — Gemini reactive grant', () => {
   it('delivers updated TOML policy with granted tools', async () => {
-    const agent = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
     const result = await composePermissions({
-      member_id: agent.id,
+      member_id: member.id,
       role: 'doer',
       grant: ['Bash(docker:*)'],
     });
@@ -308,11 +308,11 @@ describe('composePermissions — Gemini reactive grant', () => {
   });
 
   it('blocks dangerous permissions for Gemini too', async () => {
-    const agent = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
+    addAgent(member);
 
     const result = await composePermissions({
-      member_id: agent.id,
+      member_id: member.id,
       role: 'doer',
       grant: ['Bash(sudo:*)'],
     });
@@ -329,12 +329,12 @@ describe('composePermissions — Gemini reactive grant', () => {
 describe('composePermissions — no llmProvider defaults to Claude', () => {
   it('treats member with no llmProvider as Claude', async () => {
     // makeTestAgent without llmProvider → undefined
-    const agent = makeTestAgent({ friendlyName: 'legacy-agent', os: 'linux' });
-    delete (agent as any).llmProvider;
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'legacy-member', os: 'linux' });
+    delete (member as any).llmProvider;
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    const result = await composePermissions({ member_id: agent.id, role: 'doer' });
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
     expect(result).toContain('claude'); // provider name in output
 
@@ -351,11 +351,11 @@ describe('composePermissions — no llmProvider defaults to Claude', () => {
 
 describe('composePermissions — fleet-mcp disabled in member config (#151)', () => {
   it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (proactive)', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    await composePermissions({ member_id: agent.id, role: 'doer' });
+    await composePermissions({ member_id: member.id, role: 'doer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
@@ -366,14 +366,14 @@ describe('composePermissions — fleet-mcp disabled in member config (#151)', ()
   });
 
   it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (reactive grant)', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
 
     const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write'] } });
     mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
     mockExecCommand.mockResolvedValue(OK);
 
-    await composePermissions({ member_id: agent.id, role: 'doer', grant: ['Bash(npm:*)'] });
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(npm:*)'] });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
@@ -389,8 +389,8 @@ describe('composePermissions — fleet-mcp disabled in member config (#151)', ()
 
 describe('composePermissions — fresh/empty permissions.json', () => {
   it('does not crash when permissions.json exists but contains only {}', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
     const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
@@ -409,7 +409,7 @@ describe('composePermissions — fresh/empty permissions.json', () => {
     // Use .resolves so vitest actually awaits the promise and catches rejections
     await expect(
       composePermissions({
-        member_id: agent.id,
+        member_id: member.id,
         role: 'doer',
         project_folder: '/fake/project',
       })

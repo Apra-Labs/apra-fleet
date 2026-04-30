@@ -7,28 +7,14 @@ import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
-import { logLine } from '../utils/log-helpers.js';
 
-/**
- * Scan stdout for a FLEET_PID:<pid> line, store the PID, and strip the line.
- * The PID wrapper always emits this as the first stdout line before LLM output.
- */
-export function extractAndStorePid(agentId: string, result: SSHExecResult): SSHExecResult {
-  const lines = result.stdout.split('\n');
-  const idx = lines.findIndex(l => /^FLEET_PID:\d+\r?$/.test(l));
-  if (idx === -1) return result;
-  const pid = parseInt(lines[idx].replace(/\r$/, '').slice('FLEET_PID:'.length), 10);
-  setStoredPid(agentId, pid);
-  lines.splice(idx, 1);
-  return { ...result, stdout: lines.join('\n') };
-}
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles, downloadFiles } from './file-transfer.js';
 
 export interface AgentStrategy {
-  execCommand(command: string, timeoutMs?: number, maxTotalMs?: number): Promise<SSHExecResult>;
+  execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string): Promise<TransferResult>;
   /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
@@ -40,8 +26,8 @@ export interface AgentStrategy {
 class RemoteStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
-    return sshExecCommand(this.agent, command, timeoutMs, maxTotalMs);
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void): Promise<SSHExecResult> {
+    return sshExecCommand(this.agent, command, timeoutMs, maxTotalMs, onPidCaptured);
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string): Promise<TransferResult> {
@@ -81,15 +67,12 @@ class RemoteStrategy implements AgentStrategy {
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number): Promise<SSHExecResult> {
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void): Promise<SSHExecResult> {
     let pidExtracted = false;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
       const cmds = getOsCommands(getAgentOS(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
-      if (child.pid !== undefined) {
-        logLine('execute_command', `agent=${this.agent.friendlyName} PID=${child.pid} (local)`);
-      }
 
       let settled = false;
       function settle(fn: () => void) {
@@ -139,7 +122,7 @@ class LocalStrategy implements AgentStrategy {
           if (m) {
             const pid = parseInt(m[1], 10);
             setStoredPid(this.agent.id, pid);
-            logLine('execute_prompt', `agent=${this.agent.friendlyName} LLM_PID=${pid} (local)`);
+            onPidCaptured?.(pid);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
             pidExtracted = true;
           }

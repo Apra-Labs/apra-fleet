@@ -60,11 +60,11 @@ describe('removeMember - decommissioning', () => {
   afterEach(() => restoreRegistry());
 
   it('blocks removal when member is busy and force=false', async () => {
-    const agent = makeTestAgent({ friendlyName: 'busy-worker' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'busy-worker' });
+    addAgent(member);
     mockReadMemberStatus.mockReturnValue('busy');
 
-    const result = await removeMember({ member_id: agent.id, force: false });
+    const result = await removeMember({ member_id: member.id, force: false });
 
     expect(result).toContain('⛔');
     expect(result).toContain('busy');
@@ -72,65 +72,65 @@ describe('removeMember - decommissioning', () => {
   });
 
   it('allows removal when member is busy and force=true', async () => {
-    const agent = makeTestAgent({ friendlyName: 'busy-worker' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'busy-worker' });
+    addAgent(member);
     mockReadMemberStatus.mockReturnValue('busy');
 
-    const result = await removeMember({ member_id: agent.id, force: true });
+    const result = await removeMember({ member_id: member.id, force: true });
 
     expect(result).toContain('✅');
   });
 
   it('allows removal when member is idle', async () => {
-    const agent = makeTestAgent({ friendlyName: 'idle-worker' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'idle-worker' });
+    addAgent(member);
 
-    const result = await removeMember({ member_id: agent.id });
+    const result = await removeMember({ member_id: member.id });
 
     expect(result).toContain('✅');
   });
 
   it('calls cancelCredentialCleanup before removing', async () => {
-    const agent = makeTestAgent({ friendlyName: 'cred-worker' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'cred-worker' });
+    addAgent(member);
 
-    await removeMember({ member_id: agent.id });
+    await removeMember({ member_id: member.id });
 
-    expect(mockCancelCredentialCleanup).toHaveBeenCalledWith(agent.id);
+    expect(mockCancelCredentialCleanup).toHaveBeenCalledWith(member.id);
   });
 
   it('revokes VCS auth for remote member with vcsProvider', async () => {
-    const agent = makeTestAgent({ friendlyName: 'vcs-worker', vcsProvider: 'github' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'vcs-worker', vcsProvider: 'github' });
+    addAgent(member);
 
-    await removeMember({ member_id: agent.id });
+    await removeMember({ member_id: member.id });
 
     expect(mockRevokeGithub).toHaveBeenCalledOnce();
   });
 
   it('skips VCS revoke for local member', async () => {
-    const agent = makeTestAgent({ friendlyName: 'local-worker', agentType: 'local', vcsProvider: 'github' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'local-worker', agentType: 'local', vcsProvider: 'github' });
+    addAgent(member);
 
-    await removeMember({ member_id: agent.id });
+    await removeMember({ member_id: member.id });
 
     expect(mockRevokeGithub).not.toHaveBeenCalled();
   });
 
   it('skips VCS revoke when no vcsProvider configured', async () => {
-    const agent = makeTestAgent({ friendlyName: 'no-vcs', vcsProvider: undefined });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'no-vcs', vcsProvider: undefined });
+    addAgent(member);
 
-    await removeMember({ member_id: agent.id });
+    await removeMember({ member_id: member.id });
 
     expect(mockRevokeGithub).not.toHaveBeenCalled();
   });
 
   it('attempts authorized_keys cleanup for remote member with keyPath', async () => {
-    const agent = makeTestAgent({ friendlyName: 'key-worker', keyPath: undefined });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'key-worker', keyPath: undefined });
+    addAgent(member);
 
-    await removeMember({ member_id: agent.id });
+    await removeMember({ member_id: member.id });
 
     // keyPath is undefined so no authorized_keys command
     const allCmds = mockExecCommand.mock.calls.map(c => c[0]);
@@ -138,22 +138,22 @@ describe('removeMember - decommissioning', () => {
   });
 
   it('continues removal even when testConnection fails', async () => {
-    const agent = makeTestAgent({ friendlyName: 'offline-worker' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'offline-worker' });
+    addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'timeout' });
 
-    const result = await removeMember({ member_id: agent.id });
+    const result = await removeMember({ member_id: member.id });
 
     expect(result).toContain('✅');
     expect(result).toContain('⚠️');
   });
 
   it('continues removal even when VCS revoke throws', async () => {
-    const agent = makeTestAgent({ friendlyName: 'revoke-throws', vcsProvider: 'github' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'revoke-throws', vcsProvider: 'github' });
+    addAgent(member);
     mockRevokeGithub.mockRejectedValue(new Error('revoke failed'));
 
-    const result = await removeMember({ member_id: agent.id });
+    const result = await removeMember({ member_id: member.id });
 
     expect(result).toContain('✅');
   });

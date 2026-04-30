@@ -282,11 +282,11 @@ describe('registerMember - cloud config', () => {
     const { getAllAgents } = await import('../src/services/registry.js');
     const agents = getAllAgents();
     expect(agents).toHaveLength(1);
-    const agent = agents[0];
-    expect(agent.cloud).toBeDefined();
-    expect(agent.cloud!.instanceId).toBe('i-0abc1234def567890');
-    expect(agent.keyPath).toBe('/home/user/.ssh/id_rsa');
-    expect(agent.authType).toBe('key');
+    const member = agents[0];
+    expect(member.cloud).toBeDefined();
+    expect(member.cloud!.instanceId).toBe('i-0abc1234def567890');
+    expect(member.keyPath).toBe('/home/user/.ssh/id_rsa');
+    expect(member.authType).toBe('key');
   });
 
   it('rejects cloud member missing cloud_instance_id', async () => {

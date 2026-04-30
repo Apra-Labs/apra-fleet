@@ -14,9 +14,9 @@ import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
-import { clearStoredPid, isAgentStopped, clearAgentStopped } from '../utils/agent-helpers.js';
+import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
-import { logLine, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -25,8 +25,8 @@ export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
-  timeout_ms: z.number().default(300000).describe('Inactivity timeout in milliseconds — the command is killed after this many ms without any stdout/stderr output (default: 5 minutes)'),
-  max_total_ms: z.number().optional().describe('Hard ceiling in milliseconds — the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
+  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds — the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
+  max_total_s: z.number().optional().describe('Hard ceiling in seconds — the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
   dangerously_skip_permissions: z.boolean().default(false).describe('DEPRECATED: use update_member(unattended="dangerous") instead. This field is ignored and will be removed in a future version.'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names — the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
@@ -145,49 +145,48 @@ export async function executePrompt(input: ExecutePromptInput): Promise<string> 
     sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
   });
 
-  const timeoutMs = input.timeout_ms ?? 300000;
-  const maxTotalMs = input.max_total_ms;
-
-  // If agent was explicitly stopped, surface the error once and clear the flag.
-  // The next execute_prompt call will proceed normally.
-  if (isAgentStopped(agent.id)) {
-    inFlightAgents.delete(agent.id);
-    clearAgentStopped(agent.id);
-    return `⛔ Agent "${agent.friendlyName}" was stopped by the PM. Stopped flag cleared — call execute_prompt again to resume.`;
-  }
+  const timeoutMs = (input.timeout_s ?? 300) * 1000;
+  const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
 
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
-  await tryKillPid(agent.id, strategy, cmds);
+  await tryKillPid(agent, strategy, cmds);
 
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
 
-  logLine('execute_prompt', `agent=${agent.friendlyName} prompt="${truncateForLog(maskSecrets(input.prompt))}"`);
-  const _epStartTime = Date.now();
+  const scope = new LogScope('execute_prompt', `timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
+  const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   let _epExitCode: number | 'error' = 'error';
+  let _epError: string | undefined;
+  let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
   try {
-    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs);
+    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured);
     let parsed = provider.parseResponse(result);
+    if (parsed.usage) _epUsage = parsed.usage;
 
     // Stale session retry — immediate, without session ID
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      await tryKillPid(agent.id, strategy, cmds);
+      scope.info('retrying — stale session');
+      await tryKillPid(agent, strategy, cmds);
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured);
       parsed = provider.parseResponse(result);
+      if (parsed.usage) _epUsage = parsed.usage;
     }
 
     // Server/overloaded error retry — single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
-      await tryKillPid(agent.id, strategy, cmds);
+      scope.info('retrying — server overloaded');
+      await tryKillPid(agent, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured);
       parsed = provider.parseResponse(result);
+      if (parsed.usage) _epUsage = parsed.usage;
     }
 
     _epExitCode = result.code;
@@ -223,9 +222,13 @@ session: ${parsed.sessionId}`;
     return output;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
+    _epError = err.message;
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
-    logLine('execute_prompt', `agent=${agent.friendlyName} exit=${_epExitCode} elapsed=${Date.now() - _epStartTime}ms`);
+    const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
+    if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
+    else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
+    else scope.ok(`exit=0${_epTok}`);
     inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
