@@ -6,6 +6,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { isContainedInWorkFolder } from '../utils/platform.js';
+import { LogScope } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export const receiveFilesSchema = z.object({
@@ -53,6 +54,9 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
 
   const strategy = getStrategy(agent);
 
+  const pathSummary = input.remote_paths[0] ?? '';
+  const scope = new LogScope('receive_files', `${input.remote_paths.length} file(s) ← ${agent.friendlyName}:${pathSummary}`, agent);
+
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
@@ -78,9 +82,17 @@ export async function receiveFiles(input: ReceiveFilesInput): Promise<string> {
 
     output += `\nLocal destination: ${input.local_dest_dir}`;
 
+    if (result.failed.length > 0 && result.success.length > 0)
+      scope.fail(`${result.success.length} ok, ${result.failed.length} failed`);
+    else if (result.failed.length > 0)
+      scope.abort(`all ${result.failed.length} file(s) failed`);
+    else
+      scope.ok(`${result.success.length} file(s)`);
+
     return output;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
+    scope.abort(err.message);
     return `Failed to download files from "${agent.friendlyName}": ${err.message}`;
   }
 }

@@ -24,7 +24,7 @@ vi.mock('../src/os/index.js', () => ({
   }),
 }));
 
-// agent-helpers only used for getAgentOS — stub it
+// member-helpers only used for getAgentOS — stub it
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: () => 'linux',
   setIdleTouchHook: vi.fn(),
@@ -35,7 +35,7 @@ import { checkMemberActivity } from '../src/services/cloud/activity.js';
 
 const baseAgent: Agent = {
   id: 'test-id',
-  friendlyName: 'test-agent',
+  friendlyName: 'test-member',
   agentType: 'remote',
   host: '1.2.3.4',
   port: 22,
@@ -178,7 +178,7 @@ describe('checkMemberActivity - custom activityCommand (U4)', () => {
     expect(result).toBe('idle');
   });
 
-  it('skips activityCommand when agent has no cloud config', async () => {
+  it('skips activityCommand when member has no cloud config', async () => {
     const noCloudAgent: Agent = { ...baseAgent, cloud: undefined };
     mockExecCommand.mockResolvedValueOnce(sshResult('', 2));    // gpuProcessCheck: skip
     mockExecCommand.mockResolvedValueOnce(sshResult('idle'));   // fleetProcessCheck (no activity cmd)

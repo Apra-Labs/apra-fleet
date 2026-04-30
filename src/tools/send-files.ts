@@ -6,6 +6,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { isContainedInWorkFolder } from '../utils/platform.js';
+import { LogScope } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export const sendFilesSchema = z.object({
@@ -73,6 +74,9 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
 
   const strategy = getStrategy(agent);
 
+  const dest = resolvedPath ?? agent.workFolder;
+  const scope = new LogScope('send_files', `${input.local_paths.length} file(s) → ${dest}`, agent);
+
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   try {
@@ -98,9 +102,17 @@ export async function sendFiles(input: SendFilesInput): Promise<string> {
 
     output += `\nDestination: ${resolvedPath ?? agent.workFolder}`;
 
+    if (result.failed.length > 0 && result.success.length > 0)
+      scope.fail(`${result.success.length} ok, ${result.failed.length} failed`);
+    else if (result.failed.length > 0)
+      scope.abort(`all ${result.failed.length} file(s) failed`);
+    else
+      scope.ok(`${result.success.length} file(s)`);
+
     return output;
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
+    scope.abort(err.message);
     return `Failed to upload files to "${agent.friendlyName}": ${err.message}`;
   }
 }

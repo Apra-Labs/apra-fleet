@@ -490,7 +490,7 @@ describe('CopilotProvider', () => {
   });
 
   it('logs warning for unattended=auto (not supported)', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
     expect(cmd).not.toContain('--allow-all-tools');
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Copilot'));
@@ -498,7 +498,7 @@ describe('CopilotProvider', () => {
   });
 
   it('logs warning for unattended=dangerous (not supported)', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
     expect(cmd).not.toContain('--allow-all-tools');
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Copilot'));
@@ -657,8 +657,8 @@ describe('buildResumeFlag', () => {
 // ─── Backwards compatibility ──────────────────────────────────────────────────
 
 describe('backwards compatibility', () => {
-  it('agent without llmProvider uses ClaudeProvider', () => {
-    // Simulate what code does: agent.llmProvider ?? 'claude'
+  it('member without llmProvider uses ClaudeProvider', () => {
+    // Simulate what code does: member.llmProvider ?? 'claude'
     const agentLlmProvider = undefined;
     const provider = getProvider(agentLlmProvider ?? 'claude');
     expect(provider.name).toBe('claude');

@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { getStoredPid, setAgentStopped } from '../utils/agent-helpers.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getStoredPid, getAgentOS } from '../utils/agent-helpers.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
+import { logLine } from '../utils/log-helpers.js';
 
 export const stopPromptSchema = z.object({
   ...memberIdentifier,
@@ -22,14 +22,12 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
 
   const pid = getStoredPid(agent.id);
 
-  // Kill active process (if any) before setting the stopped flag
-  await tryKillPid(agent.id, strategy, cmds);
+  await tryKillPid(agent, strategy, cmds);
 
-  // Mark agent stopped to prevent re-dispatch
-  setAgentStopped(agent.id);
+  logLine('stop_prompt', `pid=${pid ?? 'none'}`, agent);
 
   if (pid !== undefined) {
-    return `🛑 Agent "${agent.friendlyName}" stopped (killed PID ${pid}). Next execute_prompt will require explicit intent.`;
+    return `🛑 Agent "${agent.friendlyName}" stopped (killed PID ${pid}).`;
   }
-  return `🛑 Agent "${agent.friendlyName}" marked stopped (no active session was running). Next execute_prompt will require explicit intent.`;
+  return `🛑 Agent "${agent.friendlyName}" stopped (no active session was running).`;
 }

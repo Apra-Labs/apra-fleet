@@ -63,7 +63,7 @@ describe('OsCommands via getOsCommands', () => {
     });
   });
 
-  describe('generic agent CLI commands', () => {
+  describe('generic member CLI commands', () => {
     const claudeProvider = getProvider('claude');
     const geminiProvider = getProvider('gemini');
 
@@ -444,7 +444,7 @@ describe('isContainedInWorkFolder', () => {
 
 describe('SSH username with spaces (#144)', () => {
   it('getSSHConfig passes username with spaces intact', () => {
-    const agent: any = {
+    const member: any = {
       host: '192.168.1.1',
       port: 22,
       username: 'tester tester',
@@ -452,19 +452,19 @@ describe('SSH username with spaces (#144)', () => {
       encryptedPassword: undefined,
     };
     // Must not throw and must preserve the space-containing username
-    const config = getSSHConfig(agent);
+    const config = getSSHConfig(member);
     expect(config.username).toBe('tester tester');
   });
 
   it('getSSHConfig passes username without spaces intact', () => {
-    const agent: any = {
+    const member: any = {
       host: '192.168.1.1',
       port: 22,
       username: 'normaluser',
       authType: 'password',
       encryptedPassword: undefined,
     };
-    const config = getSSHConfig(agent);
+    const config = getSSHConfig(member);
     expect(config.username).toBe('normaluser');
   });
 });

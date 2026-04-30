@@ -65,7 +65,7 @@ describe('friendlyName Zod validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('update-agent schema applies the same validation', () => {
+  it('update-member schema applies the same validation', () => {
     const result = updateMemberSchema.shape.friendly_name.safeParse('test;whoami');
     expect(result.success).toBe(false);
 
@@ -259,7 +259,7 @@ describe('credential leakage prevention', () => {
         const longErrorMessage = 'APIError: Your API key is invalid: sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
         mockProvisionAuth.mockRejectedValue(new Error(longErrorMessage));
 
-        const agent = makeTestAgent({
+        const member = makeTestAgent({
             cloud: {
                 provider: 'aws',
                 instanceId: 'i-123',
@@ -267,11 +267,11 @@ describe('credential leakage prevention', () => {
                 idleTimeoutMin: 10,
             }
         });
-        addAgent(agent);
+        addAgent(member);
 
         // Dynamically import to use the mocks
         const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
-        await ensureCloudReady(agent);
+        await ensureCloudReady(member);
 
         const loggedOutput = stderrWrite.mock.calls.map(call => call[0]).join('\n');
 

@@ -109,9 +109,8 @@ while you are composing permissions, `resume=true` still succeeds via stale-sess
 auto-recovery, but the member restarts without its in-progress context.
 
 **Cancelling a running session:** Use `stop_prompt` when a member is working on the wrong
-thing, stuck in a loop, or dispatched with incorrect instructions. The one-shot error gate
-fires on the next dispatch then self-clears — no manual cleanup needed. Always follow with
-`resume=false` to start a clean session.
+thing, stuck in a loop, or dispatched with incorrect instructions. Always follow immediately
+with `resume=false` to start a clean session.
 
 Note: `stop_prompt` (a fleet MCP tool) kills the member's LLM process. This is distinct from
 stopping a background orchestration sub-task within the PM's own session — the latter mechanism
