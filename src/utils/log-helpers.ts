@@ -3,6 +3,13 @@ import path from 'node:path';
 import { FLEET_DIR } from '../paths.js';
 
 let _stream: fs.WriteStream | null = null;
+let _activeLogFile: string | null = null;
+
+/** Returns the resolved path of the active log file, or null if logging is unavailable. */
+export function getActiveLogFile(): string | null {
+  getStream(); // ensure initialised
+  return _activeLogFile;
+}
 
 function getStream(): fs.WriteStream | null {
   if (_stream) return _stream;
@@ -11,6 +18,7 @@ function getStream(): fs.WriteStream | null {
     fs.mkdirSync(logsDir, { recursive: true });
     const logFile = path.join(logsDir, `fleet-${process.pid}.log`);
     _stream = fs.createWriteStream(logFile, { flags: 'a' });
+    _activeLogFile = logFile;
   } catch {
     // data dir not available
   }
