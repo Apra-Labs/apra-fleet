@@ -95,8 +95,11 @@ All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify
 
 ## Dispatch Rules
 
+**Rule:** Shell commands (git, npm, bash scripts, file ops) → `execute_command`. LLM reasoning tasks (write code, review, plan, analyse) → `execute_prompt`. When in doubt: if a human could write the exact command string upfront, it's `execute_command`.
+
 - **`execute_prompt`** — always wrap in a background Agent: `Agent(run_in_background=true)`. No exceptions.
 - **`execute_command`** — any command that may take several seconds must be wrapped in a background Agent. Short reads (`cat`, `git status`, `echo`) can be called inline. Always use bash syntax — Git Bash is universally available on developer machines. Never use PowerShell or cmd.exe syntax, even on Windows members.
+- **When clubbing fleet calls into a background Agent:** Always name the tool explicitly in the subagent prompt — write "use `execute_command` to run..." or "use `execute_prompt` to dispatch...". Never leave tool selection implicit.
 - **`send_files` / `receive_files`** — transfers exceeding 1MB must use a background Agent.
 
 **Concurrent dispatch guard:** Only one `execute_prompt` can be in-flight per member at a time (enforced server-side). A second concurrent dispatch returns immediately with:
