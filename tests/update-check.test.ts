@@ -12,7 +12,41 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkForUpdate, getUpdateNotice, _setUpdateCache } from '../src/services/update-check.js';
+import { checkForUpdate, getUpdateNotice, _setUpdateCache, _isNewer } from '../src/services/update-check.js';
+
+// ---------------------------------------------------------------------------
+// parseVersion / isNewer — 4-part version tag support (#211)
+// ---------------------------------------------------------------------------
+
+describe('isNewer — 4-part version tags', () => {
+  it('v0.1.8.0 vs v0.1.8 → equal (not newer)', () => {
+    expect(_isNewer('v0.1.8.0', 'v0.1.8')).toBe(false);
+  });
+
+  it('v0.1.8.1 vs v0.1.8 → newer', () => {
+    expect(_isNewer('v0.1.8.1', 'v0.1.8')).toBe(true);
+  });
+
+  it('v0.1.9.0 vs v0.1.8.1 → newer', () => {
+    expect(_isNewer('v0.1.9.0', 'v0.1.8.1')).toBe(true);
+  });
+
+  it('v0.1.8 vs v0.1.8.0 → not newer (symmetric)', () => {
+    expect(_isNewer('v0.1.8', 'v0.1.8.0')).toBe(false);
+  });
+
+  it('invalid candidate returns false', () => {
+    expect(_isNewer('garbage', 'v0.1.8')).toBe(false);
+  });
+
+  it('invalid current returns false', () => {
+    expect(_isNewer('v0.1.8', 'not-a-version')).toBe(false);
+  });
+
+  it('2-part version returns false (< 3 parts)', () => {
+    expect(_isNewer('v1.0', 'v0.1.8')).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // checkForUpdate + getUpdateNotice
