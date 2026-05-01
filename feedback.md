@@ -1,111 +1,74 @@
-# #182 Tier-Aware Dispatch — Code Review
+# Issue #98 Plan Review — Glob Patterns and Directories in send_files / receive_files
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-28 18:30:00+00:00
-**Verdict:** APPROVED
+**Date:** 2026-05-01
+**Verdict:** CHANGES NEEDED
 
 ---
 
-## Phase 1 Review (T1–T4)
+## 13-Point Checklist
 
-### T1: Replace count rule with cohesion rule in plan-prompt.md — PASS
+### 1. Does the plan address everything in requirements.md?
+**PARTIAL.** Glob expansion, directory walking, and backward compatibility are covered for both `send_files` and `receive_files`. However, requirements.md lists `src/services/strategy.ts` in "Files in scope" and the plan's own Notes (line 123–124) acknowledge that the local strategy must be updated — yet **no task exists for updating `LocalStrategy.transferFiles()` or `LocalStrategy.receiveFiles()`**. These methods (`strategy.ts:181–205` and `strategy.ts:207–227`) currently accept `string[]` and use `path.basename(localPath)` for destination paths. Without a dedicated task, local members will break or silently ignore directory structure.
 
-All three instances of the count-based rule have been replaced:
+### 2. Are phases clearly separated with VERIFY checkpoints?
+**PASS.** Four phases, each ending with a VERIFY block listing build, test, and manual checks.
 
-1. **Line 27 (DRAFT rules):** "2-3 work tasks per phase, then a VERIFY checkpoint" replaced with the full cohesion rule: "Phase boundaries by cohesion, not count — a phase is a coherent unit of work that produces a reviewable, testable increment..." — matches requirements.md §1 verbatim. PASS.
-2. **Line 67 (SELF-CRITIQUE):** "Checkpoints too far apart — more than 3 work tasks without a VERIFY?" replaced with "Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?" — correctly reframes the failure mode in cohesion terms. PASS.
-3. **Line 75 (REFINE):** "VERIFY checkpoint every 2-3 work tasks" replaced with "VERIFY checkpoint at the natural completion boundary of each cohesive phase" — consistent with the cohesion model. PASS.
+### 3. Are tiers monotonically non-decreasing across the plan?
+**MINOR NIT.** Task 6 (Phase 3) is tier `cheap` after Tasks 4–5 are `standard`, and Tasks 7–8 (Phase 4) return to `standard`. Sequence: cheap → standard → standard → standard → standard → cheap → standard → standard. Not monotonically non-decreasing. Task 6 is genuinely trivial (schema text update), but either promote it to `standard` or document the exception.
 
-Grep for "2-3 work tasks" and "more than 3 work tasks" across all 5 PM skill files returns zero matches. The count-based rule is fully eradicated.
+### 4. Does each task have a concrete "Done when" criterion?
+**PASS.** Every task has specific, verifiable criteria including build and test gates.
 
-### T2: Add monotonic tier constraint to plan-prompt.md — PASS
+### 5. Are blockers correctly stated?
+**PASS.** Task 4 correctly notes it can run in parallel with Task 2. All dependency chains are accurate.
 
-- **Lines 38–42 (DRAFT rules):** Monotonic tier constraint added with exact wording from requirements.md §2, including ✅/❌ examples. Placed correctly after the tier assignment block. PASS.
-- **Line 68 (SELF-CRITIQUE):** "Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point." — correctly adds the corresponding failure mode. PASS.
+### 6. Is the base branch correct?
+**PASS.** Base branch: `main`. Implementation branch: `feat/glob-dir-transfer`. Both follow conventions.
 
-### T3: Add cohesion rule and monotonic tier constraint to tpl-plan.md — PASS
+### 7. Are file paths accurate and do referenced files exist?
+**PASS.** All existing files verified present:
+- `src/tools/send-files.ts` ✓
+- `src/tools/receive-files.ts` ✓
+- `src/services/sftp.ts` ✓
+- `src/services/file-transfer.ts` ✓
+- `src/services/strategy.ts` ✓
 
-- **Lines 56–64:** New "Phase Sizing Rules" section between Risk Register and Notes. Contains:
-  - Cohesion rule with wording consistent with plan-prompt.md (minor expected capitalization: sentence-initial vs mid-sentence after a dash). PASS.
-  - Monotonic tier constraint with identical wording and examples. PASS.
+New files (`src/utils/expand-paths.ts`, `tests/expand-paths.test.ts`, `tests/sftp.test.ts`) correctly marked as new.
 
-### T4: Update tpl-reviewer-plan.md checklist — PASS
+### 8. Is scope complete — local member strategy, schema descriptions, collision check all covered?
+**NO — local member strategy task is missing.**
+- **Schema descriptions:** Covered in Tasks 3 and 6. ✓
+- **Collision check:** Task 3 updates collision check to use `entry.relative` instead of `basename`. ✓
+- **Local member strategy:** `LocalStrategy.transferFiles()` (`strategy.ts:181`) accepts `string[]` and computes `path.basename(localPath)` at line 195. `LocalStrategy.receiveFiles()` (`strategy.ts:207`) does the same at line 217. Both must be updated to accept `{absolute, relative}[]`, use `entry.relative` for the destination subpath, and call `fs.mkdirSync(path.dirname(destPath), { recursive: true })` to create intermediate directories. **Add a task** in Phase 2 (alongside Task 2) to update both local strategy methods.
 
-- **Item 6:** Replaced count-based check with cohesion boundary check. PASS.
-- **Item 7:** New monotonic tier check added. PASS.
-- **Items 8–13:** Correctly renumbered from original 7–12. PASS.
-- No reference to "2-3" task count remains. PASS.
+### 9. Are risks identified and mitigated?
+**PARTIAL.** Six risks identified with reasonable mitigations. Missing risk: **symlink traversal** during local or remote directory walks could escape work_folder boundaries. Add a risk entry and mitigation (skip symlinks during walk, or validate expanded paths against work_folder).
 
-### V1: Cross-file consistency — PASS
+### 10. Is the regression test realistic and sufficient?
+**PASS.** Task 7 covers all five local expansion cases. Task 8 covers remote expansion and upload with nested entries. VERIFY blocks include backward-compat manual checks. Sufficient for v1.
 
-| Check | Result |
-|-------|--------|
-| Zero instances of "2-3 work tasks" count rule | PASS — grep returns 0 matches across all 5 files |
-| Cohesion rule in plan-prompt.md and tpl-plan.md | PASS — wording matches |
-| Monotonic tier constraint in plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md | PASS — identical substance |
-| tpl-reviewer-plan.md has both new checklist items | PASS — items 6 and 7 |
-| No contradictions between files | PASS |
+### 11. Are there implementation details missing that would block a developer?
+**YES — two items:**
+1. **`minimatch` dependency vs inline matcher:** Task 4 proposes `minimatch` then hedges with "implement a simple `*`/`?` matcher internally." Requirements.md says "Node 22 built-ins only — no new npm dependencies." The inline matcher is the correct choice per the requirements. State this explicitly and remove the `minimatch` option.
+2. **`file-transfer.ts` type change:** Task 2 mentions updating `file-transfer.ts` but doesn't spell out that `uploadFiles()` and `downloadFiles()` signatures both change from `localPaths: string[]` to `entries: Array<{absolute: string; relative: string}>`. This is a thin wrapper (`file-transfer.ts:7–14`) but the type change should be called out explicitly.
 
----
+### 12. Are commit/branch conventions followed?
+**PASS.** Branch `feat/glob-dir-transfer` follows `feat/<topic>` convention. Each task = one commit. VERIFY = checkpoint.
 
-## Phase 2 Review (T5–T7)
+### 13. Any security concerns (path traversal via relative paths)?
+**YES — one gap.** In `receive-files.ts`, the path security check (lines 38–53) validates each user-supplied `remote_path` against `work_folder` **before** expansion. After `expandRemotePaths()` runs inside `downloadViaSFTP` (Task 5), the expanded paths bypass this validation. A symlink inside a remote directory could point outside `work_folder`, and the expanded file would be downloaded without any containment check.
 
-### T5: Per-task dispatch algorithm in single-pair-sprint.md — PASS
-
-1. **Per-Task Dispatch Algorithm section (lines 50–60):** New section with pseudocode reading `planned.json` + `progress.json`, extracting `nextTask.tier`, deriving `resume` from `nextTask.phase === lastDispatchedPhase`. Matches requirements.md §3 exactly. PASS.
-2. **Execution Loop (lines 64–71):** Updated from phase-level dispatch ("resume=false — fresh session per phase") to per-task dispatch ("resume per data-driven rule, model=nextTask.tier"). Reviewer dispatch explicitly marked `model=premium`. PASS.
-3. **Session Rules table (lines 76–83):** Rows now use phase-number comparison (`nextTask.phase !== lastDispatchedPhase` / `=== lastDispatchedPhase`) instead of the old "Start of new phase" / "Within a phase" language. PASS.
-4. **Data-driven resume rule table (lines 85–92):** The 4-condition table from requirements.md §4 is present and identical to the spec. PASS.
-5. **`lastDispatchedPhase` tracking:**
-   - Line 60: PM records it after each dispatch. PASS.
-   - Line 135: Cleared on sprint completion. PASS.
-   - Line 150: Checked during PM restart recovery. PASS.
-
-### T6: Data-driven resume and tier-based dispatch in doer-reviewer.md — PASS
-
-1. **Model tier check (line 14):** Old "Doers use `model=standard` by default" is gone. Now reads: "For doers, PM reads `tasks[i].tier` from `planned.json` and passes `model: <tier>` to `execute_prompt` — no hardcoded default." Matches requirements.md §3. PASS.
-2. **Doer session rules (lines 35–36):** Updated to phase-number comparison format (`nextTask.phase !==/=== lastDispatchedPhase`), consistent with single-pair-sprint.md. PASS.
-3. **Resume Rule section (lines 57–65):** New "Doer dispatches" subsection with the 4-condition data-driven resume table. Introductory text explicitly states derivation from `planned.json` phase numbers via `lastDispatchedPhase` in `status.md`. PASS.
-4. **"All dispatches" table (lines 67–77):** Original table preserved and augmented with two new rows (`stop_prompt` cancellation, session timeout mid-grant). No conflict with the doer-specific table above. PASS.
-
-### T7: Cross-file consistency sweep — PASS
-
-Verified all 6 consistency checks from the PLAN.md specification:
-
-| # | Check | Result |
-|---|-------|--------|
-| 1 | Zero count-rule survivors across all 5 files | PASS — `grep "2-3 work tasks\|2-3 tasks per phase\|more than 3 work tasks"` returns 0 matches. The two "2-3" hits (single-pair-sprint.md line 19 about requirement descriptions, SKILL.md line 126 about timeout multipliers) are unrelated to phase sizing. |
-| 2 | Cohesion rule wording: plan-prompt.md ↔ tpl-plan.md | PASS — identical substance, minor expected casing difference (mid-sentence "a" vs sentence-initial "A") |
-| 3 | Monotonic tier constraint: plan-prompt.md ↔ tpl-plan.md | PASS — identical wording and examples in both files |
-| 4 | Resume rule: single-pair-sprint.md ↔ doer-reviewer.md | PASS — the 4-condition data-driven resume table is identical in both files |
-| 5 | `lastDispatchedPhase` consistency | PASS — referenced in single-pair-sprint.md (dispatch algorithm, session rules, sprint completion, recovery) and doer-reviewer.md (doer session rules, resume rule). All references use the same `status.md` storage location. |
-| 6 | No contradictions between any pair of files | PASS — all 5 files reinforce the same dispatch model. plan-prompt.md/tpl-plan.md define rules for planning; tpl-reviewer-plan.md checks them; single-pair-sprint.md and doer-reviewer.md implement them at dispatch time. |
-
-### V2: Acceptance Criteria Verification — PASS
-
-| # | Acceptance Criterion | Status |
-|---|---------------------|--------|
-| 1 | plan-prompt.md: no count rule, replaced with cohesion rule | PASS |
-| 2 | tpl-plan.md: reflects cohesion rule and monotonic tier constraint | PASS |
-| 3 | tpl-reviewer-plan.md: checklist items for cohesion + tier checks | PASS |
-| 4 | single-pair-sprint.md: per-task dispatch algorithm with `lastDispatchedPhase` | PASS |
-| 5 | doer-reviewer.md: data-driven resume derivation from phase numbers | PASS |
-| 6 | All 5 files internally consistent — no contradictions | PASS |
-| 7 | Count-based "2-3 tasks" rule fully removed from all 5 files | PASS |
-
-### CI Status — NOTE
-
-Markdown-only sprint with no build or test suite. Not a blocker.
+**Fix:** After remote expansion in `downloadViaSFTP` (or within `expandRemotePaths`), validate each resolved `remoteFull` path against `work_folder` using the same `isContainedInWorkFolder` check. Alternatively, use `lstat` during the remote directory walk to skip symlinks entirely.
 
 ---
 
-## Summary
+## Summary of Required Changes
 
-All 7 tasks (T1–T7) and both verification checkpoints (V1, V2) pass without issues. The sprint delivers a complete, consistent overhaul of the PM skill's dispatch model across all 5 files:
-
-- **Phase sizing** shifts from arbitrary "2-3 tasks" count to cohesion-driven boundaries (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Tier ordering** gains a monotonic non-decreasing constraint within phases (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Dispatch granularity** moves from per-phase to per-task with tier-aware model selection (single-pair-sprint.md, doer-reviewer.md)
-- **Resume logic** becomes data-driven via `lastDispatchedPhase` in `status.md`, replacing manual reasoning (single-pair-sprint.md, doer-reviewer.md)
-
-No contradictions found between any pair of files. No partial survivals of the old count-based rule. All 7 acceptance criteria from requirements.md are met. Ready for merge.
+| # | Severity | Action |
+|---|----------|--------|
+| 1 | **Blocking** | Add a task to update `LocalStrategy.transferFiles()` and `LocalStrategy.receiveFiles()` in `strategy.ts` to accept `{absolute, relative}[]` and create intermediate directories (checklist items 1, 8) |
+| 2 | **Blocking** | Add post-expansion path security validation in `downloadViaSFTP` or `expandRemotePaths` to prevent symlink-based work_folder escape (checklist item 13) |
+| 3 | **Minor** | Remove `minimatch` option — requirements mandate no new deps; use inline `*`/`?` matcher (checklist item 11) |
+| 4 | **Minor** | Promote Task 6 tier from `cheap` to `standard` for monotonic tier ordering (checklist item 3) |
+| 5 | **Minor** | Add symlink traversal risk to Risk Register (checklist item 9) |
