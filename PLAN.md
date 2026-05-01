@@ -1,124 +1,218 @@
-# apra-fleet #182 — Tier-Aware Dispatch
+# apra-fleet — bug: send_files / receive_files fail against Windows members
 
-> Replace count-based phase sizing with cohesion-driven boundaries, add monotonic tier ordering within phases, implement per-task dispatch with data-driven resume logic, and ensure cross-file consistency across all 5 PM skill files.
+> Fix Linux→Windows file transfers that fail with "No such file" due to `path.posix.resolve` mishandling Windows drive-letter paths in the SFTP transport layer.
 
 ---
 
 ## Exploration Summary
 
-### "2-3" count rule locations (to remove/replace)
-| File | Line | Text |
-|------|------|------|
-| `plan-prompt.md` | 27 | "2-3 work tasks per phase, then a VERIFY checkpoint" |
-| `plan-prompt.md` | 62 | "Checkpoints too far apart — more than 3 work tasks without a VERIFY?" |
-| `plan-prompt.md` | 69 | "VERIFY checkpoint every 2-3 work tasks" |
-| `tpl-reviewer-plan.md` | 12 | "2-3 work tasks per phase, then a VERIFY checkpoint?" |
+### Root Cause: `path.posix.resolve` in `sftp.ts`
 
-Note: `single-pair-sprint.md:19` has "2-3 line descriptions" — this is about requirements quality, not phase sizing. Leave it.
+The bug is in `src/services/sftp.ts`, not in the tool-level files (`send-files.ts`, `receive-files.ts`). Both `uploadViaSFTP` (line 68) and `downloadViaSFTP` (line 109) use `path.posix.resolve()` to compute remote SFTP paths. This function does NOT understand Windows drive letters — it treats `C:/Users/...` as a relative path (not starting with `/`) and prepends the local process CWD:
 
-### Resume logic locations (to update)
-| File | Lines | Current behavior |
-|------|-------|-----------------|
-| `single-pair-sprint.md` | 53–71 | Phase-level dispatch, session rules table |
-| `doer-reviewer.md` | 14 | Hardcodes `model=standard` for doers |
-| `doer-reviewer.md` | 35–36 | Phase-level doer session rules |
-| `doer-reviewer.md` | 56–68 | Resume rule table — manually derived, no phase-number logic |
+```
+path.posix.resolve('C:/Users/Kashyap/repos', '_staging')
+→ '/home/kashyap/repos/apra/apra-fleet/C:/Users/Kashyap/repos/_staging'  ← BROKEN
+```
 
-### What's missing (to add)
-- No per-task dispatch algorithm — `single-pair-sprint.md` dispatches per-phase
-- No `lastDispatchedPhase` tracking concept in `status.md`
-- No monotonic tier constraint anywhere
-- No data-driven resume derivation from `planned.json` phase numbers
-- `tpl-reviewer-plan.md` has no checklist for cohesion boundaries or tier ordering
+The SFTP server receives this garbage path → "No such file".
+
+### Why NOT PR #97
+
+PR #97 (`d0139ff`) only renamed parameters (`destination_path → dest_subdir`, `local_destination → local_dest_dir`). The `path.posix.resolve` calls in `sftp.ts` were **not touched** by PR #97. The bug likely existed from the initial creation of `sftp.ts` — it was never caught because no Windows member existed to test against until recently.
+
+PR #174 (`98b348f`) partially fixed Windows path handling by adding `isContainedInWorkFolder()` to `platform.ts`, fixing **path validation**. But it did not fix **path resolution in the SFTP transfer layer** (`sftp.ts`).
+
+### Verified assumptions
+
+1. `path.posix.resolve('C:/Users/...', '_staging')` produces a Linux-CWD-prefixed garbage path (confirmed via Node.js REPL)
+2. `sftp.ts` uses `path.posix.resolve` in both `uploadViaSFTP` (line 68) and `downloadViaSFTP` (line 109) — confirmed by reading the code
+3. `sftp.ts` was NOT modified by PR #97 — confirmed by `git show d0139ff --stat` (sftp.ts not listed)
+4. The existing `isContainedInWorkFolder` in `platform.ts` correctly handles Windows drive letters — the same resolution pattern should be applied in `sftp.ts`
+5. Linux→Linux works because Linux work folders start with `/`, which `path.posix.resolve` handles correctly
+6. The existing tests mock the SFTP layer (`vi.spyOn(sftp, 'downloadViaSFTP')`) — they never exercise the actual path resolution inside `sftp.ts`
+
+### Commits touching file-transfer code since PR #97
+
+| SHA | Description | Impact |
+|-----|-------------|--------|
+| `d0139ff` | PR #97 — param renames | Changed param names in send-files.ts/receive-files.ts, NOT sftp.ts |
+| `98b348f` | PR #174 — Windows path rejection fix | Fixed path validation, did NOT fix sftp.ts path resolution |
+| `b1646c4` | PR #175 — collision detection | send-files.ts only, unrelated |
+| `86431fc` | PR #171 — deleteFiles escaping | strategy.ts only, unrelated |
+| `a6f505a` | PR #183 — session lifecycle | Touched strategy.ts (signal arg), unrelated |
+| `8c15862` | PR #202 — JSONL logging | Structural, unrelated |
+| `1ee1881` | PR #207 — JSONL parseResponse | Touched sftp.ts but only for logging, not path resolution |
+
+### Bisect commit window
+
+The standard bisect range is `d0139ff~1..HEAD`, but based on code analysis, the bug **predates PR #97**. The actual regression was introduced when `sftp.ts` was first created with `path.posix.resolve` for remote path computation. Bisect (T3) will confirm this by finding when `sftp.ts` was first added and verifying the bug existed from inception.
+
+### Patterns and constraints
+
+- **Path resolution pattern** already exists in two places: `isContainedInWorkFolder` (platform.ts) and lines 52-55 of `send-files.ts`. Both correctly handle Windows drive letters. The fix applies this same pattern in `sftp.ts`.
+- **`sftpMkdirRecursive`** handles Windows drive-letter paths acceptably — it tries to mkdir each segment (`C:`, `C:/Users`, etc.) and catches errors for existing dirs.
+- **CI** already runs on `ubuntu-latest`, `macos-latest`, `windows-latest` with `npm test` — new test files are picked up automatically.
+- **Test infrastructure** uses vitest, mocks via `vi.mock`/`vi.spyOn`, and `test-helpers.ts` for test agents.
 
 ---
 
 ## Tasks
 
-### Phase 1: Cohesion Rule & Tier Constraint (plan templates)
+### Phase 1: Root Cause Identification
 
-**Rationale:** These 3 files define how plans are structured and reviewed. They share the phase-sizing data model — changing one without the others creates contradictions.
+**Rationale:** Confirm the root cause before writing any fix. The GH issue needs accurate diagnosis, bisect validates whether this is PR #97 or a pre-existing bug. All tasks share the same domain context.
 
-#### Task 1: Replace count rule with cohesion rule in plan-prompt.md
-- **Change:** Remove all 3 instances of the count-based "2-3 tasks per phase" rule. Replace with the cohesion-driven phase boundary definition from requirements.md §1. Update PHASE 1 DRAFT rules (line 27), PHASE 3 SELF-CRITIQUE failure mode (line 62), and PHASE 4 REFINE bullet (line 69).
-- **Files:** `skills/pm/plan-prompt.md`
+#### T1: Open GitHub issue
+
+- **Change:** Create GH issue on `Apra-Labs/apra-fleet` with the full repro from `requirements.md`. Title: `bug: send_files / receive_files fail against Windows members from Linux driver (since v0.1.4)`. Labels: `bug, P0, regression`. Link PR #97 as the suspected source. Body includes all 5 failing cases, the working Linux↔Linux contrast, and the suspected root cause area.
+- **Files:** None (external — `gh issue create`)
 - **Tier:** cheap
-- **Done when:** No instance of "2-3 work tasks" or "more than 3 work tasks" remains in the file. The cohesion rule text matches requirements.md §1.
+- **Done when:** GH issue exists with correct title, labels, and body. Issue number captured for reference in subsequent tasks.
 - **Blockers:** None
 
-#### Task 2: Add monotonic tier constraint to plan-prompt.md
-- **Change:** Add the monotonically non-decreasing tier ordering rule from requirements.md §2 to the PHASE 1 DRAFT rules section (after the tier assignment block). Include the ✅/❌ examples. Also add a corresponding self-critique check in PHASE 3 ("Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one?").
-- **Files:** `skills/pm/plan-prompt.md`
-- **Tier:** cheap
-- **Done when:** The monotonic tier constraint with examples appears in DRAFT rules. A tier-ordering failure mode appears in SELF-CRITIQUE.
-- **Blockers:** Depends on Task 1 being complete (shared section context)
+#### T2: Reproduction test proving the path.posix.resolve bug
 
-#### Task 3: Add cohesion rule and monotonic tier constraint to tpl-plan.md
-- **Change:** Add a "Phase Sizing Rules" section to the Notes area at the bottom of the template. Include: (a) the cohesion-driven phase boundary definition, (b) the monotonic tier ordering constraint with examples. This ensures doers generating plans from this template see both rules.
-- **Files:** `skills/pm/tpl-plan.md`
-- **Tier:** cheap
-- **Done when:** The Notes section contains both the cohesion rule and the monotonic tier constraint. The wording is consistent with plan-prompt.md (Task 1 & 2).
+- **Change:** Create `tests/sftp-path-resolution.test.ts` with tests demonstrating that `path.posix.resolve` produces incorrect paths for Windows drive-letter work folders. Tests should:
+  1. Show `path.posix.resolve('C:/Users/Kashyap/repos', '_staging')` does NOT produce `C:/Users/Kashyap/repos/_staging`
+  2. Show the same call with a Linux work folder (`/home/user/repos`) works correctly
+  3. Test with all path styles from the 5 repro cases (relative, dotted, absolute Windows)
+  4. This test documents the fundamental bug and serves as a bisect oracle
+- **Files:** `tests/sftp-path-resolution.test.ts`
+- **Tier:** standard
+- **Done when:** Test file exists, all tests pass (they demonstrate the bug exists in the current code), `npm test tests/sftp-path-resolution.test.ts` succeeds.
 - **Blockers:** None
 
-#### Task 4: Update tpl-reviewer-plan.md checklist
-- **Change:** Replace checklist item 6 ("2-3 work tasks per phase, then a VERIFY checkpoint?") with two new checklist items: (a) "Are phase boundaries drawn at cohesion boundaries — each phase is a coherent unit producing a reviewable, testable increment?" (b) "Are tiers monotonically non-decreasing within each phase (cheap → standard → premium, never downgrading)?"
-- **Files:** `skills/pm/tpl-reviewer-plan.md`
-- **Tier:** cheap
-- **Done when:** Item 6 is replaced. Both new checklist items are present. No reference to "2-3" task count remains.
-- **Blockers:** None
+#### T3: Bisect + root cause documentation
 
-#### VERIFY: Phase 1 — Plan Templates
-- Confirm: no "2-3 work tasks" count rule survives in any of the 3 files
-- Confirm: cohesion rule appears in both `plan-prompt.md` and `tpl-plan.md`
-- Confirm: monotonic tier constraint appears in both `plan-prompt.md` and `tpl-plan.md`
-- Confirm: `tpl-reviewer-plan.md` has both new checklist items (cohesion + tier)
-- Report: any inconsistencies between the 3 files
+- **Change:**
+  1. Run `git log --follow --diff-filter=A -- src/services/sftp.ts` to find when sftp.ts was first added
+  2. If the `path.posix.resolve` pattern existed in the initial commit, document that this is a pre-existing feature gap, not a regression from PR #97
+  3. If it was introduced later, identify the commit
+  4. Write `feedback.md` documenting: root cause commit SHA, one-paragraph diagnosis, whether this is a regression or feature gap
+- **Files:** `feedback.md`
+- **Tier:** standard
+- **Done when:** `feedback.md` exists with root cause commit SHA, diagnosis paragraph, and classification (regression vs. feature gap). The diagnosis matches the code evidence.
+- **Blockers:** T2 must be complete (reproduction test confirms the bug)
+
+#### VERIFY: Phase 1 — Root Cause
+
+- GH issue exists on `Apra-Labs/apra-fleet` with correct title, labels, and body
+- Reproduction test passes and demonstrates the `path.posix.resolve` bug
+- `feedback.md` documents root cause commit, diagnosis, and classification
+- Bisect result confirms or refutes PR #97 as the source
 
 ---
 
-### Phase 2: Per-Task Dispatch & Data-Driven Resume
+### Phase 2: Fix + Test Matrix
 
-**Rationale:** These 2 files define the dispatch and resume model. Changing dispatch granularity in one without updating resume logic in the other would create unsafe cross-tier resume scenarios.
+**Rationale:** The fix and the test matrix are tightly coupled — the tests validate the fix, and both must land together to be meaningful.
 
-#### Task 5: Per-task dispatch algorithm in single-pair-sprint.md
-- **Change:** In the Phase 3 Execution section:
-  1. Replace the phase-level execution loop (lines 52–59) with the per-task dispatch algorithm from requirements.md §3: read `planned.json` + `progress.json`, find next pending task, extract tier, determine resume from phase comparison with `lastDispatchedPhase`.
-  2. Update the Session Rules table (lines 64–71) to reflect per-task dispatch: "Within a phase" row should reference the data-driven rule (`nextTask.phase === lastDispatchedPhase`).
-  3. Add `lastDispatchedPhase` tracking to `status.md` — document that PM records it after each dispatch.
-  4. Add the data-driven resume rule table from requirements.md §4 (the 4-condition table).
-- **Files:** `skills/pm/single-pair-sprint.md`
+#### T4: Implement fix in sftp.ts + platform.ts
+
+- **Change:**
+  1. Add `resolveRemotePath(workFolder: string, subPath: string): string` to `src/utils/platform.ts` — normalizes backslashes to forward slashes, detects Windows drive letters (`/^[A-Za-z]:/`), joins paths correctly without `path.posix.resolve`
+  2. In `src/services/sftp.ts` `uploadViaSFTP`: replace `path.posix.resolve(workFolderPosix, destinationPath.replace(...))` on line 68 with `resolveRemotePath(agent.workFolder, destinationPath)`. Use `resolveRemotePath` for `workFolderPosix` fallback too.
+  3. In `src/services/sftp.ts` `downloadViaSFTP`: replace `path.posix.resolve(workFolderPosix, remotePath.replace(...))` on line 109 with `resolveRemotePath(agent.workFolder, remotePath)`.
+  4. Clean up unused `workFolderPosix` locals if no longer needed.
+- **Files:** `src/utils/platform.ts`, `src/services/sftp.ts`
 - **Tier:** standard
-- **Done when:** The execution loop shows per-task dispatch (not per-phase). The session rules table uses phase-number comparison. `lastDispatchedPhase` is documented. The 4-condition resume table is present.
+- **Done when:**
+  - `resolveRemotePath` exists in `platform.ts` and is exported
+  - `sftp.ts` no longer uses `path.posix.resolve` for remote path computation
+  - `npm run build` passes
+  - Existing tests pass (`npm test`)
 - **Blockers:** None
 
-#### Task 6: Data-driven resume and tier-based dispatch in doer-reviewer.md
-- **Change:**
-  1. Replace the "Model tier check" paragraph (line 14) — remove "Doers use `model=standard` by default unless the task tier specifies otherwise." Replace with: PM reads `tasks[i].tier` from `planned.json` and passes `model: <tier>` to `execute_prompt`. Reviewer dispatches remain `model: premium`.
-  2. Update doer session rules (lines 35–36) to reference data-driven resume: replace "Within a phase: resume is allowed" with the phase-number comparison rule (`nextTask.phase === lastDispatchedPhase` → `resume=true`).
-  3. Update the Resume Rule table (lines 58–67) to add the data-driven derivation. Add a note explaining that resume is derived from `planned.json` phase numbers, not manually reasoned. Reference `lastDispatchedPhase` from `status.md`.
-- **Files:** `skills/pm/doer-reviewer.md`
+#### T5: Cross-OS file transfer test matrix (G1)
+
+- **Change:** Create `tests/file-transfer-matrix.test.ts` with parameterized tests covering every (driver OS, target member type) combination from the requirements matrix. Tests should:
+  1. Mock the SSH/SFTP connection layer and verify the correct remote paths are computed and passed to SFTP operations
+  2. Cover: Linux→local Linux, Linux→remote Linux (SFTP), Linux→remote Windows (SFTP), and cloud member paths
+  3. Windows→* combinations included as TODO/skip markers for completeness
+  4. Include the comment block from G1 requirements at the top of the file
+  5. Test both `send_files` and `receive_files` for each combination
+  6. Specifically test the 5 repro cases from requirements.md against Windows members
+- **Files:** `tests/file-transfer-matrix.test.ts`
 - **Tier:** standard
-- **Done when:** No hardcoded `model=standard` for doers. Resume rule references phase-number comparison. The table includes `lastDispatchedPhase` derivation. Consistent with single-pair-sprint.md (Task 5).
-- **Blockers:** Task 5 should be complete first (shared data model for `lastDispatchedPhase`)
+- **Done when:**
+  - Test file exists with required comment block header
+  - All Linux→* matrix rows are implemented
+  - Windows→* rows are marked TODO
+  - All implemented tests pass on the fixed code
+  - `npm test tests/file-transfer-matrix.test.ts` succeeds
+- **Blockers:** T4 must be complete (tests verify the fix)
 
-#### Task 7: Cross-file consistency sweep
-- **Change:** Read all 5 files end-to-end. Check for:
-  1. Any surviving "2-3 tasks per phase" count rule (must be zero across all 5 files)
-  2. Cohesion rule wording consistency between `plan-prompt.md` and `tpl-plan.md`
-  3. Monotonic tier constraint wording consistency between `plan-prompt.md` and `tpl-plan.md`
-  4. Resume rule consistency between `single-pair-sprint.md` and `doer-reviewer.md`
-  5. `lastDispatchedPhase` referenced consistently wherever dispatch/resume logic appears
-  6. No contradictions between any pair of files
-  Fix any inconsistencies found.
-- **Files:** all 5 — `skills/pm/plan-prompt.md`, `skills/pm/tpl-plan.md`, `skills/pm/tpl-reviewer-plan.md`, `skills/pm/single-pair-sprint.md`, `skills/pm/doer-reviewer.md`
-- **Tier:** premium
-- **Done when:** All 7 acceptance criteria from requirements.md are met. No contradictions between any pair of files.
-- **Blockers:** All prior tasks must be complete
+#### VERIFY: Phase 2 — Fix + Tests
 
-#### VERIFY: Phase 2 — Dispatch & Resume
-- Confirm all 7 acceptance criteria from requirements.md
-- Confirm no contradictions between any pair of the 5 files
-- Report: final state of each file's key changes
+- `npm run build` is clean
+- `npm test` passes all tests including new ones
+- `resolveRemotePath` correctly handles: relative paths, absolute Linux paths, absolute Windows paths, backslash paths
+- File transfer matrix covers all required (driver, target) combinations
+- Tests would FAIL on the pre-fix code (verify by temporarily reverting sftp.ts changes)
+
+---
+
+### Phase 3: Guardrails + Final Verification
+
+**Rationale:** Documentation guardrails (G2–G5) are all cheap markdown tasks that share the goal of preventing regression. Final build verification confirms everything works together.
+
+#### T6: tests/README.md documenting the matrix (G2)
+
+- **Change:** Create `tests/README.md` with:
+  1. Section explaining the cross-OS test matrix and why it exists
+  2. The sftp.ts path resolution incident as cautionary tale (link to GH issue from T1)
+  3. The rule: any PR touching `src/tools/send-files.ts`, `src/tools/receive-files.ts`, `src/services/strategy.ts`, or `src/services/sftp.ts` must keep the matrix passing AND must add a new matrix row if a new transport/OS combination is introduced
+- **Files:** `tests/README.md`
+- **Tier:** cheap
+- **Done when:** `tests/README.md` exists with all three required sections. Links the GH issue from T1.
+- **Blockers:** T1 must be complete (need issue number for link)
+
+#### T7: Update project CLAUDE.md — File Transfer Tools section (G3)
+
+- **Change:** Add a "File Transfer Tools" section to the tracked project `CLAUDE.md`. Content includes:
+  1. Pointer to `tests/file-transfer-matrix.test.ts` as the authoritative test matrix
+  2. PR checklist for changes to file-transfer code (5 steps from requirements G3)
+  3. The path-style trap warning (Windows backslashes, `path.posix.resolve` pitfall, `resolveRemotePath` as the correct function)
+  4. Link to the GH issue for context
+- **Files:** `CLAUDE.md` (project, tracked in git via `git add -f`)
+- **Tier:** cheap
+- **Done when:** `CLAUDE.md` has the "File Transfer Tools" section matching the template from requirements.md G3, with actual issue number substituted.
+- **Blockers:** T1 must be complete (need issue number)
+
+#### T8: Update skills/fleet/SKILL.md — cross-OS callout (G4)
+
+- **Change:** In the "File Transfer" section of `skills/fleet/SKILL.md`, add a callout that both tools must work for Linux↔Windows transfers in both directions, and that the test matrix in `tests/file-transfer-matrix.test.ts` is authoritative.
+- **Files:** `skills/fleet/SKILL.md`
+- **Tier:** cheap
+- **Done when:** SKILL.md File Transfer section includes the cross-OS callout and test matrix reference.
+- **Blockers:** None
+
+#### T9: Verify CI gate (G5)
+
+- **Change:** Confirm `.github/workflows/ci.yml` runs `npm test` which picks up all vitest test files including the new matrix test. Document confirmation in `feedback.md` (append). If the matrix test isn't automatically included, add it explicitly to the workflow.
+- **Files:** `feedback.md` (append), possibly `.github/workflows/ci.yml`
+- **Tier:** cheap
+- **Done when:** CI gate confirmed or fixed. Documentation appended to `feedback.md`.
+- **Blockers:** None
+
+#### T10: Final build + test verification
+
+- **Change:** Run `npm run build && npm test`. Fix any remaining issues. Ensure all tests pass including new ones.
+- **Files:** Any files with remaining issues
+- **Tier:** cheap
+- **Done when:** `npm run build` clean (zero errors), `npm test` all pass.
+- **Blockers:** All prior tasks complete
+
+#### VERIFY: Phase 3 — Guardrails + Final
+
+- `tests/README.md` exists with matrix docs and incident reference
+- Project `CLAUDE.md` has File Transfer Tools section with PR checklist and path-style warning
+- `skills/fleet/SKILL.md` has cross-OS callout in File Transfer section
+- CI gate confirmed running the matrix test
+- `npm run build` clean, `npm test` all pass
+- All guardrail deliverables (G1–G5) landed
+- Code pushed to `origin/bug_fix/file-transfer-windows`
 
 ---
 
@@ -126,16 +220,19 @@ Note: `single-pair-sprint.md:19` has "2-3 line descriptions" — this is about r
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Cohesion rule wording diverges between plan-prompt.md and tpl-plan.md | med | Task 7 consistency sweep catches divergence; reviewer checklist in tpl-reviewer-plan.md enforces it going forward |
-| Resume rule table in doer-reviewer.md contradicts single-pair-sprint.md session rules | high | Task 6 explicitly cross-references Task 5's data model; Task 7 validates consistency |
-| "2-3" count rule survives in a location not identified during exploration | med | Task 7 does a full grep across all 5 files as final check |
-| Monotonic tier constraint is too rigid for edge cases | low | The constraint allows splitting into a new phase — this is documented in the examples |
+| Bug predates PR #97 — not a regression but a feature gap | low | Fix is the same regardless. Bisect (T3) confirms. GH issue body notes this if confirmed. |
+| `sftpMkdirRecursive` also broken for Windows drive-letter paths | medium | Tested in T2/T5 — mkdir builds segments incrementally, catches errors for existing dirs. If broken, fix alongside T4. |
+| `resolveRemotePath` doesn't handle edge cases (UNC paths, network shares) | low | Out of scope per requirements — only fixing drive-letter paths. Add TODO for UNC support if needed. |
+| Mocked tests don't catch live SFTP server path interpretation differences | medium | T4/T5 test the path resolution logic, not the SFTP server. E2E verification against live Windows member (PM-coordinated) catches server-side issues. |
+| The project CLAUDE.md requires `git add -f` due to .gitignore | low | Existing pattern — CLAUDE.md is already tracked. Document in commit message. |
 
 ## Notes
-- Each task should result in a git commit
+
+- Branch: `bug_fix/file-transfer-windows`
+- Base branch: `main`
+- Each task results in a git commit
 - Verify tasks are checkpoints — stop and report after each one
-- Base branch: main
-- Feature branch: feat/tier-aware-dispatch
-- Phase 1 tasks are all `cheap` (mechanical text changes in markdown)
-- Phase 2 tasks escalate: `standard` for the algorithm changes, `premium` for the cross-file consistency sweep
-- Tier ordering within each phase is monotonically non-decreasing (cheap→cheap→cheap→cheap, standard→standard→premium)
+- Phase 1 tiers: cheap → standard → standard (monotonically non-decreasing)
+- Phase 2 tiers: standard → standard (monotonically non-decreasing)
+- Phase 3 tiers: cheap → cheap → cheap → cheap → cheap (monotonically non-decreasing)
+- E2E verification against live Windows member requires PM coordination — included in Phase 3 VERIFY
