@@ -23,9 +23,7 @@ Usage:
     --force                            Stop running server before installing
   apra-fleet update                    Update to the latest release
     --check                            Check for updates without installing
-  apra-fleet secret --set <name>           Deliver a secret to a waiting request
-  apra-fleet secret --list                 List secrets
-  apra-fleet secret --delete <name>        Delete a secret
+  apra-fleet auth <name>               Provide credentials for a pending member operation
   apra-fleet --version                 Print version
   apra-fleet --help                    Show this help
 

@@ -87,6 +87,11 @@ export async function runUpdateCheck(): Promise<void> {
       process.exit(0);
     }
 
+    if (/-(alpha|beta|rc)\b/i.test(tagName)) {
+      console.log(`apra-fleet ${installed} is up to date.`);
+      process.exit(0);
+    }
+
     const latest = tagName.startsWith('v') ? tagName : `v${tagName}`;
     if (isNewer(tagName, installed)) {
       console.log(`apra-fleet ${latest} is available (installed: ${installed}).\nDownload: https://github.com/Apra-Labs/apra-fleet/releases/tag/${latest}`);

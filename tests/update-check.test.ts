@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkForUpdate, getUpdateNotice, _setUpdateCache, _isNewer } from '../src/services/update-check.js';
+import { checkForUpdate, getUpdateNotice, _setUpdateCache, _isNewer, runUpdateCheck } from '../src/services/update-check.js';
 
 // ---------------------------------------------------------------------------
 // parseVersion / isNewer — 4-part version tag support (#211)
@@ -135,6 +135,67 @@ describe('checkForUpdate — newer version available', () => {
 
     await checkForUpdate();
     expect(getUpdateNotice()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runUpdateCheck — CLI --check output
+// ---------------------------------------------------------------------------
+
+describe('runUpdateCheck — CLI update check', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit'); }) as any);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('prints up-to-date when installed version equals remote', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ tag_name: 'v0.0.0' }),
+    }));
+    try { await runUpdateCheck(); } catch {}
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('is up to date'));
+  });
+
+  it('prints download URL when newer version is available', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ tag_name: 'v99.0.0' }),
+    }));
+    try { await runUpdateCheck(); } catch {}
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('v99.0.0'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Download:'));
+  });
+
+  it('prints up-to-date for pre-release alpha tag', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ tag_name: 'v99.0.0-alpha.1' }),
+    }));
+    try { await runUpdateCheck(); } catch {}
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('is up to date'));
+  });
+
+  it('prints fallback message on network failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
+    try { await runUpdateCheck(); } catch {}
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Could not check for updates'));
+  });
+
+  it('prints fallback message on non-ok HTTP response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: async () => ({}),
+    }));
+    try { await runUpdateCheck(); } catch {}
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Could not check for updates'));
   });
 });
 
