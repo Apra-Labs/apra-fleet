@@ -1,111 +1,133 @@
-# #182 Tier-Aware Dispatch — Code Review
+# Windows File-Transfer Bug Fix — Plan Review
 
-**Reviewer:** fleet-rev
-**Date:** 2026-04-28 18:30:00+00:00
+**Reviewer:** apra-fleet-reviewer
+**Date:** 2026-05-01T12:00:00+05:30
 **Verdict:** APPROVED
 
----
-
-## Phase 1 Review (T1–T4)
-
-### T1: Replace count rule with cohesion rule in plan-prompt.md — PASS
-
-All three instances of the count-based rule have been replaced:
-
-1. **Line 27 (DRAFT rules):** "2-3 work tasks per phase, then a VERIFY checkpoint" replaced with the full cohesion rule: "Phase boundaries by cohesion, not count — a phase is a coherent unit of work that produces a reviewable, testable increment..." — matches requirements.md §1 verbatim. PASS.
-2. **Line 67 (SELF-CRITIQUE):** "Checkpoints too far apart — more than 3 work tasks without a VERIFY?" replaced with "Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?" — correctly reframes the failure mode in cohesion terms. PASS.
-3. **Line 75 (REFINE):** "VERIFY checkpoint every 2-3 work tasks" replaced with "VERIFY checkpoint at the natural completion boundary of each cohesive phase" — consistent with the cohesion model. PASS.
-
-Grep for "2-3 work tasks" and "more than 3 work tasks" across all 5 PM skill files returns zero matches. The count-based rule is fully eradicated.
-
-### T2: Add monotonic tier constraint to plan-prompt.md — PASS
-
-- **Lines 38–42 (DRAFT rules):** Monotonic tier constraint added with exact wording from requirements.md §2, including ✅/❌ examples. Placed correctly after the tier assignment block. PASS.
-- **Line 68 (SELF-CRITIQUE):** "Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point." — correctly adds the corresponding failure mode. PASS.
-
-### T3: Add cohesion rule and monotonic tier constraint to tpl-plan.md — PASS
-
-- **Lines 56–64:** New "Phase Sizing Rules" section between Risk Register and Notes. Contains:
-  - Cohesion rule with wording consistent with plan-prompt.md (minor expected capitalization: sentence-initial vs mid-sentence after a dash). PASS.
-  - Monotonic tier constraint with identical wording and examples. PASS.
-
-### T4: Update tpl-reviewer-plan.md checklist — PASS
-
-- **Item 6:** Replaced count-based check with cohesion boundary check. PASS.
-- **Item 7:** New monotonic tier check added. PASS.
-- **Items 8–13:** Correctly renumbered from original 7–12. PASS.
-- No reference to "2-3" task count remains. PASS.
-
-### V1: Cross-file consistency — PASS
-
-| Check | Result |
-|-------|--------|
-| Zero instances of "2-3 work tasks" count rule | PASS — grep returns 0 matches across all 5 files |
-| Cohesion rule in plan-prompt.md and tpl-plan.md | PASS — wording matches |
-| Monotonic tier constraint in plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md | PASS — identical substance |
-| tpl-reviewer-plan.md has both new checklist items | PASS — items 6 and 7 |
-| No contradictions between files | PASS |
+> See the recent git history of this file to understand the context of this review.
 
 ---
 
-## Phase 2 Review (T5–T7)
+## Criterion 1: Does every task have clear "done" criteria?
 
-### T5: Per-task dispatch algorithm in single-pair-sprint.md — PASS
+**PASS.** Every work task (T1–T10) includes a "Done when:" block with specific, verifiable conditions — file existence checks, command outputs, behavioral assertions. The verify checkpoints (V1–V3) list explicit acceptance items. No task leaves "done" to the implementer's interpretation. Notably, T4's done criteria include both positive (function exists, exported, build passes) and negative (sftp.ts no longer uses `path.posix.resolve`), which is thorough.
 
-1. **Per-Task Dispatch Algorithm section (lines 50–60):** New section with pseudocode reading `planned.json` + `progress.json`, extracting `nextTask.tier`, deriving `resume` from `nextTask.phase === lastDispatchedPhase`. Matches requirements.md §3 exactly. PASS.
-2. **Execution Loop (lines 64–71):** Updated from phase-level dispatch ("resume=false — fresh session per phase") to per-task dispatch ("resume per data-driven rule, model=nextTask.tier"). Reviewer dispatch explicitly marked `model=premium`. PASS.
-3. **Session Rules table (lines 76–83):** Rows now use phase-number comparison (`nextTask.phase !== lastDispatchedPhase` / `=== lastDispatchedPhase`) instead of the old "Start of new phase" / "Within a phase" language. PASS.
-4. **Data-driven resume rule table (lines 85–92):** The 4-condition table from requirements.md §4 is present and identical to the spec. PASS.
-5. **`lastDispatchedPhase` tracking:**
-   - Line 60: PM records it after each dispatch. PASS.
-   - Line 135: Cleared on sprint completion. PASS.
-   - Line 150: Checked during PM restart recovery. PASS.
+---
 
-### T6: Data-driven resume and tier-based dispatch in doer-reviewer.md — PASS
+## Criterion 2: High cohesion within each task, low coupling between tasks?
 
-1. **Model tier check (line 14):** Old "Doers use `model=standard` by default" is gone. Now reads: "For doers, PM reads `tasks[i].tier` from `planned.json` and passes `model: <tier>` to `execute_prompt` — no hardcoded default." Matches requirements.md §3. PASS.
-2. **Doer session rules (lines 35–36):** Updated to phase-number comparison format (`nextTask.phase !==/=== lastDispatchedPhase`), consistent with single-pair-sprint.md. PASS.
-3. **Resume Rule section (lines 57–65):** New "Doer dispatches" subsection with the 4-condition data-driven resume table. Introductory text explicitly states derivation from `planned.json` phase numbers via `lastDispatchedPhase` in `status.md`. PASS.
-4. **"All dispatches" table (lines 67–77):** Original table preserved and augmented with two new rows (`stop_prompt` cancellation, session timeout mid-grant). No conflict with the doer-specific table above. PASS.
+**PASS.** Each task has a single concern: T1 is an issue, T2 is a repro test, T3 is bisect + documentation, T4 is the code fix, T5 is the test matrix, T6–T8 are individual documentation updates, T9 is CI verification, T10 is final validation. No task mixes implementation with documentation or testing with issue management. Cross-task coupling is limited to explicit data dependencies (T1's issue number used by T6/T7, T4's `resolveRemotePath` tested by T5).
 
-### T7: Cross-file consistency sweep — PASS
+---
 
-Verified all 6 consistency checks from the PLAN.md specification:
+## Criterion 3: Are key abstractions and shared interfaces in the earliest tasks?
 
-| # | Check | Result |
-|---|-------|--------|
-| 1 | Zero count-rule survivors across all 5 files | PASS — `grep "2-3 work tasks\|2-3 tasks per phase\|more than 3 work tasks"` returns 0 matches. The two "2-3" hits (single-pair-sprint.md line 19 about requirement descriptions, SKILL.md line 126 about timeout multipliers) are unrelated to phase sizing. |
-| 2 | Cohesion rule wording: plan-prompt.md ↔ tpl-plan.md | PASS — identical substance, minor expected casing difference (mid-sentence "a" vs sentence-initial "A") |
-| 3 | Monotonic tier constraint: plan-prompt.md ↔ tpl-plan.md | PASS — identical wording and examples in both files |
-| 4 | Resume rule: single-pair-sprint.md ↔ doer-reviewer.md | PASS — the 4-condition data-driven resume table is identical in both files |
-| 5 | `lastDispatchedPhase` consistency | PASS — referenced in single-pair-sprint.md (dispatch algorithm, session rules, sprint completion, recovery) and doer-reviewer.md (doer session rules, resume rule). All references use the same `status.md` storage location. |
-| 6 | No contradictions between any pair of files | PASS — all 5 files reinforce the same dispatch model. plan-prompt.md/tpl-plan.md define rules for planning; tpl-reviewer-plan.md checks them; single-pair-sprint.md and doer-reviewer.md implement them at dispatch time. |
+**PASS.** The core abstraction — `resolveRemotePath(workFolder, subPath)` — is introduced in T4, the first implementation task of Phase 2. Phase 1 is entirely diagnostic (no implementation), so T4 is the earliest possible location. T5 then tests this function. The pattern of existing Windows path handling in `platform.ts` (`isContainedInWorkFolder`) is correctly identified in the exploration summary as the model for the new function, establishing continuity with the existing codebase.
 
-### V2: Acceptance Criteria Verification — PASS
+---
 
-| # | Acceptance Criterion | Status |
-|---|---------------------|--------|
-| 1 | plan-prompt.md: no count rule, replaced with cohesion rule | PASS |
-| 2 | tpl-plan.md: reflects cohesion rule and monotonic tier constraint | PASS |
-| 3 | tpl-reviewer-plan.md: checklist items for cohesion + tier checks | PASS |
-| 4 | single-pair-sprint.md: per-task dispatch algorithm with `lastDispatchedPhase` | PASS |
-| 5 | doer-reviewer.md: data-driven resume derivation from phase numbers | PASS |
-| 6 | All 5 files internally consistent — no contradictions | PASS |
-| 7 | Count-based "2-3 tasks" rule fully removed from all 5 files | PASS |
+## Criterion 4: Is the riskiest assumption validated in Task 1?
 
-### CI Status — NOTE
+**PASS with NOTE.** The riskiest assumption — that `path.posix.resolve` mishandles Windows drive-letter paths — was already validated during exploration (Node.js REPL confirmation documented in the Exploration Summary, verified assumption #1). T2 formalizes this into a regression test. T1 opens the GH issue using the pre-validated diagnosis.
 
-Markdown-only sprint with no build or test suite. Not a blocker.
+**NOTE:** T1 opens the GH issue labeling PR #97 as "suspected source" before T3's bisect confirms that PR #97 is NOT the source. The exploration summary already concludes PR #97 is not the cause, so the issue body should reflect this with language like "initially suspected but analysis indicates pre-existing." The plan partially handles this ("GH issue body notes this if confirmed" — Risk Register row 1), but T1's description still says to "Link PR #97 as the suspected source." This could be tightened: T1 should note PR #97 as initially suspected but likely cleared, pending bisect confirmation in T3.
+
+---
+
+## Criterion 5: Later tasks reuse early abstractions (DRY)?
+
+**PASS.** T5's test matrix exercises `resolveRemotePath` from T4. T6–T8 reference the test matrix from T5 and the GH issue from T1. The `resolveRemotePath` function reuses the Windows drive-letter detection pattern already present in `isContainedInWorkFolder` (platform.ts lines 12–13), avoiding a second implementation of the same logic. The plan explicitly identifies this reuse in the Exploration Summary (verified assumption #4).
+
+---
+
+## Criterion 6: Are phase boundaries drawn at cohesion boundaries?
+
+**PASS.** Phase 1 (diagnosis): GH issue + repro test + bisect — all about understanding and confirming the root cause. Phase 2 (fix + tests): code change + test matrix — tightly coupled, must land together. Phase 3 (guardrails + docs): documentation, CI verification, final validation — all lightweight, independent tasks sharing the goal of preventing regression. Each phase produces a reviewable increment: Phase 1 produces a confirmed diagnosis, Phase 2 produces a working fix with tests, Phase 3 produces documentation guardrails.
+
+---
+
+## Criterion 7: Are tiers monotonically non-decreasing within each phase?
+
+**PASS.** Phase 1: cheap (T1) -> standard (T2) -> standard (T3). Phase 2: standard (T4) -> standard (T5). Phase 3: cheap (T6) -> cheap (T7) -> cheap (T8) -> cheap (T9) -> cheap (T10). All monotonically non-decreasing. The plan's Notes section explicitly documents this, showing awareness of the constraint.
+
+---
+
+## Criterion 8: Each task completable in one session?
+
+**PASS.** T1 is a `gh issue create` command. T2 is a single test file with clear scope. T3 is a git bisect + writing a paragraph. T4 touches exactly 2 files with a well-defined function signature. T5 is a parameterized test file. T6–T8 are markdown edits. T9 is reading CI config + appending a note. T10 is running `npm run build && npm test`. None of these require multi-session work.
+
+---
+
+## Criterion 9: Dependencies satisfied in order?
+
+**PASS.** Dependency graph:
+- T1: no blockers
+- T2: no blockers (can run parallel with T1)
+- T3: blocks on T2 (uses repro test as bisect oracle)
+- T4: no blockers (root cause pre-confirmed during exploration)
+- T5: blocks on T4 (tests the fix)
+- T6: blocks on T1 (needs issue number)
+- T7: blocks on T1 (needs issue number)
+- T8: no blockers
+- T9: no blockers
+- T10: blocks on all prior
+
+All dependencies are satisfied by task ordering. Phase boundaries enforce additional sequencing (Phase 2 starts after Phase 1 VERIFY, etc.).
+
+**NOTE:** T4 lists "Blockers: None" but conceptually depends on Phase 1's root cause confirmation. This is justified — the exploration summary already confirmed the root cause via code reading and REPL testing. T3's bisect is a formality to document the originating commit, not to discover whether the bug exists. The plan correctly treats T4 as independently executable.
+
+---
+
+## Criterion 10: Any vague tasks two developers would interpret differently?
+
+**PASS.** T4 specifies the exact function signature (`resolveRemotePath(workFolder: string, subPath: string): string`), the exact file locations, the exact lines to replace (68 and 109 in sftp.ts), and the regex pattern for Windows detection (`/^[A-Za-z]:/`). T5 specifies the exact matrix dimensions, which combinations to implement vs. mark as TODO, and the 5 repro cases. The only task with slight ambiguity is T3's bisect — "write feedback.md documenting root cause commit SHA" — but the done criteria clarify exactly what's needed.
+
+---
+
+## Criterion 11: Any hidden dependencies between tasks?
+
+**PASS with NOTE.** The explicit dependency graph is clean. Two subtle points:
+
+1. **T3 and T9 both write to `feedback.md`** — T3 creates it, T9 appends to it. This is correctly ordered (T3 in Phase 1, T9 in Phase 3) and T9 explicitly says "append." No conflict.
+
+2. **T4's `resolveRemotePath` placement in `platform.ts`** — this file already exports `isContainedInWorkFolder` and `detectOS`. Adding `resolveRemotePath` is a natural fit, but T4 should note that the new function's Windows detection logic (`/^[A-Za-z]:/`) must stay consistent with `isContainedInWorkFolder`'s identical check on line 12. This isn't a hidden *dependency* per se, but a hidden *consistency constraint* within T4. Minor.
+
+---
+
+## Criterion 12: Does the plan include a risk register?
+
+**PASS.** The risk register contains 5 risks with impact ratings and concrete mitigations:
+- Bug predating PR #97 (low) — correctly mitigated by "fix is the same regardless"
+- `sftpMkdirRecursive` breakage (medium) — mitigated by testing in T2/T5
+- UNC/network path edge cases (low) — correctly scoped out
+- Mock vs. live SFTP divergence (medium) — mitigated by E2E verification (though see AC5 gap below)
+- CLAUDE.md `git add -f` requirement (low) — acknowledged as existing pattern
+
+The register is proportionate to the sprint scope and addresses the most likely failure modes.
+
+---
+
+## Criterion 13: Does the plan align with requirements intent — solving the right problem?
+
+**PASS with NOTE.** The plan correctly identifies the root cause (`path.posix.resolve` in sftp.ts lines 68 and 109), proposes the right fix (`resolveRemotePath` with Windows drive-letter awareness), and covers all 12 acceptance criteria — with one gap:
+
+**AC5 Gap — E2E Verification:** Acceptance criterion 5 requires "E2E verification of all 5 failing repro cases against a Windows member." No work task (T1–T10) is assigned to this. The plan acknowledges it in the Notes ("E2E verification against live Windows member requires PM coordination") and in the Phase 3 VERIFY checkpoint, but VERIFY is a checkpoint, not a work task. T5's test matrix uses mocks, not a live Windows member.
+
+This is understandable — E2E against a live Windows member requires infrastructure that may not be available during the sprint — but it should be explicitly represented as a task (even if the task's done criteria include "PM confirms member availability" as a precondition). As written, a developer could complete all 10 tasks, pass all 3 verify checkpoints, and still not have performed E2E verification. Recommend adding a T11 in Phase 3 for E2E verification with a PM-coordination precondition, or explicitly noting in V3 that E2E is a PM-gated post-merge step.
 
 ---
 
 ## Summary
 
-All 7 tasks (T1–T7) and both verification checkpoints (V1, V2) pass without issues. The sprint delivers a complete, consistent overhaul of the PM skill's dispatch model across all 5 files:
+**11 of 13 criteria pass cleanly. 2 pass with notes. No criteria fail.**
 
-- **Phase sizing** shifts from arbitrary "2-3 tasks" count to cohesion-driven boundaries (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Tier ordering** gains a monotonic non-decreasing constraint within phases (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Dispatch granularity** moves from per-phase to per-task with tier-aware model selection (single-pair-sprint.md, doer-reviewer.md)
-- **Resume logic** becomes data-driven via `lastDispatchedPhase` in `status.md`, replacing manual reasoning (single-pair-sprint.md, doer-reviewer.md)
+The plan is well-structured with clear phase boundaries, specific done criteria, correct dependency ordering, and monotonically non-decreasing tiers. The root cause analysis in the Exploration Summary is thorough and already validated — the plan correctly builds on confirmed findings rather than speculating.
 
-No contradictions found between any pair of files. No partial survivals of the old count-based rule. All 7 acceptance criteria from requirements.md are met. Ready for merge.
+**Must address before execution:**
+- AC5 (E2E verification) has no assigned work task. Add an explicit task or document it as a PM-gated post-merge step in V3. This is the only gap between the plan and the 12 acceptance criteria.
+
+**Minor improvements (non-blocking):**
+- T1's GH issue body should reflect the pre-exploration finding that PR #97 is likely NOT the source, rather than framing it as "suspected."
+- T4 should note the consistency constraint with `isContainedInWorkFolder`'s Windows detection regex.
+
+**Verdict rationale:** The plan solves the right problem with the right approach. The single gap (AC5 E2E) is acknowledged in the plan and is infrastructure-dependent rather than a planning oversight. The risk register correctly identifies it. Approved for execution with the recommendation to formalize the E2E step.
