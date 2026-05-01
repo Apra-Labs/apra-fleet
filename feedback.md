@@ -1,111 +1,128 @@
-# #182 Tier-Aware Dispatch — Code Review
+# Issue #159 — Credential Audit Log: Plan Review
 
-**Reviewer:** fleet-rev
-**Date:** 2026-04-28 18:30:00+00:00
-**Verdict:** APPROVED
-
----
-
-## Phase 1 Review (T1–T4)
-
-### T1: Replace count rule with cohesion rule in plan-prompt.md — PASS
-
-All three instances of the count-based rule have been replaced:
-
-1. **Line 27 (DRAFT rules):** "2-3 work tasks per phase, then a VERIFY checkpoint" replaced with the full cohesion rule: "Phase boundaries by cohesion, not count — a phase is a coherent unit of work that produces a reviewable, testable increment..." — matches requirements.md §1 verbatim. PASS.
-2. **Line 67 (SELF-CRITIQUE):** "Checkpoints too far apart — more than 3 work tasks without a VERIFY?" replaced with "Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?" — correctly reframes the failure mode in cohesion terms. PASS.
-3. **Line 75 (REFINE):** "VERIFY checkpoint every 2-3 work tasks" replaced with "VERIFY checkpoint at the natural completion boundary of each cohesive phase" — consistent with the cohesion model. PASS.
-
-Grep for "2-3 work tasks" and "more than 3 work tasks" across all 5 PM skill files returns zero matches. The count-based rule is fully eradicated.
-
-### T2: Add monotonic tier constraint to plan-prompt.md — PASS
-
-- **Lines 38–42 (DRAFT rules):** Monotonic tier constraint added with exact wording from requirements.md §2, including ✅/❌ examples. Placed correctly after the tier assignment block. PASS.
-- **Line 68 (SELF-CRITIQUE):** "Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point." — correctly adds the corresponding failure mode. PASS.
-
-### T3: Add cohesion rule and monotonic tier constraint to tpl-plan.md — PASS
-
-- **Lines 56–64:** New "Phase Sizing Rules" section between Risk Register and Notes. Contains:
-  - Cohesion rule with wording consistent with plan-prompt.md (minor expected capitalization: sentence-initial vs mid-sentence after a dash). PASS.
-  - Monotonic tier constraint with identical wording and examples. PASS.
-
-### T4: Update tpl-reviewer-plan.md checklist — PASS
-
-- **Item 6:** Replaced count-based check with cohesion boundary check. PASS.
-- **Item 7:** New monotonic tier check added. PASS.
-- **Items 8–13:** Correctly renumbered from original 7–12. PASS.
-- No reference to "2-3" task count remains. PASS.
-
-### V1: Cross-file consistency — PASS
-
-| Check | Result |
-|-------|--------|
-| Zero instances of "2-3 work tasks" count rule | PASS — grep returns 0 matches across all 5 files |
-| Cohesion rule in plan-prompt.md and tpl-plan.md | PASS — wording matches |
-| Monotonic tier constraint in plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md | PASS — identical substance |
-| tpl-reviewer-plan.md has both new checklist items | PASS — items 6 and 7 |
-| No contradictions between files | PASS |
+**Reviewer:** fleet-rev (Claude Opus 4.6)
+**Date:** 2026-05-01
+**Verdict:** **APPROVED**
 
 ---
 
-## Phase 2 Review (T5–T7)
+## 13-Point Checklist
 
-### T5: Per-task dispatch algorithm in single-pair-sprint.md — PASS
+### 1. Does the plan address everything in requirements.md? — PASS
 
-1. **Per-Task Dispatch Algorithm section (lines 50–60):** New section with pseudocode reading `planned.json` + `progress.json`, extracting `nextTask.tier`, deriving `resume` from `nextTask.phase === lastDispatchedPhase`. Matches requirements.md §3 exactly. PASS.
-2. **Execution Loop (lines 64–71):** Updated from phase-level dispatch ("resume=false — fresh session per phase") to per-task dispatch ("resume per data-driven rule, model=nextTask.tier"). Reviewer dispatch explicitly marked `model=premium`. PASS.
-3. **Session Rules table (lines 76–83):** Rows now use phase-number comparison (`nextTask.phase !== lastDispatchedPhase` / `=== lastDispatchedPhase`) instead of the old "Start of new phase" / "Within a phase" language. PASS.
-4. **Data-driven resume rule table (lines 85–92):** The 4-condition table from requirements.md §4 is present and identical to the spec. PASS.
-5. **`lastDispatchedPhase` tracking:**
-   - Line 60: PM records it after each dispatch. PASS.
-   - Line 135: Cleared on sprint completion. PASS.
-   - Line 150: Checked during PM restart recovery. PASS.
+All 5 events (SET, DELETED, RESOLVED, REJECTED, EXPIRED) mapped to correct trigger points. Log format matches the spec. Security properties (names-only, append-only, `0o600`, 10MB rotation) all present. `tool?` parameter addition to `credentialResolve()` and all 7 call-site updates covered. No MCP tool needed — correctly identified as side-effect of existing operations.
 
-### T6: Data-driven resume and tier-based dispatch in doer-reviewer.md — PASS
+### 2. Are phases clearly separated with VERIFY checkpoints? — PASS
 
-1. **Model tier check (line 14):** Old "Doers use `model=standard` by default" is gone. Now reads: "For doers, PM reads `tasks[i].tier` from `planned.json` and passes `model: <tier>` to `execute_prompt` — no hardcoded default." Matches requirements.md §3. PASS.
-2. **Doer session rules (lines 35–36):** Updated to phase-number comparison format (`nextTask.phase !==/=== lastDispatchedPhase`), consistent with single-pair-sprint.md. PASS.
-3. **Resume Rule section (lines 57–65):** New "Doer dispatches" subsection with the 4-condition data-driven resume table. Introductory text explicitly states derivation from `planned.json` phase numbers via `lastDispatchedPhase` in `status.md`. PASS.
-4. **"All dispatches" table (lines 67–77):** Original table preserved and augmented with two new rows (`stop_prompt` cancellation, session timeout mid-grant). No conflict with the doer-specific table above. PASS.
+Four phases, each with an explicit VERIFY checkpoint:
+- Phase 1: Audit log service (standalone, testable in isolation)
+- Phase 2: Wire into credential-store.ts
+- Phase 3: Pass tool names at call sites
+- Phase 4: Unit + integration tests
 
-### T7: Cross-file consistency sweep — PASS
+Each phase produces a reviewable, testable increment. Separation is cohesive — Phase 1 can be reviewed without Phase 2 context.
 
-Verified all 6 consistency checks from the PLAN.md specification:
+### 3. Are tiers monotonically non-decreasing within each phase? — PASS
 
-| # | Check | Result |
-|---|-------|--------|
-| 1 | Zero count-rule survivors across all 5 files | PASS — `grep "2-3 work tasks\|2-3 tasks per phase\|more than 3 work tasks"` returns 0 matches. The two "2-3" hits (single-pair-sprint.md line 19 about requirement descriptions, SKILL.md line 126 about timeout multipliers) are unrelated to phase sizing. |
-| 2 | Cohesion rule wording: plan-prompt.md ↔ tpl-plan.md | PASS — identical substance, minor expected casing difference (mid-sentence "a" vs sentence-initial "A") |
-| 3 | Monotonic tier constraint: plan-prompt.md ↔ tpl-plan.md | PASS — identical wording and examples in both files |
-| 4 | Resume rule: single-pair-sprint.md ↔ doer-reviewer.md | PASS — the 4-condition data-driven resume table is identical in both files |
-| 5 | `lastDispatchedPhase` consistency | PASS — referenced in single-pair-sprint.md (dispatch algorithm, session rules, sprint completion, recovery) and doer-reviewer.md (doer session rules, resume rule). All references use the same `status.md` storage location. |
-| 6 | No contradictions between any pair of files | PASS — all 5 files reinforce the same dispatch model. plan-prompt.md/tpl-plan.md define rules for planning; tpl-reviewer-plan.md checks them; single-pair-sprint.md and doer-reviewer.md implement them at dispatch time. |
+| Phase | Tasks | Tiers | Monotonic? |
+|-------|-------|-------|------------|
+| 1 | T1 | cheap | trivial ✓ |
+| 2 | T2, T3 | cheap → standard | ✓ |
+| 3 | T4 | cheap | trivial ✓ |
+| 4 | T5, T6 | standard → standard | ✓ |
 
-### V2: Acceptance Criteria Verification — PASS
+No tier downgrades within any phase.
 
-| # | Acceptance Criterion | Status |
-|---|---------------------|--------|
-| 1 | plan-prompt.md: no count rule, replaced with cohesion rule | PASS |
-| 2 | tpl-plan.md: reflects cohesion rule and monotonic tier constraint | PASS |
-| 3 | tpl-reviewer-plan.md: checklist items for cohesion + tier checks | PASS |
-| 4 | single-pair-sprint.md: per-task dispatch algorithm with `lastDispatchedPhase` | PASS |
-| 5 | doer-reviewer.md: data-driven resume derivation from phase numbers | PASS |
-| 6 | All 5 files internally consistent — no contradictions | PASS |
-| 7 | Count-based "2-3 tasks" rule fully removed from all 5 files | PASS |
+### 4. Does each task have a concrete "Done when" criterion? — PASS
 
-### CI Status — NOTE
+All 6 tasks have explicit, verifiable criteria. Examples: "Unit test can call `appendAuditLog()` and read back a correctly-formatted line" (T1), "All 7 files updated; `npm run build` passes; audit log entries for each tool show the correct `tool=` field" (T4). No vague criteria found.
 
-Markdown-only sprint with no build or test suite. Not a blocker.
+### 5. Are blockers correctly stated? — PASS
+
+| Task | Stated Blockers | Correct? |
+|------|----------------|----------|
+| T1 | none | ✓ — standalone module |
+| T2 | T1 | ✓ — needs audit type import |
+| T3 | T1, T2 | ✓ — needs module + updated signature |
+| T4 | T2 | ✓ — needs `tool?` param to compile |
+| T5 | T1 | ✓ — tests the audit module |
+| T6 | T3, T4 | ✓ — tests wired-up calls with tool names |
+
+### 6. Is the base branch correct? — PASS
+
+Base branch: `main`. Implementation branch: `feat/credential-audit-log`. Both follow the `feat/<topic>` convention from CLAUDE.md.
+
+### 7. Are file paths accurate and do referenced files exist? — PASS
+
+Verified against the repo:
+- `src/services/credential-store.ts` — exists ✓
+- `src/services/credential-audit.ts` — new file, correctly marked ✓
+- All 7 call-site files under `src/tools/` — exist ✓
+- `tests/credential-audit.test.ts` — new file ✓
+- `tests/credential-store.test.ts` — does not exist; plan says "create if absent" ✓
+- Import path `./credential-audit.js` — correct for ESM output ✓
+
+### 8. Is scope complete — all 7 call sites listed? — PASS
+
+Grep for `credentialResolve(` in `src/tools/` returns exactly 7 matches. All match the plan's list:
+
+| File | Plan's call | Actual current call | Match? |
+|------|-------------|-------------------|--------|
+| `execute-command.ts` | `credentialResolve(name, callingMember, 'execute_command')` | `credentialResolve(name, callingMember)` | ✓ |
+| `provision-auth.ts` | `credentialResolve(name, agent.friendlyName, 'provision_auth')` | `credentialResolve(name, agent.friendlyName)` | ✓ |
+| `provision-vcs-auth.ts` | `credentialResolve(name, callingMember, 'provision_vcs_auth')` | `credentialResolve(name, callingMember)` | ✓ |
+| `register-member.ts` | `credentialResolve(name, input.friendly_name, 'register_member')` | `credentialResolve(name, input.friendly_name)` | ✓ |
+| `setup-git-app.ts` | `credentialResolve(tokenMatch[1], '*', 'setup_git_app')` | `credentialResolve(tokenMatch[1], '*')` | ✓ |
+| `update-member.ts` | `credentialResolve(name, existing.friendlyName, 'update_member')` | `credentialResolve(name, existing.friendlyName)` | ✓ |
+| `credential-store-update.ts` | `credentialResolve(input.name, undefined, 'credential_store_update')` | `credentialResolve(input.name)` | ✓ |
+
+All existing argument patterns preserved; only the new third `tool` argument is added.
+
+### 9. Are risks identified and mitigated? — PASS
+
+Risk register covers 5 risks with appropriate mitigations:
+- Audit write failure → catch-and-swallow (critical — audit must never break credential ops)
+- Unbounded growth → 10MB rotation
+- chmod overhead → first-write-only mode set
+- Rotation race → single-process, no concern
+- Undefined callingMember → intentional PM fallback
+
+One minor note: the risk register mentions `FLEET_AUDIT_MAX_BYTES` env var for configurable rotation cap, but Task 1 only mentions `MAX_AUDIT_LOG_BYTES` as a constant default. The env var override should be documented in Task 1's change description to avoid ambiguity during implementation. **Not blocking** — the developer can infer this from the risk register.
+
+### 10. Is the regression test realistic and sufficient? — PASS
+
+- T5: 5 unit test cases covering format, optional fields, rotation, permissions, error swallowing
+- T6: 6 integration test cases covering all 5 event types plus the null/not-found no-audit case
+- VERIFY checkpoints include manual smoke tests (SET + RESOLVED flow)
+- Spy-based approach for integration tests (mock `appendAuditLog`) is appropriate — avoids filesystem coupling in credential-store tests
+
+### 11. Are there implementation details missing that would block a developer? — PASS (with note)
+
+The plan is implementation-ready. One minor gap:
+
+- **Env var for max bytes**: Task 1 should explicitly state `const MAX_AUDIT_LOG_BYTES = parseInt(process.env.FLEET_AUDIT_MAX_BYTES ?? '') || 10 * 1024 * 1024` (or similar) to match the risk register's configurability claim. Currently Task 1 just says "default `10 * 1024 * 1024`" without specifying the env var. **Not blocking** — developer can derive from risk register context.
+
+### 12. Are commit/branch conventions followed? — PASS
+
+- Branch: `feat/credential-audit-log` — matches `feat/<topic>` convention ✓
+- "Each task = one git commit" — follows one-commit-per-task convention ✓
+- Base branch `main` with PR workflow — follows "never push to main directly" rule ✓
+
+### 13. Any security concerns (e.g. audit log leaking credential names)? — PASS
+
+- **Names only, never values**: Plan explicitly states log entries contain `credential=<name>` with no plaintext or ciphertext. Verified against the `AuditEntry` type — no `value` field exists.
+- **File permissions**: `0o600` matches `credentials.json` permissions, consistent security posture.
+- **Credential names are not secrets**: Names like `github_pat` or `deploy_key` are already visible via `credential_store_list` MCP tool. Logging them to a file with the same owner-only permissions adds no new exposure surface.
+- **No delete API for audit log**: Append-only by design — entries survive credential deletion, preserving the audit trail.
+- **Rotation overwrites `.log.1`**: Acceptable — rotated-out entries are older and lower-value; keeping one rotation file is a reasonable trade-off vs unbounded growth.
 
 ---
 
 ## Summary
 
-All 7 tasks (T1–T7) and both verification checkpoints (V1, V2) pass without issues. The sprint delivers a complete, consistent overhaul of the PM skill's dispatch model across all 5 files:
+The plan is well-structured, accurate, and complete. All 7 `credentialResolve()` call sites verified against the actual codebase. Event points in `credential-store.ts` correctly identified (lines 111–129 for SET, 161–173 for DELETE, 202–266 for RESOLVE with expired/denied/success paths, 337–362 for PURGE). Risk mitigations are sound. Test coverage is comprehensive.
 
-- **Phase sizing** shifts from arbitrary "2-3 tasks" count to cohesion-driven boundaries (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Tier ordering** gains a monotonic non-decreasing constraint within phases (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Dispatch granularity** moves from per-phase to per-task with tier-aware model selection (single-pair-sprint.md, doer-reviewer.md)
-- **Resume logic** becomes data-driven via `lastDispatchedPhase` in `status.md`, replacing manual reasoning (single-pair-sprint.md, doer-reviewer.md)
+**Minor notes (non-blocking):**
+1. Task 1 should explicitly mention the `FLEET_AUDIT_MAX_BYTES` env var for max log size configurability, rather than leaving it only in the risk register.
 
-No contradictions found between any pair of files. No partial survivals of the old count-based rule. All 7 acceptance criteria from requirements.md are met. Ready for merge.
+**Verdict: APPROVED** — ready for implementation.
