@@ -1,136 +1,17 @@
 {
-  "project": "apra-fleet — bug: send_files / receive_files fail against Windows members",
-  "plan_file": "PLAN.md",
-  "created": "2026-05-01",
-  "branch": "bug_fix/file-transfer-windows",
-  "base_branch": "main",
   "tasks": [
-    {
-      "id": "T1",
-      "phase": 1,
-      "step": "Open GitHub issue on Apra-Labs/apra-fleet",
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T2",
-      "phase": 1,
-      "step": "Reproduction test — path.posix.resolve bug with Windows drive letters",
-      "type": "work",
-      "status": "pending",
-      "tier": "standard",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T3",
-      "phase": 1,
-      "step": "Bisect + root cause documentation in feedback.md",
-      "type": "work",
-      "status": "pending",
-      "tier": "standard",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "V1",
-      "phase": 1,
-      "step": "VERIFY: Phase 1 — Root Cause Identification",
-      "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T4",
-      "phase": 2,
-      "step": "Implement fix — resolveRemotePath in platform.ts, apply in sftp.ts",
-      "type": "work",
-      "status": "pending",
-      "tier": "standard",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T5",
-      "phase": 2,
-      "step": "Cross-OS file transfer test matrix (G1) — tests/file-transfer-matrix.test.ts",
-      "type": "work",
-      "status": "pending",
-      "tier": "standard",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "V2",
-      "phase": 2,
-      "step": "VERIFY: Phase 2 — Fix + Tests",
-      "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T6",
-      "phase": 3,
-      "step": "tests/README.md — matrix documentation (G2)",
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T7",
-      "phase": 3,
-      "step": "Update CLAUDE.md — File Transfer Tools section (G3)",
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T8",
-      "phase": 3,
-      "step": "Update skills/fleet/SKILL.md — cross-OS callout (G4)",
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T9",
-      "phase": 3,
-      "step": "Verify CI gate (G5)",
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "T10",
-      "phase": 3,
-      "step": "Final build + test verification",
-      "type": "work",
-      "status": "pending",
-      "tier": "cheap",
-      "commit": "",
-      "notes": ""
-    },
-    {
-      "id": "V3",
-      "phase": 3,
-      "step": "VERIFY: Phase 3 — Guardrails + Final",
-      "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
-    }
+    {"id": "T1", "phase": 1, "title": "Open GitHub issue", "tier": "cheap", "type": "task", "status": "completed", "notes": "Issue #220 opened on Apra-Labs/apra-fleet with full repro details including 5 failing cases and suspected source PR #97"},
+    {"id": "T2", "phase": 1, "title": "Reproduction test proving path.posix.resolve bug", "tier": "standard", "type": "task", "status": "pending", "notes": ""},
+    {"id": "T3", "phase": 1, "title": "Bisect + root cause documentation", "tier": "standard", "type": "task", "status": "pending", "notes": ""},
+    {"id": "V1", "phase": 1, "title": "VERIFY: Phase 1 — Root Cause", "tier": "standard", "type": "verify", "status": "pending", "notes": ""},
+    {"id": "T4", "phase": 2, "title": "Implement fix in sftp.ts + platform.ts", "tier": "standard", "type": "task", "status": "pending", "notes": ""},
+    {"id": "T5", "phase": 2, "title": "Cross-OS file transfer test matrix (G1)", "tier": "standard", "type": "task", "status": "pending", "notes": ""},
+    {"id": "V2", "phase": 2, "title": "VERIFY: Phase 2 — Fix + Tests", "tier": "standard", "type": "verify", "status": "pending", "notes": ""},
+    {"id": "T6", "phase": 3, "title": "tests/README.md documenting the matrix (G2)", "tier": "cheap", "type": "task", "status": "pending", "notes": ""},
+    {"id": "T7", "phase": 3, "title": "Update project CLAUDE.md — File Transfer Tools (G3)", "tier": "cheap", "type": "task", "status": "pending", "notes": ""},
+    {"id": "T8", "phase": 3, "title": "Update skills/fleet/SKILL.md — cross-OS callout (G4)", "tier": "cheap", "type": "task", "status": "pending", "notes": ""},
+    {"id": "T9", "phase": 3, "title": "Verify CI gate (G5)", "tier": "cheap", "type": "task", "status": "pending", "notes": ""},
+    {"id": "T10", "phase": 3, "title": "Final build + test verification", "tier": "cheap", "type": "task", "status": "pending", "notes": ""},
+    {"id": "V3", "phase": 3, "title": "VERIFY: Phase 3 — Guardrails + Final", "tier": "cheap", "type": "verify", "status": "pending", "notes": ""}
   ]
 }
