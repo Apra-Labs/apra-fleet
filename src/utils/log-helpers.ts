@@ -27,23 +27,22 @@ function getStream(): fs.WriteStream | null {
 
 type LogAgent = { id: string; friendlyName: string };
 
-function tzOffset(): string {
-  const off = -new Date().getTimezoneOffset();
+function localISOString(): string {
+  const now = new Date();
+  const off = -now.getTimezoneOffset(); // minutes east of UTC
   const sign = off >= 0 ? '+' : '-';
-  const h = String(Math.floor(Math.abs(off) / 60)).padStart(2, '0');
-  const m = String(Math.abs(off) % 60).padStart(2, '0');
-  return `${sign}${h}:${m}`;
-}
-
-function localIsoTimestamp(): string {
-  return new Date().toISOString().slice(0, -1) + tzOffset();
+  const absOff = Math.abs(off);
+  const h = String(Math.floor(absOff / 60)).padStart(2, '0');
+  const m = String(absOff % 60).padStart(2, '0');
+  const local = new Date(now.getTime() + off * 60000);
+  return local.toISOString().slice(0, -1) + `${sign}${h}:${m}`;
 }
 
 function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: string, agent?: LogAgent, inv?: string): void {
   try {
     const stream = getStream();
     if (!stream) return;
-    const line: Record<string, unknown> = { ts: localIsoTimestamp(), level, tag };
+    const line: Record<string, unknown> = { ts: localISOString(), level, tag };
     if (inv !== undefined) line.inv = inv;
     if (agent !== undefined) {
       line.mid = agent.id;
