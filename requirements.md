@@ -1,87 +1,38 @@
-# apra-fleet #182 — Tier-Aware Dispatch
-
-## Source
-GitHub issue: https://github.com/Apra-Labs/apra-fleet/issues/182
-
-## Base branch
-`main`
-
-## Feature branch
-`feat/tier-aware-dispatch`
+# Issue #190 — CODEX session resume and session listing
 
 ## Problem
 
-The PM skill has four interconnected gaps in how it plans and dispatches work:
+Fleet's CODEX provider (`src/providers/codex.ts`) declares `supportsResume(): true` but is non-functional:
 
-1. **Task tier is never used** — PM hardcodes `model=standard` for all doer dispatches regardless of per-task `tier` annotations in `planned.json`. Cheap tasks are over-provisioned.
-2. **Resume logic is manually derived** — PM reasons about `resume=true/false` from session context rather than reading phase numbers from `planned.json`. Fragile across PM restarts.
-3. **Cross-tier resume is unsafe** — resuming at a cheaper model than the previous task risks exceeding the model's context window (e.g. 500K tokens of Opus history resumed with Haiku's 200K limit → CLI rejects or silently truncates).
-4. **Phases are defined by task count, not cohesion** — `plan-prompt.md` says "2-3 work tasks per phase, then a VERIFY". This is the wrong signal. Phases should be defined by **high cohesion within, loose coupling between**. VERIFY checkpoints placed too close together waste tokens: every review is cumulative, so an extra unnecessary VERIFY adds a full premium-model review session for marginal safety gain.
+1. `parseResponse()` always returns `sessionId: undefined` — fleet never captures a session ID for CODEX members, so `resume=true` can never actually resume a session
+2. `buildPromptCommand()` appends `resume` only if `sessionId` is truthy — but since it is always `undefined`, the resume branch never fires
+3. `resumeFlag()` returns `'resume'` with no session ID — a placeholder that does nothing
+4. Session listing (equivalent of Claude's `--list-sessions`) has not been researched for the codex CLI
 
-## Solution (final spec — incorporates all issue comments)
+## Goal
 
-### 1. Phase boundaries driven by cohesion, not count
+Research the codex CLI's session resume and listing capabilities, then implement working session resume (capturing the session ID from NDJSON output and passing it correctly on resume) and session listing (if supported).
 
-Replace the "2-3 tasks per phase" count rule in `plan-prompt.md` and `tpl-plan.md` with:
+## Research questions
 
-> **A phase is a coherent unit of work that produces a reviewable, testable increment.** Group tasks into a phase when they share a data model, code path, or design decision — splitting them would produce an incoherent intermediate state or require touching the same code twice. Place a VERIFY at the natural completion boundary of that unit, not at an arbitrary task count.
+1. What NDJSON event type does `codex exec --json` emit that contains the session ID?
+2. What is the exact CLI flag/syntax for resuming a session (`--continue <id>`, `--session <id>`, or similar)?
+3. Does the `codex` CLI support listing past sessions? If so, what command?
+4. Are there codex CLI version constraints for these features?
 
-Practical effect: phases may have 4-5 tasks (a coherent subsystem) or just 1-2 (a genuinely isolated change). Fewer VERIFYs → fewer cumulative review sessions → lower total token cost.
+## Acceptance Criteria
 
-### 2. Monotonically non-decreasing tiers within a phase
+- `execute_prompt(resume=true)` on a CODEX member correctly resumes the previous session (verified by observing shared context across two calls)
+- `fleet_status` shows the session ID for CODEX members after a prompt completes
+- Session listing implemented or explicitly documented as unsupported with a `TODO` noting the CLI gap
+- `npm run build` and `npm test` pass
 
-Add to `plan-prompt.md` and `tpl-plan.md`:
+## Files in scope
 
-> **Within a phase, order tasks from cheapest to most expensive tier (cheap → standard → premium). Never downgrade mid-phase.** If a cheap task logically follows a premium task, place it in a new phase.
+- `src/providers/codex.ts` — `parseResponse()`, `buildPromptCommand()`, `resumeFlag()`, `supportsResume()`
+- `tests/providers/codex.test.ts` (new or existing)
 
-```
-cheap → cheap → standard → standard → premium → VERIFY  ✅
-cheap → standard → cheap → VERIFY  ❌  (downgrade — split into two phases)
-```
+## Notes
 
-This gives the dispatcher a safe invariant: any `resume=true` within a phase is guaranteed to be at the same or higher tier. Context always fits. No runtime checks needed.
-
-### 3. PM dispatches one task at a time at the correct tier (simplified algorithm)
-
-> No clubbing logic needed. Dispatches within a phase use `resume=true` anyway, so the session is continuous regardless of whether tasks are clubbed or dispatched individually.
-
-Before each doer dispatch, PM reads `planned.json` and `progress.json`:
-
-```
-nextTask = planned.json.tasks.find(t => t.status === "pending")
-tier     = nextTask.tier
-resume   = (nextTask.phase === lastDispatchedPhase)   // from status.md
-```
-
-Dispatch ONE task at `tier`. Doer executes it, commits, stops. Repeat.
-
-PM records `lastDispatchedPhase` in `status.md` after each dispatch.
-
-### 4. Data-driven resume rule
-
-| Condition | resume |
-|-----------|--------|
-| `nextTask.phase === lastDispatchedPhase` | `true` |
-| `nextTask.phase !== lastDispatchedPhase` (new phase) | `false` |
-| After reviewer CHANGES NEEDED → doer fix | `true` |
-| Role switch (doer ↔ reviewer) | `false` |
-
-## Implementation scope — PM skill files only, no fleet server changes
-
-| File | Change |
-|------|--------|
-| `skills/pm/plan-prompt.md` | Replace "2-3 tasks per phase" count rule with cohesion/coupling rule; add monotonic tier constraint |
-| `skills/pm/tpl-plan.md` | Same rules in the template shown to doers |
-| `skills/pm/tpl-reviewer-plan.md` | Add reviewer checklist: (a) cohesion check for phase boundaries, (b) monotonic tier check within phases |
-| `skills/pm/single-pair-sprint.md` | Replace phase-level dispatch with per-task dispatch algorithm; add `lastDispatchedPhase` tracking in status.md |
-| `skills/pm/doer-reviewer.md` | Data-driven resume derivation from `planned.json` phase numbers |
-
-## Acceptance criteria
-
-1. `plan-prompt.md` no longer contains "2-3 work tasks per phase" — replaced with cohesion rule
-2. `tpl-plan.md` reflects the same cohesion rule and monotonic tier constraint
-3. `tpl-reviewer-plan.md` has checklist items for cohesion boundary check and monotonic tier check
-4. `single-pair-sprint.md` documents the per-task dispatch algorithm with `lastDispatchedPhase` tracking
-5. `doer-reviewer.md` documents data-driven resume derivation (phase number comparison)
-6. All 5 files are internally consistent — no contradictions between them
-7. The count-based "2-3 tasks" rule is fully removed from all 5 files — no partial survivals
+- Base branch: `main`
+- Research must be done against a live CODEX member with `codex --version` and `codex exec --help`
