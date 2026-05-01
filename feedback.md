@@ -1,111 +1,85 @@
-# #182 Tier-Aware Dispatch — Code Review
+# Plan Review — issue #215 (provision_llm_auth cross-provider)
 
 **Reviewer:** fleet-rev
-**Date:** 2026-04-28 18:30:00+00:00
-**Verdict:** APPROVED
+**Date:** 2026-05-01
+**Branch:** plan/issue-215
+**Verdict:** CHANGES NEEDED
 
 ---
 
-## Phase 1 Review (T1–T4)
+## Checklist
 
-### T1: Replace count rule with cohesion rule in plan-prompt.md — PASS
-
-All three instances of the count-based rule have been replaced:
-
-1. **Line 27 (DRAFT rules):** "2-3 work tasks per phase, then a VERIFY checkpoint" replaced with the full cohesion rule: "Phase boundaries by cohesion, not count — a phase is a coherent unit of work that produces a reviewable, testable increment..." — matches requirements.md §1 verbatim. PASS.
-2. **Line 67 (SELF-CRITIQUE):** "Checkpoints too far apart — more than 3 work tasks without a VERIFY?" replaced with "Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?" — correctly reframes the failure mode in cohesion terms. PASS.
-3. **Line 75 (REFINE):** "VERIFY checkpoint every 2-3 work tasks" replaced with "VERIFY checkpoint at the natural completion boundary of each cohesive phase" — consistent with the cohesion model. PASS.
-
-Grep for "2-3 work tasks" and "more than 3 work tasks" across all 5 PM skill files returns zero matches. The count-based rule is fully eradicated.
-
-### T2: Add monotonic tier constraint to plan-prompt.md — PASS
-
-- **Lines 38–42 (DRAFT rules):** Monotonic tier constraint added with exact wording from requirements.md §2, including ✅/❌ examples. Placed correctly after the tier assignment block. PASS.
-- **Line 68 (SELF-CRITIQUE):** "Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point." — correctly adds the corresponding failure mode. PASS.
-
-### T3: Add cohesion rule and monotonic tier constraint to tpl-plan.md — PASS
-
-- **Lines 56–64:** New "Phase Sizing Rules" section between Risk Register and Notes. Contains:
-  - Cohesion rule with wording consistent with plan-prompt.md (minor expected capitalization: sentence-initial vs mid-sentence after a dash). PASS.
-  - Monotonic tier constraint with identical wording and examples. PASS.
-
-### T4: Update tpl-reviewer-plan.md checklist — PASS
-
-- **Item 6:** Replaced count-based check with cohesion boundary check. PASS.
-- **Item 7:** New monotonic tier check added. PASS.
-- **Items 8–13:** Correctly renumbered from original 7–12. PASS.
-- No reference to "2-3" task count remains. PASS.
-
-### V1: Cross-file consistency — PASS
-
-| Check | Result |
-|-------|--------|
-| Zero instances of "2-3 work tasks" count rule | PASS — grep returns 0 matches across all 5 files |
-| Cohesion rule in plan-prompt.md and tpl-plan.md | PASS — wording matches |
-| Monotonic tier constraint in plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md | PASS — identical substance |
-| tpl-reviewer-plan.md has both new checklist items | PASS — items 6 and 7 |
-| No contradictions between files | PASS |
+| # | Criterion | Pass | Notes |
+|---|-----------|------|-------|
+| 1 | Clear "done" criteria on every task | YES | Each task has a concrete "Done when" clause |
+| 2 | High cohesion within tasks, low coupling between | YES | Probe, Flow-A fix, OOB improvement are well-separated concerns |
+| 3 | Key abstractions in earliest tasks | PARTIAL | `probeExistingAuth()` is introduced in Task 2 but no shared cross-provider helper is factored out for Tasks 3-4 to reuse |
+| 4 | Riskiest assumption validated early | YES | Audit is Task 1; probe (the riskiest runtime change) is Task 2 |
+| 5 | Later tasks reuse early abstractions (DRY) | PARTIAL | Tasks 5-6 test against Tasks 2-4 but no shared fixture or factory is mentioned |
+| 6 | Phase boundaries at cohesion boundaries | NO | See STRUCTURAL below |
+| 7 | Tiers monotonically non-decreasing within phases | YES | cheap -> cheap -> standard (once phase structure is fixed) |
+| 8 | Each task completable in one session | YES | All are scoped tightly |
+| 9 | Dependencies satisfied in order | NO | See BLOCKER below |
+| 10 | Any vague tasks two developers would interpret differently | YES | See VAGUE below |
+| 11 | Any hidden dependencies | YES | See HIDDEN DEPS below |
+| 12 | Risk register present and complete | PARTIAL | See RISK below |
+| 13 | Plan aligns with requirements intent | PARTIAL | See ALIGNMENT below |
 
 ---
 
-## Phase 2 Review (T5–T7)
+## Issues
 
-### T5: Per-task dispatch algorithm in single-pair-sprint.md — PASS
+### STRUCTURAL — Phase headings are broken
 
-1. **Per-Task Dispatch Algorithm section (lines 50–60):** New section with pseudocode reading `planned.json` + `progress.json`, extracting `nextTask.tier`, deriving `resume` from `nextTask.phase === lastDispatchedPhase`. Matches requirements.md §3 exactly. PASS.
-2. **Execution Loop (lines 64–71):** Updated from phase-level dispatch ("resume=false — fresh session per phase") to per-task dispatch ("resume per data-driven rule, model=nextTask.tier"). Reviewer dispatch explicitly marked `model=premium`. PASS.
-3. **Session Rules table (lines 76–83):** Rows now use phase-number comparison (`nextTask.phase !== lastDispatchedPhase` / `=== lastDispatchedPhase`) instead of the old "Start of new phase" / "Within a phase" language. PASS.
-4. **Data-driven resume rule table (lines 85–92):** The 4-condition table from requirements.md §4 is present and identical to the spec. PASS.
-5. **`lastDispatchedPhase` tracking:**
-   - Line 60: PM records it after each dispatch. PASS.
-   - Line 135: Cleared on sprint completion. PASS.
-   - Line 150: Checked during PM restart recovery. PASS.
+All six tasks are nested under the single `### Phase 1: Audit and compatibility matrix` heading. Phases 2-4 exist only as `VERIFY` labels but have no corresponding section headers. This makes the plan hard to navigate and ambiguous about which tasks belong to which phase.
 
-### T6: Data-driven resume and tier-based dispatch in doer-reviewer.md — PASS
+**Fix:** Add explicit phase headers:
+- Phase 1: Audit (Task 1)
+- Phase 2: Pre-auth probe (Task 2)
+- Phase 3: Cross-provider flow fixes (Tasks 3-4)
+- Phase 4: Tests (Tasks 5-6)
 
-1. **Model tier check (line 14):** Old "Doers use `model=standard` by default" is gone. Now reads: "For doers, PM reads `tasks[i].tier` from `planned.json` and passes `model: <tier>` to `execute_prompt` — no hardcoded default." Matches requirements.md §3. PASS.
-2. **Doer session rules (lines 35–36):** Updated to phase-number comparison format (`nextTask.phase !==/=== lastDispatchedPhase`), consistent with single-pair-sprint.md. PASS.
-3. **Resume Rule section (lines 57–65):** New "Doer dispatches" subsection with the 4-condition data-driven resume table. Introductory text explicitly states derivation from `planned.json` phase numbers via `lastDispatchedPhase` in `status.md`. PASS.
-4. **"All dispatches" table (lines 67–77):** Original table preserved and augmented with two new rows (`stop_prompt` cancellation, session timeout mid-grant). No conflict with the doer-specific table above. PASS.
+### BLOCKER — Missing dependency declarations
 
-### T7: Cross-file consistency sweep — PASS
+- **Task 5** ("Unit tests for pre-auth probe") depends on Task 2 which implements `probeExistingAuth()`. Currently says "Blockers: none".
+- **Task 6** ("Unit tests for cross-provider flow selection") depends on Tasks 3-4. Currently says "Blockers: none".
 
-Verified all 6 consistency checks from the PLAN.md specification:
+**Fix:** Task 5 blockers: Task 2. Task 6 blockers: Tasks 3, 4.
 
-| # | Check | Result |
-|---|-------|--------|
-| 1 | Zero count-rule survivors across all 5 files | PASS — `grep "2-3 work tasks\|2-3 tasks per phase\|more than 3 work tasks"` returns 0 matches. The two "2-3" hits (single-pair-sprint.md line 19 about requirement descriptions, SKILL.md line 126 about timeout multipliers) are unrelated to phase sizing. |
-| 2 | Cohesion rule wording: plan-prompt.md ↔ tpl-plan.md | PASS — identical substance, minor expected casing difference (mid-sentence "a" vs sentence-initial "A") |
-| 3 | Monotonic tier constraint: plan-prompt.md ↔ tpl-plan.md | PASS — identical wording and examples in both files |
-| 4 | Resume rule: single-pair-sprint.md ↔ doer-reviewer.md | PASS — the 4-condition data-driven resume table is identical in both files |
-| 5 | `lastDispatchedPhase` consistency | PASS — referenced in single-pair-sprint.md (dispatch algorithm, session rules, sprint completion, recovery) and doer-reviewer.md (doer session rules, resume rule). All references use the same `status.md` storage location. |
-| 6 | No contradictions between any pair of files | PASS — all 5 files reinforce the same dispatch model. plan-prompt.md/tpl-plan.md define rules for planning; tpl-reviewer-plan.md checks them; single-pair-sprint.md and doer-reviewer.md implement them at dispatch time. |
+### VAGUE — Gemini pre-auth probe doesn't validate auth
 
-### V2: Acceptance Criteria Verification — PASS
+Task 2 specifies `gemini --version` as the probe for Gemini, with the note "version check is sufficient for Gemini." But `--version` only confirms the CLI is installed, not that the user is authenticated. The requirements say "detect if already authenticated." Two developers would interpret this differently — one might ship `--version`, another would use a real Gemini API call.
 
-| # | Acceptance Criterion | Status |
-|---|---------------------|--------|
-| 1 | plan-prompt.md: no count rule, replaced with cohesion rule | PASS |
-| 2 | tpl-plan.md: reflects cohesion rule and monotonic tier constraint | PASS |
-| 3 | tpl-reviewer-plan.md: checklist items for cohesion + tier checks | PASS |
-| 4 | single-pair-sprint.md: per-task dispatch algorithm with `lastDispatchedPhase` | PASS |
-| 5 | doer-reviewer.md: data-driven resume derivation from phase numbers | PASS |
-| 6 | All 5 files internally consistent — no contradictions | PASS |
-| 7 | Count-based "2-3 tasks" rule fully removed from all 5 files | PASS |
+Checked the codebase: `verifyWithVersion` in provision-auth.ts is used for post-provisioning verification (confirming the CLI runs), not for auth validation. Using the same weak check as a pre-auth probe would create false positives — the probe would say "already authenticated" when only the CLI binary is present.
 
-### CI Status — NOTE
+**Fix:** Specify the exact Gemini probe command that validates auth (e.g., `gemini -p "hello"` with a timeout), or document explicitly why `--version` is sufficient for Gemini's auth model (e.g., if Gemini CLI refuses to run `--version` without valid credentials, say so).
 
-Markdown-only sprint with no build or test suite. Not a blocker.
+### HIDDEN DEPS — Task 3 done-when assumes orchestrator provider is known
+
+Task 3's done-when says: "claude->gemini with no local Gemini OAuth -> logs 'cross-provider: no local Gemini credentials...'". This requires `provisionAuth` to know the orchestrator's own provider to detect the cross-provider case. Currently `provisionAuth` only calls `getProvider(agent.llmProvider)` for the *target* member's provider — there is no existing mechanism to resolve the orchestrator's own provider identity within that function.
+
+**Fix:** Task 3 should specify how the orchestrator's provider is obtained (e.g., from server config, from a new parameter, or by reading the local machine's active provider). This is an implementation detail that affects the function signature.
+
+### RISK — Two missing risks
+
+The risk register is solid but omits two scenarios:
+
+1. **False-positive probe:** Pre-auth probe returns exit 0 but the token is actually expired, scoped incorrectly, or (for Gemini with `--version`) the CLI is installed but unauthenticated. Provisioning is skipped, member fails later. Impact: high — this is exactly the silent failure the issue is trying to eliminate.
+   - **Mitigation:** probe should use a real API call (not just version check) and treat non-zero exit OR error response as "not authenticated."
+
+2. **Race with token refresh during cross-provider copy:** OAuth credential files are read and copied, but between read and write the local token auto-refreshes, leaving the member with a stale copy.
+   - **Mitigation:** low probability, existing `validateCredentials` likely covers this, but should be noted.
+
+### ALIGNMENT — Requirements ask for 6-combination coverage in implementation, not just audit
+
+The requirements say "Implement the three-strategy flow for cross-provider cases" and list 6 specific provider combinations. The plan audits all 6 in Task 1 but the implementation tasks (2-4) are generic — they don't specify per-combination behavior. Notably, codex and copilot return `null` from `oauthCredentialFiles()` and have different CLI names, so their probe commands and flow paths differ from claude/gemini. Task 6 says "npm test covers all 6 cross-provider combinations" but no implementation task defines what the correct behavior is for each combination.
+
+**Fix:** Either:
+- (a) Add sub-bullets in Tasks 2-4 specifying the probe command, OAuth path, and OOB prompt for each of codex and copilot, OR
+- (b) Explicitly state that codex/copilot are API-key-only (probe -> OOB, skip Flow A) and that this is a deliberate design decision derived from their `null` OAuth support.
 
 ---
 
 ## Summary
 
-All 7 tasks (T1–T7) and both verification checkpoints (V1, V2) pass without issues. The sprint delivers a complete, consistent overhaul of the PM skill's dispatch model across all 5 files:
-
-- **Phase sizing** shifts from arbitrary "2-3 tasks" count to cohesion-driven boundaries (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Tier ordering** gains a monotonic non-decreasing constraint within phases (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Dispatch granularity** moves from per-phase to per-task with tier-aware model selection (single-pair-sprint.md, doer-reviewer.md)
-- **Resume logic** becomes data-driven via `lastDispatchedPhase` in `status.md`, replacing manual reasoning (single-pair-sprint.md, doer-reviewer.md)
-
-No contradictions found between any pair of files. No partial survivals of the old count-based rule. All 7 acceptance criteria from requirements.md are met. Ready for merge.
+The plan has the right shape — audit first, then probe, then fix flows, then test. The individual tasks are well-scoped and the risk register covers real concerns. However: phase structure is broken (all tasks under Phase 1), two blocker declarations are missing, the Gemini probe doesn't actually validate auth, the orchestrator-provider detection mechanism is unspecified, and the implementation tasks need to be explicit about per-provider behavior. These are all fixable without restructuring the plan's task sequence.
