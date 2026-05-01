@@ -1,127 +1,128 @@
-# apra-fleet secret CLI — Plan Review
+# apra-fleet secret CLI — Plan Re-Review
 
 **Reviewer:** fleet-rev
 **Date:** 2026-05-01
-**Verdict:** CHANGES NEEDED
+**Verdict:** APPROVED
 
 ---
 
-## 1. Done criteria (Checklist #1)
+## Prior feedback.md history
 
-Tasks 2, 4, 5, and 6 have clear, verifiable done criteria. **FAIL** on Task 1: the done criteria cover `--help`, `--set` error path, and `--list`, but omit `--update`, `--delete`, and `--delete --all` acceptance. These are distinct user-facing flows with validation rules (e.g. "at least one flag required" for `--update`, confirmation prompt for `--delete --all`). Task 3 is acceptable — "auto-launched terminal closes when secret delivered via separate shell" is testable, though it is a manual/integration check.
+```
+52d768e review: plan/issue-216 — fleet-rev          (initial review, CHANGES NEEDED — 6 findings)
+2776724 plan: updated PLAN.md addressing review      (planner's revision)
+```
 
-**Fix:** Add explicit done-when bullets for `--update` (at least one metadata flag required, error otherwise), `--delete <name>` (removes from store), and `--delete --all` (confirmation prompt, refusal on non-`yes` input).
-
----
-
-## 2. Cohesion and coupling (Checklist #2)
-
-**FAIL** on Task 1. It implements six distinct CLI modes (`--set`, `--set --persist`, `--list`, `--update`, `--delete`, `--delete --all`) in a single task. Each mode has different flag parsing, different validation, and different service function calls. This is low cohesion within one task. If `--set` with OOB socket delivery is working but `--delete --all` confirmation is buggy, the task is ambiguously incomplete.
-
-Task 3 mixes two concerns — changing the spawned command string (from `auth` to `secret --set`) and adding PID-tracking/kill logic — but these are tightly coupled enough that splitting would add overhead without benefit. **PASS** for Tasks 2–6.
-
-**Fix:** Split Task 1 into two tasks: (A) `--set` and `--set --persist` (the OOB delivery path, which is the core new capability), and (B) `--list`, `--update`, `--delete`, `--delete --all` (vault management, which are thin wrappers over existing `credential-store.ts` functions). This also makes done criteria cleaner.
+This re-review verifies the 6 findings from the initial review and re-runs the full 13-point checklist.
 
 ---
 
-## 3. Shared abstractions early (Checklist #3)
+## Finding Verification
 
-**PASS.** Task 1 establishes the CLI entry point and arg-parsing scaffold that all later tasks build on. The existing `credential-store.ts` functions (`credentialSet`, `credentialList`, `credentialDelete`, `credentialUpdate`) and `secureInput()` are already in the codebase — the plan correctly reuses them rather than re-inventing.
+### Finding 1 — Task 1 split into OOB delivery vs vault management: RESOLVED
 
----
+Old Task 1 was a single monolithic task covering six CLI modes. Now split into Task 2a (OOB delivery: `--set` and `--set --persist`) and Task 2b (vault management: `--list`, `--update`, `--delete`, `--delete --all`). Each has focused done-when criteria matching its scope. Cohesion is improved.
 
-## 4. Riskiest assumption validated early (Checklist #4)
+### Finding 2 — Task 3 declares Task 1a as blocker: RESOLVED
 
-**PASS.** The riskiest integration — OOB socket delivery from the new `secret --set` path — lands in Phase 1 and is verified at the Phase 1 checkpoint. Phase 2 (three-signal upgrade) extends an already-proven path. The cross-platform PID kill risk is called out in the risk register and deferred to Phase 2 where it belongs.
+Task 4 (three-signal OOB) now explicitly states `Blockers: Task 2a must be merged.` The dependency that was previously implicit in phase ordering is now declared.
 
----
+### Finding 3 — `--set` use-case matrix inlined: RESOLVED
 
-## 5. DRY / reuse of early abstractions (Checklist #5)
+Task 2a now enumerates all three use cases inline:
+1. OOB delivery (waiter exists, no `--persist`)
+2. OOB delivery + persist (waiter exists, `--persist`)
+3. Persist only (no waiter, `--persist` required)
 
-**PASS.** Task 1 reuses `secureInput()`, `getSocketPath()`, and all four credential-store service functions. Task 5 tests exercise the CLI built in Task 1. No duplicated logic is introduced.
+No "see requirements.md" cross-reference remains.
 
----
+### Finding 4 — CREDENTIALS_PATH refactor moved before standard-tier OOB work: RESOLVED
 
-## 6. Phase boundaries at cohesion boundaries (Checklist #6)
+The cheap `getCredentialsPath()` refactor is now Task 1 in Phase 1, before all standard-tier work. Cross-phase tier ordering is now: cheap (Phase 1) → standard (Phase 2) → standard (Phase 3) → standard/cheap (Phase 4). The problematic Phase 2 standard → Phase 3 cheap downgrade from the original plan is eliminated.
 
-**PASS.** Phase 1 = CLI surface, Phase 2 = server-side OOB upgrade, Phase 3 = path hardening, Phase 4 = tests. Each phase is a coherent, independently testable increment with its own VERIFY checkpoint.
+### Finding 5 — Two new risks added: RESOLVED
 
----
+Risk register now includes:
+- **`auth` alias backward compat** — mitigation: keep `auth` branch in `index.ts`; add integration test
+- **Non-TTY `secureInput` fallback** — mitigation: detect `process.stdin.isTTY`; if false, print error and exit 1
 
-## 7. Tier monotonicity (Checklist #7)
+Both risks have actionable mitigations.
 
-**FAIL.** Phase 2 is `standard`, Phase 3 drops to `cheap`, Phase 4 bounces between `standard` and `cheap`. The guideline is monotonically non-decreasing within each phase to avoid context-switching between effort levels. Phase 3 (cheap) following Phase 2 (standard) is a downgrade.
+### Finding 6 — All "see requirements.md" deferences removed: RESOLVED
 
-**Fix:** Reorder Task 4 (cheap path refactor) to run before Task 3 (standard OOB upgrade) — this is also better architecturally because Task 3's new spawn command `apra-fleet secret --set <name>` should use the hardened `getCredentialsPath()` from the start. Alternatively, merge Task 4 into Phase 1 as it has no blockers and is a cheap, low-risk refactor.
-
----
-
-## 8. Each task completable in one session (Checklist #8)
-
-**FAIL** on Task 1 as currently scoped (six CLI modes with distinct flag parsing, validation, and service calls). After the split recommended in finding #2, each resulting task is comfortably single-session. All other tasks are appropriately sized. **PASS** for Tasks 2–6.
-
----
-
-## 9. Dependencies satisfied in order (Checklist #9)
-
-**PASS** for declared dependencies. However, see finding #11 for an undeclared dependency.
+The old plan's `"Read requirements.md for exact flag semantics"` is gone. Task 2a inlines use cases, Task 2b inlines `--list` column spec, `--update` flags, and `--delete --all` confirmation prompt. The plan is self-contained.
 
 ---
 
-## 10. Ambiguous tasks (Checklist #10)
+## Full 13-Point Checklist
 
-**NOTE.** Task 1 says "Read requirements.md for exact flag semantics" rather than spelling them out inline. This is a pointer, not a specification. Two developers could interpret the `--set` error-path logic differently (e.g., should `--set` with `--persist` and a waiting request deliver *and* persist, or persist only?). The requirements are clear on this — "same as (1), but `--persist` also writes to `credentials.json`" — but the plan should not rely on cross-referencing.
+### 1. Done criteria — PASS
 
-**Fix:** In Task 1 (or 1A after split), enumerate the three `--set` use cases from requirements inline: (1) waiter exists, no `--persist` → deliver only; (2) waiter exists, `--persist` → deliver and persist; (3) no waiter, `--persist` → persist only; (4) no waiter, no `--persist` → error. Also state the default `network_policy=deny` and `--members` default of `*`.
+All tasks have verifiable done-when clauses. Task 2a specifies the three `--set` outcomes. Task 2b specifies table display, metadata-only update, `--all` confirmation, and invalid name rejection.
 
----
+**Minor note:** Task 2b done-when doesn't explicitly state "`--delete <name>` removes from store" as a separate bullet — it's covered by the Change description but could be more explicit. Non-blocking.
 
-## 11. Hidden dependencies (Checklist #11)
+### 2. Cohesion and coupling — PASS
 
-**FAIL.** Task 3 changes `launchAuthTerminal` in `auth-socket.ts` to spawn `apra-fleet secret --set <name>` instead of `apra-fleet auth <name>`. This command only exists after Task 1 is complete. Task 3's blockers list only "PID kill cross-platform" — it does not declare a dependency on Task 1.
+Task 2a (OOB delivery) and Task 2b (vault management) are well-bounded. Task 4 (three-signal OOB) appropriately bundles the command-string change with PID tracking since they're tightly coupled. No task mixes unrelated concerns.
 
-This is currently safe because Phase 2 follows Phase 1 sequentially, but if tasks were parallelized or reordered, Task 3 would produce a broken spawn command. Explicit is better than implicit.
+### 3. Shared abstractions early — PASS
 
-**Fix:** Add `Blockers: Task 1` to Task 3.
+Phase 1 establishes `getCredentialsPath()`. Phase 2 builds on existing `credential-store.ts` functions, `secureInput()`, and `getSocketPath()`. No new shared abstractions are needed before they're used.
 
----
+### 4. Riskiest assumption validated early — PASS
 
-## 12. Risk register (Checklist #12)
+OOB socket delivery (Task 2a) is the core new capability and lands in Phase 2 with a VERIFY checkpoint. The cross-platform PID kill risk is deferred to Phase 3 (Task 4) where it belongs.
 
-**FAIL — incomplete.** The register covers four risks but misses two material ones:
+### 5. DRY / reuse of early abstractions — PASS
 
-1. **`auth` alias backward compatibility.** The plan keeps `auth` as an undocumented alias, but `auth.ts` currently accepts `--api-key`, `--confirm`, and `--prompt` flags that `secret.ts` does not replicate. If external scripts or the server's `launchAuthTerminal` still call `apra-fleet auth --api-key <name>` during the transition window between Tasks 1–2 and Task 3, the OOB flow breaks. Mitigation: keep `auth.ts` unchanged and functional until Task 3 switches the spawned command to `secret --set`.
-2. **Non-TTY `secureInput` fallback.** `secureInput()` falls back to plain `readline` when `stdin` is not a TTY. If a CI job or piped invocation hits `secret --set`, the no-echo guarantee is lost. Requirements say "CLI always prompts for the value with no-echo secure input" — the plan should acknowledge this edge case and decide whether to error or warn.
+All tasks reuse existing service functions. No duplication introduced.
 
-The "Gemini trust directory blocks execute_prompt" risk is tangential to this issue and clutters the register.
+### 6. Phase boundaries at cohesion boundaries — PASS
 
-**Fix:** Add risks #1 and #2 above. Remove or move the Gemini trust risk to a project-level note.
+Phase 1 = internal refactor. Phase 2 = user-facing CLI surface. Phase 3 = server-side OOB upgrade. Phase 4 = tests. Each phase is independently testable with its own VERIFY checkpoint.
 
----
+### 7. Tier monotonicity — PASS
 
-## 13. Alignment with requirements (Checklist #13)
+Cross-phase ordering is cheap → standard → standard → standard/cheap. The blocking violation (standard → cheap between Phases 2 and 3) from the original plan is fixed.
 
-**PASS** on overall direction — the plan solves the right problem (user-facing secret management CLI replacing the internal-only `auth` command). Key requirements are covered: `--set`/`--persist`/`--list`/`--update`/`--delete` semantics, OOB three-signal upgrade, `auth` removal from `--help`, `APRA_FLEET_DATA_DIR` forward compatibility, and no data migration.
+**Minor note:** Within Phase 2, Task 3 (cheap) follows Tasks 2a/2b (standard). This is a minor intra-phase drop but Task 3 is a thin wiring task that logically completes the CLI entry point — splitting it into a separate phase would be over-engineering.
 
-**NOTE:** Two requirements details are not explicitly called out in any task:
-- Name validation regex `[a-zA-Z0-9_]{1,64}` — mentioned in Task 5 (tests) but not in Task 1 (implementation). Validation should be implemented before it is tested.
-- The `--list` table format columns (`NAME / SCOPE / POLICY / MEMBERS / EXPIRES`) from requirements are not specified in Task 1's done criteria.
+### 8. Each task completable in one session — PASS
+
+After the split, the largest task is Task 2a (three `--set` use cases with socket comms). This is well-scoped for a single session. All other tasks are smaller.
+
+### 9. Dependencies satisfied in order — PASS
+
+Task 4 declares `Task 2a must be merged`. Phase ordering ensures all other implicit dependencies are met.
+
+### 10. Ambiguous tasks — PASS
+
+No cross-references to external documents for spec details. All flag semantics, error messages, and validation rules are stated inline.
+
+### 11. Hidden dependencies — PASS
+
+The previously undeclared Task 4 → Task 2a dependency is now explicit. No other hidden dependencies detected.
+
+### 12. Risk register — PASS
+
+Five risks with mitigations. The two risks flagged in the initial review (auth alias compat, non-TTY secureInput) are now present with actionable mitigations.
+
+**Minor note:** The Gemini trust directory risk is still present. The initial review suggested removing it as tangential. It's not harmful but adds noise. Non-blocking.
+
+### 13. Alignment with requirements — PASS
+
+All requirements are covered: `--set`/`--persist`/`--list`/`--update`/`--delete` semantics, OOB three-signal upgrade, `auth` removal from `--help`, `APRA_FLEET_DATA_DIR` forward compat, no data migration, name validation regex, `--list` table columns.
 
 ---
 
 ## Summary
 
-**Passed (7/13):** Shared abstractions early (#3), riskiest assumption validated early (#4), DRY reuse (#5), phase boundaries (#6), dependencies in order (#9), requirements alignment (#13), ambiguity (#10 — minor note only).
+**Passed: 13/13** (3 minor non-blocking notes)
 
-**Must change before implementation:**
-1. **Split Task 1** into set/persist vs. vault-management tasks (findings #2, #8)
-2. **Declare Task 3 → Task 1 dependency** (finding #11)
-3. **Add done criteria** for `--update`, `--delete`, `--delete --all`, name validation, and `--list` table format to Task 1 (finding #1)
-4. **Fix tier ordering** — move Task 4 before Task 3 or into Phase 1 (finding #7)
-5. **Complete the risk register** — add auth alias compat and non-TTY risks, remove tangential Gemini entry (finding #12)
-6. **Inline `--set` use cases** in Task 1 instead of pointing to requirements.md (finding #10)
+All 6 findings from the initial review are resolved. The plan is self-contained, well-ordered, and aligned with requirements. Ready for implementation.
 
-**Deferred (no action needed now):**
-- `confirm` network policy (explicitly out of V1 scope per requirements)
-- `--from-env` flag (explicitly out of scope)
-- Full `#193` data-dir migration (deferred per requirements)
+### Non-blocking notes (address during implementation):
+1. Task 2b done-when: consider adding explicit `--delete <name>` acceptance criterion
+2. Phase 2 intra-phase tier: Task 3 (cheap) after Tasks 2a/2b (standard) — acceptable given logical cohesion
+3. Gemini trust directory risk entry is tangential — consider removing during implementation
