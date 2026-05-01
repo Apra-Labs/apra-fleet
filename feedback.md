@@ -1,85 +1,59 @@
-# Plan Review — issue #215 (provision_llm_auth cross-provider)
+# Plan Re-Review — issue #215 (provision_llm_auth cross-provider)
 
 **Reviewer:** fleet-rev
 **Date:** 2026-05-01
 **Branch:** plan/issue-215
-**Verdict:** CHANGES NEEDED
+**Verdict:** APPROVED with minor nits
 
 ---
 
-## Checklist
+## Prior Findings Status
+
+The original review (commit 64c0291) raised 6 findings. Checking each against the revised PLAN.md (commit dd27118):
+
+| # | Finding | Resolved? | Notes |
+|---|---------|-----------|----------|
+| 1 | 4-phase structure restored with VERIFY sections | YES | Phases 1-4 have proper `###` headers and VERIFY blocks |
+| 2 | Tasks 5-6 declare blockers on Tasks 2-4 | YES | Both say "Blockers: Tasks 2, 3, 4 must be complete" |
+| 3 | Gemini probe uses actual auth call (not --version) | YES | Now specifies `gemini -p "hello" --output-format json --max-turns 1` |
+| 4 | Task 3 describes orchestrator provider detection mechanism | YES | Specifies `%%FLEET_PROVIDER%%` env var with fallback to local agent config |
+| 5 | Two new risks added (false-positive probe + token-refresh race) | YES | Both present in risk register with mitigations |
+| 6 | All 6 provider combinations explicitly called out in Tasks 2-4 | YES | Task 2 lists all 6 with probe strategy; Tasks 3-4 reference per-combination approach (codex/copilot deferred to Task 1 audit, which is correct) |
+
+**6 of 6 findings resolved.**
+
+---
+
+## Full 13-Point Checklist
 
 | # | Criterion | Pass | Notes |
 |---|-----------|------|-------|
-| 1 | Clear "done" criteria on every task | YES | Each task has a concrete "Done when" clause |
-| 2 | High cohesion within tasks, low coupling between | YES | Probe, Flow-A fix, OOB improvement are well-separated concerns |
-| 3 | Key abstractions in earliest tasks | PARTIAL | `probeExistingAuth()` is introduced in Task 2 but no shared cross-provider helper is factored out for Tasks 3-4 to reuse |
-| 4 | Riskiest assumption validated early | YES | Audit is Task 1; probe (the riskiest runtime change) is Task 2 |
-| 5 | Later tasks reuse early abstractions (DRY) | PARTIAL | Tasks 5-6 test against Tasks 2-4 but no shared fixture or factory is mentioned |
-| 6 | Phase boundaries at cohesion boundaries | NO | See STRUCTURAL below |
-| 7 | Tiers monotonically non-decreasing within phases | YES | cheap -> cheap -> standard (once phase structure is fixed) |
-| 8 | Each task completable in one session | YES | All are scoped tightly |
-| 9 | Dependencies satisfied in order | NO | See BLOCKER below |
-| 10 | Any vague tasks two developers would interpret differently | YES | See VAGUE below |
-| 11 | Any hidden dependencies | YES | See HIDDEN DEPS below |
-| 12 | Risk register present and complete | PARTIAL | See RISK below |
-| 13 | Plan aligns with requirements intent | PARTIAL | See ALIGNMENT below |
+| 1 | Clear "done" criteria on every task | YES | Each task has concrete "Done when" |
+| 2 | High cohesion within tasks, low coupling between | YES | |
+| 3 | Key abstractions in earliest tasks | YES | `probeExistingAuth()` in Task 2; orchestrator detection in Task 3 |
+| 4 | Riskiest assumption validated early | YES | Audit Task 1; probe (riskiest change) Task 2 |
+| 5 | Later tasks reuse early abstractions (DRY) | YES | Tasks 5-6 test against probe/flow abstractions |
+| 6 | Phase boundaries at cohesion boundaries | YES | 4 clean phases: audit, probe, flows, tests |
+| 7 | Tiers monotonically non-decreasing within phases | YES | cheap → cheap → standard → standard |
+| 8 | Each task completable in one session | YES | |
+| 9 | Dependencies satisfied in order | YES | Tasks 5-6 block on 2-4 |
+| 10 | Any vague tasks two developers would interpret differently | NO | Probe commands now explicit per provider |
+| 11 | Any hidden dependencies | NO | Orchestrator detection mechanism specified |
+| 12 | Risk register present and complete | YES | 6 risks, all with mitigations |
+| 13 | Plan aligns with requirements intent | YES | 6 combinations covered; codex/copilot appropriately deferred to audit |
 
 ---
 
-## Issues
+## Minor Nits (non-blocking)
 
-### STRUCTURAL — Phase headings are broken
+1. **Markdown escaping issue:** Several strings in Tasks 2-4 have garbled quoting (e.g., `\hello\`, `\already" authenticated "skipping\`, `\cross-provider:" no local...`). These appear to be escaped quotes that weren't properly rendered. Cosmetic only — intent is clear.
 
-All six tasks are nested under the single `### Phase 1: Audit and compatibility matrix` heading. Phases 2-4 exist only as `VERIFY` labels but have no corresponding section headers. This makes the plan hard to navigate and ambiguous about which tasks belong to which phase.
+2. **Trailing whitespace:** Lines end with double-space (markdown line break). Not harmful but unusual for a plan document.
 
-**Fix:** Add explicit phase headers:
-- Phase 1: Audit (Task 1)
-- Phase 2: Pre-auth probe (Task 2)
-- Phase 3: Cross-provider flow fixes (Tasks 3-4)
-- Phase 4: Tests (Tasks 5-6)
-
-### BLOCKER — Missing dependency declarations
-
-- **Task 5** ("Unit tests for pre-auth probe") depends on Task 2 which implements `probeExistingAuth()`. Currently says "Blockers: none".
-- **Task 6** ("Unit tests for cross-provider flow selection") depends on Tasks 3-4. Currently says "Blockers: none".
-
-**Fix:** Task 5 blockers: Task 2. Task 6 blockers: Tasks 3, 4.
-
-### VAGUE — Gemini pre-auth probe doesn't validate auth
-
-Task 2 specifies `gemini --version` as the probe for Gemini, with the note "version check is sufficient for Gemini." But `--version` only confirms the CLI is installed, not that the user is authenticated. The requirements say "detect if already authenticated." Two developers would interpret this differently — one might ship `--version`, another would use a real Gemini API call.
-
-Checked the codebase: `verifyWithVersion` in provision-auth.ts is used for post-provisioning verification (confirming the CLI runs), not for auth validation. Using the same weak check as a pre-auth probe would create false positives — the probe would say "already authenticated" when only the CLI binary is present.
-
-**Fix:** Specify the exact Gemini probe command that validates auth (e.g., `gemini -p "hello"` with a timeout), or document explicitly why `--version` is sufficient for Gemini's auth model (e.g., if Gemini CLI refuses to run `--version` without valid credentials, say so).
-
-### HIDDEN DEPS — Task 3 done-when assumes orchestrator provider is known
-
-Task 3's done-when says: "claude->gemini with no local Gemini OAuth -> logs 'cross-provider: no local Gemini credentials...'". This requires `provisionAuth` to know the orchestrator's own provider to detect the cross-provider case. Currently `provisionAuth` only calls `getProvider(agent.llmProvider)` for the *target* member's provider — there is no existing mechanism to resolve the orchestrator's own provider identity within that function.
-
-**Fix:** Task 3 should specify how the orchestrator's provider is obtained (e.g., from server config, from a new parameter, or by reading the local machine's active provider). This is an implementation detail that affects the function signature.
-
-### RISK — Two missing risks
-
-The risk register is solid but omits two scenarios:
-
-1. **False-positive probe:** Pre-auth probe returns exit 0 but the token is actually expired, scoped incorrectly, or (for Gemini with `--version`) the CLI is installed but unauthenticated. Provisioning is skipped, member fails later. Impact: high — this is exactly the silent failure the issue is trying to eliminate.
-   - **Mitigation:** probe should use a real API call (not just version check) and treat non-zero exit OR error response as "not authenticated."
-
-2. **Race with token refresh during cross-provider copy:** OAuth credential files are read and copied, but between read and write the local token auto-refreshes, leaving the member with a stale copy.
-   - **Mitigation:** low probability, existing `validateCredentials` likely covers this, but should be noted.
-
-### ALIGNMENT — Requirements ask for 6-combination coverage in implementation, not just audit
-
-The requirements say "Implement the three-strategy flow for cross-provider cases" and list 6 specific provider combinations. The plan audits all 6 in Task 1 but the implementation tasks (2-4) are generic — they don't specify per-combination behavior. Notably, codex and copilot return `null` from `oauthCredentialFiles()` and have different CLI names, so their probe commands and flow paths differ from claude/gemini. Task 6 says "npm test covers all 6 cross-provider combinations" but no implementation task defines what the correct behavior is for each combination.
-
-**Fix:** Either:
-- (a) Add sub-bullets in Tasks 2-4 specifying the probe command, OAuth path, and OOB prompt for each of codex and copilot, OR
-- (b) Explicitly state that codex/copilot are API-key-only (probe -> OOB, skip Flow A) and that this is a deliberate design decision derived from their `null` OAuth support.
+3. **Task 5 blockers are broader than needed:** Task 5 tests only the pre-auth probe (Task 2), but declares blockers on Tasks 2, 3, AND 4. Strictly, Task 5 only needs Task 2 complete. This is conservative (not wrong), but could delay test writing unnecessarily.
 
 ---
 
 ## Summary
 
-The plan has the right shape — audit first, then probe, then fix flows, then test. The individual tasks are well-scoped and the risk register covers real concerns. However: phase structure is broken (all tasks under Phase 1), two blocker declarations are missing, the Gemini probe doesn't actually validate auth, the orchestrator-provider detection mechanism is unspecified, and the implementation tasks need to be explicit about per-provider behavior. These are all fixable without restructuring the plan's task sequence.
+Plan is **approved**. All 6 original findings have been addressed. The 4-phase structure is clean, dependencies are declared, probe commands are explicit per provider, orchestrator detection is specified, and the risk register is comprehensive. The plan is ready for implementation.
