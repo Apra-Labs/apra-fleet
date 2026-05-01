@@ -1,87 +1,44 @@
-# apra-fleet #182 — Tier-Aware Dispatch
-
-## Source
-GitHub issue: https://github.com/Apra-Labs/apra-fleet/issues/182
-
-## Base branch
-`main`
-
-## Feature branch
-`feat/tier-aware-dispatch`
+# Issue #98 — Glob patterns and directories in send_files / receive_files
 
 ## Problem
 
-The PM skill has four interconnected gaps in how it plans and dispatches work:
+`send_files` and `receive_files` accept only individual file paths. Sending a directory requires enumerating every file manually — error-prone and tedious for common cases like uploading `src/` or downloading a test output folder.
 
-1. **Task tier is never used** — PM hardcodes `model=standard` for all doer dispatches regardless of per-task `tier` annotations in `planned.json`. Cheap tasks are over-provisioned.
-2. **Resume logic is manually derived** — PM reasons about `resume=true/false` from session context rather than reading phase numbers from `planned.json`. Fragile across PM restarts.
-3. **Cross-tier resume is unsafe** — resuming at a cheaper model than the previous task risks exceeding the model's context window (e.g. 500K tokens of Opus history resumed with Haiku's 200K limit → CLI rejects or silently truncates).
-4. **Phases are defined by task count, not cohesion** — `plan-prompt.md` says "2-3 work tasks per phase, then a VERIFY". This is the wrong signal. Phases should be defined by **high cohesion within, loose coupling between**. VERIFY checkpoints placed too close together waste tokens: every review is cumulative, so an extra unnecessary VERIFY adds a full premium-model review session for marginal safety gain.
+## Goal
 
-## Solution (final spec — incorporates all issue comments)
+Support glob patterns and directory paths in `local_paths` (send_files) and `remote_paths` (receive_files), with directory structure preserved for directory arguments.
 
-### 1. Phase boundaries driven by cohesion, not count
+## Expansion rules
 
-Replace the "2-3 tasks per phase" count rule in `plan-prompt.md` and `tpl-plan.md` with:
+### send_files `local_paths`
+| Input | Expansion | Destination relative path |
+|-------|-----------|--------------------------|
+| `src/foo.ts` (explicit file) | as-is | `foo.ts` (basename only — no change to existing behaviour) |
+| `tests/*.ts` (glob) | all matching files | `<basename>` each — flat, same as explicit files |
+| `src/` (directory) | all files recursively under `src/` | `src/foo.ts`, `src/bar/baz.ts` — structure preserved |
 
-> **A phase is a coherent unit of work that produces a reviewable, testable increment.** Group tasks into a phase when they share a data model, code path, or design decision — splitting them would produce an incoherent intermediate state or require touching the same code twice. Place a VERIFY at the natural completion boundary of that unit, not at an arbitrary task count.
+### receive_files `remote_paths`
+| Input | Expansion | Local path |
+|-------|-----------|-----------|
+| `output.log` (explicit file) | as-is | `localDest/output.log` (no change) |
+| `dist/*.js` (remote glob) | SFTP readdir + filter | `localDest/<basename>` each — flat |
+| `dist/` (remote directory) | SFTP recursive readdir | `localDest/dist/foo.js`, `localDest/dist/sub/bar.js` — structure preserved |
 
-Practical effect: phases may have 4-5 tasks (a coherent subsystem) or just 1-2 (a genuinely isolated change). Fewer VERIFYs → fewer cumulative review sessions → lower total token cost.
+## Key constraint
 
-### 2. Monotonically non-decreasing tiers within a phase
+Existing callers passing individual file paths must see **no change** in destination path — backward compatible.
 
-Add to `plan-prompt.md` and `tpl-plan.md`:
+## Files in scope
 
-> **Within a phase, order tasks from cheapest to most expensive tier (cheap → standard → premium). Never downgrade mid-phase.** If a cheap task logically follows a premium task, place it in a new phase.
+- `src/utils/expand-paths.ts` (new) — `expandLocalPaths()`: expand globs and directories to `{absolute, relative}[]`
+- `src/services/sftp.ts` — `uploadViaSFTP()`: accept `{absolute, relative}[]`; add `expandRemotePaths()` for SFTP-side directory/glob expansion; update `downloadViaSFTP()`
+- `src/services/file-transfer.ts` — thread through expanded paths
+- `src/tools/send-files.ts` — call `expandLocalPaths()` before collision check; update schema description
+- `src/tools/receive-files.ts` — expand remote paths before download; update schema description
+- `tests/expand-paths.test.ts` (new), `tests/sftp.test.ts` (new or existing)
 
-```
-cheap → cheap → standard → standard → premium → VERIFY  ✅
-cheap → standard → cheap → VERIFY  ❌  (downgrade — split into two phases)
-```
+## Notes
 
-This gives the dispatcher a safe invariant: any `resume=true` within a phase is guaranteed to be at the same or higher tier. Context always fits. No runtime checks needed.
-
-### 3. PM dispatches one task at a time at the correct tier (simplified algorithm)
-
-> No clubbing logic needed. Dispatches within a phase use `resume=true` anyway, so the session is continuous regardless of whether tasks are clubbed or dispatched individually.
-
-Before each doer dispatch, PM reads `planned.json` and `progress.json`:
-
-```
-nextTask = planned.json.tasks.find(t => t.status === "pending")
-tier     = nextTask.tier
-resume   = (nextTask.phase === lastDispatchedPhase)   // from status.md
-```
-
-Dispatch ONE task at `tier`. Doer executes it, commits, stops. Repeat.
-
-PM records `lastDispatchedPhase` in `status.md` after each dispatch.
-
-### 4. Data-driven resume rule
-
-| Condition | resume |
-|-----------|--------|
-| `nextTask.phase === lastDispatchedPhase` | `true` |
-| `nextTask.phase !== lastDispatchedPhase` (new phase) | `false` |
-| After reviewer CHANGES NEEDED → doer fix | `true` |
-| Role switch (doer ↔ reviewer) | `false` |
-
-## Implementation scope — PM skill files only, no fleet server changes
-
-| File | Change |
-|------|--------|
-| `skills/pm/plan-prompt.md` | Replace "2-3 tasks per phase" count rule with cohesion/coupling rule; add monotonic tier constraint |
-| `skills/pm/tpl-plan.md` | Same rules in the template shown to doers |
-| `skills/pm/tpl-reviewer-plan.md` | Add reviewer checklist: (a) cohesion check for phase boundaries, (b) monotonic tier check within phases |
-| `skills/pm/single-pair-sprint.md` | Replace phase-level dispatch with per-task dispatch algorithm; add `lastDispatchedPhase` tracking in status.md |
-| `skills/pm/doer-reviewer.md` | Data-driven resume derivation from `planned.json` phase numbers |
-
-## Acceptance criteria
-
-1. `plan-prompt.md` no longer contains "2-3 work tasks per phase" — replaced with cohesion rule
-2. `tpl-plan.md` reflects the same cohesion rule and monotonic tier constraint
-3. `tpl-reviewer-plan.md` has checklist items for cohesion boundary check and monotonic tier check
-4. `single-pair-sprint.md` documents the per-task dispatch algorithm with `lastDispatchedPhase` tracking
-5. `doer-reviewer.md` documents data-driven resume derivation (phase number comparison)
-6. All 5 files are internally consistent — no contradictions between them
-7. The count-based "2-3 tasks" rule is fully removed from all 5 files — no partial survivals
+- Base branch: `main`
+- Node 22 built-ins only — no new npm dependencies. Use `glob` from `node:fs/promises` (added Node 22.0) for local glob expansion; `fs.readdirSync(dir, { recursive: true })` for local directory walk; SFTP `readdir` for remote directory walk.
+- `node:fs/promises` `glob` is not yet stable in older Node 22 minor versions — use `fast-glob` as a dev dependency if needed, but prefer built-in.
