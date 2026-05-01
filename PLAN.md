@@ -37,18 +37,18 @@
 - **Done when:** All 8 files committed with ≥40% word-count reduction; `git diff --stat` shows only these 8 files
 - **Blockers:** Task 1
 
-#### Task 3: Compress `skills/pm/` operational files (11 files)
-- **Change:** Compress the 11 non-template operational files: `SKILL.md`, `single-pair-sprint.md`, `multi-pair-sprint.md`, `simple-sprint.md`, `doer-reviewer.md`, `cleanup.md`, `init.md`, `context-file.md`, `plan-prompt.md`, `onboarding.md` (if present), and any other non-`tpl-` files. Record pre/post word counts in the commit message.
-- **Files:** `skills/pm/*.md` (non-tpl- files)
+#### Task 3: Compress `skills/pm/` operational files (9 files)
+- **Change:** Compress the 9 non-template operational files: `SKILL.md`, `single-pair-sprint.md`, `multi-pair-sprint.md`, `simple-sprint.md`, `doer-reviewer.md`, `cleanup.md`, `init.md`, `context-file.md`, `plan-prompt.md`. Record pre/post word counts in the commit message.
+- **Files:** `skills/pm/*.md` (non-tpl- files only — exactly these 9)
 - **Tier:** standard
-- **Done when:** All operational pm files committed with ≥40% word-count reduction
+- **Done when:** All 9 operational pm files committed with ≥40% word-count reduction
 - **Blockers:** Task 1
 
-#### Task 4: Compress `skills/pm/tpl-*.md` template files (9 files)
-- **Change:** Compress all 9 template files: `tpl-doer.md`, `tpl-reviewer.md`, `tpl-reviewer-plan.md`, `tpl-plan.md`, `tpl-deploy.md`, `tpl-design.md`, `tpl-requirements.md`, `tpl-status.md`, `tpl-backlog.md`, `tpl-projects.md`, `tpl-pm.md`. These are filled in by the PM LLM at runtime — caveman compression applies equally. Note: `tpl-progress.json` is JSON, skip it. Record pre/post word counts in the commit message.
-- **Files:** `skills/pm/tpl-*.md` (template files only)
+#### Task 4: Compress `skills/pm/tpl-*.md` template files (11 files)
+- **Change:** Compress all 11 template files: `tpl-doer.md`, `tpl-reviewer.md`, `tpl-reviewer-plan.md`, `tpl-plan.md`, `tpl-deploy.md`, `tpl-design.md`, `tpl-requirements.md`, `tpl-status.md`, `tpl-backlog.md`, `tpl-projects.md`, `tpl-pm.md`. These are filled in by the PM LLM at runtime — caveman compression applies equally. Note: `tpl-progress.json` is JSON, skip it. Record pre/post word counts in the commit message.
+- **Files:** `skills/pm/tpl-*.md` (all 11 template files)
 - **Tier:** standard
-- **Done when:** All tpl-*.md files committed with ≥40% word-count reduction
+- **Done when:** All 11 tpl-*.md files committed with ≥40% word-count reduction
 - **Blockers:** Task 1
 
 #### VERIFY: Phase 2
@@ -78,7 +78,7 @@
 #### Task 6: Regression test representative PM commands
 - **Change:** Install compressed skills (they're already in the working tree — `apra-fleet install` reads from the repo). Run the following representative commands via a live PM session and verify behaviour matches pre-compression: (a) `/pm status` — checks skill loading and status rendering, (b) `/pm pair fleet-dev fleet-rev` — exercises doer-reviewer.md and context-file.md, (c) `/pm plan` with a trivial requirements.md — exercises single-pair-sprint.md and tpl-plan.md, (d) `/fleet onboard` — exercises onboarding.md. Record any behavioural differences. If any command produces wrong output, trace back to the responsible compressed file and fix.
 - **Files:** no new files — this is a test-and-fix task; commit any fixes found
-- **Tier:** standard
+- **Tier:** premium
 - **Done when:** All 4 representative commands produce correct output; any fixes committed
 - **Blockers:** Tasks 2, 3, 4, 5
 
@@ -101,6 +101,7 @@
 
 ## Notes
 - Base branch: `main`
+- Implementation branch: `feat/compress-skill-files`
 - Each task = one git commit
 - VERIFY = checkpoint, stop and report
 - `skills/fleet/profiles/*.json` — excluded (JSON config, not LLM text)
