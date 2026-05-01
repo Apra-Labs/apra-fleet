@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import type { Client } from 'ssh2';
 import type { Agent } from '../types.js';
 import { getConnection } from './ssh.js';
+import { resolveRemotePath } from '../utils/platform.js';
 
 function getSFTP(client: Client): Promise<import('ssh2').SFTPWrapper> {
   return new Promise((resolve, reject) => {
@@ -63,10 +64,9 @@ export async function uploadViaSFTP(
   const client = await getConnection(agent);
   const sftp = await getSFTP(client);
 
-  const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
   const remoteBase = destinationPath
-    ? path.posix.resolve(workFolderPosix, destinationPath.replace(/\\/g, '/'))
-    : workFolderPosix;
+    ? resolveRemotePath(agent.workFolder, destinationPath)
+    : agent.workFolder.replace(/\\/g, '/');
 
   await sftpMkdirRecursive(sftp, remoteBase);
 
@@ -99,14 +99,12 @@ export async function downloadViaSFTP(
 
   fs.mkdirSync(localDestination, { recursive: true });
 
-  const workFolderPosix = agent.workFolder.replace(/\\/g, '/');
-
   const success: string[] = [];
   const failed: { path: string; error: string }[] = [];
 
   for (const remotePath of remotePaths) {
     if (abortSignal?.aborted) throw new Error('Aborted by client');
-    const resolvedRemote = path.posix.resolve(workFolderPosix, remotePath.replace(/\\/g, '/'));
+    const resolvedRemote = resolveRemotePath(agent.workFolder, remotePath);
     const fileName = path.posix.basename(resolvedRemote);
     const localPath = path.join(localDestination, fileName);
     try {
