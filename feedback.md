@@ -51,6 +51,18 @@ In `src/services/sftp.ts`:
 - **Work folder escape**: `resolveRemotePath` itself does not validate containment (it's a resolution utility), but callers in the tool layer (`send-files.ts`, `receive-files.ts`) use `isContainedInWorkFolder` as a gate before transferring. The separation of concerns is correct.
 - **No injection vectors**: Remote paths are passed directly to SFTP `fastPut`/`fastGet` — no shell interpolation, no command construction.
 
+## T9: CI Gate Verification
+
+**PASS**
+
+`.github/workflows/ci.yml` contains a `build-and-test` job that:
+1. Runs on a matrix of OSes: `[ubuntu-latest, macos-latest, windows-latest]` (line 28)
+2. Installs dependencies via `npm ci` (line 43)
+3. Builds with `npm run build` (line 46)
+4. Runs tests with `npm test` (line 52)
+
+The `npm test` command in package.json runs `vitest`, which automatically discovers all test files matching `**/*.test.ts` and `**/*.test.js` patterns. This includes the new `tests/file-transfer-matrix.test.ts` and all other test files. The CI gate will automatically fail any PR that breaks the cross-OS matrix tests.
+
 ## Summary
 
-Phase 2 is **APPROVED**. The fix correctly replaces the broken `path.posix.resolve` pattern with a Windows-aware `resolveRemotePath` utility. The test matrix comprehensively covers all required driver/target combinations with explicit regression guards for the 5 repro cases from issue #220. Security boundaries are maintained. The 3 pre-existing test failures are unrelated to this branch.
+Phase 2 is **APPROVED**. The fix correctly replaces the broken `path.posix.resolve` pattern with a Windows-aware `resolveRemotePath` utility. The test matrix comprehensively covers all required driver/target combinations with explicit regression guards for the 5 repro cases from issue #220. Security boundaries are maintained. The 3 pre-existing test failures are unrelated to this branch. CI gate confirmed: matrix tests run automatically and will catch future regressions.
