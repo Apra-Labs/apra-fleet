@@ -59,6 +59,46 @@ export async function checkForUpdate(): Promise<void> {
   }
 }
 
+/** CLI command: check for updates and print result, then exit. */
+export async function runUpdateCheck(): Promise<void> {
+  const installed = serverVersion.split('_')[0];
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 5000);
+    let res: Response;
+    try {
+      res = await fetch('https://api.github.com/repos/Apra-Labs/apra-fleet/releases/latest', {
+        signal: controller.signal,
+        headers: { 'User-Agent': `apra-fleet/${serverVersion}` },
+      });
+    } finally {
+      clearTimeout(tid);
+    }
+
+    if (!res.ok) {
+      console.log('Could not check for updates. Visit https://github.com/Apra-Labs/apra-fleet/releases');
+      process.exit(0);
+    }
+
+    const data = await res.json() as { tag_name?: string };
+    const tagName = data.tag_name;
+    if (!tagName) {
+      console.log('Could not check for updates. Visit https://github.com/Apra-Labs/apra-fleet/releases');
+      process.exit(0);
+    }
+
+    const latest = tagName.startsWith('v') ? tagName : `v${tagName}`;
+    if (isNewer(tagName, installed)) {
+      console.log(`apra-fleet ${latest} is available (installed: ${installed}).\nDownload: https://github.com/Apra-Labs/apra-fleet/releases/tag/${latest}`);
+    } else {
+      console.log(`apra-fleet ${installed} is up to date.`);
+    }
+  } catch {
+    console.log('Could not check for updates. Visit https://github.com/Apra-Labs/apra-fleet/releases');
+  }
+  process.exit(0);
+}
+
 /** Returns a one-line update notice if a newer release is available, null otherwise. */
 export function getUpdateNotice(): string | null {
   if (!cachedUpdate) return null;

@@ -23,7 +23,9 @@ Usage:
     --force                            Stop running server before installing
   apra-fleet update                    Update to the latest release
     --check                            Check for updates without installing
-  apra-fleet auth <name>               Provide password for pending member registration
+  apra-fleet secret --set <name>           Deliver a secret to a waiting request
+  apra-fleet secret --list                 List secrets
+  apra-fleet secret --delete <name>        Delete a secret
   apra-fleet --version                 Print version
   apra-fleet --help                    Show this help
 
@@ -40,9 +42,22 @@ if (arg === 'install') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
     .catch(err => { logError('cli', `Auth failed: ${err.message}`); process.exit(1); });
-} else {
+} else if (arg === 'update') {
+  const restArgs = process.argv.slice(2);
+  if (restArgs.includes('--check')) {
+    import('./services/update-check.js')
+      .then(m => m.runUpdateCheck())
+      .catch(err => { logError('cli', `Update check failed: ${err.message}`); process.exit(1); });
+  } else {
+    console.log(`apra-fleet update — coming soon.\nTo update manually, download the latest release from:\n  https://github.com/Apra-Labs/apra-fleet/releases`);
+    process.exit(0);
+  }
+} else if (arg === undefined) {
   // Default: start MCP server
   startServer();
+} else {
+  console.error(`apra-fleet: unknown command '${arg}'\nRun 'apra-fleet --help' for usage.`);
+  process.exit(1);
 }
 
 async function startServer() {
