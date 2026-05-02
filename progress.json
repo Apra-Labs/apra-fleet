@@ -25,8 +25,8 @@
       "phase": 2,
       "title": "Implement src/cli/update.ts (new file)",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Implemented runUpdate() function."
     },
     {
       "id": "T3",
