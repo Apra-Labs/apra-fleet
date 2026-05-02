@@ -74,7 +74,7 @@ describe('checkForUpdate — newer version available', () => {
     expect(notice).not.toBeNull();
     expect(notice).toContain('v99.0.0');
     expect(notice).toContain('is available');
-    expect(notice).toContain('/pm deploy apra-fleet');
+    expect(notice).toContain('apra-fleet update');
   });
 
   it('returns null when remote version equals installed', async () => {
