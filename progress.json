@@ -1,0 +1,91 @@
+{
+  "project": "apra-fleet #212 — apra-fleet update command",
+  "branch": "plan/issue-212",
+  "base_branch": "main",
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": 1,
+      "title": "Write install-config.json at install time",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Implemented install option persistence."
+    },
+    {
+      "id": "V1",
+      "phase": 1,
+      "title": "VERIFY: Phase 1 — Install option persistence",
+      "type": "verify",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T2",
+      "phase": 2,
+      "title": "Implement src/cli/update.ts (new file)",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T3",
+      "phase": 2,
+      "title": "Wire update into src/index.ts",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V2",
+      "phase": 2,
+      "title": "VERIFY: Phase 2 — Core update command",
+      "type": "verify",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T4",
+      "phase": 3,
+      "title": "Change update notice string in src/services/update-check.ts",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V3",
+      "phase": 3,
+      "title": "VERIFY: Phase 3 — Update notice polish",
+      "type": "verify",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T5",
+      "phase": 4,
+      "title": "Unit tests for install-config.json write",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T6",
+      "phase": 4,
+      "title": "Unit tests for runUpdate()",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V4",
+      "phase": 4,
+      "title": "VERIFY: Phase 4 — Tests",
+      "type": "verify",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}
