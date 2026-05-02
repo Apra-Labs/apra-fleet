@@ -75,8 +75,8 @@
       "phase": 4,
       "title": "Unit tests for runUpdate()",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Verified up-to-date, newer available, and config fallback paths."
     },
     {
       "id": "V4",
