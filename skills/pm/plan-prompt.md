@@ -12,7 +12,11 @@ You are generating an implementation plan. Read requirements.md for what needs t
 2. Read existing tests — understand conventions and framework
 3. `git log --oneline -20` — recent changes in the area
 4. List assumptions about how the code works
-5. Verify each assumption by reading actual code
+5. For every assumption you listed, answer: "How do I know this is currently true?" Then verify it.
+   Two categories to check:
+   - **Existence:** Does the thing you are building on top of actually exist right now? (e.g. a named entity, interface, resource, capability, configuration, or path your plan depends on)
+   - **Accessibility:** Can the part of the system that needs it actually reach it? (e.g. is it exposed, connected, permitted, or in scope for the component that will use it)
+   If you cannot verify an assumption, it becomes a risk register entry, not a task precondition.
 6. Report: what you found, what patterns exist, what constraints matter
 
 ### PHASE 1 — DRAFT
@@ -35,10 +39,11 @@ Rules:
   - When the PM creates progress.json from the plan, it copies each task's tier into `tasks[i].tier`
   - During dispatch, the PM reads `tasks[i].tier` and passes `model: <tier>` to `execute_prompt` for doer dispatches
   - **Constraint:** Reviewer dispatches always use `model: premium` regardless of the task tier — this is not configurable by the planner
-- **Monotonically non-decreasing tiers within a phase:** Within a phase, order tasks from cheapest to most expensive tier (cheap → standard → premium). Never downgrade mid-phase. If a cheap task logically follows a premium task, place it in a new phase.
+- **The plan is the elaboration, not the summary:** requirements.md uses terse human language with intentional ambiguity. PLAN.md must resolve that ambiguity — every edge case decided, every behaviour specified, every acceptance criterion precise enough that two developers would implement the same thing. Referencing requirements.md for background is fine; deferring a decision to it is not.
+- **Monotonically non-decreasing tiers within a phase:** Within a phase, order tasks cheap → standard → premium. The PM resumes the same session across tasks in a phase — a premium task can build a large context that a cheap model cannot load. The PM may group consecutive same-tier tasks into a single dispatch streak; tier transitions trigger a new dispatch. If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary. Cross-phase tier order does not matter — each phase starts a fresh session.
   ```
   cheap → cheap → standard → standard → premium → VERIFY  ✅
-  cheap → standard → cheap → VERIFY  ❌  (downgrade — split into two phases)
+  cheap → standard → cheap → VERIFY  ❌  (downgrade within phase — split into two phases)
   ```
 
 ### PHASE 2 — FRONT-LOAD FOUNDATIONS
@@ -66,6 +71,9 @@ Check your draft against these failure modes:
 - Missing "done" criteria — how does the member know the task is complete?
 - Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?
 - Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point.
+- Untracked work — re-read every task description, note, and comment in your draft. Does any sentence say "X will also need to change", "X must be updated", or "X is a prerequisite"? If yes and there is no task that does that work, either add the task or explicitly state it is out of scope.
+- Missing blocker — does this task depend on anything that another task produces or puts in place? If yes, that task must be listed in Blockers, even if the phase order implies it.
+- Tier downgrade within a phase — does any task have a lower tier than the task before it in the same phase? If yes, either reorder (if dependencies allow) or split the phase at the downgrade point. Cross-phase tier order does not matter — each phase starts with a fresh session.
 
 ### PHASE 4 — REFINE
 
