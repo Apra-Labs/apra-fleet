@@ -90,6 +90,17 @@ const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
 
 const inFlightAgents = new Set<string>();
 
+// Exit paths from executePrompt — all must clear busy state (inFlightAgents.delete + writeStatusline):
+// (a) normal success: result.code === 0 → line 219 writes statusline, finally deletes
+// (b) non-zero exit from execCommand: result.code !== 0 → line 202 returns, finally deletes
+// (c) exception in try block (auth, network, crash) → line 232 catches, finally deletes
+// (d) AbortSignal/MCP client cancellation → abortHandler kills PID, execCommand resolves with code, finally deletes
+// (e) stale session retry: detected line 180, retried line 184, finally deletes if fail/succeed
+// (f) server overload retry: detected line 190, retried line 195, finally deletes if fail/succeed
+// (g) early returns before inFlightAgents.add (lines 101, 106, 110): busy state never entered
+// Currently broken: writeStatusline() clear only in success path (line 219), not in catch or finally.
+// Must move writeStatusline() to finally block so ALL paths clear statusline to idle.
+
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
@@ -216,8 +227,6 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       });
     }
 
-    writeStatusline();
-
     let output = `${deprecationWarning}📋 Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
@@ -229,7 +238,11 @@ Tokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}`
 session: ${parsed.sessionId}`;
     return output;
   } catch (err: any) {
-    writeStatusline(new Map([[agent.id, 'offline']]));
+    // Only mark offline for genuine SSH/network connection failures, not for cancellations
+    const isConnectionError = err.message && /ssh|network|timeout|econnrefused|ehostunreach/i.test(err.message);
+    if (isConnectionError) {
+      writeStatusline(new Map([[agent.id, 'offline']]));
+    }
     _epError = err.message;
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
@@ -238,6 +251,8 @@ session: ${parsed.sessionId}`;
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);
+    // Clear busy state from statusline unconditionally on all exit paths
+    writeStatusline();
     inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
