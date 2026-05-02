@@ -59,7 +59,7 @@ export async function checkForUpdate(): Promise<void> {
 export function getUpdateNotice(): string | null {
   if (!cachedUpdate) return null;
   const { latest, installed } = cachedUpdate;
-  return `ℹ️ apra-fleet ${latest} is available (installed: ${installed}). Run \`/pm deploy apra-fleet\` to update.`;
+  return `ℹ️ apra-fleet ${latest} is available (installed: ${installed}). Run \`apra-fleet update\` to update.`;
 }
 
 /** Inject a cached update directly (test helper). */
