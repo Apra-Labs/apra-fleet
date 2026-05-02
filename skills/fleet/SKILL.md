@@ -133,6 +133,8 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 3. execute_command on member: tar -xzf src.tar.gz && rm src.tar.gz
 ```
 
+**Cross-OS transfers:** Both `send_files` and `receive_files` must work bidirectionally for Linux↔Windows transfers (fleet host on Linux, member on Windows, and vice versa).
+
 ## Permissions
 
 `compose_permissions` produces provider-native config automatically. See `permissions.md` for:
