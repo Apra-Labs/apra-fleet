@@ -384,6 +384,61 @@ describe('composePermissions — fleet-mcp disabled in member config (#151)', ()
 });
 
 // ---------------------------------------------------------------------------
+// Task T4: deliverConfigFile() BOM-free Windows write (#219)
+// ---------------------------------------------------------------------------
+
+describe('deliverConfigFile — Windows BOM-free write (T4)', () => {
+  it('uses WriteAllText with UTF8Encoding($false) on Windows, not Set-Content', async () => {
+    const member = makeTestAgent({ friendlyName: 'gemini-win', llmProvider: 'gemini', os: 'windows' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const settingsWrite = allCmds.find(cmd => cmd.includes('.gemini\\settings.json') || cmd.includes('.gemini/settings.json'));
+    expect(settingsWrite).toBeDefined();
+    expect(settingsWrite).toContain('WriteAllText');
+    expect(settingsWrite).toContain('UTF8Encoding($false)');
+    expect(settingsWrite).not.toContain('Set-Content');
+    expect(settingsWrite).not.toContain('-Encoding UTF8');
+  });
+
+  it('uses heredoc form (cat >) on Linux', async () => {
+    const member = makeTestAgent({ friendlyName: 'gemini-linux', llmProvider: 'gemini', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const settingsWrite = allCmds.find(cmd => cmd.includes('cat >') && cmd.includes('.gemini/settings.json'));
+    expect(settingsWrite).toBeDefined();
+    expect(settingsWrite).toContain('FLEET_PERMS_EOF');
+    expect(settingsWrite).not.toContain('WriteAllText');
+  });
+
+  it('doubles single quotes in content for PowerShell string safety on Windows', async () => {
+    const member = makeTestAgent({ friendlyName: 'gemini-win-quotes', llmProvider: 'gemini', os: 'windows' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    // Grant a permission containing a single quote — it must be double-escaped in the PowerShell write command
+    await composePermissions({
+      member_id: member.id,
+      role: 'doer',
+      grant: ["Bash(node 'exec':*)"],
+    });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const tomlWrite = allCmds.find(cmd => cmd.includes('fleet.toml'));
+    expect(tomlWrite).toBeDefined();
+    // Single quote must be doubled for PowerShell single-quoted strings
+    expect(tomlWrite).toContain("node ''exec''");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Fresh/empty permissions.json — no crash (#88)
 // ---------------------------------------------------------------------------
 

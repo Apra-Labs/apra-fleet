@@ -337,6 +337,26 @@ describe('GeminiProvider', () => {
     const mcpServers = settings.mcpServers as Record<string, unknown>;
     expect(mcpServers).toEqual({});
   });
+
+  // Task T5: Gemini MCP exclusion tests
+  it('buildPromptCommand includes --allowed-mcp-server-names to prevent fleet MCP loading (T5)', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS });
+    expect(cmd).toContain('--allowed-mcp-server-names');
+  });
+
+  it('fleet TOML does not reference apra-fleet in the allow list (T5)', () => {
+    const [, toml] = p.composePermissionConfig('doer', ['Read(*)', 'Write(*)']) as [Record<string, unknown>, string];
+    expect(typeof toml).toBe('string');
+    expect(toml).not.toContain('apra-fleet');
+    expect(toml).toContain('[policy]');
+    expect(toml).toContain('Read(*)');
+  });
+
+  it('fleet TOML does not reference apra-fleet in reviewer allow list (T5)', () => {
+    const [, toml] = p.composePermissionConfig('reviewer', ['Read(*)']) as [Record<string, unknown>, string];
+    expect(toml).not.toContain('apra-fleet');
+    expect(toml).toContain('[policy]');
+  });
 });
 
 // ─── CodexProvider ────────────────────────────────────────────────────────────
