@@ -1,9 +1,9 @@
-# Review: feat/gemini-mcp-fix (Phases 1–3)
+# Review: feat/gemini-mcp-fix (Phases 1–4)
 
 **Reviewer:** fleet-reviewer  
 **Date:** 2026-05-02  
-**Branch:** `feat/gemini-mcp-fix` (commits `da829b6..6e17319`)  
-**Verdict:** APPROVED with minor notes
+**Branch:** `feat/gemini-mcp-fix` (commits `da829b6..9aa0382`)  
+**Verdict:** APPROVED
 
 ---
 
@@ -88,6 +88,66 @@ The implementation matches the plan and requirements:
 - MCP exclusion uses the most reliable mechanism (CLI flag) with a settings-level fallback
 - Code is clean, comments are accurate, build passes
 
-The deferred read-merge TODO (preserving existing OAuth settings during `deliverConfigFile`) remains open but is pre-existing and documented. Tests (T4, T5) will be reviewed separately.
+The deferred read-merge TODO (preserving existing OAuth settings during `deliverConfigFile`) remains open but is pre-existing and documented.
 
-**APPROVED** — ready for test phase.
+---
+
+## T4: Unit tests for BOM-free write (`tests/compose-permissions.test.ts`)
+
+**Status:** Complete. All plan requirements covered.
+
+Test cases in `deliverConfigFile — Windows BOM-free write (T4)` describe block (lines 390–439):
+
+| Plan requirement | Test case | Verified |
+|---|---|---|
+| Windows uses `UTF8Encoding($false)`, not `Set-Content -Encoding UTF8` | `uses WriteAllText with UTF8Encoding($false) on Windows, not Set-Content` | Yes — asserts `WriteAllText` and `UTF8Encoding($false)` present, `Set-Content` and `-Encoding UTF8` absent |
+| Linux heredoc path unchanged | `uses heredoc form (cat >) on Linux` | Yes — asserts `cat >`, `FLEET_PERMS_EOF` present, `WriteAllText` absent |
+| Single-quote escaping correct | `doubles single quotes in content for PowerShell string safety on Windows` | Yes — grants a permission containing a single quote (`Bash(node 'exec':*)`), asserts `node ''exec''` in the TOML write command |
+
+**Quality notes:**
+- Tests exercise the full `composePermissions` → `deliverConfigFile` code path via the mocked `execCommand`, which is the right level of integration — they test the actual PowerShell command string that would be executed.
+- The single-quote test is well-designed: it injects a quote through the `grant` parameter, which flows through TOML generation and then through `deliverConfigFile`'s escaping logic, covering the full pipeline.
+
+**No issues.**
+
+---
+
+## T5: Unit tests for Gemini MCP exclusion (`tests/providers.test.ts`)
+
+**Status:** Complete. All plan requirements covered.
+
+Test cases added to the `GeminiProvider` describe block (lines 329–359):
+
+| Plan requirement | Test case | Verified |
+|---|---|---|
+| `composePermissionConfig` returns `mcpServers: {}` (doer) | `composePermissionConfig disables all MCP servers via mcpServers: {} for doer (#219)` | Yes — asserts `mcpServers` equals `{}` |
+| `composePermissionConfig` returns `mcpServers: {}` (reviewer) | `composePermissionConfig disables all MCP servers via mcpServers: {} for reviewer (#219)` | Yes — same assertion for reviewer role |
+| `buildPromptCommand` includes `--allowed-mcp-server-names` | `buildPromptCommand includes --allowed-mcp-server-names to prevent fleet MCP loading (T5)` | Yes — asserts flag present in command string |
+| `apra-fleet` absent from TOML allow list | `fleet TOML does not reference apra-fleet in the allow list (T5)` | Yes — passes `['Read(*)', 'Write(*)']` as allow list, asserts TOML does not contain `apra-fleet` |
+| Same for reviewer | `fleet TOML does not reference apra-fleet in reviewer allow list (T5)` | Yes — same assertion with reviewer role |
+
+**Quality notes:**
+- The TOML tests pass explicit `allow` arrays to confirm that granted permissions appear in the output but `apra-fleet` never leaks in. Good boundary check.
+- Both doer and reviewer roles are tested for each assertion — complete coverage of the role matrix.
+- The `--allowed-mcp-server-names` test is at the `buildPromptCommand` unit level, which is the right place (command construction, not integration).
+
+**No issues.**
+
+---
+
+## Test run result
+
+`npm test`: **63 test files passed, 1113 tests passed, 6 skipped** (all pre-existing skips). No new failures introduced. One flaky pre-existing failure in `session-lifecycle.test.ts` (`stop_prompt kills stored PID`) appeared intermittently but is unrelated to this branch.
+
+---
+
+## Overall Assessment (Phases 1–4)
+
+All five tasks (T1–T5) are complete and correct:
+- Research drove the fix approach (T1)
+- BOM fix is minimal and correct (T2), with full test coverage (T4)
+- MCP exclusion uses dual-layer defence — CLI flag + settings override (T3), with comprehensive tests (T5)
+- All plan-specified edge cases are covered: single-quote escaping, Linux path unchanged, `--allowed-mcp-server-names` in command, `apra-fleet` absent from TOML allow list
+- Build and tests pass clean
+
+**APPROVED** — ready to merge.
