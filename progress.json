@@ -33,8 +33,8 @@
       "phase": 2,
       "title": "Wire update into src/index.ts",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Wired update into index.ts and added --help."
     },
     {
       "id": "V2",
