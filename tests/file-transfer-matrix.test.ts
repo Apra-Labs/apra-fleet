@@ -1,7 +1,7 @@
 // File-transfer cross-OS matrix.
 // Any change to src/tools/send-files.ts, src/tools/receive-files.ts,
 // src/services/strategy.ts, or src/services/sftp.ts MUST keep this matrix passing.
-// If you add a new (driver, target) combination, add a row here first.
+// If you add a new (fleet host, target) combination, add a row here first.
 // Bug history: PR #97 silently broke Linux→Windows transfers because no
 // test in this matrix existed for that combination — see issue #220.
 
@@ -83,12 +83,12 @@ describe('File-transfer cross-OS matrix', () => {
     });
   });
 
-  // ── Linux driver → remote Linux member (SFTP) ────────────────────────────
+  // ── Linux fleet host → remote Linux member (SFTP) ────────────────────────────
   //
   // | Driver | Target      | send_files | receive_files |
   // | Linux  | remote Linux| required   | required      |
 
-  describe('Linux driver → remote Linux member (SFTP)', () => {
+  describe('Linux fleet host → remote Linux member (SFTP)', () => {
     const agent = () => makeTestAgent({ workFolder: '/home/user/project' });
 
     it('send_files: no dest_subdir → uploads to workFolder root', async () => {
@@ -128,14 +128,14 @@ describe('File-transfer cross-OS matrix', () => {
     });
   });
 
-  // ── Linux driver → remote Windows member (SFTP) ──────────────────────────
+  // ── Linux fleet host → remote Windows member (SFTP) ──────────────────────────
   //
   // | Driver | Target         | send_files | receive_files |
   // | Linux  | remote Windows | required   | required      |   ← was missing; see issue #220
   //
   // All 5 repro cases from requirements.md are covered below.
 
-  describe('Linux driver → remote Windows member (SFTP)', () => {
+  describe('Linux fleet host → remote Windows member (SFTP)', () => {
     const WIN_WORK_FOLDER = 'C:\\Users\\Kashyap\\bkp\\source\\repos\\incytes-app-30';
     const agent = () => makeTestAgent({ workFolder: WIN_WORK_FOLDER });
 
@@ -218,7 +218,7 @@ describe('File-transfer cross-OS matrix', () => {
     });
   });
 
-  // ── Linux driver → local Linux member ────────────────────────────────────
+  // ── Linux fleet host → local Linux member ────────────────────────────────────
   //
   // | Driver | Target      | send_files | receive_files |
   // | Linux  | local Linux | required   | required      |
@@ -226,12 +226,12 @@ describe('File-transfer cross-OS matrix', () => {
   // Local strategy uses fs.copyFile, not SFTP. Covered by existing tests in
   // tests/send-files-collision.test.ts and tests/receive-files.test.ts.
 
-  // ── Windows driver → * ───────────────────────────────────────────────────
+  // ── Windows fleet host → * ───────────────────────────────────────────────────
   //
   // These combinations require a Windows CI runner. Marked TODO until a
   // windows-latest GitHub Actions job is wired up for the fleet test suite.
 
-  describe.todo('Windows driver → local Windows member — needs Windows runner');
-  describe.todo('Windows driver → remote Linux member (SFTP) — needs Windows runner');
-  describe.todo('Windows driver → remote Windows member (SFTP) — needs Windows runner');
+  describe.todo('Windows fleet host → local Windows member — needs Windows runner');
+  describe.todo('Windows fleet host → remote Linux member (SFTP) — needs Windows runner');
+  describe.todo('Windows fleet host → remote Windows member (SFTP) — needs Windows runner');
 });

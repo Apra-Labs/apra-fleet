@@ -2,12 +2,12 @@
 
 ## Cross-OS File Transfer Matrix
 
-The `file-transfer-matrix.test.ts` file contains a comprehensive test matrix covering all (driver OS, target member type) combinations for file transfer operations. This matrix is **authoritative** for validating changes to the file transfer code path.
+The `file-transfer-matrix.test.ts` file contains a comprehensive test matrix covering all (fleet host OS, target member type) combinations for file transfer operations. This matrix is **authoritative** for validating changes to the file transfer code path.
 
 ### Why This Matrix Exists
 
 The file transfer code (`send_files`, `receive_files`, and their underlying SFTP transport) must work correctly across all combinations of:
-- Driver OS (Linux, Windows, macOS)
+- Fleet host OS (Linux, Windows, macOS)
 - Target member type (local, remote Linux via SSH, remote Windows via SSH, cloud)
 - Path styles (relative, absolute Linux `/paths`, absolute Windows `C:\paths`, and mixed)
 
