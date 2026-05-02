@@ -42,8 +42,8 @@
       "title": "VERIFY: Phase 2 — Core update command",
       "type": "verify",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Verified CLI wiring and update check logic."
     },
     {
       "id": "T4",
