@@ -3,7 +3,7 @@
   "branch": "feat/gemini-mcp-fix",
   "lastDispatchedPhase": null,
   "tasks": [
-    { "id": "T1", "phase": 1, "title": "Verify Gemini settings.json MCP exclusion syntax on a live member", "tier": "cheap", "status": "pending" },
+    { "id": "T1", "phase": 1, "title": "Verify Gemini settings.json MCP exclusion syntax on a live member", "tier": "cheap", "status": "completed", "notes": "Research findings written to docs/research-219-gemini-mcp.md — identifies mismatch in config structure (install uses mcpServers, exclusion attempts mcp.excluded) and documents 3 questions requiring live member verification" },
     { "id": "T2", "phase": 2, "title": "Replace Set-Content -Encoding UTF8 with BOM-free write in deliverConfigFile()", "tier": "cheap", "status": "pending" },
     { "id": "T3", "phase": 3, "title": "Fix MCP exclusion in composePermissionConfig() based on research", "tier": "standard", "status": "pending", "blockers": ["T1"] },
     { "id": "T4", "phase": 4, "title": "Unit tests for deliverConfigFile() BOM-free write", "tier": "standard", "status": "pending", "blockers": ["T2"] },
