@@ -84,8 +84,8 @@
       "title": "VERIFY: Phase 4 — Tests",
       "type": "verify",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Verified build and all 1013 tests pass, including new unit tests for install persistence and runUpdate."
     }
   ]
 }
