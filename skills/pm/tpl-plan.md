@@ -53,17 +53,20 @@
 |------|--------|------------|
 | {{risk}} | {{high/med/low}} | {{mitigation}} |
 
+Cover at minimum: backward compat (changed interfaces, renamed items), security (trust boundaries, input validation), external constraints (no new dependencies, min runtime version), partial failure (one path works, another doesn't).
+
 ## Phase Sizing Rules
 
 **Phase boundaries by cohesion, not count.** A phase is a coherent unit of work that produces a reviewable, testable increment. Group tasks into a phase when they share a data model, code path, or design decision — splitting them would produce an incoherent intermediate state or require touching the same code twice. Place a VERIFY at the natural completion boundary of that unit, not at an arbitrary task count. Phases may have 4-5 tasks (a coherent subsystem) or just 1-2 (a genuinely isolated change).
 
-**Monotonically non-decreasing tiers within a phase.** Within a phase, order tasks from cheapest to most expensive tier (cheap → standard → premium). Never downgrade mid-phase. If a cheap task logically follows a premium task, place it in a new phase.
+**Monotonically non-decreasing tiers within a phase.** Within a phase, order tasks cheap → standard → premium. The PM resumes the same session across tasks in a phase — a premium task can build a large context that a cheap model cannot load. The PM may group consecutive same-tier tasks into a single dispatch streak; tier transitions trigger a new dispatch. If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary rather than violating the ordering rule. Cross-phase tier order does not matter — each phase always starts a fresh session.
 ```
 cheap → cheap → standard → standard → premium → VERIFY  ✅
-cheap → standard → cheap → VERIFY  ❌  (downgrade — split into two phases)
+cheap → standard → cheap → VERIFY  ❌  (downgrade within phase — split into two phases)
 ```
 
 ## Notes
 - Each task should result in a git commit
 - Verify tasks are checkpoints — stop and report after each one
 - Base branch: {{base_branch}}
+- Implementation branch: {{impl_branch}}
