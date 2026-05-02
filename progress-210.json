@@ -1,0 +1,82 @@
+{
+  "project": "apra-fleet #210 — Members stuck in busy state",
+  "branch": "plan/issue-210",
+  "base_branch": "main",
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": 1,
+      "title": "Trace and document every exit path in execute-prompt.ts",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Added comprehensive comment block documenting all 7 exit paths: success, non-zero code, exception, AbortSignal, stale session retry, server overload retry, early returns."
+    },
+    {
+      "id": "T2",
+      "phase": 1,
+      "title": "Move writeStatusline() clear to finally block",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Moved writeStatusline() clear to finally block (line 255). Updated catch block to only mark offline for genuine SSH/network errors, not cancellations. All exit paths now properly clear busy state."
+    },
+    {
+      "id": "V1",
+      "phase": 1,
+      "title": "VERIFY: Phase 1 — Audit all exit paths",
+      "type": "verify",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T3",
+      "phase": 2,
+      "title": "Guard against PID-less cancellation leaving stale state",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T4",
+      "phase": 2,
+      "title": "Defend against re-dispatch race after stop_prompt",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V2",
+      "phase": 2,
+      "title": "VERIFY: Phase 2 — PID capture race and stop_prompt hardening",
+      "type": "verify",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T5",
+      "phase": 3,
+      "title": "Unit tests for busy state clear on all exit paths",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T6",
+      "phase": 3,
+      "title": "Unit tests for stop_prompt busy-clear",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V3",
+      "phase": 3,
+      "title": "VERIFY: Phase 3 — Tests",
+      "type": "verify",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}
