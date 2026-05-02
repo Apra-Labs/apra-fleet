@@ -31,7 +31,7 @@ export class GeminiProvider implements ProviderAdapter {
     const { folder, promptFile, sessionId, unattended, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
-    let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json`;
+    let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json --allowed-mcp-server-names ""`;
     const rf = buildResumeFlag(sessionId);
     if (rf) {
       cmd += ` ${rf}`;
@@ -125,11 +125,10 @@ export class GeminiProvider implements ProviderAdapter {
 
   composePermissionConfig(role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
     // settings.json: merge mode into existing content — do not overwrite.
-    // TODO (Task 2.1): read existing settings.json via cmds.readRemoteJson before merging,
-    //   so that oauth-personal and other user settings are preserved.
+    // mcpServers: {} disables all MCP servers (overrides global registration of apra-fleet).
+    // Note: caller is responsible for reading/merging with existing content to preserve oauth-personal and other user settings.
     const mode = role === 'doer' ? 'auto_edit' : 'default';
-    // For now, carry only the mode field; caller is responsible for merging with existing content.
-    const settings: Record<string, unknown> = { mode, mcp: { excluded: ['apra-fleet'] } };
+    const settings: Record<string, unknown> = { mode, mcpServers: {} };
 
     // fleet.toml: policy rules
     let toml = `[policy]\nmode = "${mode}"\ndescription = "Fleet ${role} permissions"\n`;
