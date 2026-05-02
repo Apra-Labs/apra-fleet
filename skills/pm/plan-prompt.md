@@ -70,7 +70,6 @@ Check your draft against these failure modes:
 - Wrong ordering — could the riskiest assumption be validated earlier?
 - Missing "done" criteria — how does the member know the task is complete?
 - Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?
-- Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point.
 - Untracked work — re-read every task description, note, and comment in your draft. Does any sentence say "X will also need to change", "X must be updated", or "X is a prerequisite"? If yes and there is no task that does that work, either add the task or explicitly state it is out of scope.
 - Missing blocker — does this task depend on anything that another task produces or puts in place? If yes, that task must be listed in Blockers, even if the phase order implies it.
 - Tier downgrade within a phase — does any task have a lower tier than the task before it in the same phase? If yes, either reorder (if dependencies allow) or split the phase at the downgrade point. Cross-phase tier order does not matter — each phase starts with a fresh session.
