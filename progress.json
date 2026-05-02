@@ -17,8 +17,8 @@
       "title": "VERIFY: Phase 1 — Install option persistence",
       "type": "verify",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Verified install-config.json persistence with existing install tests."
     },
     {
       "id": "T2",
