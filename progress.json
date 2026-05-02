@@ -59,8 +59,8 @@
       "title": "VERIFY: Phase 3 — Update notice polish",
       "type": "verify",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Verified build and all tests pass."
     },
     {
       "id": "T5",
