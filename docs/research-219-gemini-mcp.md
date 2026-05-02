@@ -143,3 +143,34 @@ Reasoning:
 | Per-project overrides global | Yes (implicit) | ❌ No | Task 3 |
 | `apra-fleet` in global settings | Yes (from install) | ⚠️ Likely | Task 3 |
 | BOM in Windows write | UTF-8 with BOM | ✅ Yes (confirmed bug) | Task 2 |
+
+---
+
+## Live Verification Results (fleet-dev2, Gemini CLI 0.40.1)
+
+### Q1 — Is apra-fleet in global settings?
+YES. `~/.gemini/settings.json` on fleet-dev2 contains:
+```json
+"mcpServers": {
+  "apra-fleet": {
+    "command": "C:\\Users\\akhil\\.apra-fleet\\bin\\apra-fleet.exe",
+    "args": [],
+    "trust": true
+  }
+}
+```
+This means every Gemini session on any member where apra-fleet was installed loads apra-fleet.exe automatically.
+
+### Q2 — Correct syntax for MCP exclusion?
+`mcp: { excluded: [...] }` is **WRONG** — no such field exists in Gemini settings.
+
+Confirmed mechanisms:
+1. **`--allowed-mcp-server-names <names>`** — CLI flag that whitelists specific MCP servers per session. Most reliable. Would need to be passed when fleet launches `gemini -p`.
+2. **Remove from `mcpServers`** — if per-project `.gemini/settings.json` can override global `mcpServers`, writing `"mcpServers": {}` per-project would suppress all MCP servers for that project.
+3. **Per-project `permissions.allow`** — could omit `mcp__apra-fleet__*` to deny tool access even if server is loaded.
+
+### Q3 — Does per-project override global?
+Unknown from current data. The per-project `.gemini/settings.json` on fleet-dev2 only has `{"mode": "auto_edit"}` — no MCP config — so merge behaviour is untested.
+
+### Recommended fix for T3
+Option 1 (`--allowed-mcp-server-names`) is the most reliable: pass an empty or non-fleet list when fleet launches `gemini -p` on members. This requires changing `src/providers/gemini.ts` `buildPromptCommand()` to add the flag, rather than writing settings.json. The compose_permissions fix becomes: write `"mcpServers": {}` (remove apra-fleet) in the per-project settings AND investigate if per-project overrides global.
