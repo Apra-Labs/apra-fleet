@@ -600,6 +600,12 @@ ${killHint}
   // Finalize permissions
   mergePermissions(paths);
 
+  // Write install-config.json
+  const installConfig = { llm, skill: skillMode };
+  const configDir = path.join(FLEET_BASE, 'data');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'install-config.json'), JSON.stringify(installConfig, null, 2), { mode: 0o600 });
+
   // --- Done ---
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
