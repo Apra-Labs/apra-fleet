@@ -326,18 +326,16 @@ describe('GeminiProvider', () => {
     expect(p.supportsApiKey()).toBe(true);
   });
 
-  it('composePermissionConfig suppresses fleet-mcp via mcp.excluded for doer (#151)', () => {
+  it('composePermissionConfig disables all MCP servers via mcpServers: {} for doer (#219)', () => {
     const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcp = settings.mcp as Record<string, unknown>;
-    expect(Array.isArray(mcp?.excluded)).toBe(true);
-    expect((mcp.excluded as string[]).includes('apra-fleet')).toBe(true);
+    const mcpServers = settings.mcpServers as Record<string, unknown>;
+    expect(mcpServers).toEqual({});
   });
 
-  it('composePermissionConfig suppresses fleet-mcp via mcp.excluded for reviewer (#151)', () => {
+  it('composePermissionConfig disables all MCP servers via mcpServers: {} for reviewer (#219)', () => {
     const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcp = settings.mcp as Record<string, unknown>;
-    expect(Array.isArray(mcp?.excluded)).toBe(true);
-    expect((mcp.excluded as string[]).includes('apra-fleet')).toBe(true);
+    const mcpServers = settings.mcpServers as Record<string, unknown>;
+    expect(mcpServers).toEqual({});
   });
 });
 

@@ -118,9 +118,9 @@ describe('composePermissions — Gemini proactive', () => {
     // settings.json should have auto_edit mode for doer
     const settingsWrite = writes.find(cmd => cmd.includes('.gemini/settings.json'))!;
     expect(settingsWrite).toContain('auto_edit');
-    // settings.json must suppress fleet-mcp via mcp.excluded (#151)
-    expect(settingsWrite).toContain('apra-fleet');
-    expect(settingsWrite).toContain('excluded');
+    // settings.json must disable all MCP servers via mcpServers: {} (#219)
+    expect(settingsWrite).toContain('mcpServers');
+    expect(settingsWrite).toContain('{}');
 
     // fleet.toml should have [policy] section
     const tomlWrite = writes.find(cmd => cmd.includes('fleet.toml'))!;
@@ -140,9 +140,9 @@ describe('composePermissions — Gemini proactive', () => {
 
     const settingsWrite = writes.find(cmd => cmd.includes('.gemini/settings.json'))!;
     expect(settingsWrite).toContain('"default"');
-    // settings.json must suppress fleet-mcp via mcp.excluded (#151)
-    expect(settingsWrite).toContain('apra-fleet');
-    expect(settingsWrite).toContain('excluded');
+    // settings.json must disable all MCP servers via mcpServers: {} (#219)
+    expect(settingsWrite).toContain('mcpServers');
+    expect(settingsWrite).toContain('{}');
   });
 });
 
