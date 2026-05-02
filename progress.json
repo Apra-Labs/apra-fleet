@@ -50,8 +50,8 @@
       "phase": 3,
       "title": "Change update notice string in src/services/update-check.ts",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Updated update notice string."
     },
     {
       "id": "V3",
