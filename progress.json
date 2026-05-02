@@ -67,8 +67,8 @@
       "phase": 4,
       "title": "Unit tests for install-config.json write",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Verified default, custom, and shorthand flag persistence."
     },
     {
       "id": "T6",
