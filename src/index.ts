@@ -15,16 +15,19 @@ if (arg === '--help' || arg === '-h') {
   console.log(`apra-fleet ${serverVersion}
 
 Usage:
-  apra-fleet                  Start MCP server (stdio)
-  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
-  apra-fleet install --skill all       Same as bare install (all skills)
-  apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
-  apra-fleet install --skill none      Skip skill installation
-  apra-fleet install --no-skill        Same as --skill none
-  apra-fleet auth <name>      Provide password for pending registration (auto-launched)
-  apra-fleet --version        Print version
-  apra-fleet --help           Show this help`);
+  apra-fleet                           Start MCP server (stdio)
+  apra-fleet install                   Install binary, hooks, MCP server, and skills
+    --llm <provider>                   Target LLM provider: claude (default), gemini, codex, copilot
+    --skill all|fleet|pm|none          Which skills to install (default: all)
+    --no-skill                         Skip skill installation
+    --force                            Stop running server before installing
+  apra-fleet update                    Update to the latest release
+    --check                            Check for updates without installing
+  apra-fleet auth <name>               Provide credentials for a pending member operation
+  apra-fleet --version                 Print version
+  apra-fleet --help                    Show this help
+
+Run 'apra-fleet <subcommand> --help' for detailed usage.`);
   process.exit(0);
 }
 
@@ -37,9 +40,22 @@ if (arg === 'install') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
     .catch(err => { logError('cli', `Auth failed: ${err.message}`); process.exit(1); });
-} else {
+} else if (arg === 'update') {
+  const restArgs = process.argv.slice(2);
+  if (restArgs.includes('--check')) {
+    import('./services/update-check.js')
+      .then(m => m.runUpdateCheck())
+      .catch(err => { logError('cli', `Update check failed: ${err.message}`); process.exit(1); });
+  } else {
+    console.log(`apra-fleet update — coming soon.\nTo update manually, download the latest release from:\n  https://github.com/Apra-Labs/apra-fleet/releases`);
+    process.exit(0);
+  }
+} else if (arg === undefined) {
   // Default: start MCP server
   startServer();
+} else {
+  console.error(`apra-fleet: unknown command '${arg}'\nRun 'apra-fleet --help' for usage.`);
+  process.exit(1);
 }
 
 async function startServer() {

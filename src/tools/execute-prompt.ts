@@ -154,7 +154,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
 
-  const scope = new LogScope('execute_prompt', `[${resolvedModel}] timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
+  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
   
   const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
 

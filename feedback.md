@@ -1,111 +1,83 @@
-# #182 Tier-Aware Dispatch — Code Review
+# Review: commit 390c4ca — `fix: unknown subcommand error, update --check, secret in help`
 
-**Reviewer:** fleet-rev
-**Date:** 2026-04-28 18:30:00+00:00
-**Verdict:** APPROVED
-
----
-
-## Phase 1 Review (T1–T4)
-
-### T1: Replace count rule with cohesion rule in plan-prompt.md — PASS
-
-All three instances of the count-based rule have been replaced:
-
-1. **Line 27 (DRAFT rules):** "2-3 work tasks per phase, then a VERIFY checkpoint" replaced with the full cohesion rule: "Phase boundaries by cohesion, not count — a phase is a coherent unit of work that produces a reviewable, testable increment..." — matches requirements.md §1 verbatim. PASS.
-2. **Line 67 (SELF-CRITIQUE):** "Checkpoints too far apart — more than 3 work tasks without a VERIFY?" replaced with "Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?" — correctly reframes the failure mode in cohesion terms. PASS.
-3. **Line 75 (REFINE):** "VERIFY checkpoint every 2-3 work tasks" replaced with "VERIFY checkpoint at the natural completion boundary of each cohesive phase" — consistent with the cohesion model. PASS.
-
-Grep for "2-3 work tasks" and "more than 3 work tasks" across all 5 PM skill files returns zero matches. The count-based rule is fully eradicated.
-
-### T2: Add monotonic tier constraint to plan-prompt.md — PASS
-
-- **Lines 38–42 (DRAFT rules):** Monotonic tier constraint added with exact wording from requirements.md §2, including ✅/❌ examples. Placed correctly after the tier assignment block. PASS.
-- **Line 68 (SELF-CRITIQUE):** "Tier downgrade mid-phase — does any phase have a cheaper task after a more expensive one? Split at the downgrade point." — correctly adds the corresponding failure mode. PASS.
-
-### T3: Add cohesion rule and monotonic tier constraint to tpl-plan.md — PASS
-
-- **Lines 56–64:** New "Phase Sizing Rules" section between Risk Register and Notes. Contains:
-  - Cohesion rule with wording consistent with plan-prompt.md (minor expected capitalization: sentence-initial vs mid-sentence after a dash). PASS.
-  - Monotonic tier constraint with identical wording and examples. PASS.
-
-### T4: Update tpl-reviewer-plan.md checklist — PASS
-
-- **Item 6:** Replaced count-based check with cohesion boundary check. PASS.
-- **Item 7:** New monotonic tier check added. PASS.
-- **Items 8–13:** Correctly renumbered from original 7–12. PASS.
-- No reference to "2-3" task count remains. PASS.
-
-### V1: Cross-file consistency — PASS
-
-| Check | Result |
-|-------|--------|
-| Zero instances of "2-3 work tasks" count rule | PASS — grep returns 0 matches across all 5 files |
-| Cohesion rule in plan-prompt.md and tpl-plan.md | PASS — wording matches |
-| Monotonic tier constraint in plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md | PASS — identical substance |
-| tpl-reviewer-plan.md has both new checklist items | PASS — items 6 and 7 |
-| No contradictions between files | PASS |
+**Branch:** `fixes/after_v0.1.8`
+**Verdict: CHANGES NEEDED**
 
 ---
 
-## Phase 2 Review (T5–T7)
+## Findings
 
-### T5: Per-task dispatch algorithm in single-pair-sprint.md — PASS
+### 1. `src/index.ts` — Unknown subcommand error handling
 
-1. **Per-Task Dispatch Algorithm section (lines 50–60):** New section with pseudocode reading `planned.json` + `progress.json`, extracting `nextTask.tier`, deriving `resume` from `nextTask.phase === lastDispatchedPhase`. Matches requirements.md §3 exactly. PASS.
-2. **Execution Loop (lines 64–71):** Updated from phase-level dispatch ("resume=false — fresh session per phase") to per-task dispatch ("resume per data-driven rule, model=nextTask.tier"). Reviewer dispatch explicitly marked `model=premium`. PASS.
-3. **Session Rules table (lines 76–83):** Rows now use phase-number comparison (`nextTask.phase !== lastDispatchedPhase` / `=== lastDispatchedPhase`) instead of the old "Start of new phase" / "Within a phase" language. PASS.
-4. **Data-driven resume rule table (lines 85–92):** The 4-condition table from requirements.md §4 is present and identical to the spec. PASS.
-5. **`lastDispatchedPhase` tracking:**
-   - Line 60: PM records it after each dispatch. PASS.
-   - Line 135: Cleared on sprint completion. PASS.
-   - Line 150: Checked during PM restart recovery. PASS.
+**PASS.** The unknown-command fallback (line 58-60) correctly errors for `apra-fleet foo`, and the `arg === undefined` guard (line 55) ensures no error when invoked with no arg (stdio mode).
 
-### T6: Data-driven resume and tier-based dispatch in doer-reviewer.md — PASS
+### 2. `src/index.ts` — `update` / `update --check` dispatch
 
-1. **Model tier check (line 14):** Old "Doers use `model=standard` by default" is gone. Now reads: "For doers, PM reads `tasks[i].tier` from `planned.json` and passes `model: <tier>` to `execute_prompt` — no hardcoded default." Matches requirements.md §3. PASS.
-2. **Doer session rules (lines 35–36):** Updated to phase-number comparison format (`nextTask.phase !==/=== lastDispatchedPhase`), consistent with single-pair-sprint.md. PASS.
-3. **Resume Rule section (lines 57–65):** New "Doer dispatches" subsection with the 4-condition data-driven resume table. Introductory text explicitly states derivation from `planned.json` phase numbers via `lastDispatchedPhase` in `status.md`. PASS.
-4. **"All dispatches" table (lines 67–77):** Original table preserved and augmented with two new rows (`stop_prompt` cancellation, session timeout mid-grant). No conflict with the doer-specific table above. PASS.
+**PASS.** Both cases are handled:
+- `update --check` (line 47-50): imports `runUpdateCheck()` and runs it.
+- `update` alone (line 51-53): prints a "coming soon" message with a manual download link.
 
-### T7: Cross-file consistency sweep — PASS
+Minor note: `restArgs = process.argv.slice(2)` at line 46 includes `'update'` itself in the array, but this is harmless because it only checks for `--check`.
 
-Verified all 6 consistency checks from the PLAN.md specification:
+### 3. `src/index.ts` — `--help` text
 
-| # | Check | Result |
-|---|-------|--------|
-| 1 | Zero count-rule survivors across all 5 files | PASS — `grep "2-3 work tasks\|2-3 tasks per phase\|more than 3 work tasks"` returns 0 matches. The two "2-3" hits (single-pair-sprint.md line 19 about requirement descriptions, SKILL.md line 126 about timeout multipliers) are unrelated to phase sizing. |
-| 2 | Cohesion rule wording: plan-prompt.md ↔ tpl-plan.md | PASS — identical substance, minor expected casing difference (mid-sentence "a" vs sentence-initial "A") |
-| 3 | Monotonic tier constraint: plan-prompt.md ↔ tpl-plan.md | PASS — identical wording and examples in both files |
-| 4 | Resume rule: single-pair-sprint.md ↔ doer-reviewer.md | PASS — the 4-condition data-driven resume table is identical in both files |
-| 5 | `lastDispatchedPhase` consistency | PASS — referenced in single-pair-sprint.md (dispatch algorithm, session rules, sprint completion, recovery) and doer-reviewer.md (doer session rules, resume rule). All references use the same `status.md` storage location. |
-| 6 | No contradictions between any pair of files | PASS — all 5 files reinforce the same dispatch model. plan-prompt.md/tpl-plan.md define rules for planning; tpl-reviewer-plan.md checks them; single-pair-sprint.md and doer-reviewer.md implement them at dispatch time. |
+**PASS (with caveat).** Help text correctly shows `secret --set/--list/--delete` (lines 26-28) and does NOT show `auth`. The `auth` subcommand is still handled silently at line 41 (hidden/internal), which is fine.
 
-### V2: Acceptance Criteria Verification — PASS
+### 4. `src/index.ts` — Missing `secret` subcommand dispatch (BUG)
 
-| # | Acceptance Criterion | Status |
-|---|---------------------|--------|
-| 1 | plan-prompt.md: no count rule, replaced with cohesion rule | PASS |
-| 2 | tpl-plan.md: reflects cohesion rule and monotonic tier constraint | PASS |
-| 3 | tpl-reviewer-plan.md: checklist items for cohesion + tier checks | PASS |
-| 4 | single-pair-sprint.md: per-task dispatch algorithm with `lastDispatchedPhase` | PASS |
-| 5 | doer-reviewer.md: data-driven resume derivation from phase numbers | PASS |
-| 6 | All 5 files internally consistent — no contradictions | PASS |
-| 7 | Count-based "2-3 tasks" rule fully removed from all 5 files | PASS |
+**FAIL.** The help text advertises `apra-fleet secret --set <name>`, `--list`, and `--delete`, but there is **no `else if (arg === 'secret')` branch** in the CLI dispatch (lines 36-61). Running `apra-fleet secret --set foo` will hit the unknown-command error at line 58:
 
-### CI Status — NOTE
+```
+apra-fleet: unknown command 'secret'
+```
 
-Markdown-only sprint with no build or test suite. Not a blocker.
+This is a user-facing bug — the help promises a command that doesn't work.
+
+### 5. `src/services/update-check.ts` — `runUpdateCheck()` correctness
+
+**PASS.** The function correctly:
+- Fetches the latest release from GitHub (line 70)
+- Uses a 5s abort timeout (line 66-67)
+- Compares versions using the existing `isNewer()` helper (line 91)
+- Prints a clear "available" or "up to date" message (lines 92-94)
+- Handles network failure gracefully: catch block at line 97 prints a helpful fallback message, no crash
+- Handles non-ok response (line 78) and missing `tag_name` (line 85) gracefully
+
+### 6. `src/services/update-check.ts` — Pre-release filtering inconsistency
+
+**ISSUE.** `checkForUpdate()` (line 50) explicitly skips pre-release tags (`alpha`, `beta`, `rc`):
+```ts
+if (!tagName || /-(alpha|beta|rc)\b/i.test(tagName)) return;
+```
+But `runUpdateCheck()` does NOT apply this filter. If the latest GitHub release is a pre-release tag, the CLI will report it as available to the user, while the background check would silently ignore it. This is inconsistent.
+
+### 7. `src/services/update-check.ts` — Duplication
+
+**ACCEPTABLE (with note).** `runUpdateCheck()` duplicates ~20 lines of fetch/abort/parse logic from `checkForUpdate()`. The two functions have different concerns (silent cache vs. CLI print-and-exit), so the duplication is tolerable for now. A shared `fetchLatestTag()` helper would reduce this, but it's not blocking. If the pre-release filter is added to `runUpdateCheck`, the duplication argument becomes stronger — consider extracting at that point.
 
 ---
 
-## Summary
+## Test Gap Analysis
 
-All 7 tasks (T1–T7) and both verification checkpoints (V1, V2) pass without issues. The sprint delivers a complete, consistent overhaul of the PM skill's dispatch model across all 5 files:
+**Test count: 1075 passed (unchanged from prior baseline).** No tests were added or removed by this commit.
 
-- **Phase sizing** shifts from arbitrary "2-3 tasks" count to cohesion-driven boundaries (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Tier ordering** gains a monotonic non-decreasing constraint within phases (plan-prompt.md, tpl-plan.md, tpl-reviewer-plan.md)
-- **Dispatch granularity** moves from per-phase to per-task with tier-aware model selection (single-pair-sprint.md, doer-reviewer.md)
-- **Resume logic** becomes data-driven via `lastDispatchedPhase` in `status.md`, replacing manual reasoning (single-pair-sprint.md, doer-reviewer.md)
+### Missing test coverage
 
-No contradictions found between any pair of files. No partial survivals of the old count-based rule. All 7 acceptance criteria from requirements.md are met. Ready for merge.
+1. **`runUpdateCheck()`** — No tests exist. The existing `tests/update-check.test.ts` covers `checkForUpdate`, `isNewer`, and `getUpdateNotice`, but not the new `runUpdateCheck` function. Needed tests:
+   - Newer version available: prints "is available" message
+   - Up to date: prints "is up to date" message
+   - Network failure: prints fallback message (no crash)
+   - Non-ok HTTP response: prints fallback message
+   - Missing `tag_name`: prints fallback message
+
+2. **Unknown subcommand path** — No tests cover the CLI dispatch error for unknown commands. Lower priority since this is a simple branch, but would be nice for regression safety.
+
+---
+
+## Recommendations
+
+1. **Add `secret` subcommand dispatch** in `src/index.ts` — add an `else if (arg === 'secret')` branch that imports and runs the credential-store CLI handler. Without this, the help text is misleading.
+
+2. **Add pre-release filter** to `runUpdateCheck()` — match the behavior of `checkForUpdate()` by skipping alpha/beta/rc tags.
+
+3. **Add tests for `runUpdateCheck()`** — at minimum cover the happy path (newer available, up to date) and error paths (network failure, non-ok response).

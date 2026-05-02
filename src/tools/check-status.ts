@@ -11,6 +11,7 @@ import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning } from '../services/cloud/cost.js';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
+import { getActiveLogFile } from '../utils/log-helpers.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -214,6 +215,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   writeStatusline(statusOverrides);
 
   const updateNotice = getUpdateNotice();
+  const logFile = getActiveLogFile();
 
   if (format === 'json') {
     const payload: Record<string, unknown> = {
@@ -221,6 +223,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       summary: { total: rows.length, online, offline: rows.length - online },
       members: rows,
     };
+    if (logFile) payload.logFile = logFile;
     if (updateNotice) {
       const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
       if (m) payload.updateAvailable = { latest: m[1], installed: m[2] };
@@ -231,6 +234,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   // Compact: 1 summary line + 1 line per member, multiple fields per line
   let t = updateNotice ? `${updateNotice}\n` : '';
   t += `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
+  if (logFile) t += `log=${logFile} | `;
   t += rows.map(r => {
     const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
     return `${r.icon} ${r.name}(${st})`;
