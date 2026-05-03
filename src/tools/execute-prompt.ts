@@ -90,16 +90,14 @@ const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
 
 export const inFlightAgents = new Set<string>();
 
-// Exit paths from executePrompt — all must clear busy state (inFlightAgents.delete + writeStatusline):
-// (a) normal success: result.code === 0 → line 219 writes statusline, finally deletes
-// (b) non-zero exit from execCommand: result.code !== 0 → line 202 returns, finally deletes
-// (c) exception in try block (auth, network, crash) → line 232 catches, finally deletes
-// (d) AbortSignal/MCP client cancellation → abortHandler kills PID, execCommand resolves with code, finally deletes
-// (e) stale session retry: detected line 180, retried line 184, finally deletes if fail/succeed
-// (f) server overload retry: detected line 190, retried line 195, finally deletes if fail/succeed
-// (g) early returns before inFlightAgents.add (lines 101, 106, 110): busy state never entered
-// Currently broken: writeStatusline() clear only in success path (line 219), not in catch or finally.
-// Must move writeStatusline() to finally block so ALL paths clear statusline to idle.
+// All exit paths from executePrompt clear busy state via the finally block (inFlightAgents.delete + writeStatusline):
+// (a) normal success: result.code === 0 → finally sets idle and removes agent from inFlight
+// (b) non-zero exit from execCommand: result.code !== 0 → finally sets idle and removes agent from inFlight
+// (c) exception in try block (auth, network, crash) → catch records error type; finally sets offline or idle
+// (d) AbortSignal/MCP client cancellation → abortHandler kills PID, execCommand resolves, finally clears
+// (e) stale session retry → retried without session ID; finally clears on success or failure
+// (f) server overload retry → retried after delay; finally clears on success or failure
+// (g) early returns before inFlightAgents.add: busy state never entered
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
