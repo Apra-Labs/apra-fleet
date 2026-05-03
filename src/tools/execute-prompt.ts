@@ -237,7 +237,7 @@ session: ${parsed.sessionId}`;
     return output;
   } catch (err: any) {
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
-    const isConnectionError = err.message && /ssh|network|timeout|econnrefused|ehostunreach/i.test(err.message);
+    const isConnectionError = err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message);
     if (isConnectionError) {
       writeStatusline(new Map([[agent.id, 'offline']]));
     }
