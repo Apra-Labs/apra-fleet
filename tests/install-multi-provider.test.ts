@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { parse as parseToml } from 'smol-toml';
 import { runInstall } from '../src/cli/install.js';
 
@@ -59,10 +59,10 @@ describe('runInstall multi-provider', () => {
     );
 
     // Check if Claude MCP command is run
-    expect(vi.mocked(execSync)).toHaveBeenCalledWith(
-      expect.stringContaining('claude mcp add'),
-      expect.any(Object)
+    const claudeAddCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add')
     );
+    expect(claudeAddCall).toBeDefined();
   });
 
   it('installs for Gemini when --llm gemini is passed', async () => {
@@ -76,7 +76,9 @@ describe('runInstall multi-provider', () => {
     );
 
     // Should NOT run claude mcp add
-    const claudeCmd = vi.mocked(execSync).mock.calls.find(c => c[0].toString().includes('claude mcp add'));
+    const claudeCmd = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add')
+    );
     expect(claudeCmd).toBeUndefined();
 
     // Should have written to Gemini settings with trust: true
@@ -229,10 +231,14 @@ describe('runInstall multi-provider', () => {
   it('Claude MCP registration uses --scope user flag', async () => {
     await runInstall([]);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const addCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add')
+    );
     expect(addCall).toBeDefined();
-    expect(addCall).toContain('--scope user');
+    const args = addCall![1] as string[];
+    const scopeIdx = args.indexOf('--scope');
+    expect(scopeIdx).toBeGreaterThanOrEqual(0);
+    expect(args[scopeIdx + 1]).toBe('user');
   });
 
   it('Gemini MCP registration embeds mcpServers.apra-fleet with trust:true', async () => {

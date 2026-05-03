@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { parse, stringify } from 'smol-toml';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
@@ -240,11 +240,11 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any): void 
   writeConfig(paths, settings);
 }
 
-function mergePermissions(paths: ProviderInstallConfig): void {
+function mergePermissions(paths: ProviderInstallConfig, serverName: string = 'apra-fleet'): void {
   const settings = readConfig(paths);
 
   const requiredPerms = [
-    'mcp__apra-fleet__*',
+    `mcp__${serverName}__*`,
     'Agent(*)',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
@@ -273,11 +273,12 @@ function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): 
   writeConfig(paths, settings);
 }
 
-function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any, serverName: string, envVars?: Record<string, string>): void {
   const settings = readConfig(paths);
   settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers['apra-fleet'] = {
+  settings.mcpServers[serverName] = {
     ...mcpConfig,
+    ...(envVars && Object.keys(envVars).length > 0 ? { env: envVars } : {}),
     trust: true,
   };
 
@@ -297,20 +298,24 @@ function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string):
   writeConfig(paths, settings);
 }
 
-function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any, serverName: string, envVars?: Record<string, string>): void {
   const settings = readConfig(paths);
   settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers['apra-fleet'] = mcpConfig;
+  settings.mcpServers[serverName] = {
+    ...mcpConfig,
+    ...(envVars && Object.keys(envVars).length > 0 ? { env: envVars } : {}),
+  };
 
   writeConfig(paths, settings);
 }
 
-function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any, serverName: string, envVars?: Record<string, string>): void {
   const settings = readConfig(paths);
   settings.mcp_servers = settings.mcp_servers || {};
-  settings.mcp_servers['apra-fleet'] = {
+  settings.mcp_servers[serverName] = {
     command: mcpConfig.command.replace(/\\/g, '/'),
     args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
+    ...(envVars && Object.keys(envVars).length > 0 ? { env: envVars } : {}),
   };
 
   writeConfig(paths, settings);
@@ -361,15 +366,17 @@ export async function runInstall(args: string[]): Promise<void> {
 Install the apra-fleet binary, hooks, MCP server registration, and skills.
 
 Usage:
-  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
-  apra-fleet install --skill all       Same as bare install (all skills)
-  apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
-  apra-fleet install --skill none      Skip skill installation
-  apra-fleet install --no-skill        Same as --skill none
-  apra-fleet install --force           Stop a running server before installing
-  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot
-  apra-fleet install --help            Show this help
+  apra-fleet install                          Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet install --skill all              Same as bare install (all skills)
+  apra-fleet install --skill fleet            Install fleet skill only
+  apra-fleet install --skill pm               Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill none             Skip skill installation
+  apra-fleet install --no-skill               Same as --skill none
+  apra-fleet install --force                  Stop a running server before installing
+  apra-fleet install --llm <provider>         Target LLM provider: claude (default), gemini, codex, copilot
+  apra-fleet install --data-dir <path>        Use a custom data directory (isolates registry, statusline, etc.)
+  apra-fleet install --instance <name>        Shorthand: --data-dir ~/.apra-fleet/workspaces/<name>, registers as apra-fleet-<name>
+  apra-fleet install --help                   Show this help
 
 Options:
   --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot.
@@ -378,7 +385,9 @@ Options:
                           run sequentially rather than in parallel.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
   --no-skill              Alias for --skill none.
-  --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).
+  --data-dir <path>       Use a custom data directory (isolates registry, statusline, etc.).
+  --instance <name>       Shorthand for --data-dir ~/.apra-fleet/workspaces/<name>.`);
     process.exit(0);
     return;
   }
@@ -400,6 +409,48 @@ Options:
     console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
     process.exit(1);
   }
+
+  // Parse --instance flag (shorthand: sets data-dir to workspaces/<name> + server name to apra-fleet-<name>)
+  let instanceName: string | undefined;
+  const instanceEqualArg = args.find(a => a.startsWith('--instance='));
+  if (instanceEqualArg) {
+    instanceName = instanceEqualArg.split('=').slice(1).join('=');
+  } else {
+    const idx = args.indexOf('--instance');
+    if (idx >= 0 && idx < args.length - 1 && !args[idx + 1].startsWith('--')) {
+      instanceName = args[idx + 1];
+    }
+  }
+  if (instanceName !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(instanceName)) {
+    console.error(`Error: --instance name must be alphanumeric (with optional - or _), max 64 chars.`);
+    process.exit(1);
+  }
+
+  // Parse --data-dir flag
+  let dataDir: string | undefined;
+  const dataDirEqualArg = args.find(a => a.startsWith('--data-dir='));
+  if (dataDirEqualArg) {
+    dataDir = dataDirEqualArg.split('=').slice(1).join('=');
+  } else {
+    const idx = args.indexOf('--data-dir');
+    if (idx >= 0 && idx < args.length - 1 && !args[idx + 1].startsWith('--')) {
+      dataDir = args[idx + 1];
+    }
+  }
+
+  // --instance expands to --data-dir ~/.apra-fleet/workspaces/<name> if --data-dir not also set
+  if (instanceName && !dataDir) {
+    dataDir = path.join(home, '.apra-fleet', 'workspaces', instanceName);
+  }
+
+  // Resolve ~ in --data-dir
+  if (dataDir) {
+    dataDir = dataDir.replace(/^~(?=$|\/)/, home);
+  }
+
+  // Derive MCP server name: apra-fleet-<name> for --instance, otherwise apra-fleet
+  const serverName = instanceName ? `apra-fleet-${instanceName}` : 'apra-fleet';
+  const envVars: Record<string, string> = dataDir ? { APRA_FLEET_DATA_DIR: dataDir } : {};
 
   const paths = getProviderInstallConfig(llm);
 
@@ -437,8 +488,8 @@ Options:
   const force = args.includes('--force');
 
   // Reject unknown flags to catch typos early
-  const knownFlagPrefixes = ['--llm=', '--skill='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--data-dir=', '--instance='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--help', '-h', '--data-dir', '--instance']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -541,19 +592,42 @@ ${killHint}
 
   if (llm === 'claude') {
     try {
-      run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+      run(`claude mcp remove ${serverName} --scope user`, { stdio: 'ignore' });
     } catch { /* not registered */ }
-    
-    const cmd = mcpConfig.command === 'node' 
-      ? `claude mcp add --scope user apra-fleet -- node "${mcpConfig.args[0]}"`
-      : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
-    run(cmd);
+
+    const envArgs = Object.entries(envVars).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    const serverArgs = mcpConfig.command === 'node'
+      ? ['node', mcpConfig.args[0]]
+      : [mcpConfig.command];
+    const addArgs = ['mcp', 'add', '--scope', 'user', ...envArgs, serverName, '--', ...serverArgs];
+    const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' as const } : {};
+    execFileSync('claude', addArgs, { stdio: 'inherit', ...shellOpt });
   } else if (llm === 'gemini') {
-    mergeGeminiConfig(paths, mcpConfig);
+    mergeGeminiConfig(paths, mcpConfig, serverName, envVars);
   } else if (llm === 'codex') {
-    mergeCodexConfig(paths, mcpConfig);
+    mergeCodexConfig(paths, mcpConfig, serverName, envVars);
   } else if (llm === 'copilot') {
-    mergeCopilotConfig(paths, mcpConfig);
+    mergeCopilotConfig(paths, mcpConfig, serverName, envVars);
+  }
+
+  // Register named workspace in the workspaces index when --instance is used
+  if (instanceName && dataDir) {
+    const workspacesIndexPath = path.join(home, '.apra-fleet', 'workspaces.json');
+    let index: { workspaces: Array<{ name: string; path: string; created: string }> } = { workspaces: [] };
+    if (fs.existsSync(workspacesIndexPath)) {
+      try { index = JSON.parse(fs.readFileSync(workspacesIndexPath, 'utf-8')); } catch { /* ignore */ }
+    }
+    index.workspaces = index.workspaces || [];
+    const existing = index.workspaces.findIndex(w => w.name === instanceName);
+    const entry = { name: instanceName, path: dataDir, created: new Date().toISOString() };
+    if (existing >= 0) {
+      index.workspaces[existing] = entry;
+    } else {
+      index.workspaces.push(entry);
+    }
+    fs.mkdirSync(path.dirname(workspacesIndexPath), { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(workspacesIndexPath, JSON.stringify(index, null, 2) + '\n');
   }
 
   // --- Step 6: Install fleet skill (optional) ---
@@ -598,7 +672,7 @@ ${killHint}
   }
 
   // Finalize permissions
-  mergePermissions(paths);
+  mergePermissions(paths, serverName);
 
   // Write install-config.json
   const installConfig = { llm, skill: skillMode };
@@ -607,14 +681,16 @@ ${killHint}
   fs.writeFileSync(path.join(configDir, 'install-config.json'), JSON.stringify(installConfig, null, 2), { mode: 0o600 });
 
   // --- Done ---
-  const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
+  const instructions = llm === 'claude' ? `Run /mcp in Claude Code to load the server (server name: ${serverName}).` : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
+  const dataDirNote = dataDir ? `\n  Data Dir:    ${dataDir}` : '';
+  const instanceNote = serverName !== 'apra-fleet' ? `\n  MCP Server:  ${serverName}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
+  Settings:    ${paths.settingsFile}${instanceNote}${dataDirNote}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
 
 ${instructions}${forceNote}
 `);
