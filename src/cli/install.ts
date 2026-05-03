@@ -628,7 +628,7 @@ ${killHint}
     const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8' });
     beadsVersion = (versionOut as string).trim() || 'installed';
   } catch {
-    // not installed or unavailable
+    beadsVersion = 'not available';
   }
 
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
