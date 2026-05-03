@@ -598,15 +598,17 @@ ${killHint}
   }
 
   // --- Step 8: Install Beads task tracker ---
+  // shell:true required on Windows — npm global packages install as .cmd wrappers
+  // that cannot be directly spawned by Node without a shell
   console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
   try {
     // Check if already installed
     try {
-      execFileSync('bd', ['--version'], { stdio: 'pipe' });
+      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
       // already installed — skip
     } catch {
       // not installed — install it
-      execFileSync('npm', ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      execFileSync('npm', ['install', '-g', '@beads/bd'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install
@@ -625,7 +627,7 @@ ${killHint}
   // --- Done ---
   let beadsVersion = 'installed';
   try {
-    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8' });
+    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
     beadsVersion = (versionOut as string).trim() || 'installed';
   } catch {
     beadsVersion = 'not available';
