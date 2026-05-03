@@ -63,7 +63,7 @@ export async function runUpdate(): Promise<void> {
     }));
     
     await new Promise((resolve, reject) => {
-      fileStream.on('finish', resolve);
+      fileStream.on('finish', () => resolve(undefined));
       fileStream.on('error', reject);
       fileStream.end();
     });
