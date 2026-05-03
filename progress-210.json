@@ -41,8 +41,8 @@
       "phase": 2,
       "title": "Defend against re-dispatch race after stop_prompt",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Added poll in stop_prompt after kill: when PID was known, spin 50ms intervals (max 2s) until !inFlightAgents.has(agent.id). Ensures execute_prompt's finally block drains before stop_prompt returns, so re-dispatch never races against cleanup."
     },
     {
       "id": "V2",

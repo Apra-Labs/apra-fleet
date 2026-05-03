@@ -26,7 +26,16 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
 
   await tryKillPid(agent, strategy, cmds);
 
-  // Unconditionally clear busy state — handles pid=none race where inFlightAgents
+  if (pid !== undefined) {
+    // Poll until execute_prompt's finally block clears inFlightAgents so a
+    // re-dispatch immediately after stop_prompt doesn't race against cleanup.
+    const deadline = Date.now() + 2000;
+    while (inFlightAgents.has(agent.id) && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  // Unconditionally clear busy state — handles pid=none case where inFlightAgents
   // still holds the agent but the process never recorded a PID.
   inFlightAgents.delete(agent.id);
   writeStatusline();
