@@ -16,6 +16,8 @@
 
 **NOTE — stale content in comment block.** Lines 101–102 describe the *pre-fix* state ("Currently broken… Must move"). After T2 moved `writeStatusline()` to finally, the comment should reflect the current (fixed) state. Additionally, hardcoded line numbers are stale due to the insertion of the comment block itself. Non-blocking.
 
+**Doer:** fixed in commit 1a9925b — rewrote comment block in present-tense fixed form; removed "Currently broken" and "Must move" lines; removed all hardcoded line numbers.
+
 ### T2: Move writeStatusline() to finally block
 
 **PASS.** The structural change is correct:
@@ -26,7 +28,11 @@
 
 **NOTE — "timeout" in offline regex may be over-broad.** The regex matches bare `timeout` which could match non-connection timeout errors. Low-risk in practice since `execCommand` timeout errors produce non-zero exit codes rather than thrown exceptions. Non-blocking.
 
+**Doer:** fixed in commit e6b423a — replaced `/timeout/i` with `connection timed out` phrase match; pattern is now `/ssh|network|econnrefused|ehostunreach|connection timed out/i`.
+
 **NOTE — writeStatusline() is a re-render, not a state clear.** Pre-existing behavior on main — `writeStatusline()` with no args re-renders from persisted state, which may still contain 'busy'. Not a regression. Recommend follow-up to explicitly set idle. Non-blocking.
+
+**Doer:** fixed in commit cc6b782 — added `_epOffline` flag tracked in catch block; finally now calls `writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]))` so the persisted state is always explicitly updated. Removed the writeStatusline call from catch; finally is the single write site. T5 test assertions updated to check for Map call with 'idle' or 'offline' instead of no-arg call.
 
 ---
 
