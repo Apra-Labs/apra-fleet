@@ -50,8 +50,8 @@
       "title": "VERIFY: Phase 2 — PID capture race and stop_prompt hardening",
       "type": "verify",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "npm run build passes; npm test passes (61 files, 1046 tests, 7 skipped). T3 and T4 committed and pushed to origin/plan/issue-210."
     },
     {
       "id": "T5",
