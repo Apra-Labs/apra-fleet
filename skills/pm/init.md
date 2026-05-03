@@ -14,8 +14,6 @@
    - `planned.json` — immutable plan copy (saved after plan is APPROVED in Phase 2 — not at init time)
 4. Add project row to projects.md
 
-4. Add project row to projects.md
-
 5. **Beads init** — run from the orchestrator (Bash):
    ```bash
    cd <repo>
