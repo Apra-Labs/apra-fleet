@@ -46,34 +46,34 @@ bd create "sprint: <project>" -p 1   # → epic-id (record in status.md)
 ```
 
 ### `/pm plan` — after PLAN.md is approved
-For each task in PLAN.md:
+For each task in PLAN.md, assign to the member who will do it:
 ```bash
-bd create "T1.1: <title>" -p 1 --parent <epic-id>    # → task-id
-bd create "T1.2: <title>" -p 2 --parent <epic-id>    # → task-id
-bd dep add <T1.2-id> <T1.1-id>   # 1.2 blocked until 1.1 done
+bd create "T1.1: <title>" -p 1 --parent <epic-id> --assignee <member>   # → task-id
+bd create "T1.2: <title>" -p 2 --parent <epic-id> --assignee <member>   # → task-id
+bd dep add <T1.2-id> <T1.1-id>   # T1.2 blocked until T1.1 done
 ```
 Record all task IDs in `<project>/status.md` under a `## Beads` section.
 
-### `/pm start` — dispatching doer to a task
+### `/pm start` — dispatching a member to a task
 ```bash
-bd update <task-id> --claim
+bd update <task-id> --status in_progress --assignee <member>
 ```
 
-### VERIFY checkpoint reached (doer stops)
+### VERIFY checkpoint reached (member stops)
 ```bash
-bd update <verify-task-id> --done   # close the verify task
-bd ready                             # confirm what's next
+bd close <task-id>   # mark complete
+bd ready             # confirm what's next
 ```
 
 ### Reviewer returns CHANGES NEEDED — each HIGH finding
 ```bash
-bd create "fix: <finding title>" -p 0 --parent <epic-id>   # → finding-id
+bd create "fix: <finding title>" -p 0 --parent <epic-id> --assignee <doer>   # → finding-id
 ```
-When doer fixes it and reviewer approves: `bd update <finding-id> --done`
+When doer fixes it and reviewer approves: `bd close <finding-id>`
 
 ### `/pm cleanup` — sprint complete
 ```bash
-bd update <epic-id> --done
+bd close <epic-id>
 ```
 
 ---
@@ -87,7 +87,7 @@ bd create "<description>" -p 3 --parent <epic-id>   # low priority
 
 When user says "show backlog" or "what's deferred":
 ```bash
-bd ready --all   # or bd show <epic-id> --tree to see all items
+bd list --all --pretty   # full tree view including backlog
 ```
 
 ---
@@ -96,8 +96,8 @@ bd ready --all   # or bd show <epic-id> --tree to see all items
 
 Show current sprint's Beads state at any time:
 ```bash
-bd show <epic-id> --tree
-bd ready
+bd list --all --pretty   # full tree: all members, all tasks, status at a glance
+bd ready                 # what's claimable right now (no blockers)
 ```
 
 ---
@@ -114,6 +114,33 @@ This shows all unblocked tasks across ALL sprints. PM uses this to know what's i
 
 ## Innovative Use Patterns
 
+### Multi-member tracking (10+ members)
+
+Each task is assigned to a member at creation time. PM gets a per-member view or a global view instantly:
+
+```bash
+# Global view — all members, all tasks, tree format
+bd list --all --pretty
+
+# Per-member view — what is alice working on?
+bd list --assignee alice --status open,in_progress
+
+# What's blocked across all members?
+bd list --status blocked
+
+# What's ready to pick up (no blockers, any member)?
+bd ready
+
+# What's in-progress right now (who is busy)?
+bd list --status in_progress
+```
+
+PM dispatches: `bd update <task-id> --status in_progress --assignee <member>`  
+Member completes: `bd close <task-id>`  
+`bd ready` immediately shows what that member can pick up next.
+
+This replaces the need to read `progress.json` on each member — one `bd list --all --pretty` gives the full picture across every member in the fleet.
+
 ### Cross-sprint dependency
 When sprint B can't start until sprint A's PR merges:
 ```bash
@@ -122,20 +149,20 @@ bd dep add <sprint-B-epic-id> <sprint-A-epic-id>
 `bd ready` won't surface sprint B tasks until sprint A closes.
 
 ### Reviewer findings as tasks
-Every HIGH finding from code review becomes a tracked task. PM never loses a finding — it either gets fixed (done) or deferred (low priority backlog task). Full audit trail in `bd show`.
+Every HIGH finding from code review becomes a tracked task assigned back to the doer. PM never loses a finding — it either gets fixed (`bd close`) or deferred (low-priority backlog task). Full audit trail in `bd show`.
 
 ### Backlog grooming
 ```bash
-bd ready --all   # PM presents all open low-priority tasks to user for re-prioritization or close
+bd list --all --pretty   # PM presents full tree to user for re-prioritization or close
 ```
 
 ### Recovery without `/pm recover`
-Session crash? Just run `bd ready`. PM sees exactly what's in-flight across every active project without reading a single file. Then `bd show <task-id>` for full context on any item.
+Session crash? Just run `bd list --all --pretty`. PM sees every member's state across every active project without reading a single file. Then `bd show <task-id>` for full context on any item.
 
 ### PR linking
 At cleanup, PM adds the PR URL to the epic:
 ```bash
-bd update <epic-id> --note "PR: https://github.com/Apra-Labs/apra-fleet/pull/N"
+bd note <epic-id> "PR: https://github.com/Apra-Labs/apra-fleet/pull/N"
 ```
 
 ---
