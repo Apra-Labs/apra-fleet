@@ -1,7 +1,7 @@
 # apra-fleet #210 — Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-05-02 20:05:00+05:30
+**Date:** 2026-05-02 22:20:00-04:00
 **Verdict:** APPROVED
 
 > See the recent git history of this file to understand the context of this review.
@@ -14,49 +14,80 @@
 
 **PASS.** Comment block at `src/tools/execute-prompt.ts:93-102` documents all seven exit paths (a–g) including early returns before `inFlightAgents.add`. Coverage is thorough — every path through `executePrompt` is accounted for.
 
-**NOTE — stale content in comment block.** Lines 101–102 read:
-```
-// Currently broken: writeStatusline() clear only in success path (line 219), not in catch or finally.
-// Must move writeStatusline() to finally block so ALL paths clear statusline to idle.
-```
-This describes the *pre-fix* state. After T2 moved `writeStatusline()` to finally, the comment should reflect the *current* state (e.g., "Fixed: writeStatusline() now in finally block, clears statusline on all exit paths"). As written, a future reader will think the bug is still present.
-
-Additionally, line references in the comment (lines 219, 202, 232, 180, 184, 190, 195, 101, 106, 110) are stale — the 11-line comment block itself shifted all subsequent line numbers. Consider removing specific line numbers in favor of descriptive labels (e.g., "success return", "non-zero exit return", "catch block").
+**NOTE — stale content in comment block.** Lines 101–102 describe the *pre-fix* state ("Currently broken… Must move"). After T2 moved `writeStatusline()` to finally, the comment should reflect the current (fixed) state. Additionally, hardcoded line numbers are stale due to the insertion of the comment block itself. Non-blocking.
 
 ### T2: Move writeStatusline() to finally block
 
 **PASS.** The structural change is correct:
 
-1. **writeStatusline() removed from success path** (was between token usage update and output construction) — confirmed in diff, line no longer present.
+1. **writeStatusline() removed from success path** — confirmed in diff, no longer present between token usage update and output construction.
 2. **writeStatusline() added to finally block** (`src/tools/execute-prompt.ts:255`) — runs unconditionally on all exit paths. Positioned after `scope.ok/fail/abort` and before `inFlightAgents.delete` and `deletePromptFile`.
 3. **Catch block offline distinction** (`src/tools/execute-prompt.ts:241-245`) — catch now only marks offline for genuine connection failures via regex `/ssh|network|timeout|econnrefused|ehostunreach/i`. Cancellations and other errors fall through to finally's unconditional `writeStatusline()`.
 
-**NOTE — "timeout" in offline regex may be over-broad.** The regex matches bare `timeout` which could match Node.js `TimeoutError` messages from AbortSignal-based timeouts (cancellations). The risk register specifies "TimeoutError → idle," but the regex would classify it as a connection error → offline. In practice this is low-risk because `execCommand` timeout errors are caught differently (they produce non-zero exit codes, not thrown exceptions), but a tighter pattern like `/ssh|network|timed?\s*out|econnrefused|ehostunreach/i` or `/connection.*timeout/i` would be more precise. Non-blocking — the current regex covers the common SSH error messages correctly.
+**NOTE — "timeout" in offline regex may be over-broad.** The regex matches bare `timeout` which could match non-connection timeout errors. Low-risk in practice since `execCommand` timeout errors produce non-zero exit codes rather than thrown exceptions. Non-blocking.
 
-**NOTE — writeStatusline() is a re-render, not a state clear.** `writeStatusline()` with no args loads persisted state from `statusline-state.json` and re-renders without modification (`src/services/statusline.ts:59-86`). After `writeStatusline(new Map([[agent.id, 'busy']]))` sets busy in state, a subsequent `writeStatusline()` re-renders with the persisted 'busy' value — it does not reset to 'idle'. This is a pre-existing behavior on main (the success path on main also calls `writeStatusline()` the same way), so it is not a regression introduced by this PR. However, it means the statusline display may lag until `fleet_status` (check-status.ts) does a full connectivity sweep and overwrites all states. Consider filing a follow-up to have the finally block call `writeStatusline(new Map([[agent.id, 'idle']]))` explicitly — with appropriate logic to preserve the offline marker from catch. Not blocking for Phase 1 since it matches main's existing behavior.
+**NOTE — writeStatusline() is a re-render, not a state clear.** Pre-existing behavior on main — `writeStatusline()` with no args re-renders from persisted state, which may still contain 'busy'. Not a regression. Recommend follow-up to explicitly set idle. Non-blocking.
 
-**Catch-then-finally interaction is correct.** When catch sets `writeStatusline(new Map([[agent.id, 'offline']]))`, the offline state is persisted to the state file. The subsequent `writeStatusline()` in finally re-renders from persisted state, so the offline marker survives. No overwrite issue.
+---
+
+## Phase 2 Code Review: PID capture race and stop_prompt hardening (T3 + T4)
+
+### T3: Guard against PID-less cancellation leaving stale state
+
+**PASS.** Changes to `src/tools/stop-prompt.ts` correctly implement the specification:
+
+1. **Imports added** (lines 8–9): `inFlightAgents` from `./execute-prompt.js` and `writeStatusline` from `../services/statusline.js`. Import paths are correct — note the Phase 1 plan review incorrectly referenced `src/utils/statusline.ts` but implementation correctly uses `src/services/statusline.js`.
+2. **Export of `inFlightAgents`** (`src/tools/execute-prompt.ts:91`): Changed from `const` to `export const`. Clean — no runtime behavior change.
+3. **Unconditional busy-state clear** (`src/tools/stop-prompt.ts:40-41`): `inFlightAgents.delete(agent.id)` followed by `writeStatusline()` runs after all other logic, ensuring the pid=none case is handled.
+
+**Done criteria met:** When `stop_prompt` is called with pid=none, `inFlightAgents.delete` removes the stale entry and `writeStatusline()` re-renders. A subsequent `execute_prompt` will pass the `inFlightAgents.has()` guard at line 120.
+
+### T4: Defend against re-dispatch race after stop_prompt
+
+**PASS.** The poll guard at `src/tools/stop-prompt.ts:29-36` correctly implements the specification:
+
+1. **Condition gating** (`pid !== undefined`): Poll only fires when a PID was actually killed — in the pid=none path, there's no running `execCommand` promise whose finally block needs to drain, so polling is unnecessary. The unconditional delete at line 40 handles that case directly.
+2. **Poll mechanics**: 50ms intervals, 2000ms deadline. Exactly matches PLAN.md specification.
+3. **Correctness**: After `tryKillPid` sends the signal, the `execCommand` promise in `executePrompt` resolves (process exited), the finally block runs `inFlightAgents.delete(agent.id)`, and the poll exits. The subsequent unconditional delete at line 40 is then a no-op (safe — `Set.delete` on a non-existent element returns false).
+4. **Timeout safety**: If the 2s deadline expires (finally block never ran — pathological case), the unconditional delete at line 40 still clears the agent. This means `stop_prompt` *always* guarantees busy state is cleared on return, regardless of poll outcome.
+
+**Done criteria met:** After `stop_prompt` returns, `inFlightAgents.has(agent.id)` is guaranteed false. An immediately subsequent `execute_prompt` will not hit the "already running" guard.
+
+**NOTE — double-delete on happy path is intentional redundancy.** When pid is defined and the poll succeeds (finally already cleared `inFlightAgents`), the unconditional delete at line 40 is a no-op. This is correct defensive code — it handles the timeout case where finally hasn't run yet without adding a conditional branch.
+
+**NOTE — poll occurs before logLine.** The `logLine` call (line 43) is positioned after the poll and unconditional clear. This means the log entry reflects the final state. Correct ordering.
 
 ### Build & Tests
 
-**PASS.** `npm run build` succeeds (clean tsc). `npm test` passes: 1064 passed, 6 skipped, 61 test files, no failures.
+**PASS.** `npm run build` succeeds (clean tsc). `npm test` passes: 61 test files, 1064 passed, 6 skipped, no failures.
 
 ### Regression Check
 
-No changes to `src/services/statusline.ts`. No changes to any other tool files. The diff is scoped entirely to `src/tools/execute-prompt.ts`. No regressions in previously stable code.
+Phase 2 changes touch only `src/tools/stop-prompt.ts` (new imports + poll logic + unconditional clear) and `src/tools/execute-prompt.ts` (export keyword on `inFlightAgents`). No behavioral change to execute-prompt.ts beyond the export visibility. No regressions in Phase 1 changes — the finally block structure, catch block offline distinction, and comment block are untouched. All 61 test suites still pass.
 
 ### Requirements Alignment
 
-Requirements.md specifies: "Busy state clears as soon as execute_prompt exits — whether by normal completion, timeout, cancellation, or crash." The `inFlightAgents.delete` in finally (unchanged from main) ensures the concurrent dispatch guard clears on all paths. The `writeStatusline()` in finally ensures a re-render on all paths (with the pre-existing state caveat noted above). The catch block offline distinction matches the plan's intent to differentiate connection failures from cancellations.
+Requirements.md specifies:
+- "Busy state clears as soon as execute_prompt exits" → Phase 1 ensures this via finally block.
+- "The concurrent dispatch guard fires incorrectly, blocking legitimate dispatches" → Phase 2 ensures `stop_prompt` clears `inFlightAgents` unconditionally, so the next `execute_prompt` dispatch is never blocked by stale state.
+- "Workaround is manual stop_prompt or server restart" → Now unnecessary: `stop_prompt` is a reliable fix (not just a workaround) that guarantees clean state.
+
+Both phases align with the stated requirements and solve the described problem.
 
 ---
 
 ## Summary
 
-Phase 1 (T1 + T2) is **APPROVED**. The core structural fix — moving `writeStatusline()` to the finally block and adding connection-error gating in catch — is correct and matches the plan's specification. Build and tests pass clean. No regressions.
+Phases 1 and 2 (T1–T4) are **APPROVED**. The implementation correctly:
 
-Three non-blocking notes for the doer to address at their discretion:
+- Moves `writeStatusline()` to the finally block for unconditional cleanup on all exit paths (T1/T2)
+- Exports `inFlightAgents` and uses it in `stop_prompt` to unconditionally clear busy state (T3)
+- Adds a poll guard to prevent re-dispatch races after PID kill (T4)
 
-1. **Comment block staleness**: Lines 101–102 describe pre-fix state ("Currently broken… Must move"). Update to reflect current (fixed) state. Remove hardcoded line numbers.
-2. **Timeout regex breadth**: `/timeout/i` in the offline-detection regex could match non-connection timeout errors. Consider tightening to `/timed?\s*out/i` or `/connection.*timeout/i`.
-3. **writeStatusline() does not clear busy from persisted state**: Pre-existing issue on main. Recommend a follow-up to explicitly set idle in finally: `writeStatusline(new Map([[agent.id, 'idle']]))` with logic to preserve catch's offline override.
+Build and tests pass clean. No regressions. Code matches PLAN.md specifications and solves requirements.md's stated problem.
+
+**Non-blocking notes carried forward from Phase 1** (unchanged, at doer's discretion):
+
+1. Comment block lines 101–102 describe pre-fix state — update to reflect current state; remove hardcoded line numbers.
+2. Timeout regex `/timeout/i` could be tightened to avoid matching non-connection timeouts.
+3. `writeStatusline()` re-renders persisted state rather than explicitly clearing to idle — recommend follow-up issue.
