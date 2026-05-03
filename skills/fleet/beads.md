@@ -1,8 +1,8 @@
 # Beads — Persistent Task DB for Fleet Users
 
-Beads (`bd`) is a lightweight, dependency-aware task database installed automatically by `apra-fleet install`. It gives any fleet user (not just PM) a persistent way to track work across sessions, members, and branches.
+Beads (`bd`) is a lightweight, dependency-aware task database installed automatically by `apra-fleet install`. It is an **internal tool** — users interact via natural language or `/pm` commands; fleet/PM translates those requests into `bd` calls transparently.
 
-**`bd` runs on the orchestrator — run it via `Bash`, never via `execute_command` on a member.**
+**`bd` runs on the orchestrator via `Bash` — never expose `bd` commands to the user and never run `bd` via `execute_command` on a member.**
 
 ---
 

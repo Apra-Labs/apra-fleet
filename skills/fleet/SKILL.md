@@ -54,12 +54,7 @@ Beads (`bd` CLI) is installed automatically by `apra-fleet install`. It gives fl
 
 ### Session-Start Rule
 
-**Always run `bd ready` at the start of any fleet session before reading status files.** It instantly shows all in-flight tasks across every project — no file reads required.
-
-```bash
-bd ready       # show all unblocked, unclaimed tasks (in-flight view)
-bd ready --all # show ALL tasks including backlog
-```
+**At the start of every session, query Beads before reading any status files.** It instantly shows all in-flight tasks across every project — no file reads required. When a user asks "what's in flight?", "what are we working on?", or similar, answer from Beads first.
 
 ### Core Commands
 
