@@ -1,0 +1,82 @@
+{
+  "project": "apra-fleet #210 — Members stuck in busy state",
+  "branch": "plan/issue-210",
+  "base_branch": "main",
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": 1,
+      "title": "Trace and document every exit path in execute-prompt.ts",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Added code comment block above inFlightAgents.add documenting all 7 exit paths. Verified inFlightAgents.delete and writeStatusline are in finally block."
+    },
+    {
+      "id": "T2",
+      "phase": 1,
+      "title": "Move writeStatusline() clear to finally block",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "writeStatusline() moved to finally block (unconditional clear). Catch block now only marks offline for genuine SSH/network errors; cancellations clear to idle via finally."
+    },
+    {
+      "id": "V1",
+      "phase": 1,
+      "title": "VERIFY: Phase 1",
+      "type": "verify",
+      "tier": "premium",
+      "status": "completed",
+      "notes": "npm run build and npm test both passed. Phase 1 code review completed by fleet-rev."
+    },
+    {
+      "id": "T3",
+      "phase": 2,
+      "title": "Guard against PID-less cancellation leaving stale state",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Exported inFlightAgents from execute-prompt.ts. stop_prompt now unconditionally calls inFlightAgents.delete and writeStatusline regardless of PID."
+    },
+    {
+      "id": "T4",
+      "phase": 2,
+      "title": "Defend against re-dispatch race after stop_prompt",
+      "tier": "standard",
+      "status": "completed",
+      "notes": "stop_prompt polls inFlightAgents (50ms intervals, max 2s) after killing PID before returning, ensuring the finally block from the killed session has cleared before re-dispatch."
+    },
+    {
+      "id": "V2",
+      "phase": 2,
+      "title": "VERIFY: Phase 2",
+      "type": "verify",
+      "tier": "premium",
+      "status": "completed",
+      "notes": "npm run build and npm test both passed. Phase 1+2 cumulative code review completed by fleet-rev."
+    },
+    {
+      "id": "T5",
+      "phase": 3,
+      "title": "Unit tests for busy state clear on all exit paths",
+      "tier": "standard",
+      "status": "completed",
+      "notes": "Added describe('busy-state clear on all exit paths (T5)') to tests/execute-prompt.test.ts with 4 tests: success (exit=0), failure (exit=1), thrown exception, and AbortSignal. Each asserts inFlightAgents.has() is false and writeStatusline was called with no-arg clear. Mocked statusline module at test-file level."
+    },
+    {
+      "id": "T6",
+      "phase": 3,
+      "title": "Unit tests for stop_prompt busy-clear",
+      "tier": "standard",
+      "status": "completed",
+      "notes": "Added describe('stop_prompt busy-clear (T6)') to tests/stop-prompt.test.ts with 2 tests: (1) pid=none clears inFlightAgents and calls writeStatusline; (2) stop_prompt followed by executePrompt does not return 'already running' error. All 1052 tests pass."
+    },
+    {
+      "id": "V3",
+      "phase": 3,
+      "title": "VERIFY: Phase 3",
+      "type": "verify",
+      "tier": "premium",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}

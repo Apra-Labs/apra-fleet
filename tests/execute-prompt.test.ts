@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
-import { executePrompt } from '../src/tools/execute-prompt.js';
+import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
 import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
+import { writeStatusline } from '../src/services/statusline.js';
 import type { SSHExecResult } from '../src/types.js';
+
+vi.mock('../src/services/statusline.js', () => ({
+  writeStatusline: vi.fn(),
+  readMemberStatus: vi.fn(() => 'idle'),
+}));
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number) => Promise<SSHExecResult>>();
 
@@ -435,6 +441,96 @@ describe('kill-before-retry (T5)', () => {
 
     // Kill call must use 5000ms timeout, not the full 300000ms prompt timeout
     expect(mockExecCommand.mock.calls[0][1]).toBe(5000);
+  });
+});
+
+describe('busy-state clear on all exit paths (T5)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) inFlightAgents.delete(memberId);
+  });
+
+  it('clears inFlightAgents and calls writeStatusline after success (exit=0)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-exit0' });
+    memberId = member.id;
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok', session_id: 's1' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+
+    await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
+  });
+
+  it('clears inFlightAgents and calls writeStatusline after failure (exit=1)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-exit1' });
+    memberId = member.id;
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: 'unexpected error', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+
+    await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
+  });
+
+  it('clears inFlightAgents and calls writeStatusline after thrown exception', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-exception' });
+    memberId = member.id;
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockRejectedValueOnce(new Error('ssh connection lost'))
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
+  });
+
+  it('clears inFlightAgents and calls writeStatusline after AbortSignal fires', async () => {
+    const controller = new AbortController();
+    const member = makeTestAgent({ friendlyName: 'ep-abort' });
+    memberId = member.id;
+    addAgent(member);
+
+    let resolveMain!: (v: SSHExecResult) => void;
+    const mainPromise = new Promise<SSHExecResult>(res => { resolveMain = res; });
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(() => mainPromise)                    // main — hangs until killed
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });      // tryKillPid + deletePromptFile
+
+    const promise = executePrompt(
+      { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
+      { signal: controller.signal },
+    );
+
+    controller.abort();
+    resolveMain({ stdout: '', stderr: 'killed', code: 1 });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await promise;
+
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
   });
 });
 
