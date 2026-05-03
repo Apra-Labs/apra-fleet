@@ -6,6 +6,23 @@ Beads (`bd`) is installed automatically by `apra-fleet install`. It gives PM a p
 
 ---
 
+## Rules
+
+**Terse, enforced. No exceptions.**
+
+| Rule | Command |
+|------|---------|
+| **Check before create epic** — never duplicate a sprint epic | `bd search "sprint: <project>" --status all --json` → use existing ID if found |
+| **Check before create task** — never duplicate a task | `bd list --parent <epic-id> --title "<task>" --json` → skip if found |
+| **Check before dispatch** — never steal a claimed task | `bd show <task-id> --json \| jq .status` → dispatch only if `"open"` |
+| **`bd init` is idempotent** — always safe to re-run | — |
+| **`bd close` is idempotent** — safe to repeat | — |
+| **`bd update --status in_progress`** — NOT protected; last write wins | Always check status first |
+| **Lost epic-id** — recover without reading files | `bd search "sprint: <project>" --status all --json \| jq -r '.[0].id'` |
+| **Lost task-id** — recover by title | `bd list --parent <epic-id> --title "<task>" --json \| jq -r '.[0].id'` |
+
+---
+
 ## Why Beads
 
 | Problem (file-only) | Solution (Beads) |
@@ -41,8 +58,16 @@ PM calls `bd` at these points in every sprint:
 ### `/pm init`
 ```bash
 cd <repo>
-bd init                          # idempotent — safe to re-run
-bd create "sprint: <project>" -p 1   # → epic-id (record in status.md)
+bd init   # idempotent
+
+# Check before create — avoid duplicate epics
+EXISTING=$(bd search "sprint: <project>" --status all --json | jq -r '.[0].id // empty')
+if [ -n "$EXISTING" ]; then
+  EPIC_ID=$EXISTING   # reuse existing epic
+else
+  EPIC_ID=$(bd create "sprint: <project>" -p 1 --json | jq -r .id)
+fi
+# Record EPIC_ID in <project>/status.md
 ```
 
 ### `/pm plan` — after PLAN.md is approved
@@ -56,7 +81,13 @@ Record all task IDs in `<project>/status.md` under a `## Beads` section.
 
 ### `/pm start` — dispatching a member to a task
 ```bash
-bd update <task-id> --status in_progress --assignee <member>
+# Check before dispatch — never steal a claimed task
+STATUS=$(bd show <task-id> --json | jq -r .status)
+if [ "$STATUS" = "open" ]; then
+  bd update <task-id> --status in_progress --assignee <member>
+else
+  echo "Task already $STATUS — skip or escalate"
+fi
 ```
 
 ### VERIFY checkpoint reached (member stops)
