@@ -10,7 +10,7 @@
     {"id": "2.1", "title": "Implement workspace CLI", "status": "completed", "notes": "src/cli/workspace.ts with list/add/remove/use/status; index.ts workspace dispatch added"},
     {"id": "verify-2", "title": "VERIFY: Phase 2", "status": "completed", "notes": "Tests pass on branch commit 608950e"},
     {"id": "3.1", "title": "Unit tests for --data-dir, --instance, workspace", "status": "completed", "notes": "tests/install-data-dir.test.ts with mocked fs and child_process"},
-    {"id": "3.2", "title": "Documentation", "status": "pending", "notes": "README.md and skills/fleet/SKILL.md have no --data-dir/--instance/workspace section yet"},
-    {"id": "verify-3", "title": "VERIFY: Phase 3", "status": "pending", "notes": "Blocked on 3.2 docs"}
+    {"id": "3.2", "title": "Documentation", "status": "completed", "notes": "Added multi-instance section to README.md (details block) and --instance note to skills/fleet/SKILL.md"},
+    {"id": "verify-3", "title": "VERIFY: Phase 3", "status": "completed", "notes": "52 test files, 883 tests passed (npm test)"}
   ]
 }
