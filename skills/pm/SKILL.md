@@ -37,11 +37,27 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 - `/pm pair <member> <member>` — Pair doer↔reviewer. Update icons (doer=circle, reviewer=square, same color) via `update_member`. See doer-reviewer.md.
 - `/pm plan <requirement>` — Triggers Phase 2 (Plan Generation). See single-pair-sprint.md. User provides requirements.md.
 - `/pm start <member>` — Begin Phase 3 execution. Before dispatch: complete doer-reviewer.md setup checklist and pre-flight checks. Plan must be APPROVED (planned.json exists in `<project>/`). Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution.
-- `/pm status <member>` — Check progress.json and git log
+- `/pm status <member>` — Check progress.json and git log. Also run `bd ready` for cross-sprint view.
 - `/pm resume <member>` — Resume after a verification checkpoint
 - `/pm deploy <member>` — Execute the project's deployment runbook. First, `receive_files` to pull `deploy.md` from the repo root or `docs/` folder via any available member. If it doesn't exist in the repo, create a copy locally from `tpl-deploy.md`, fill in the project's deploy and verify steps, then `send_files` to the doer's repo root and have them commit it before proceeding. Once deploy.md is in place, execute each step via `execute_command` on the target member, then run the Verify section to confirm the deploy succeeded.
-- `/pm recover <project>` — After PM restart: inspect each member's state and present recovery options. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md depending on sprint type.
-- `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, then raise the PR. See cleanup.md.
+- `/pm recover <project>` — After PM restart: run `bd ready` first for instant cross-sprint orientation, then inspect member state. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md.
+- `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, close Beads epic, then raise the PR. See cleanup.md.
+- `/pm backlog` — Query and manage deferred items via Beads. See beads.md.
+- `/pm tasks` — Show current sprint's Beads task tree (`bd show <epic-id> --tree`). See beads.md.
+
+## Beads — Persistent Task DB
+
+PM uses Beads (`bd` CLI, installed by `apra-fleet install`) as the persistent task database across all sprints. See `beads.md` for the full reference.
+
+**Session start rule:** Always run `bd ready` before opening any `status.md`. This gives an instant cross-sprint view of what's in-flight — no file reading required for orientation.
+
+**Lifecycle hooks (enforced — not optional):**
+- `/pm init` → `bd init` + `bd create` sprint epic + record epic-id in `status.md`
+- `/pm plan` (after approval) → `bd create` one task per PLAN.md item + `bd dep add` for dependencies
+- `/pm start` / task dispatch → `bd update <id> --claim`
+- VERIFY checkpoint done → `bd update <id> --done`
+- Reviewer CHANGES NEEDED → `bd create` a task per HIGH finding
+- `/pm cleanup` → `bd update <epic-id> --done` before raising PR
 
 ## Core Rules
 
@@ -104,6 +120,7 @@ execute_command  command="git remote set-url origin https://token:{{secure.githu
 - `context-file.md` — agent context file: provider filename lookup, role templates, delivery rules
 - `cleanup.md` — sprint cleanup command and PR raise procedure
 - `init.md` — project folder initialization
+- `beads.md` — Beads persistent task DB: commands, lifecycle hooks, backlog ops, cross-sprint patterns
 - `tpl-*.md` — templates: plan, plan-reviewer (`tpl-reviewer-plan.md`), doer, reviewer, status, requirements, design, deploy
 
 ## Model Selection
@@ -124,5 +141,5 @@ PM manages members running different LLM providers (Claude, Gemini, Codex, Copil
 | **Permissions** | `compose_permissions` produces provider-native config automatically — PM just calls it with role + member |
 | **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to the appropriate model for each provider |
 | **CLI commands** | Handled by the server — PM never constructs provider CLI strings directly |
-| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
+| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
 | **Attribution config** | Claude only (onboarding Step 2) — skip for all other providers |
