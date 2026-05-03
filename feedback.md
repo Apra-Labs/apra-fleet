@@ -1,8 +1,8 @@
 # apra-fleet #210 — Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-05-02 20:40:00-04:00
-**Verdict:** APPROVED
+**Date:** 2026-05-02 23:30:00-04:00
+**Verdict:** APPROVED (re-review)
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -95,7 +95,7 @@ Both phases align with the stated requirements and solve the described problem.
 
 **Test setup is correct.** `writeStatusline` is mocked at module level (`vi.mock('../src/services/statusline.js')`). `inFlightAgents` is imported directly from `execute-prompt.js` and cleaned up in `afterEach`. `vi.useFakeTimers()` is scoped to this describe block only — no interference with other test suites.
 
-**Assertion strategy is sound.** Each test checks two invariants: (1) `inFlightAgents.has(memberId) === false` — the concurrent dispatch guard is clear; (2) `writeStatusline` was called at least once with no arguments — the finally block's statusline re-render fired. The `some(c => c.length === 0)` pattern correctly distinguishes the no-arg finally call from any catch-block call that passes a Map argument.
+**Assertion strategy is sound.** Each test checks two invariants: (1) `inFlightAgents.has(memberId) === false` — the concurrent dispatch guard is clear; (2) `writeStatusline` was called with a Map containing the expected state (`'idle'` or `'offline'`). The SSH exception test correctly asserts `'offline'`; all other exit paths assert `'idle'`.
 
 ### T6: Unit tests for stop_prompt busy-clear
 
@@ -144,8 +144,32 @@ Phases 1–3 (T1–T6) are **APPROVED**. The implementation correctly:
 
 Build and all 1070 tests pass clean. No regressions across any phase. Production changes are limited to `src/tools/execute-prompt.ts` and `src/tools/stop-prompt.ts`. Code matches PLAN.md specifications and solves requirements.md's stated problem.
 
-**Non-blocking notes (unchanged, at doer's discretion):**
+---
 
-1. Comment block lines 101–102 describe pre-fix state — update to reflect current state; remove hardcoded line numbers.
-2. Timeout regex `/timeout/i` could be tightened to avoid matching non-connection timeouts.
-3. `writeStatusline()` re-renders persisted state rather than explicitly clearing to idle — recommend follow-up issue.
+## Re-review: Three non-blocking notes addressed
+
+All three non-blocking notes from the Phase 3 review have been fixed. Re-review verdict: **APPROVED — no remaining issues.**
+
+### 1. Stale comment block (commit 1a9925b) — PASS
+
+Comment block at `src/tools/execute-prompt.ts:93-100` rewritten in present-tense fixed form. No "Currently broken" or "Must move" language remains. All hardcoded line numbers removed. Each exit path (a–g) accurately describes the current behavior.
+
+### 2. Broad timeout regex (commit e6b423a) — PASS
+
+Regex at `src/tools/execute-prompt.ts:241` tightened from `/ssh|network|timeout|econnrefused|ehostunreach/i` to `/ssh|network|econnrefused|ehostunreach|connection timed out/i`. The phrase `connection timed out` is specific to TCP connection failures and will not match generic inactivity or request timeout errors. Correct fix.
+
+### 3. Explicit idle/offline in finally block (commit cc6b782) — PASS (root cause fix)
+
+This is the suspected root cause of #210 and the most important fix in the branch. Scrutinised carefully:
+
+- **`_epOffline` flag** (line 183): initialized `false`, set to `true` in catch only for genuine SSH/network errors via the tightened regex. Scoped correctly — `let` at function level, readable in both catch and finally.
+- **Finally block** (line 251): `writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]))` — always writes an explicit state. The prior `writeStatusline()` no-arg call re-rendered persisted state which could still contain `'busy'`, leaving the statusline stuck even though `inFlightAgents` was cleared. This explicit write eliminates that bug.
+- **Single write site**: The `writeStatusline` call was removed from the catch block. Finally is now the only location that writes statusline post-execution. This prevents double-write on the exception path and ensures consistent state regardless of exit path.
+- **T5 test updates**: All four T5 tests updated to assert `Map` with `'idle'` or `'offline'` instead of no-arg call. The SSH exception test (test 3) correctly asserts `'offline'`; success, failure, and abort tests assert `'idle'`. Assertions are precise and match the new behavior.
+- **Order of operations**: `writeStatusline` (line 251) runs before `inFlightAgents.delete` (line 252). This is correct — the statusline is updated while the agent is still in the in-flight set, so any concurrent reader sees a consistent transition from busy→idle/offline.
+
+**No issues found.** The fix is correct, minimal, and well-tested.
+
+### Build & Tests (re-review)
+
+`npm run build` succeeds (clean tsc). `npm test` passes: 61 test files, 1070 passed, 6 skipped, no failures. Identical to Phase 3 — no regressions from the three fix commits.
