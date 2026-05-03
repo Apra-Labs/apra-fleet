@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { parse, stringify } from 'smol-toml';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
@@ -449,7 +449,7 @@ Options:
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
-  const totalSteps = (installFleet && installPm) ? 7 : installFleet ? 6 : installPm ? 7 : 5;
+  const totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -597,6 +597,22 @@ ${killHint}
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
+  // --- Step 8: Install Beads task tracker ---
+  console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
+  try {
+    // Check if already installed
+    try {
+      execFileSync('bd', ['--version'], { stdio: 'pipe' });
+      // already installed — skip
+    } catch {
+      // not installed — install it
+      execFileSync('npm', ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+    }
+  } catch (err) {
+    // non-fatal: warn but don't fail the install
+    console.warn('  ⚠ Beads install skipped — npm not available or install failed');
+  }
+
   // Finalize permissions
   mergePermissions(paths);
 
@@ -607,6 +623,14 @@ ${killHint}
   fs.writeFileSync(path.join(configDir, 'install-config.json'), JSON.stringify(installConfig, null, 2), { mode: 0o600 });
 
   // --- Done ---
+  let beadsVersion = 'installed';
+  try {
+    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8' });
+    beadsVersion = (versionOut as string).trim() || 'installed';
+  } catch {
+    // not installed or unavailable
+  }
+
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
   console.log(`
@@ -615,6 +639,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
+  Beads:       ${beadsVersion}
 
 ${instructions}${forceNote}
 `);
