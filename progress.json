@@ -1,0 +1,87 @@
+{
+  "issue": "#125",
+  "branch": "feat/multi-provider-per-member",
+  "baseBranch": "main",
+  "tasks": [
+    {
+      "id": "1.1",
+      "phase": 1,
+      "title": "Update member type — providers array",
+      "type": "code",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "1.2",
+      "phase": 1,
+      "title": "Update register_member tool",
+      "type": "code",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "1.3",
+      "phase": 1,
+      "title": "Update update_member tool",
+      "type": "code",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "1.V",
+      "phase": 1,
+      "title": "VERIFY: Phase 1",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "2.1",
+      "phase": 2,
+      "title": "execute_prompt — add optional provider param",
+      "type": "code",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "2.2",
+      "phase": 2,
+      "title": "provision_llm_auth — add optional provider param",
+      "type": "code",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "2.V",
+      "phase": 2,
+      "title": "VERIFY: Phase 2",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "3.1",
+      "phase": 3,
+      "title": "member_detail + fleet_status + list_members — show all providers",
+      "type": "code",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "3.2",
+      "phase": 3,
+      "title": "Tests",
+      "type": "code",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "3.V",
+      "phase": 3,
+      "title": "VERIFY: Phase 3",
+      "type": "verify",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}
