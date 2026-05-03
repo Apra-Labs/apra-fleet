@@ -471,10 +471,12 @@ describe('busy-state clear on all exit paths (T5)', () => {
     await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
     expect(inFlightAgents.has(memberId)).toBe(false);
-    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
+    expect(vi.mocked(writeStatusline).mock.calls.some(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
+    )).toBe(true);
   });
 
-  it('clears inFlightAgents and calls writeStatusline after failure (exit=1)', async () => {
+  it('clears inFlightAgents and sets idle after failure (exit=1)', async () => {
     const member = makeTestAgent({ friendlyName: 'ep-exit1' });
     memberId = member.id;
     addAgent(member);
@@ -486,10 +488,12 @@ describe('busy-state clear on all exit paths (T5)', () => {
     await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
     expect(inFlightAgents.has(memberId)).toBe(false);
-    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
+    expect(vi.mocked(writeStatusline).mock.calls.some(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
+    )).toBe(true);
   });
 
-  it('clears inFlightAgents and calls writeStatusline after thrown exception', async () => {
+  it('clears inFlightAgents and sets offline after SSH connection failure', async () => {
     const member = makeTestAgent({ friendlyName: 'ep-exception' });
     memberId = member.id;
     addAgent(member);
@@ -501,10 +505,12 @@ describe('busy-state clear on all exit paths (T5)', () => {
     await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
     expect(inFlightAgents.has(memberId)).toBe(false);
-    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
+    expect(vi.mocked(writeStatusline).mock.calls.some(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'offline'
+    )).toBe(true);
   });
 
-  it('clears inFlightAgents and calls writeStatusline after AbortSignal fires', async () => {
+  it('clears inFlightAgents and sets idle after AbortSignal fires', async () => {
     const controller = new AbortController();
     const member = makeTestAgent({ friendlyName: 'ep-abort' });
     memberId = member.id;
@@ -530,7 +536,9 @@ describe('busy-state clear on all exit paths (T5)', () => {
     await promise;
 
     expect(inFlightAgents.has(memberId)).toBe(false);
-    expect(vi.mocked(writeStatusline).mock.calls.some(c => c.length === 0)).toBe(true);
+    expect(vi.mocked(writeStatusline).mock.calls.some(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
+    )).toBe(true);
   });
 });
 

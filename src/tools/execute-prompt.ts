@@ -180,6 +180,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epExitCode: number | 'error' = 'error';
   let _epError: string | undefined;
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
+  let _epOffline = false;
   try {
     let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured);
     let parsed = provider.parseResponse(result);
@@ -237,10 +238,7 @@ session: ${parsed.sessionId}`;
     return output;
   } catch (err: any) {
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
-    const isConnectionError = err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message);
-    if (isConnectionError) {
-      writeStatusline(new Map([[agent.id, 'offline']]));
-    }
+    _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     _epError = err.message;
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
@@ -249,8 +247,8 @@ session: ${parsed.sessionId}`;
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);
-    // Clear busy state from statusline unconditionally on all exit paths
-    writeStatusline();
+    // Explicitly set idle (or offline for connection failures) — never rely on persisted busy state clearing itself
+    writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
     inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
