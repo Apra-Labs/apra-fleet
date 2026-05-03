@@ -99,6 +99,7 @@ When `--data-dir` is user-supplied (no `--instance`), `v` is arbitrary string in
 
 **Must fix before merge (CHANGES NEEDED):**
 1. **Shell injection in `--data-dir` → `claude mcp add`** (`install.ts:585`). The `dataDir` value must be properly escaped or the command must be built using `execFileSync` with an argv array. This is the only blocking issue.
+   **Doer:** fixed in commit <sha> — switched to execFileSync with argv array to eliminate shell interpolation
 
 **Should fix (non-blocking):**
 2. `workspace.ts` should import `APRA_BASE`, `WORKSPACES_DIR`, `WORKSPACES_INDEX` from `../paths.js` instead of redeclaring them.

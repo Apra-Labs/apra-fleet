@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { runInstall } from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
@@ -53,29 +53,32 @@ describe('runInstall --data-dir / --instance', () => {
   it('--data-dir passes -e APRA_FLEET_DATA_DIR to claude mcp add', async () => {
     await runInstall(['--data-dir', '/custom/data']);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const addCall = calls.find(c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add'));
     expect(addCall).toBeDefined();
-    expect(addCall).toContain('-e APRA_FLEET_DATA_DIR="/custom/data"');
-    expect(addCall).toContain('apra-fleet');
+    const args = addCall![1] as string[];
+    expect(args.join(' ')).toContain('-e APRA_FLEET_DATA_DIR=/custom/data');
+    expect(args).toContain('apra-fleet');
   });
 
   it('--data-dir with equals form works', async () => {
     await runInstall(['--data-dir=/my/dir']);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const addCall = calls.find(c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add'));
     expect(addCall).toBeDefined();
-    expect(addCall).toContain('-e APRA_FLEET_DATA_DIR="/my/dir"');
+    const args = addCall![1] as string[];
+    expect(args.join(' ')).toContain('-e APRA_FLEET_DATA_DIR=/my/dir');
   });
 
   it('no --data-dir → no -e env flag in claude mcp add', async () => {
     await runInstall([]);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const addCall = calls.find(c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add'));
     expect(addCall).toBeDefined();
-    expect(addCall).not.toContain('-e APRA_FLEET_DATA_DIR');
+    const args = addCall![1] as string[];
+    expect(args.join(' ')).not.toContain('APRA_FLEET_DATA_DIR');
   });
 
   // --- Claude + --instance ---
@@ -83,29 +86,30 @@ describe('runInstall --data-dir / --instance', () => {
   it('--instance sets server name to apra-fleet-<name>', async () => {
     await runInstall(['--instance', 'odm']);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const addCall = calls.find(c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add'));
     expect(addCall).toBeDefined();
-    expect(addCall).toContain('apra-fleet-odm');
+    expect(addCall![1] as string[]).toContain('apra-fleet-odm');
   });
 
   it('--instance sets APRA_FLEET_DATA_DIR to workspaces/<name>', async () => {
     await runInstall(['--instance', 'myproject']);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const addCall = calls.find(c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add'));
     expect(addCall).toBeDefined();
+    const args = addCall![1] as string[];
     const expectedPath = path.join(mockHome, '.apra-fleet', 'workspaces', 'myproject');
-    expect(addCall).toContain(expectedPath);
+    expect(args.join(' ')).toContain(expectedPath);
   });
 
   it('--instance equals form works', async () => {
     await runInstall(['--instance=proj']);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const addCall = calls.find(c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add'));
     expect(addCall).toBeDefined();
-    expect(addCall).toContain('apra-fleet-proj');
+    expect(addCall![1] as string[]).toContain('apra-fleet-proj');
   });
 
   it('--instance removes the old server name before adding new', async () => {
@@ -243,10 +247,11 @@ describe('runInstall --data-dir / --instance', () => {
   it('--data-dir with ~ expands to home dir', async () => {
     await runInstall(['--data-dir', '~/custom/data']);
 
-    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
-    const addCall = calls.find(c => c.includes('claude mcp add'));
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const addCall = calls.find(c => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('add'));
     expect(addCall).toBeDefined();
-    expect(addCall).toContain(`${mockHome}/custom/data`);
-    expect(addCall).not.toContain('~');
+    const argStr = (addCall![1] as string[]).join(' ');
+    expect(argStr).toContain(`${mockHome}/custom/data`);
+    expect(argStr).not.toContain('~');
   });
 });

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { parse, stringify } from 'smol-toml';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
@@ -595,12 +595,13 @@ ${killHint}
       run(`claude mcp remove ${serverName} --scope user`, { stdio: 'ignore' });
     } catch { /* not registered */ }
 
-    const envFlags = Object.entries(envVars).map(([k, v]) => `-e ${k}="${v}"`).join(' ');
-    const envPart = envFlags ? ` ${envFlags}` : '';
-    const cmd = mcpConfig.command === 'node'
-      ? `claude mcp add --scope user${envPart} ${serverName} -- node "${mcpConfig.args[0]}"`
-      : `claude mcp add --scope user${envPart} ${serverName} -- "${mcpConfig.command}"`;
-    run(cmd);
+    const envArgs = Object.entries(envVars).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    const serverArgs = mcpConfig.command === 'node'
+      ? ['node', mcpConfig.args[0]]
+      : [mcpConfig.command];
+    const addArgs = ['mcp', 'add', '--scope', 'user', ...envArgs, serverName, '--', ...serverArgs];
+    const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' as const } : {};
+    execFileSync('claude', addArgs, { stdio: 'inherit', ...shellOpt });
   } else if (llm === 'gemini') {
     mergeGeminiConfig(paths, mcpConfig, serverName, envVars);
   } else if (llm === 'codex') {
