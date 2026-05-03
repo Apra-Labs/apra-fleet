@@ -41,6 +41,15 @@ if (arg === 'install') {
     .catch(err => { logError('cli', `Auth failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'update') {
   const rest = process.argv.slice(3);
+  if (rest.includes('--help') || rest.includes('-h')) {
+    console.log(`apra-fleet update
+
+Usage:
+  apra-fleet update           Check for and install latest update
+  apra-fleet update --check   Check for update without installing
+  apra-fleet update --help    Show this help`);
+    process.exit(0);
+  }
   if (rest.includes('--check')) {
     import('./services/update-check.js')
       .then(async m => {
