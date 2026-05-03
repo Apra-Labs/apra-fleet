@@ -14,4 +14,14 @@
    - `planned.json` — immutable plan copy (saved after plan is APPROVED in Phase 2 — not at init time)
 4. Add project row to projects.md
 
+4. Add project row to projects.md
+
+5. **Beads init** — run from the orchestrator (Bash):
+   ```bash
+   cd <repo>
+   bd init                                    # idempotent
+   bd create "sprint: <project>" -p 1         # → <epic-id>
+   ```
+   Record `<epic-id>` in `<project>/status.md` under a `## Beads` section. Task IDs are added here after `/pm plan` completes. See `beads.md` for the full pattern.
+
 All project artifacts live in `<project>/` — see Core Rule 2 in SKILL.md for the full sandboxing requirement.
