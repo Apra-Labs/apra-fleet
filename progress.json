@@ -11,6 +11,7 @@
     {"id": "verify-2", "title": "VERIFY: Phase 2", "status": "completed", "notes": "Tests pass on branch commit 608950e"},
     {"id": "3.1", "title": "Unit tests for --data-dir, --instance, workspace", "status": "completed", "notes": "tests/install-data-dir.test.ts with mocked fs and child_process"},
     {"id": "3.2", "title": "Documentation", "status": "completed", "notes": "Added multi-instance section to README.md (details block) and --instance note to skills/fleet/SKILL.md"},
-    {"id": "verify-3", "title": "VERIFY: Phase 3", "status": "completed", "notes": "52 test files, 883 tests passed (npm test)"}
+    {"id": "verify-3", "title": "VERIFY: Phase 3", "status": "completed", "notes": "52 test files, 883 tests passed (npm test)"},
+    {"id": "security-fix", "title": "Fix shell injection in --data-dir (blocking review finding)", "status": "completed", "notes": "Replaced execSync string interpolation with execFileSync argv array (commit 9df6102). Updated tests to assert on execFileSync mock."}
   ]
 }
