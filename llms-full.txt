@@ -174,6 +174,31 @@ claude mcp remove apra-fleet --scope user
 
 </details>
 
+<details>
+<summary><strong>Running multiple fleet instances on the same machine</strong></summary>
+
+Use `--instance` (recommended) or `--data-dir` to keep fleet data isolated per project.
+
+**Named instance** — registers the MCP server as `apra-fleet-<name>` with data under `~/.apra-fleet/workspaces/<name>`:
+```bash
+apra-fleet install --instance my-project
+```
+
+**Custom data directory:**
+```bash
+apra-fleet install --data-dir ~/fleet-data/my-project
+```
+
+**Manage instances with the workspace command:**
+```bash
+apra-fleet workspace list      # show all instances
+apra-fleet workspace status    # current instance info
+```
+
+Credentials stored in one instance are not readable by another — each instance has its own encryption salt.
+
+</details>
+
 ## Register your first member
 
 A "member" is any machine (or workspace) that fleet manages. There are two types:

@@ -37,6 +37,8 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `credential_store_update` | Update credential metadata (members, TTL, network policy) without re-entering the secret |
 | `stop_prompt` | Kill the active LLM process on a member. **Always call `TaskStop` after calling `stop_prompt`**.<br><br>**Use when:** a member is hung, working on the wrong thing, or needs to be cancelled. |
 
+**Multiple instances on the same machine:** Use `--instance <name>` when installing to isolate fleet data per project (registers the MCP server as `apra-fleet-<name>`, data under `~/.apra-fleet/workspaces/<name>`). Example: `apra-fleet install --instance my-project`. Each instance has its own credential store and member registry.
+
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
 - `permissions.md` — permission composition and denial handling
