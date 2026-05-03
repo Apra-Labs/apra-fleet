@@ -61,7 +61,12 @@ export async function runUpdate(): Promise<void> {
         fileStream.write(Buffer.from(chunk));
       }
     }));
-    fileStream.end();
+    
+    await new Promise((resolve, reject) => {
+      fileStream.on('finish', resolve);
+      fileStream.on('error', reject);
+      fileStream.end();
+    });
 
     if (process.platform !== 'win32') {
       fs.chmodSync(tmpPath, 0o755);
