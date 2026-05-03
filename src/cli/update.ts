@@ -72,7 +72,7 @@ export async function runUpdate(): Promise<void> {
       fs.chmodSync(tmpPath, 0o755);
     }
 
-    const configPath = path.join(FLEET_DIR, '..', 'data', 'install-config.json');
+    const configPath = path.join(FLEET_DIR, 'install-config.json');
     let config = { llm: 'claude', skill: 'all' };
     if (fs.existsSync(configPath)) {
       try {
