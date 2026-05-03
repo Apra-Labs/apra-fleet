@@ -124,5 +124,5 @@ PM manages members running different LLM providers (Claude, Gemini, Codex, Copil
 | **Permissions** | `compose_permissions` produces provider-native config automatically — PM just calls it with role + member |
 | **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to the appropriate model for each provider |
 | **CLI commands** | Handled by the server — PM never constructs provider CLI strings directly |
-| **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members |
+| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
 | **Attribution config** | Claude only (onboarding Step 2) — skip for all other providers |
