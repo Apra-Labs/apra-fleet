@@ -44,3 +44,17 @@ All 1113 tests pass across 63 test files. No regressions introduced.
 When `bd --version` call fails during Beads post-install validation, the banner section left `beadsVersion` as `'installed'` instead of showing the actual failure state.
 
 **Doer:** fixed in commit f4e2a99 — catch block now sets beadsVersion to 'not available'
+
+### Re-review (commit b1c111b) — APPROVED
+
+Verified the one-line fix in `src/cli/install.ts`:
+
+- **Before:** catch block was empty (`// not installed or unavailable`), leaving `beadsVersion` as `'installed'` even when `bd --version` fails.
+- **After:** catch block sets `beadsVersion = 'not available'`, so the post-install banner correctly reflects failure.
+
+All three code paths are sound:
+1. `bd --version` succeeds with output → banner shows actual version string.
+2. `bd --version` succeeds but returns empty → banner shows `'installed'` (fallback).
+3. `bd --version` throws → banner shows `'not available'` (the fix).
+
+**Tests:** 1066 passed, 7 skipped across 64 test files. No regressions.
