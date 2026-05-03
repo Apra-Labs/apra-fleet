@@ -25,16 +25,16 @@
       "title": "VERIFY: Phase 1 — Audit all exit paths",
       "type": "verify",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "PM approved Phase 1. npm run build and npm test both pass (61 files, 1046 tests)."
     },
     {
       "id": "T3",
       "phase": 2,
       "title": "Guard against PID-less cancellation leaving stale state",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Exported inFlightAgents from execute-prompt.ts. In stop-prompt.ts: imported inFlightAgents and writeStatusline, added inFlightAgents.delete(agent.id) and writeStatusline() unconditionally after tryKillPid. Handles pid=none race where process never recorded PID."
     },
     {
       "id": "T4",

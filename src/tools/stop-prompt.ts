@@ -5,6 +5,8 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { logLine } from '../utils/log-helpers.js';
+import { inFlightAgents } from './execute-prompt.js';
+import { writeStatusline } from '../services/statusline.js';
 
 export const stopPromptSchema = z.object({
   ...memberIdentifier,
@@ -23,6 +25,11 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
   const pid = getStoredPid(agent.id);
 
   await tryKillPid(agent, strategy, cmds);
+
+  // Unconditionally clear busy state — handles pid=none race where inFlightAgents
+  // still holds the agent but the process never recorded a PID.
+  inFlightAgents.delete(agent.id);
+  writeStatusline();
 
   logLine('stop_prompt', `pid=${pid ?? 'none'}`, agent);
 
