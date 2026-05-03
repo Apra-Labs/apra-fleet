@@ -37,10 +37,3 @@ compose-permissions integration levels.
 ### Test suite health
 
 All 1113 tests pass across 63 test files. No regressions introduced.
-
-## PR #232: Beads Install Step Bug Fix
-
-### Issue
-When `bd --version` call fails during Beads post-install validation, the banner section left `beadsVersion` as `'installed'` instead of showing the actual failure state.
-
-**Doer:** fixed in commit f4e2a99 — catch block now sets beadsVersion to 'not available'
