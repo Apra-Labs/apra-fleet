@@ -1,7 +1,7 @@
 # apra-fleet #210 — Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-05-02 22:20:00-04:00
+**Date:** 2026-05-02 20:40:00-04:00
 **Verdict:** APPROVED
 
 > See the recent git history of this file to understand the context of this review.
@@ -76,17 +76,69 @@ Both phases align with the stated requirements and solve the described problem.
 
 ---
 
-## Summary
+## Phase 3 Code Review: Test coverage for busy-state cleanup (T5 + T6)
 
-Phases 1 and 2 (T1–T4) are **APPROVED**. The implementation correctly:
+### T5: Unit tests for busy-state clear on all exit paths
 
-- Moves `writeStatusline()` to the finally block for unconditional cleanup on all exit paths (T1/T2)
+**PASS.** Four tests added in `tests/execute-prompt.test.ts` under `describe('busy-state clear on all exit paths (T5)')`:
+
+1. **Success (exit=0)** — `mockExecCommand` returns code 0 with valid JSON. Asserts `inFlightAgents.has(memberId)` is false and `writeStatusline()` was called with no args.
+2. **Failure (exit=1)** — `mockExecCommand` returns code 1 with stderr. Same assertions — busy state clears even on non-zero exit.
+3. **Thrown exception** — `mockExecCommand` rejects with `Error('ssh connection lost')`. Verifies the catch→finally chain clears busy state.
+4. **AbortSignal cancellation** — Uses `AbortController` and deferred promise pattern. The main exec hangs, abort fires, then the promise resolves with code 1. Uses `vi.advanceTimersByTimeAsync(0)` to flush microtasks. Asserts busy state is cleared after abort path.
+
+**Test setup is correct.** `writeStatusline` is mocked at module level (`vi.mock('../src/services/statusline.js')`). `inFlightAgents` is imported directly from `execute-prompt.js` and cleaned up in `afterEach`. `vi.useFakeTimers()` is scoped to this describe block only — no interference with other test suites.
+
+**Assertion strategy is sound.** Each test checks two invariants: (1) `inFlightAgents.has(memberId) === false` — the concurrent dispatch guard is clear; (2) `writeStatusline` was called at least once with no arguments — the finally block's statusline re-render fired. The `some(c => c.length === 0)` pattern correctly distinguishes the no-arg finally call from any catch-block call that passes a Map argument.
+
+### T6: Unit tests for stop_prompt busy-clear
+
+**PASS.** Two tests added in `tests/stop-prompt.test.ts` under `describe('stop_prompt busy-clear (T6)')`:
+
+1. **pid=none clears busy state** — Manually adds `memberId` to `inFlightAgents`, calls `stopPrompt`, asserts `inFlightAgents.has(memberId)` is false and `writeStatusline` was called. Also asserts the return string contains 'stopped'. This directly tests the T3 fix for the pid=none case.
+2. **Re-dispatch after stop** — Simulates the end-to-end user scenario from issue #210: member is stuck busy (in `inFlightAgents` with no PID), user calls `stop_prompt`, then immediately dispatches `execute_prompt`. Asserts the result does *not* contain 'already running' and *does* contain the expected output. This is the integration-level test for the T3+T4 fix working together.
+
+**Test isolation is correct.** `afterEach` cleans up both `inFlightAgents` and `clearStoredPid`. `mockExecCommand` is set up fresh for the re-dispatch test. The `writeStatusline` mock is shared with the T5 tests via the same module-level `vi.mock`.
+
+### Build & Tests
+
+**PASS.** `npm run build` succeeds (clean tsc). `npm test` passes: 61 test files, **1070 passed** (up from 1064 in Phase 2), 6 skipped, no failures. The delta of +6 tests matches exactly: 4 from T5 + 2 from T6.
+
+### Regression Check
+
+Phase 3 changes are test-only — no production code was modified. `tests/execute-prompt.test.ts` gained 4 tests, `tests/stop-prompt.test.ts` gained 2 tests. Both files add imports (`inFlightAgents`, `writeStatusline`) and module-level mocks that are scoped correctly. No existing test assertions were modified. All 61 test suites still pass.
+
+### Test Coverage Assessment
+
+The six new tests cover the critical behavioral guarantees from Phases 1 and 2:
+
+| Exit path | Covered by |
+|---|---|
+| Normal success (exit=0) | T5 test 1 |
+| Non-zero exit (exit=1) | T5 test 2 |
+| Thrown exception (catch block) | T5 test 3 |
+| AbortSignal cancellation | T5 test 4 |
+| stop_prompt with pid=none | T6 test 1 |
+| stop_prompt → re-dispatch (integration) | T6 test 2 |
+
+**Not covered (acceptable):** Stale session retry (exit path e) and server overload retry (exit path f) — these are internal retry loops that eventually exit through one of the covered paths. The poll guard timeout case in `stop_prompt` (2s deadline expires) is hard to test deterministically and the unconditional delete provides the safety net.
+
+---
+
+## Cumulative Summary (All Phases)
+
+Phases 1–3 (T1–T6) are **APPROVED**. The implementation correctly:
+
+- Documents all seven exit paths from `executePrompt` (T1)
+- Moves `writeStatusline()` to the finally block for unconditional cleanup (T2)
 - Exports `inFlightAgents` and uses it in `stop_prompt` to unconditionally clear busy state (T3)
 - Adds a poll guard to prevent re-dispatch races after PID kill (T4)
+- Tests busy-state cleanup on all four primary exit paths: success, failure, exception, abort (T5)
+- Tests `stop_prompt` busy-clear for pid=none and the stop→re-dispatch user scenario (T6)
 
-Build and tests pass clean. No regressions. Code matches PLAN.md specifications and solves requirements.md's stated problem.
+Build and all 1070 tests pass clean. No regressions across any phase. Production changes are limited to `src/tools/execute-prompt.ts` and `src/tools/stop-prompt.ts`. Code matches PLAN.md specifications and solves requirements.md's stated problem.
 
-**Non-blocking notes carried forward from Phase 1** (unchanged, at doer's discretion):
+**Non-blocking notes (unchanged, at doer's discretion):**
 
 1. Comment block lines 101–102 describe pre-fix state — update to reflect current state; remove hardcoded line numbers.
 2. Timeout regex `/timeout/i` could be tightened to avoid matching non-connection timeouts.
