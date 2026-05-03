@@ -37,10 +37,10 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 - `/pm pair <member> <member>` — Pair doer↔reviewer. Update icons (doer=circle, reviewer=square, same color) via `update_member`. See doer-reviewer.md.
 - `/pm plan <requirement>` — Triggers Phase 2 (Plan Generation). See single-pair-sprint.md. User provides requirements.md.
 - `/pm start <member>` — Begin Phase 3 execution. Before dispatch: complete doer-reviewer.md setup checklist and pre-flight checks. Plan must be APPROVED (planned.json exists in `<project>/`). Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution.
-- `/pm status <member>` — Check progress.json and git log. Also run `bd ready` for cross-sprint view.
+- `/pm status <member>` — Check in-flight tasks (via Beads), progress.json, and git log.
 - `/pm resume <member>` — Resume after a verification checkpoint
 - `/pm deploy <member>` — Execute the project's deployment runbook. First, `receive_files` to pull `deploy.md` from the repo root or `docs/` folder via any available member. If it doesn't exist in the repo, create a copy locally from `tpl-deploy.md`, fill in the project's deploy and verify steps, then `send_files` to the doer's repo root and have them commit it before proceeding. Once deploy.md is in place, execute each step via `execute_command` on the target member, then run the Verify section to confirm the deploy succeeded.
-- `/pm recover <project>` — After PM restart: run `bd ready` first for instant cross-sprint orientation, then inspect member state. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md.
+- `/pm recover <project>` — After PM restart: check in-flight tasks via Beads for instant orientation, then inspect member state. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md.
 - `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, close Beads epic, then raise the PR. See cleanup.md.
 - `/pm backlog` — Query and manage deferred items via Beads. See beads.md.
 - `/pm tasks` — Show current sprint's Beads task tree (`bd show <epic-id> --tree`). See beads.md.
