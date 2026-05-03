@@ -44,6 +44,48 @@ See sub-documents for detailed usage:
 - `troubleshooting.md` — fleet tool troubleshooting by symptom
 - `skill-matrix.md` — skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md` — VCS auth provisioning per provider
+- `beads.md` — Beads persistent task DB: commands, backlog ops, session recovery patterns
+
+## Beads — Persistent Task Tracking
+
+Beads (`bd` CLI) is installed automatically by `apra-fleet install`. It gives fleet users a persistent, dependency-aware task database that survives across sessions, branches, and members.
+
+**Run `bd` via `Bash` on the orchestrator — never via `execute_command` on a member.**
+
+### Session-Start Rule
+
+**Always run `bd ready` at the start of any fleet session before reading status files.** It instantly shows all in-flight tasks across every project — no file reads required.
+
+```bash
+bd ready       # show all unblocked, unclaimed tasks (in-flight view)
+bd ready --all # show ALL tasks including backlog
+```
+
+### Core Commands
+
+```bash
+bd init                             # init in current repo (once, idempotent)
+bd create "title" -p <0-3>          # create task (0=critical, 1=high, 2=med, 3=low)
+bd update <id> --claim              # mark in-progress (on dispatch)
+bd update <id> --done               # mark complete (on verify/approval)
+bd update <id> --note "PR: <url>"   # attach a note
+bd dep add <child-id> <parent-id>   # child blocked until parent done
+bd show <id> --tree                 # task + all dependencies
+```
+
+### Backlog Pattern
+
+When a user says "add to backlog" or "defer this":
+```bash
+bd create "<description>" -p 3 --parent <epic-id>   # low priority, stays in backlog
+```
+
+When asked "what's deferred" or "show backlog":
+```bash
+bd ready --all   # or: bd show <epic-id> --tree
+```
+
+See `beads.md` for the full reference, workflow examples, and PM integration details.
 
 ## Secure Credentials
 
@@ -241,7 +283,7 @@ When you see this notice, surface it to the user verbatim before the rest of the
 |---------|---------------|
 | **Agent context file** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT-INSTRUCTIONS.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
-| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
+| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
 
 ## Fleet Logs
 
