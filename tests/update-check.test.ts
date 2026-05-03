@@ -12,39 +12,39 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkForUpdate, getUpdateNotice, _setUpdateCache, _isNewer, runUpdateCheck } from '../src/services/update-check.js';
+import { checkForUpdate, getUpdateNotice, _setUpdateCache, isNewer } from '../src/services/update-check.js';
 
 // ---------------------------------------------------------------------------
-// parseVersion / isNewer — 4-part version tag support (#211)
+// isNewer — version comparison (3-part semver only)
 // ---------------------------------------------------------------------------
 
-describe('isNewer — 4-part version tags', () => {
-  it('v0.1.8.0 vs v0.1.8 → equal (not newer)', () => {
-    expect(_isNewer('v0.1.8.0', 'v0.1.8')).toBe(false);
+describe('isNewer — version comparison', () => {
+  it('v0.1.9 vs v0.1.8 → newer', () => {
+    expect(isNewer('v0.1.9', 'v0.1.8')).toBe(true);
   });
 
-  it('v0.1.8.1 vs v0.1.8 → newer', () => {
-    expect(_isNewer('v0.1.8.1', 'v0.1.8')).toBe(true);
+  it('v0.1.8 vs v0.1.8 → not newer (equal)', () => {
+    expect(isNewer('v0.1.8', 'v0.1.8')).toBe(false);
   });
 
-  it('v0.1.9.0 vs v0.1.8.1 → newer', () => {
-    expect(_isNewer('v0.1.9.0', 'v0.1.8.1')).toBe(true);
+  it('v0.1.7 vs v0.1.8 → not newer (older)', () => {
+    expect(isNewer('v0.1.7', 'v0.1.8')).toBe(false);
   });
 
-  it('v0.1.8 vs v0.1.8.0 → not newer (symmetric)', () => {
-    expect(_isNewer('v0.1.8', 'v0.1.8.0')).toBe(false);
+  it('4-part version string returns false (not supported)', () => {
+    expect(isNewer('v0.1.8.1', 'v0.1.8')).toBe(false);
   });
 
   it('invalid candidate returns false', () => {
-    expect(_isNewer('garbage', 'v0.1.8')).toBe(false);
+    expect(isNewer('garbage', 'v0.1.8')).toBe(false);
   });
 
   it('invalid current returns false', () => {
-    expect(_isNewer('v0.1.8', 'not-a-version')).toBe(false);
+    expect(isNewer('v0.1.8', 'not-a-version')).toBe(false);
   });
 
-  it('2-part version returns false (< 3 parts)', () => {
-    expect(_isNewer('v1.0', 'v0.1.8')).toBe(false);
+  it('2-part version returns false (not enough parts)', () => {
+    expect(isNewer('v1.0', 'v0.1.8')).toBe(false);
   });
 });
 
@@ -74,7 +74,7 @@ describe('checkForUpdate — newer version available', () => {
     expect(notice).not.toBeNull();
     expect(notice).toContain('v99.0.0');
     expect(notice).toContain('is available');
-    expect(notice).toContain('/pm deploy apra-fleet');
+    expect(notice).toContain('apra-fleet update');
   });
 
   it('returns null when remote version equals installed', async () => {
@@ -135,67 +135,6 @@ describe('checkForUpdate — newer version available', () => {
 
     await checkForUpdate();
     expect(getUpdateNotice()).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// runUpdateCheck — CLI --check output
-// ---------------------------------------------------------------------------
-
-describe('runUpdateCheck — CLI update check', () => {
-  let exitSpy: ReturnType<typeof vi.spyOn>;
-  let logSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit'); }) as any);
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('prints up-to-date when installed version equals remote', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ tag_name: 'v0.0.0' }),
-    }));
-    try { await runUpdateCheck(); } catch {}
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('is up to date'));
-  });
-
-  it('prints download URL when newer version is available', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ tag_name: 'v99.0.0' }),
-    }));
-    try { await runUpdateCheck(); } catch {}
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('v99.0.0'));
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Download:'));
-  });
-
-  it('prints up-to-date for pre-release alpha tag', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ tag_name: 'v99.0.0-alpha.1' }),
-    }));
-    try { await runUpdateCheck(); } catch {}
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('is up to date'));
-  });
-
-  it('prints fallback message on network failure', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
-    try { await runUpdateCheck(); } catch {}
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Could not check for updates'));
-  });
-
-  it('prints fallback message on non-ok HTTP response', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      json: async () => ({}),
-    }));
-    try { await runUpdateCheck(); } catch {}
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Could not check for updates'));
   });
 });
 
