@@ -32,8 +32,8 @@ Write `<project>/requirements.md`. Quality bar:
 5. Once APPROVED: save `planned.json` in `<project>/` — this is the immutable original, never modify it
 6. **Beads: push plan tasks** — for each task in PLAN.md, create a Beads task and wire dependencies:
    ```bash
-   bd create "T1.1: <title>" -p 1 --parent <epic-id>   # → task-id
-   bd create "T1.2: <title>" -p 2 --parent <epic-id>   # → task-id
+   bd create "T1.1: <title>" -p 1 --parent <epic-id> --assignee <doer>   # → task-id
+   bd create "T1.2: <title>" -p 2 --parent <epic-id> --assignee <doer>   # → task-id
    bd dep add <T1.2-id> <T1.1-id>                       # T1.2 blocked until T1.1 done
    ```
    Record all task IDs in `<project>/status.md` Beads section. See `beads.md`.
@@ -70,13 +70,13 @@ Dispatch ONE task at `model: <tier>`. PM records `lastDispatchedPhase = nextTask
 
 ```
 PM sends task harness → dispatches doer (resume per data-driven rule, model=nextTask.tier)
-  → bd update <task-id> --claim
+  → bd update <task-id> --status in_progress --assignee <doer>
   → doer reads progress.json → executes next pending task → commits → updates progress.json
   → hits VERIFY checkpoint → STOPS → PM reads progress.json
-  → bd update <verify-id> --done
+  → bd close <verify-id>
   → PM dispatches REVIEWER (model=premium) → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
   → APPROVED: PM dispatches doer for next task (resume=true if same phase) → repeat
-  → CHANGES NEEDED: bd create "<finding>" -p 0 --parent <epic-id> per HIGH finding → PM sends feedback to doer → doer fixes → bd update <finding-id> --done → PM re-dispatches REVIEWER → repeat
+  → CHANGES NEEDED: bd create "<finding>" -p 0 --parent <epic-id> --assignee <doer> per HIGH finding → PM sends feedback to doer → doer fixes → bd close <finding-id> → PM re-dispatches REVIEWER → repeat
   → all tasks done → move to next phase or completion
 ```
 

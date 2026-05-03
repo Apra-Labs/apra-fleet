@@ -9,7 +9,7 @@ git rm --cached .fleet-task*.md 2>/dev/null || true; rm -f .fleet-task*.md; git 
 **Why:** If a file like `CLAUDE.md` or `AGENTS.md` exists in `main`, it is a project deliverable — the sprint replaced it with a context file of the same name. Restoring from `origin/main` ensures the deliverable is preserved. Only files absent from `main` (pure sprint context) are deleted.
 
 After cleanup on both members:
-1. **Close Beads epic:** `bd update <epic-id> --done`
+1. **Close Beads epic:** `bd close <epic-id>`
 2. **Raise PR:** `gh pr create`
-3. **Link PR to epic:** `bd update <epic-id> --note "PR: <url>"`
+3. **Link PR to epic:** `bd note <epic-id> "PR: <url>"`
 4. **Verify CI:** `gh pr checks` — do not merge, merge is the user's decision.
