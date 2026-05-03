@@ -30,7 +30,12 @@ describe('runUpdate (T6)', () => {
     // Mock fs.createWriteStream
     vi.mocked(fs.createWriteStream).mockReturnValue({
       write: vi.fn(),
-      end: vi.fn(),
+      end: vi.fn(function(this: any) {
+        if (this._onFinish) this._onFinish();
+      }),
+      on: vi.fn(function(this: any, event, cb) {
+        if (event === 'finish') this._onFinish = cb;
+      }),
     } as any);
 
     // Default fs behavior

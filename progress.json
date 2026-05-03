@@ -26,7 +26,7 @@
       "title": "Implement src/cli/update.ts (new file)",
       "tier": "standard",
       "status": "completed",
-      "notes": "Implemented runUpdate() function."
+      "notes": "Implemented runUpdate() function. Fixed stream flush race and simplified config path per reviewer feedback."
     },
     {
       "id": "T3",
@@ -34,7 +34,7 @@
       "title": "Wire update into src/index.ts",
       "tier": "cheap",
       "status": "completed",
-      "notes": "Wired update into index.ts and added --help."
+      "notes": "Wired update into index.ts and added --help. Verified update --help synopsis."
     },
     {
       "id": "V2",
@@ -85,7 +85,7 @@
       "type": "verify",
       "tier": "cheap",
       "status": "completed",
-      "notes": "Verified build and all 1013 tests pass, including new unit tests for install persistence and runUpdate."
+      "notes": "Verified build and all 1013 tests pass, including new unit tests and reviewer feedback fixes (stream flush, --help, path simplification)."
     }
   ]
 }
