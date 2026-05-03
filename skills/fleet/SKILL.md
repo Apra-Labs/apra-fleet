@@ -241,7 +241,7 @@ When you see this notice, surface it to the user verbatim before the rest of the
 |---------|---------------|
 | **Agent context file** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT-INSTRUCTIONS.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
-| **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members |
+| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
 
 ## Fleet Logs
 

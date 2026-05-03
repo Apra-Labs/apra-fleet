@@ -88,7 +88,16 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
 
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
 
-const inFlightAgents = new Set<string>();
+export const inFlightAgents = new Set<string>();
+
+// All exit paths from executePrompt clear busy state via the finally block (inFlightAgents.delete + writeStatusline):
+// (a) normal success: result.code === 0 → finally sets idle and removes agent from inFlight
+// (b) non-zero exit from execCommand: result.code !== 0 → finally sets idle and removes agent from inFlight
+// (c) exception in try block (auth, network, crash) → catch records error type; finally sets offline or idle
+// (d) AbortSignal/MCP client cancellation → abortHandler kills PID, execCommand resolves, finally clears
+// (e) stale session retry → retried without session ID; finally clears on success or failure
+// (f) server overload retry → retried after delay; finally clears on success or failure
+// (g) early returns before inFlightAgents.add: busy state never entered
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
@@ -171,6 +180,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epExitCode: number | 'error' = 'error';
   let _epError: string | undefined;
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
+  let _epOffline = false;
   try {
     let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured);
     let parsed = provider.parseResponse(result);
@@ -216,8 +226,6 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       });
     }
 
-    writeStatusline();
-
     let output = `${deprecationWarning}📋 Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
@@ -229,7 +237,8 @@ Tokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}`
 session: ${parsed.sessionId}`;
     return output;
   } catch (err: any) {
-    writeStatusline(new Map([[agent.id, 'offline']]));
+    // Only mark offline for genuine SSH/network connection failures, not for cancellations
+    _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     _epError = err.message;
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
@@ -238,6 +247,8 @@ session: ${parsed.sessionId}`;
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);
+    // Explicitly set idle (or offline for connection failures) — never rely on persisted busy state clearing itself
+    writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
     inFlightAgents.delete(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
