@@ -1,9 +1,9 @@
 ﻿# Member Onboarding
 
-8 steps after egister_member.
+8 steps after register_member.
 
 ## 1: SSH Key (remote)
-If uthType=password ↔ setup_ssh_key.
+If authType=password ↔ setup_ssh_key.
 
 ## 1.5: Verify CLI
 Check llmProvider + os. Run execute_command:
@@ -23,7 +23,7 @@ git remote -v: GitHub, Bitbucket, Azure DevOps.
 dev, review, test, devops, debug.
 
 ## 5: VCS Auth
-Provision per uth-{provider}.md.
+Provision per auth-{provider}.md.
 
 ## 6: Skills
 Install per skill-matrix.md.
@@ -37,8 +37,8 @@ Update status file.
 ## Credentials
 1. credential_store_set → OOB prompt.
 2. Ref by name.
-3. Member use {.NAME}} in execute_command. Server resolve + redact.
+3. Member use {{secure.NAME}} in execute_command. Server resolve + redact.
 
 **Example:**
 - PM: credential_store_set name=github_pat
-- Member: execute_command command="git remote set-url origin https://token:{.github_pat}}@..."
+- Member: execute_command command="git remote set-url origin https://token:{{secure.github_pat}}@..."

@@ -26,7 +26,7 @@ At "verify" tasks:
 - git rebase origin/{{base_branch}}. Rerun tests.
 
 ## Secrets
-Use {.NAME}} in execute_command only. No prompts/logs. Resolve + redact. If missing, report blocker.
+Use {{secure.NAME}} in execute_command only. No prompts/logs. Resolve + redact. If missing, report blocker.
 
 ## Rules
 - 1 task at a time. Commit. Continue.

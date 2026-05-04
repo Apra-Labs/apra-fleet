@@ -3,7 +3,7 @@
 App passwords.
 
 1. Profile > App passwords.
-2. Scopes: epository, pullrequest.
+2. Scopes: repository, pullrequest.
 3. Provide token, email, workspace.
 
 **Deploy:**

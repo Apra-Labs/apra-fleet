@@ -20,9 +20,9 @@ Orchestrate fleet members.
 
 - /pm init <project>: Init folder/templates.
 - /pm pair <doer> <rev>: Pair members. Update icons (doer=circle, rev=square).
-- /pm plan <req>: Phase 2 (Plan).
+- /pm plan <req>: Phase 2 (Plan). Read requirements.md, generate PLAN.md, define checkpoints.
 - /pm start <member>: Phase 3 (Execution).
-- /pm status <member>: Check progress/git.
+- /pm status <member>: Check progress.json and git log.
 - /pm resume <member>: Resume after checkpoint.
 - /pm deploy <member>: Execute deploy.md.
 - /pm recover <project>: Triage/recovery.
@@ -39,7 +39,7 @@ Orchestrate fleet members.
 7. **Autonomy:** Don't wait for user. Escalate genuine ambiguities only.
 8. **Batch:** Club fleet calls into one background Agent.
 9. **Unattended:** auto (perms) or dangerous (bypass). Recompose perms. NEVER pass dangerously_skip_permissions to execute_prompt.
-10. **Commits:** PLAN.md, progress.json, eedback.md committed every turn.
+10. **Commits:** PLAN.md, progress.json, feedback.md committed every turn.
 11. **PRs:** Raise PR + verify CI. **Do not merge.**
 12. **gh CLI:** PM runs directly via Bash. NEVER delegate to members.
 
@@ -49,12 +49,12 @@ Orchestrate fleet members.
 
 1. credential_store_set OOB.
 2. Ref by name (e.g., github_pat).
-3. Member use {.NAME}} in execute_command. Server resolve + redact.
+3. Member use {{secure.NAME}} in execute_command. Server resolve + redact.
 
 **Example:**
 - PM: credential_store_set name=github_pat
 - Prompt: "Auth using github_pat."
-- Member: execute_command command="...{.github_pat}}..."
+- Member: execute_command command="...{{secure.github_pat}}..."
 
 ## Model Selection
 - cheap: execution, tests.
