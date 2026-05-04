@@ -1,87 +1,44 @@
-# Member Onboarding
+﻿# Member Onboarding
 
-After `register_member`, run these 8 steps before dispatching any work.
+8 steps after egister_member.
 
-## Step 1: Setup SSH Key Auth (remote members only)
+## 1: SSH Key (remote)
+If uthType=password ↔ setup_ssh_key.
 
-Check `member_detail` — if member type is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
+## 1.5: Verify CLI
+Check llmProvider + os. Run execute_command:
+- Claude: claude --version
+- Gemini: gemini --version
+- Codex: codex --version
+- Copilot: copilot --version
+Fail? update_llm_cli.
 
-## Step 1.5: Verify CLI Installation
+## 2: No Attribution
+**Claude only.** Write {"attribution":{"commit":"","pr":""}} to .claude/settings.json.
 
-Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` with the provider's version command to confirm the agent CLI is installed:
+## 3: VCS
+git remote -v: GitHub, Bitbucket, Azure DevOps.
 
-- **Claude:** `claude --version`
-- **Gemini:** `gemini --version`
-- **Codex:** `codex --version`
-- **Copilot:** `copilot --version`
+## 4: Roles
+dev, review, test, devops, debug.
 
-If the LLM CLI is not installed or the command fails, use `update_llm_cli` to install it before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
+## 5: VCS Auth
+Provision per uth-{provider}.md.
 
-## Step 2: Disable AI Attribution
+## 6: Skills
+Install per skill-matrix.md.
 
-**Claude only.** Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
+## 7: .gitignore
+execute_command: echo '.fleet-task.md' >> .gitignore.
 
-Gemini, Codex, and Copilot do not support attribution config — skip this step for those providers.
+## 8: Status
+Update status file.
 
-## Step 3: Detect VCS Provider
+## Credentials
+1. credential_store_set → OOB prompt.
+2. Ref by name.
+3. Member use {.NAME}} in execute_command. Server resolve + redact.
 
-Run on the member: `git remote -v`
-
-- `github.com` → GitHub
-- `bitbucket.org` → Bitbucket
-- `dev.azure.com` → Azure DevOps
-
-No remotes? Ask the user for VCS provider and repo URL.
-
-## Step 4: Determine Roles
-
-Ask the user. Roles: development, code-review, testing, devops, debugging. A member can have multiple.
-
-## Step 5: Setup VCS Auth
-
-Verify auth, provision if needed. See auth-{provider}.md for provider-specific steps and required scopes per role. Skip for local members — they inherit the user's native git credentials.
-
-## Step 6: Check/Install Required Skills
-
-Look up the member's project + VCS + roles in skill-matrix.md. Install any missing skills.
-
-## Step 7: Add Fleet Ephemeral Files to .gitignore
-
-Run `execute_command → echo '.fleet-task.md' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
-
-## Step 8: Update Member Status File
-
-Add to the member's status file:
-
-```
-## Member Profile
-- LLM Provider: Gemini
-- VCS: Bitbucket (kumaakh/apra-lic-mgr)
-- Roles: development, code-review
-- Auth: Bitbucket API token (verified)
-- Skills: bitbucket-devops (installed)
-```
-
-## Pre-loading credentials before dispatch
-
-If the task you are about to dispatch requires an API key, token, or password (e.g., calling an external API, pushing to a private registry, authenticating to a third-party service), store it in the credential store **before** dispatching the member.
-
-**Why:** `execute_prompt` prompts are visible in the LLM conversation. Passing raw secrets there exposes them in logs and chat history. The credential store keeps the plaintext out of the LLM entirely.
-
-**Steps:**
-1. Call `credential_store_set` with a descriptive name (e.g., `github_pat`, `npm_token`, `openai_key`) — Fleet opens an OOB terminal prompt for the value
-2. Pass the `sec://NAME` handle in the task prompt — reference by name only (e.g. `"authenticate using credential github_pat"`). The secret value is only injected server-side when `{{secure.NAME}}` appears in an `execute_command` call — never in AI prompt text.
-3. The member uses `{{secure.NAME}}` in `execute_command` — Fleet resolves the value server-side and redacts it from output before the LLM sees it
-
-**Example — dispatching a member that needs to push code to GitHub:**
-
-```
-# PM stores the token before dispatch
-credential_store_set  name=github_pat
-
-# PM includes in the task prompt — reference by name only:
-"When pushing code to GitHub, authenticate using credential github_pat."
-
-# Member uses it in a command transparently
-execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
-```
+**Example:**
+- PM: credential_store_set name=github_pat
+- Member: execute_command command="git remote set-url origin https://token:{.github_pat}}@..."
