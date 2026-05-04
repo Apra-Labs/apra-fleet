@@ -1,62 +1,34 @@
-# Multi-Pair Sprint
+﻿# Multi-Pair Sprint
 
-A multi-pair sprint assigns multiple doer/reviewer pairs to the same sprint, each working on a separate git branch (worktree). Use this when the work can be cleanly partitioned into independent tracks.
+Multiple doer/reviewer pairs on separate branches. Use for independent tracks.
 
-## When to use
-
-- Large sprint where tasks can be split into independent, low-coupling tracks
-- Two or more pairs can work in parallel without blocking each other
-- Each track has a clear boundary (e.g. frontend / backend, service A / service B)
-
-Use a single-pair sprint (single-pair-sprint.md) if the work is sequential or tightly coupled.
-
-## Branching Strategy
-
-Each pair works on its own feature branch off the sprint base branch:
-
+## Branching
 ```
 main
- └── sprint/<name>          ← sprint base branch (integration branch)
-      ├── sprint/<name>/pair-1   ← pair 1's working branch
-      └── sprint/<name>/pair-2   ← pair 2's working branch
+ └── sprint/<name> (base)
+      ├── sprint/<name>/pair-1
+      └── sprint/<name>/pair-2
 ```
-
-- PM creates the sprint base branch before dispatching any pair
-- Each pair's doer works only on their own branch — never the base or another pair's branch
-- Pairs do not merge into the base branch themselves — PM handles integration
+- PM creates base branch.
+- Each pair works on its own branch.
+- PM handles integration.
 
 ## Contracts
+Identify shared interfaces (APIs, models) first. Document in `<project>/contracts.md`. Both doers receive via `send_files`. Contracts immutable unless PM approves revision.
 
-Before dispatching either pair, PM identifies shared interfaces — APIs, data models, file formats, event schemas — that both tracks will depend on. These are documented in `<project>/contracts.md` and sent to both doers via `send_files`.
+## Rules
+- Assign tracks in `status.md`.
+- Pairs work independently.
+- PM handles cross-pair sync (merges).
 
-Both pairs treat contracts as immutable during the sprint. If a pair discovers a contract must change, they stop and notify PM. PM assigns the contract revision to one pair; the other waits until it is APPROVED and merged before continuing.
+## Integration
+1. Each pair follows `doer-reviewer.md`.
+2. Pair APPROVED → PM merges into base.
+3. Dependents rebase: `git fetch` + `rebase origin/sprint/<name>`.
+4. All APPROVED → `backlog.md` update → `cleanup.md` → raise single PR to `main`.
 
-## Coordination Rules
+## Review
+Reviewers check their own pair's work. Optional integration review of base branch.
 
-- Assign tracks at sprint start — document in `<project>/status.md` which pair owns which tasks
-- Pairs work independently; PM monitors all pairs in parallel
-- If pair 2 depends on output from pair 1: pair 2 does not start until pair 1's track is reviewed and merged into the sprint base branch
-- PM handles cross-pair git sync: `git merge sprint/<name>/pair-1 into sprint/<name>/pair-2` when needed
-
-## Integration Flow
-
-1. Each pair follows the standard doer-reviewer loop (see doer-reviewer.md) on their own branch
-2. When a pair's track is APPROVED: PM merges that pair's branch into the sprint base branch via `execute_command`
-3. PM notifies dependent pairs to rebase: `git fetch origin && git rebase origin/sprint/<name>`
-4. Once all pairs are APPROVED and merged into the sprint base branch: update `<project>/backlog.md` with any unresolved findings or deferred items from all pairs, then run cleanup on all members and raise a single PR from the sprint base branch to main (see cleanup.md)
-
-## Reviewer Scope
-
-- Each reviewer reviews their own pair's deliverables only
-- A cross-pair integration review is optional but recommended before raising the final PR — assign one reviewer to review the merged sprint base branch diff against main
-
-## Status Tracking
-
-Record all pairs in `<project>/status.md`:
-
-```
-| Pair | Doer | Reviewer | Track | Branch | Status |
-|------|------|----------|-------|--------|--------|
-| 1    | dev1 | rev1     | API   | sprint/x/pair-1 | in-progress |
-| 2    | dev2 | rev2     | UI    | sprint/x/pair-2 | waiting-pair-1 |
-```
+## Status
+Track in `status.md`.
