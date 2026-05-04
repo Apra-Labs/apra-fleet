@@ -49,10 +49,12 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 
 PM uses Beads (`bd` CLI, installed by `apra-fleet install`) as the persistent task database across all sprints. See `beads.md` for the full reference.
 
-**Session start rule:** Always run `bd ready` before opening any `status.md`. This gives an instant cross-sprint view of what's in-flight — no file reading required for orientation.
+**Session start rule:** Always run `bd ready` (from PM's own directory — the central Beads DB) before opening any `status.md`. This gives an instant cross-sprint view of what's in-flight across all projects and members — no file reading required for orientation.
+
+**Central DB rule:** PM runs `bd init` once in PM's own working directory — NOT inside each project repo. One Beads DB tracks all projects, all members, all sprints. `bd list --all --pretty` gives a global view without switching directories.
 
 **Lifecycle hooks (enforced — not optional):**
-- `/pm init` → `bd init` + `bd create` sprint epic + record epic-id in `status.md`
+- `/pm init` → `bd init` (PM root, idempotent) + `bd create` sprint epic + record epic-id in `status.md`
 - `/pm plan` (after approval) → `bd create` one task per PLAN.md item + `bd dep add` for dependencies
 - `/pm start` / task dispatch → `bd update <id> --claim`
 - VERIFY checkpoint done → `bd update <id> --done`

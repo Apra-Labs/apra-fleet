@@ -61,8 +61,8 @@ PM calls `bd` at these points in every sprint:
 
 ### `/pm init`
 ```bash
-cd <repo>
-bd init   # idempotent
+cd <pm_root>   # PM's own working directory — one central DB for ALL projects and members
+bd init        # idempotent; run once, not per project
 
 # Check before create — avoid duplicate epics
 EXISTING=$(bd search "sprint: <project>" --status all --json | jq -r '.[0].id // empty')
