@@ -10,7 +10,7 @@ Write `<project>/requirements.md`. Include issue details, root causes. Riskiest 
 - `send_files requirements.md`.
 - `execute_prompt plan-prompt.md`.
 - Doer-reviewer loop (use `tpl-reviewer-plan.md`).
-- Approved? Save `planned.json`.
+- Approved? Save `planned.json` (immutable, NEVER modify it).
 
 ## Phase 3: Execution
 ### Harness
@@ -27,7 +27,7 @@ PM sends harness → Dispatch doer → Doer works/commits/updates `progress.json
 - **CHANGES NEEDED** → Feedback to doer → Doer fix → Re-review.
 
 ### Permissions
-Recompose on role switch. Denial? `compose_permissions` with `grant`.
+Recompose on role switch. Denial? `compose_permissions` with `grant`. NEVER bypass by running the denied command yourself.
 
 ### Monitoring
 - `cat progress.json`.

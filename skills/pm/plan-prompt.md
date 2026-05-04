@@ -46,7 +46,7 @@ Rewrite per critique.
 ### Phase 5: Branch & Commit
 1. `git fetch origin`.
 2. `git checkout -b <branch> origin/<base>`.
-3. Commit plan to branch.
+3. Commit plan to branch. NEVER commit to the base branch.
 4. `git push`.
 
 Output in `tpl-plan.md` format.

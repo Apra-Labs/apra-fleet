@@ -62,7 +62,7 @@ Docs: onboarding.md, permissions.md, profiles/, 	roubleshooting.md, skill-matrix
 Use member_id (UUID) or member_name.
 
 ## Tool Boundaries
-**Local:** ALWAYS use fleet tools. No bypass.
+**Local:** ALWAYS use fleet tools. NEVER SSH directly or bypass.
 
 ## Dispatch
 - Shell → execute_command.
@@ -71,7 +71,7 @@ Use member_id (UUID) or member_name.
 
 - execute_prompt: wrap in Agent(run_in_background=true).
 - execute_command: wrap bg Agent if > 30s.
-- Use bash. Background agent: name tool.
+- Use bash (NEVER PowerShell/cmd). Background agent: MUST explicitly name tool.
 - send_files/eceive_files: > 1MB → bg Agent.
 
 **Guard:** One execute_prompt per member. stop_prompt to cancel.
@@ -81,7 +81,7 @@ Use member_id (UUID) or member_name.
 2. Onboarding complete.
 
 ## File Transfer
-Batch ops.
+Batch ops. NEVER transfer one file per call.
 
 - send_files: push. local_paths, dest_subdir.
 - eceive_files: pull. emote_paths, local_dest_dir.

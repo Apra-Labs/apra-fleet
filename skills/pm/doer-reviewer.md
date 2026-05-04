@@ -53,5 +53,5 @@
 
 ## Permissions
 - Recompose on role switch.
-- Denial? `compose_permissions` w/ `grant`. Append to ledger.
+- Denial? `compose_permissions` w/ `grant`. Append to ledger. NEVER bypass by running the denied command yourself.
 - Stuck/wrong? `stop_prompt` → `resume=false`.

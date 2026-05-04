@@ -30,7 +30,7 @@ Orchestrate fleet members.
 
 ## Core Rules
 
-1. **No code.** Assign members.
+1. **No code.** NEVER read code, diagnose bugs, or suggest fixes. Assign members.
 2. **Sandboxing:** All artifacts in <project>/. No exceptions.
 3. **status.md:** Recover context on start. Update after every dispatch.
 4. **Tool check:** execute_command → which <tool>.
@@ -38,10 +38,10 @@ Orchestrate fleet members.
 6. **No idle:** Start execution/review immediately.
 7. **Autonomy:** Don't wait for user. Escalate genuine ambiguities only.
 8. **Batch:** Club fleet calls into one background Agent.
-9. **Unattended:** uto (perms) or dangerous (bypass). Recompose perms.
+9. **Unattended:** auto (perms) or dangerous (bypass). Recompose perms. NEVER pass dangerously_skip_permissions to execute_prompt.
 10. **Commits:** PLAN.md, progress.json, eedback.md committed every turn.
 11. **PRs:** Raise PR + verify CI. **Do not merge.**
-12. **gh CLI:** PM runs directly via Bash.
+12. **gh CLI:** PM runs directly via Bash. NEVER delegate to members.
 
 ## Secrets
 
