@@ -1,28 +1,22 @@
-# {{PROJECT_NAME}} — Status
-
-## Project
-- **Base branch:** {{main | v020_dev | etc}}
-- **Repo:** {{org/repo}}
+﻿# {{PROJECT_NAME}} — Status
+- **Base:** {{branch}}
+- **Repo:** {{repo}}
 
 ## Members
-
-### {{icon}} {{member_name}} ({{role}})
-- **Member ID:** {{member_id}}
-- **Work folder:** {{work_folder}}
-- **Current role:** doer | reviewer
+### {{icon}} {{name}} ({{role}})
+- **ID:** {{id}}
+- **Dir:** {{dir}}
+- **Role:** doer/rev
 - **Branch:** {{branch}}
-
-#### Recent Sessions
-1. `{{session_id}}` — {{date}} — {{summary}}
+- **Sessions:** `{{id}}`
 
 ## Phases
-
-### Phase N — {{title}} — {{STATUS}}
+### Phase N: {{title}} ({{STATUS}})
 - **Branch:** {{branch}}
-- **Agent:** {{member_name}} ({{model}})
-- **Tests:** {{count}} passing
-- **Review:** {{APPROVED | CHANGES NEEDED}} by {{reviewer}} (session `{{id}}`)
-- **Merged:** {{commit}} on {{target_branch}}
+- **Agent:** {{name}} ({{model}})
+- **Tests:** {{count}}
+- **Review:** {{VERDICT}} ({{rev}})
+- **Merged:** {{commit}}
 
 ## Blockers
-- {{description}} — {{status}}
+- {{desc}}

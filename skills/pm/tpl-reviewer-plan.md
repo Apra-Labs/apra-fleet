@@ -1,53 +1,43 @@
-# Plan Review
+﻿# Plan Review
 
-You are reviewing a plan in PLAN.md against requirements.md and any design docs in the work folder.
+Review `PLAN.md` against `requirements.md` and design docs.
 
-## Check each item
-
-1. Does every task have clear "done" criteria?
-2. High cohesion within each task, low coupling between tasks?
-3. Are key abstractions and shared interfaces in the earliest tasks?
-4. Is the riskiest assumption validated in Task 1?
-5. Later tasks reuse early abstractions (DRY)?
-6. Are phase boundaries drawn at cohesion boundaries — each phase is a coherent unit producing a reviewable, testable increment (tasks share a data model, code path, or design decision)?
-7. Are tiers monotonically non-decreasing within each phase (cheap → standard → premium, never downgrading mid-phase)?
-8. Each task completable in one session?
-9. Dependencies satisfied in order?
-10. Any vague tasks that two developers would interpret differently?
-11. Any hidden dependencies between tasks?
-12. Does the plan include a risk register? If missing or incomplete, identify the risks yourself and add them as findings
-13. Does the plan align with requirements.md intent — solving the right problem, not just a technically clean plan?
+## Checklist
+1. Clear "done" criteria?
+2. High cohesion, low coupling?
+3. Foundations/interfaces in early tasks?
+4. Riskiest assumption in Task 1?
+5. Follow DRY?
+6. Phase boundaries at cohesion points (testable units)?
+7. Monotonic tiers within phases (`cheap` → `standard` → `premium`)?
+8. 1 session per task?
+9. Correct dependency order?
+10. No vague tasks?
+11. No hidden dependencies?
+12. Risk register present + complete?
+13. Aligns with requirements intent?
 
 ## Output
+Re-review? Check `feedback.md` history.
 
-If this is a re-review: run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand what was previously flagged and how the doer addressed it. Incorporate those responses into your new write-up.
+Overwrite `feedback.md`:
 
-Overwrite feedback.md with this structure:
+```markdown
+# <Name> — Plan Review
 
-```
-# <Sprint/Feature Name> — Plan Review
-
-**Reviewer:** <member name>
-**Date:** YYYY-MM-DD HH:MM:SS+TZ
+**Reviewer:** <name>
+**Date:** <date>
 **Verdict:** APPROVED | CHANGES NEEDED
 
-> See the recent git history of this file to understand the context of this review.
+---
+## <Section>
+<Narrative. PASS/FAIL/NOTE inline.>
 
 ---
-
-## <Review section>
-
-<Detailed narrative. PASS/FAIL/NOTE inline. Explain what you found, where, and why it matters.>
-
----
-
 ## Summary
-
-<Synthesize what passed, what must change, what is deferred.>
+<Synthesize.>
 ```
 
-For each check: PASS or FAIL with narrative — not one-liners.
+If `CHANGES NEEDED`: Doer annotates fixes in `feedback.md`.
 
-If verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
-
-Commit feedback.md and push.
+Commit `feedback.md` + push.

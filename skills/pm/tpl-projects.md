@@ -1,4 +1,4 @@
-# Active Projects
+﻿# Projects
 
-| Project | Folder | Members | Phase | Status |
-|---------|--------|---------|-------|--------|
+| Proj | Dir | Members | Phase | Status |
+|---|---|---|---|---|

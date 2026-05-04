@@ -1,43 +1,40 @@
-# {{PROJECT_NAME}} — Plan Execution
+﻿# {{PROJECT_NAME}} — Execution
 
-## Context Recovery
-Before starting any work: `git log --oneline -10`
+## Context
+git log --oneline -10.
 
-## Execution Model
-You are executing a plan defined in PLAN.md. Progress tracked in progress.json.
+## Model
+Follow PLAN.md. Track in progress.json.
 
-On each invocation:
-1. Read progress.json — find next task with status "pending"
-2. Read PLAN.md — get full details for that task
-3. Execute — write code, run tests, fix issues
-4. Commit with descriptive message referencing the task ID
-5. Update progress.json — set task to "completed", add notes
-6. Continue to next pending task
+1. Read progress.json → find "pending".
+2. Read PLAN.md for details.
+3. Execute: code, test, fix.
+4. Commit (ref task ID).
+5. Update progress.json ("completed", notes).
+6. Next task.
 
-## Verify Checkpoints
-Tasks with type "verify" are checkpoints. When you reach one:
-1. Run the project build step (e.g. `npm run build`, `tsc`, `cargo build`) first, then run the full test suite (unit, integration, e2e). Both must pass.
-2. Confirm all prior tasks in the group work correctly
-3. Update progress.json with test results and issues found
-4. `git push origin {{branch}}` — code must be on origin before PM reviews
-5. STOP — do not continue. Report status so the PM can review.
+## VERIFY Checkpoints
+At "verify" tasks:
+1. Build + Test (unit, integration, e2e). Must pass.
+2. Check prior tasks.
+3. Update progress.json w/ results.
+4. git push origin {{branch}}.
+5. **STOP.** Report status.
 
-## Branch Hygiene
-- Before creating a branch: `git fetch origin && git checkout origin/{{base_branch}}`
-- Before pushing a PR or at PM's request: `git fetch origin && git rebase origin/{{base_branch}}`, rerun tests after rebase
+## Branch
+- git fetch origin.
+- git rebase origin/{{base_branch}}. Rerun tests.
 
-## Secrets & API Keys
-
-If this task requires secrets, API keys, or tokens (e.g., external API calls, private registry pushes, third-party service authentication), check whether the PM has pre-loaded them via the credential store before you start. Use `{{secure.NAME}}` tokens only in `execute_command` — never in prompts or log messages. Fleet resolves and redacts them automatically in commands. Do not ask for raw secret values in conversation; if a required `sec://NAME` handle is missing, report it as a blocker so the PM can store it OOB.
+## Secrets
+Use {.NAME}} in execute_command only. No prompts/logs. Resolve + redact. If missing, report blocker.
 
 ## Rules
-- ONE task at a time, then commit, then continue
-- After every commit: run fast/unit tests. If they fail, fix before moving to the next task.
-- Always update progress.json after each task
-- Blocker? Set status to "blocked" with notes, then STOP
-- NEVER skip tasks — execute in order
-- Read PLAN.md before starting each task
-- Commit and push PLAN.md, progress.json, and all project docs (design.md, feedback-*.md) at every turn — reviewers depend on them
-- NEVER commit this agent context file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT-INSTRUCTIONS.md) — it is role-specific and not shared
-- NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
-- NEVER stage or commit `.fleet-task.md` — these are ephemeral prompt delivery files managed by the fleet server
+- 1 task at a time. Commit. Continue.
+- After commit: unit tests. Fix if fail.
+- Update progress.json after each task.
+- Blocker? "blocked" + notes → STOP.
+- No skipping. Order matters.
+- Commit/push PLAN.md, progress.json, docs every turn.
+- **Never commit context file** (CLAUDE.md, etc.).
+- **Never push to base branch.**
+- **Never commit .fleet-task.md.**

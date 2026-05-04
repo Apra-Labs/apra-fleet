@@ -1,4 +1,4 @@
-# {{PROJECT_NAME}} — Implementation Plan
+﻿# {{PROJECT_NAME}} — Plan
 
 > {{PLAN_SUMMARY}}
 
@@ -9,64 +9,40 @@
 ### Phase 1: {{PHASE_1_NAME}}
 
 #### Task 1: {{TASK_TITLE}}
-- **Change:** {{what to do}}
-- **Files:** {{which files}}
+- **Change:** {{what}}
+- **Files:** {{files}}
 - **Tier:** cheap | standard | premium
-- **Done when:** {{acceptance criteria}}
-- **Blockers:** {{potential blockers}}
-
-#### Task 2: {{TASK_TITLE}}
-- **Change:** {{what to do}}
-- **Files:** {{which files}}
-- **Tier:** cheap | standard | premium
-- **Done when:** {{acceptance criteria}}
-- **Blockers:** {{potential blockers}}
-
-#### Task 3: {{TASK_TITLE}}
-- **Change:** {{what to do}}
-- **Files:** {{which files}}
-- **Tier:** cheap | standard | premium
-- **Done when:** {{acceptance criteria}}
-- **Blockers:** {{potential blockers}}
-
-#### VERIFY: {{PHASE_1_NAME}}
-- Run full test suite
-- Confirm all Phase 1 changes work together
-- Report: tests passing, any regressions, any issues found
-
----
-
-### Phase 2: {{PHASE_2_NAME}}
-
-#### Task 4: {{TASK_TITLE}}
-{{TASK_DETAILS}}
+- **Done when:** {{criteria}}
+- **Blockers:** {{blockers}}
 
 ...
 
-#### VERIFY: {{PHASE_2_NAME}}
+#### VERIFY: {{PHASE_1_NAME}}
+- Run tests.
+- Confirm changes work.
+- Report results.
 
 ---
 
 ## Risk Register
 
 | Risk | Impact | Mitigation |
-|------|--------|------------|
-| {{risk}} | {{high/med/low}} | {{mitigation}} |
+|---|---|---|
+| {{risk}} | {{level}} | {{mitigation}} |
 
-Cover at minimum: backward compat (changed interfaces, renamed items), security (trust boundaries, input validation), external constraints (no new dependencies, min runtime version), partial failure (one path works, another doesn't).
+Cover: backward compat, security, constraints, partial failure.
 
-## Phase Sizing Rules
+## Rules
 
-**Phase boundaries by cohesion, not count.** A phase is a coherent unit of work that produces a reviewable, testable increment. Group tasks into a phase when they share a data model, code path, or design decision — splitting them would produce an incoherent intermediate state or require touching the same code twice. Place a VERIFY at the natural completion boundary of that unit, not at an arbitrary task count. Phases may have 4-5 tasks (a coherent subsystem) or just 1-2 (a genuinely isolated change).
+**Cohesion:** Phases are testable units. Group tasks sharing data/logic. VERIFY at natural boundaries.
 
-**Monotonically non-decreasing tiers within a phase.** Within a phase, order tasks cheap → standard → premium. The PM resumes the same session across tasks in a phase — a premium task can build a large context that a cheap model cannot load. The PM may group consecutive same-tier tasks into a single dispatch streak; tier transitions trigger a new dispatch. If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary rather than violating the ordering rule. Cross-phase tier order does not matter — each phase always starts a fresh session.
+**Tiers:** Order `cheap` → `standard` → `premium` within phase. Split phase if tier drops.
 ```
-cheap → cheap → standard → standard → premium → VERIFY  ✅
-cheap → standard → cheap → VERIFY  ❌  (downgrade within phase — split into two phases)
+cheap → standard → premium → VERIFY  ✅
+cheap → standard → cheap → VERIFY  ❌ (split phase)
 ```
 
-## Notes
-- Each task should result in a git commit
-- Verify tasks are checkpoints — stop and report after each one
-- Base branch: {{base_branch}}
-- Implementation branch: {{impl_branch}}
+- 1 task = 1 commit.
+- VERIFY = STOP + Report.
+- Base: {{base_branch}}.
+- Branch: {{impl_branch}}.

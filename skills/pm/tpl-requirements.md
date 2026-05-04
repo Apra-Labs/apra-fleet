@@ -1,21 +1,19 @@
-# Requirements — {{BACKLOG_ID}} {{TITLE}}
+﻿# Requirements — {{ID}} {{TITLE}}
 
 ## Base Branch
-`{{main | v020_dev | etc}}` — branch to fork from and merge back to
+`{{branch}}`
 
 ## Goal
-{{1-2 sentences: what the user wants and why}}
+{{What and why}}
 
 ## Scope
-- {{specific deliverable}}
-- {{specific deliverable}}
+- {{deliverable}}
 
 ## Out of Scope
-- {{thing NOT to build}} — {{why not now}}
+- {{not now}}
 
 ## Constraints
-- {{technical, timeline, or compatibility constraint}}
+- {{technical/timeline}}
 
 ## Acceptance Criteria
-- [ ] {{observable outcome that proves the goal is met}}
-- [ ] {{observable outcome}}
+- [ ] {{outcome}}
