@@ -12,14 +12,16 @@ Beads (`bd`) is installed automatically by `apra-fleet install`. It gives PM a p
 
 | Rule | Command |
 |------|---------|
-| **Check before create epic** — never duplicate a sprint epic | `bd search "sprint: <project>" --status all --json` → use existing ID if found |
-| **Check before create task** — never duplicate a task | `bd list --parent <epic-id> --title "<task>" --json` → skip if found |
-| **Check before dispatch** — never steal a claimed task | `bd show <task-id> --json \| jq .status` → dispatch only if `"open"` |
-| **`bd init` is idempotent** — always safe to re-run | — |
-| **`bd close` is idempotent** — safe to repeat | — |
+| **Check before create epic** — never duplicate | `bd search "sprint: <project>" --status all --json` → use existing ID if found |
+| **Check before create task** — never duplicate | `bd search "<task title>" --status all --json` → skip if found under epic |
+| **Check before dispatch** — never steal a claimed task | `bd show <task-id> --json \| jq -r .status` → dispatch only if `"open"` |
+| **`bd init`** — idempotent, always safe to re-run | — |
+| **`bd close`** — idempotent, safe to repeat | — |
 | **`bd update --status in_progress`** — NOT protected; last write wins | Always check status first |
-| **Lost epic-id** — recover without reading files | `bd search "sprint: <project>" --status all --json \| jq -r '.[0].id'` |
-| **Lost task-id** — recover by title | `bd list --parent <epic-id> --title "<task>" --json \| jq -r '.[0].id'` |
+| **Premature close** — reopen with | `bd reopen <id>` |
+| **Lost epic-id** | `bd search "sprint: <project>" --status all --json \| jq -r '.[0].id'` |
+| **Lost task-id** | `bd search "<task title>" --status all --json \| jq -r '.[0].id'` |
+| **`blocked` status** | Explicitly set only — dep-blocked issues remain `open` in `bd list --status blocked` |
 
 ---
 
@@ -39,14 +41,16 @@ Beads (`bd`) is installed automatically by `apra-fleet install`. It gives PM a p
 ## Essential Commands
 
 ```bash
-bd init                          # init Beads in current dir (once per repo)
-bd ready                         # show all unblocked, unclaimed tasks
-bd create "title" -p <n>         # create task (priority: 0=critical, 1=high, 2=med, 3=low)
-bd update <id> --claim           # mark in-progress (dispatch)
-bd update <id> --done            # mark complete (verify/approval)
-bd dep add <child-id> <parent-id># express dependency (child blocked until parent done)
-bd show <id>                     # full task details
-bd show <id> --tree              # task + all dependencies
+bd init                               # init Beads in current dir (once per repo, idempotent)
+bd ready                              # show PM dispatch state — open tasks with no blockers
+bd create "title" -p <n>              # create task (priority: 0=critical 1=high 2=med 3=low)
+bd update <id> --status in_progress   # mark in-progress on dispatch
+bd close <id>                         # mark complete (idempotent)
+bd reopen <id>                        # reopen a closed task (e.g. CI fails post-cleanup)
+bd note <id> "text"                   # append note (PR URL, finding, blocker)
+bd dep add <child-id> <parent-id>     # child blocked until parent is done
+bd list --all --pretty                # full tree: all tasks, all statuses
+bd search "text" --status all --json  # find by title — use for dedup before create
 ```
 
 ---
@@ -105,6 +109,9 @@ When doer fixes it and reviewer approves: `bd close <finding-id>`
 ### `/pm cleanup` — sprint complete
 ```bash
 bd close <epic-id>
+bd note <epic-id> "PR: <url>"   # link PR to epic
+# If CI fails post-cleanup and another fix cycle is needed:
+# bd reopen <epic-id>
 ```
 
 ---

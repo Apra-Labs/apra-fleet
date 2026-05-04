@@ -150,7 +150,7 @@ When all phases are APPROVED:
 
 When the PM session ends unexpectedly, remote agent CLI processes are killed (SSH channel close → SIGHUP). Partial work may be uncommitted.
 
-**Step 0 — Global triage:** Run `bd ready` first — instantly shows all in-flight tasks across every project without reading files. Then `fleet_status` to check member connectivity.
+**Step 0 — Global triage:** Run `bd list --all --pretty` first for PM dispatch state across all projects (no file reads needed for orientation). Then `fleet_status` to check member connectivity. **Important:** Beads reflects PM actions (dispatch/close), not member execution — always follow up with `cat progress.json` per member to confirm actual completion state. A task marked `in_progress` in Beads may be incomplete on disk if the member crashed mid-task.
 
 For each member in the project:
 1. `execute_command → cat progress.json` — what tasks are completed/pending/blocked?

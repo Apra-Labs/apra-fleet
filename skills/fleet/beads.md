@@ -9,16 +9,18 @@ Beads (`bd`) is a lightweight, dependency-aware task database installed automati
 ## Quick Reference
 
 ```bash
-bd init                          # init Beads in current dir (once per repo)
-bd ready                         # show all unblocked, unclaimed tasks
-bd create "title" -p <n>         # create task (priority: 0=critical, 1=high, 2=med, 3=low)
-bd update <id> --claim           # mark in-progress
-bd update <id> --done            # mark complete
-bd update <id> --note "text"     # attach a note (e.g. PR URL, blocker reason)
-bd dep add <child-id> <parent-id># child is blocked until parent is done
-bd show <id>                     # full task details
-bd show <id> --tree              # task + all dependencies
-bd ready --all                   # show ALL tasks including low-priority backlog
+bd init                               # init Beads in current dir (once per repo, idempotent)
+bd ready                              # show all unblocked open tasks (PM dispatch state)
+bd create "title" -p <n>              # create task (priority: 0=critical 1=high 2=med 3=low)
+bd update <id> --status in_progress   # mark in-progress
+bd close <id>                         # mark complete (idempotent)
+bd reopen <id>                        # reopen a closed task
+bd note <id> "text"                   # append a note (e.g. PR URL, blocker reason)
+bd dep add <child-id> <parent-id>     # child is blocked until parent is done
+bd show <id>                          # full task details
+bd list --all --pretty                # full tree: all tasks, all statuses
+bd list --assignee <member>           # tasks for a specific member
+bd search "text" --status all --json  # find existing issues by title (use for dedup)
 ```
 
 ---
