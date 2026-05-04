@@ -1,0 +1,99 @@
+{
+  "project": "apra-fleet #216 — Redesign auth → secret subcommand",
+  "branch": "plan/issue-216",
+  "base_branch": "main",
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": 1,
+      "title": "Make CREDENTIALS_PATH call-time in src/services/credential-store.ts",
+      "tier": "cheap",
+      "status": "completed",
+      "notes": "Replaced const CREDENTIALS_PATH with getCredentialsPath() function. Reads process.env.APRA_FLEET_DATA_DIR at call time. All credential-store tests pass (29 passed)."
+    },
+    {
+      "id": "V1",
+      "phase": 1,
+      "title": "VERIFY: Phase 1 — Credential store path hardening",
+      "type": "verify",
+      "tier": "premium",
+      "status": "completed",
+      "notes": "npm test passes (credential-store tests: 29 passed). Manual verification: APRA_FLEET_DATA_DIR=<dir> correctly redirects vault path to <dir>/credentials.json. Build passes (npm run build)."
+    },
+    {
+      "id": "T2a",
+      "phase": 2,
+      "title": "Create src/cli/secret.ts (OOB delivery path — --set)",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T2b",
+      "phase": 2,
+      "title": "Create src/cli/secret.ts (Vault management — --list, --update, --delete)",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T3",
+      "phase": 2,
+      "title": "Wire secret into src/index.ts and update --help",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V2",
+      "phase": 2,
+      "title": "VERIFY: Phase 2 — New secret CLI entry point",
+      "type": "verify",
+      "tier": "premium",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T4",
+      "phase": 3,
+      "title": "Three-signal OOB in src/tools/credential-store-set.ts",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V3",
+      "phase": 3,
+      "title": "VERIFY: Phase 3 — OOB signal upgrade",
+      "type": "verify",
+      "tier": "premium",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T5",
+      "phase": 4,
+      "title": "Unit tests for secret CLI (tests/secret-cli.test.ts)",
+      "tier": "standard",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "T6",
+      "phase": 4,
+      "title": "Unit tests for credential-store path derivation",
+      "tier": "cheap",
+      "status": "pending",
+      "notes": ""
+    },
+    {
+      "id": "V4",
+      "phase": 4,
+      "title": "VERIFY: Phase 4 — All tests pass",
+      "type": "verify",
+      "tier": "premium",
+      "status": "pending",
+      "notes": ""
+    }
+  ]
+}
