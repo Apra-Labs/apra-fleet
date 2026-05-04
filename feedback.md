@@ -1,8 +1,8 @@
 # apra-fleet #216 — Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-05-04 10:12:00-07:00
-**Verdict:** APPROVED
+**Date:** 2026-05-04 10:20:00-04:00
+**Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -13,9 +13,10 @@
 ```
 f921d84 review: plan/issue-216 — fleet-rev          (initial plan review, CHANGES NEEDED — 6 findings)
 788e440 review: plan/issue-216 re-review — fleet-rev (plan re-review, APPROVED)
+3229d49 review: plan/issue-216 Phases 1–3 code review — APPROVED (T1–T4)
 ```
 
-This review covers **Phases 1–3 implementation** (Tasks T1, T2a, T2b, T3, T4) — all code commits from `7491679` through `71c0a3e`.
+This review supersedes `3229d49`. The prior code review missed one blocking finding (wrong default network policy in `--set --persist`).
 
 ---
 
@@ -23,8 +24,8 @@ This review covers **Phases 1–3 implementation** (Tasks T1, T2a, T2b, T3, T4) 
 
 - `npm run build`: **PASS** — clean TypeScript compilation, zero errors.
 - `npm test`: **PASS** — 1106 passed, 6 skipped, 0 failures across 65 test files.
-- **auth-socket.test.ts failures (V3 note):** The doer reported 21 pre-existing EADDRINUSE failures in auth-socket.test.ts. Verified pre-existing: checked out `main` version of `tests/auth-socket.test.ts` and ran it against the current branch — 38/38 passed. Full suite also passes clean. The failures were transient named-pipe collisions between parallel test runs, not caused by sprint code. **PASS**
-- **CI:** No CI runs exist for this branch (no PR created yet). Cannot verify CI. **NOTE** — not blocking since local build+test pass clean.
+- **auth-socket.test.ts failures (V3 note):** The doer reported 21 pre-existing EADDRINUSE failures in auth-socket.test.ts. Verified pre-existing: `git diff main..plan/issue-216 -- tests/auth-socket.test.ts` shows zero changes to auth-socket tests. Full suite passes clean on this branch. The failures were transient named-pipe collisions between parallel test runs, not caused by sprint code. **PASS**
+- **CI:** No CI runs exist for `plan/issue-216`. Cannot verify CI. **NOTE** — not blocking since local build+test pass clean.
 
 ---
 
@@ -33,10 +34,10 @@ This review covers **Phases 1–3 implementation** (Tasks T1, T2a, T2b, T3, T4) 
 **File:** `src/services/credential-store.ts`
 
 - `getCredentialsPath()` (line 74–77) reads `process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR` at call time, not module load. **PASS**
-- All credential functions (`credentialSet`, `credentialList`, `credentialDelete`, `credentialResolve`, `credentialUpdate`, `purgeExpiredCredentials`) route through `loadCredentialFile()`/`saveCredentialFile()` which call `getCredentialsPath()`. **PASS**
-- Done-when criterion: `APRA_FLEET_DATA_DIR=/tmp/test apra-fleet secret --list` reads from `/tmp/test/credentials.json`. Verified by code path — `getCredentialsPath()` returns the correct derived path. **PASS**
+- All credential functions route through `loadCredentialFile()`/`saveCredentialFile()` which call `getCredentialsPath()`. **PASS**
+- Done-when: `APRA_FLEET_DATA_DIR=/tmp/test apra-fleet secret --list` reads from `/tmp/test/credentials.json`. Verified by code path. **PASS**
 
-**NOTE:** `loadCredentialFile()` and `saveCredentialFile()` both independently read `process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR` for directory creation, then call `getCredentialsPath()` for the file path — the env var is read twice in close proximity. Not a bug (correct at call time), but a minor DRY opportunity. Non-blocking.
+**NOTE:** `loadCredentialFile()` and `saveCredentialFile()` both independently read `APRA_FLEET_DATA_DIR` for directory creation, then call `getCredentialsPath()` — env var read twice. Not a bug, minor DRY opportunity. Non-blocking.
 
 ---
 
@@ -44,30 +45,38 @@ This review covers **Phases 1–3 implementation** (Tasks T1, T2a, T2b, T3, T4) 
 
 ### T2a — `--set` OOB Delivery (`src/cli/secret.ts`)
 
-- Name validation regex `[a-zA-Z0-9_]{1,64}` applied at entry (line 175–179). **PASS**
-- `secureInput()` used for no-echo prompting (line 183). **PASS**
-- Three use cases implemented:
-  1. OOB delivery (waiter exists, no `--persist`): connects to `getSocketPath()`, sends JSON auth message, clears secret after write. **PASS**
-  2. OOB + persist: same + calls `credentialSet()` with `persist=true`. **PASS**
-  3. Persist only (no waiter, `--persist` required): errors with "No pending request for NAME. Use --persist to store for future use." **PASS**
-- Secret cleared after socket transmission (`secretValue = ''`, line 199). **PASS**
-- Socket connection errors handled gracefully. **PASS**
+- Name validation regex `[a-zA-Z0-9_]{1,64}` at entry (line 175–179). **PASS**
+- `secureInput()` for no-echo prompting (line 183). **PASS**
+- Three use cases implemented (OOB delivery, OOB+persist, persist-only with error). **PASS**
+- Secret cleared after socket transmission (line 199). **PASS**
+
+**BLOCKING — Wrong default network policy (lines 247, 256):** `credentialSet(name, secretValue, true, 'confirm')` uses `'confirm'` as the 4th argument. Requirements.md is explicit: "Default network policy (no flag): `deny`" (line 47). Furthermore, requirements.md says `'confirm'` is "reserved for future" and "not in V1" (lines 99–100). The CLI should use `'deny'`, not `'confirm'`. **FAIL**
+
+**Fix:** Change both lines 247 and 256 from `'confirm'` to `'deny'`:
+```typescript
+// Line 247
+credentialSet(name, secretValue, true, 'deny');
+// Line 256
+credentialSet(name, secretValue, true, 'deny');
+```
+
+**NOTE — Missing metadata flags in `--set --persist`:** Requirements.md (lines 39–45) lists `--allow`, `--deny`, `--members`, `--ttl` as flags that apply with `--persist` on the `--set` subcommand. The current implementation only parses `--persist`. However, PLAN.md Task 2a does not specify these flags, and the plan was approved without them. Workaround exists: `--set --persist` then `--update` to set metadata. Non-blocking — gap is in the approved plan, not in the implementation.
 
 ### T2b — Vault Management (`src/cli/secret.ts`)
 
-- `--list`: Table with NAME, SCOPE, POLICY, MEMBERS, EXPIRES columns. Dynamic column widths. No values shown. **PASS**
-- `--update <name>`: Parses `--allow`, `--deny`, `--members`, `--ttl` flags. TTL validation rejects non-positive values. **PASS**
-- `--delete <name>`: Name validation, calls `credentialDelete()`. **PASS**
-- `--delete --all`: Prompts "Delete all secrets? Type yes to confirm: ", requires exact "yes". **PASS**
+- `--list`: Table with NAME, SCOPE, POLICY, MEMBERS, EXPIRES columns. Dynamic widths. No values shown. **PASS**
+- `--update <name>`: Parses `--allow`, `--deny`, `--members`, `--ttl`. TTL validation rejects non-positive. **PASS**
+- `--delete <name>`: Name validation, `credentialDelete()`. **PASS**
+- `--delete --all`: Prompts "Delete all secrets? Type yes to confirm:", requires exact "yes". **PASS**
 
-**NOTE:** `--update` with zero flags silently succeeds (empty patch). Requirements say "at least one flag required." The no-op is harmless but a validation message would improve UX. Non-blocking — can be addressed in Phase 4 (T5) alongside test coverage.
+**NOTE:** `--update` with zero flags silently succeeds (empty patch). Requirements say "at least one flag required." Harmless no-op but could be validated. Non-blocking.
 
 ### T3 — Wire into `src/index.ts`
 
-- `secret` dispatch branch added (line 40–43), imports `cli/secret.js`. **PASS**
-- `auth` branch preserved (line 44–47) as undocumented alias. **PASS**
-- `--help` shows `secret --set`, `secret --list`, `secret --delete`. No `auth` line. **PASS**
-- Done-when: `apra-fleet secret --help` reachable, `apra-fleet auth` still works. **PASS**
+- `secret` dispatch added (line 40–43). **PASS**
+- `auth` alias preserved (line 44–47). **PASS**
+- `--help` shows `secret` lines, not `auth`. **PASS**
+- Done-when criteria met. **PASS**
 
 ---
 
@@ -75,25 +84,19 @@ This review covers **Phases 1–3 implementation** (Tasks T1, T2a, T2b, T3, T4) 
 
 **Files:** `src/tools/credential-store-set.ts`, `src/services/auth-socket.ts`
 
-### Three signals implemented:
+### Three signals:
 
-1. **Spawn terminal**: `launchAuthTerminal()` with `['--api-key']` args dispatches to `secret --set <name>` via `getAuthCommand()` (line 364–389). PID recorded in `pending.spawned_pid`. **PASS**
-2. **Return tool message**: "Waiting for secret {name}. Run: apra-fleet secret --set {name}" returned immediately (line 42). **PASS**
+1. **Spawn terminal**: `launchAuthTerminal()` dispatches to `secret --set <name>` via `getAuthCommand()`. **PASS**
+2. **Return tool message**: "Waiting for secret {name}..." returned immediately (line 42). **PASS**
 3. **Log at info level**: `logLine('credential_store_set', waitingMsg)` (line 43). **PASS**
 
 ### PID tracking and kill:
 
-- `PendingAuth` interface extended with `spawned_pid?: number` (line 18). **PASS**
-- `killProcess()` helper (lines 40–51): POSIX uses `process.kill(pid, 'SIGTERM')`, Windows uses `taskkill /F /PID`. Silent catch for already-exited processes. **PASS**
-- On receipt via socket (lines 98–102): kills `pending.spawned_pid`, clears reference. **PASS**
-- PID recorded on Windows (cmd spawn, line 519–525) and Linux (lines 532–541). macOS uses AppleScript wrapper — correctly does not record PID (wrapper PID ≠ terminal PID). **PASS**
-
-### Cross-platform terminal launch:
-
-- Windows: `cmd /c start "Fleet Password Entry" /wait ...` — detached, PID tracked. **PASS**
-- Linux: gnome-terminal/xterm fallback chain. **PASS**
-- macOS: AppleScript-based Terminal.app launch. **PASS**
-- Headless/SSH detection with fallback instructions. **PASS**
+- `PendingAuth` extended with `spawned_pid?: number` (line 18). **PASS**
+- `killProcess()` (lines 40–51): POSIX `SIGTERM`, Windows `taskkill /F /PID`. **PASS**
+- On receipt (lines 98–102): kills `spawned_pid`, clears reference. **PASS**
+- PID recorded on Windows (line 522–524) and Linux (line 538–540). **PASS**
+- macOS: AppleScript wrapper launches Terminal.app. PID not recorded because killing the `osascript` PID does not close the Terminal window — this is a platform limitation, not a bug. Terminal shows "You can close this window." **PASS**
 
 ---
 
@@ -101,23 +104,23 @@ This review covers **Phases 1–3 implementation** (Tasks T1, T2a, T2b, T3, T4) 
 
 | Check | Status |
 |-------|--------|
-| Name validation (`[a-zA-Z0-9_]{1,64}`) applied consistently across all entry points | **PASS** |
-| Secrets never logged or printed to console | **PASS** |
-| `secureInput()` masks terminal input | **PASS** |
-| Secret cleared after socket transmission | **PASS** |
+| Name validation applied consistently | **PASS** |
+| Secrets never logged or printed | **PASS** |
+| `secureInput()` masks input | **PASS** |
+| Secret cleared after socket write | **PASS** |
 | Socket messages JSON-serialized (no injection) | **PASS** |
-| PID kill: `child.pid` is numeric (no command injection in `taskkill`) | **PASS** |
-| Credentials encrypted via `encryptPassword()` before storage | **PASS** |
-| No hardcoded secrets in code | **PASS** |
+| PID kill uses numeric `.pid` (no cmd injection) | **PASS** |
+| Credentials encrypted before storage | **PASS** |
+| No hardcoded secrets | **PASS** |
 
 ---
 
 ## Regressions Check
 
-- Phases 1–3 build on existing credential-store and auth-socket infrastructure without removing or modifying existing public APIs.
-- `auth` subcommand preserved as alias — backward compatibility maintained.
-- Full test suite passes (1106/1106) with no regressions against main branch test expectations.
-- No previously approved phases to regress against (this is the first code review for this sprint).
+- No existing public APIs removed or modified.
+- `auth` alias preserved for backward compatibility.
+- Full test suite passes (1106/1106) with no regressions.
+- No previously approved code phases to regress against.
 
 **PASS**
 
@@ -125,12 +128,14 @@ This review covers **Phases 1–3 implementation** (Tasks T1, T2a, T2b, T3, T4) 
 
 ## Summary
 
-**Verdict: APPROVED**
+**Verdict: CHANGES NEEDED**
 
-All five tasks (T1, T2a, T2b, T3, T4) meet their PLAN.md done-when criteria and align with requirements.md. Build and tests pass clean. The 21 auth-socket.test.ts failures reported in the V3 checkpoint are confirmed pre-existing transient issues (EADDRINUSE from test parallelism), not introduced by this sprint.
+**One blocking finding:**
+- `src/cli/secret.ts` lines 247 and 256: default network policy is `'confirm'` (a non-V1 future feature) instead of `'deny'` (the V1 default per requirements.md). Two-line fix.
 
-**Two non-blocking notes for Phase 4:**
-1. `--update` with zero flags should validate and error rather than silently no-op (address in T5 test coverage).
-2. `getCredentialsPath()` env var read is duplicated in `loadCredentialFile`/`saveCredentialFile` — minor DRY opportunity.
+**Three non-blocking notes for Phase 4:**
+1. Missing `--allow`/`--deny`/`--members`/`--ttl` flags on `--set --persist` — gap in approved plan, not implementation. Workaround: `--update` after `--set`.
+2. `--update` with zero flags should validate and error rather than silently no-op.
+3. `getCredentialsPath()` env var read is duplicated in `loadCredentialFile`/`saveCredentialFile` — minor DRY opportunity.
 
-Phase 4 (T5, T6 — unit tests) remains pending. No blocking issues found.
+All other aspects of Phases 1–3 (T1, T2a, T2b, T3, T4) pass review. Build and tests clean. Pre-existing auth-socket test failures confirmed not introduced by this sprint.
