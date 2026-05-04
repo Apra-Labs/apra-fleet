@@ -101,6 +101,11 @@ async function handleUpdate(args: string[]): Promise<void> {
     patch.expiresAt = Date.now() + ttlSeconds * 1000;
   }
 
+  if (Object.keys(patch).length === 0) {
+    console.error('✗ No fields to update — specify at least one of: --allow, --deny, --members, --ttl');
+    process.exit(1);
+  }
+
   const result = credentialUpdate(name, patch);
   if (!result) {
     console.error(`✗ Credential not found: ${name}`);
