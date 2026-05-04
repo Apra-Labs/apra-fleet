@@ -68,7 +68,7 @@
       "type": "verify",
       "tier": "premium",
       "status": "pending",
-      "notes": ""
+      "notes": "Task T4 complete. Build passes. Pre-existing socket cleanup failures in auth-socket.test.ts (EADDRINUSE on named pipes between tests, 21 failures, 1084 passed total). Requires investigation/fix before checkpoint can pass."
     },
     {
       "id": "T5",
