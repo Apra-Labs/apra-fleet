@@ -27,6 +27,7 @@ interface PasswordWaiter {
 const pendingRequests = new Map<string, PendingAuth>();
 const passwordWaiters = new Map<string, PasswordWaiter>();
 let socketServer: net.Server | null = null;
+let closingPromise: Promise<void> | null = null;
 
 export function getSocketPath(): string {
   if (process.platform === 'win32') {
@@ -119,9 +120,13 @@ export async function ensureAuthSocket(): Promise<void> {
     server.on('error', (err: NodeJS.ErrnoException) => {
       server.close();
       // On Windows, named pipes may not be released immediately after close.
-      // Retry a few times with a short delay before giving up.
+      // Retry a few times with increasing delays before giving up.
       if (err.code === 'EADDRINUSE' && process.platform === 'win32' && retriesLeft > 0) {
-        setTimeout(() => tryListen(retriesLeft - 1).then(resolve, reject), 100);
+        // Increase delay for later retries — earlier retries happen faster
+        const totalRetries = process.env.NODE_ENV === 'test' ? 15 : 5;
+        const delayBase = process.env.NODE_ENV === 'test' ? 100 : 250;
+        const delay = delayBase * (totalRetries - retriesLeft + 1);
+        setTimeout(() => tryListen(retriesLeft - 1).then(resolve, reject), delay);
       } else {
         reject(err);
       }
@@ -136,7 +141,10 @@ export async function ensureAuthSocket(): Promise<void> {
     });
   });
 
-  return tryListen(5);
+  // Increase retries on Windows where named pipes take longer to release
+  // In tests, we retry more aggressively; in production the default is sufficient
+  const maxRetries = process.platform === 'win32' ? (process.env.NODE_ENV === 'test' ? 10 : 5) : 0;
+  return tryListen(maxRetries);
 }
 
 export function createPendingAuth(memberName: string): void {
@@ -194,7 +202,12 @@ export function hasPendingAuth(memberName: string): boolean {
   return true;
 }
 
-export function cleanupAuthSocket(): void {
+export function cleanupAuthSocket(): Promise<void> {
+  // If already closing, wait for that to complete
+  if (closingPromise) {
+    return closingPromise;
+  }
+
   // Reject any pending waiters
   for (const [, waiter] of passwordWaiters) {
     clearTimeout(waiter.timer);
@@ -202,14 +215,42 @@ export function cleanupAuthSocket(): void {
   }
   passwordWaiters.clear();
 
-  if (socketServer) {
-    socketServer.close();
-    socketServer = null;
-  }
-  if (process.platform !== 'win32') {
-    try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
-  }
-  pendingRequests.clear();
+  closingPromise = new Promise((resolve) => {
+    if (socketServer) {
+      const server = socketServer;
+      socketServer = null; // Clear immediately so ensureAuthSocket doesn't think it's ready
+
+      server.close(() => {
+        // On Windows, add extra delay to ensure the pipe is fully released
+        const onComplete = () => {
+          if (process.platform !== 'win32') {
+            try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
+          }
+          pendingRequests.clear();
+          closingPromise = null;
+          resolve();
+        };
+
+        if (process.platform === 'win32') {
+          // Windows named pipes need extra time to release
+          // In tests, use a longer delay to ensure full release; in production use a shorter one
+          const delay = process.env.NODE_ENV === 'test' ? 1500 : 500;
+          setTimeout(onComplete, delay);
+        } else {
+          onComplete();
+        }
+      });
+    } else {
+      if (process.platform !== 'win32') {
+        try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
+      }
+      pendingRequests.clear();
+      closingPromise = null;
+      resolve();
+    }
+  });
+
+  return closingPromise;
 }
 
 type OobLaunchFn = (

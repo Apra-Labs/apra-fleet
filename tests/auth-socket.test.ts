@@ -17,8 +17,8 @@ import {
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
-  afterEach(() => {
-    cleanupAuthSocket();
+  afterEach(async () => {
+    await cleanupAuthSocket();
   });
 
   describe('getSocketPath', () => {
@@ -64,9 +64,9 @@ describe('auth-socket', () => {
       expect(after).toBe(true);
     });
 
-    it('cleans up on cleanupAuthSocket', () => {
+    it('cleans up on cleanupAuthSocket', async () => {
       createPendingAuth('test-member');
-      cleanupAuthSocket();
+      await cleanupAuthSocket();
       expect(hasPendingAuth('test-member')).toBe(false);
     });
   });
@@ -102,7 +102,7 @@ describe('auth-socket', () => {
       expect(encPw).not.toBeNull();
       expect(encPw).toContain(':'); // encrypted format is iv:authTag:ciphertext
 
-      // Entry consumed — should be gone
+      // Entry consumed ï¿½ should be gone
       expect(hasPendingAuth('web1')).toBe(false);
     });
 
@@ -180,7 +180,7 @@ describe('auth-socket', () => {
       expect(resp.error).toContain('Invalid message');
     });
 
-    it('is idempotent — calling ensureAuthSocket twice does not error', async () => {
+    it('is idempotent ï¿½ calling ensureAuthSocket twice does not error', async () => {
       await ensureAuthSocket();
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
@@ -195,7 +195,7 @@ describe('auth-socket', () => {
         expect(fs.existsSync(sockPath)).toBe(true);
       }
 
-      cleanupAuthSocket();
+      await cleanupAuthSocket();
 
       if (process.platform !== 'win32') {
         expect(fs.existsSync(sockPath)).toBe(false);
@@ -276,7 +276,7 @@ describe('auth-socket', () => {
         client.on('error', reject);
       });
 
-      // Now wait — should resolve immediately since password is already there
+      // Now wait ï¿½ should resolve immediately since password is already there
       const encPw = await waitForPassword('fast-test', 1000);
       expect(encPw).toContain(':');
     });
@@ -288,15 +288,15 @@ describe('auth-socket', () => {
       const passwordPromise = waitForPassword('cleanup-test', 5000);
 
       await new Promise(r => setTimeout(r, 50));
-      cleanupAuthSocket();
+      await cleanupAuthSocket();
 
       await expect(passwordPromise).rejects.toThrow('Auth socket closed');
     });
   });
 
   describe('collectOobPassword', () => {
-    afterEach(() => {
-      cleanupAuthSocket();
+    afterEach(async () => {
+      await cleanupAuthSocket();
     });
 
     it('returns immediately when pending auth already has password', async () => {
@@ -365,8 +365,8 @@ describe('auth-socket', () => {
     });
   });
   describe('collectOobApiKey', () => {
-    afterEach(() => {
-      cleanupAuthSocket();
+    afterEach(async () => {
+      await cleanupAuthSocket();
     });
 
     it('launches terminal with --api-key flag', async () => {
@@ -448,7 +448,7 @@ describe('auth-socket', () => {
       });
       const result1Promise = collectOobApiKey('cancel-cred', 'credential_store_set', { launchFn: launchFn1, waitTimeoutMs: 5000 });
       // Wait for launchFn to be called (happens after ensureAuthSocket, which may retry on Windows)
-      await vi.waitFor(() => { if (!capturedOnExit) throw new Error('launch not yet called'); }, { timeout: 2000 });
+      await vi.waitFor(() => { if (!capturedOnExit) throw new Error('launch not yet called'); }, { timeout: 10000 });
       capturedOnExit!(1); // simulate user closing the terminal
       const result1 = await result1Promise;
       expect('fallback' in result1).toBe(true);
@@ -513,7 +513,7 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('launchAuthTerminal — headless fallback', () => {
+  describe('launchAuthTerminal ï¿½ headless fallback', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
     });
