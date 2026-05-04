@@ -75,16 +75,16 @@
       "phase": 4,
       "title": "Unit tests for secret CLI (tests/secret-cli.test.ts)",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "33 tests: name validation, --list table, --set error paths + OOB delivery, --delete single/all, --update flags. Also fixed handleUpdate to exit(1) on zero flags (reviewer note)."
     },
     {
       "id": "T6",
       "phase": 4,
       "title": "Unit tests for credential-store path derivation",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "7 tests: call-time env var resolution, mid-process redirect, dir isolation, auto-create, round-trip read/write/delete. Also deduped env-var reads in loadCredentialFile/saveCredentialFile via path.dirname(getCredentialsPath())."
     },
     {
       "id": "V4",
@@ -93,7 +93,7 @@
       "type": "verify",
       "tier": "premium",
       "status": "pending",
-      "notes": ""
+      "notes": "Build: PASS. T5 (33 tests) + T6 (7 tests): all pass. Total: 1123 passed, 22 failed (auth-socket.test.ts Windows named-pipe timing, pre-existing), 7 skipped. Pre-existing failures up from 21 to 22 — one additional auth-socket timing flake, not caused by T5/T6 changes. Awaiting PM review."
     }
   ]
 }
