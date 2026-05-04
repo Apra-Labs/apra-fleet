@@ -42,6 +42,7 @@ export const updateMemberSchema = z.object({
   cloud_activity_command: z.string().optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
   llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().describe('Change the LLM provider for this member.'),
   unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  category: z.string().max(64).optional().describe('Group label for this member (e.g. "doers", "reviewers"). Pass empty string to clear.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -119,6 +120,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
   if (input.unattended !== undefined) updates.unattended = input.unattended;
+  if (input.category !== undefined) updates.category = input.category || undefined;
   if (input.host) updates.host = input.host;
   if (input.port) updates.port = input.port;
   if (input.username) updates.username = input.username;

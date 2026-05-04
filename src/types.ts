@@ -29,6 +29,7 @@ export interface Agent {
   lastBranch?: string;
   tokenUsage?: { input: number; output: number };
   unattended?: false | 'auto' | 'dangerous';
+  category?: string;
 }
 
 export interface GitHubAppConfig {

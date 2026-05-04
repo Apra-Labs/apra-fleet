@@ -90,27 +90,36 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         session: a.sessionId ?? null,
         created: a.createdAt,
         lastUsed: a.lastUsed ?? 'never',
+        category: a.category ?? null,
       })),
     });
   }
 
-  // Compact: 1 line per member with key fields packed together
-  let t = `${agents.length} member(s)\n`;
+  // Compact: group members by category, one group per row block
+  const grouped = new Map<string, Array<{ agent: Agent; authStatus: string }>>();
   for (const [i, a] of agents.entries()) {
-    const icon = a.icon ?? DEFAULT_ICON;
-    const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
-    const authStatus = authStatuses[i];
-    
-    t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'} | provider=${a.llmProvider ?? 'claude'}`;
-    if (a.agentType !== 'local') {
-      t += ` | user=${a.username} | ssh=${a.authType}`;
-      if (authStatus !== 'offline' && authStatus !== 'N/A') {
-        t += ` | llm-auth=${authStatus}`;
-      } else if (authStatus === 'offline') {
-        t += ` | status=offline`;
+    const key = a.category?.trim() || '(uncategorized)';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push({ agent: a, authStatus: authStatuses[i] });
+  }
+
+  let t = `${agents.length} member(s)\n`;
+  for (const [category, members] of grouped) {
+    t += `\n[${category}]\n`;
+    for (const { agent: a, authStatus } of members) {
+      const icon = a.icon ?? DEFAULT_ICON;
+      const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
+      t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'} | provider=${a.llmProvider ?? 'claude'}`;
+      if (a.agentType !== 'local') {
+        t += ` | user=${a.username} | ssh=${a.authType}`;
+        if (authStatus !== 'offline' && authStatus !== 'N/A') {
+          t += ` | llm-auth=${authStatus}`;
+        } else if (authStatus === 'offline') {
+          t += ` | status=offline`;
+        }
       }
+      t += '\n';
     }
-    t += '\n';
   }
   return t;
 }

@@ -75,13 +75,27 @@ export function writeStatusline(overrides?: Map<string, string>): void {
       icon: a.icon ?? DEFAULT_ICON,
       name: a.friendlyName,
       status: saved[a.id] ?? 'idle',
+      category: a.category?.trim() || '(uncategorized)',
     }));
 
-    states.sort((a, b) => (PRIORITY[a.status] ?? 99) - (PRIORITY[b.status] ?? 99));
+    // Group by category, sort within each group by priority
+    const grouped = new Map<string, typeof states>();
+    for (const s of states) {
+      if (!grouped.has(s.category)) grouped.set(s.category, []);
+      grouped.get(s.category)!.push(s);
+    }
+    for (const members of grouped.values()) {
+      members.sort((a, b) => (PRIORITY[a.status] ?? 99) - (PRIORITY[b.status] ?? 99));
+    }
 
-    const line = states
-      .map(s => `${s.icon} ${s.name}:${STATUS_EMOJI[s.status] ?? '?'} ${s.status}`)
-      .join('  ');
+    const categoryParts: string[] = [];
+    for (const [category, members] of grouped) {
+      const membersStr = members
+        .map(s => `${s.icon} ${s.name}:${STATUS_EMOJI[s.status] ?? '?'} ${s.status}`)
+        .join('  ');
+      categoryParts.push(`[${category}]: ${membersStr}`);
+    }
+    const line = categoryParts.join('\n');
 
     saveState(saved);
     fs.writeFileSync(STATUSLINE_PATH, line + '\n', { mode: 0o600 });

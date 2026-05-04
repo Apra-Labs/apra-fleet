@@ -216,10 +216,11 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const updateNotice = getUpdateNotice();
 
   if (format === 'json') {
+    const rowsWithCategory = rows.map((r, i) => ({ ...r, category: agents[i].category ?? null }));
     const payload: Record<string, unknown> = {
       version: serverVersion,
       summary: { total: rows.length, online, offline: rows.length - online },
-      members: rows,
+      members: rowsWithCategory,
     };
     if (updateNotice) {
       const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
@@ -228,32 +229,48 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     return JSON.stringify(payload);
   }
 
+  // Group rows by category
+  const grouped = new Map<string, Array<{ row: AgentStatusRow; agent: ReturnType<typeof getAllAgents>[number] }>>();
+  for (let i = 0; i < rows.length; i++) {
+    const key = agents[i].category?.trim() || '(uncategorized)';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push({ row: rows[i], agent: agents[i] });
+  }
+
   // Compact: 1 summary line + 1 line per member, multiple fields per line
   let t = updateNotice ? `${updateNotice}\n` : '';
-  t += `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
-  t += rows.map(r => {
-    const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
-    return `${r.icon} ${r.name}(${st})`;
-  }).join(', ');
+  t += `Fleet ${serverVersion}: ${online}/${rows.length} online`;
+  for (const [category, members] of grouped) {
+    const chips = members.map(({ row: r }) => {
+      const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
+      return `${r.icon} ${r.name}(${st})`;
+    }).join(', ');
+    t += ` | [${category}]: ${chips}`;
+  }
   t += '\n';
-  for (const r of rows) {
-    const branchStr = r.branch ? ` | branch=${r.branch}` : '';
-    const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
-      ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
-    let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}${tokenStr}`;
-    if (r.cloudInfo) {
-      const ci = r.cloudInfo;
-      const uptimeHrs = uptimeHoursFromLaunch(ci.launchTime);
-      const uptime = ci.launchTime ? formatUptimeDuration(uptimeHrs) : '-';
-      const cost = estimateCost(ci.instanceType, uptimeHrs);
-      const rate = hourlyRate(ci.instanceType);
-      const warn = costWarning(ci.instanceType, uptimeHrs);
-      const gpuStr = ci.gpuUtil !== undefined ? ` GPU:${ci.gpuUtil}%` : '';
-      const typeStr = ci.instanceType ? ` ${ci.instanceType}` : '';
-      const warnStr = warn ? ' ⚠' : '';
-      line += ` | [cloud:${ci.state}${typeStr} ${uptime} ${cost} @${rate}${gpuStr}${warnStr}]`;
+
+  // Detail lines grouped by category
+  for (const [category, members] of grouped) {
+    t += `\n[${category}]\n`;
+    for (const { row: r } of members) {
+      const branchStr = r.branch ? ` | branch=${r.branch}` : '';
+      const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
+        ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
+      let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}${tokenStr}`;
+      if (r.cloudInfo) {
+        const ci = r.cloudInfo;
+        const uptimeHrs = uptimeHoursFromLaunch(ci.launchTime);
+        const uptime = ci.launchTime ? formatUptimeDuration(uptimeHrs) : '-';
+        const cost = estimateCost(ci.instanceType, uptimeHrs);
+        const rate = hourlyRate(ci.instanceType);
+        const warn = costWarning(ci.instanceType, uptimeHrs);
+        const gpuStr = ci.gpuUtil !== undefined ? ` GPU:${ci.gpuUtil}%` : '';
+        const typeStr = ci.instanceType ? ` ${ci.instanceType}` : '';
+        const warnStr = warn ? ' ⚠' : '';
+        line += ` | [cloud:${ci.state}${typeStr} ${uptime} ${cost} @${rate}${gpuStr}${warnStr}]`;
+      }
+      t += line + '\n';
     }
-    t += line + '\n';
   }
   return t;
 }
