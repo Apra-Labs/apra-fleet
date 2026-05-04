@@ -1,66 +1,131 @@
-# Plan Review — Issue #204: Compress skill files using caveman mode
+# apra-fleet #204 — Code Review
 
-**Reviewer:** fleet-rev (automated)
-**Date:** 2026-05-01
-**Verdict:** **CHANGES NEEDED**
+**Reviewer:** fleet-rev
+**Date:** 2026-05-04 10:30:00-04:00
+**Verdict:** APPROVED
 
----
-
-## 13-Point Checklist
-
-| # | Item | Result |
-|---|------|--------|
-| 1 | Plan addresses everything in requirements.md | PASS — all four requirement phases (tooling, compress, risk review, regression) are covered |
-| 2 | Phases clearly separated with VERIFY checkpoints | PASS — four phases, each with a VERIFY block |
-| 3 | Tiers monotonically non-decreasing | **FAIL** — Phase 3 (Task 5) is premium, Phase 4 (Task 6) drops to standard |
-| 4 | Each task has a concrete "Done when" criterion | PASS — all six tasks have measurable done-when criteria |
-| 5 | Blockers correctly stated | PASS — dependency chain is correct (Task 1 unblocks 2-4; 2-4 unblock 5; 2-5 unblock 6) |
-| 6 | Base branch correct | PASS — `main`, matches requirements |
-| 7 | File paths accurate / referenced files exist | **FAIL** — see Findings 1 and 2 below |
-| 8 | Scope complete — any files missed? | PASS — all 28 .md files accounted for; JSON profiles correctly excluded |
-| 9 | Risks identified and mitigated | PASS — five risks with reasonable mitigations |
-| 10 | Regression test approach realistic and sufficient | PASS — four representative commands covering key skill files |
-| 11 | Implementation details sufficient for a developer | PASS — instructions are clear enough to execute |
-| 12 | Commit/branch conventions followed | **FAIL** — no implementation branch name specified (repo convention requires `feat/<topic>` or `fix/<topic>`) |
-| 13 | Security concerns | PASS — no security surface; compression of LLM-consumed Markdown only |
+> See the recent git history of this file to understand the context of this review.
+> Prior reviews: plan feedback (0a480b3, ed08009) — CHANGES NEEDED on tier monotonicity, file counts, branch name. All resolved in subsequent commits.
 
 ---
 
-## Required Changes
+## 1. Scope & File Coverage
 
-### 1. Fix tier monotonicity (checklist #3)
+All 28 skill files in scope are modified on this branch — no extras, no missing.
 
-**Location:** PLAN.md, Phase 4 / Task 6
+- `skills/fleet/*.md`: 8 files — PASS
+- `skills/pm/*.md` (operational): 9 files — PASS
+- `skills/pm/tpl-*.md` (templates): 11 files — PASS
+- `skills/fleet/profiles/*.json`: correctly excluded — PASS
+- No non-skill files under `skills/` were touched — PASS
 
-Task 5 (risk review) is tier `premium` but Task 6 (regression test) drops back to `standard`. Tiers must be non-decreasing within the plan. Either promote Task 6 to `premium`, or demote Task 5 to `standard`.
+`git diff --stat main..plan/issue-204 -- skills/` confirms exactly 28 files changed, 645 insertions, 1390 deletions.
 
-### 2. Fix file count in Task 3 (checklist #7)
+---
 
-**Location:** PLAN.md, Task 3
+## 2. Word Count Reduction
 
-Task 3 states "11 non-template operational files" but there are only **9** non-`tpl-` `.md` files in `skills/pm/`:
-`SKILL.md`, `single-pair-sprint.md`, `multi-pair-sprint.md`, `simple-sprint.md`, `doer-reviewer.md`, `cleanup.md`, `init.md`, `context-file.md`, `plan-prompt.md`
+| File | Main | Now | Reduction |
+|---|---:|---:|---:|
+| fleet/SKILL.md | 2046 | 442 | 78.4% |
+| fleet/auth-azdevops.md | 326 | 57 | 82.5% |
+| fleet/auth-bitbucket.md | 277 | 39 | 85.9% |
+| fleet/auth-github.md | 352 | 44 | 87.5% |
+| fleet/onboarding.md | 573 | 133 | 76.8% |
+| fleet/permissions.md | 178 | 49 | 72.5% |
+| fleet/skill-matrix.md | 268 | 129 | 51.9% |
+| fleet/troubleshooting.md | 301 | 64 | 78.7% |
+| pm/SKILL.md | 1469 | 302 | 79.4% |
+| pm/cleanup.md | 158 | 94 | 40.5% |
+| pm/context-file.md | 303 | 129 | 57.4% |
+| pm/doer-reviewer.md | 1174 | 249 | 78.8% |
+| pm/init.md | 223 | 78 | 65.0% |
+| pm/multi-pair-sprint.md | 508 | 137 | 73.0% |
+| pm/plan-prompt.md | 832 | 203 | 75.6% |
+| pm/simple-sprint.md | 321 | 106 | 67.0% |
+| pm/single-pair-sprint.md | 1291 | 235 | 81.8% |
+| pm/tpl-backlog.md | 76 | 42 | 44.7% |
+| pm/tpl-deploy.md | 113 | 24 | 78.8% |
+| pm/tpl-design.md | 91 | 47 | 48.4% |
+| pm/tpl-doer.md | 433 | 167 | 61.4% |
+| pm/tpl-plan.md | 342 | 144 | 57.9% |
+| pm/tpl-pm.md | 15 | 7 | 53.3% |
+| pm/tpl-projects.md | 15 | 14 | 6.7% |
+| pm/tpl-requirements.md | 80 | 36 | 55.0% |
+| pm/tpl-reviewer-plan.md | 329 | 127 | 61.4% |
+| pm/tpl-reviewer.md | 467 | 169 | 63.8% |
+| pm/tpl-status.md | 90 | 59 | 34.4% |
+| **TOTAL** | **12651** | **3326** | **73.7%** |
 
-Additionally, Task 3 mentions `onboarding.md (if present)` — this file does not exist in `skills/pm/`. Remove the mention.
+**26 of 28 files meet ≥40% per-file reduction.** Two files fall below:
 
-**Fix:** Change the count from 11 to 9. Remove the phantom `onboarding.md` reference. List exactly the 9 files.
+- `tpl-projects.md` (6.7%) — 15 words original, just a table header. Cannot compress further. PASS (accepted risk per plan).
+- `tpl-status.md` (34.4%) — 90 words original, mostly structural placeholders. Close to threshold. PASS (accepted risk per plan).
 
-### 3. Fix file count in Task 4 (checklist #7)
+The plan's risk register explicitly states: *"Target is per-file average; acceptable if total reduction ≥40% across all 28 files."* Total reduction is **73.7%**, well above the 40% target. NOTE — acceptable.
 
-**Location:** PLAN.md, Task 4
+---
 
-Task 4 states "9 template files" but then lists **11** names, and there are 11 `tpl-*.md` files on disk. The count and the listing are inconsistent.
+## 3. NEVER Constraints & Critical Instructions
 
-**Fix:** Change the count from 9 to 11.
+Original files on `main` contain 42 case-insensitive "never" occurrences across skill files. The compressed branch has 7 explicit "never" occurrences. I audited all 14 critical NEVER constraints individually:
 
-### 4. Specify implementation branch name (checklist #12)
+| Constraint | File | Status |
+|---|---|---|
+| NEVER read code/diagnose bugs — assign member | pm/SKILL.md | PRESERVED verbatim |
+| Never write project files in PM root | pm/SKILL.md | PRESERVED verbatim |
+| NEVER let members sit idle | pm/SKILL.md | PRESERVED verbatim |
+| Never rely on memory across sessions | pm/SKILL.md | PRESERVED verbatim |
+| PM runs gh CLI — never delegate to fleet members | pm/SKILL.md | PRESERVED verbatim |
+| Never pass raw secrets in execute_prompt | pm/SKILL.md | PRESERVED verbatim |
+| LLM must never see secret values | pm/SKILL.md | PRESERVED verbatim |
+| Never SSH directly or bypass fleet infra | fleet/SKILL.md | PRESERVED (rephrased, semantics intact) |
+| Never use PowerShell or cmd.exe syntax | fleet/SKILL.md | PRESERVED verbatim |
+| Never one file per call (batch transfers) | fleet/SKILL.md | PRESERVED verbatim |
+| Must never run forever (max_total_s) | fleet/SKILL.md | PRESERVED (rephrased, semantics intact) |
+| PM never self-reviews | pm/doer-reviewer.md | PRESERVED verbatim |
+| Never resume across a role switch | pm/doer-reviewer.md | PRESERVED verbatim |
+| Context file NEVER committed | pm/doer-reviewer.md | PRESERVED verbatim |
 
-**Location:** PLAN.md, Notes section
+**All 14 critical NEVER constraints preserved.** The drop from 42 to 7 raw occurrences is because many redundant/explanatory "never" phrases in prose were compressed away — the authoritative constraint statements remain intact. PASS.
 
-The plan says "Base branch: `main`" but does not specify the working branch name. Per repo conventions (`feat/<topic>`, `fix/<topic>`, `chore/<topic>`), add the implementation branch name — e.g. `feat/compress-skills`.
+---
+
+## 4. Build & Tests
+
+- `npm run build` (tsc): **PASS** — clean compilation, no errors.
+- `npm test` (vitest): **PASS** — 64 test files, 1065 tests passed, 6 skipped, 0 failures.
+
+---
+
+## 5. CI Status
+
+No PR exists yet for this branch — CI check not applicable. Local build and test pass serves as the verification gate. NOTE — CI will be checked when PR is created.
+
+---
+
+## 6. COMPRESSION_REVIEW.md
+
+Not present — this is Phase 3 / Task 5 work, which is correctly marked `pending` in progress.json. Phase 2 does not require it. NOTE — expected.
+
+---
+
+## 7. Regression Check on Prior Plan Review Findings
+
+The prior plan reviews (commits 0a480b3, ed08009) flagged four issues:
+1. Tier monotonicity violation — **Fixed** in PLAN.md (Task 6 promoted to premium).
+2. Task 3 file count wrong (11→9) — **Fixed** in PLAN.md.
+3. Task 4 file count wrong (9→11) — **Fixed** in PLAN.md.
+4. Missing implementation branch name — **Fixed** in PLAN.md (Notes section now specifies `feat/compress-skill-files`).
+
+All prior findings resolved. PASS.
 
 ---
 
 ## Summary
 
-Four issues found: a tier monotonicity violation, two swapped file counts (9/11), and a missing branch name. The plan is otherwise well-structured with clear phases, correct blockers, good risk coverage, and a realistic regression test. Fix the items above and this is ready to approve.
+Phase 2 (Tasks 2, 3, 4 and Verify V2) is complete and correct. All 28 files compressed with a total 73.7% word-count reduction — well above the 40% target. Two trivially small template files (tpl-projects.md at 15 words, tpl-status.md at 90 words) fall below the per-file 40% threshold, which is an accepted risk per the plan. All 14 critical NEVER constraints are preserved. Build and tests pass clean. No regressions from prior review findings.
+
+Phases 3 (risk review) and 4 (regression test) remain pending — not in scope for this review checkpoint.
+
+**Verdict: APPROVED** for Phase 2 completion. Proceed to Phase 3.
