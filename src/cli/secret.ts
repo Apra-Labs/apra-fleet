@@ -249,7 +249,7 @@ async function handleSet(args: string[]): Promise<void> {
 
     // Persist mode: store the secret
     try {
-      credentialSet(name, secretValue, true, 'confirm');
+      credentialSet(name, secretValue, true, 'deny');
       console.error(`✓ Secret stored for ${name}.`);
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);
@@ -258,7 +258,7 @@ async function handleSet(args: string[]): Promise<void> {
   } else if (persist) {
     // OOB delivery + persist: store the secret
     try {
-      credentialSet(name, secretValue, true, 'confirm');
+      credentialSet(name, secretValue, true, 'deny');
       console.error(`✓ Secret also stored for future use.`);
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);

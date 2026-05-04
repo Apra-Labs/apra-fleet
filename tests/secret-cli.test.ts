@@ -94,7 +94,7 @@ beforeEach(() => {
 
   mockCredentialList.mockReturnValue([]);
   mockCredentialDelete.mockReturnValue(true);
-  mockCredentialSet.mockReturnValue({ name: 'x', scope: 'session', network_policy: 'confirm', created_at: '', allowedMembers: '*' });
+  mockCredentialSet.mockReturnValue({ name: 'x', scope: 'session', network_policy: 'deny', created_at: '', allowedMembers: '*' });
   mockCredentialUpdate.mockReturnValue({ members: '*', network_policy: 'allow' });
   mockSecureInput.mockResolvedValue('my-secret-value');
 });
@@ -259,7 +259,7 @@ describe('runSecret --set', () => {
   it('stores credential when no server but --persist is given', async () => {
     mockNetConnect.mockImplementation(() => makeErrorSocket());
     await runSecret(['--set', 'my_secret', '--persist']);
-    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', true, 'confirm');
+    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', true, 'deny');
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
