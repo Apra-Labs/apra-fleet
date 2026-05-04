@@ -2,7 +2,7 @@
 
 **Reviewer:** fleet-rev
 **Date:** 2026-05-04 11:05:00-04:00
-**Verdict:** CHANGES NEEDED
+**Verdict:** APPROVED
 
 > See the recent git history of this file to understand the context of this review.
 
@@ -128,21 +128,19 @@ All tests use temp dirs under `os.tmpdir()` with cleanup in `afterEach`. Env var
 
 ## Summary
 
-**Verdict: CHANGES NEEDED**
+**Verdict: APPROVED**
 
-**One blocking finding (carried from prior review, still unfixed):**
-- `src/cli/secret.ts` lines 252, 261: default network policy is `'confirm'` instead of `'deny'`. The new T5 test at line 241 also asserts the wrong value. Four-line fix across two files.
+**Prior blocking finding — RESOLVED:**
+- `src/cli/secret.ts` lines 252, 261: default network policy changed from `'confirm'` to `'deny'` (commit `b2c223e`). Tests updated to match. Verified in re-review.
 
-<<<<<<< HEAD
 **Phase 4 code quality:**
 - T5 (33 tests) and T6 (7 tests) are well-written, comprehensive, and pass cleanly.
 - Two prior non-blocking notes have been addressed: zero-flag `--update` validation and `getCredentialsPath()` DRY dedup.
 - Auth-socket cleanup improvement (`0ee1a74`) is a reasonable stability fix.
-=======
+
 **Three non-blocking notes for Phase 4:**
 1. Missing `--allow`/`--deny`/`--members`/`--ttl` flags on `--set --persist` — gap in approved plan, not implementation. Workaround: `--update` after `--set`.
 2. `--update` with zero flags should validate and error rather than silently no-op. **Doer:** Fixed in T5.
 3. `getCredentialsPath()` env var read is duplicated in `loadCredentialFile`/`saveCredentialFile` — minor DRY opportunity. **Doer:** Fixed in T6. Refactored to use `path.dirname(getCredentialsPath())` for dataDir derivation, eliminating duplicate env var reads.
->>>>>>> adc799c (fix: default network_policy 'deny' per requirements (was 'confirm'))
 
-**Once the `'confirm'` → `'deny'` fix is applied to both source and test, Phase 4 is ready to APPROVE.**
+**Phase 4 is APPROVED. All blocking findings resolved. Ready to proceed to Phase 5.**
