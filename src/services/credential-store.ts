@@ -77,11 +77,11 @@ function getCredentialsPath(): string {
 }
 
 function loadCredentialFile(): CredentialFile {
-  const dataDir = process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR;
+  const credentialsPath = getCredentialsPath();
+  const dataDir = path.dirname(credentialsPath);
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   }
-  const credentialsPath = getCredentialsPath();
   if (!fs.existsSync(credentialsPath)) {
     return { version: '1.0', credentials: {} };
   }
@@ -89,11 +89,11 @@ function loadCredentialFile(): CredentialFile {
 }
 
 function saveCredentialFile(file: CredentialFile): void {
-  const dataDir = process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR;
+  const credentialsPath = getCredentialsPath();
+  const dataDir = path.dirname(credentialsPath);
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   }
-  const credentialsPath = getCredentialsPath();
   fs.writeFileSync(credentialsPath, JSON.stringify(file, null, 2), { mode: 0o600 });
   enforceOwnerOnly(credentialsPath);
 }
