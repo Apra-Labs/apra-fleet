@@ -58,8 +58,8 @@
       "phase": 3,
       "title": "Three-signal OOB in src/tools/credential-store-set.ts",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Implemented three-signal OOB flow: (1) spawn terminal with `apra-fleet secret --set <name>` and record PID, (2) return waiting message to console and log at info level, (3) kill terminal PID on credential receipt. Uses immediate return flow where subsequent calls retrieve stored credential."
     },
     {
       "id": "V3",
