@@ -31,8 +31,12 @@ describe('isNewer — version comparison', () => {
     expect(isNewer('v0.1.7', 'v0.1.8')).toBe(false);
   });
 
-  it('4-part version string returns false (not supported)', () => {
-    expect(isNewer('v0.1.8.1', 'v0.1.8')).toBe(false);
+  it('4-part version: v0.1.8.1 > v0.1.8', () => {
+    expect(isNewer('v0.1.8.1', 'v0.1.8')).toBe(true);
+  });
+
+  it('4-part version: v0.1.8.0 not newer than v0.1.8', () => {
+    expect(isNewer('v0.1.8.0', 'v0.1.8')).toBe(false);
   });
 
   it('invalid candidate returns false', () => {

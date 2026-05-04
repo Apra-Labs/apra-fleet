@@ -7,21 +7,25 @@ interface UpdateInfo {
 
 let cachedUpdate: UpdateInfo | null = null;
 
-/** Parse "vX.Y.Z" or "vX.Y.Z_hash" into [major, minor, patch]. Returns null on parse failure. */
-export function parseVersion(v: string): [number, number, number] | null {
+/** Parse "vX.Y.Z[.W]" or "vX.Y.Z_hash" into numeric parts. Returns null on parse failure. */
+export function parseVersion(v: string): number[] | null {
   const clean = v.replace(/^v/, '').split('_')[0];
   const parts = clean.split('.').map(Number);
-  if (parts.length !== 3 || parts.some(n => isNaN(n))) return null;
-  return parts as [number, number, number];
+  if (parts.length < 3 || parts.some(n => isNaN(n))) return null;
+  return parts;
 }
 
 export function isNewer(candidate: string, current: string): boolean {
   const c = parseVersion(candidate);
   const i = parseVersion(current);
   if (!c || !i) return false;
-  if (c[0] !== i[0]) return c[0] > i[0];
-  if (c[1] !== i[1]) return c[1] > i[1];
-  return c[2] > i[2];
+  const len = Math.max(c.length, i.length);
+  for (let idx = 0; idx < len; idx++) {
+    const cv = c[idx] ?? 0;
+    const iv = i[idx] ?? 0;
+    if (cv !== iv) return cv > iv;
+  }
+  return false;
 }
 
 /** Fire-and-forget: fetch latest release from GitHub and cache if newer. Never throws. */
