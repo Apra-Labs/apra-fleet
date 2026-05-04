@@ -1,7 +1,8 @@
 import net from 'node:net';
+import readline from 'node:readline';
 import { getSocketPath } from '../services/auth-socket.js';
 import { secureInput } from '../utils/secure-input.js';
-import { credentialSet } from '../services/credential-store.js';
+import { credentialSet, credentialList, credentialDelete, credentialUpdate, type CredentialUpdatePatch } from '../services/credential-store.js';
 
 const NAME_REGEX = /^[a-zA-Z0-9_]{1,64}$/;
 
@@ -19,17 +20,146 @@ export async function runSecret(args: string[]): Promise<void> {
   if (args[0] === '--set') {
     await handleSet(args.slice(1));
   } else if (args[0] === '--list') {
-    console.error('--list not yet implemented');
-    process.exit(1);
+    await handleList();
   } else if (args[0] === '--update') {
-    console.error('--update not yet implemented');
-    process.exit(1);
+    await handleUpdate(args.slice(1));
   } else if (args[0] === '--delete') {
-    console.error('--delete not yet implemented');
-    process.exit(1);
+    await handleDelete(args.slice(1));
   } else {
     console.error('Usage: apra-fleet secret --set <name> [--persist]');
     process.exit(1);
+  }
+}
+
+async function handleList(): Promise<void> {
+  const credentials = credentialList();
+
+  if (credentials.length === 0) {
+    console.log('No secrets stored.');
+    return;
+  }
+
+  const rows: string[][] = [];
+  const headers = ['NAME', 'SCOPE', 'POLICY', 'MEMBERS', 'EXPIRES'];
+  rows.push(headers);
+
+  for (const cred of credentials) {
+    const membersStr = Array.isArray(cred.allowedMembers) ? cred.allowedMembers.join(',') : cred.allowedMembers;
+    const expiresStr = cred.expiresAt ? new Date(cred.expiresAt).toLocaleString() : '—';
+    rows.push([cred.name, cred.scope, cred.network_policy, membersStr, expiresStr]);
+  }
+
+  // Calculate column widths
+  const colWidths = headers.map((_, i) => Math.max(...rows.map(r => r[i].length)));
+
+  // Print header
+  console.log(rows[0].map((h, i) => h.padEnd(colWidths[i])).join('  '));
+  console.log(colWidths.map(w => '—'.repeat(w)).join('  '));
+
+  // Print rows
+  for (let i = 1; i < rows.length; i++) {
+    console.log(rows[i].map((cell, j) => cell.padEnd(colWidths[j])).join('  '));
+  }
+}
+
+async function handleUpdate(args: string[]): Promise<void> {
+  const name = args[0];
+  if (!name) {
+    console.error('Usage: apra-fleet secret --update <name> [--members <list>] [--ttl <seconds>] [--allow|--deny]');
+    process.exit(1);
+  }
+
+  if (!NAME_REGEX.test(name)) {
+    console.error(`✗ Invalid credential name: ${name}`);
+    console.error('  Name must match [a-zA-Z0-9_]{1,64}');
+    process.exit(1);
+  }
+
+  const patch: CredentialUpdatePatch = {};
+
+  // Parse --allow or --deny
+  if (args.includes('--allow')) {
+    patch.network_policy = 'allow';
+  } else if (args.includes('--deny')) {
+    patch.network_policy = 'deny';
+  }
+
+  // Parse --members
+  const membersIdx = args.indexOf('--members');
+  if (membersIdx !== -1 && membersIdx + 1 < args.length) {
+    patch.members = args[membersIdx + 1];
+  }
+
+  // Parse --ttl
+  const ttlIdx = args.indexOf('--ttl');
+  if (ttlIdx !== -1 && ttlIdx + 1 < args.length) {
+    const ttlSeconds = parseInt(args[ttlIdx + 1], 10);
+    if (isNaN(ttlSeconds) || ttlSeconds <= 0) {
+      console.error('✗ Invalid TTL: must be a positive number');
+      process.exit(1);
+    }
+    patch.expiresAt = Date.now() + ttlSeconds * 1000;
+  }
+
+  const result = credentialUpdate(name, patch);
+  if (!result) {
+    console.error(`✗ Credential not found: ${name}`);
+    process.exit(1);
+  }
+
+  console.log(`✓ Credential updated: ${name}`);
+}
+
+async function handleDelete(args: string[]): Promise<void> {
+  const deleteAll = args.includes('--all');
+  const name = deleteAll ? undefined : args[0];
+
+  if (deleteAll) {
+    // Prompt for confirmation
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+
+    const answer = await new Promise<string>((resolve) => {
+      rl.question('Delete all secrets? Type yes to confirm: ', (ans) => {
+        rl.close();
+        resolve(ans);
+      });
+    });
+
+    if (answer !== 'yes') {
+      console.log('Cancelled.');
+      return;
+    }
+
+    // Delete all
+    const allCreds = credentialList();
+    let deletedCount = 0;
+    for (const cred of allCreds) {
+      if (credentialDelete(cred.name)) {
+        deletedCount++;
+      }
+    }
+    console.log(`✓ Deleted ${deletedCount} credential(s).`);
+  } else {
+    if (!name) {
+      console.error('Usage: apra-fleet secret --delete <name> | apra-fleet secret --delete --all');
+      process.exit(1);
+    }
+
+    if (!NAME_REGEX.test(name)) {
+      console.error(`✗ Invalid credential name: ${name}`);
+      console.error('  Name must match [a-zA-Z0-9_]{1,64}');
+      process.exit(1);
+    }
+
+    if (!credentialDelete(name)) {
+      console.error(`✗ Credential not found: ${name}`);
+      process.exit(1);
+    }
+
+    console.log(`✓ Credential deleted: ${name}`);
   }
 }
 
