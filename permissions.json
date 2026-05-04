@@ -1,0 +1,60 @@
+{
+  "stacks": [],
+  "granted": [
+    {
+      "permission": "Bash(npm:*)",
+      "reason": "Need npm build/test and git for CI fix sprint on apra-fleet",
+      "date": "2026-04-24"
+    },
+    {
+      "permission": "Bash(npm run build:*)",
+      "reason": "Need npm build/test and git for CI fix sprint on apra-fleet",
+      "date": "2026-04-24"
+    },
+    {
+      "permission": "Bash(npm test:*)",
+      "reason": "Need npm build/test and git for CI fix sprint on apra-fleet",
+      "date": "2026-04-24"
+    },
+    {
+      "permission": "Bash(git:*)",
+      "reason": "Need npm build/test and git for CI fix sprint on apra-fleet",
+      "date": "2026-04-24"
+    },
+    {
+      "permission": "PowerShell(npm:*)",
+      "reason": "Need npm run build:binary for SEA binary build in feat/pino-logging task",
+      "date": "2026-04-28"
+    },
+    {
+      "permission": "Bash(dist/apra-fleet-installer-win-x64.exe:*)",
+      "reason": "Need installer exe and apra-fleet.exe binary execution, plus ls/sleep for SEA build/test loop",
+      "date": "2026-04-28"
+    },
+    {
+      "permission": "Bash(~/.apra-fleet/bin/apra-fleet.exe:*)",
+      "reason": "Need installer exe and apra-fleet.exe binary execution, plus ls/sleep for SEA build/test loop",
+      "date": "2026-04-28"
+    },
+    {
+      "permission": "Bash(ls:*)",
+      "reason": "Need installer exe and apra-fleet.exe binary execution, plus ls/sleep for SEA build/test loop",
+      "date": "2026-04-28"
+    },
+    {
+      "permission": "Bash(sleep:*)",
+      "reason": "Need installer exe and apra-fleet.exe binary execution, plus ls/sleep for SEA build/test loop",
+      "date": "2026-04-28"
+    },
+    {
+      "permission": "Bash(./dist/apra-fleet-installer-win-x64.exe:*)",
+      "reason": "SEA binary install + log verification steps for pino-logging build task",
+      "date": "2026-04-28"
+    },
+    {
+      "permission": "Bash(cat:*)",
+      "reason": "SEA binary install + log verification steps for pino-logging build task",
+      "date": "2026-04-28"
+    }
+  ]
+}

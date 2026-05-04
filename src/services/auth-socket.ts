@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
-import { logError } from '../utils/log-helpers.js';
+import { logError, logLine } from '../utils/log-helpers.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -15,6 +15,7 @@ const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
 interface PendingAuth {
   encryptedPassword?: string;
   createdAt: number;
+  spawned_pid?: number;
 }
 
 interface PasswordWaiter {
@@ -34,6 +35,19 @@ export function getSocketPath(): string {
     return `\\\\.\\pipe\\apra-fleet-auth-${username}`;
   }
   return SOCKET_PATH;
+}
+
+function killProcess(pid: number): void {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
+  } catch {
+    // Process may have already exited
+  }
 }
 
 export async function ensureAuthSocket(): Promise<void> {
@@ -81,6 +95,11 @@ export async function ensureAuthSocket(): Promise<void> {
             // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
             (msg as any).password = '';
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
+            // Kill the spawned terminal process if one was launched
+            if (pending.spawned_pid) {
+              killProcess(pending.spawned_pid);
+              pending.spawned_pid = undefined;
+            }
             // Resolve any waiting tool handler
             const waiter = passwordWaiters.get(msg.member_name);
             if (waiter) {
@@ -338,22 +357,35 @@ export async function collectOobConfirm(
 }
 
 /**
- * Resolve the command to invoke this binary's `auth` subcommand.
+ * Resolve the command to invoke this binary's `auth` or `secret` subcommand.
+ * For API key mode (--api-key in extraArgs), uses `secret --set`.
  * Returns [command, ...args] suitable for spawn().
  */
 function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
   const extra = extraArgs ?? [];
+  const isApiKeyMode = extra.includes('--api-key');
+
+  // For API key mode, use `secret --set` instead of `auth --api-key`
+  let cmdArgs: string[];
+  if (isApiKeyMode) {
+    // Remove --api-key and --prompt args, use simple `secret --set <name>`
+    cmdArgs = ['secret', '--set', memberName];
+  } else {
+    // For password/confirm modes, use original `auth <mode> <name>` command
+    cmdArgs = ['auth', ...extra, memberName];
+  }
+
   // SEA binary: process.execPath is the binary itself
   try {
     const sea = require('node:sea');
     if (sea.isSea()) {
-      return { cmd: process.execPath, args: ['auth', ...extra, memberName] };
+      return { cmd: process.execPath, args: cmdArgs };
     }
   } catch { /* not SEA */ }
 
-  // Dev mode: node <path-to-index.js> auth <name>
+  // Dev mode: node <path-to-index.js> <command>
   const indexJs = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'index.js');
-  return { cmd: process.argv[0], args: [indexJs, 'auth', ...extra, memberName] };
+  return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
 function buildHeadlessFallback(memberName: string, reason: string): string {
@@ -398,7 +430,8 @@ function findLinuxTerminal(): string | null {
 }
 
 /**
- * Launch a new terminal window running `apra-fleet auth <memberName>`.
+ * Launch a new terminal window running `apra-fleet secret --set <memberName>` or `apra-fleet auth <memberName>`.
+ * Records the spawned PID in the pending request so it can be killed when credential is received.
  * Returns a user-facing message describing what happened and executes a
  * callback when the spawned terminal process exits.
  */
@@ -410,6 +443,7 @@ export function launchAuthTerminal(
   const { cmd, args } = getAuthCommand(memberName, extraArgs);
   const fullArgs = [cmd, ...args];
   let child: ChildProcess;
+  const isApiKeyMode = extraArgs?.includes('--api-key') ?? false;
 
   try {
     const platform = process.platform;
@@ -485,6 +519,10 @@ export function launchAuthTerminal(
       // The title argument to start is required.
       const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
       child = spawn('cmd', spawnArgs, { detached: true, stdio: 'ignore' });
+      if (child.pid && isApiKeyMode) {
+        const pending = pendingRequests.get(memberName);
+        if (pending) pending.spawned_pid = child.pid;
+      }
     } else {
       // Linux: find available terminal emulator. Most support an execute flag.
       const terminal = findLinuxTerminal();
@@ -496,6 +534,10 @@ export function launchAuthTerminal(
       } else {
         // xterm, x-terminal-emulator etc.
         child = spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' });
+      }
+      if (child.pid && isApiKeyMode) {
+        const pending = pendingRequests.get(memberName);
+        if (pending) pending.spawned_pid = child.pid;
       }
     }
 

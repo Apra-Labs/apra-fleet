@@ -25,24 +25,24 @@
       "phase": 2,
       "title": "Create src/cli/secret.ts (OOB delivery path — --set)",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Implemented --set <name> with optional --persist flag. Uses secureInput() for secure entry. Connects to auth socket and sends credentials. Handles OOB delivery, OOB+persist, and persist-only flows."
     },
     {
       "id": "T2b",
       "phase": 2,
       "title": "Create src/cli/secret.ts (Vault management — --list, --update, --delete)",
       "tier": "standard",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Implemented --list (table format), --update (metadata via credentialUpdate), --delete (single/all with confirmation). Name validation: [a-zA-Z0-9_]{1,64}."
     },
     {
       "id": "T3",
       "phase": 2,
       "title": "Wire secret into src/index.ts and update --help",
       "tier": "cheap",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "Added 'secret' command dispatch, updated --help with secret command lines. Kept 'auth' as undocumented alias for backward compatibility."
     },
     {
       "id": "V2",
@@ -50,8 +50,8 @@
       "title": "VERIFY: Phase 2 — New secret CLI entry point",
       "type": "verify",
       "tier": "premium",
-      "status": "pending",
-      "notes": ""
+      "status": "completed",
+      "notes": "npm run build passes. apra-fleet secret --help shows correct synopsis. apra-fleet --help shows secret command lines (--set, --list, --delete), auth line not shown (backward-compatible alias). Credential-store tests: 29 passed."
     },
     {
       "id": "T4",
