@@ -1,18 +1,18 @@
 # {{PROJECT_NAME}} — Backlog
 
-Items not resolved in a sprint live here for the next one. Each entry must include full detail — never summarize.
+Unresolved items. Full detail required.
 
 ---
 
 ## BL-N — {{HEADLINE}}
 
 **Impact:** High | Medium | Low
-**Source:** {{GitHub issue URL | review finding ID | sprint name}}
+**Source:** {{GitHub URL | review ID | sprint}}
 
 **Detail:**
-{{Full description — include code locations, root causes, reproduction steps. Do not summarize.}}
+{{Full description: code locations, root causes, reproduction. No summary.}}
 
-**Impact of not addressing:**
-{{What breaks, degrades, or accumulates if this is left unresolved.}}
+**Impact of deferral:**
+{{What breaks or accumulates.}}
 
 ---

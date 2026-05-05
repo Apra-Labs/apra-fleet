@@ -11,7 +11,7 @@
     { "id": "T6",  "phase": 3, "title": "Compress PM ops batch 3: init.md, context-file.md, plan-prompt.md", "tier": "standard", "status": "completed", "notes": "before=1678 after=559 (67% reduction)" },
     { "id": "T7",  "phase": 4, "title": "Compress PM templates batch 1: tpl-doer.md, tpl-reviewer.md, tpl-reviewer-plan.md, tpl-plan.md", "tier": "standard", "status": "completed", "notes": "before=1666 after=754 (55% reduction)" },
     { "id": "T8",  "phase": 4, "title": "Compress PM templates batch 2: tpl-deploy.md, tpl-design.md, tpl-requirements.md, tpl-status.md", "tier": "standard", "status": "completed", "notes": "before=374 after=245 (35% reduction)" },
-    { "id": "T9",  "phase": 4, "title": "Compress PM templates batch 3: tpl-backlog.md, tpl-projects.md, tpl-pm.md", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T9",  "phase": 4, "title": "Compress PM templates batch 3: tpl-backlog.md, tpl-projects.md, tpl-pm.md", "tier": "standard", "status": "completed", "notes": "before=106 after=74 (30% reduction)" },
     { "id": "T10", "phase": 5, "title": "Risk review — write COMPRESSION_NORMAL_REVIEW.md, fix all HIGH findings", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "T11", "phase": 6, "title": "Write COMPRESSION_COMPARISON.md (original vs high-compress vs lite-compress vs normal-compress for all 28 files)", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "V1",  "phase": 6, "title": "VERIFY: Final — push all work to origin, stop for prose review", "type": "verify", "tier": "standard", "status": "pending", "notes": "" }
