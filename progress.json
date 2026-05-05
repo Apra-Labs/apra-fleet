@@ -9,7 +9,7 @@
     { "id": "V1",  "phase": 1, "title": "VERIFY: Phase 1 — Bootstrap", "type": "verify", "tier": "standard", "status": "completed", "notes": "Phase 1 complete. Counts: azdevops (326->332, +1.8%), bitbucket (277->267, -3.6%). Build pass. Pushed." },
     { "id": "T4",  "phase": 2, "title": "Compress fleet batch 1: auth-github.md, SKILL.md, onboarding.md", "tier": "standard", "status": "completed", "notes": "Lite-compressed. Counts: before=3115 after=2981 (4.3% reduction)." },
     { "id": "T5",  "phase": 2, "title": "Compress fleet batch 2: permissions.md, skill-matrix.md, troubleshooting.md", "tier": "standard", "status": "completed", "notes": "Lite-compressed. Counts: before=738 after=714 (3.3% reduction)." },
-    { "id": "V2",  "phase": 2, "title": "VERIFY: Phase 2 — Fleet files", "type": "verify", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "V2",  "phase": 2, "title": "VERIFY: Phase 2 — Fleet files", "type": "verify", "tier": "standard", "status": "completed", "notes": "Phase 2 complete. Counts: before=3853 after=3695 (-4.1%). Build pass. Pushed." },
     { "id": "T6",  "phase": 3, "title": "Compress PM ops batch 1: SKILL.md, single-pair-sprint.md, multi-pair-sprint.md", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "T7",  "phase": 3, "title": "Compress PM ops batch 2: simple-sprint.md, doer-reviewer.md, cleanup.md", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "T8",  "phase": 3, "title": "Compress PM ops batch 3: init.md, context-file.md, plan-prompt.md", "tier": "standard", "status": "pending", "notes": "" },
