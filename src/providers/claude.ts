@@ -32,10 +32,13 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, model, maxTurns } = opts;
+    const { folder, promptFile, sessionId, unattended, model, maxTurns, inv } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
-    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    if (inv) {
+      instruction = `[${inv}] ${instruction}`;
+    }
     let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
     if (sessionId) {
       cmd += ' -c';

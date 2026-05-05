@@ -91,6 +91,8 @@ export class LogScope {
     this._emit('info', entryMsg);
   }
 
+  getInv(): string { return this.inv; }
+
   info(msg: string):  void { this._emit('info',  msg); }
   warn(msg: string):  void { this._emit('warn',  msg); }
   error(msg: string): void { this._emit('error', msg); }

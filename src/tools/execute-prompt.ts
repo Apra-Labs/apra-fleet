@@ -154,12 +154,15 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     ? '⚠️ DEPRECATION: dangerously_skip_permissions is deprecated and ignored. Use update_member(unattended="dangerous") instead.\n\n'
     : '';
 
+  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
+
   const promptOpts = {
     folder: resolvedWorkFolder,
     promptFile: promptFileName,
     unattended: agent.unattended,
     model: resolvedModel,
     maxTurns: input.max_turns,
+    inv: scope.getInv(),
   };
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
@@ -175,8 +178,6 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
-
-  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
   
   const onPidCaptured = (pid: number) => {
     scope.info(`pid=${pid}`);

@@ -444,6 +444,86 @@ describe('kill-before-retry (T5)', () => {
   });
 });
 
+describe('inv token prepend (T4)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('prepends [inv] token to -p argument in fresh session', async () => {
+    const member = makeTestAgent({ friendlyName: 'inv-fresh' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-inv-1' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    // calls[1] = main prompt command (calls[0] = writePromptFile)
+    const cmd = mockExecCommand.mock.calls[1][0];
+    expect(cmd).toContain('-p "[');
+    expect(cmd).toContain('] Your task is described in');
+    // Check inv token is a 5-character alphanumeric string
+    const invMatch = cmd.match(/-p "\[([a-z0-9]{5})\]/);
+    expect(invMatch).not.toBeNull();
+  });
+
+  it('prepends [inv] token to -p argument in resumed session', async () => {
+    const member = makeTestAgent({ friendlyName: 'inv-resume', sessionId: 'old-sess' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-inv-2' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    // calls[1] = main prompt command (calls[0] = writePromptFile)
+    const cmd = mockExecCommand.mock.calls[1][0];
+    expect(cmd).toContain('-p "[');
+    expect(cmd).toContain('] Your task is described in');
+    // Check inv token is a 5-character alphanumeric string
+    const invMatch = cmd.match(/-p "\[([a-z0-9]{5})\]/);
+    expect(invMatch).not.toBeNull();
+  });
+
+  it('inv token is unique across calls', async () => {
+    const member1 = makeTestAgent({ friendlyName: 'inv-unique-1' });
+    const member2 = makeTestAgent({ friendlyName: 'inv-unique-2' });
+    addAgent(member1);
+    addAgent(member2);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-unique' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member1.id, prompt: 'hi1', resume: false, timeout_s: 5 });
+    await executePrompt({ member_id: member2.id, prompt: 'hi2', resume: false, timeout_s: 5 });
+
+    // Extract inv tokens from both commands
+    const cmd1 = mockExecCommand.mock.calls[1][0];
+    const cmd2 = mockExecCommand.mock.calls[4][0]; // [0]=writePromptFile, [1]=main, [2]=deletePromptFile, [3]=writePromptFile, [4]=main
+
+    const invMatch1 = cmd1.match(/-p "\[([a-z0-9]{5})\]/);
+    const invMatch2 = cmd2.match(/-p "\[([a-z0-9]{5})\]/);
+
+    expect(invMatch1).not.toBeNull();
+    expect(invMatch2).not.toBeNull();
+    // The tokens should be different (statistically very likely with 5 random alphanumeric chars)
+    expect(invMatch1![1]).not.toBe(invMatch2![1]);
+  });
+});
+
 describe('busy-state clear on all exit paths (T5)', () => {
   let memberId: string;
 
