@@ -285,3 +285,112 @@ No regressions. Phase 1 (path encoding, inv token) and Phase 2 (findLogFile) fun
 5. (Phase 3) Windows `Get-Content -Tail 20` (line count) vs Unix `tail -c 500` (byte count) — asymmetric but correct; PowerShell lacks byte-count tail.
 6. (Phase 3) `readLogTail` module is now unused by the stall detector — potential dead code for post-sprint cleanup.
 7. (Phase 3) No test for `llmProvider: undefined` defaulting to Claude extraction path.
+
+---
+
+## Phase 4 Review
+
+**Date:** 2026-05-05 17:40:00-04:00
+
+### Build & Tests
+
+- `npm run build`: PASS — clean compile, no errors.
+- `npm test`: PASS — 1159 passed, 6 skipped, 0 failures.
+
+### Task 9: Inject AbortSignal into `execCommand`
+
+**Commits:** `1b4fa97`
+**Files:** `src/services/ssh.ts` (+9 lines), `src/services/strategy.ts` (+14 lines), `src/tools/execute-prompt.ts` (+3/-3 lines)
+
+**Done criteria check:**
+- MCP client disconnect directly unblocks the `await`: PASS — All 3 `strategy.execCommand` calls (primary at line 221, stale-session retry at line 230, server-overloaded retry at line 241) now pass `extra?.signal`. When signal fires, the transport-level `onAbort` handler calls `settle(() => reject(new Error('Command aborted by client')))`, which rejects the awaited promise immediately — independent of whether the subprocess has exited.
+- Subprocess kill continues in parallel as best-effort cleanup: PASS — The top-level `abortHandler` (lines 206-209) fires `tryKillPid(agent, strategy, cmds).catch(() => {})` — fire-and-forget, runs concurrently with the promise rejection from `execCommand`.
+- `finally` block reliably runs to clear stall entry and `inFlightAgents`: PASS — When abort fires, `execCommand` rejects → caught by `catch` (line 282) → `finally` (lines 287-298) unconditionally clears `inFlightAgents.delete(agent.id)`, `stallDetector.remove(agent.id)`, sets statusline to `idle`, and cleans up the prompt file.
+
+**Critical path analysis — "does the AbortSignal actually unblock the await in ALL code paths?"**
+
+1. **Primary `execCommand` (line 221):** signal passed → `onAbort` calls `settle(reject)` → promise rejects → caught at line 282. PASS.
+2. **Stale session retry `execCommand` (line 230):** signal passed → same mechanism. PASS.
+3. **Server overloaded retry `execCommand` (line 241):** signal passed → same mechanism. PASS.
+4. **`tryKillPid` calls within retry logic (lines 228, 238):** These do NOT receive the abort signal. If `tryKillPid` hangs while the MCP disconnects, the abort won't unblock it. However, `tryKillPid` uses its own timeout (default 30s), so it won't hang forever. And the abort signal on the outer `execCommand` would already have rejected, but these are awaited sequentially — the code awaits `tryKillPid` before calling the next `execCommand`. **NOTE:** If abort fires during a `tryKillPid` call inside the retry branches, the abort won't unblock that specific await. The `tryKillPid` will run to completion (or its own timeout). This is a minor gap — in practice, `tryKillPid` is fast (it sends a `kill` command), and the retry branches are already in a failure recovery path. Not blocking.
+5. **`SERVER_RETRY_DELAY_MS` setTimeout (line 239):** If abort fires during this delay, it won't cancel it — the delay runs to completion, then the next `execCommand` is called (which will immediately reject via the already-aborted signal). This is a minor inefficiency (a few seconds of unnecessary wait), not a correctness issue. Not blocking.
+
+**Transport-level implementation review:**
+
+- **LocalStrategy** (`strategy.ts` lines 178-185): `child.kill('SIGKILL')` + `settle(reject)`. `SIGKILL` is the strongest signal — correct for ensuring the child doesn't linger. The `settle` guard prevents double-resolution if the child exits naturally at the same time. Checks `abortSignal.aborted` for already-aborted signals — defensive and correct. `{ once: true }` prevents listener accumulation.
+- **RemoteStrategy / ssh.ts** (lines 245-252): `stream.close()` (wrapped in try/catch for best-effort) + `settle(reject)`. `stream.close()` sends `SSH_MSG_CHANNEL_CLOSE` which terminates the remote command's I/O. Same `settle` guard and `aborted` pre-check. Correct.
+- **Listener cleanup:** `execute-prompt.ts` line 288: `extra?.signal?.removeEventListener('abort', abortHandler)` in `finally` — cleans up the top-level listener. The transport-level listeners use `{ once: true }` so they auto-clean after firing. No leaks.
+
+**Offline status guard:**
+Line 284: `_epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message))`. The string `'Command aborted by client'` does NOT match this regex → `_epOffline = false` → statusline set to `'idle'`, not `'offline'`. Correct — a client-side cancellation is not a connectivity failure.
+
+**Code quality:**
+- Clean, minimal diff — only the lines that need to change. No unnecessary refactoring.
+- The `abortSignal` parameter is added as the last positional argument in both the interface and all implementations — backwards compatible; existing callers that don't pass it get `undefined` and the abort block is skipped.
+- No shell injection risk — the signal is a DOM API object, not interpolated into commands.
+
+**Verdict: PASS**
+
+### Task 10: Unit tests for disconnect cleanup
+
+**Commits:** `d14ce80`
+**Files:** `tests/execute-prompt.test.ts` (+136 lines, 3 tests)
+
+**Done criteria check:**
+- Test that simulates MCP abort while `execCommand` is awaiting: PASS — all 3 tests use `AbortController` + `mockImplementationOnce` that returns a promise gated on `signal.addEventListener('abort', ...)`. Abort is triggered after `vi.advanceTimersByTimeAsync(0)` flushes microtasks.
+- Verify `finally` runs: PASS — all 3 tests assert `inFlightAgents.has(memberId) === false`.
+- Stall entry cleared: PASS — all 3 tests assert `getStallDetector().stallCheckList.has(memberId) === false`.
+- `inFlightAgents` cleaned up even when subprocess kill rejects: PASS — test 2 sets `callCount === 4` (tryKillPid from abortHandler) to reject with `'kill failed: no such process'`. Still asserts cleanup.
+
+**Are the tests meaningful (not just checking that the code runs, but that cleanup actually happens)?**
+
+1. **"abort signal unblocks execCommand and triggers finally cleanup when subprocess never exits"** — The mock creates a promise that NEVER resolves on its own — it only rejects via the abort listener. This proves the signal is the sole mechanism unblocking the await. Asserts: result contains `'aborted'`, `inFlightAgents` cleared, `stallCheckList` cleared, statusline set to `'idle'`. All four are meaningful end-state checks. PASS.
+
+2. **"finally runs and cleans up even when tryKillPid rejects"** — Sets up a stored PID (9999), which causes `tryKillPid` to be called in the abortHandler. The mock makes that call (callCount 4) reject. Despite the rejection, `inFlightAgents` and `stallCheckList` are cleared — proving the `.catch(() => {})` on `tryKillPid` in the abortHandler doesn't break the finally cleanup chain. PASS.
+
+3. **"does not mark agent offline for abort errors"** — Asserts zero `'offline'` statusline calls and at least one `'idle'` call. This directly tests the regex guard on `_epOffline`. PASS.
+
+**Test quality:**
+- Each test properly cleans up `inFlightAgents` and `stallCheckList` in `afterEach` — no test pollution.
+- The mock pattern (hang-until-abort) is the correct way to test this scenario — if abort didn't work, the test would hang (and timeout via vitest).
+- `vi.advanceTimersByTimeAsync(0)` is the right tool for flushing microtasks without advancing real time — necessary because `executePrompt` has `await` points before reaching the main `execCommand`.
+- Test 2's `callCount`-based mock (5 cases) is somewhat fragile if `executePrompt` internals reorder calls, but it matches the existing patterns in the file (e.g., busy-state tests) and the comments clearly document what each call represents. Acceptable.
+
+**Minor observations:**
+- No test for the edge case where abort fires during the `SERVER_RETRY_DELAY_MS` setTimeout (finding #5 above). The signal doesn't cancel the delay, so the retry `execCommand` would run and immediately reject. Correct behavior, but untested. Not blocking.
+- No test for abort firing during `connectWithTOFU` in `ssh.ts` — if the SSH connection itself hangs, the abort won't unblock it because the abort listener is registered inside the `client.exec` callback, which runs after connection is established. This is a pre-existing limitation of the SSH connection pool, not introduced by Phase 4. Not blocking.
+- Test 1 asserts `result.toContain('aborted')` but the actual return is `❌ Failed to execute prompt on "abort-hang": Command aborted by client` — `'aborted'` appears in `'Command aborted by client'`. PASS, though checking for the full substring would be more explicit.
+
+**Verdict: PASS**
+
+---
+
+## Regression Check
+
+No regressions. Phase 1 (path encoding, inv token), Phase 2 (findLogFile), and Phase 3 (pollLogFile, stall-detector guards) functionality untouched by Phase 4 commits. The only changes to existing files are additive: new parameter at end of `execCommand` signatures, new `extra?.signal` argument at call sites. All existing tests pass with the expanded signature (the new parameter is optional, so existing callers are unaffected). Test count increased from 1156 (Phase 3) to 1159 (Phase 4) — net +3 tests from the T10 describe block.
+
+---
+
+## Cumulative Summary
+
+**Phase 1: APPROVED** — T1–T4 done, all criteria met.
+**Phase 2: APPROVED** — T5–T6 done, all criteria met.
+**Phase 3: APPROVED** — T7–T8 done, all criteria met.
+**Phase 4: APPROVED** — T9–T10 done, all criteria met.
+
+**Build:** PASS (clean compile)
+**Tests:** 1159 passed, 6 skipped, 0 failures.
+
+**No blocking issues found.**
+
+**Notes carried forward (non-blocking):**
+1. (Phase 1) Cosmetic inconsistency: `basename()` vs `.split().pop()` in log-path-resolver.
+2. (Phase 1) No Windows unit test for inv token in `buildAgentPromptCommand`.
+3. (Phase 2) BSD `find` on macOS doesn't support `-newermt` — remote macOS agents will need a fallback. Acknowledged in risk register; deferred.
+4. (Phase 2) No unit test for `readFileSync` throw during local inv token check (handled by catch, non-blocking).
+5. (Phase 3) Windows `Get-Content -Tail 20` (line count) vs Unix `tail -c 500` (byte count) — asymmetric but correct; PowerShell lacks byte-count tail.
+6. (Phase 3) `readLogTail` module is now unused by the stall detector — potential dead code for post-sprint cleanup.
+7. (Phase 3) No test for `llmProvider: undefined` defaulting to Claude extraction path.
+8. (Phase 4) `tryKillPid` calls within the retry branches (stale session, server overloaded) are not guarded by the abort signal — if abort fires while `tryKillPid` is awaited, it won't unblock until `tryKillPid` completes or times out. Minor; `tryKillPid` is normally fast.
+9. (Phase 4) `SERVER_RETRY_DELAY_MS` setTimeout is not cancellable by abort — minor inefficiency (seconds), not a correctness bug.
+10. (Phase 4) No test for abort firing during `connectWithTOFU` (SSH connection hang). Pre-existing limitation; not introduced by Phase 4.
