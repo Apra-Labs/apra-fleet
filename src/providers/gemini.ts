@@ -1,8 +1,27 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
 import { buildResumeFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+
+export function getAllowedMcpServers(): string {
+  const settingsPath = path.join(os.homedir(), '.gemini', 'settings.json');
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf-8');
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+    const mcpServers = settings['mcpServers'];
+    if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) {
+      return 'none';
+    }
+    const allowed = Object.keys(mcpServers).filter(k => k !== 'apra-fleet');
+    return allowed.length > 0 ? allowed.join(',') : 'none';
+  } catch {
+    return 'none';
+  }
+}
 
 export class GeminiProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'gemini';
@@ -31,7 +50,7 @@ export class GeminiProvider implements ProviderAdapter {
     const { folder, promptFile, sessionId, unattended, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
-    let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json --allowed-mcp-server-names ""`;
+    let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json --allowed-mcp-server-names "${getAllowedMcpServers()}"`;
     const rf = buildResumeFlag(sessionId);
     if (rf) {
       cmd += ` ${rf}`;
