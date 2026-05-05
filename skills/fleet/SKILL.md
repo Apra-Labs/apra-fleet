@@ -40,38 +40,38 @@ This skill defines how to interact with fleet infrastructure: registering and on
 See sub-documents for detailed usage:
 - `onboarding.md` — full 8-step member onboarding sequence
 - `permissions.md` — permission composition and denial handling
-- `profiles/` — stack permission profiles (base-dev, base-reviewer, node, python, go, etc.) — add new profiles here to support additional stacks or roles
+- `profiles/` — stack permission profiles (base-dev, base-reviewer, node, python, go, etc.) — add new profiles to support additional stacks or roles
 - `troubleshooting.md` — fleet tool troubleshooting by symptom
 - `skill-matrix.md` — skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md` — VCS auth provisioning per provider
 
 ## Secure Credentials
 
-The `{{secure.NAME}}` pattern lets you reference stored secrets in any command without ever exposing plaintext to the LLM or logs.
+The `{{secure.NAME}}` pattern allows referencing stored secrets in commands without exposing plaintext to the LLM or logs.
 
 **How it works:**
-1. Store a secret with `credential_store_set` — Fleet opens an OOB terminal prompt, so the value never appears in chat
-2. Reference it as `{{secure.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, or `provision_auth`
-3. Fleet resolves the token server-side before execution; output containing the plaintext is redacted to `[REDACTED:NAME]` before results reach the LLM
+1. Store a secret with `credential_store_set` — Fleet opens an OOB terminal prompt, so the value never appears in chat.
+2. Reference it as `{{secure.NAME}}` in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, or `provision_auth`.
+3. Fleet resolves the token server-side before execution; output containing the plaintext is redacted to `[REDACTED:NAME]` before results reach the LLM.
 
 **When to use:**
-- Any API key, token, or password that a member needs in a shell command
-- Rotating credentials: `credential_store_delete` then `credential_store_set` — no re-provisioning required
-- Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
+- Any API key, token, or password that a member needs in a shell command.
+- Rotating credentials: `credential_store_delete` then `credential_store_set` — no re-provisioning required.
+- Pre-loading secrets before a dispatch so members can authenticate in commands autonomously.
 
 > ⚠️ **`{{secure.NAME}}` only resolves in specific credential fields** (listed above).
-> Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the
-> token string through literally — the secret will NOT be injected, and the raw handle name
+> Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) passes the
+> token string literally. The secret will NOT be injected, and the raw handle name
 > will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
 
 **Access control (scoping):** Credentials can be scoped to specific members.
-- `members="*"` (default) — all members can access the credential
-- `members="alice,bob"` — only those members can access it
-- Scoping is enforced at resolve time — a member outside the allowed set receives an access-denied error
-- **Updating scope or metadata:** Use `credential_store_update` to change `members`, `ttl_seconds`, or `network_policy` without re-entering the secret. Use `credential_store_set` again only if you need to change the secret value (triggers OOB re-entry).
+- `members="*"` (default) — all members can access the credential.
+- `members="alice,bob"` — only those members can access it.
+- Scoping is enforced at resolve time — a member outside the allowed set receives an access-denied error.
+- **Updating scope or metadata:** Use `credential_store_update` to change `members`, `ttl_seconds`, or `network_policy` without re-entering the secret. Use `credential_store_set` to change the secret value (triggers OOB re-entry).
 
 **TTL (time-to-live):** Set `ttl_seconds` to auto-expire a credential. Expired credentials
-are rejected at resolve time with a clear error (not silently empty).
+are rejected at resolve time with an error.
 
 Example: `credential_store_set  name=ci_token  ttl_seconds=3600`
 
@@ -90,19 +90,19 @@ All tools accept `member_id` (UUID) or `member_name` (friendly name) to identify
 
 ## Tool Boundaries
 
-- **Local members:** ALWAYS use fleet tools (`execute_command`, `execute_prompt`, `send_files`, etc.) — never SSH directly or bypass fleet infrastructure
-- Fleet tools are the canonical interface — all member interactions go through them
+- **Local members:** Always use fleet tools (`execute_command`, `execute_prompt`, `send_files`, etc.) — never SSH directly or bypass fleet infrastructure.
+- Fleet tools are the canonical interface — all member interactions go through them.
 
 ## Dispatch Rules
 
-**Rule:** Shell commands (git, npm, bash scripts, file ops) → `execute_command`. LLM reasoning tasks (write code, review, plan, analyse) → `execute_prompt`. When in doubt: if a human could write the exact command string upfront, it's `execute_command`.
+**Rule:** Shell commands (git, npm, bash scripts, file ops) → `execute_command`. LLM reasoning tasks (write code, review, plan, analyse) → `execute_prompt`. If a human can write the exact command string upfront, use `execute_command`.
 
-- **`execute_prompt`** — always wrap in a background Agent: `Agent(run_in_background=true)`. No exceptions.
-- **`execute_command`** — any command that may take several seconds must be wrapped in a background Agent. Short reads (`cat`, `git status`, `echo`) can be called inline. Always use bash syntax — Git Bash is universally available on developer machines. Never use PowerShell or cmd.exe syntax, even on Windows members.
-- **When clubbing fleet calls into a background Agent:** Always name the tool explicitly in the subagent prompt — write "use `execute_command` to run..." or "use `execute_prompt` to dispatch...". Never leave tool selection implicit.
+- **`execute_prompt`** — wrap in a background Agent: `Agent(run_in_background=true)`.
+- **`execute_command`** — wrap any command that may take several seconds in a background Agent. Short reads (`cat`, `git status`, `echo`) can be called inline. Use bash syntax — Git Bash is available on developer machines. Never use PowerShell or cmd.exe syntax, even on Windows members.
+- **When grouping fleet calls into a background Agent:** Name the tool explicitly in the subagent prompt — write "use `execute_command` to run..." or "use `execute_prompt` to dispatch...". Never leave tool selection implicit.
 - **`send_files` / `receive_files`** — transfers exceeding 1MB must use a background Agent.
 
-**Concurrent dispatch guard:** Only one `execute_prompt` can be in-flight per member at a time (enforced server-side). A second concurrent dispatch returns immediately with:
+**Concurrent dispatch guard:** Only one `execute_prompt` can be in-flight per member at a time (enforced server-side). A second concurrent dispatch returns:
 
 ```
 ❌ execute_prompt is already running for "<member-name>"
@@ -113,19 +113,19 @@ Use `stop_prompt` to cancel the in-flight session before re-dispatching.
 ## Pre-dispatch Checks
 
 Before dispatching any work:
-1. `fleet_status` — confirm member is idle (status must not be busy)
-2. Member must have completed onboarding — see `onboarding.md`
+1. `fleet_status` — confirm member is idle (status must not be busy).
+2. Member must have completed onboarding — see `onboarding.md`.
 
 Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
 ## File Transfer
 
-Both `send_files` and `receive_files` are batch operations — always transfer all files in a single call, never one file per call.
+Both `send_files` and `receive_files` are batch operations — transfer all files in a single call.
 
-- `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
-- `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
+- `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Batch multiple files in a single call.
+- `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Batch multiple files in a single call.
 
-**Directories and globs:** `send_files` accepts individual file paths only — directories and glob patterns are not supported yet (see issue #98). To transfer an entire directory, tar it locally and extract on the member:
+**Directories and globs:** `send_files` accepts individual file paths only — directories and glob patterns are not supported (see issue #98). To transfer a directory, tar it locally and extract on the member:
 
 ```
 1. execute_command on local: tar -czf /tmp/src.tar.gz -C /path/to src/
@@ -133,14 +133,14 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 3. execute_command on member: tar -xzf src.tar.gz && rm src.tar.gz
 ```
 
-**Cross-OS transfers:** Both `send_files` and `receive_files` must work bidirectionally for Linux↔Windows transfers (fleet host on Linux, member on Windows, and vice versa).
+**Cross-OS transfers:** Both `send_files` and `receive_files` must work bidirectionally for Linux↔Windows transfers.
 
 ## Permissions
 
 `compose_permissions` produces provider-native config automatically. See `permissions.md` for:
-- How to compose and deliver permissions before dispatching work
-- How to handle permission denials during execution
-- How to recompose when switching roles
+- Composing and delivering permissions before dispatching work.
+- Handling permission denials during execution.
+- Recomposing when switching roles.
 
 ## execute_prompt Timeout Parameters
 
@@ -148,13 +148,13 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 
 | Parameter | Semantics |
 |-----------|-----------|
-| `timeout_s` | **Inactivity timeout** — the session is killed only if no stdout/stderr output arrives for this many seconds. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are never killed by this timer as long as output keeps flowing. Default: 300s (5 min). |
+| `timeout_s` | **Inactivity timeout** — the session is killed if no stdout/stderr output arrives for this many seconds. The timer resets on every output chunk. Active sessions (writing code, running tests, producing tokens) are not killed by this timer as long as output flows. Default: 300s (5 min). |
 | `max_total_s` | **Hard ceiling** — the session is killed after this total elapsed time in seconds regardless of activity. Optional; defaults to unlimited. |
 
-**When to use which:**
+**Usage:**
 
-- Use `timeout_s` for normal dispatch. It extends the deadline automatically as long as the member is active, so you don't need to over-estimate how long a task takes.
-- Use `max_total_s` only for tasks that must never run forever — CI pipelines, automated batch jobs, or any context where an unbounded runaway is unacceptable.
+- Use `timeout_s` for normal dispatch. It extends the deadline automatically while the member is active.
+- Use `max_total_s` for tasks that must not run forever — CI pipelines, automated batch jobs, or contexts where an unbounded runaway is unacceptable.
 - Both timers run concurrently; whichever fires first kills the process.
 
 ## execute_prompt: Session Resume
@@ -166,12 +166,12 @@ The `resume` parameter controls whether a prior session is continued:
 | `true` (default) | If a session ID is stored for this member, continues it. If none exists, starts fresh. |
 | `false` | Always starts a fresh session — ignores any stored session ID. |
 
-`resume` is boolean only. There is no way to target a specific session ID by value.
-The tool always resumes the most recently stored session for that member.
+`resume` is boolean only. Targeting a specific session ID by value is not supported.
+The tool resumes the most recently stored session for that member.
 
 **Automatic stale-session recovery:** If `resume=true` and the stored session has expired
 or the provider returns an error, `execute_prompt` retries once automatically with a fresh
-session. This recovery is transparent — no caller intervention required.
+session. This recovery is transparent.
 
 **Provider support:**
 
@@ -209,13 +209,13 @@ Auto-approval is delivered via config files written by `compose_permissions` —
 **Prefer `auto` + `compose_permissions` over `dangerous`** — `auto` scopes approval to the
 explicitly listed tools; `dangerous` bypasses all checks globally.
 
-**Always call `compose_permissions` before dispatch regardless of unattended mode.**
+**Call `compose_permissions` before dispatch regardless of unattended mode.**
 The permissions config file must be delivered to the member's work folder before the CLI
 starts — `compose_permissions` does this for all providers.
 
 ## Model Tiers
 
-Use model tiers: `cheap` for execution (commands, status, tests, deploys), `standard` for construction (code, config, devops), `premium` for planning, review, design, and architecture. The server resolves tiers to the appropriate model for each provider. User override always wins. When in doubt, prefer cheaper.
+Use model tiers: `cheap` for execution (commands, status, tests, deploys), `standard` for construction (code, config, devops), `premium` for planning, review, design, and architecture. The server resolves tiers to the appropriate model for each provider. User override always wins. Prefer cheaper.
 
 Pass as `model: "cheap" | "standard" | "premium"` in `execute_prompt`.
 
@@ -233,7 +233,7 @@ To override, use `update_member` with the icon parameter.
 ℹ️ apra-fleet v0.1.8 is available (installed: v0.1.7). Run `/pm deploy apra-fleet` to update.
 ```
 
-When you see this notice, surface it to the user verbatim before the rest of the status output. Do not suppress or paraphrase it. In JSON format the notice appears as an `updateAvailable` object with `latest` and `installed` fields — surface it the same way.
+Surface this notice verbatim before the rest of the status output. Do not suppress or paraphrase it. In JSON format the notice appears as an `updateAvailable` object with `latest` and `installed` fields — surface it the same way.
 
 ## Provider Awareness
 
@@ -241,11 +241,11 @@ When you see this notice, surface it to the user verbatim before the rest of the
 |---------|---------------|
 | **Agent context file** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT-INSTRUCTIONS.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
-| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
+| **Timeouts** | Gemini members are slower — use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
 
 ## Fleet Logs
 
-The fleet server writes structured JSONL logs to `APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log`. Multiple fleet instances each have their own log file. **To find the correct log file for the server you are talking to, call `fleet_status` — it reports the exact log file path** (e.g. `logging: ~/.apra-fleet/data/logs/fleet-40064.log`). Never guess by listing the directory.
+The fleet server writes structured JSONL logs to `APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log`. Multiple fleet instances each have their own log file. **To find the correct log file, call `fleet_status` — it reports the exact log file path** (e.g. `logging: ~/.apra-fleet/data/logs/fleet-40064.log`). Never guess by listing the directory.
 
 Use `jq` to read logs:
 
