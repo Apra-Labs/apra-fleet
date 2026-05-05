@@ -1,0 +1,25 @@
+{
+  "project": "apra-fleet #241 — Stall Detector",
+  "branch": "feat/stall-detector",
+  "base_branch": "main",
+  "tasks": [
+    { "id": "T0",  "phase": 0, "title": "Resilience & Edge Case Design Document", "tier": "cheap", "status": "completed", "notes": "docs/stall-detector-resilience.md created with 6 edge case decisions: log-not-created, read-failure, process-exit, spawn-gap, concurrent-add, stale-preexisting. Includes consistency checks and implementation guidelines." },
+    { "id": "V0",  "phase": 0, "title": "VERIFY: Phase 0 — Resilience Analysis", "type": "verify", "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T1a", "phase": 1, "title": "Add lastLlmActivityAt to Agent Type (src/types.ts)", "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T1b", "phase": 1, "title": "Log File Path Resolver (Claude + Gemini)", "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T2",  "phase": 1, "title": "StallEntry Type & StallDetector Class Skeleton", "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T3",  "phase": 1, "title": "Internal execute_command Wrapper (readLogTail)", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T4",  "phase": 1, "title": "Polling Loop Implementation (_poll method)", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T5",  "phase": 1, "title": "Unit Tests for StallDetector", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "V1",  "phase": 1, "title": "VERIFY: Phase 1 — Foundation", "type": "verify", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T7",  "phase": 2, "title": "Hook StallDetector into execute_prompt — Two-Phase Add & All Exit Paths", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T8",  "phase": 2, "title": "Hook StallDetector into stop_prompt", "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T9",  "phase": 2, "title": "Hook StallDetector into Member Unregister", "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T10", "phase": 2, "title": "Initialize StallDetector on Server Start/Stop + log MCP caller identity", "tier": "cheap", "status": "pending", "notes": "Also log MCP clientInfo (name, version) + ppid in startup log entry to identify caller process." },
+    { "id": "V2",  "phase": 2, "title": "VERIFY: Phase 2 — Integration", "type": "verify", "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T11", "phase": 3, "title": "Surface lastLlmActivityAt in member_detail", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T12", "phase": 3, "title": "Surface lastLlmActivityAt in fleet_status", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T13", "phase": 3, "title": "Integration Tests", "tier": "premium", "status": "pending", "notes": "" },
+    { "id": "V3",  "phase": 3, "title": "VERIFY: Phase 3 — Surface", "type": "verify", "tier": "premium", "status": "pending", "notes": "" }
+  ]
+}
