@@ -104,3 +104,91 @@ No regressions detected in previously approved phases. The pre-existing stall de
 1. `resolveSessionLogPath` uses `workFolder.split(/[\\/]/).pop()` for Gemini basename extraction instead of `basename()` used in `resolveSessionLogDir` — cosmetic inconsistency.
 2. No Windows-specific unit test for `buildAgentPromptCommand` inv token prepend — the logic is identical to the Linux providers but was initially missed (caught and fixed in `93ca425`). A test would prevent future regressions.
 3. Optional improvement from plan review still applies: reorder Phase 5 (cheap) before Phase 4 (premium) for tier monotonicity.
+
+---
+
+## Phase 2 Review
+
+**Date:** 2026-05-05 17:05:00-04:00
+
+### Build & Tests
+
+- `npm run build`: PASS — clean compile, no errors.
+- `npm test`: PASS — 1139 passed, 6 skipped, 0 failures.
+
+### Task 5: Implement `findLogFile` with mtime filter
+
+**Commits:** `f5796ae`, `fd81756`
+**Files:** `src/services/stall/find-log-file.ts` (190 lines)
+
+**Done criteria check:**
+- Resolves correct file for a fresh local Claude session within 30s: PASS — `tryFindLocal` with no `sessionId` uses `findLocalMtimeCandidates` (mtime scan). Retry loop: initial + 3 retries × 10s = 30s max.
+- Resolves for a fresh local Gemini session within 30s: PASS — Gemini falls through to mtime scan regardless of sessionId (line 76). Same retry envelope.
+- mtime filter is primary mechanism: PASS — `statSync(f).mtimeMs > t0` for local (line 30), `find -newermt` / `Get-ChildItem | Where-Object LastWriteTime` for remote (lines 96-97).
+- `stall_log_not_found` logged after 30s with no match: PASS — line 188, emitted after `MAX_ATTEMPTS` (4) exhausted.
+
+**Architecture review:**
+- Clean separation: `tryFindLocal` / `tryFindRemote` dispatch on `agent.agentType`.
+- Case A (fresh, no sessionId) → mtime scan for both providers.
+- Case B Claude (sessionId known) → direct path lookup `<logDir>/<sessionId>.jsonl` + mtime check.
+- Case B Gemini (sessionId known) → still uses mtime scan (Gemini's file naming doesn't match sessionId). Correct per design doc.
+- `[inv]` tiebreaker: local uses `readFileSync`, remote uses `grep -l` / `Select-String`. Only fires when >1 candidate matches mtime. Logged when used.
+- Remote commands: Linux uses `find -newermt`, Windows uses PowerShell `Get-ChildItem | Where-Object LastWriteTime`. Both filter by `.jsonl` extension.
+
+**Code quality observations:**
+- `MAX_ATTEMPTS = 4` with comment "initial + 3 retries = 30s total" — clear intent. The `sleep` is gated by `attempt > 0`, so first attempt is immediate. Correct.
+- `execLines` swallows exit code 1 (no matches from `find`/`grep`) — correct; only non-0/non-1 is treated as error.
+- `toPsDateTime` and `toFindNewermt` format ISO timestamps for remote commands. `toFindNewermt` uses `YYYY-MM-DD HH:MM:SS` format which `find -newermt` accepts on GNU coreutils. Note: BSD `find` (macOS) does NOT support `-newermt` — but remote macOS agents would need `-newerBt` or a temp-file approach. This matches the risk register entry ("fall back to `-newer <tempfile>` if `-newermt` unavailable"). The current implementation handles the happy path; the fallback is deferred. Acceptable for Phase 2 — the risk register acknowledges this.
+- No shell injection risk: `dir`, `sessionId`, and `inv` values come from internal state (registry), not user input. The `inv` is a 5-char alphanumeric token. Safe.
+- Error handling: all `try/catch` blocks return empty/null — no unhandled exceptions. The `getAgent` null check at the top is good defensive coding.
+
+**Verdict: PASS**
+
+### Task 6: Unit tests for `findLogFile`
+
+**Commits:** `f5796ae`, `fd81756`
+**Files:** `tests/find-log-file.test.ts` (429 lines, 22 tests)
+
+**Done criteria check:**
+- Local mtime filter (matching and non-matching files): PASS — tested in "Case A" and "Case B Claude" describe blocks.
+- Case B Claude direct path lookup: PASS — 4 tests covering found, stale mtime, missing file, and no-fallthrough to scan.
+- Case B Gemini mtime scan: PASS — test verifies `readdirSync` is called (not direct path).
+- Retry exhaustion logging: PASS — "makes exactly 4 attempts" + "logs stall_log_not_found" tests.
+- `[inv]` tiebreaker logic: PASS — tested for local (readFileSync match) and remote (grep/Select-String match).
+
+**Test quality:**
+- Good use of `vi.useFakeTimers()` + `vi.runAllTimersAsync()` to avoid real 30s waits.
+- Comprehensive mock strategy: mocks `fs`, registry, strategy, log helpers, agent helpers. Clean isolation.
+- Remote tests cover both Linux (`find`, `grep`) and Windows (`Get-ChildItem`, `Get-Item`, `Select-String`) paths.
+- The "returns result on second attempt" test verifies retry-then-succeed behavior — confirms the retry loop actually re-scans.
+- Edge case: "does NOT fall through to mtime scan" for Case B Claude verifies the early-return optimization.
+
+**Minor observations:**
+- Test count in progress.json says "22 tests" but the file has 22 `it()` blocks. Matches.
+- No test for the specific case where `readFileSync` throws during inv token check — but the implementation has a `catch { return false }` which defaults to safe behavior. Not blocking.
+
+**Verdict: PASS**
+
+---
+
+## Regression Check
+
+No regressions. Phase 1 functionality (path encoding, log directory resolution, inv token prepend) is untouched by Phase 2 commits. Test count increased from 1117 (Phase 1) to 1139 (Phase 2) — net +22 tests from `find-log-file.test.ts`. No test removals or modifications to existing test files.
+
+---
+
+## Cumulative Summary
+
+**Phase 1: APPROVED** — T1–T4 done, all criteria met.
+**Phase 2: APPROVED** — T5–T6 done, all criteria met.
+
+**Build:** PASS (clean compile)
+**Tests:** 1139 passed, 6 skipped, 0 failures.
+
+**No blocking issues found.**
+
+**Notes carried forward (non-blocking):**
+1. (Phase 1) Cosmetic inconsistency: `basename()` vs `.split().pop()` in log-path-resolver.
+2. (Phase 1) No Windows unit test for inv token in `buildAgentPromptCommand`.
+3. (Phase 2) BSD `find` on macOS doesn't support `-newermt` — remote macOS agents will need a fallback. Acknowledged in risk register; deferred.
+4. (Phase 2) No unit test for `readFileSync` throw during local inv token check (handled by catch, non-blocking).
