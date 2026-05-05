@@ -1,14 +1,7 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
 import { pollLogFile } from './stall-poller.js';
-
-function toLocalISOString(ms: number): string {
-  const d = new Date(ms);
-  const offset = -d.getTimezoneOffset();
-  const sign = offset >= 0 ? '+' : '-';
-  const pad = (n: number) => String(Math.abs(n)).padStart(2, '0');
-  return d.toISOString().replace('Z', `${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`);
-}
+import { toLocalISOString } from './time-utils.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_STALL_THRESHOLD_MS = 120_000;
