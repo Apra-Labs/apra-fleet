@@ -1,65 +1,61 @@
 # {{PROJECT_NAME}} — Code Review
 
 ## Context Recovery
-Before starting any review: `git log --oneline {{base_branch}}..{{branch}}`
+`git log --oneline {{base_branch}}..{{branch}}`
 
 ## Review Model
-You are reviewing work tracked in PLAN.md and progress.json.
+Review work in `PLAN.md` + `progress.json`. Scope: all phases from Phase 1 through current. Check for regressions.
 
-Review scope covers all phases from Phase 1 through the current phase — not just the latest diff. Code written in earlier phases may have regressed or been invalidated by later changes.
+## Procedure
 
-## On each review
+1. `git log --oneline -- feedback.md` + `git show` prior versions. Understand how doer addressed findings.
+2. Read `progress.json` → identify new "completed" tasks.
+3. Read `PLAN.md`, `requirements.md`, design docs. Align with requirements intent.
+4. `git diff` against base branch.
+5. Check task "done" criteria.
+6. Run build + ALL tests. Fails? CHANGES NEEDED.
+7. Verify CI passes. Red? CHANGES NEEDED.
+8. Check regressions in prior phases.
 
-1. Run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand previous findings and how the doer addressed them. Incorporate the doer's responses into your review notes so the full picture is captured in the new write-up.
-2. Read progress.json — identify which tasks are marked completed since last review
-3. Read PLAN.md, requirements.md, and any design docs in the work folder — verify code aligns with requirements intent, not just plan mechanics
-4. `git diff` the relevant commits against the base branch
-5. Check each completed task against its "done" criteria in PLAN.md
-6. Run the project build step first, then run ALL tests (unit, integration, e2e). Both must pass — if either fails, CHANGES NEEDED.
-7. Verify CI passes for the latest push — if CI is red, CHANGES NEEDED regardless of code quality
-8. Check for regressions in previously approved phases
+## Checklist
 
-## What to check
-
-- Does the code match what PLAN.md specified?
-- Does the code solve what requirements.md asked for?
-- Do tests pass? Are new tests added for new behavior?
-- Test quality: flag overlapping/redundant tests that add no value. Flag untested exposed surfaces (public APIs, error paths, edge cases). Phase does not close until test coverage is meaningful, not just present
-- Are there security issues (injection, auth bypass, secrets in code)?
-- Is the code consistent with existing patterns and conventions?
-- Are docs updated if behavior changed?
-- Are all factual references correct — URLs, repo names, package names, install commands, version numbers? Members hallucinate these; spot-check against known sources.
+- Match `PLAN.md` specs?
+- Solve `requirements.md`?
+- Tests pass? New tests added?
+- Test quality: flag redundant tests or untested public APIs/errors.
+- Security (injection, auth, secrets)?
+- Consistent patterns?
+- Docs updated?
+- Correct factual references (URLs, repos, versions). Spot-check.
 
 ## Output
 
-Overwrite feedback.md with this structure:
+Overwrite `feedback.md`:
 
 ```
-# <Sprint/Feature Name> — Code Review
+# <Sprint Name> — Code Review
 
 **Reviewer:** <member name>
-**Date:** YYYY-MM-DD HH:MM:SS+TZ
+**Date:** YYYY-MM-DD
 **Verdict:** APPROVED | CHANGES NEEDED
 
-> See the recent git history of this file to understand the context of this review.
+> See git history of this file for context.
 
 ---
 
-## <Review section>
-
-<Detailed narrative. PASS/FAIL/NOTE inline. Explain what you found, where, and why it matters.>
+## <Section>
+<Narrative. PASS/FAIL/NOTE inline. Explanation.>
 
 ---
 
 ## Summary
-
-<Synthesize what passed, what must change, what is deferred.>
+<Synthesis: passed/must change/deferred.>
 ```
 
-If verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
+CHANGES NEEDED? Doer annotates: `**Doer:** fixed in <sha>`.
 
-Commit feedback.md and push.
+Commit `feedback.md` and push.
 
 ## Rules
-- NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
-- NEVER commit this agent context file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT-INSTRUCTIONS.md) — it is role-specific and not shared
+- NEVER push to base branch.
+- NEVER commit this context file.
