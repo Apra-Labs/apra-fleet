@@ -39,8 +39,8 @@ describe('memberDetail branch display', () => {
   });
 
   it('includes branch in json output when workFolder is a git repo', async () => {
-    const agent = makeTestAgent({ friendlyName: 'branch-agent' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'branch-member' });
+    addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 3 });
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('.credentials.json')) return { stdout: 'missing', stderr: '', code: 0 };
@@ -51,13 +51,13 @@ describe('memberDetail branch display', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
     expect(result.branch).toBe('main');
   });
 
   it('omits branch from output when not a git repo', async () => {
-    const agent = makeTestAgent({ friendlyName: 'no-git-agent' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'no-git-member' });
+    addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 3 });
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('.credentials.json')) return { stdout: 'missing', stderr: '', code: 0 };
@@ -68,7 +68,7 @@ describe('memberDetail branch display', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
     expect(result.branch).toBeUndefined();
   });
 });
@@ -84,17 +84,17 @@ describe('memberDetail auth detection', () => {
   });
 
   it('reports no auth when nothing is found', async () => {
-    const agent = makeTestAgent({ friendlyName: 'bare-agent' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'bare-member' });
+    addAgent(member);
     setupDefaultMock();
 
-    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
     expect(result.llm_cli.auth).toBe('none');
   });
 
   it('detects both auth methods when present', async () => {
-    const agent = makeTestAgent({ friendlyName: 'multi-auth' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'multi-auth' });
+    addAgent(member);
     setupDefaultMock();
 
     mockExecCommand.mockImplementation(async (cmd: string) => {
@@ -105,13 +105,13 @@ describe('memberDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
     expect(result.llm_cli.auth).toBe('api-key (WARNING: OAuth also present — API key takes precedence)');
   });
 
   it('detects API key only', async () => {
-    const agent = makeTestAgent({ friendlyName: 'apikey-only' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'apikey-only' });
+    addAgent(member);
     setupDefaultMock();
 
     mockExecCommand.mockImplementation(async (cmd: string) => {
@@ -122,14 +122,14 @@ describe('memberDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
     expect(result.llm_cli.auth).toBe('api-key');
     expect(result.llm_cli.auth).not.toContain('OAuth');
   });
 
   it('strips provider prefix from version string', async () => {
-    const agent = makeTestAgent({ friendlyName: 'prefixed-version' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'prefixed-version' });
+    addAgent(member);
     setupDefaultMock();
 
     mockExecCommand.mockImplementation(async (cmd: string) => {
@@ -140,7 +140,7 @@ describe('memberDetail auth detection', () => {
       return { stdout: 'N/A', stderr: '', code: 0 };
     });
 
-    const result = JSON.parse(await memberDetail({ member_id: agent.id, format: 'json' }));
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
     expect(result.llm_cli.version).toBe('1.0.42');
   });
 });

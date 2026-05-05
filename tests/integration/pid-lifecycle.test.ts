@@ -6,19 +6,26 @@ import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { getStoredPid, clearStoredPid, setStoredPid } from '../../src/utils/agent-helpers.js';
 import type { Agent, SSHExecResult } from '../../src/types.js';
 
-const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number) => Promise<SSHExecResult>>();
+const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void) => Promise<SSHExecResult>>();
 
-// Integration mock: wraps mockExecCommand with the real extractAndStorePid so FLEET_PID
-// lines in stdout are automatically stored — testing the full PID extraction + kill pipeline
-// together rather than each in isolation.
+// Integration mock: wraps mockExecCommand and replicates the FLEET_PID extraction logic
+// inline (parsing stdout, calling setStoredPid + onPidCaptured) — mirrors what the real
+// LocalStrategy/SSH streaming handlers do via the onPidCaptured callback.
 vi.mock('../../src/services/strategy.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../src/services/strategy.js')>();
   return {
     ...original,
-    getStrategy: (agent: Agent) => ({
-      execCommand: async (cmd: string, timeout?: number, maxTotalMs?: number) => {
-        const result = await mockExecCommand(cmd, timeout, maxTotalMs);
-        return original.extractAndStorePid(agent.id, result);
+    getStrategy: (member: Agent) => ({
+      execCommand: async (cmd: string, timeout?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void) => {
+        const result = await mockExecCommand(cmd, timeout, maxTotalMs, onPidCaptured);
+        const m = /^FLEET_PID:(\d+)\r?$/m.exec(result.stdout);
+        if (m) {
+          const pid = parseInt(m[1], 10);
+          setStoredPid(member.id, pid);
+          onPidCaptured?.(pid);
+          return { ...result, stdout: result.stdout.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '') };
+        }
+        return result;
       },
       testConnection: vi.fn().mockResolvedValue({ ok: true, latencyMs: 0 }),
       transferFiles: vi.fn().mockResolvedValue({ success: [], failed: [] }),
@@ -30,7 +37,7 @@ vi.mock('../../src/services/strategy.js', async (importOriginal) => {
 });
 
 describe('PID lifecycle — integration (T12)', () => {
-  let agentId: string;
+  let memberId: string;
 
   beforeEach(() => {
     backupAndResetRegistry();
@@ -41,13 +48,13 @@ describe('PID lifecycle — integration (T12)', () => {
   afterEach(() => {
     restoreRegistry();
     vi.useRealTimers();
-    if (agentId) clearStoredPid(agentId);
+    if (memberId) clearStoredPid(memberId);
   });
 
   it('PID captured from stdout is killed at the start of the next executePrompt call', async () => {
-    const agent = makeTestLocalAgent({ friendlyName: 'pid-capture-agent', workFolder: os.tmpdir() });
-    agentId = agent.id;
-    addAgent(agent);
+    const member = makeTestLocalAgent({ friendlyName: 'pid-capture-member', workFolder: os.tmpdir() });
+    memberId = member.id;
+    addAgent(member);
 
     // First call: emits FLEET_PID:1111, then fails with a non-retryable error.
     // PID 1111 is stored by the real extractAndStorePid but NOT cleared (no success path).
@@ -57,10 +64,10 @@ describe('PID lifecycle — integration (T12)', () => {
       code: 1,
     });
 
-    const first = await executePrompt({ member_id: agentId, prompt: 'first', resume: false, timeout_ms: 5000 });
+    const first = await executePrompt({ member_id: memberId, prompt: 'first', resume: false, timeout_s: 5 });
     expect(first).toContain('failed');
     // PID stored by real extractAndStorePid — not cleared because the call failed
-    expect(getStoredPid(agentId)).toBe(1111);
+    expect(getStoredPid(memberId)).toBe(1111);
 
     // Second call: PID 1111 must be killed BEFORE writePromptFile and the new spawn
     mockExecCommand
@@ -71,7 +78,7 @@ describe('PID lifecycle — integration (T12)', () => {
         code: 0,
       });
 
-    const second = await executePrompt({ member_id: agentId, prompt: 'second', resume: false, timeout_ms: 5000 });
+    const second = await executePrompt({ member_id: memberId, prompt: 'second', resume: false, timeout_s: 5 });
     expect(second).toContain('ok');
 
     // 3 total calls:
@@ -83,9 +90,9 @@ describe('PID lifecycle — integration (T12)', () => {
   });
 
   it('PID is cleared after successful completion', async () => {
-    const agent = makeTestLocalAgent({ friendlyName: 'pid-clear-agent', workFolder: os.tmpdir() });
-    agentId = agent.id;
-    addAgent(agent);
+    const member = makeTestLocalAgent({ friendlyName: 'pid-clear-member', workFolder: os.tmpdir() });
+    memberId = member.id;
+    addAgent(member);
 
     // Command emits FLEET_PID:2222 then succeeds; PID should be cleared on the success path
     mockExecCommand.mockResolvedValueOnce({
@@ -94,18 +101,18 @@ describe('PID lifecycle — integration (T12)', () => {
       code: 0,
     });
 
-    await executePrompt({ member_id: agentId, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(getStoredPid(agentId)).toBeUndefined();
+    expect(getStoredPid(memberId)).toBeUndefined();
   });
 
   it('PID from the failing main command is killed before the server-error retry', async () => {
-    const agent = makeTestLocalAgent({ friendlyName: 'retry-kill-agent', workFolder: os.tmpdir() });
-    agentId = agent.id;
-    addAgent(agent);
+    const member = makeTestLocalAgent({ friendlyName: 'retry-kill-member', workFolder: os.tmpdir() });
+    memberId = member.id;
+    addAgent(member);
 
-    // Pre-existing PID from a prior failed call (the agent was left running)
-    setStoredPid(agentId, 3333);
+    // Pre-existing PID from a prior failed call (the member was left running)
+    setStoredPid(memberId, 3333);
 
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })   // kill pre-stored 3333
@@ -121,7 +128,7 @@ describe('PID lifecycle — integration (T12)', () => {
         code: 0,
       });
 
-    const promise = executePrompt({ member_id: agentId, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const promise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
     await vi.advanceTimersByTimeAsync(5000);  // advance past SERVER_RETRY_DELAY_MS
     const result = await promise;
 

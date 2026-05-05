@@ -11,6 +11,8 @@ AI agents that write code, review each other's work, and coordinate across your 
 
 **Apra Fleet** is an open-source **MCP server** that pairs AI coding agents into **doer-reviewer loops** for higher quality code, and orchestrates them across machines via SSH when you need distributed power. Works with Claude Code, Gemini, Codex and other AI coding assistants.
 
+If apra-fleet helped you move faster with better quality, please [⭐ star this repo](https://github.com/Apra-Labs/apra-fleet) — it helps others find it.
+
 ## What you get
 
 ### Doer-reviewer loops — two agents, one quality bar
@@ -343,7 +345,7 @@ Fleet automatically uses the correct env var name per provider.
 
 ### Provider capabilities and limits
 
-- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_ms` to bound execution.
+- `max_turns` is Claude-only. For Gemini, Codex, and Copilot, use `timeout_s` to bound execution.
 - Fine-grained permission control (`compose_permissions`) is Claude-only. Other providers use all-or-nothing skip-permissions flags.
 - Codex output uses NDJSON internally — fleet handles this transparently.
 - Gemini responses may silently truncate at ~8K tokens. Split large tasks into smaller units.

@@ -9,7 +9,7 @@ function makeAgent(envVars?: Record<string, string>): Agent {
     ? Object.fromEntries(Object.entries(envVars).map(([k, v]) => [k, encryptPassword(v)]))
     : undefined;
   return {
-    id: 'test-agent',
+    id: 'test-member',
     friendlyName: 'test',
     host: 'localhost',
     username: 'user',
@@ -21,42 +21,42 @@ function makeAgent(envVars?: Record<string, string>): Agent {
 
 describe('buildAuthEnvPrefix', () => {
   it('returns empty string when encryptedEnvVars is undefined', () => {
-    const agent = makeAgent();
-    expect(buildAuthEnvPrefix(agent, 'linux')).toBe('');
-    expect(buildAuthEnvPrefix(agent, 'macos')).toBe('');
-    expect(buildAuthEnvPrefix(agent, 'windows')).toBe('');
+    const member = makeAgent();
+    expect(buildAuthEnvPrefix(member, 'linux')).toBe('');
+    expect(buildAuthEnvPrefix(member, 'macos')).toBe('');
+    expect(buildAuthEnvPrefix(member, 'windows')).toBe('');
   });
 
   it('returns empty string when encryptedEnvVars is empty object', () => {
-    const agent = { ...makeAgent(), encryptedEnvVars: {} } as Agent;
-    expect(buildAuthEnvPrefix(agent, 'linux')).toBe('');
-    expect(buildAuthEnvPrefix(agent, 'windows')).toBe('');
+    const member = { ...makeAgent(), encryptedEnvVars: {} } as Agent;
+    expect(buildAuthEnvPrefix(member, 'linux')).toBe('');
+    expect(buildAuthEnvPrefix(member, 'windows')).toBe('');
   });
 
   it('linux: returns export format with double-quoted value', () => {
-    const agent = makeAgent({ GEMINI_API_KEY: 'test-key-123' });
-    const prefix = buildAuthEnvPrefix(agent, 'linux');
+    const member = makeAgent({ GEMINI_API_KEY: 'test-key-123' });
+    const prefix = buildAuthEnvPrefix(member, 'linux');
     expect(prefix).toContain('export GEMINI_API_KEY="test-key-123"');
     expect(prefix.endsWith(' && ')).toBe(true);
   });
 
   it('macos: returns same export format as linux', () => {
-    const agent = makeAgent({ GEMINI_API_KEY: 'test-key-456' });
-    const prefix = buildAuthEnvPrefix(agent, 'macos');
+    const member = makeAgent({ GEMINI_API_KEY: 'test-key-456' });
+    const prefix = buildAuthEnvPrefix(member, 'macos');
     expect(prefix).toContain('export GEMINI_API_KEY="test-key-456"');
     expect(prefix.endsWith(' && ')).toBe(true);
   });
 
   it('windows: returns PowerShell $env: format with single-quoted value', () => {
-    const agent = makeAgent({ GEMINI_API_KEY: 'test-key-789' });
-    const prefix = buildAuthEnvPrefix(agent, 'windows');
+    const member = makeAgent({ GEMINI_API_KEY: 'test-key-789' });
+    const prefix = buildAuthEnvPrefix(member, 'windows');
     expect(prefix).toContain("$env:GEMINI_API_KEY='test-key-789'");
     expect(prefix.endsWith('; ')).toBe(true);
   });
 
   it('linux: multiple env vars joined with &&', () => {
-    const agent = makeAgent({ GEMINI_API_KEY: 'key1', OPENAI_API_KEY: 'key2' });
-    const prefix = buildAuthEnvPrefix(agent, 'linux');
+    const member = makeAgent({ GEMINI_API_KEY: 'key1', OPENAI_API_KEY: 'key2' });
+    const prefix = buildAuthEnvPrefix(member, 'linux');
     expect(prefix).toContain('export GEMINI_API_KEY="key1"');
     expect(prefix).toContain('export OPENAI_API_KEY="key2"');
     expect(prefix).toContain(' && ');
@@ -65,8 +65,8 @@ describe('buildAuthEnvPrefix', () => {
   });
 
   it('windows: multiple env vars joined with ;', () => {
-    const agent = makeAgent({ GEMINI_API_KEY: 'key1', OPENAI_API_KEY: 'key2' });
-    const prefix = buildAuthEnvPrefix(agent, 'windows');
+    const member = makeAgent({ GEMINI_API_KEY: 'key1', OPENAI_API_KEY: 'key2' });
+    const prefix = buildAuthEnvPrefix(member, 'windows');
     expect(prefix).toContain("$env:GEMINI_API_KEY='key1'");
     expect(prefix).toContain("$env:OPENAI_API_KEY='key2'");
     expect(prefix).toContain('; ');
@@ -74,8 +74,8 @@ describe('buildAuthEnvPrefix', () => {
   });
 
   it('linux: escapes special characters in values (double-quote escaping)', () => {
-    const agent = makeAgent({ API_KEY: 'key"with\'quotes$and\\backslash' });
-    const prefix = buildAuthEnvPrefix(agent, 'linux');
+    const member = makeAgent({ API_KEY: 'key"with\'quotes$and\\backslash' });
+    const prefix = buildAuthEnvPrefix(member, 'linux');
     // Double-quote escaping: " -> \", $ -> \$, \ -> \\
     expect(prefix).toContain('export API_KEY="');
     expect(prefix).not.toContain('key"with'); // raw " should be escaped
@@ -85,8 +85,8 @@ describe('buildAuthEnvPrefix', () => {
   });
 
   it('windows: escapes single quotes in values (PowerShell escaping)', () => {
-    const agent = makeAgent({ API_KEY: "key'with'quotes" });
-    const prefix = buildAuthEnvPrefix(agent, 'windows');
+    const member = makeAgent({ API_KEY: "key'with'quotes" });
+    const prefix = buildAuthEnvPrefix(member, 'windows');
     // PowerShell single-quote escaping: ' -> ''
     expect(prefix).toContain("$env:API_KEY='key''with''quotes'");
   });

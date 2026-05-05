@@ -73,7 +73,7 @@ Known limitations when using non-Claude providers in a fleet.
 
 | Gap | Provider(s) | Impact on Fleet | Mitigation |
 |-----|------------|----------------|------------|
-| **No `--max-turns`** | Gemini, Codex, Copilot | Can't bound execution by turn count | Use `timeout_ms` as the primary execution guard. `max_turns` is Claude-only and ignored for other providers. |
+| **No `--max-turns`** | Gemini, Codex, Copilot | Can't bound execution by turn count | Use `timeout_s` as the primary execution guard. `max_turns` is Claude-only and ignored for other providers. |
 | **No server-side session ID in JSON output** | Gemini, Codex, Copilot | Can't store a session ID to pass back for `--resume` | Provider-specific approach: Claude stores `session_id` from JSON. Others use generic "resume last session" flag (`-r`, `exec resume`, `--continue`). |
 | **NDJSON vs single JSON** | Codex | Response format differs from other providers | CodexProvider parser collects NDJSON events and extracts the final result + metadata from the last event. Transparent to tool code via `provider.parseResponse()`. |
 | **OAuth credential copy doesn't work** | Gemini, Codex, Copilot | `provision_llm_auth` Flow A (copy `~/.claude/.credentials.json`) is Claude-only | For non-Claude providers: use the `api_key` parameter with the provider's env var (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`). OAuth/login must be done interactively on the member. |

@@ -86,54 +86,34 @@ The `activePid` field on `Agent` is a type-level remnant from early design; the 
 
 ### Design decision
 
-`timeout_ms` was resemanticised from a hard wall-clock deadline to an **inactivity timeout** — the process is killed only when no stdout/stderr output has arrived for `timeout_ms` milliseconds.
+`timeout_s` was resemanticised from a hard wall-clock deadline to an **inactivity timeout** — the process is killed only when no stdout/stderr output has arrived for `timeout_s` seconds.
 
-The implementation is Option 1 (rolling `lastActivityAt` timestamp) rather than Option 2 (tool-call awareness). Each `data` event on the stream resets `lastActivityAt`. The watchdog fires when `now - lastActivityAt > timeout_ms`.
+The implementation is Option 1 (rolling `lastActivityAt` timestamp) rather than Option 2 (tool-call awareness). Each `data` event on the stream resets `lastActivityAt`. The watchdog fires when `now - lastActivityAt > timeout_s * 1000`.
 
 ### Why not tool-call awareness
 
 Tool-call awareness (Option 2) would require parsing the streaming JSON event types to detect when a tool call is in flight. This is significantly more complex and requires the fleet server to understand provider-specific streaming formats. The rolling timer is simpler, more robust, and sufficient for the primary use case: preventing kills during long builds or test runs where the LLM is still producing output.
 
-Limitation: a blocking tool call that produces no output (no tokens flowing during tool execution) is treated as inactivity. This is an acceptable trade-off; the `max_total_ms` ceiling handles runaway sessions.
+Limitation: a blocking tool call that produces no output (no tokens flowing during tool execution) is treated as inactivity. This is an acceptable trade-off; the `max_total_s` ceiling handles runaway sessions.
 
-### The `max_total_ms` ceiling
+### The `max_total_s` ceiling
 
-An optional second timer, `max_total_ms`, provides a hard ceiling that is **never reset** regardless of activity. Use cases:
+An optional second timer, `max_total_s`, provides a hard ceiling that is **never reset** regardless of activity. Use cases:
 - Preventing runaway sessions that continuously produce output
 - Budget enforcement for token-intensive tasks
 
-If `max_total_ms` is omitted, there is no total time limit — only inactivity kills apply.
+If `max_total_s` is omitted, there is no total time limit — only inactivity kills apply.
 
 ### Backward compatibility
 
-Callers that set only `timeout_ms` behave identically to before (activity-based kill, no ceiling). The new default is: inactivity timeout with no ceiling.
+Callers that set only `timeout_s` behave identically to before (activity-based kill, no ceiling). The new default is: inactivity timeout with no ceiling.
 
 ---
 
-## Stopped Flag Design (#148)
+## Cancellation via `stop_prompt`
 
-### Design decision
+`stop_prompt` kills the LLM process running **on the member machine** (the process tracked in the PID registry) and clears the PID store. It does not directly terminate the local Claude Code background agent that dispatched the work.
 
-The `stopped` flag is in-memory only — a `Map<string, boolean>` keyed by agent ID in `agent-helpers.ts`.
+Always call `TaskStop` on the dispatching background agent **after** calling `stop_prompt`.
 
-```
-_stoppedAgents: Map<agentId → true>
-```
-
-### Why not persisted
-
-Same rationale as the PID store: a `stopped` flag is runtime state representing an operator decision made in the current session. Persisting it would cause a member to appear stuck after a fleet server restart, requiring manual intervention to clear.
-
-### Flag lifecycle
-
-1. `stop_prompt` kills the stored PID and sets the flag.
-2. `executePrompt` checks the flag at entry. If set, it returns an error message and does **not** spawn.
-3. A fresh `executePrompt` call (after the operator has assessed the situation) clears the flag — specifically, the flag is cleared after the kill-previous-PID step at the top of `executePrompt`, before the new session starts.
-
-This design means "stopped" is a single-prompt interlock: the next explicit `execute_prompt` call clears it. This is intentional — the PM must consciously re-dispatch, which prevents misbehaving background agents from auto-recovering.
-
-### What `stop_prompt` actually stops
-
-`stop_prompt` kills the LLM process running **on the member machine** (the process tracked in the PID registry). It does not directly stop the local Claude Code background agent that dispatched the work. The stopped flag prevents the background agent from issuing further `execute_prompt` calls after its current in-flight call returns.
-
-This is sufficient for the failure cascade scenario: PM calls `stop_prompt`, the LLM process on the member is killed, and the background agent's subsequent `execute_prompt` attempts are blocked by the flag.
+The next `execute_prompt` call after a `stop_prompt` proceeds immediately.

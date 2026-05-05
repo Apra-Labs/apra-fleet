@@ -150,7 +150,7 @@ async function deliverConfigFile(
     : JSON.stringify(content, null, 2);
 
   const writeCmd = agentOs === 'windows'
-    ? `Set-Content -Path "${filePath.replace(/\//g, '\\')}" -Value '${contentStr.replace(/'/g, "''")}' -Encoding UTF8`
+    ? `[System.IO.File]::WriteAllText("${filePath.replace(/\//g, '\\')}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
     : `cat > ${filePath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
   await strategy.execCommand(writeCmd, 5000);
 }

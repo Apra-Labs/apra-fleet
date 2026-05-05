@@ -2,7 +2,7 @@
  * T12: Cloud lifecycle integration tests.
  *
  * Covers the full end-to-end flows with mocked AWS CLI + SSH:
- *   1. Full lifecycle: stopped agent → execute_command → ensureCloudReady starts it → SSH runs
+ *   1. Full lifecycle: stopped member → execute_command → ensureCloudReady starts it → SSH runs
  *   2. Idle auto-stop: idle past timeout → idleManager.checkOnce → stopInstance called
  *   3. Long-running task launch: execute_command with long_running=true → nohup wrapper
  *   4. monitor_task: SSH returns completed status.json → auto_stop → stopInstance called
@@ -28,7 +28,7 @@ const {
   mockCheckMemberActivity,
   mockSetIdleTouchHook,
 } = vi.hoisted(() => ({
-  mockEnsureCloudReady: vi.fn<(agent: any) => Promise<any>>((a) => Promise.resolve(a)),
+  mockEnsureCloudReady: vi.fn<(member: any) => Promise<any>>((a) => Promise.resolve(a)),
   mockExecCommand: vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>(),
   mockGetInstanceState: vi.fn(),
   mockStartInstance: vi.fn(),
@@ -119,35 +119,35 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 1: Full lifecycle — stopped agent auto-starts via ensureCloudReady
+// Test 1: Full lifecycle — stopped member auto-starts via ensureCloudReady
 // ---------------------------------------------------------------------------
 
 describe('Cloud lifecycle: execute_command auto-start', () => {
   it('calls ensureCloudReady which starts the instance, then runs the SSH command', async () => {
     const { executeCommand } = await import('../src/tools/execute-command.js');
-    const agent = makeCloudAgent({ host: '10.0.0.1' });
-    addAgent(agent);
+    const member = makeCloudAgent({ host: '10.0.0.1' });
+    addAgent(member);
 
     // ensureCloudReady simulates starting instance and returning updated IP
-    const startedAgent = { ...agent, host: '54.10.20.30' };
+    const startedAgent = { ...member, host: '54.10.20.30' };
     mockEnsureCloudReady.mockResolvedValueOnce(startedAgent);
 
-    await executeCommand({ member_id: agent.id, command: 'echo hello', timeout_ms: 5000 });
+    await executeCommand({ member_id: member.id, command: 'echo hello', timeout_s: 5 });
 
     // ensureCloudReady was called (this is where startInstance happens in real code)
     expect(mockEnsureCloudReady).toHaveBeenCalledOnce();
-    expect(mockEnsureCloudReady).toHaveBeenCalledWith(expect.objectContaining({ id: agent.id }));
+    expect(mockEnsureCloudReady).toHaveBeenCalledWith(expect.objectContaining({ id: member.id }));
     // SSH command was executed after start
     expect(mockExecCommand).toHaveBeenCalledOnce();
   });
 
   it('returns error string if ensureCloudReady fails (terminated instance)', async () => {
     const { executeCommand } = await import('../src/tools/execute-command.js');
-    const agent = makeCloudAgent();
-    addAgent(agent);
+    const member = makeCloudAgent();
+    addAgent(member);
     mockEnsureCloudReady.mockRejectedValueOnce(new Error('Instance i-0abc is terminated'));
 
-    const result = await executeCommand({ member_id: agent.id, command: 'ls', timeout_ms: 5000 });
+    const result = await executeCommand({ member_id: member.id, command: 'ls', timeout_s: 5 });
 
     expect(result).toContain('Instance i-0abc is terminated');
     expect(mockExecCommand).not.toHaveBeenCalled();
@@ -159,39 +159,39 @@ describe('Cloud lifecycle: execute_command auto-start', () => {
 // ---------------------------------------------------------------------------
 
 describe('Cloud lifecycle: idle auto-stop', () => {
-  it('stops a cloud agent that has been idle past its idleTimeoutMin', async () => {
+  it('stops a cloud member that has been idle past its idleTimeoutMin', async () => {
     const { IdleManager } = await import('../src/services/cloud/idle-manager.js');
-    const agent = makeCloudAgent(); // lastUsed 2h ago, idleTimeoutMin=1
+    const member = makeCloudAgent(); // lastUsed 2h ago, idleTimeoutMin=1
 
-    mockGetAllAgents.mockReturnValue([agent]);
+    mockGetAllAgents.mockReturnValue([member]);
     mockGetInstanceState.mockResolvedValue('running');
     mockCheckMemberActivity.mockResolvedValue('idle');
     mockStopInstance.mockResolvedValue(undefined);
 
     const manager = new IdleManager();
-    manager.start(60_000); // global fallback = 1min; per-agent also 1min
+    manager.start(60_000); // global fallback = 1min; per-member also 1min
 
     await manager.checkOnce();
 
-    expect(mockGetInstanceState).toHaveBeenCalledWith(agent.cloud);
-    expect(mockCheckMemberActivity).toHaveBeenCalledWith(agent);
-    expect(mockStopInstance).toHaveBeenCalledWith(agent.cloud);
+    expect(mockGetInstanceState).toHaveBeenCalledWith(member.cloud);
+    expect(mockCheckMemberActivity).toHaveBeenCalledWith(member);
+    expect(mockStopInstance).toHaveBeenCalledWith(member.cloud);
 
     manager.stop();
   });
 
-  it('does NOT stop an agent that was recently active (timer reset)', async () => {
+  it('does NOT stop an member that was recently active (timer reset)', async () => {
     const { IdleManager } = await import('../src/services/cloud/idle-manager.js');
-    const agent = makeCloudAgent(); // lastUsed 2h ago
+    const member = makeCloudAgent(); // lastUsed 2h ago
 
-    mockGetAllAgents.mockReturnValue([agent]);
+    mockGetAllAgents.mockReturnValue([member]);
     mockGetInstanceState.mockResolvedValue('running');
 
     const manager = new IdleManager();
     manager.start(60_000);
 
     // Reset timer to now — should prevent stop
-    manager.resetTimer(agent.id);
+    manager.resetTimer(member.id);
 
     await manager.checkOnce();
 
@@ -207,13 +207,13 @@ describe('Cloud lifecycle: idle auto-stop', () => {
 describe('Cloud lifecycle: long_running execute_command', () => {
   it('launches a background task and returns task_id', async () => {
     const { executeCommand } = await import('../src/tools/execute-command.js');
-    const agent = makeCloudAgent();
-    addAgent(agent);
+    const member = makeCloudAgent();
+    addAgent(member);
 
     const result = await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: 'python train.py',
-      timeout_ms: 5000,
+      timeout_s: 5,
       long_running: true,
       max_retries: 2,
     });
@@ -232,17 +232,17 @@ describe('Cloud lifecycle: long_running execute_command', () => {
   it('uses restart_command: wrapper script contains both base64-encoded commands', async () => {
     const { executeCommand } = await import('../src/tools/execute-command.js');
     const { generateTaskWrapper } = await import('../src/services/cloud/task-wrapper.js');
-    const agent = makeCloudAgent();
-    addAgent(agent);
+    const member = makeCloudAgent();
+    addAgent(member);
 
     const mainCmd = 'python train.py --epochs 100';
     const restartCmd = 'python train.py --resume checkpoint.pt';
 
     await executeCommand({
-      member_id: agent.id,
+      member_id: member.id,
       command: mainCmd,
       restart_command: restartCmd,
-      timeout_ms: 5000,
+      timeout_s: 5,
       long_running: true,
     });
 
@@ -270,8 +270,8 @@ describe('Cloud lifecycle: long_running execute_command', () => {
 describe('Cloud lifecycle: monitor_task', () => {
   it('returns completed status and calls stopInstance when auto_stop=true', async () => {
     const { monitorTask } = await import('../src/tools/monitor-task.js');
-    const agent = makeCloudAgent();
-    addAgent(agent);
+    const member = makeCloudAgent();
+    addAgent(member);
 
     const statusJson = JSON.stringify({
       taskId: 'task-abc123',
@@ -290,7 +290,7 @@ describe('Cloud lifecycle: monitor_task', () => {
       .mockResolvedValueOnce({ stdout: 'Training complete.', stderr: '', code: 0 }); // log tail
 
     const result = await monitorTask({
-      member_id: agent.id,
+      member_id: member.id,
       task_id: 'task-abc123',
       auto_stop: true,
     });
@@ -304,13 +304,13 @@ describe('Cloud lifecycle: monitor_task', () => {
     expect(parsed.autoStopped).toBe(true);
 
     // stopInstance was called because auto_stop=true and status=completed
-    expect(mockStopInstance).toHaveBeenCalledWith(agent.cloud);
+    expect(mockStopInstance).toHaveBeenCalledWith(member.cloud);
   });
 
   it('does NOT stop instance when task is still running', async () => {
     const { monitorTask } = await import('../src/tools/monitor-task.js');
-    const agent = makeCloudAgent();
-    addAgent(agent);
+    const member = makeCloudAgent();
+    addAgent(member);
 
     const statusJson = JSON.stringify({
       taskId: 'task-running',
@@ -326,7 +326,7 @@ describe('Cloud lifecycle: monitor_task', () => {
       .mockResolvedValueOnce({ stdout: 'epoch 15/100', stderr: '', code: 0 });
 
     const result = await monitorTask({
-      member_id: agent.id,
+      member_id: member.id,
       task_id: 'task-running',
       auto_stop: true, // true but task not done
     });

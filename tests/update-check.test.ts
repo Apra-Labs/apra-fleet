@@ -12,7 +12,45 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkForUpdate, getUpdateNotice, _setUpdateCache } from '../src/services/update-check.js';
+import { checkForUpdate, getUpdateNotice, _setUpdateCache, isNewer } from '../src/services/update-check.js';
+
+// ---------------------------------------------------------------------------
+// isNewer — version comparison (3-part semver only)
+// ---------------------------------------------------------------------------
+
+describe('isNewer — version comparison', () => {
+  it('v0.1.9 vs v0.1.8 → newer', () => {
+    expect(isNewer('v0.1.9', 'v0.1.8')).toBe(true);
+  });
+
+  it('v0.1.8 vs v0.1.8 → not newer (equal)', () => {
+    expect(isNewer('v0.1.8', 'v0.1.8')).toBe(false);
+  });
+
+  it('v0.1.7 vs v0.1.8 → not newer (older)', () => {
+    expect(isNewer('v0.1.7', 'v0.1.8')).toBe(false);
+  });
+
+  it('4-part version: v0.1.8.1 > v0.1.8', () => {
+    expect(isNewer('v0.1.8.1', 'v0.1.8')).toBe(true);
+  });
+
+  it('4-part version: v0.1.8.0 not newer than v0.1.8', () => {
+    expect(isNewer('v0.1.8.0', 'v0.1.8')).toBe(false);
+  });
+
+  it('invalid candidate returns false', () => {
+    expect(isNewer('garbage', 'v0.1.8')).toBe(false);
+  });
+
+  it('invalid current returns false', () => {
+    expect(isNewer('v0.1.8', 'not-a-version')).toBe(false);
+  });
+
+  it('2-part version returns false (not enough parts)', () => {
+    expect(isNewer('v1.0', 'v0.1.8')).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // checkForUpdate + getUpdateNotice
@@ -40,7 +78,7 @@ describe('checkForUpdate — newer version available', () => {
     expect(notice).not.toBeNull();
     expect(notice).toContain('v99.0.0');
     expect(notice).toContain('is available');
-    expect(notice).toContain('/pm deploy apra-fleet');
+    expect(notice).toContain('apra-fleet update');
   });
 
   it('returns null when remote version equals installed', async () => {

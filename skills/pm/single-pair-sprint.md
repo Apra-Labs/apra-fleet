@@ -47,14 +47,26 @@ The task harness is the set of files sent to the doer's `work_folder` root via `
 
 `progress.json` is the living state. Always query it for current status.
 
+### Per-Task Dispatch Algorithm
+
+Before each doer dispatch, PM reads `planned.json` and `progress.json`:
+
+```
+nextTask = planned.json.tasks.find(t => t.status === "pending")
+tier     = nextTask.tier
+resume   = (nextTask.phase === lastDispatchedPhase)   // from status.md
+```
+
+Dispatch ONE task at `model: <tier>`. PM records `lastDispatchedPhase = nextTask.phase` in `status.md` after each dispatch.
+
 ### Execution Loop
 
 ```
-PM sends task harness → kicks off doer (resume=false — fresh session per phase)
+PM sends task harness → dispatches doer (resume per data-driven rule, model=nextTask.tier)
   → doer reads progress.json → executes next pending task → commits → updates progress.json
   → hits VERIFY checkpoint → STOPS → PM reads progress.json
-  → PM dispatches REVIEWER → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
-  → APPROVED: PM resumes doer (resume=true within a phase) → repeat
+  → PM dispatches REVIEWER (model=premium) → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
+  → APPROVED: PM dispatches doer for next task (resume=true if same phase) → repeat
   → CHANGES NEEDED: PM sends feedback to doer → doer fixes → PM re-dispatches REVIEWER → repeat
   → all tasks done → move to next phase or completion
 ```
@@ -63,12 +75,21 @@ PM sends task harness → kicks off doer (resume=false — fresh session per pha
 
 | Dispatch | resume |
 |----------|--------|
-| Start of new phase | `false` |
-| Within a phase | `true` |
-| Plan revision (any feedback iteration) | `true` |
+| New phase (`nextTask.phase !== lastDispatchedPhase`) | `false` |
+| Same phase (`nextTask.phase === lastDispatchedPhase`) | `true` |
+| After reviewer CHANGES NEEDED → doer fix | `true` |
 | Initial review dispatch | `false` |
 | Re-review after fixes | `true` |
 | Role switch (doer↔reviewer) | `false` |
+
+**Data-driven resume rule** — derived from `planned.json` phase numbers, not manually reasoned:
+
+| Condition | resume |
+|-----------|--------|
+| `nextTask.phase === lastDispatchedPhase` | `true` |
+| `nextTask.phase !== lastDispatchedPhase` (new phase) | `false` |
+| After reviewer CHANGES NEEDED → doer fix | `true` |
+| Role switch (doer ↔ reviewer) | `false` |
 
 ### Permissions
 
@@ -111,7 +132,7 @@ When all phases are APPROVED:
 
 3. **Update backlog.md** — record all unresolved MEDIUM/LOW review findings and deferred items from this sprint.
 
-4. **Update status.md** — mark sprint complete, record member states.
+4. **Update status.md** — mark sprint complete, record member states. Clear `lastDispatchedPhase`.
 
 ---
 
@@ -126,7 +147,7 @@ For each member in the project:
    - **On reviewer members:** progress.json is not authoritative — it reflects the doer's task state at last sync. Check `git log --oneline -- feedback.md` for reviewer progress instead.
 2. `execute_command → git log --oneline -5` — any commits since last known state?
 3. `execute_command → git status` — uncommitted changes?
-4. Compare against local `<project>/status.md` — what did PM last know?
+4. Compare against local `<project>/status.md` — what did PM last know? Check `lastDispatchedPhase` to determine resume vs. fresh-session for next dispatch.
 
 Present a per-member state summary before acting:
 

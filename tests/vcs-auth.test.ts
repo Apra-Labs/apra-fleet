@@ -48,9 +48,9 @@ describe('GitHub provider', () => {
 
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
-    const agent = makeAgent({ gitAccess: 'push', gitRepos: ['Org/Repo'] });
+    const member = makeAgent({ gitAccess: 'push', gitRepos: ['Org/Repo'] });
 
-    const result = await githubProvider.deploy(agent, cmds, exec, { type: 'github-app' });
+    const result = await githubProvider.deploy(member, cmds, exec, { type: 'github-app' });
 
     expect(result.success).toBe(true);
     expect(result.metadata?.mode).toBe('github-app');
@@ -98,9 +98,9 @@ describe('GitHub provider', () => {
     });
     mockMint.mockRejectedValue(new Error('403 Forbidden'));
     const exec = async () => '';
-    const agent = makeAgent({ gitAccess: 'push', gitRepos: ['Org/Repo'] });
+    const member = makeAgent({ gitAccess: 'push', gitRepos: ['Org/Repo'] });
 
-    const result = await githubProvider.deploy(agent, cmds, exec, { type: 'github-app' });
+    const result = await githubProvider.deploy(member, cmds, exec, { type: 'github-app' });
     expect(result.success).toBe(false);
     expect(result.message).toContain('403 Forbidden');
   });

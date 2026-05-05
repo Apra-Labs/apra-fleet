@@ -4,10 +4,7 @@ import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegis
 import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { stopPrompt } from '../../src/tools/stop-prompt.js';
-import {
-  getStoredPid, clearStoredPid,
-  isAgentStopped, clearAgentStopped, setStoredPid,
-} from '../../src/utils/agent-helpers.js';
+import { getStoredPid, clearStoredPid, setStoredPid } from '../../src/utils/agent-helpers.js';
 import { launchAuthTerminal, isSSHSession } from '../../src/services/auth-socket.js';
 import { getStrategy } from '../../src/services/strategy.js';
 import type { Agent, SSHExecResult } from '../../src/types.js';
@@ -20,9 +17,9 @@ vi.mock('../../src/services/strategy.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../src/services/strategy.js')>();
   return {
     ...original,
-    getStrategy: (agent: Agent) => {
-      if (agent.agentType === 'local') {
-        return original.getStrategy(agent);
+    getStrategy: (member: Agent) => {
+      if (member.agentType === 'local') {
+        return original.getStrategy(member);
       }
       return {
         execCommand: mockExecCommand,
@@ -37,15 +34,15 @@ vi.mock('../../src/services/strategy.js', async (importOriginal) => {
 });
 
 // ── Inactivity timer ─────────────────────────────────────────────────────────
-// Tests the rolling inactivity timer and max_total_ms ceiling by running real
+// Tests the rolling inactivity timer and max_total_s ceiling by running real
 // local processes through LocalStrategy.execCommand.
 
 describe('Inactivity timer — integration (T13)', () => {
   const WORK_DIR = os.tmpdir();
 
   it('command with regular output is not killed before the inactivity timeout', async () => {
-    const agent = makeTestLocalAgent({ workFolder: WORK_DIR });
-    const strategy = getStrategy(agent);  // local → real LocalStrategy
+    const member = makeTestLocalAgent({ workFolder: WORK_DIR });
+    const strategy = getStrategy(member);  // local → real LocalStrategy
 
     // Prints 3 times every 100 ms — inactivity gap never reaches 3000 ms
     const cmd = process.platform === 'win32'
@@ -58,16 +55,16 @@ describe('Inactivity timer — integration (T13)', () => {
   }, 15000);
 
   it('silent command is killed after inactivity timeout', async () => {
-    const agent = makeTestLocalAgent({ workFolder: WORK_DIR });
-    const strategy = getStrategy(agent);
+    const member = makeTestLocalAgent({ workFolder: WORK_DIR });
+    const strategy = getStrategy(member);
 
     const cmd = process.platform === 'win32' ? 'Start-Sleep -Seconds 10' : 'sleep 10';
     await expect(strategy.execCommand(cmd, 300)).rejects.toThrow(/inactivity/);
   }, 5000);
 
-  it('max_total_ms hard ceiling kills command regardless of activity', async () => {
-    const agent = makeTestLocalAgent({ workFolder: WORK_DIR });
-    const strategy = getStrategy(agent);
+  it('max_total_s hard ceiling kills command regardless of activity', async () => {
+    const member = makeTestLocalAgent({ workFolder: WORK_DIR });
+    const strategy = getStrategy(member);
 
     // Outputs every 50 ms — would never hit a 5000 ms inactivity timeout on its own
     const cmd = process.platform === 'win32'
@@ -79,11 +76,11 @@ describe('Inactivity timer — integration (T13)', () => {
 });
 
 // ── Cancellation ─────────────────────────────────────────────────────────────
-// Tests the stop_agent → executePrompt interaction: stopped flag set by stop_agent
-// is enforced by executePrompt, then cleared so the next call proceeds normally.
+// Tests the stop_prompt → executePrompt interaction: stop_prompt kills the PID
+// and executePrompt can be dispatched immediately after (no error gate).
 
 describe('Cancellation — integration (T13)', () => {
-  let agentId: string;
+  let memberId: string;
 
   beforeEach(() => {
     backupAndResetRegistry();
@@ -92,66 +89,42 @@ describe('Cancellation — integration (T13)', () => {
 
   afterEach(() => {
     restoreRegistry();
-    if (agentId) {
-      clearStoredPid(agentId);
-      clearAgentStopped(agentId);
-    }
+    if (memberId) clearStoredPid(memberId);
   });
 
-  it('stop_agent kills stored PID and sets the stopped flag', async () => {
-    const agent = makeTestAgent({ friendlyName: 'stop-kill-agent' });
-    agentId = agent.id;
-    addAgent(agent);
-    setStoredPid(agentId, 5555);
+  it('stop_prompt kills stored PID and clears it', async () => {
+    const member = makeTestAgent({ friendlyName: 'stop-kill-member' });
+    memberId = member.id;
+    addAgent(member);
+    setStoredPid(memberId, 5555);
 
     mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // kill
 
-    const result = await stopPrompt({ member_id: agentId });
+    const result = await stopPrompt({ member_id: memberId });
 
     expect(result).toContain('stopped');
-    expect(getStoredPid(agentId)).toBeUndefined();
-    expect(isAgentStopped(agentId)).toBe(true);
+    expect(getStoredPid(memberId)).toBeUndefined();
     expect(mockExecCommand.mock.calls[0][0]).toContain('5555');
   });
 
-  it('executePrompt on a stopped agent returns an error and clears the stopped flag', async () => {
-    const agent = makeTestAgent({ friendlyName: 'stopped-agent' });
-    agentId = agent.id;
-    addAgent(agent);
-    // Simulate stop_agent having already been called
-    setStoredPid(agentId, 7777);
-    await stopPrompt({ member_id: agentId });
+  it('executePrompt proceeds immediately after stop_prompt — no error gate', async () => {
+    const member = makeTestAgent({ friendlyName: 'stopped-then-resumed' });
+    memberId = member.id;
+    addAgent(member);
+    setStoredPid(memberId, 7777);
+
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // kill in stop_prompt
+    await stopPrompt({ member_id: memberId });
     vi.clearAllMocks();
 
-    const result = await executePrompt({ member_id: agentId, prompt: 'go', resume: false, timeout_ms: 5000 });
-
-    expect(result).toContain('stopped');
-    expect(result).toContain('stopped-agent');
-    // Stopped flag is cleared so the next call can proceed
-    expect(isAgentStopped(agentId)).toBe(false);
-    // No command should have been dispatched
-    expect(mockExecCommand).not.toHaveBeenCalled();
-  });
-
-  it('executePrompt proceeds normally after the stopped flag is cleared', async () => {
-    const agent = makeTestAgent({ friendlyName: 'cleared-agent' });
-    agentId = agent.id;
-    addAgent(agent);
-
-    // Trigger stopped error (sets flag via stop_agent, then executePrompt clears it)
-    await stopPrompt({ member_id: agentId });
-    vi.clearAllMocks();
-    await executePrompt({ member_id: agentId, prompt: 'first', resume: false, timeout_ms: 5000 });
-    expect(isAgentStopped(agentId)).toBe(false);
-
-    // Next call proceeds normally using the mocked remote strategy
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
-      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'back', session_id: 's1' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'resumed', session_id: 's1' }), stderr: '', code: 0 })
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
 
-    const result = await executePrompt({ member_id: agentId, prompt: 'second', resume: false, timeout_ms: 5000 });
-    expect(result).toContain('back');
+    const result = await executePrompt({ member_id: memberId, prompt: 'go', resume: false, timeout_s: 5 });
+
+    expect(result).toContain('resumed');
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { serverVersion } from './version.js';
+import { logLine, logError } from './utils/log-helpers.js';
 
 // --- CLI dispatch (before MCP server imports to keep --version fast) ---
 const arg = process.argv[2];
@@ -15,6 +16,8 @@ if (arg === '--help' || arg === '-h') {
 
 Usage:
   apra-fleet                  Start MCP server (stdio)
+  apra-fleet update           Check for and install latest update
+  apra-fleet update --check   Check for update
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
@@ -31,11 +34,36 @@ if (arg === 'install') {
   // Dynamic import so MCP deps aren't loaded for install
   import('./cli/install.js')
     .then(m => m.runInstall(process.argv.slice(3)))
-    .catch(err => { console.error('Install failed:', err.message); process.exit(1); });
+    .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'auth') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
-    .catch(err => { console.error('Auth failed:', err.message); process.exit(1); });
+    .catch(err => { logError('cli', `Auth failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'update') {
+  const rest = process.argv.slice(3);
+  if (rest.includes('--help') || rest.includes('-h')) {
+    console.log(`apra-fleet update
+
+Usage:
+  apra-fleet update           Check for and install latest update
+  apra-fleet update --check   Check for update without installing
+  apra-fleet update --help    Show this help`);
+    process.exit(0);
+  }
+  if (rest.includes('--check')) {
+    import('./services/update-check.js')
+      .then(async m => {
+        await m.checkForUpdate();
+        const notice = m.getUpdateNotice();
+        if (notice) console.log(notice);
+        else console.log('apra-fleet is up to date.');
+      })
+      .catch(err => { logError('cli', `Update check failed: ${err.message}`); process.exit(1); });
+  } else {
+    import('./cli/update.js')
+      .then(m => m.runUpdate())
+      .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
+  }
 } else {
   // Default: start MCP server
   startServer();
@@ -131,9 +159,9 @@ async function startServer() {
     return getWelcomeBackPreamble();
   }
 
-  function wrapTool(toolName: string, handler: (input: any) => Promise<string>) {
-    return async (input: any) => {
-      const result = await handler(input);
+  function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string>) {
+    return async (input: any, extra?: any) => {
+      const result = await handler(input, extra);
       const isJson = isJsonResponse(result);
       const preamble = getOnboardingPreamble(toolName, isJson);
       const suffix = isJson ? null : getOnboardingNudge(toolName, input, result);
@@ -162,12 +190,12 @@ async function startServer() {
   server.tool('update_member', "Change a member's name, connection details, working directory, AI provider, or other settings.", updateMemberSchema.shape, wrapTool('update_member', (input) => updateMember(input as any)));
 
   // --- File Operations ---
-  server.tool('send_files', 'Transfer local files to a member. Always batch multiple files into a single call — never invoke repeatedly for individual files.', sendFilesSchema.shape, wrapTool('send_files', (input) => sendFiles(input as any)));
-  server.tool('receive_files', 'Download files from a member to a local directory. Always batch multiple files into a single call — never invoke repeatedly for individual files.', receiveFilesSchema.shape, wrapTool('receive_files', (input) => receiveFiles(input as any)));
+  server.tool('send_files', 'Transfer local files to a member. Always batch multiple files into a single call — never invoke repeatedly for individual files.', sendFilesSchema.shape, wrapTool('send_files', (input, extra) => sendFiles(input as any, extra)));
+  server.tool('receive_files', 'Download files from a member to a local directory. Always batch multiple files into a single call — never invoke repeatedly for individual files.', receiveFilesSchema.shape, wrapTool('receive_files', (input, extra) => receiveFiles(input as any, extra)));
 
   // --- Prompt Execution ---
-  server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run an AI prompt on a member. Supports session resume for multi-turn conversations.', executePromptSchema.shape, wrapTool('execute_prompt', (input) => executePrompt(input as any)));
-  server.tool('execute_command', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command on a member. Use for quick tasks like installing packages, checking versions, or running scripts.', executeCommandSchema.shape, wrapTool('execute_command', (input) => executeCommand(input as any)));
+  server.tool('execute_prompt', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run an AI prompt on a member. Supports session resume for multi-turn conversations.', executePromptSchema.shape, wrapTool('execute_prompt', (input, extra) => executePrompt(input as any, extra)));
+  server.tool('execute_command', 'IMP: Never call this tool directly. Always wrap in a background subagent: Agent(run_in_background=true). Run a shell command on a member. Use for quick tasks like installing packages, checking versions, or running scripts.', executeCommandSchema.shape, wrapTool('execute_command', (input, extra) => executeCommand(input as any, extra)));
 
   // --- Authentication & SSH ---
   server.tool('provision_llm_auth', "Authenticate a fleet member so it can run prompts. Copies your current login session to the member, or deploys an API key if provided. Run this before execute_prompt if the member reports no authentication.", provisionAuthSchema.shape, wrapTool('provision_llm_auth', (input) => provisionAuth(input as any)));
@@ -193,7 +221,7 @@ async function startServer() {
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Optionally stop the cloud instance automatically when the task completes.', monitorTaskSchema.shape, wrapTool('monitor_task', (input) => monitorTask(input as any)));
 
   // --- Agent Lifecycle ---
-  server.tool('stop_prompt', 'Kill the active LLM process on a member and prevent it from re-dispatching until a fresh execute_prompt clears the flag. Use when a background agent is stuck or needs to be cancelled.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
+  server.tool('stop_prompt', 'Kill the active LLM process on a member. Always call TaskStop on the dispatching background agent after calling this.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
   // --- Credential Store ---
   server.tool('credential_store_set', 'Collect a secret from the user out-of-band and store it. Returns a handle (sec://NAME) and scope. Use {{secure.NAME}} tokens in execute_command to inject the value.', credentialStoreSetSchema.shape, wrapTool('credential_store_set', (input) => credentialStoreSet(input as any)));
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
@@ -203,6 +231,9 @@ async function startServer() {
   // --- Start Server ---
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  const { FLEET_DIR } = await import('./paths.js');
+  logLine('startup', `apra-fleet ${serverVersion} started — FLEET_DIR=${FLEET_DIR}`);
 
   idleManager.start();
   void cleanupStaleTasks();

@@ -46,7 +46,7 @@ describe('register_member: unattended field persistence', () => {
 
   it('persists unattended="auto" on the registered Agent record', async () => {
     await registerMember({
-      friendly_name: 'auto-agent',
+      friendly_name: 'auto-member',
       member_type: 'remote',
       host: '10.0.0.1',
       port: 22,
@@ -57,14 +57,14 @@ describe('register_member: unattended field persistence', () => {
     });
 
     const { getAllAgents } = await import('../src/services/registry.js');
-    const registered = getAllAgents().find(a => a.friendlyName === 'auto-agent');
+    const registered = getAllAgents().find(a => a.friendlyName === 'auto-member');
     expect(registered).toBeDefined();
     expect(registered!.unattended).toBe('auto');
   });
 
   it('persists unattended="dangerous" on the registered Agent record', async () => {
     await registerMember({
-      friendly_name: 'dangerous-agent',
+      friendly_name: 'dangerous-member',
       member_type: 'remote',
       host: '10.0.0.2',
       port: 22,
@@ -75,14 +75,14 @@ describe('register_member: unattended field persistence', () => {
     });
 
     const { getAllAgents } = await import('../src/services/registry.js');
-    const registered = getAllAgents().find(a => a.friendlyName === 'dangerous-agent');
+    const registered = getAllAgents().find(a => a.friendlyName === 'dangerous-member');
     expect(registered).toBeDefined();
     expect(registered!.unattended).toBe('dangerous');
   });
 
   it('defaults unattended to false when not provided', async () => {
     await registerMember({
-      friendly_name: 'default-agent',
+      friendly_name: 'default-member',
       member_type: 'remote',
       host: '10.0.0.3',
       port: 22,
@@ -92,7 +92,7 @@ describe('register_member: unattended field persistence', () => {
     });
 
     const { getAllAgents } = await import('../src/services/registry.js');
-    const registered = getAllAgents().find(a => a.friendlyName === 'default-agent');
+    const registered = getAllAgents().find(a => a.friendlyName === 'default-member');
     expect(registered).toBeDefined();
     expect(registered!.unattended).toBe(false);
   });
@@ -111,38 +111,38 @@ describe('update_member: unattended field', () => {
   });
 
   it('sets unattended="auto" on a member that previously had false', async () => {
-    const agent = makeTestAgent({ unattended: false });
-    addAgent(agent);
+    const member = makeTestAgent({ unattended: false });
+    addAgent(member);
 
-    const result = await updateMember({ member_id: agent.id, unattended: 'auto' });
+    const result = await updateMember({ member_id: member.id, unattended: 'auto' });
     expect(result).toContain('updated');
-    expect(getAgent(agent.id)?.unattended).toBe('auto');
+    expect(getAgent(member.id)?.unattended).toBe('auto');
   });
 
   it('changes unattended from "auto" to "dangerous"', async () => {
-    const agent = makeTestAgent({ unattended: 'auto' });
-    addAgent(agent);
+    const member = makeTestAgent({ unattended: 'auto' });
+    addAgent(member);
 
-    const result = await updateMember({ member_id: agent.id, unattended: 'dangerous' });
+    const result = await updateMember({ member_id: member.id, unattended: 'dangerous' });
     expect(result).toContain('updated');
-    expect(getAgent(agent.id)?.unattended).toBe('dangerous');
+    expect(getAgent(member.id)?.unattended).toBe('dangerous');
   });
 
   it('resets unattended back to false from "dangerous"', async () => {
-    const agent = makeTestAgent({ unattended: 'dangerous' });
-    addAgent(agent);
+    const member = makeTestAgent({ unattended: 'dangerous' });
+    addAgent(member);
 
-    const result = await updateMember({ member_id: agent.id, unattended: false });
+    const result = await updateMember({ member_id: member.id, unattended: false });
     expect(result).toContain('updated');
-    expect(getAgent(agent.id)?.unattended).toBe(false);
+    expect(getAgent(member.id)?.unattended).toBe(false);
   });
 
   it('does not change unattended when the field is not provided', async () => {
-    const agent = makeTestAgent({ unattended: 'auto' });
-    addAgent(agent);
+    const member = makeTestAgent({ unattended: 'auto' });
+    addAgent(member);
 
-    await updateMember({ member_id: agent.id, friendly_name: agent.friendlyName });
-    expect(getAgent(agent.id)?.unattended).toBe('auto');
+    await updateMember({ member_id: member.id, friendly_name: member.friendlyName });
+    expect(getAgent(member.id)?.unattended).toBe('auto');
   });
 });
 
@@ -161,8 +161,8 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
   });
 
   it('returns deprecation warning when dangerously_skip_permissions=true', async () => {
-    const agent = makeTestAgent({ friendlyName: 'dep-agent', unattended: false });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'dep-member', unattended: false });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'done', session_id: 'sess-dep' }),
       stderr: '',
@@ -170,10 +170,10 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     });
 
     const result = await executePrompt({
-      member_id: agent.id,
+      member_id: member.id,
       prompt: 'do something',
       resume: false,
-      timeout_ms: 5000,
+      timeout_s: 5,
       dangerously_skip_permissions: true,
     });
 
@@ -183,8 +183,8 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
   });
 
   it('does not include deprecation warning when dangerously_skip_permissions is false', async () => {
-    const agent = makeTestAgent({ friendlyName: 'no-dep-agent', unattended: false });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'no-dep-member', unattended: false });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'ok', session_id: 'sess-nodep' }),
       stderr: '',
@@ -192,19 +192,19 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     });
 
     const result = await executePrompt({
-      member_id: agent.id,
+      member_id: member.id,
       prompt: 'do something',
       resume: false,
-      timeout_ms: 5000,
+      timeout_s: 5,
       dangerously_skip_permissions: false,
     });
 
     expect(result).not.toContain('DEPRECATION');
   });
 
-  it('does NOT pass --dangerously-skip-permissions when dangerously_skip_permissions=true but agent.unattended=false', async () => {
-    const agent = makeTestAgent({ friendlyName: 'no-bypass-agent', unattended: false });
-    addAgent(agent);
+  it('does NOT pass --dangerously-skip-permissions when dangerously_skip_permissions=true but member.unattended=false', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-bypass-member', unattended: false });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'done', session_id: 'sess-nobypass' }),
       stderr: '',
@@ -212,10 +212,10 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     });
 
     await executePrompt({
-      member_id: agent.id,
+      member_id: member.id,
       prompt: 'do something',
       resume: false,
-      timeout_ms: 5000,
+      timeout_s: 5,
       dangerously_skip_permissions: true,
     });
 
@@ -225,9 +225,9 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     expect(mainCmd).not.toContain('--permission-mode');
   });
 
-  it('passes --dangerously-skip-permissions when agent.unattended="dangerous" regardless of deprecated flag', async () => {
-    const agent = makeTestAgent({ friendlyName: 'bypass-via-unattended', unattended: 'dangerous' });
-    addAgent(agent);
+  it('passes --dangerously-skip-permissions when member.unattended="dangerous" regardless of deprecated flag', async () => {
+    const member = makeTestAgent({ friendlyName: 'bypass-via-unattended', unattended: 'dangerous' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'done', session_id: 'sess-bypass' }),
       stderr: '',
@@ -235,10 +235,10 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     });
 
     await executePrompt({
-      member_id: agent.id,
+      member_id: member.id,
       prompt: 'do something',
       resume: false,
-      timeout_ms: 5000,
+      timeout_s: 5,
       dangerously_skip_permissions: false,
     });
 
@@ -247,9 +247,9 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     expect(mainCmd).toContain('--dangerously-skip-permissions');
   });
 
-  it('passes --permission-mode auto when agent.unattended="auto"', async () => {
-    const agent = makeTestAgent({ friendlyName: 'auto-via-unattended', unattended: 'auto' });
-    addAgent(agent);
+  it('passes --permission-mode auto when member.unattended="auto"', async () => {
+    const member = makeTestAgent({ friendlyName: 'auto-via-unattended', unattended: 'auto' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'done', session_id: 'sess-auto' }),
       stderr: '',
@@ -257,10 +257,10 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     });
 
     await executePrompt({
-      member_id: agent.id,
+      member_id: member.id,
       prompt: 'do something',
       resume: false,
-      timeout_ms: 5000,
+      timeout_s: 5,
     });
 
     // calls[0]=writePromptFile, calls[1]=main command

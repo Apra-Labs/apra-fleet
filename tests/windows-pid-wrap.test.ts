@@ -122,32 +122,31 @@ describe('buildAgentPromptCommand: working directory', () => {
     expect(out).toContain('C:\\Users\\test\\project');
   });
 
-  it('Set-Location appears before ProcessStartInfo', () => {
+  it('Set-Location appears before FLEET_PID emission', () => {
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
     const setLocIdx = out.indexOf('Set-Location');
-    const startProcIdx = out.indexOf('ProcessStartInfo');
+    const pidIdx = out.indexOf('FLEET_PID');
     expect(setLocIdx).toBeGreaterThanOrEqual(0);
-    expect(startProcIdx).toBeGreaterThanOrEqual(0);
-    expect(setLocIdx).toBeLessThan(startProcIdx);
+    expect(pidIdx).toBeGreaterThanOrEqual(0);
+    expect(setLocIdx).toBeLessThan(pidIdx);
   });
 });
 
 // ─── 6. Env var setup before Start-Process ───────────────────────────────────
 
 describe('buildAgentPromptCommand: env var setup', () => {
-  it('PATH assignment appears before ProcessStartInfo', () => {
+  it('PATH assignment appears before FLEET_PID emission', () => {
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
-    // CLI_PATH sets $env:Path before the process launch
     const pathIdx = out.indexOf('$env:Path');
-    const startProcIdx = out.indexOf('ProcessStartInfo');
+    const pidIdx = out.indexOf('FLEET_PID');
     expect(pathIdx).toBeGreaterThanOrEqual(0);
-    expect(startProcIdx).toBeGreaterThanOrEqual(0);
-    expect(pathIdx).toBeLessThan(startProcIdx);
+    expect(pidIdx).toBeGreaterThanOrEqual(0);
+    expect(pathIdx).toBeLessThan(pidIdx);
   });
 
-  it('uses ProcessStartInfo to launch the claude executable', () => {
+  it('uses direct shell execution to launch the claude executable', () => {
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
-    expect(out).toContain('ProcessStartInfo');
-    expect(out).toContain('ProcessStartInfo]::new("claude"');
+    expect(out).toContain('FLEET_PID:$pid');
+    expect(out).toContain('claude');
   });
 });

@@ -11,6 +11,7 @@ import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning } from '../services/cloud/cost.js';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
+import { getActiveLogFile } from '../utils/log-helpers.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -34,6 +35,7 @@ interface AgentStatusRow {
   branch?: string;
   cloudInfo?: CloudInfo;
   tokenUsage?: { input: number; output: number };
+  category: string | null;
 }
 
 function formatTimeAgo(isoDate?: string): string {
@@ -61,6 +63,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     lastActivity: formatTimeAgo(agent.lastUsed),
     branch: agent.lastBranch,
     tokenUsage: agent.tokenUsage,
+    category: agent.category?.trim() || null,
   };
 
   const strategy = getStrategy(agent);
@@ -184,15 +187,17 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
 
   const rows: AgentStatusRow[] = results.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
-    const hostLabel = formatAgentHost(agents[i]);
+    const agent = agents[i];
+    const hostLabel = formatAgentHost(agent);
     return {
-      icon: agents[i].icon ?? DEFAULT_ICON,
-      name: agents[i].friendlyName,
+      icon: agent.icon ?? DEFAULT_ICON,
+      name: agent.friendlyName,
       host: hostLabel,
       status: 'OFFLINE' as const,
       busy: '-',
-      session: agents[i].sessionId ? agents[i].sessionId.substring(0, 8) + '...' : '(none)',
-      lastActivity: formatTimeAgo(agents[i].lastUsed),
+      session: agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : '(none)',
+      lastActivity: formatTimeAgo(agent.lastUsed),
+      category: agent.category?.trim() || null,
     };
   });
 
@@ -214,14 +219,15 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   writeStatusline(statusOverrides);
 
   const updateNotice = getUpdateNotice();
+  const logFile = getActiveLogFile();
 
   if (format === 'json') {
-    const rowsWithCategory = rows.map((r, i) => ({ ...r, category: agents[i].category ?? null }));
     const payload: Record<string, unknown> = {
       version: serverVersion,
       summary: { total: rows.length, online, offline: rows.length - online },
-      members: rowsWithCategory,
+      members: rows,
     };
+    if (logFile) payload.logFile = logFile;
     if (updateNotice) {
       const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
       if (m) payload.updateAvailable = { latest: m[1], installed: m[2] };
@@ -229,18 +235,25 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     return JSON.stringify(payload);
   }
 
-  // Group rows by category
+  // Group rows by category (category is already attached to each row)
   const grouped = new Map<string, Array<{ row: AgentStatusRow; agent: ReturnType<typeof getAllAgents>[number] }>>();
   for (let i = 0; i < rows.length; i++) {
-    const key = agents[i].category?.trim() || '(uncategorized)';
+    const key = rows[i].category ?? '(uncategorized)';
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push({ row: rows[i], agent: agents[i] });
   }
+  const sortedKeys = [...grouped.keys()].sort((a, b) => {
+    if (a === '(uncategorized)') return 1;
+    if (b === '(uncategorized)') return -1;
+    return a.localeCompare(b);
+  });
 
   // Compact: 1 summary line + 1 line per member, multiple fields per line
   let t = updateNotice ? `${updateNotice}\n` : '';
   t += `Fleet ${serverVersion}: ${online}/${rows.length} online`;
-  for (const [category, members] of grouped) {
+  if (logFile) t += ` | log=${logFile}`;
+  for (const category of sortedKeys) {
+    const members = grouped.get(category)!;
     const chips = members.map(({ row: r }) => {
       const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
       return `${r.icon} ${r.name}(${st})`;
@@ -250,7 +263,8 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   t += '\n';
 
   // Detail lines grouped by category
-  for (const [category, members] of grouped) {
+  for (const category of sortedKeys) {
+    const members = grouped.get(category)!;
     t += `\n[${category}]\n`;
     for (const { row: r } of members) {
       const branchStr = r.branch ? ` | branch=${r.branch}` : '';

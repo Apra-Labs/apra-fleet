@@ -1,4 +1,4 @@
-ï»¿import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import fs from 'node:fs';
 import {
@@ -102,7 +102,7 @@ describe('auth-socket', () => {
       expect(encPw).not.toBeNull();
       expect(encPw).toContain(':'); // encrypted format is iv:authTag:ciphertext
 
-      // Entry consumed â€” should be gone
+      // Entry consumed — should be gone
       expect(hasPendingAuth('web1')).toBe(false);
     });
 
@@ -180,7 +180,7 @@ describe('auth-socket', () => {
       expect(resp.error).toContain('Invalid message');
     });
 
-    it('is idempotent â€” calling ensureAuthSocket twice does not error', async () => {
+    it('is idempotent — calling ensureAuthSocket twice does not error', async () => {
       await ensureAuthSocket();
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
@@ -276,7 +276,7 @@ describe('auth-socket', () => {
         client.on('error', reject);
       });
 
-      // Now wait â€” should resolve immediately since password is already there
+      // Now wait — should resolve immediately since password is already there
       const encPw = await waitForPassword('fast-test', 1000);
       expect(encPw).toContain(':');
     });
@@ -513,7 +513,7 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('launchAuthTerminal â€” headless fallback', () => {
+  describe('launchAuthTerminal — headless fallback', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
     });

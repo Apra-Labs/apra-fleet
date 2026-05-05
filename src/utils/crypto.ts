@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from '../paths.js';
+import { logWarn } from './log-helpers.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
@@ -34,7 +35,8 @@ function getOrCreateKey(): Buffer {
   // Back it up so the user's data isn't silently lost.
   if (fs.existsSync(CREDENTIALS_PATH)) {
     fs.renameSync(CREDENTIALS_PATH, CREDENTIALS_PATH + '.bak');
-    console.warn(
+    logWarn(
+      'crypto',
       '[apra-fleet] Encryption key upgraded to random persistent key. ' +
       'Existing stored credentials could not be migrated and have been backed up to credentials.json.bak. ' +
       'Please re-enter any stored API keys via credential_store_set.',

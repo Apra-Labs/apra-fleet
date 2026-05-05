@@ -2,6 +2,7 @@ import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import { logWarn } from '../utils/log-helpers.js';
 
 export class CopilotProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'copilot';
@@ -42,9 +43,9 @@ export class CopilotProvider implements ProviderAdapter {
     }
     // Copilot CLI does not support unattended permission flags
     if (unattended === 'auto') {
-      console.warn("WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
+      logWarn('copilot', "WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
     } else if (unattended === 'dangerous') {
-      console.warn("WARNING: unattended='dangerous' is not supported for Copilot — member will run interactively");
+      logWarn('copilot', "WARNING: unattended='dangerous' is not supported for Copilot — member will run interactively");
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
@@ -57,7 +58,7 @@ export class CopilotProvider implements ProviderAdapter {
   }
 
   permissionModeAutoFlag(): string | null {
-    console.warn("WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
+    logWarn('copilot', "WARNING: unattended='auto' is not supported for Copilot — member will run interactively");
     return null;
   }
 
@@ -167,6 +168,14 @@ export class CopilotProvider implements ProviderAdapter {
 
   oauthEnvVarsToUnset(): string[] {
     return [];
+  }
+
+
+
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
+    // For native binaries on Windows, shell-based wrapping ensures reliable output redirection
+    // while still allowing for tree-based process termination via the shell PID.
+    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
   }
 
   jsonOutputFlag(): string {

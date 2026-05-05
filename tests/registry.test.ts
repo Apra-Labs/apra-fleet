@@ -18,21 +18,21 @@ afterEach(() => restoreRegistry());
 
 describe('registry CRUD', () => {
   it('adds, retrieves by ID, and retrieves by name', () => {
-    const agent = makeAgent({ friendlyName: 'web-server' });
-    addAgent(agent);
+    const member = makeAgent({ friendlyName: 'web-server' });
+    addAgent(member);
 
     expect(getAllAgents()).toHaveLength(1);
 
-    const byId = getAgent(agent.id);
+    const byId = getAgent(member.id);
     expect(byId).toBeDefined();
     expect(byId!.friendlyName).toBe('web-server');
   });
 
-  it('returns undefined for unknown agent ID', () => {
+  it('returns undefined for unknown member ID', () => {
     expect(getAgent('nonexistent-id')).toBeUndefined();
   });
 
-  it('finds agent by name (case-insensitive)', () => {
+  it('finds member by name (case-insensitive)', () => {
     addAgent(makeAgent({ friendlyName: 'ML-Trainer' }));
 
     expect(findAgentByName('ml-trainer')).toBeDefined();
@@ -40,36 +40,36 @@ describe('registry CRUD', () => {
     expect(findAgentByName('nonexistent')).toBeUndefined();
   });
 
-  it('updates an agent and persists changes', () => {
-    const agent = makeAgent({ friendlyName: 'old-name' });
-    addAgent(agent);
+  it('updates an member and persists changes', () => {
+    const member = makeAgent({ friendlyName: 'old-name' });
+    addAgent(member);
 
-    const updated = updateAgent(agent.id, { friendlyName: 'new-name', port: 2222 });
+    const updated = updateAgent(member.id, { friendlyName: 'new-name', port: 2222 });
     expect(updated!.friendlyName).toBe('new-name');
     expect(updated!.port).toBe(2222);
 
-    expect(getAgent(agent.id)!.friendlyName).toBe('new-name');
+    expect(getAgent(member.id)!.friendlyName).toBe('new-name');
   });
 
-  it('returns undefined when updating nonexistent agent', () => {
+  it('returns undefined when updating nonexistent member', () => {
     expect(updateAgent('fake-id', { friendlyName: 'x' })).toBeUndefined();
   });
 
-  it('removes an agent', () => {
-    const agent = makeAgent();
-    addAgent(agent);
-    expect(removeAgent(agent.id)).toBe(true);
+  it('removes an member', () => {
+    const member = makeAgent();
+    addAgent(member);
+    expect(removeAgent(member.id)).toBe(true);
     expect(getAllAgents()).toHaveLength(0);
   });
 
-  it('returns false when removing nonexistent agent', () => {
+  it('returns false when removing nonexistent member', () => {
     expect(removeAgent('fake-id')).toBe(false);
   });
 });
 
 
 describe('registry - security', () => {
-  it('does not store plaintext password in agent fields', () => {
+  it('does not store plaintext password in member fields', () => {
     addAgent(makeAgent({ encryptedPassword: 'abc123:def456:789xyz' }));
 
     const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
@@ -78,9 +78,9 @@ describe('registry - security', () => {
   });
 });
 
-describe('registry - cloud agent storage', () => {
-  it('stores and retrieves cloud config in agent', () => {
-    const agent = makeAgent({
+describe('registry - cloud member storage', () => {
+  it('stores and retrieves cloud config in member', () => {
+    const member = makeAgent({
       cloud: {
         provider: 'aws',
         instanceId: 'i-0abc1234def567890',
@@ -88,9 +88,9 @@ describe('registry - cloud agent storage', () => {
         idleTimeoutMin: 30,
       },
     });
-    addAgent(agent);
+    addAgent(member);
 
-    const retrieved = getAgent(agent.id);
+    const retrieved = getAgent(member.id);
     expect(retrieved).toBeDefined();
     expect(retrieved!.cloud).toBeDefined();
     expect(retrieved!.cloud!.instanceId).toBe('i-0abc1234def567890');
@@ -98,7 +98,7 @@ describe('registry - cloud agent storage', () => {
   });
 
   it('stores cloud config with optional profile', () => {
-    const agent = makeAgent({
+    const member = makeAgent({
       cloud: {
         provider: 'aws',
         instanceId: 'i-0abc1234def567890',
@@ -107,15 +107,15 @@ describe('registry - cloud agent storage', () => {
         idleTimeoutMin: 60,
       },
     });
-    addAgent(agent);
+    addAgent(member);
 
-    const retrieved = getAgent(agent.id);
+    const retrieved = getAgent(member.id);
     expect(retrieved!.cloud!.profile).toBe('my-profile');
     expect(retrieved!.cloud!.idleTimeoutMin).toBe(60);
   });
 
   it('updates cloud config fields via updateAgent', () => {
-    const agent = makeAgent({
+    const member = makeAgent({
       cloud: {
         provider: 'aws',
         instanceId: 'i-0abc1234def567890',
@@ -123,21 +123,21 @@ describe('registry - cloud agent storage', () => {
         idleTimeoutMin: 30,
       },
     });
-    addAgent(agent);
+    addAgent(member);
 
     const updatedCloud = {
-      ...agent.cloud!,
+      ...member.cloud!,
       region: 'us-west-2',
       idleTimeoutMin: 60,
     };
-    const updated = updateAgent(agent.id, { cloud: updatedCloud });
+    const updated = updateAgent(member.id, { cloud: updatedCloud });
     expect(updated!.cloud!.region).toBe('us-west-2');
     expect(updated!.cloud!.idleTimeoutMin).toBe(60);
     expect(updated!.cloud!.instanceId).toBe('i-0abc1234def567890'); // unchanged
   });
 
   it('persists cloud config to disk and reloads correctly', () => {
-    const agent = makeAgent({
+    const member = makeAgent({
       cloud: {
         provider: 'aws',
         instanceId: 'i-0abc1234def567890',
@@ -145,7 +145,7 @@ describe('registry - cloud agent storage', () => {
         idleTimeoutMin: 30,
       },
     });
-    addAgent(agent);
+    addAgent(member);
 
     // Simulate reload by reading raw registry file
     const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
@@ -156,9 +156,9 @@ describe('registry - cloud agent storage', () => {
   });
 
   it('non-cloud agents have no cloud field', () => {
-    const agent = makeAgent(); // no cloud field
-    addAgent(agent);
-    const retrieved = getAgent(agent.id);
+    const member = makeAgent(); // no cloud field
+    addAgent(member);
+    const retrieved = getAgent(member.id);
     expect(retrieved!.cloud).toBeUndefined();
   });
 });
@@ -199,7 +199,7 @@ describe('registry - duplicate folder validation', () => {
     expect(hasDuplicateFolder('local', '/home/user/project/')).toBe(true);
   });
 
-  it('excludes agent by ID (for updates)', () => {
+  it('excludes member by ID (for updates)', () => {
     addAgent(makeAgent({ id: 'local-1', agentType: 'local', workFolder: '/home/user/project', host: undefined }));
     expect(hasDuplicateFolder('local', '/home/user/project', undefined, undefined, 'local-1')).toBe(false);
   });

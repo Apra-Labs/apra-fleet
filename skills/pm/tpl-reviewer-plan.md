@@ -9,13 +9,14 @@ You are reviewing a plan in PLAN.md against requirements.md and any design docs 
 3. Are key abstractions and shared interfaces in the earliest tasks?
 4. Is the riskiest assumption validated in Task 1?
 5. Later tasks reuse early abstractions (DRY)?
-6. 2-3 work tasks per phase, then a VERIFY checkpoint?
-7. Each task completable in one session?
-8. Dependencies satisfied in order?
-9. Any vague tasks that two developers would interpret differently?
-10. Any hidden dependencies between tasks?
-11. Does the plan include a risk register? If missing or incomplete, identify the risks yourself and add them as findings
-12. Does the plan align with requirements.md intent — solving the right problem, not just a technically clean plan?
+6. Are phase boundaries drawn at cohesion boundaries — each phase is a coherent unit producing a reviewable, testable increment (tasks share a data model, code path, or design decision)?
+7. Are tiers monotonically non-decreasing within each phase (cheap → standard → premium, never downgrading mid-phase)?
+8. Each task completable in one session?
+9. Dependencies satisfied in order?
+10. Any vague tasks that two developers would interpret differently?
+11. Any hidden dependencies between tasks?
+12. Does the plan include a risk register? If missing or incomplete, identify the risks yourself and add them as findings
+13. Does the plan align with requirements.md intent — solving the right problem, not just a technically clean plan?
 
 ## Output
 

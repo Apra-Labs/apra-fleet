@@ -40,18 +40,18 @@ describe('writeStatusline — #39 statusline clears after remove_member', () => 
   });
 
   it('clears statusline file when last member is removed', () => {
-    // 1. Register one agent and mark it busy.
-    addAgent(makeAgent('agent-a', 'agent-a'));
-    writeStatusline(new Map([['agent-a', 'busy']]));
+    // 1. Register one member and mark it busy.
+    addAgent(makeAgent('member-a', 'member-a'));
+    writeStatusline(new Map([['member-a', 'busy']]));
 
-    // Sanity: statusline file should now contain the busy icon for agent-a.
+    // Sanity: statusline file should now contain the busy icon for member-a.
     expect(fs.existsSync(STATUSLINE_PATH)).toBe(true);
     const before = fs.readFileSync(STATUSLINE_PATH, 'utf-8');
-    expect(before).toContain('agent-a');
+    expect(before).toContain('member-a');
     expect(before.trim()).not.toBe('');
 
-    // 2. Remove the last agent, then call writeStatusline (mirrors remove-member.ts).
-    removeAgent('agent-a');
+    // 2. Remove the last member, then call writeStatusline (mirrors remove-member.ts).
+    removeAgent('member-a');
     expect(getAllAgents()).toHaveLength(0);
     writeStatusline();
 
@@ -65,15 +65,15 @@ describe('writeStatusline — #39 statusline clears after remove_member', () => 
   });
 
   it('does not clobber statusline when a later removal leaves other agents', () => {
-    addAgent(makeAgent('agent-a', 'agent-a'));
-    addAgent(makeAgent('agent-b', 'agent-b'));
-    writeStatusline(new Map([['agent-a', 'busy'], ['agent-b', 'idle']]));
+    addAgent(makeAgent('member-a', 'member-a'));
+    addAgent(makeAgent('member-b', 'member-b'));
+    writeStatusline(new Map([['member-a', 'busy'], ['member-b', 'idle']]));
 
-    removeAgent('agent-a');
+    removeAgent('member-a');
     writeStatusline();
 
     const content = fs.readFileSync(STATUSLINE_PATH, 'utf-8');
-    expect(content).toContain('agent-b');
-    expect(content).not.toContain('agent-a');
+    expect(content).toContain('member-b');
+    expect(content).not.toContain('member-a');
   });
 });

@@ -40,8 +40,8 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 | `member_id` | string | yes | UUID of the target member |
 | `prompt` | string | yes | The prompt text to send to the LLM agent |
 | `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
-| `timeout_ms` | number | no | Default: 300000 (5 min). **Inactivity timeout** — resets on every output chunk; kills the session only when silent for this many ms |
-| `max_total_ms` | number | no | Default: none. **Hard ceiling** — kills the session after this total elapsed time regardless of activity |
+| `timeout_s` | number | no | Default: 300 (5 min). **Inactivity timeout** — resets on every output chunk; kills the session only when silent for this many seconds |
+| `max_total_s` | number | no | Default: none. **Hard ceiling** — kills the session after this total elapsed time in seconds regardless of activity |
 | `dangerously_skip_permissions` | boolean | no | Default: `false`. Passes the provider's skip-permissions flag so the agent can execute tools without interactive approval |
 | `model` | string | no | Model to use. Pass a tier name (`premium`, `standard`, `cheap`) or a provider-specific model ID. Defaults to `standard` tier when omitted. |
 
@@ -70,7 +70,7 @@ Do NOT enable this for open-ended prompts on members with access to sensitive da
 2. **Base64-encodes the prompt** — this avoids shell escaping issues when the prompt contains quotes, newlines, or special characters. The encoding is decoded on the target side before being passed to the CLI.
 3. **Builds the provider command** — via `provider.buildPromptCommand()`, which produces the correct CLI call for the member's provider and OS. Max-turns flag is only appended for Claude (the only provider that supports it).
 4. **Appends the resume flag** if `resume=true` and the member has a stored session. Each provider uses its own resume flag.
-5. **Executes via strategy** — `strategy.execCommand(cmd, timeout_ms)`.
+5. **Executes via strategy** — `strategy.execCommand(cmd, timeout_s * 1000)`.
 6. **Parses the response** — via `provider.parseResponse()`. Handles Codex NDJSON transparently; extracts text and session info from all providers.
 7. **Handles stale sessions** — if the command fails and a resume was attempted, retries without resume (starts a fresh session).
 8. **Updates registry** — stores the new `sessionId` (Claude only) and `lastUsed` timestamp.
@@ -100,7 +100,7 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 |------|------|----------|-------------|
 | `member_id` | string | yes | UUID of the target member |
 | `command` | string | yes | The shell command to execute |
-| `timeout_ms` | number | no | Default: 120000 (2 minutes). Max time to wait for the command to finish |
+| `timeout_s` | number | no | Default: 120 (2 minutes). Max time to wait for the command to finish |
 | `run_from` | string | no | Override directory to run from. Defaults to member's registered work folder — rarely needed. |
 
 **What it does:**

@@ -329,7 +329,7 @@ describe('getOnboardingNudge', () => {
 
     getOnboardingNudge('register_member', { member_type: 'local' }, '✅ Member registered.'); // first — consumes milestone
     const second = getOnboardingNudge('register_member', { member_type: 'local' }, '✅ Member registered.');
-    // second call: firstMemberRegistered is set, multiMemberNudgeShown not set but only 1 agent → null
+    // second call: firstMemberRegistered is set, multiMemberNudgeShown not set but only 1 member → null
     expect(second).toBeNull();
   });
 
@@ -337,7 +337,7 @@ describe('getOnboardingNudge', () => {
     const { loadOnboardingState, getOnboardingNudge } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
-    // First registration — only 1 agent in registry
+    // First registration — only 1 member in registry
     writeRegistry([{ id: '1', friendlyName: 'alpha', agentType: 'local', workFolder: '/tmp/a', createdAt: new Date().toISOString() }]);
     getOnboardingNudge('register_member', { member_type: 'local' }, '✅ Member registered.'); // advances firstMemberRegistered
 
@@ -585,7 +585,7 @@ describe('getWelcomeBackPreamble', () => {
     expect(result).toContain('2h ago');
   });
 
-  it('shows "unknown" lastActive when agent has a malformed lastUsed (NaN guard)', async () => {
+  it('shows "unknown" lastActive when member has a malformed lastUsed (NaN guard)', async () => {
     const { loadOnboardingState, getWelcomeBackPreamble, _resetForTest } = await import('../src/services/onboarding.js');
     fs.writeFileSync(ONBOARDING_PATH, JSON.stringify({ bannerShown: true, firstMemberRegistered: true, firstPromptExecuted: false, multiMemberNudgeShown: false }), { mode: 0o600 });
     _resetForTest();

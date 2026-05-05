@@ -326,18 +326,36 @@ describe('GeminiProvider', () => {
     expect(p.supportsApiKey()).toBe(true);
   });
 
-  it('composePermissionConfig suppresses fleet-mcp via mcp.excluded for doer (#151)', () => {
+  it('composePermissionConfig disables all MCP servers via mcpServers: {} for doer (#219)', () => {
     const [settings] = p.composePermissionConfig('doer') as [Record<string, unknown>];
-    const mcp = settings.mcp as Record<string, unknown>;
-    expect(Array.isArray(mcp?.excluded)).toBe(true);
-    expect((mcp.excluded as string[]).includes('apra-fleet')).toBe(true);
+    const mcpServers = settings.mcpServers as Record<string, unknown>;
+    expect(mcpServers).toEqual({});
   });
 
-  it('composePermissionConfig suppresses fleet-mcp via mcp.excluded for reviewer (#151)', () => {
+  it('composePermissionConfig disables all MCP servers via mcpServers: {} for reviewer (#219)', () => {
     const [settings] = p.composePermissionConfig('reviewer') as [Record<string, unknown>];
-    const mcp = settings.mcp as Record<string, unknown>;
-    expect(Array.isArray(mcp?.excluded)).toBe(true);
-    expect((mcp.excluded as string[]).includes('apra-fleet')).toBe(true);
+    const mcpServers = settings.mcpServers as Record<string, unknown>;
+    expect(mcpServers).toEqual({});
+  });
+
+  // Task T5: Gemini MCP exclusion tests
+  it('buildPromptCommand includes --allowed-mcp-server-names to prevent fleet MCP loading (T5)', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS });
+    expect(cmd).toContain('--allowed-mcp-server-names');
+  });
+
+  it('fleet TOML does not reference apra-fleet in the allow list (T5)', () => {
+    const [, toml] = p.composePermissionConfig('doer', ['Read(*)', 'Write(*)']) as [Record<string, unknown>, string];
+    expect(typeof toml).toBe('string');
+    expect(toml).not.toContain('apra-fleet');
+    expect(toml).toContain('[policy]');
+    expect(toml).toContain('Read(*)');
+  });
+
+  it('fleet TOML does not reference apra-fleet in reviewer allow list (T5)', () => {
+    const [, toml] = p.composePermissionConfig('reviewer', ['Read(*)']) as [Record<string, unknown>, string];
+    expect(toml).not.toContain('apra-fleet');
+    expect(toml).toContain('[policy]');
   });
 });
 
@@ -490,7 +508,7 @@ describe('CopilotProvider', () => {
   });
 
   it('logs warning for unattended=auto (not supported)', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'auto' });
     expect(cmd).not.toContain('--allow-all-tools');
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Copilot'));
@@ -498,7 +516,7 @@ describe('CopilotProvider', () => {
   });
 
   it('logs warning for unattended=dangerous (not supported)', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: 'dangerous' });
     expect(cmd).not.toContain('--allow-all-tools');
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('not supported for Copilot'));
@@ -657,8 +675,8 @@ describe('buildResumeFlag', () => {
 // ─── Backwards compatibility ──────────────────────────────────────────────────
 
 describe('backwards compatibility', () => {
-  it('agent without llmProvider uses ClaudeProvider', () => {
-    // Simulate what code does: agent.llmProvider ?? 'claude'
+  it('member without llmProvider uses ClaudeProvider', () => {
+    // Simulate what code does: member.llmProvider ?? 'claude'
     const agentLlmProvider = undefined;
     const provider = getProvider(agentLlmProvider ?? 'claude');
     expect(provider.name).toBe('claude');

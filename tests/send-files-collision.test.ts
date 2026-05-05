@@ -14,7 +14,7 @@ vi.mock('../src/services/strategy.js', () => ({
 }));
 
 vi.mock('../src/services/cloud/lifecycle.js', () => ({
-  ensureCloudReady: (agent: any) => Promise.resolve(agent),
+  ensureCloudReady: (member: any) => Promise.resolve(member),
 }));
 
 vi.mock('../src/services/statusline.js', () => ({
@@ -34,11 +34,11 @@ describe('sendFiles - basename collision detection', () => {
   afterEach(() => restoreRegistry());
 
   it('blocks transfer when two files share a basename', async () => {
-    const agent = makeTestAgent({ friendlyName: 'test-member' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'test-member' });
+    addAgent(member);
 
     const result = await sendFiles({
-      member_id: agent.id,
+      member_id: member.id,
       local_paths: ['/a/dir/report.txt', '/b/dir/report.txt'],
     });
 
@@ -48,11 +48,11 @@ describe('sendFiles - basename collision detection', () => {
   });
 
   it('blocks when three files have two sharing a basename', async () => {
-    const agent = makeTestAgent({ friendlyName: 'test-member' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'test-member' });
+    addAgent(member);
 
     const result = await sendFiles({
-      member_id: agent.id,
+      member_id: member.id,
       local_paths: ['/a/log.txt', '/b/unique.txt', '/c/log.txt'],
     });
 
@@ -62,12 +62,12 @@ describe('sendFiles - basename collision detection', () => {
   });
 
   it('allows transfer when all basenames are unique', async () => {
-    const agent = makeTestAgent({ friendlyName: 'test-member' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'test-member' });
+    addAgent(member);
     mockTransferFiles.mockResolvedValue({ success: ['a.txt', 'b.txt'], failed: [] });
 
     const result = await sendFiles({
-      member_id: agent.id,
+      member_id: member.id,
       local_paths: ['/a/a.txt', '/b/b.txt'],
     });
 
@@ -76,12 +76,12 @@ describe('sendFiles - basename collision detection', () => {
   });
 
   it('allows single file transfer without collision check issues', async () => {
-    const agent = makeTestAgent({ friendlyName: 'test-member' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'test-member' });
+    addAgent(member);
     mockTransferFiles.mockResolvedValue({ success: ['only.txt'], failed: [] });
 
     const result = await sendFiles({
-      member_id: agent.id,
+      member_id: member.id,
       local_paths: ['/some/path/only.txt'],
     });
 

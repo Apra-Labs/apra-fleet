@@ -29,6 +29,23 @@ export function isContainedInWorkFolder(workFolder: string, remotePath: string):
   return resolved === normWorkFolder || resolved.startsWith(`${normWorkFolder}/`);
 }
 
+/**
+ * Resolves a remote path relative to a work folder, handling Windows drive-letter paths
+ * that path.posix.resolve incorrectly treats as relative (since they don't start with '/').
+ */
+export function resolveRemotePath(workFolder: string, subPath: string): string {
+  const normWorkFolder = workFolder.replace(/\\/g, '/').replace(/\/$/, '');
+  const normSubPath = subPath.replace(/\\/g, '/');
+  const isWindowsWorkFolder = /^[A-Za-z]:/.test(normWorkFolder);
+
+  if (isWindowsWorkFolder) {
+    const isAbsolute = /^[A-Za-z]:/.test(normSubPath) || normSubPath.startsWith('/');
+    return isAbsolute ? normSubPath : `${normWorkFolder}/${normSubPath}`;
+  } else {
+    return path.posix.resolve(normWorkFolder, normSubPath);
+  }
+}
+
 export function detectOS(unameOutput: string, verOutput: string): RemoteOS {
   if (verOutput.toLowerCase().includes('windows') || verOutput.toLowerCase().includes('microsoft')) {
     return 'windows';

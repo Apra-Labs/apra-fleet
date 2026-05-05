@@ -4,7 +4,7 @@
  * Covers:
  * - execute-prompt with each provider (Claude, Gemini, Codex, Copilot)
  * - provision-auth API key flow for each provider
- * - update-agent-cli with each provider
+ * - update-member-cli with each provider
  * - mixed fleet: Claude + Gemini member in same test
  * - fleetProcessCheck uses correct processName per provider
  */
@@ -53,15 +53,15 @@ describe('executePrompt — provider routing', () => {
   });
 
   it('routes Claude member through claude CLI and parses JSON response', async () => {
-    const agent = makeTestAgent({ friendlyName: 'claude-agent', llmProvider: 'claude' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'claude-member', llmProvider: 'claude' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'claude response', session_id: 'sess-c' }),
       stderr: '',
       code: 0,
     });
 
-    const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
     expect(result).toContain('claude response');
     expect(result).toContain('sess-c');
 
@@ -72,15 +72,15 @@ describe('executePrompt — provider routing', () => {
   });
 
   it('routes Gemini member through gemini CLI and parses response', async () => {
-    const agent = makeTestAgent({ friendlyName: 'gemini-agent', llmProvider: 'gemini' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'gemini-member', llmProvider: 'gemini' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ response: 'gemini response' }),
       stderr: '',
       code: 0,
     });
 
-    const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
     expect(result).toContain('gemini response');
 
     // calls[0] = writePromptFile, calls[1] = main prompt command
@@ -89,8 +89,8 @@ describe('executePrompt — provider routing', () => {
   });
 
   it('routes Codex member through codex CLI', async () => {
-    const agent = makeTestAgent({ friendlyName: 'codex-agent', llmProvider: 'codex' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'codex-member', llmProvider: 'codex' });
+    addAgent(member);
     // Codex returns NDJSON — last line has the result
     const ndjson = [
       JSON.stringify({ type: 'start' }),
@@ -99,7 +99,7 @@ describe('executePrompt — provider routing', () => {
     ].join('\n');
     mockExecCommand.mockResolvedValue({ stdout: ndjson, stderr: '', code: 0 });
 
-    const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
     expect(result).toBeDefined();
 
     // calls[0] = writePromptFile, calls[1] = main prompt command
@@ -108,15 +108,15 @@ describe('executePrompt — provider routing', () => {
   });
 
   it('routes Copilot member through copilot CLI', async () => {
-    const agent = makeTestAgent({ friendlyName: 'copilot-agent', llmProvider: 'copilot' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'copilot-member', llmProvider: 'copilot' });
+    addAgent(member);
     mockExecCommand.mockResolvedValue({
       stdout: JSON.stringify({ result: 'copilot response' }),
       stderr: '',
       code: 0,
     });
 
-    const result = await executePrompt({ member_id: agent.id, prompt: 'hi', resume: false, timeout_ms: 5000 });
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
     expect(result).toBeDefined();
 
     // calls[0] = writePromptFile, calls[1] = main prompt command
@@ -136,7 +136,7 @@ describe('executePrompt — provider routing', () => {
       code: 0,
     });
 
-    await executePrompt({ member_id: claudeAgent.id, prompt: 'hello', resume: false, timeout_ms: 5000 });
+    await executePrompt({ member_id: claudeAgent.id, prompt: 'hello', resume: false, timeout_s: 5 });
     // calls[0] = writePromptFile, calls[1] = main prompt command
     const claudeCmd = mockExecCommand.mock.calls[1][0] as string;
     expect(claudeCmd).toContain('claude');
@@ -144,7 +144,7 @@ describe('executePrompt — provider routing', () => {
 
     mockExecCommand.mockClear();
 
-    await executePrompt({ member_id: geminiAgent.id, prompt: 'hello', resume: false, timeout_ms: 5000 });
+    await executePrompt({ member_id: geminiAgent.id, prompt: 'hello', resume: false, timeout_s: 5 });
     // calls[0] = writePromptFile, calls[1] = main prompt command
     const geminiCmd = mockExecCommand.mock.calls[1][0] as string;
     expect(geminiCmd).toContain('gemini');
@@ -170,13 +170,13 @@ describe('provisionAuth — API key per provider', () => {
 
   for (const llmProvider of providerNames) {
     it(`provisions ${llmProvider} API key using correct env var`, async () => {
-      const agent = makeTestAgent({ friendlyName: `${llmProvider}-member`, llmProvider });
-      addAgent(agent);
+      const member = makeTestAgent({ friendlyName: `${llmProvider}-member`, llmProvider });
+      addAgent(member);
       mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
       const provider = providers.getProvider(llmProvider);
-      const result = await provisionAuth({ member_id: agent.id, api_key: 'test-key-12345' });
+      const result = await provisionAuth({ member_id: member.id, api_key: 'test-key-12345' });
 
       expect(result).toContain('API key provisioned');
 
@@ -189,12 +189,12 @@ describe('provisionAuth — API key per provider', () => {
     const geminiProvider = providers.getProvider('gemini');
     const spy = vi.spyOn(geminiProvider, 'oauthCredentialFiles').mockReturnValue(null);
 
-    const agent = makeTestAgent({ friendlyName: 'gemini-oauth', llmProvider: 'gemini' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'gemini-oauth', llmProvider: 'gemini' });
+    addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockCollectOobApiKey.mockResolvedValue({ fallback: '🔐 Could not open terminal. Run manually.' });
 
-    const result = await provisionAuth({ member_id: agent.id });
+    const result = await provisionAuth({ member_id: member.id });
     expect(mockCollectOobApiKey).toHaveBeenCalledWith('gemini-oauth', 'provision_llm_auth', expect.objectContaining({ prompt: expect.stringContaining('gemini') }));
     expect(result).toContain('Could not open terminal');
 
@@ -203,7 +203,7 @@ describe('provisionAuth — API key per provider', () => {
 });
 
 // ---------------------------------------------------------------------------
-// update-agent-cli: uses provider install/update commands
+// update-member-cli: uses provider install/update commands
 // ---------------------------------------------------------------------------
 
 describe('updateAgentCli — provider install/update', () => {
@@ -217,14 +217,14 @@ describe('updateAgentCli — provider install/update', () => {
   });
 
   it('uses gemini version command when member is gemini provider', async () => {
-    const agent = makeTestAgent({ friendlyName: 'gemini-member', llmProvider: 'gemini' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'gemini-member', llmProvider: 'gemini' });
+    addAgent(member);
     mockExecCommand
       .mockResolvedValueOnce({ stdout: 'gemini 1.0.0', stderr: '', code: 0 })  // version before
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })               // update
       .mockResolvedValueOnce({ stdout: 'gemini 1.1.0', stderr: '', code: 0 }); // version after
 
-    const result = await updateAgentCli({ member_id: agent.id });
+    const result = await updateAgentCli({ member_id: member.id });
     expect(result).toContain('gemini-member');
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
@@ -232,14 +232,14 @@ describe('updateAgentCli — provider install/update', () => {
   });
 
   it('defaults to claude when llmProvider is undefined', async () => {
-    const agent = makeTestAgent({ friendlyName: 'default-member' });
-    addAgent(agent);
+    const member = makeTestAgent({ friendlyName: 'default-member' });
+    addAgent(member);
     mockExecCommand
       .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', code: 0 })
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
       .mockResolvedValueOnce({ stdout: 'claude 1.1.0', stderr: '', code: 0 });
 
-    await updateAgentCli({ member_id: agent.id });
+    await updateAgentCli({ member_id: member.id });
 
     const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     expect(cmds.some(c => c.includes('claude'))).toBe(true);

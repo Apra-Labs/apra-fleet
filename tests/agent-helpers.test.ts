@@ -10,18 +10,18 @@ beforeEach(() => backupAndResetRegistry());
 afterEach(() => restoreRegistry());
 
 describe('getAgentOrFail', () => {
-  it('returns agent when found by UUID', () => {
-    const agent = makeAgent({ id: 'found-agent', friendlyName: 'my-agent' });
-    addAgent(agent);
+  it('returns member when found by UUID', () => {
+    const member = makeAgent({ id: 'found-member', friendlyName: 'my-member' });
+    addAgent(member);
 
-    const found = getAgentOrFail('found-agent');
+    const found = getAgentOrFail('found-member');
     expect(typeof found).not.toBe('string');
-    expect((found as Agent).friendlyName).toBe('my-agent');
+    expect((found as Agent).friendlyName).toBe('my-member');
   });
 
-  it('returns agent when found by friendly name', () => {
-    const agent = makeAgent({ id: 'uuid-123', friendlyName: 'focus-dev1' });
-    addAgent(agent);
+  it('returns member when found by friendly name', () => {
+    const member = makeAgent({ id: 'uuid-123', friendlyName: 'focus-dev1' });
+    addAgent(member);
 
     const found = getAgentOrFail('focus-dev1');
     expect(typeof found).not.toBe('string');
@@ -43,8 +43,8 @@ describe('getAgentOS', () => {
 
 describe('touchAgent', () => {
   it('updates lastUsed timestamp', () => {
-    const agent = makeAgent({ id: 'touch-test' });
-    addAgent(agent);
+    const member = makeAgent({ id: 'touch-test' });
+    addAgent(member);
 
     touchAgent('touch-test');
     expect(getAgent('touch-test')!.lastUsed).toBeDefined();
@@ -64,20 +64,20 @@ describe('touchAgent', () => {
 
 describe('checkVcsTokenExpiry', () => {
   it('returns null when no expiry is tracked', () => {
-    const agent = makeAgent({});
-    expect(checkVcsTokenExpiry(agent)).toBeNull();
+    const member = makeAgent({});
+    expect(checkVcsTokenExpiry(member)).toBeNull();
   });
 
   it('returns null when token is not near expiry', () => {
     const now = new Date('2026-03-24T10:00:00Z');
-    const agent = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
-    expect(checkVcsTokenExpiry(agent, now)).toBeNull();
+    const member = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
+    expect(checkVcsTokenExpiry(member, now)).toBeNull();
   });
 
   it('returns warning when token expires within 10 minutes', () => {
     const now = new Date('2026-03-24T10:55:00Z');
-    const agent = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
-    const result = checkVcsTokenExpiry(agent, now);
+    const member = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
+    const result = checkVcsTokenExpiry(member, now);
     expect(result).toContain('⚠️');
     expect(result).toContain('5 minute');
     expect(result).toContain('consider refreshing');
@@ -85,8 +85,8 @@ describe('checkVcsTokenExpiry', () => {
 
   it('returns warning when token is expired', () => {
     const now = new Date('2026-03-24T12:00:00Z');
-    const agent = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
-    const result = checkVcsTokenExpiry(agent, now);
+    const member = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
+    const result = checkVcsTokenExpiry(member, now);
     expect(result).toContain('⚠️');
     expect(result).toContain('expired');
     expect(result).toContain('re-run provision_vcs_auth');
@@ -94,15 +94,15 @@ describe('checkVcsTokenExpiry', () => {
 
   it('uses singular "minute" for 1 minute remaining', () => {
     const now = new Date('2026-03-24T10:59:30Z');
-    const agent = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
-    const result = checkVcsTokenExpiry(agent, now);
+    const member = makeAgent({ vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
+    const result = checkVcsTokenExpiry(member, now);
     expect(result).toContain('1 minute');
     expect(result).not.toContain('1 minutes');
   });
 });
 
 describe('PID store helpers', () => {
-  const id = 'pid-test-agent';
+  const id = 'pid-test-member';
 
   afterEach(() => clearStoredPid(id));
 
@@ -128,6 +128,6 @@ describe('PID store helpers', () => {
   });
 
   it('clearStoredPid is a no-op when no PID exists', () => {
-    expect(() => clearStoredPid('nonexistent-agent')).not.toThrow();
+    expect(() => clearStoredPid('nonexistent-member')).not.toThrow();
   });
 });
