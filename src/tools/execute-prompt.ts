@@ -12,6 +12,7 @@ import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
+import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -119,6 +120,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
   }
   inFlightAgents.add(agent.id);
+  const stallDetector = getStallDetector();
+  stallDetector.add(agent.id, {
+    sessionId: null,
+    logFilePath: null,
+    lastActivityAt: Date.now(),
+    consecutiveIdleCycles: 0,
+    consecutiveReadFailures: 0,
+    memberId: agent.id,
+    memberName: agent.friendlyName,
+    provisional: true,
+  });
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
   const resolvedWorkFolder = resolveTilde(agent.workFolder);
@@ -214,6 +226,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
     // Update session ID and last used
     touchAgent(agent.id, parsed.sessionId);
+    if (parsed.sessionId) {
+      stallDetector.update(agent.id, {
+        sessionId: parsed.sessionId,
+        logFilePath: resolveSessionLogPath(agent.llmProvider ?? 'claude', parsed.sessionId, agent.workFolder),
+        provisional: false,
+      });
+    }
     clearStoredPid(agent.id);
 
     if (parsed.usage) {
@@ -250,6 +269,7 @@ session: ${parsed.sessionId}`;
     // Explicitly set idle (or offline for connection failures) — never rely on persisted busy state clearing itself
     writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
     inFlightAgents.delete(agent.id);
+    stallDetector.remove(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }
 }
