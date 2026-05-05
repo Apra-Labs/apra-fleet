@@ -64,9 +64,13 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
-} else {
+} else if (arg === undefined || arg === '--stdio') {
   // Default: start MCP server
   startServer();
+} else {
+  console.error(`Error: unknown option '${arg}'`);
+  console.error(`\nRun 'apra-fleet --help' for usage.`);
+  process.exit(1);
 }
 
 async function startServer() {
