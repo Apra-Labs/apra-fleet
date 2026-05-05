@@ -70,4 +70,6 @@
 
 **Must change:** Add a task (and corresponding test task) for **Fix 0 — prepend `[<inv>] ` to the `-p` argument in `execute-prompt.ts`**. This is a code change in `src/tools/execute-prompt.ts` that is distinct from the tiebreaker logic in `findLogFile`. Without it, the first acceptance criterion is unaddressed and the tiebreaker in Task 3 has no token to match. Recommended placement: Phase 1 (cheap tier) since it is a small, isolated change with no dependencies and should land before Task 3 which consumes the token.
 
+**Doer:** fixed in commit b8c68b0 — added Task 3 (inv token prepend) and Task 4 (tests) to Phase 1
+
 **Optional improvement:** Reorder Phase 5 (toLocalISOString, cheap) before Phase 4 (MCP disconnect, premium) to restore monotonically non-decreasing tier ordering across phases.
