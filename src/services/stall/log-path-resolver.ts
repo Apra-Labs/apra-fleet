@@ -10,13 +10,13 @@ export function resolveSessionLogDir(
   const home = homeDir ?? homedir();
 
   if (provider === 'claude') {
-    const projectPathEncoded = workFolder.replace(/\//g, '%2F').replace(/\\/g, '%5C');
+    const projectPathEncoded = workFolder.replace(/[\/\\:]/g, '-');
     return join(home, '.claude', 'projects', projectPathEncoded);
   }
 
   if (provider === 'gemini') {
     const projectName = basename(workFolder) || 'project';
-    return join(home, '.gemini', 'tmp', projectName);
+    return join(home, '.gemini', 'tmp', projectName, 'chats');
   }
 
   return null;
@@ -32,16 +32,14 @@ export function resolveSessionLogPath(
 
   if (provider === 'claude') {
     // Claude: ~/.claude/projects/<project-path-encoded>/<sessionId>.jsonl
-    // TODO: Verify exact encoding scheme for project path (currently: replace / and \ with %2F and %5C)
-    const projectPathEncoded = workFolder.replace(/\//g, '%2F').replace(/\\/g, '%5C');
+    const projectPathEncoded = workFolder.replace(/[\/\\:]/g, '-');
     return join(home, '.claude', 'projects', projectPathEncoded, `${sessionId}.jsonl`);
   }
 
   if (provider === 'gemini') {
-    // Gemini: ~/.gemini/tmp/<project>/<sessionId>.jsonl
-    // TODO: Verify exact Gemini path structure on live system
+    // Gemini: ~/.gemini/tmp/<project>/chats/<sessionId>.jsonl
     const projectName = workFolder.split(/[\\/]/).pop() ?? 'project';
-    return join(home, '.gemini', 'tmp', projectName, `${sessionId}.jsonl`);
+    return join(home, '.gemini', 'tmp', projectName, 'chats', `${sessionId}.jsonl`);
   }
 
   throw new Error(`Unknown LLM provider: ${provider}`);

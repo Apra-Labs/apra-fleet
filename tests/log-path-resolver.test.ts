@@ -10,8 +10,8 @@ describe('resolveSessionLogPath', () => {
       '/home/user/project',
       '/home/user'
     );
-    // Project path /home/user/project should be encoded: /home/user%2Fproject
-    const expected = join('/home/user', '.claude', 'projects', '%2Fhome%2Fuser%2Fproject', 'session-123-abc.jsonl');
+    // Project path /home/user/project should be encoded with dashes: -home-user-project
+    const expected = join('/home/user', '.claude', 'projects', '-home-user-project', 'session-123-abc.jsonl');
     expect(result).toBe(expected);
   });
 
@@ -22,8 +22,8 @@ describe('resolveSessionLogPath', () => {
       'C:\\Users\\test\\workspace',
       'C:\\Users\\test'
     );
-    // Windows path should be encoded: C:%5CUsers%5Ctest%5Cworkspace
-    const expected = join('C:\\Users\\test', '.claude', 'projects', 'C:%5CUsers%5Ctest%5Cworkspace', 'session-456-def.jsonl');
+    // Windows path should be encoded with dashes: C--Users-test-workspace
+    const expected = join('C:\\Users\\test', '.claude', 'projects', 'C--Users-test-workspace', 'session-456-def.jsonl');
     expect(result).toBe(expected);
   });
 
@@ -34,8 +34,8 @@ describe('resolveSessionLogPath', () => {
       '/home/user/my-project',
       '/home/user'
     );
-    // Gemini uses last path component as project name
-    const expected = join('/home/user', '.gemini', 'tmp', 'my-project', 'session-789-ghi.jsonl');
+    // Gemini uses last path component as project name and includes chats subdirectory
+    const expected = join('/home/user', '.gemini', 'tmp', 'my-project', 'chats', 'session-789-ghi.jsonl');
     expect(result).toBe(expected);
   });
 
@@ -46,8 +46,8 @@ describe('resolveSessionLogPath', () => {
       'C:\\Users\\test\\workspace',
       'C:\\Users\\test'
     );
-    // Extract project name from last path component
-    const expected = join('C:\\Users\\test', '.gemini', 'tmp', 'workspace', 'session-xyz-123.jsonl');
+    // Extract project name from last path component and include chats subdirectory
+    const expected = join('C:\\Users\\test', '.gemini', 'tmp', 'workspace', 'chats', 'session-xyz-123.jsonl');
     expect(result).toBe(expected);
   });
 

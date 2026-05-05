@@ -1,0 +1,24 @@
+{
+  "project": "apra-fleet-241",
+  "branch": "feat/stall-detector",
+  "lastUpdated": "2026-05-05",
+  "tasks": [
+    { "id": "T1",  "title": "Fix path encoding and Gemini log directory",          "phase": 1, "tier": "cheap",    "status": "pending", "notes": "" },
+    { "id": "T2",  "title": "Unit tests for path encoding and log directory",       "phase": 1, "tier": "cheap",    "status": "pending", "notes": "" },
+    { "id": "T3",  "title": "Prepend [inv] token to -p argument in execute-prompt.ts", "phase": 1, "tier": "cheap", "status": "pending", "notes": "" },
+    { "id": "T4",  "title": "Unit tests for inv token prepend",                     "phase": 1, "tier": "cheap",    "status": "pending", "notes": "" },
+    { "id": "V1",  "title": "VERIFY: Phase 1 — Path Encoding & Log Directory",      "phase": 1, "tier": "cheap",    "status": "pending", "type": "verify", "notes": "" },
+    { "id": "T5",  "title": "Implement findLogFile with mtime filter",              "phase": 2, "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T6",  "title": "Unit tests for findLogFile",                           "phase": 2, "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "V2",  "title": "VERIFY: Phase 2 — Log File Discovery",                 "phase": 2, "tier": "standard", "status": "pending", "type": "verify", "notes": "" },
+    { "id": "T7",  "title": "Implement polling loop",                               "phase": 3, "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T8",  "title": "Unit tests for polling and timestamp extraction",      "phase": 3, "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "V3",  "title": "VERIFY: Phase 3 — Activity Polling",                   "phase": 3, "tier": "standard", "status": "pending", "type": "verify", "notes": "" },
+    { "id": "T9",  "title": "Inject AbortSignal into execCommand",                 "phase": 4, "tier": "premium",  "status": "pending", "notes": "" },
+    { "id": "T10", "title": "Unit tests for disconnect cleanup",                    "phase": 4, "tier": "premium",  "status": "pending", "notes": "" },
+    { "id": "V4",  "title": "VERIFY: Phase 4 — MCP Disconnect Fix",                 "phase": 4, "tier": "premium",  "status": "pending", "type": "verify", "notes": "" },
+    { "id": "T11", "title": "Fix toLocalISOString",                                 "phase": 5, "tier": "cheap",    "status": "pending", "notes": "" },
+    { "id": "T12", "title": "Unit tests for toLocalISOString",                      "phase": 5, "tier": "cheap",    "status": "pending", "notes": "" },
+    { "id": "V5",  "title": "VERIFY: Phase 5 — toLocalISOString Fix",               "phase": 5, "tier": "cheap",    "status": "pending", "type": "verify", "notes": "" }
+  ]
+}
