@@ -14,7 +14,7 @@ import { execCommand as sshExecCommand, testConnection as sshTestConnection, clo
 import { uploadFiles, downloadFiles } from './file-transfer.js';
 
 export interface AgentStrategy {
-  execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void): Promise<SSHExecResult>;
+  execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
@@ -26,8 +26,8 @@ export interface AgentStrategy {
 class RemoteStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void): Promise<SSHExecResult> {
-    return sshExecCommand(this.agent, command, timeoutMs, maxTotalMs, onPidCaptured);
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult> {
+    return sshExecCommand(this.agent, command, timeoutMs, maxTotalMs, onPidCaptured, abortSignal);
   }
 
   async transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult> {
@@ -67,7 +67,7 @@ class RemoteStrategy implements AgentStrategy {
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
-  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void): Promise<SSHExecResult> {
+  async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult> {
     let pidExtracted = false;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
       const cmds = getOsCommands(getAgentOS(this.agent));
@@ -174,6 +174,15 @@ class LocalStrategy implements AgentStrategy {
       });
 
       child.stdin?.end();
+
+      if (abortSignal) {
+        const onAbort = () => {
+          child.kill('SIGKILL');
+          settle(() => reject(new Error('Command aborted by client')));
+        };
+        if (abortSignal.aborted) onAbort();
+        else abortSignal.addEventListener('abort', onAbort, { once: true });
+      }
     });
     return result;
   }

@@ -218,7 +218,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
   let _epOffline = false;
   try {
-    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured);
+    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
 
@@ -227,7 +227,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       scope.info(`[${resolvedModel}] retrying — stale session`);
       await tryKillPid(agent, strategy, cmds);
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
       parsed = provider.parseResponse(result);
       if (parsed.usage) _epUsage = parsed.usage;
     }
@@ -238,7 +238,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       await tryKillPid(agent, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
       parsed = provider.parseResponse(result);
       if (parsed.usage) _epUsage = parsed.usage;
     }

@@ -126,7 +126,8 @@ export async function execCommand(
   command: string,
   timeoutMs: number = 30000,
   maxTotalMs?: number,
-  onPidCaptured?: (pid: number) => void
+  onPidCaptured?: (pid: number) => void,
+  abortSignal?: AbortSignal,
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
   resetIdleTimer(poolKey(agent));
@@ -240,6 +241,15 @@ export async function execCommand(
         if (stderrSpillStream) stderrSpillStream.end();
         settle(() => reject(err));
       });
+
+      if (abortSignal) {
+        const onAbort = () => {
+          try { stream.close(); } catch { /* best-effort */ }
+          settle(() => reject(new Error('Command aborted by client')));
+        };
+        if (abortSignal.aborted) onAbort();
+        else abortSignal.addEventListener('abort', onAbort, { once: true });
+      }
     });
   });
 }
