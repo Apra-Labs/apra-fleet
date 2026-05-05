@@ -1,0 +1,6 @@
+test(pm): fix regression in PM commands caused by over-compression
+
+- Fix typography/escape corruption in skill files (form feeds, carriage returns, missing characters, secure placeholders).
+- Restore operational nuances for /pm plan, /pm status and /fleet onboard to fix regression test failures.
+
+Refs #204, Task T6

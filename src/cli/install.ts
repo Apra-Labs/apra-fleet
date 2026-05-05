@@ -1,89 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
-import { parse, stringify } from 'smol-toml';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-
-const home = os.homedir();
-const FLEET_BASE = path.join(home, '.apra-fleet');
-const BIN_DIR = path.join(FLEET_BASE, 'bin');
-const HOOKS_DIR = path.join(FLEET_BASE, 'hooks');
-const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
-// NOTE: install NEVER writes to the data directory (~/.apra-fleet/data/).
-// Registry (registry.json) and onboarding state (onboarding.json) live there and
-// must not be touched by reinstalls or upgrades — see onboarding.ts upgrade detection.
-
-interface ProviderInstallConfig {
-  configDir: string;
-  settingsFile: string;
-  skillsDir: string;
-  fleetSkillsDir: string;
-  name: string;
-}
-
-function readConfig(paths: ProviderInstallConfig): any {
-  if (!fs.existsSync(paths.settingsFile)) return {};
-  const content = fs.readFileSync(paths.settingsFile, 'utf-8');
-  if (paths.settingsFile.endsWith('.toml')) {
-    return parse(content);
-  }
-  try {
-    return JSON.parse(content);
-  } catch {
-    return {};
-  }
-}
-
-function writeConfig(paths: ProviderInstallConfig, config: any): void {
-  fs.mkdirSync(paths.configDir, { recursive: true });
-  let content = '';
-  if (paths.settingsFile.endsWith('.toml')) {
-    content = stringify(config);
-  } else {
-    content = JSON.stringify(config, null, 2) + '\n';
-  }
-  fs.writeFileSync(paths.settingsFile, content);
-}
-
-function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
-  switch (provider) {
-    case 'gemini':
-      return {
-        configDir: path.join(home, '.gemini'),
-        settingsFile: path.join(home, '.gemini', 'settings.json'),
-        skillsDir: path.join(home, '.gemini', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.gemini', 'skills', 'fleet'),
-        name: 'Gemini',
-      };
-    case 'codex':
-      return {
-        configDir: path.join(home, '.codex'),
-        settingsFile: path.join(home, '.codex', 'config.toml'),
-        skillsDir: path.join(home, '.codex', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.codex', 'skills', 'fleet'),
-        name: 'Codex',
-      };
-    case 'copilot':
-      return {
-        configDir: path.join(home, '.copilot'),
-        settingsFile: path.join(home, '.copilot', 'settings.json'),
-        skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
-        name: 'Copilot',
-      };
-    case 'claude':
-    default:
-      return {
-        configDir: path.join(home, '.claude'),
-        settingsFile: path.join(home, '.claude', 'settings.json'),
-        skillsDir: path.join(home, '.claude', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.claude', 'skills', 'fleet'),
-        name: 'Claude',
-      };
-  }
-}
+import {
+  BIN_DIR,
+  HOOKS_DIR,
+  SCRIPTS_DIR,
+  getProviderInstallConfig,
+  readConfig,
+  writeConfig,
+  writeInstallConfig,
+  ProviderInstallConfig
+} from './config.js';
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -618,11 +547,8 @@ ${killHint}
   // Finalize permissions
   mergePermissions(paths);
 
-  // Write install-config.json
-  const installConfig = { llm, skill: skillMode };
-  const configDir = path.join(FLEET_BASE, 'data');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(path.join(configDir, 'install-config.json'), JSON.stringify(installConfig, null, 2), { mode: 0o600 });
+  // Write install-config.json (merge provider entry)
+  writeInstallConfig(llm, skillMode);
 
   // --- Done ---
   let beadsVersion = 'installed';

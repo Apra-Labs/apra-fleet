@@ -24,6 +24,7 @@ Usage:
   apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
+  apra-fleet uninstall                 Uninstall binary + hooks + MCP + skills
   apra-fleet auth <name>      Provide password for pending registration (auto-launched)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
@@ -35,6 +36,10 @@ if (arg === 'install') {
   import('./cli/install.js')
     .then(m => m.runInstall(process.argv.slice(3)))
     .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'uninstall') {
+  import('./cli/uninstall.js')
+    .then(m => m.runUninstall(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Uninstall failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'auth') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))

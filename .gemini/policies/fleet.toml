@@ -1,4 +1,4 @@
-﻿[policy]
+[policy]
 mode = "auto_edit"
 description = "Fleet doer permissions"
 
@@ -30,4 +30,3 @@ allow = [
   "Bash(tar:*)",
   "Bash(unzip:*)"
 ]
-

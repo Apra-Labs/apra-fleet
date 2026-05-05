@@ -1,7 +1,7 @@
 {
   "tasks": [
-    { "id": "T1", "status": "pending", "tier": "cheap" },
-    { "id": "T2", "status": "pending", "tier": "cheap" },
+    { "id": "T1", "status": "completed", "tier": "cheap", "notes": "Shared config refactored in src/cli/config.ts and used in install.ts." },
+    { "id": "T2", "status": "completed", "tier": "cheap", "notes": "Uninstall command scaffolded in src/cli/uninstall.ts and registered in index.ts." },
     { "id": "V1", "status": "pending", "tier": "cheap" },
     { "id": "T3", "status": "pending", "tier": "standard" },
     { "id": "T4", "status": "pending", "tier": "standard" },
