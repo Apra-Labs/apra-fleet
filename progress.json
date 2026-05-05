@@ -4,7 +4,7 @@
   "base_branch": "main",
   "tasks": [
     { "id": "T1",  "phase": 1, "title": "Collect baseline word counts (WORD_COUNT_BASELINE.md)", "tier": "standard", "status": "completed", "notes": "Collected baseline counts for all 28 files." },
-    { "id": "T2",  "phase": 2, "title": "Compress fleet batch 1: auth-azdevops.md, auth-bitbucket.md, auth-github.md, SKILL.md, onboarding.md", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T2",  "phase": 2, "title": "Compress fleet batch 1: auth-azdevops.md, auth-bitbucket.md, auth-github.md, SKILL.md, onboarding.md", "tier": "standard", "status": "completed", "notes": "before=3718 after=1883 (49% reduction)" },
     { "id": "T3",  "phase": 2, "title": "Compress fleet batch 2: permissions.md, skill-matrix.md, troubleshooting.md", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "T4",  "phase": 3, "title": "Compress PM ops batch 1: SKILL.md, single-pair-sprint.md, multi-pair-sprint.md", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "T5",  "phase": 3, "title": "Compress PM ops batch 2: simple-sprint.md, doer-reviewer.md, cleanup.md", "tier": "standard", "status": "pending", "notes": "" },

@@ -1,87 +1,81 @@
 # Member Onboarding
 
-After `register_member`, run these 8 steps before dispatching any work.
+8 steps after `register_member`.
 
-## Step 1: Setup SSH Key Auth (remote members only)
+## 1: SSH Key (remote only)
 
-Check `member_detail` — if member type is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
+Check `member_detail`. If `remote` + `password`, run `setup_ssh_key`. Skip if local or key-based.
 
-## Step 1.5: Verify CLI Installation
+## 1.5: Verify CLI
 
-Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` with the provider's version command to confirm the agent CLI is installed:
+Check `llmProvider` + `os` via `member_detail`. Run `execute_command` with version flag:
 
-- **Claude:** `claude --version`
-- **Gemini:** `gemini --version`
-- **Codex:** `codex --version`
-- **Copilot:** `copilot --version`
+- Claude: `claude --version`
+- Gemini: `gemini --version`
+- Codex: `codex --version`
+- Copilot: `copilot --version`
 
-If the LLM CLI is not installed or the command fails, use `update_llm_cli` to install it before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
+If fails, run `update_llm_cli`. confirm CLI before prompt dispatch.
 
-## Step 2: Disable AI Attribution
+## 2: Disable Attribution (Claude only)
 
-**Claude only.** Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
+Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in work folder via `execute_command`. Merge if exists. Skip for others.
 
-Gemini, Codex, and Copilot do not support attribution config — skip this step for those providers.
+## 3: Detect VCS
 
-## Step 3: Detect VCS Provider
-
-Run on the member: `git remote -v`
-
+Run `git remote -v`.
 - `github.com` → GitHub
 - `bitbucket.org` → Bitbucket
 - `dev.azure.com` → Azure DevOps
+No remotes? Ask user for provider + repo URL.
 
-No remotes? Ask the user for VCS provider and repo URL.
+## 4: Roles
 
-## Step 4: Determine Roles
+Ask user. Roles: development, code-review, testing, devops, debugging. Can have multiple.
 
-Ask the user. Roles: development, code-review, testing, devops, debugging. A member can have multiple.
+## 5: VCS Auth
 
-## Step 5: Setup VCS Auth
+Verify/provision auth. See `auth-{provider}.md` for scopes. Skip for local members.
 
-Verify auth, provision if needed. See auth-{provider}.md for provider-specific steps and required scopes per role. Skip for local members — they inherit the user's native git credentials.
+## 6: Skills
 
-## Step 6: Check/Install Required Skills
+Check `skill-matrix.md` (project + VCS + roles). Install missing skills.
 
-Look up the member's project + VCS + roles in skill-matrix.md. Install any missing skills.
+## 7: .gitignore
 
-## Step 7: Add Fleet Ephemeral Files to .gitignore
+Run `execute_command → echo '.fleet-task.md' >> .gitignore`. Ephemeral files must not be committed.
 
-Run `execute_command → echo '.fleet-task.md' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
+## 8: Status File
 
-## Step 8: Update Member Status File
-
-Add to the member's status file:
-
+Add to member's status file:
 ```
 ## Member Profile
-- LLM Provider: Gemini
+- Provider: Gemini
 - VCS: Bitbucket (kumaakh/apra-lic-mgr)
 - Roles: development, code-review
-- Auth: Bitbucket API token (verified)
+- Auth: Bitbucket token (verified)
 - Skills: bitbucket-devops (installed)
 ```
 
-## Pre-loading credentials before dispatch
+## Pre-load Credentials
 
-If the task you are about to dispatch requires an API key, token, or password (e.g., calling an external API, pushing to a private registry, authenticating to a third-party service), store it in the credential store **before** dispatching the member.
+If task needs secrets (API keys, tokens), store in credential store **before** dispatch.
 
-**Why:** `execute_prompt` prompts are visible in the LLM conversation. Passing raw secrets there exposes them in logs and chat history. The credential store keeps the plaintext out of the LLM entirely.
+**Why**: `execute_prompt` text is visible. Passing raw secrets exposes them. Credential store keeps plaintext out of LLM.
 
-**Steps:**
-1. Call `credential_store_set` with a descriptive name (e.g., `github_pat`, `npm_token`, `openai_key`) — Fleet opens an OOB terminal prompt for the value
-2. Pass the `sec://NAME` handle in the task prompt — reference by name only (e.g. `"authenticate using credential github_pat"`). The secret value is only injected server-side when `{{secure.NAME}}` appears in an `execute_command` call — never in AI prompt text.
-3. The member uses `{{secure.NAME}}` in `execute_command` — Fleet resolves the value server-side and redacts it from output before the LLM sees it
+**Steps**:
+1. `credential_store_set` with name (e.g., `github_pat`). Fleet opens OOB terminal for value.
+2. Reference by name in prompt (e.g. "use credential github_pat"). Value injected server-side when `{{secure.NAME}}` in `execute_command`.
+3. Member uses `{{secure.NAME}}` in `execute_command`. Fleet resolves server-side, redacts output.
 
-**Example — dispatching a member that needs to push code to GitHub:**
-
+**Example**:
 ```
-# PM stores the token before dispatch
-credential_store_set  name=github_pat
+# PM stores token
+credential_store_set name=github_pat
 
-# PM includes in the task prompt — reference by name only:
-"When pushing code to GitHub, authenticate using credential github_pat."
+# PM includes in task prompt:
+"Pushing to GitHub? use credential github_pat."
 
-# Member uses it in a command transparently
-execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
+# Member uses in command
+execute_command command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
 ```

@@ -1,16 +1,16 @@
-# Azure DevOps Authentication
+# Azure DevOps Auth
 
-Personal Access Tokens (PATs) with configurable scopes and expiration. Auth: empty username, PAT as password.
+Personal Access Tokens (PATs) with scopes + expiration. Auth: empty username, PAT as password.
 
 ## Setup
 
-1. Go to `https://dev.azure.com/{org}/_settings/tokens`
-2. Click "New Token"
-3. Set descriptive name (e.g., "fleet-{name}")
-4. Select required scopes (see below)
-5. Set expiration (recommend: 90 days)
-6. Copy token — shown only once
-7. Provide token and org URL when prompted
+1. Go `https://dev.azure.com/{org}/_settings/tokens`
+2. "New Token"
+3. Name: `fleet-{name}`
+4. Select scopes (see below)
+5. Expiration: 90 days
+6. Copy token (shown once)
+7. Provide token + org URL when prompted
 
 ## Deploy
 
@@ -28,7 +28,7 @@ provision_vcs_auth(member_id, provider: 'azure-devops', org_url: 'https://dev.az
 | devops | Full access, or Code + Build + Release: R&W |
 | debugging | Code: Read |
 
-Union of all roles assigned to the member.
+Union of roles assigned to member.
 
 ## Test
 
@@ -41,32 +41,32 @@ git ls-remote https://dev.azure.com/{org}/{project}/_git/{repo} HEAD
 
 | Symptom | Fix |
 |---------|-----|
-| 401 Unauthorized | Create new PAT and re-deploy |
-| 403 Forbidden | Create PAT with broader scopes |
-| TF400813: Resource not available | Verify org URL matches `https://dev.azure.com/{org}` |
+| 401 Unauthorized | New PAT + re-deploy |
+| 403 Forbidden | PAT with broader scopes |
+| TF400813: Not available | Org URL must match `https://dev.azure.com/{org}` |
 | Clone prompts for password | Re-run `provision_vcs_auth` |
 
-## Storing tokens for reuse
+## Reuse
 
-After provisioning VCS auth, you can store the Azure DevOps PAT in the credential store for direct use in `execute_command` — for example, calling the Azure DevOps REST API or authenticating git operations manually.
+Store PAT in credential store for `execute_command` (REST API or manual git).
 
-**Store an Azure DevOps PAT for reuse:**
+**Store:**
 
 ```
 credential_store_set  name=azdevops_pat
 ```
 
-**Use it in a command on a member:**
+**Use:**
 
 ```
 execute_command  command="curl -sf -u :{{secure.azdevops_pat}} 'https://dev.azure.com/{org}/_apis/projects?api-version=7.1'"
 execute_command  command="git remote set-url origin https://token:{{secure.azdevops_pat}}@dev.azure.com/{org}/{project}/_git/{repo}"
 ```
 
-The token is resolved server-side and redacted in output (`[REDACTED:azdevops_pat]`) — it never appears in the LLM conversation or command logs.
+Token resolves server-side, redacted in output (`[REDACTED:azdevops_pat]`). Never in LLM logs.
 
 ## Notes
 
-- PAT expiration: default 30 days, max 1 year
-- Azure DevOps does not support app-based tokens — PATs are the standard
-- Org URL must be base URL without trailing path
+- Expiration: default 30d, max 1y
+- No app tokens — use PAT
+- Org URL: base URL, no trailing path
