@@ -12,7 +12,7 @@ import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { getStallDetector, resolveSessionLogPath, resolveSessionLogDir } from '../services/stall/index.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -130,6 +130,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberId: agent.id,
     memberName: agent.friendlyName,
     provisional: true,
+    stallReported: false,
   });
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
@@ -177,7 +178,29 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
   
-  const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
+  const onPidCaptured = (pid: number) => {
+    scope.info(`pid=${pid}`);
+    const logDir = resolveSessionLogDir(agent.llmProvider ?? 'claude', agent.workFolder);
+    if (logDir) {
+      try {
+        const watcher = fs.watch(logDir, { persistent: false }, (event: string, filename: string | null) => {
+          if (filename?.endsWith('.jsonl')) {
+            const logPath = path.join(logDir, filename);
+            const sessionId = filename.replace('.jsonl', '');
+            stallDetector.update(agent.id, {
+              sessionId,
+              logFilePath: logPath,
+              provisional: false,
+            });
+            scope.info(`stall log resolved via dir-watch: sessionId=${sessionId}`);
+            watcher.close();
+          }
+        });
+      } catch {
+        // log dir may not exist yet — provisional entry stays until session ends
+      }
+    }
+  };
 
   const abortHandler = () => {
     scope.abort('cancelled by MCP client');

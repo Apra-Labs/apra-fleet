@@ -1,6 +1,26 @@
 import type { LlmProvider } from '../../types.js';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, basename } from 'path';
+
+export function resolveSessionLogDir(
+  provider: LlmProvider,
+  workFolder: string,
+  homeDir?: string
+): string | null {
+  const home = homeDir ?? homedir();
+
+  if (provider === 'claude') {
+    const projectPathEncoded = workFolder.replace(/\//g, '%2F').replace(/\\/g, '%5C');
+    return join(home, '.claude', 'projects', projectPathEncoded);
+  }
+
+  if (provider === 'gemini') {
+    const projectName = basename(workFolder) || 'project';
+    return join(home, '.gemini', 'tmp', projectName);
+  }
+
+  return null;
+}
 
 export function resolveSessionLogPath(
   provider: LlmProvider,

@@ -2,6 +2,14 @@ import { updateAgent } from '../registry.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
 import { readLogTail } from './read-log-tail.js';
 
+function toLocalISOString(ms: number): string {
+  const d = new Date(ms);
+  const offset = -d.getTimezoneOffset();
+  const sign = offset >= 0 ? '+' : '-';
+  const pad = (n: number) => String(Math.abs(n)).padStart(2, '0');
+  return d.toISOString().replace('Z', `${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`);
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_STALL_THRESHOLD_MS = 120_000;
 
@@ -14,6 +22,7 @@ export interface StallEntry {
   memberId: string;
   memberName: string;
   provisional: boolean;
+  stallReported: boolean;
 }
 
 export class StallDetector {
@@ -24,6 +33,7 @@ export class StallDetector {
     if (this.stallCheckList.has(memberId)) {
       logWarn('stall_detector', `Overwriting existing entry for member ${memberId}`);
     }
+    logLine('stall_add', `member=${entry.memberName} provisional=${entry.provisional} total=${this.stallCheckList.size + 1}`);
     this.stallCheckList.set(memberId, entry);
   }
 
@@ -37,6 +47,7 @@ export class StallDetector {
   }
 
   remove(memberId: string): void {
+    logLine('stall_remove', `memberId=${memberId} remaining=${this.stallCheckList.size - 1}`);
     this.stallCheckList.delete(memberId);
   }
 
@@ -65,21 +76,28 @@ export class StallDetector {
   }
 
   async _poll(): Promise<void> {
+    logLine('stall_poll_tick', JSON.stringify({
+      activeWatched: this.stallCheckList.size,
+      provisional: [...this.stallCheckList.values()].filter(e => e.provisional).length,
+      members: [...this.stallCheckList.values()].map(e => e.memberName),
+    }));
+
     const now = Date.now();
     const stallThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
       if (entry.provisional) {
         // Provisional: skip log reading, but still detect stalls via baseline timeout
-        if (now - entry.lastActivityAt > stallThresholdMs) {
+        if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
           const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
           logLine('stall_detected', JSON.stringify({
             event: 'stall_detected',
             memberId,
             memberName: entry.memberName,
             idleSecs,
-            lastActivityAt: new Date(entry.lastActivityAt).toISOString(),
+            lastActivityAt: toLocalISOString(entry.lastActivityAt),
           }));
+          this.update(memberId, { stallReported: true });
         }
         continue;
       }
@@ -117,6 +135,7 @@ export class StallDetector {
           lastActivityAt: ts,
           consecutiveIdleCycles: 0,
           consecutiveReadFailures: 0,
+          stallReported: false,
         });
         updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
         continue;
@@ -129,15 +148,16 @@ export class StallDetector {
         consecutiveReadFailures: 0,
       });
 
-      if (now - entry.lastActivityAt > stallThresholdMs) {
+      if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
         const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
         logLine('stall_detected', JSON.stringify({
           event: 'stall_detected',
           memberId,
           memberName: entry.memberName,
           idleSecs,
-          lastActivityAt: new Date(entry.lastActivityAt).toISOString(),
+          lastActivityAt: toLocalISOString(entry.lastActivityAt),
         }));
+        this.update(memberId, { stallReported: true });
       }
     }
   }

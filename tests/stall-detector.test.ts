@@ -32,6 +32,7 @@ function makeEntry(overrides: Partial<StallEntry> = {}): StallEntry {
     memberId: 'member-1',
     memberName: 'alice',
     provisional: false,
+    stallReported: false,
     ...overrides,
   };
 }
