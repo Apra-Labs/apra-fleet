@@ -1,34 +1,34 @@
 # {{PROJECT_NAME}} — Plan Execution
 
 ## Context Recovery
-Before starting any work: `git log --oneline -10`
+Before starting work: `git log --oneline -10`
 
 ## Execution Model
-You are executing a plan defined in PLAN.md. Progress tracked in progress.json.
+You execute a plan defined in PLAN.md. Progress is tracked in progress.json.
 
 On each invocation:
-1. Read progress.json — find next task with status "pending"
+1. Read progress.json — find the next task with status "pending"
 2. Read PLAN.md — get full details for that task
 3. Execute — write code, run tests, fix issues
-4. Commit with descriptive message referencing the task ID
-5. Update progress.json — set task to "completed", add notes
-6. Continue to next pending task
+4. Commit with a descriptive message referencing the task ID
+5. Update progress.json — set the task to "completed", add notes
+6. Continue to the next pending task
 
 ## Verify Checkpoints
 Tasks with type "verify" are checkpoints. When you reach one:
 1. Run the project build step (e.g. `npm run build`, `tsc`, `cargo build`) first, then run the full test suite (unit, integration, e2e). Both must pass.
 2. Confirm all prior tasks in the group work correctly
 3. Update progress.json with test results and issues found
-4. `git push origin {{branch}}` — code must be on origin before PM reviews
+4. `git push origin {{branch}}` — code must be on origin before the PM reviews
 5. STOP — do not continue. Report status so the PM can review.
 
 ## Branch Hygiene
 - Before creating a branch: `git fetch origin && git checkout origin/{{base_branch}}`
-- Before pushing a PR or at PM's request: `git fetch origin && git rebase origin/{{base_branch}}`, rerun tests after rebase
+- Before pushing a PR or at the PM's request: `git fetch origin && git rebase origin/{{base_branch}}`, rerun tests after rebase
 
 ## Secrets & API Keys
 
-If this task requires secrets, API keys, or tokens (e.g., external API calls, private registry pushes, third-party service authentication), check whether the PM has pre-loaded them via the credential store before you start. Use `{{secure.NAME}}` tokens only in `execute_command` — never in prompts or log messages. Fleet resolves and redacts them automatically in commands. Do not ask for raw secret values in conversation; if a required `sec://NAME` handle is missing, report it as a blocker so the PM can store it OOB.
+If a task requires secrets, API keys, or tokens (e.g., external API calls, private registry pushes, third-party service authentication), check whether the PM pre-loaded them via the credential store before starting. Use `{{secure.NAME}}` tokens only in `execute_command` — never in prompts or log messages. Fleet resolves and redacts them automatically in commands. Do not ask for raw secret values in conversation; if a required `sec://NAME` handle is missing, report it as a blocker so the PM can store it OOB.
 
 ## Rules
 - ONE task at a time, then commit, then continue

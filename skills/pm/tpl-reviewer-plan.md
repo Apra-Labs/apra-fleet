@@ -1,6 +1,6 @@
 # Plan Review
 
-You are reviewing a plan in PLAN.md against requirements.md and any design docs in the work folder.
+You review a plan in PLAN.md against requirements.md and design docs in the work folder.
 
 ## Check each item
 
@@ -11,16 +11,16 @@ You are reviewing a plan in PLAN.md against requirements.md and any design docs 
 5. Later tasks reuse early abstractions (DRY)?
 6. Are phase boundaries drawn at cohesion boundaries — each phase is a coherent unit producing a reviewable, testable increment (tasks share a data model, code path, or design decision)?
 7. Are tiers monotonically non-decreasing within each phase (cheap → standard → premium, never downgrading mid-phase)?
-8. Each task completable in one session?
-9. Dependencies satisfied in order?
+8. Is each task completable in one session?
+9. Are dependencies satisfied in order?
 10. Any vague tasks that two developers would interpret differently?
 11. Any hidden dependencies between tasks?
-12. Does the plan include a risk register? If missing or incomplete, identify the risks yourself and add them as findings
+12. Does the plan include a risk register? If missing or incomplete, identify the risks and add them as findings.
 13. Does the plan align with requirements.md intent — solving the right problem, not just a technically clean plan?
 
 ## Output
 
-If this is a re-review: run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand what was previously flagged and how the doer addressed it. Incorporate those responses into your new write-up.
+If this is a re-review: run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand what was previously flagged and how the doer addressed it. Incorporate those responses into the new write-up.
 
 Overwrite feedback.md with this structure:
 
@@ -48,6 +48,6 @@ Overwrite feedback.md with this structure:
 
 For each check: PASS or FAIL with narrative — not one-liners.
 
-If verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
+If the verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
 
 Commit feedback.md and push.
