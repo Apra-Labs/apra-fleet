@@ -11,6 +11,7 @@ import {
   readConfig,
   writeConfig,
   writeInstallConfig,
+  PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
 
@@ -212,13 +213,6 @@ function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
 
   writeConfig(paths, settings);
 }
-
-const PROVIDER_STANDARD_MODELS: Record<string, string> = {
-  claude: 'claude-sonnet-4-6',
-  gemini: 'gemini-3-flash-preview',
-  codex: 'gpt-5.4',
-  copilot: 'claude-sonnet-4-5',
-};
 
 function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
   const settings = readConfig(paths);

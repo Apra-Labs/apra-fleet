@@ -12,6 +12,7 @@ import {
   readConfig,
   writeConfig,
   readInstallConfig,
+  PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
 
@@ -39,9 +40,21 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): void {
   // 2. Permissions
   if (settings.permissions?.allow) {
     const originalCount = settings.permissions.allow.length;
-    const filtered = (settings.permissions.allow as string[]).filter(p => 
-      !p.includes('apra-fleet') && !p.includes('.apra-fleet')
-    );
+    const skillsDirPosix = paths.skillsDir.replace(/\\/g, '/');
+    const fleetSkillsDirPosix = paths.fleetSkillsDir.replace(/\\/g, '/');
+    
+    const filtered = (settings.permissions.allow as string[]).filter(p => {
+      // Remove specific MCP permission
+      if (p === 'mcp__apra-fleet__*') return false;
+      // Remove skills directory permissions
+      if (p === `Read(${skillsDirPosix}/**)`) return false;
+      if (p === `Read(${fleetSkillsDirPosix}/**)`) return false;
+      // Remove generic Agent(*) ONLY if it was likely added by us (it's safe to keep if unsure)
+      // but the plan says "filter out fleet-specific entries". 
+      // Agent(*) is not fleet-specific, so we leave it to be safe.
+      return true;
+    });
+    
     if (filtered.length !== originalCount) {
       console.log(`  - Removing ${originalCount - filtered.length} fleet permissions`);
       if (!dryRun) settings.permissions.allow = filtered;
@@ -69,10 +82,14 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): void {
     changed = true;
   }
 
-  // 5. Default Model (optional: only if it matches fleet standard)
-  // We leave this alone to avoid breaking user defaults, unless we want to be very aggressive.
-  // The plan says: "only remove if it matches the fleet-installed value".
-  // For now, let's keep it simple and skip model revert to avoid breaking the provider CLI.
+  // 5. Default Model
+  const providerKey = paths.name.toLowerCase() as LlmProvider;
+  const standardModel = PROVIDER_STANDARD_MODELS[providerKey];
+  if (settings.defaultModel === standardModel) {
+    console.log(`  - Removing defaultModel '${standardModel}' (matches fleet standard)`);
+    if (!dryRun) delete settings.defaultModel;
+    changed = true;
+  }
 
   if (changed && !dryRun) {
     writeConfig(paths, settings);

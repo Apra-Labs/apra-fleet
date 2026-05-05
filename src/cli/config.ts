@@ -12,6 +12,13 @@ export const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
 export const DATA_DIR = path.join(FLEET_BASE, 'data');
 export const INSTALL_CONFIG_PATH = path.join(DATA_DIR, 'install-config.json');
 
+export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
+  claude: 'claude-sonnet-4-6',
+  gemini: 'gemini-3-flash-preview',
+  codex: 'gpt-5.4',
+  copilot: 'claude-sonnet-4-5',
+};
+
 export interface ProviderInstallConfig {
   configDir: string;
   settingsFile: string;
