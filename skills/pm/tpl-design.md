@@ -1,29 +1,29 @@
 # Design — {{BACKLOG_ID}} {{TITLE}}
 
 ## Problem
-- {{symptom}} — {{specific example}}
-- {{root cause}} — {{technical explanation}}
+- {{symptom}} — {{example}}
+- {{root cause}} — {{explanation}}
 
 ## Solution
-{{2-4 sentences: what changes, what stays, key architectural shift}}
+{{description: changes, architecture shift}}
 
 ## Data Model
 `{{file_path}}`:
 ```json
-{{concrete example with real values, 3-5 entries}}
+{{example with real values}}
 ```
 
 ## API Changes
 | Method | Path | Body | Purpose |
 |--------|------|------|---------|
 
-## What Gets Deleted
+## Deletions
 | File / Symbol | Why |
 |---------------|-----|
 
-## What Stays / Adapts
+## Adaptations
 | What | Change |
 |------|--------|
 
 ## Out of Scope
-- {{thing NOT to build}} — {{why not now}}
+- {{item}} — {{reason}}

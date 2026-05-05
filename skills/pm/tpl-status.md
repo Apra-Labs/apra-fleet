@@ -1,18 +1,18 @@
 # {{PROJECT_NAME}} — Status
 
 ## Project
-- **Base branch:** {{main | v020_dev | etc}}
+- **Base branch:** {{base}}
 - **Repo:** {{org/repo}}
 
 ## Members
 
 ### {{icon}} {{member_name}} ({{role}})
-- **Member ID:** {{member_id}}
-- **Work folder:** {{work_folder}}
-- **Current role:** doer | reviewer
+- **ID:** {{member_id}}
+- **Folder:** {{work_folder}}
+- **Role:** doer | reviewer
 - **Branch:** {{branch}}
 
-#### Recent Sessions
+#### Sessions
 1. `{{session_id}}` — {{date}} — {{summary}}
 
 ## Phases
@@ -25,4 +25,4 @@
 - **Merged:** {{commit}} on {{target_branch}}
 
 ## Blockers
-- {{description}} — {{status}}
+- {{desc}} — {{status}}

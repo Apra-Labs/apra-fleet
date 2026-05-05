@@ -1,24 +1,13 @@
 # {{PROJECT_NAME}} — Deploy
 
 ## Steps
-<!-- Replace with your project's deploy sequence. PM executes these via execute_command on the member. -->
+<!-- PM executes via execute_command. -->
 
-<!-- Example: Node.js app -->
-<!-- git pull origin main -->
-<!-- npm install -->
-<!-- npm run build -->
-<!-- pm2 restart app -->
-
-<!-- Example: GitHub release -->
-<!-- gh release download latest -p '*.tar.gz' -->
-<!-- tar xzf *.tar.gz -->
-<!-- ./install.sh -->
-
-<!-- Example: Serverless -->
-<!-- cd deploy && sls deploy --stage prod -->
+<!-- Examples: -->
+<!-- git pull, npm install, build, restart -->
+<!-- download release, extract, install -->
+<!-- sls deploy -->
 
 ## Verify
-<!-- How to confirm the deploy worked. PM runs this after deploy steps. -->
-<!-- curl -s http://localhost:3000/health -->
-<!-- sls info --stage prod -->
-<!-- systemctl status app -->
+<!-- PM runs after deploy. -->
+<!-- health check, service status -->
