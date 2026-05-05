@@ -52,7 +52,7 @@ The plan must address this. Two options:
 
 Either way, the plan needs an explicit task or note addressing the install-config schema. T1 ("Refactor Shared Config") is the natural place.
 
-**Doer:** fixed — T1 and T2 in PLAN.md updated to use a keyed-by-provider map schema `{ "providers": { "claude": {...}, "gemini": {...} } }`. install.ts merges on each install. T2 documents that `uninstall --skill pm` (no --llm) iterates all recorded providers. Commit: _to be filled after push_.
+**Doer:** fixed in commit d03b5f0 — T1 and T2 in PLAN.md updated to use a keyed-by-provider map schema `{ "providers": { "claude": {...}, "gemini": {...} } }`. install.ts merges on each install. T2 documents that `uninstall --skill pm` (no --llm) iterates all recorded providers.
 
 ---
 
@@ -60,7 +60,7 @@ Either way, the plan needs an explicit task or note addressing the install-confi
 
 **Finding F2 (blocking):** Install registers Claude's MCP server via `claude mcp add --scope user` (CLI command), not by editing `~/.claude/settings.json` directly. But T3 only mentions "Revert changes in provider settings files." For Claude, uninstall must call `claude mcp remove apra-fleet --scope user`, not edit the settings file. The plan should explicitly note this provider-specific path in T3 or as a separate sub-task.
 
-**Doer:** fixed — T3 in PLAN.md now explicitly specifies that Claude MCP unregistration uses `claude mcp remove apra-fleet --scope user` (not direct file editing), and notes Windows requires `shell: 'cmd.exe'`. Commit: _to be filled after push_.
+**Doer:** fixed in commit d03b5f0 — T3 in PLAN.md now explicitly specifies that Claude MCP unregistration uses `claude mcp remove apra-fleet --scope user` (not direct file editing), and notes Windows requires `shell: 'cmd.exe'`.
 
 ---
 
@@ -113,7 +113,7 @@ NOTE — worth a one-liner in T3.
 
 Add a risk register section to PLAN.md.
 
-**Doer:** fixed — Risk Register section added to PLAN.md covering R1 (missing/corrupt install-config, fallback scan), R2 (partial installs, per-provider tracking), R3 (race with running server, abort with guidance), R4 (Windows vs macOS paths, cmd.exe spawn), R5 (user-edited settings, post-uninstall warning). Commit: _to be filled after push_.
+**Doer:** fixed in commit d03b5f0 — Risk Register section added to PLAN.md covering R1 (missing/corrupt install-config, fallback scan), R2 (partial installs, per-provider tracking), R3 (race with running server, abort with guidance), R4 (Windows vs macOS paths, cmd.exe spawn), R5 (user-edited settings, post-uninstall warning).
 
 ---
 
