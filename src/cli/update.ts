@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import { parseVersion, isNewer } from '../services/update-check.js';
 import { FLEET_DIR } from '../paths.js';
+import { readInstallConfig } from './config.js';
 
 export async function runUpdate(): Promise<void> {
   console.log(`Checking for updates...`);
@@ -72,19 +73,23 @@ export async function runUpdate(): Promise<void> {
       fs.chmodSync(tmpPath, 0o755);
     }
 
+    const config = readInstallConfig();
+    const providers = Object.keys(config.providers);
+    
+    let targetLlm = 'claude';
+    let targetSkill = 'all';
+
     const configPath = path.join(FLEET_DIR, 'install-config.json');
-    let config = { llm: 'claude', skill: 'all' };
-    if (fs.existsSync(configPath)) {
-      try {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      } catch (e) {
-        console.warn(`Warning: Could not parse install-config.json, using defaults.`);
-      }
-    } else {
+    if (providers.length > 0) {
+      targetLlm = providers[0];
+      targetSkill = config.providers[targetLlm].skill;
+    } else if (!fs.existsSync(configPath)) {
       console.warn(`Warning: install-config.json missing, using defaults.`);
+    } else {
+      console.warn(`Warning: Could not parse install-config.json, using defaults.`);
     }
 
-    const args = ['install', '--llm', config.llm, '--skill', config.skill];
+    const args = ['install', '--llm', targetLlm, '--skill', targetSkill];
     const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore' });
     installer.unref();
     process.exit(0);

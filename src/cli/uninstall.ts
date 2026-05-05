@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
+import { isApraFleetRunning } from './install.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -151,6 +152,12 @@ Options:
 
   console.log(`\nUninstalling Apra Fleet ${serverVersion}...${dryRun ? ' (DRY RUN)' : ''}\n`);
 
+  if (isApraFleetRunning()) {
+    console.error('Error: apra-fleet server is currently running. Stop it first (`apra-fleet stop`) then retry uninstall.');
+    process.exit(1);
+    return;
+  }
+
   const installConfig = readInstallConfig();
   const recordedProviders = Object.keys(installConfig.providers) as LlmProvider[];
   const isFallback = recordedProviders.length === 0;
@@ -226,4 +233,7 @@ Options:
   }
 
   console.log('\nUninstall complete.');
+  console.log('\n⚠ Note: Surgical cleanup of settings (MCP, permissions, hooks) was performed.');
+  console.log('  If you manually modified these settings, some entries might remain.');
+  console.log('  Please review your provider settings files if you suspect residual config.');
 }
