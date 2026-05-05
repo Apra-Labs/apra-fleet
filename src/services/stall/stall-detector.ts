@@ -1,3 +1,10 @@
+import { updateAgent } from '../registry.js';
+import { logLine, logWarn } from '../../utils/log-helpers.js';
+import { readLogTail } from './read-log-tail.js';
+
+const DEFAULT_POLL_INTERVAL_MS = 15_000;
+const DEFAULT_STALL_THRESHOLD_MS = 120_000;
+
 export interface StallEntry {
   sessionId: string | null;
   logFilePath: string | null;
@@ -10,12 +17,12 @@ export interface StallEntry {
 }
 
 export class StallDetector {
-  private stallCheckList: Map<string, StallEntry> = new Map();
+  readonly stallCheckList: Map<string, StallEntry> = new Map();
   private pollInterval: NodeJS.Timeout | null = null;
 
   add(memberId: string, entry: StallEntry): void {
     if (this.stallCheckList.has(memberId)) {
-      console.warn(`[StallDetector] Overwriting existing entry for member ${memberId}`);
+      logWarn('stall_detector', `Overwriting existing entry for member ${memberId}`);
     }
     this.stallCheckList.set(memberId, entry);
   }
@@ -23,7 +30,7 @@ export class StallDetector {
   update(memberId: string, partial: Partial<StallEntry>): void {
     const existing = this.stallCheckList.get(memberId);
     if (!existing) {
-      console.warn(`[StallDetector] Cannot update non-existent entry for member ${memberId}`);
+      logWarn('stall_detector', `Cannot update non-existent entry for member ${memberId}`);
       return;
     }
     this.stallCheckList.set(memberId, { ...existing, ...partial });
@@ -39,12 +46,13 @@ export class StallDetector {
 
   start(): void {
     if (this.pollInterval !== null) {
-      console.warn('[StallDetector] Already started');
+      logWarn('stall_detector', 'Already started');
       return;
     }
-    // TODO: Implement _poll method
-    // this.pollInterval = setInterval(() => this._poll(), STALL_POLL_INTERVAL_MS);
-    console.log('[StallDetector] Started (polling not yet implemented)');
+    const intervalMs = parseInt(process.env['STALL_POLL_INTERVAL_MS'] ?? String(DEFAULT_POLL_INTERVAL_MS));
+    this.pollInterval = setInterval(() => void this._poll(), intervalMs);
+    this.pollInterval.unref();
+    logLine('stall_detector', 'StallDetector started');
   }
 
   stop(): void {
@@ -53,11 +61,85 @@ export class StallDetector {
       this.pollInterval = null;
     }
     this.stallCheckList.clear();
-    console.log('[StallDetector] Stopped');
+    logLine('stall_detector', 'StallDetector stopped');
   }
 
-  private _poll(): void {
-    // TODO: Implement polling logic in Task 4
+  async _poll(): Promise<void> {
+    const now = Date.now();
+    const stallThresholdMs = parseInt(process.env['STALL_THRESHOLD_MS'] ?? String(DEFAULT_STALL_THRESHOLD_MS));
+
+    for (const [memberId, entry] of this.stallCheckList.entries()) {
+      if (entry.provisional) {
+        // Provisional: skip log reading, but still detect stalls via baseline timeout
+        if (now - entry.lastActivityAt > stallThresholdMs) {
+          const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
+          logLine('stall_detected', JSON.stringify({
+            event: 'stall_detected',
+            memberId,
+            memberName: entry.memberName,
+            idleSecs,
+            lastActivityAt: new Date(entry.lastActivityAt).toISOString(),
+          }));
+        }
+        continue;
+      }
+
+      if (!entry.logFilePath) continue;
+
+      logLine('stall_poll', JSON.stringify({
+        event: 'stall_poll',
+        memberId,
+        logPath: entry.logFilePath,
+        lastActivityAt: entry.lastActivityAt,
+      }));
+
+      const { lastTimestamp, error } = await readLogTail(memberId, entry.logFilePath);
+
+      if (error) {
+        const newFailures = entry.consecutiveReadFailures + 1;
+        this.update(memberId, { consecutiveReadFailures: newFailures });
+        if (newFailures >= 3) {
+          logWarn('stall_read_failures', JSON.stringify({ memberId, error, consecutiveReadFailures: newFailures }));
+        }
+        // Do NOT count as stall cycle per resilience decision
+        continue;
+      }
+
+      if (lastTimestamp === null) {
+        // File not yet created — do NOT count as stall cycle per resilience decision
+        continue;
+      }
+
+      const ts = new Date(lastTimestamp).getTime();
+      if (!isNaN(ts) && ts > entry.lastActivityAt) {
+        // Activity advanced — update and reset counters
+        this.update(memberId, {
+          lastActivityAt: ts,
+          consecutiveIdleCycles: 0,
+          consecutiveReadFailures: 0,
+        });
+        updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
+        continue;
+      }
+
+      // No new activity — increment idle cycle counter and check stall threshold
+      const newIdleCycles = entry.consecutiveIdleCycles + 1;
+      this.update(memberId, {
+        consecutiveIdleCycles: newIdleCycles,
+        consecutiveReadFailures: 0,
+      });
+
+      if (now - entry.lastActivityAt > stallThresholdMs) {
+        const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
+        logLine('stall_detected', JSON.stringify({
+          event: 'stall_detected',
+          memberId,
+          memberName: entry.memberName,
+          idleSecs,
+          lastActivityAt: new Date(entry.lastActivityAt).toISOString(),
+        }));
+      }
+    }
   }
 }
 
