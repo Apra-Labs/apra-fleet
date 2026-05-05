@@ -13,6 +13,7 @@
 - **Idle manager pattern** (`src/services/cloud/idle-manager.ts`): Uses `setIdleTouchHook()` to get called on every `touchAgent`. Good precedent for StallDetector integration.
 - **Agent type** (`src/types.ts`): Has `sessionId?: string`, `lastUsed?: string`, `llmProvider?: LlmProvider`, `workFolder: string`.
 - **No existing stall detection**: Only hard timeouts (timeout_s, max_total_s) exist.
+- **`execute_command`** (`src/tools/execute-command.ts`): Runs commands on a member — works for both local and remote members uniformly.
 
 ### Provider Log Paths (from requirements + provider code)
 - **Claude**: `~/.claude/projects/<project-path-encoded>/<sessionId>.jsonl`
@@ -31,12 +32,39 @@
 - Must not add N timers — one `setInterval` loop
 - TypeScript strict — no `any`
 - StallDetector hooks into execute_prompt lifecycle without modifying its core logic heavily
+- Log reading via `execute_command` — no direct `fs.stat`/`fs.readFile` on member logs
 
 ---
 
 ## Tasks
 
-### Phase 1: Foundation — StallDetector Class & Log Path Resolver
+### Phase 0: Resilience Analysis (Design-Only — No Code)
+
+#### Task 0: Resilience & Edge Case Design Document
+- **Change:** Create `docs/stall-detector-resilience.md` documenting explicit decisions for every edge case BEFORE implementation begins. This is a design artifact, not code.
+- **Decisions to document:**
+
+  | Edge Case | Decision |
+  |-----------|----------|
+  | Log file not yet created when first poll fires | Treat as "no activity yet" — do not count as stall cycle. `lastActivityAt` remains at baseline (time of add). |
+  | `execute_command` for log read fails or times out | Log the failure as a structured event. Do NOT update `lastActivityAt`. Do NOT count as a stall cycle. Increment a separate `consecutiveReadFailures` counter; emit warning after 3 consecutive failures. |
+  | Member process exits between "add to list" and first poll | The exit handler calls `remove()` immediately. Next poll iteration sees no entry — nothing to do. |
+  | Concurrent dispatches on same member (server rejects 2nd) | Server already rejects concurrent `execute_prompt` on same member. Stall list is keyed by memberId — only one entry can exist. If a second add is attempted (shouldn't happen), log a warning and overwrite. |
+  | Log file pre-exists from prior session with same session ID | Log path includes session ID which is unique per session. If the file pre-exists, its last entry timestamp may be old — baseline `lastActivityAt` is set to `Date.now()` at add time, so a stale file won't trigger immediate stall. |
+
+- **Files:** `docs/stall-detector-resilience.md` (new)
+- **Tier:** cheap
+- **Done when:** Document reviewed and each edge case has an explicit decision
+- **Blockers:** None — this is the first task, blocks all implementation
+
+#### VERIFY: Phase 0
+- [ ] All five edge cases have explicit, documented decisions
+- [ ] Decisions are consistent with each other (no contradictions)
+- [ ] Document is committed to the branch before any implementation begins
+
+---
+
+### Phase 1: Foundation — StallDetector Class, Log Path Resolver & Internal Command Wrapper
 
 #### Task 1: Log File Path Resolver
 - **Change:** Create `src/services/stall/log-path-resolver.ts` exporting `resolveSessionLogPath(provider: LlmProvider, sessionId: string, workFolder: string, homeDir?: string): string`. Handles Claude and Gemini path conventions. Returns the expected JSONL log path.
@@ -47,29 +75,53 @@
 
 #### Task 2: StallEntry Type & StallDetector Class Skeleton
 - **Change:** Create `src/services/stall/stall-detector.ts` with:
-  - `StallEntry` interface: `{ sessionId, logFilePath, lastActivityAt: number, consecutiveIdleCycles: number, memberId, memberName }`
-  - `StallDetector` class: `stallCheckList: Map<string, StallEntry>`, `add(memberId, entry)`, `remove(memberId)` (idempotent), `start()`, `stop()`, `getEntry(memberId)`
+  - `StallEntry` interface: `{ sessionId, logFilePath, lastActivityAt: number, consecutiveIdleCycles: number, consecutiveReadFailures: number, memberId, memberName }`
+  - `StallDetector` class: `stallCheckList: Map<string, StallEntry>`, `add(memberId, entry)` (idempotent overwrite with warning), `remove(memberId)` (idempotent no-op if absent), `start()`, `stop()`, `getEntry(memberId)`
   - Singleton export pattern (like IdleManager)
 - **Files:** `src/services/stall/stall-detector.ts` (new), `src/services/stall/index.ts` (barrel)
 - **Tier:** cheap
 - **Done when:** Class compiles, add/remove/double-remove work in unit test
 - **Blockers:** None
 
-#### Task 3: Polling Loop — Log File Stat Check
+#### Task 3: Internal execute_command Wrapper for Log Reading
+- **Change:** Create `src/services/stall/read-log-tail.ts` exporting an async function `readLogTail(memberId: string, logFilePath: string): Promise<{ lastTimestamp: string | null, error?: string }>`. This function:
+  - Issues an internal `execute_command` to the member (e.g. `tail -c 512 <logFilePath>`) to read the last portion of the log file
+  - Parses the output to extract the last JSON entry's timestamp
+  - Returns `null` for lastTimestamp if the file doesn't exist or is empty (not an error — per resilience decision)
+  - Returns `{ lastTimestamp: null, error: <message> }` if execute_command fails or times out
+  - The execute_command invocation must appear in the fleet server's structured JSONL log (uses existing logLine infrastructure)
+  - No direct `fs.stat`, `fs.readFile`, or any filesystem API — all access goes through execute_command
+- **Files:** `src/services/stall/read-log-tail.ts` (new)
+- **Tier:** standard
+- **Done when:** Function compiles, unit test verifies it calls execute_command (mocked), handles missing file and timeout gracefully
+- **Blockers:** Need to identify how to invoke execute_command internally (not as MCP tool call). Likely call the underlying function that `execute_command` tool delegates to.
+
+#### Task 4: Polling Loop Implementation
 - **Change:** Implement `_poll()` method on StallDetector:
   - Iterates `stallCheckList`
-  - For each entry: `fs.stat(logFilePath)` to get `mtime`
-  - If `mtime > lastActivityAt` → update `lastActivityAt`, reset `consecutiveIdleCycles`
-  - If idle for `STALL_THRESHOLD_MS` → emit stall event (log via `logWarn`)
+  - For each entry: calls `readLogTail(memberId, logFilePath)` to get last activity timestamp
+  - If `lastTimestamp > lastActivityAt` → update `lastActivityAt`, reset `consecutiveIdleCycles`, reset `consecutiveReadFailures`
+  - If `readLogTail` returns error → increment `consecutiveReadFailures`, log warning, do NOT count as stall cycle (per resilience decision)
+  - If `readLogTail` returns null timestamp (file not yet created) → do NOT count as stall cycle (per resilience decision)
+  - If idle for `STALL_THRESHOLD_MS` → emit stall event via structured log: `{event: "stall_detected", memberId, memberName, idleSecs, lastActivityAt}`
   - Update `lastLlmActivityAt` on the member record via `updateAgent()`
+  - Log each poll cycle: `{event: "stall_poll", memberId, logPath, lastActivityAt}`
   - Uses `setInterval(STALL_POLL_INTERVAL_MS)` — env vars: `STALL_POLL_INTERVAL_MS` (default 15000), `STALL_THRESHOLD_MS` (default 120000)
 - **Files:** `src/services/stall/stall-detector.ts`
 - **Tier:** standard
-- **Done when:** Poll loop detects stall after threshold in unit test with fake timers
-- **Blockers:** Log file may not exist yet at session start — handle gracefully (skip, don't count as stall)
+- **Done when:** Poll loop detects stall after threshold in unit test with fake timers; missing file and read failures handled per resilience doc
+- **Blockers:** None (resilience decisions made in Phase 0)
 
-#### Task 4: Unit Tests for StallDetector
-- **Change:** Create `tests/stall-detector.test.ts` covering: add, remove, double-remove (no-op), poll with advancing mtime, poll with stale mtime triggering stall, poll with missing log file (no false stall), start/stop lifecycle
+#### Task 5: Unit Tests for StallDetector
+- **Change:** Create `tests/stall-detector.test.ts` covering:
+  - add entry
+  - remove entry
+  - double-remove (no-op, no error)
+  - poll with advancing timestamp (no stall)
+  - poll with stale timestamp triggering stall event
+  - poll with missing log file (no false stall)
+  - poll with execute_command failure (no false stall, consecutiveReadFailures incremented)
+  - start/stop lifecycle
 - **Files:** `tests/stall-detector.test.ts` (new)
 - **Tier:** standard
 - **Done when:** All tests pass via `npm test`
@@ -77,39 +129,59 @@
 
 #### VERIFY: Phase 1
 - [ ] `StallDetector` compiles with no `any` types
-- [ ] Unit tests pass: add, remove, double-remove, stall detection, no false positive on missing file
+- [ ] Unit tests pass: add, remove, double-remove, stall detection, no false positive on missing file, no false stall on read failure
 - [ ] `resolveSessionLogPath` returns correct paths for claude and gemini providers
 - [ ] Single `setInterval` — not per-member timers
+- [ ] Log reading goes through `readLogTail` → `execute_command`, never direct filesystem access
+- [ ] Log read commands appear in fleet JSONL log
 
 ---
 
 ### Phase 2: Integration — Hook into execute_prompt & stop_prompt Lifecycle
 
-#### Task 5: Add `lastLlmActivityAt` to Agent Type
+#### Task 6: Add `lastLlmActivityAt` to Agent Type
 - **Change:** Add `lastLlmActivityAt?: string` (ISO 8601) to the `Agent` interface in `src/types.ts`
 - **Files:** `src/types.ts`
 - **Tier:** cheap
 - **Done when:** Type compiles, no downstream type errors
 - **Blockers:** None
 
-#### Task 6: Hook StallDetector into execute_prompt
+#### Task 7: Hook StallDetector into execute_prompt — All Exit Paths
 - **Change:** In `src/tools/execute-prompt.ts`:
-  - After `inFlightAgents.add(agent.id)` + after sessionId is known (line ~216): call `stallDetector.add(agent.id, { sessionId, logFilePath, lastActivityAt: Date.now(), consecutiveIdleCycles: 0, memberId: agent.id, memberName: agent.friendlyName })`
-  - In finally block (line ~252): call `stallDetector.remove(agent.id)`
-  - Import stallDetector singleton
+  - After sessionId is known (line ~216): call `stallDetector.add(agent.id, { ... })`
+  - **Removal hooks for EVERY termination condition:**
+
+    | Exit Path | Where removal happens |
+    |-----------|----------------------|
+    | Normal exit (success) | finally block (line ~252) |
+    | Error exit / non-zero exit code | finally block (line ~252) |
+    | Inactivity timeout (timeout_s fires) | finally block — timeout kills process, control reaches finally |
+    | Hard ceiling timeout (max_total_s fires) | finally block — same as above |
+    | `stop_prompt` kills the process | Handled in Task 8 (stop_prompt hook) |
+    | Member unregistered while session active | Handled in Task 9 (unregister hook) |
+
+  - The finally block calls `stallDetector.remove(agent.id)` — covers exit paths 1–4
+  - `remove()` is idempotent — double-remove from multiple paths is a no-op
 - **Files:** `src/tools/execute-prompt.ts`
 - **Tier:** standard
-- **Done when:** StallDetector entry created on session start, removed on session end (both normal exit and error)
-- **Blockers:** Session ID is only known after the first successful response — add to stall check at that point, not at process spawn. Consider adding with partial info first (logPath computed from workFolder only) then updating when sessionId arrives.
+- **Done when:** StallDetector entry created on session start, removed on every exit condition
+- **Blockers:** Session ID is only known after the first successful response — add to stall check at that point, not at process spawn. Baseline `lastActivityAt = Date.now()` at add time.
 
-#### Task 7: Hook StallDetector into stop_prompt
-- **Change:** In `src/tools/stop-prompt.ts`, after killing the PID (line ~27): call `stallDetector.remove(agent.id)` — idempotent, so double-remove from both stop_prompt and execute_prompt's finally is safe.
+#### Task 8: Hook StallDetector into stop_prompt
+- **Change:** In `src/tools/stop-prompt.ts`, after killing the PID: call `stallDetector.remove(agent.id)` — idempotent, so double-remove from both stop_prompt and execute_prompt's finally is safe.
 - **Files:** `src/tools/stop-prompt.ts`
 - **Tier:** cheap
 - **Done when:** `stop_prompt` removes member immediately (doesn't wait for poll)
 - **Blockers:** None
 
-#### Task 8: Initialize StallDetector on Server Start
+#### Task 9: Hook StallDetector into Member Unregister
+- **Change:** In the member unregister path (wherever `remove_member` is implemented): call `stallDetector.remove(memberId)` if the member has an active session. Idempotent — safe even if no entry exists.
+- **Files:** `src/tools/remove-member.ts` (or equivalent)
+- **Tier:** cheap
+- **Done when:** Unregistering a member with an active session removes it from stallCheckList
+- **Blockers:** None
+
+#### Task 10: Initialize StallDetector on Server Start
 - **Change:** In the server startup path (wherever MCP server is initialized), call `stallDetector.start()`. On shutdown, call `stallDetector.stop()`.
 - **Files:** `src/index.ts` or equivalent server entry point
 - **Tier:** cheap
@@ -118,38 +190,37 @@
 
 #### VERIFY: Phase 2
 - [ ] Starting an execute_prompt adds member to stallCheckList
-- [ ] Ending an execute_prompt removes member from stallCheckList
-- [ ] `stop_prompt` removes member immediately
-- [ ] Double-remove (stop_prompt then execute_prompt finally) doesn't crash
+- [ ] ALL exit paths remove member from stallCheckList:
+  - [ ] Normal exit (success)
+  - [ ] Error exit / non-zero code
+  - [ ] Inactivity timeout (timeout_s)
+  - [ ] Hard ceiling timeout (max_total_s)
+  - [ ] stop_prompt kills process
+  - [ ] Member unregistered mid-session
+- [ ] Double-remove (e.g. stop_prompt then execute_prompt finally) is a no-op — no error
 - [ ] StallDetector starts/stops with server
+- [ ] In-memory list starts empty on server restart — no stale entries resurrected
 
 ---
 
 ### Phase 3: Surface — Expose lastLlmActivityAt in Status Tools
 
-#### Task 9: Surface `lastLlmActivityAt` in `member_detail`
+#### Task 11: Surface `lastLlmActivityAt` in `member_detail`
 - **Change:** In `src/tools/member-detail.ts`, include `lastLlmActivityAt` from the agent record in the returned JSON. Also compute and include `idleSecs` (time since lastLlmActivityAt) if the member is busy.
 - **Files:** `src/tools/member-detail.ts`
 - **Tier:** standard
 - **Done when:** `member_detail` JSON response includes `lastLlmActivityAt` and `idleSecs` fields
 - **Blockers:** None
 
-#### Task 10: Surface `lastLlmActivityAt` in `fleet_status`
+#### Task 12: Surface `lastLlmActivityAt` in `fleet_status`
 - **Change:** In `src/tools/check-status.ts` (fleet_status), include `lastLlmActivityAt` per member in JSON output.
 - **Files:** `src/tools/check-status.ts`
 - **Tier:** standard
 - **Done when:** `fleet_status --format json` includes `lastLlmActivityAt` per member
 - **Blockers:** None
 
-#### Task 11: Surface stall info in `monitor_task`
-- **Change:** In `src/tools/monitor-task.ts`, if the monitored task's member has a stall entry, include `lastLlmActivityAt` and `idleSecs` in the response.
-- **Files:** `src/tools/monitor-task.ts`
-- **Tier:** standard
-- **Done when:** monitor_task response includes LLM activity info when available
-- **Blockers:** Need to map taskId → memberId (check if this mapping exists)
-
-#### Task 12: Integration Tests
-- **Change:** Create `tests/stall-detector-integration.test.ts` — test the full lifecycle: mock execute_prompt adding to stallCheckList, poll cycle updating lastLlmActivityAt, stop_prompt removing, member_detail returning the field.
+#### Task 13: Integration Tests
+- **Change:** Create `tests/stall-detector-integration.test.ts` — test the full lifecycle: mock execute_prompt adding to stallCheckList, poll cycle updating lastLlmActivityAt via execute_command, stop_prompt removing, unregister removing, member_detail returning the field.
 - **Files:** `tests/stall-detector-integration.test.ts` (new)
 - **Tier:** premium
 - **Done when:** Integration tests pass, covering acceptance criteria
@@ -157,9 +228,11 @@
 
 #### VERIFY: Phase 3
 - [ ] `member_detail` returns `lastLlmActivityAt` updated within last poll interval
+- [ ] `member_detail` returns `idleSecs` derived at read time
 - [ ] `fleet_status` includes `lastLlmActivityAt` per member
 - [ ] Stall event logged when member idle > threshold
 - [ ] No auto-kill — detection is observational only
+- [ ] `monitor_task` is NOT modified — stall data surfaces only via `member_detail` and `fleet_status`
 
 ---
 
@@ -167,17 +240,19 @@
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Claude project-path encoding unknown | Log file not found → no stall detection (but no false positive either) | Use `fs.stat` approach (file existence check); log warning if file not found; verify encoding on live system in Phase 1 |
+| Claude project-path encoding unknown | Log file not found → no stall detection (but no false positive either) | `readLogTail` returns null; stall counter not incremented; log warning; verify encoding on live system in Phase 1 |
 | Gemini log path structure unverified | Same as above | Same mitigation; provider-specific resolver allows easy fix |
-| Session ID only available after first response | Gap between process spawn and first poll where stall can't be detected | Add entry with `lastActivityAt = now` on spawn (uses process start as baseline); update logFilePath when sessionId arrives |
-| Log file written infrequently by LLM (e.g. batched writes) | File mtime doesn't advance even though LLM is active → false stall | Use generous default threshold (120s); make it configurable; document that threshold should exceed typical tool-call duration |
-| Remote members — log file is on remote host | Can't `fs.stat` a remote file directly | Phase 1 targets local members only; remote support requires SSH stat command — flag as future enhancement |
+| Session ID only available after first response | Gap between process spawn and first poll where stall can't be detected | Add entry with `lastActivityAt = now` on spawn (uses process start as baseline); add with real logFilePath when sessionId arrives |
+| Log file written infrequently by LLM (e.g. batched writes) | Log tail doesn't show new timestamp even though LLM is active → false stall | Use generous default threshold (120s); make it configurable; document that threshold should exceed typical tool-call duration |
+| `execute_command` for log tail adds latency to each poll | Poll cycle takes longer with many members | Set short timeout on internal execute_command (5s); parallelize reads across members within a single poll |
 | `updateAgent()` writes to disk on every poll cycle | Disk I/O overhead with many members | Only write if `lastLlmActivityAt` actually changed; batch updates per poll cycle |
 
 ## Notes
 - Base branch: main
 - Implementation branch: feat/stall-detector
 - Test framework: vitest
-- Design uses `fs.stat` (mtime) rather than reading/parsing JSONL content — simpler, avoids file locking, and mtime advancing is sufficient signal of LLM activity
+- Design uses `execute_command` to tail the log file and extract last timestamp — works uniformly for local and remote members, no special-casing
+- Log reads are observable in the fleet server's structured JSONL log
 - StallDetector is observational only — logs events, never kills processes
+- `monitor_task` has NO role in this feature — stall state surfaces via `member_detail` and `fleet_status` only
 - Env vars: `STALL_POLL_INTERVAL_MS` (default 15000), `STALL_THRESHOLD_MS` (default 120000)
