@@ -2,7 +2,7 @@
   "project": "apra-fleet-241",
   "branch": "feat/stall-detector",
   "lastUpdated": "2026-05-05",
-  "notes": "Phase 3 checkpoint complete. T7+T8+V3 all done. Build: ✓ | Tests: 1155 passed, 7 skipped. Ready for Phase 4.",
+  "notes": "Phase 4 checkpoint complete. T9+T10+V4 all done. Build: ✓ | Tests: 1158 passed, 7 skipped. Ready for Phase 5.",
   "tasks": [
     { "id": "T1",  "title": "Fix path encoding and Gemini log directory",          "phase": 1, "tier": "cheap",    "status": "completed", "notes": "Path encoding uses -; Gemini includes /chats/" },
     { "id": "T2",  "title": "Unit tests for path encoding and log directory",       "phase": 1, "tier": "cheap",    "status": "completed", "notes": "6 tests passing" },
@@ -15,9 +15,9 @@
     { "id": "T7",  "title": "Implement polling loop",                               "phase": 3, "tier": "standard", "status": "completed", "notes": "pollLogFile in stall-poller.ts; Claude assistant timestamp; Gemini $set lastUpdated; stall_poll_format_error; tail 500 bytes; default interval 30s" },
     { "id": "T8",  "title": "Unit tests for polling and timestamp extraction",      "phase": 3, "tier": "standard", "status": "completed", "notes": "18 tests in stall-poller.test.ts; 2 detector guard tests in stall-detector.test.ts; all passing" },
     { "id": "V3",  "title": "VERIFY: Phase 3 — Activity Polling",                   "phase": 3, "tier": "standard", "status": "completed", "type": "verify", "notes": "Build: ✓ | Tests: 1155 passed, 7 skipped | 71 test files" },
-    { "id": "T9",  "title": "Inject AbortSignal into execCommand",                 "phase": 4, "tier": "premium",  "status": "pending", "notes": "" },
-    { "id": "T10", "title": "Unit tests for disconnect cleanup",                    "phase": 4, "tier": "premium",  "status": "pending", "notes": "" },
-    { "id": "V4",  "title": "VERIFY: Phase 4 — MCP Disconnect Fix",                 "phase": 4, "tier": "premium",  "status": "pending", "type": "verify", "notes": "" },
+    { "id": "T9",  "title": "Inject AbortSignal into execCommand",                 "phase": 4, "tier": "premium",  "status": "completed", "notes": "abortSignal added to AgentStrategy.execCommand interface; LocalStrategy kills child + settles; SSH settles + closes stream; execute-prompt.ts passes extra?.signal to all 3 execCommand calls" },
+    { "id": "T10", "title": "Unit tests for disconnect cleanup",                    "phase": 4, "tier": "premium",  "status": "completed", "notes": "3 tests: abort unblocks hung execCommand, cleanup when tryKillPid rejects, abort does not set offline; all verify stall + inFlightAgents cleanup" },
+    { "id": "V4",  "title": "VERIFY: Phase 4 — MCP Disconnect Fix",                 "phase": 4, "tier": "premium",  "status": "completed", "type": "verify", "notes": "Build: ✓ | Tests: 1158 passed, 7 skipped | 71 test files" },
     { "id": "T11", "title": "Fix toLocalISOString",                                 "phase": 5, "tier": "cheap",    "status": "pending", "notes": "" },
     { "id": "T12", "title": "Unit tests for toLocalISOString",                      "phase": 5, "tier": "cheap",    "status": "pending", "notes": "" },
     { "id": "V5",  "title": "VERIFY: Phase 5 — toLocalISOString Fix",               "phase": 5, "tier": "cheap",    "status": "pending", "type": "verify", "notes": "" }
