@@ -192,3 +192,96 @@ No regressions. Phase 1 functionality (path encoding, log directory resolution, 
 2. (Phase 1) No Windows unit test for inv token in `buildAgentPromptCommand`.
 3. (Phase 2) BSD `find` on macOS doesn't support `-newermt` — remote macOS agents will need a fallback. Acknowledged in risk register; deferred.
 4. (Phase 2) No unit test for `readFileSync` throw during local inv token check (handled by catch, non-blocking).
+
+---
+
+## Phase 3 Review
+
+**Date:** 2026-05-05 17:25:00-04:00
+
+### Build & Tests
+
+- `npm run build`: PASS — clean compile, no errors.
+- `npm test`: PASS — 1156 passed, 6 skipped, 0 failures.
+
+### Task 7: Implement polling loop (`stall-poller.ts` + `stall-detector.ts` updates)
+
+**Commits:** `b63bb07`
+**Files:** `src/services/stall/stall-poller.ts` (new, 85 lines), `src/services/stall/stall-detector.ts` (3 changed lines)
+
+**Done criteria check:**
+- `stall_detected` fires exactly once per stall period: PASS — `!entry.stallReported` guard at lines 91 and 151 in stall-detector.ts, with `stallReported: true` set immediately after firing. Tested in T8.
+- Resets after activity resumes: PASS — when `ts > entry.lastActivityAt`, `stallReported` is reset to `false` (line 138). Tested in T8.
+- Claude `timestamp` field correctly extracted from `assistant` entries: PASS — `extractClaudeTimestamp` iterates lines in reverse, matches `type === 'assistant'`, returns `timestamp` string (lines 48–64).
+- Gemini `lastUpdated` extracted from `$set` lines: PASS — `extractGeminiTimestamp` iterates lines in reverse, checks for `$set` key, returns `lastUpdated` string (lines 67–84).
+- `stall_poll_format_error` logged on missing fields: PASS — logged when `assistant` entry lacks `timestamp` (line 57) or `$set` entry lacks `lastUpdated` (line 77).
+- 500-byte tail: PASS — `tail -c 500` on Unix (line 22).
+- Default interval 30s: PASS — `DEFAULT_POLL_INTERVAL_MS = 30_000` (line 13 of stall-detector.ts).
+
+**Architecture review:**
+- Clean module boundary: `stall-poller.ts` owns the "read tail, extract timestamp" concern. `stall-detector.ts` owns the "track state, detect stalls" concern. The detector calls `pollLogFile` as a pure I/O function and makes all state decisions itself. Good separation.
+- The import swap from `readLogTail` → `pollLogFile` is a clean drop-in replacement — same `{ lastTimestamp, error }` return shape.
+- Provider dispatch uses `agent.llmProvider ?? 'claude'` — defaulting to Claude is correct since it's the dominant provider and matches existing convention elsewhere.
+
+**Code quality observations:**
+- Windows path uses `Get-Content -Tail 20` (line count) vs Unix `tail -c 500` (byte count). The asymmetry is intentional — PowerShell `Get-Content` doesn't have a byte-count mode. 20 lines is a reasonable equivalent for JSONL where lines are ~100-300 bytes. Acceptable.
+- `logFilePath` is interpolated directly into the shell command string (lines 21–22). No injection risk — the path comes from `findLogFile` which derives it from internal registry/filesystem state, not user input.
+- Both `extractClaudeTimestamp` and `extractGeminiTimestamp` scan in reverse order (last→first) — correct for finding the most recent entry from a tail.
+- Both extractors return `{ lastTimestamp: null }` (no error) when no matching entries exist at all — this is correct behavior. A file may contain only `user` entries or non-`$set` lines; that's not an error, just "no activity data yet."
+- The `catch` blocks in extractors silently skip unparseable lines — correct for `tail -c` which may cut the first line mid-JSON.
+- 5000ms timeout on `strategy.execCommand` (line 26) — reasonable for a lightweight tail command, even over SSH.
+
+**Verdict: PASS**
+
+### Task 8: Unit tests for polling and timestamp extraction
+
+**Commits:** `cc89928`
+**Files:** `tests/stall-poller.test.ts` (new, 230 lines, 18 tests), `tests/stall-detector.test.ts` (+38 lines, 2 new tests)
+
+**Done criteria check:**
+- Claude `timestamp` extraction tests: PASS — 7 tests: basic extraction, ignoring non-assistant, no assistant entries, missing timestamp field, partial lines, Unix command shape, Windows command shape.
+- Gemini `lastUpdated` extraction tests: PASS — 4 tests: basic extraction, last `$set` wins, no `$set` lines, missing `lastUpdated` field.
+- Once-per-stall guard (`stallReported`) test: PASS — test fires two consecutive polls with stale timestamp, asserts `stall_detected` emitted exactly once.
+- Reset after activity advance: PASS — test starts with `stallReported: true`, provides fresh timestamp, asserts `stallReported` reset to `false` and `lastActivityAt` updated.
+- Missing-field log path: PASS — both Claude and Gemini missing-field tests assert `stall_poll_format_error` emission.
+
+**Test quality:**
+- Clean mock architecture: `vi.hoisted` + `vi.mock` for registry, strategy, log helpers, agent helpers. Same pattern as `find-log-file.test.ts`.
+- `jsonLines` helper for building multi-line JSONL stdout — concise and readable.
+- Error handling tests (3 tests): file-not-found, permission denied, SSH timeout. All verify correct `lastTimestamp: null` + appropriate error/no-error returns.
+- The 2 new stall-detector tests (stallReported guard) are placed in the existing `stall-detector.test.ts` file, extending the `_poll` describe block. Good — keeps stall-detector tests together rather than scattering them.
+- Test count: 18 (stall-poller) + 2 (stall-detector) = 20 new tests. Net test increase from Phase 2: +17 (1139→1156). The delta is 17 not 20 because 3 existing stall-detector tests were updated from `mockReadLogTail` → `mockPollLogFile` (mock rename, not new tests).
+
+**Minor observations:**
+- No test for the edge case where `stdout` is completely empty (0 lines after split+filter). The extractors would return `{ lastTimestamp: null }` via the fallthrough — correct behavior. Not blocking.
+- No test for `llmProvider: undefined` defaulting to Claude extraction. The `?? 'claude'` default in `pollLogFile` is untested, though it matches the app-wide convention. Not blocking.
+
+**Verdict: PASS**
+
+---
+
+## Regression Check
+
+No regressions. Phase 1 (path encoding, inv token) and Phase 2 (findLogFile) functionality untouched by Phase 3 commits. The only change to existing code was the import swap in `stall-detector.ts` (`readLogTail` → `pollLogFile`) and mock renames in `stall-detector.test.ts` — both are clean mechanical replacements with identical API shapes. `readLogTail` is still referenced by `read-log-tail.test.ts` (9 tests) — it remains a valid module; it's just no longer used by the stall detector. If it's now dead code, cleanup can happen post-sprint.
+
+---
+
+## Cumulative Summary
+
+**Phase 1: APPROVED** — T1–T4 done, all criteria met.
+**Phase 2: APPROVED** — T5–T6 done, all criteria met.
+**Phase 3: APPROVED** — T7–T8 done, all criteria met.
+
+**Build:** PASS (clean compile)
+**Tests:** 1156 passed, 6 skipped, 0 failures.
+
+**No blocking issues found.**
+
+**Notes carried forward (non-blocking):**
+1. (Phase 1) Cosmetic inconsistency: `basename()` vs `.split().pop()` in log-path-resolver.
+2. (Phase 1) No Windows unit test for inv token in `buildAgentPromptCommand`.
+3. (Phase 2) BSD `find` on macOS doesn't support `-newermt` — remote macOS agents will need a fallback. Acknowledged in risk register; deferred.
+4. (Phase 2) No unit test for `readFileSync` throw during local inv token check (handled by catch, non-blocking).
+5. (Phase 3) Windows `Get-Content -Tail 20` (line count) vs Unix `tail -c 500` (byte count) — asymmetric but correct; PowerShell lacks byte-count tail.
+6. (Phase 3) `readLogTail` module is now unused by the stall detector — potential dead code for post-sprint cleanup.
+7. (Phase 3) No test for `llmProvider: undefined` defaulting to Claude extraction path.
