@@ -17,5 +17,5 @@
 - {{technical, timeline, or compatibility constraint}}
 
 ## Acceptance Criteria
-- [ ] {{observable outcome that proves the goal is met}}
+- [ ] {{observable outcome proving the goal is met}}
 - [ ] {{observable outcome}}

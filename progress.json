@@ -15,7 +15,7 @@
     { "id": "T8",  "phase": 3, "title": "Compress PM ops batch 3: init.md, context-file.md, plan-prompt.md", "tier": "standard", "status": "completed", "notes": "Lite-compressed. Counts: before=1678 after=1181 (29.6% reduction)." },
     { "id": "V3",  "phase": 3, "title": "VERIFY: Phase 3 — PM operational files", "type": "verify", "tier": "standard", "status": "completed", "notes": "Phase 3 complete. Counts: before=6607 after=6150 (-6.9%). Build pass. Pushed." },
     { "id": "T9",  "phase": 4, "title": "Compress PM templates batch 1: tpl-doer.md, tpl-reviewer.md, tpl-reviewer-plan.md, tpl-plan.md", "tier": "standard", "status": "completed", "notes": "Lite-compressed. Counts: before=1666 after=1663 (0.2% reduction)." },
-    { "id": "T10", "phase": 4, "title": "Compress PM templates batch 2: tpl-deploy.md, tpl-design.md, tpl-requirements.md, tpl-status.md", "tier": "standard", "status": "pending", "notes": "" },
+    { "id": "T10", "phase": 4, "title": "Compress PM templates batch 2: tpl-deploy.md, tpl-design.md, tpl-requirements.md, tpl-status.md", "tier": "standard", "status": "completed", "notes": "Lite-compressed. Counts: before=374 after=375 (+0.3% increase)." },
     { "id": "T11", "phase": 4, "title": "Compress PM templates batch 3: tpl-backlog.md, tpl-projects.md, tpl-pm.md", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "V4",  "phase": 4, "title": "VERIFY: Phase 4 — PM template files", "type": "verify", "tier": "standard", "status": "pending", "notes": "" },
     { "id": "T12", "phase": 5, "title": "Risk review — write COMPRESSION_LITE_REVIEW.md, fix all HIGH findings", "tier": "standard", "status": "pending", "notes": "" },
