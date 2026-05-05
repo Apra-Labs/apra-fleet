@@ -1,6 +1,6 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
-import { readLogTail } from './read-log-tail.js';
+import { pollLogFile } from './stall-poller.js';
 
 function toLocalISOString(ms: number): string {
   const d = new Date(ms);
@@ -10,7 +10,7 @@ function toLocalISOString(ms: number): string {
   return d.toISOString().replace('Z', `${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`);
 }
 
-const DEFAULT_POLL_INTERVAL_MS = 15_000;
+const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_STALL_THRESHOLD_MS = 120_000;
 
 export interface StallEntry {
@@ -111,7 +111,7 @@ export class StallDetector {
         lastActivityAt: entry.lastActivityAt,
       }));
 
-      const { lastTimestamp, error } = await readLogTail(memberId, entry.logFilePath);
+      const { lastTimestamp, error } = await pollLogFile(memberId, entry.logFilePath);
 
       if (error) {
         const newFailures = entry.consecutiveReadFailures + 1;

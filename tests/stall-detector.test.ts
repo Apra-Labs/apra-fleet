@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockReadLogTail, mockUpdateAgent, mockLogLine, mockLogWarn } = vi.hoisted(() => ({
-  mockReadLogTail: vi.fn(),
+const { mockPollLogFile, mockUpdateAgent, mockLogLine, mockLogWarn } = vi.hoisted(() => ({
+  mockPollLogFile: vi.fn(),
   mockUpdateAgent: vi.fn(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
 }));
 
-vi.mock('../src/services/stall/read-log-tail.js', () => ({
-  readLogTail: mockReadLogTail,
+vi.mock('../src/services/stall/stall-poller.js', () => ({
+  pollLogFile: mockPollLogFile,
 }));
 
 vi.mock('../src/services/registry.js', () => ({
@@ -128,7 +128,7 @@ describe('StallDetector', () => {
       detector.add('member-1', entry);
 
       const newTimestamp = new Date(baseTime + 5000).toISOString();
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: newTimestamp });
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: newTimestamp });
 
       await detector._poll();
 
@@ -141,7 +141,7 @@ describe('StallDetector', () => {
     it('does not emit stall_detected when activity advances', async () => {
       const baseTime = Date.now();
       detector.add('member-1', makeEntry({ lastActivityAt: baseTime }));
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: new Date(baseTime + 1000).toISOString() });
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(baseTime + 1000).toISOString() });
 
       await detector._poll();
 
@@ -159,7 +159,7 @@ describe('StallDetector', () => {
 
       // Timestamp is older than lastActivityAt — no new activity
       const oldTimestamp = new Date(pastTime - 1000).toISOString();
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: oldTimestamp });
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: oldTimestamp });
 
       await detector._poll();
 
@@ -175,7 +175,7 @@ describe('StallDetector', () => {
     it('increments consecutiveIdleCycles when timestamp is stale', async () => {
       const pastTime = Date.now() - 200;
       detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: new Date(pastTime - 1000).toISOString() });
 
       await detector._poll();
 
@@ -188,7 +188,7 @@ describe('StallDetector', () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const baseTime = Date.now() - 10_000;
       detector.add('member-1', makeEntry({ lastActivityAt: baseTime, consecutiveIdleCycles: 0 }));
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: null }); // no error field = file not found
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null }); // no error field = file not found
 
       await detector._poll();
 
@@ -203,7 +203,7 @@ describe('StallDetector', () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const baseTime = Date.now() - 10_000;
       detector.add('member-1', makeEntry({ lastActivityAt: baseTime }));
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: null, error: 'Connection refused' });
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, error: 'Connection refused' });
 
       await detector._poll();
 
@@ -215,7 +215,7 @@ describe('StallDetector', () => {
     it('logs warning after 3 consecutive read failures', async () => {
       const baseTime = Date.now() - 10_000;
       detector.add('member-1', makeEntry({ lastActivityAt: baseTime, consecutiveReadFailures: 2 }));
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: null, error: 'Timeout' });
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: null, error: 'Timeout' });
 
       await detector._poll();
 
@@ -230,7 +230,7 @@ describe('StallDetector', () => {
     it('skips log reading for provisional entries', async () => {
       detector.add('member-1', makeEntry({ provisional: true, logFilePath: null }));
       await detector._poll();
-      expect(mockReadLogTail).not.toHaveBeenCalled();
+      expect(mockPollLogFile).not.toHaveBeenCalled();
     });
 
     it('emits stall_detected for provisional entry exceeding threshold', async () => {
