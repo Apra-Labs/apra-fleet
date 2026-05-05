@@ -1,0 +1,30 @@
+| File | Baseline Words |
+|------|----------------|
+| skills/fleet/auth-azdevops.md | 326 |
+| skills/fleet/auth-bitbucket.md | 277 |
+| skills/fleet/auth-github.md | 352 |
+| skills/fleet/onboarding.md | 573 |
+| skills/fleet/permissions.md | 178 |
+| skills/fleet/SKILL.md | 2186 |
+| skills/fleet/skill-matrix.md | 268 |
+| skills/fleet/troubleshooting.md | 301 |
+| skills/pm/cleanup.md | 158 |
+| skills/pm/context-file.md | 303 |
+| skills/pm/doer-reviewer.md | 1174 |
+| skills/pm/init.md | 223 |
+| skills/pm/multi-pair-sprint.md | 508 |
+| skills/pm/plan-prompt.md | 1152 |
+| skills/pm/simple-sprint.md | 321 |
+| skills/pm/single-pair-sprint.md | 1291 |
+| skills/pm/SKILL.md | 1476 |
+| skills/pm/tpl-backlog.md | 76 |
+| skills/pm/tpl-deploy.md | 113 |
+| skills/pm/tpl-design.md | 91 |
+| skills/pm/tpl-doer.md | 433 |
+| skills/pm/tpl-plan.md | 437 |
+| skills/pm/tpl-pm.md | 15 |
+| skills/pm/tpl-projects.md | 15 |
+| skills/pm/tpl-requirements.md | 80 |
+| skills/pm/tpl-reviewer-plan.md | 329 |
+| skills/pm/tpl-reviewer.md | 467 |
+| skills/pm/tpl-status.md | 90 |
