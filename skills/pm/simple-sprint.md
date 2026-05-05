@@ -1,42 +1,42 @@
 # Simple Sprint
 
-A simple sprint is a short, focused task that a single member can complete in one or a few sessions. Use this when the work is small enough that a full task harness (PLAN.md, progress.json) is unnecessary overhead.
+Short, focused task. Single member, 1 session. No `PLAN.md` or `progress.json`.
 
-## When to use
+## Usage
 
-- 1–3 tasks, completable in a single session
-- No complex phasing or cross-phase dependencies
-- Low risk, well-understood scope
+- 1–3 tasks.
+- No complex phasing/dependencies.
+- Low risk, clear scope.
 
-Use the full sprint lifecycle (single-pair-sprint.md) for anything larger.
+Larger? Use `single-pair-sprint.md`.
 
 ## Flow
 
-**Branch naming:** choose a name that makes the purpose immediately clear — `feat/<description>`, `bug_fix/<short_description>`, `chore/<description>`, etc. PM records this as `{{branch}}` in the agent context file before dispatch.
+**Branch naming**: clear purpose (`feat/<desc>`). PM records as `{{branch}}` in context file.
 
-1. Write `<project>/requirements.md` — keep it concise but complete
-2. Dispatch doer via ad-hoc `execute_prompt` — include requirements inline or reference the file
-3. Doer completes work, commits, and pushes
-4. PM dispatches reviewer (fresh session, `resume=false`) — send requirements + diff context
-5. Reviewer outputs verdict: APPROVED or CHANGES NEEDED
-6. On APPROVED: update `<project>/backlog.md` with any unresolved findings or deferred items, then cleanup and raise PR — see cleanup.md
-7. On CHANGES NEEDED: send feedback to doer, re-dispatch, repeat from step 3
+1. Write concise `<project>/requirements.md`.
+2. Dispatch doer via `execute_prompt`.
+3. Doer completes/commits/pushes.
+4. Dispatch reviewer (`resume=false`). Send requirements + diff.
+5. Verdict: APPROVED or CHANGES NEEDED.
+6. APPROVED: update `backlog.md`, cleanup, raise PR (`cleanup.md`).
+7. CHANGES NEEDED: send feedback to doer, re-dispatch.
 
 ## Rules
 
-- Still requires permissions, pre-flight checks, and doer/reviewer pairing (see doer-reviewer.md)
-- No progress.json or PLAN.md — status is tracked in `<project>/status.md` by PM
-- Agent context file is still required for doer and reviewer (see context-file.md)
+- Still requires permissions, pre-flights, pairing (`doer-reviewer.md`).
+- No `progress.json`. Status in `<project>/status.md`.
+- Agent context file is required (`context-file.md`).
 
-## Recovery After PM Restart
+## Recovery
 
-No progress.json — recovery relies on git history and status.md.
+Relies on git + `status.md`.
 
-1. `execute_command → git log --oneline -5` on member — any commits since last known state?
-2. `execute_command → git status` — uncommitted changes?
-3. Compare against `<project>/status.md` — what did PM last know?
+1. `git log` on member.
+2. `git status`.
+3. Compare with `status.md`.
 
-- **Work committed, next step clear** → resume doer with `resume=true` or dispatch reviewer
-- **At review checkpoint** → dispatch reviewer with `resume=false`
-- **Uncommitted changes of unknown origin** → escalate to user: "commit and resume, or discard?"
-- **No progress** → re-dispatch from scratch
+- **Committed, clear next step**: resume doer (`resume=true`) or dispatch reviewer.
+- **Review checkpoint**: dispatch reviewer (`resume=false`).
+- **Unknown uncommitted changes**: escalate to user.
+- **No progress**: re-dispatch.
