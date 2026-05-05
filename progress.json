@@ -2,7 +2,7 @@
   "project": "apra-fleet-241",
   "branch": "feat/stall-detector",
   "lastUpdated": "2026-05-05",
-  "notes": "Phase 5 complete. T11+T12+V5 all done. Build: ✓ | Tests: 1165 passed, 7 skipped. All 5 phases complete. Ready for final PR review.",
+  "notes": "Phase 5 review fixes applied (commit e069bc4). Sign logic corrected (offsetMin = offset) and tests strengthened (getHours() assertion). Build/test unverified this session — npm not in project allowlist. Prior session: 1165 passed, 7 skipped.",
   "tasks": [
     { "id": "T1",  "title": "Fix path encoding and Gemini log directory",          "phase": 1, "tier": "cheap",    "status": "completed", "notes": "Path encoding uses -; Gemini includes /chats/" },
     { "id": "T2",  "title": "Unit tests for path encoding and log directory",       "phase": 1, "tier": "cheap",    "status": "completed", "notes": "6 tests passing" },
