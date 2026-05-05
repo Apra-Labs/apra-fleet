@@ -2,7 +2,7 @@
   "project": "apra-fleet-241",
   "branch": "feat/stall-detector",
   "lastUpdated": "2026-05-05",
-  "notes": "Phase 5 checkpoint complete. T11+T12 all done. Build: ✓ | Tests: 1165 passed, 7 skipped. Running V5 verification.",
+  "notes": "Phase 5 complete. T11+T12+V5 all done. Build: ✓ | Tests: 1165 passed, 7 skipped. All 5 phases complete. Ready for final PR review.",
   "tasks": [
     { "id": "T1",  "title": "Fix path encoding and Gemini log directory",          "phase": 1, "tier": "cheap",    "status": "completed", "notes": "Path encoding uses -; Gemini includes /chats/" },
     { "id": "T2",  "title": "Unit tests for path encoding and log directory",       "phase": 1, "tier": "cheap",    "status": "completed", "notes": "6 tests passing" },
@@ -20,6 +20,6 @@
     { "id": "V4",  "title": "VERIFY: Phase 4 — MCP Disconnect Fix",                 "phase": 4, "tier": "premium",  "status": "completed", "type": "verify", "notes": "Build: ✓ | Tests: 1158 passed, 7 skipped | 71 test files" },
     { "id": "T11", "title": "Fix toLocalISOString",                                 "phase": 5, "tier": "cheap",    "status": "completed", "notes": "toLocalISOString moved to time-utils.ts; corrected implementation: subtract offsetMin * 60000 from ms, fix sign logic" },
     { "id": "T12", "title": "Unit tests for toLocalISOString",                      "phase": 5, "tier": "cheap",    "status": "completed", "notes": "7 timezone-agnostic tests in tests/time-utils.test.ts; all passing" },
-    { "id": "V5",  "title": "VERIFY: Phase 5 — toLocalISOString Fix",               "phase": 5, "tier": "cheap",    "status": "in_progress", "type": "verify", "notes": "Build: ✓ | Tests: 1165 passed, 7 skipped (72 files)" }
+    { "id": "V5",  "title": "VERIFY: Phase 5 — toLocalISOString Fix",               "phase": 5, "tier": "cheap",    "status": "completed", "type": "verify", "notes": "Build: ✓ | Tests: 1165 passed, 7 skipped (72 files) | All Phase 5 tasks verified" }
   ]
 }
