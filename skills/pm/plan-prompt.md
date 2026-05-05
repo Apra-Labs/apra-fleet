@@ -1,94 +1,87 @@
 # Plan Generation Prompt
 
-Send this to the member (via `execute_prompt`) before writing any plan:
+Send this to the member via `execute_prompt` before writing a plan:
 
 ---
 
-You are generating an implementation plan. Read requirements.md for what needs to be built.
+You are generating an implementation plan. Read `requirements.md` for build specifications.
 
-### PHASE 0 — EXPLORE (before writing any plan)
+### PHASE 0 — EXPLORE (before writing plan)
 
-1. Read relevant source files for this task
-2. Read existing tests — understand conventions and framework
-3. `git log --oneline -20` — recent changes in the area
-4. List assumptions about how the code works
-5. For every assumption you listed, answer: "How do I know this is currently true?" Then verify it.
-   Two categories to check:
-   - **Existence:** Does the thing you are building on top of actually exist right now? (e.g. a named entity, interface, resource, capability, configuration, or path your plan depends on)
-   - **Accessibility:** Can the part of the system that needs it actually reach it? (e.g. is it exposed, connected, permitted, or in scope for the component that will use it)
-   If you cannot verify an assumption, it becomes a risk register entry, not a task precondition.
-6. Report: what you found, what patterns exist, what constraints matter
+1. Read relevant source files for this task.
+2. Read existing tests to understand conventions and framework.
+3. `git log --oneline -20` — review recent changes in the area.
+4. List assumptions regarding code functionality.
+5. For every assumption, answer: "How do I know this is currently true?" Then verify it.
+   Check two categories:
+   - **Existence:** Does the component you are building on actually exist? (e.g., entity, interface, resource, or path).
+   - **Accessibility:** Can the system part that needs it actually reach it? (e.g., exposed, connected, permitted).
+   Unverified assumptions become risk register entries, not task preconditions.
+6. Report findings, patterns, and constraints.
 
 ### PHASE 1 — DRAFT
 
 For each task include:
-- What file(s) to create or change
-- What the change does — specific, not vague ("add X method to Y class" not "implement feature")
-- What "done" means — test passes, output appears, API returns expected response
-- What could block — missing dependency, unclear API, native code issue
+- Files to create or change.
+- Description of the change (specific, e.g., "add X method to Y class").
+- Definition of "done" (test passes, output appears, API returns expected response).
+- Potential blockers (missing dependency, unclear API, native code issue).
 
 Rules:
-- **Phase boundaries by cohesion, not count** — a phase is a coherent unit of work that produces a reviewable, testable increment. Group tasks into a phase when they share a data model, code path, or design decision — splitting them would produce an incoherent intermediate state or require touching the same code twice. Place a VERIFY at the natural completion boundary of that unit, not at an arbitrary task count. Phases may have 4-5 tasks (a coherent subsystem) or just 1-2 (a genuinely isolated change).
-- Each task completable in one session, results in one commit
-- Tasks ordered so dependencies are satisfied
+- **Phase boundaries by cohesion:** A phase is a coherent unit of work producing a reviewable, testable increment. Group tasks sharing a data model, code path, or design decision. Place a VERIFY at the natural completion boundary. Phases may have 1-5 tasks.
+- Each task must be completable in one session and result in one commit.
+- Order tasks to satisfy dependencies.
 - **Model tier assignment:** Assign a tier (`cheap`, `standard`, or `premium`) to every work task based on complexity:
-  - `cheap` — mechanical changes with no ambiguity (rename, move, simple config edit)
-  - `standard` — typical implementation work (new function, test suite, moderate refactor)
-  - `premium` — high-ambiguity design tasks, architectural decisions, or tasks requiring deep multi-file reasoning
-  - Write the tier into the task entry in PLAN.md (e.g. `- **Tier:** standard`)
-  - When the PM creates progress.json from the plan, it copies each task's tier into `tasks[i].tier`
-  - During dispatch, the PM reads `tasks[i].tier` and passes `model: <tier>` to `execute_prompt` for doer dispatches
-  - **Constraint:** Reviewer dispatches always use `model: premium` regardless of the task tier — this is not configurable by the planner
-- **The plan is the elaboration, not the summary:** requirements.md uses terse human language with intentional ambiguity. PLAN.md must resolve that ambiguity — every edge case decided, every behaviour specified, every acceptance criterion precise enough that two developers would implement the same thing. Referencing requirements.md for background is fine; deferring a decision to it is not.
-- **Monotonically non-decreasing tiers within a phase:** Within a phase, order tasks cheap → standard → premium. The PM resumes the same session across tasks in a phase — a premium task can build a large context that a cheap model cannot load. The PM may group consecutive same-tier tasks into a single dispatch streak; tier transitions trigger a new dispatch. If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary. Cross-phase tier order does not matter — each phase starts a fresh session.
-  ```
-  cheap → cheap → standard → standard → premium → VERIFY  ✅
-  cheap → standard → cheap → VERIFY  ❌  (downgrade within phase — split into two phases)
-  ```
+  - `cheap`: mechanical changes without ambiguity (rename, move, simple config edit).
+  - `standard`: typical implementation work (new function, test suite, moderate refactor).
+  - `premium`: high-ambiguity design tasks, architectural decisions, or deep multi-file reasoning.
+  - Record the tier in the task entry in `PLAN.md` (e.g., `- **Tier:** standard`).
+  - The PM copies each task's tier into `progress.json`.
+  - During dispatch, the PM passes `model: <tier>` to `execute_prompt`.
+  - **Constraint:** Reviewer dispatches always use `model: premium`.
+- **The plan is the elaboration:** `requirements.md` uses terse language with intentional ambiguity. `PLAN.md` must resolve that ambiguity — specify every edge case and behavior. Precise acceptance criteria are required.
+- **Monotonically non-decreasing tiers within a phase:** Order tasks `cheap` → `standard` → `premium` within a phase. The PM resumes the session across tasks in a phase. Tier transitions trigger a new dispatch. Split the phase if a dependency forces a higher-tier task before a lower-tier task.
 
 ### PHASE 2 — FRONT-LOAD FOUNDATIONS
 
-Two things go first:
-1. Key abstractions and shared interfaces — later tasks build on these. If the foundation is wrong, everything above it is wasted.
-2. Riskiest assumption — the thing that, if it doesn't work, invalidates everything else.
+1. Key abstractions and shared interfaces: later tasks build on these.
+2. Riskiest assumption: validate first to avoid invalidating subsequent work.
 
-Later tasks MUST follow DRY — reuse the abstractions from early tasks, never reinvent. If two tasks duplicate logic, the plan is sliced wrong.
-
-Examples: "Does the native addon run a pipeline?" — Task 1, not Task 15. "Define the shared auth interface" — Task 1, not scattered across 5 tasks.
+Follow DRY: reuse abstractions from early tasks. Avoid duplicating logic across tasks.
 
 ### PHASE 3 — SELF-CRITIQUE
 
-Golden rule: high cohesion within each task, low coupling between tasks. If a task needs the whole project to make sense, it's sliced wrong.
+Rule: high cohesion within tasks, low coupling between tasks.
 
-Check your draft against these failure modes:
-- Low cohesion — does this task touch unrelated areas? Split by component boundary.
-- High coupling — does task N depend heavily on task M's internals? Decouple via interfaces.
-- Vague task — could two developers interpret this differently?
-- Too large — more than ~50 tool calls? Split it.
-- Hidden dependency — does task N assume something from task M that isn't explicit?
-- Late verification — 5+ tasks before checking if the approach works?
-- Wrong ordering — could the riskiest assumption be validated earlier?
-- Missing "done" criteria — how does the member know the task is complete?
-- Phase boundary at wrong place — does this phase mix unrelated subsystems that could be reviewed independently? Or does it split a cohesive unit across two phases?
-- Untracked work — re-read every task description, note, and comment in your draft. Does any sentence say "X will also need to change", "X must be updated", or "X is a prerequisite"? If yes and there is no task that does that work, either add the task or explicitly state it is out of scope.
-- Missing blocker — does this task depend on anything that another task produces or puts in place? If yes, that task must be listed in Blockers, even if the phase order implies it.
-- Tier downgrade within a phase — does any task have a lower tier than the task before it in the same phase? If yes, either reorder (if dependencies allow) or split the phase at the downgrade point. Cross-phase tier order does not matter — each phase starts with a fresh session.
+Check draft for these failure modes:
+- Low cohesion: task touches unrelated areas? Split by component boundary.
+- High coupling: task N depends heavily on task M internals? Decouple via interfaces.
+- Vague task: could two developers interpret this differently?
+- Too large: more than ~50 tool calls? Split it.
+- Hidden dependency: task N assumes something from task M that is not explicit?
+- Late verification: 5+ tasks before checking approach?
+- Wrong ordering: validate riskiest assumption earlier?
+- Missing "done" criteria: how is completeness verified?
+- Phase boundary at wrong place: does phase mix unrelated subsystems or split a cohesive unit?
+- Untracked work: ensure every change mentioned in descriptions has a corresponding task.
+- Missing blocker: list dependencies in Blockers, even if phase order implies them.
+- Tier downgrade: split phase or reorder tasks if tier decreases within a phase.
 
 ### PHASE 4 — REFINE
 
 Rewrite incorporating critique:
-- Move risky/uncertain tasks earlier
-- Split vague tasks into specific ones
-- VERIFY checkpoint at the natural completion boundary of each cohesive phase
-- Every task has clear "done" criteria
+- Move risky tasks earlier.
+- Split vague tasks.
+- VERIFY checkpoint at natural completion boundaries.
+- Clear "done" criteria for every task.
 
 ### PHASE 5 — BRANCH & COMMIT
 
-1. Read requirements.md for the base branch (default: `main`)
+1. Read `requirements.md` for base branch.
 2. `git fetch origin && git checkout -b <feature-branch> origin/<base-branch>`
-3. Commit the plan files to the feature branch — NEVER commit to the base branch
+3. Commit plan files to feature branch — do not commit to base branch.
 4. `git push -u origin <feature-branch>`
 
-Output the final plan in tpl-plan.md format.
+Output final plan in `tpl-plan.md` format.
 
 ---
