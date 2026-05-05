@@ -1,6 +1,6 @@
 # {{PROJECT_NAME}} — Backlog
 
-Items not resolved in a sprint live here for the next one. Each entry must include full detail — never summarize.
+Items not resolved in a sprint live here for the next one. Each entry must include full detail. Do not summarize.
 
 ---
 
