@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const mockReadLogTail = vi.fn();
-const mockUpdateAgent = vi.fn();
-const mockLogLine = vi.fn();
-const mockLogWarn = vi.fn();
+const { mockReadLogTail, mockUpdateAgent, mockLogLine, mockLogWarn } = vi.hoisted(() => ({
+  mockReadLogTail: vi.fn(),
+  mockUpdateAgent: vi.fn(),
+  mockLogLine: vi.fn(),
+  mockLogWarn: vi.fn(),
+}));
 
 vi.mock('../src/services/stall/read-log-tail.js', () => ({
   readLogTail: mockReadLogTail,
@@ -41,7 +43,6 @@ describe('StallDetector', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     detector = new StallDetector();
-    // Reset env vars
     delete process.env['STALL_POLL_INTERVAL_MS'];
     delete process.env['STALL_THRESHOLD_MS'];
   });
@@ -143,7 +144,7 @@ describe('StallDetector', () => {
 
       await detector._poll();
 
-      const stallCalls = mockLogLine.mock.calls.filter(c => c[0] === 'stall_detected');
+      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
       expect(stallCalls).toHaveLength(0);
     });
   });
@@ -155,15 +156,15 @@ describe('StallDetector', () => {
       const entry = makeEntry({ lastActivityAt: pastTime });
       detector.add('member-1', entry);
 
-      // Timestamp is older than lastActivityAt
+      // Timestamp is older than lastActivityAt — no new activity
       const oldTimestamp = new Date(pastTime - 1000).toISOString();
       mockReadLogTail.mockResolvedValue({ lastTimestamp: oldTimestamp });
 
       await detector._poll();
 
-      const stallCalls = mockLogLine.mock.calls.filter(c => c[0] === 'stall_detected');
+      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
       expect(stallCalls).toHaveLength(1);
-      const logged = JSON.parse(stallCalls[0][1]);
+      const logged = JSON.parse(stallCalls[0][1] as string);
       expect(logged.event).toBe('stall_detected');
       expect(logged.memberId).toBe('member-1');
       expect(logged.memberName).toBe('alice');
@@ -182,16 +183,16 @@ describe('StallDetector', () => {
   });
 
   describe('_poll — missing log file (no false stall)', () => {
-    it('does not count as stall cycle when file not created', async () => {
+    it('does not count as stall cycle when file not yet created', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const baseTime = Date.now() - 10_000;
       detector.add('member-1', makeEntry({ lastActivityAt: baseTime, consecutiveIdleCycles: 0 }));
-      mockReadLogTail.mockResolvedValue({ lastTimestamp: null });
+      mockReadLogTail.mockResolvedValue({ lastTimestamp: null }); // no error field = file not found
 
       await detector._poll();
 
       expect(detector.getEntry('member-1')?.consecutiveIdleCycles).toBe(0);
-      const stallCalls = mockLogLine.mock.calls.filter(c => c[0] === 'stall_detected');
+      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
       expect(stallCalls).toHaveLength(0);
     });
   });
@@ -206,7 +207,7 @@ describe('StallDetector', () => {
       await detector._poll();
 
       expect(detector.getEntry('member-1')?.consecutiveReadFailures).toBe(1);
-      const stallCalls = mockLogLine.mock.calls.filter(c => c[0] === 'stall_detected');
+      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
       expect(stallCalls).toHaveLength(0);
     });
 
@@ -238,7 +239,7 @@ describe('StallDetector', () => {
 
       await detector._poll();
 
-      const stallCalls = mockLogLine.mock.calls.filter(c => c[0] === 'stall_detected');
+      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
       expect(stallCalls).toHaveLength(1);
     });
   });

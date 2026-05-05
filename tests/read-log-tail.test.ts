@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Agent, SSHExecResult } from '../src/types.js';
 
-const mockGetAgent = vi.fn<(id: string) => Agent | undefined>();
-const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
-const mockLogLine = vi.fn();
-const mockLogWarn = vi.fn();
+const { mockGetAgent, mockExecCommand, mockLogLine, mockLogWarn } = vi.hoisted(() => ({
+  mockGetAgent: vi.fn<(id: string) => Agent | undefined>(),
+  mockExecCommand: vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>(),
+  mockLogLine: vi.fn(),
+  mockLogWarn: vi.fn(),
+}));
 
 vi.mock('../src/services/registry.js', () => ({
   getAgent: mockGetAgent,
@@ -76,7 +78,7 @@ describe('readLogTail', () => {
   it('returns null timestamp when log file does not exist', async () => {
     mockExecCommand.mockResolvedValue({
       stdout: '',
-      stderr: 'tail: cannot open \'/home/user/.claude/session.jsonl\' for reading: No such file or directory',
+      stderr: "tail: cannot open '/home/user/.claude/session.jsonl' for reading: No such file or directory",
       code: 1,
     });
 
