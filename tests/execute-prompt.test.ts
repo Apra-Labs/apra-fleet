@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
+import { getStallDetector } from '../src/services/stall/index.js';
 import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
 import { writeStatusline } from '../src/services/statusline.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -616,6 +617,139 @@ describe('busy-state clear on all exit paths (T5)', () => {
     await promise;
 
     expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(vi.mocked(writeStatusline).mock.calls.some(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
+    )).toBe(true);
+  });
+});
+
+describe('MCP disconnect cleanup (T10)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      getStallDetector().stallCheckList.delete(memberId);
+    }
+  });
+
+  it('abort signal unblocks execCommand and triggers finally cleanup when subprocess never exits', async () => {
+    const controller = new AbortController();
+    const member = makeTestAgent({ friendlyName: 'abort-hang' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
+        return new Promise<SSHExecResult>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
+        });
+      })
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // tryKillPid + deletePromptFile
+
+    const promise = executePrompt(
+      { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
+      { signal: controller.signal },
+    );
+
+    // Flush microtasks so executePrompt reaches the main execCommand and attaches the abort listener
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await promise;
+
+    expect(result).toContain('aborted');
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+    expect(vi.mocked(writeStatusline).mock.calls.some(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
+    )).toBe(true);
+  });
+
+  it('finally runs and cleans up even when tryKillPid rejects', async () => {
+    const controller = new AbortController();
+    const member = makeTestAgent({ friendlyName: 'abort-kill-fail' });
+    memberId = member.id;
+    addAgent(member);
+    setStoredPid(memberId, 9999);
+
+    let callCount = 0;
+    mockExecCommand.mockImplementation((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
+      callCount++;
+      if (callCount === 1) {
+        // tryKillPid for stored PID 9999
+        return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+      }
+      if (callCount === 2) {
+        // writePromptFile
+        return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+      }
+      if (callCount === 3) {
+        // main execCommand — hangs until abort
+        return new Promise<SSHExecResult>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
+        });
+      }
+      if (callCount === 4) {
+        // tryKillPid from abortHandler — rejects (kill failed)
+        return Promise.reject(new Error('kill failed: no such process'));
+      }
+      // deletePromptFile
+      return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+    });
+
+    const promise = executePrompt(
+      { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
+      { signal: controller.signal },
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    await promise;
+
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+  });
+
+  it('does not mark agent offline for abort errors', async () => {
+    const controller = new AbortController();
+    const member = makeTestAgent({ friendlyName: 'abort-not-offline' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
+        return new Promise<SSHExecResult>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
+        });
+      })
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const promise = executePrompt(
+      { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
+      { signal: controller.signal },
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    await promise;
+
+    const offlineCalls = vi.mocked(writeStatusline).mock.calls.filter(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'offline'
+    );
+    expect(offlineCalls).toHaveLength(0);
     expect(vi.mocked(writeStatusline).mock.calls.some(
       c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
     )).toBe(true);
