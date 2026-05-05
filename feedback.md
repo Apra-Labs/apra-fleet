@@ -1,62 +1,126 @@
-# Uninstall Command (#245) — Plan Re-Review
+# Uninstall Command (#245) — V3 Cumulative Code Review
 
-**Reviewer:** claude-opus (plan reviewer)
-**Date:** 2026-05-05 12:35:00+05:30
-**Verdict:** APPROVED
+**Reviewer:** claude-opus (code reviewer)
+**Date:** 2026-05-05 18:45:00+05:30
+**Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
 
 ---
 
-## Prior Findings Resolution
+## Prior Review Context
 
-Three blocking findings were raised in the initial review (commit 5c63998). The doer addressed all three in commits d03b5f0 and 7bcea64.
-
-### F1 — install-config.json schema (was: BLOCKING → RESOLVED)
-
-**Original issue:** install-config.json stored a single `{ llm, skill }` object. Successive installs with different providers would overwrite rather than accumulate, meaning `apra-fleet uninstall` could not reliably reverse multi-provider installs. Additionally, `uninstall --skill pm` (no --llm) had no way to iterate across providers.
-
-**Doer:** fixed in commit d03b5f0 — T1 and T2 in PLAN.md updated to use a keyed-by-provider map schema `{ "providers": { "claude": {...}, "gemini": {...} } }`. install.ts merges on each install. T2 documents that `uninstall --skill pm` (no --llm) iterates all recorded providers.
-
-**Verification:** T1 now explicitly specifies the keyed-by-provider map schema and merge-not-overwrite semantics. T2's done criteria include all six command variants. The schema design matches the recommended Option A from the original review. PASS.
-
-### F2 — Claude MCP unregistration (was: BLOCKING → RESOLVED)
-
-**Original issue:** T3 only mentioned "Revert changes in provider settings files" but Claude MCP registration uses `claude mcp add --scope user` (a CLI command), so uninstall must use `claude mcp remove apra-fleet --scope user`, not direct settings.json editing.
-
-**Doer:** fixed in commit d03b5f0 — T3 in PLAN.md now explicitly specifies that Claude MCP unregistration uses `claude mcp remove apra-fleet --scope user` (not direct file editing), and notes Windows requires `shell: 'cmd.exe'`.
-
-**Verification:** T3 now has a clearly labeled "F2 (Claude-specific)" sub-bullet specifying the CLI command, scope flag, and Windows shell requirement. This matches the install path in install.ts. PASS.
-
-### F3 — Missing risk register (was: BLOCKING → RESOLVED)
-
-**Original issue:** PLAN.md had no risk register despite the review checklist requiring one.
-
-**Doer:** fixed in commit d03b5f0 — Risk Register section added to PLAN.md covering five risks with mitigations.
-
-**Verification:** The risk register covers all five risks originally suggested in the review (corrupt config, partial installs, server race condition, cross-platform paths, user-edited settings) plus adds concrete mitigations for each. R3 (race with running server) goes beyond the suggestion by specifying a detect-and-abort strategy. R5 (user-edited settings) addresses the non-blocking note about defaultModel — T3 now specifies "only remove if it matches the fleet-installed value." PASS.
+The plan was APPROVED at commit 70ab625. This is the first code review, covering all implementation phases (T1–T5, V1–V3).
 
 ---
 
-## Non-Blocking Notes Status
+## Phase 1: Foundation (T1, T2) — Commit cdeeb14
 
-Both non-blocking notes from the initial review were also addressed:
+### T1 — Shared Config Refactoring
 
-- **defaultModel removal strategy:** T3 now explicitly states "only remove if it matches the fleet-installed value (preserve user customization)." PASS.
-- **Confirmation prompt / --yes bypass:** T3's done criteria now include "--yes bypasses confirm prompt; interactive confirm shown otherwise." PASS.
+Code extracted from `install.ts` into `src/cli/config.ts`: `getProviderInstallConfig`, `readConfig`, `writeConfig`, `PROVIDER_STANDARD_MODELS`, plus new `readInstallConfig` / `writeInstallConfig` for the multi-provider schema. PASS.
+
+**Detail:** The multi-provider schema `{ providers: { claude: { skill, installedAt } } }` is correctly implemented. Old-format migration (`{ llm, skill }` → new schema) is handled in `readInstallConfig()` (config.ts:112–119). Merge-not-overwrite semantics confirmed in `writeInstallConfig()`. PASS.
+
+**Minor note:** `readConfig` in config.ts:78 trims the content before parsing (`.trim()`), which the original install.ts did not do. This is a safe defensive addition — not a regression. PASS.
+
+### T2 — Uninstall Command Scaffold
+
+`src/cli/uninstall.ts` registered in `src/index.ts` with proper error handling. Help text documents all six command variants. Argument parsing supports both `--llm value` and `--llm=value` forms. PASS.
+
+**Done criteria check:**
+- `apra-fleet uninstall --help` works: PASS (exits after printing usage)
+- Dry-run logging: PASS (all mutation paths guarded by `!dryRun`)
+- All six variants handled: PASS (full, --llm only, --llm + --skill, --skill only iterates all providers)
+
+### Install Tests Updated
+
+`tests/install.test.ts` updated to assert the new multi-provider schema (`.providers.claude.skill` instead of flat `{ llm, skill }`). PASS.
+
+---
+
+## Phase 2: Core Uninstall Logic (T3, T4) — Commit f79582b
+
+### T3 — Settings Cleanup
+
+**Surgical key removal (cleanupSettings function):**
+- `mcpServers.apra-fleet` removal: PASS — handles both JSON (`mcpServers`) and Codex TOML (`mcp_servers`) formats
+- `permissions.allow` filtering: PASS — removes `mcp__apra-fleet__*` and skill-directory Read permissions; preserves user-added entries
+- `hooks.PostToolUse` filtering: PASS — filters by matcher containing 'apra-fleet'
+- `statusLine` removal: PASS — only removes if command contains 'fleet-statusline'
+- `defaultModel` removal: PASS — only removes if value matches `PROVIDER_STANDARD_MODELS[provider]` (preserving user customization per plan F2 resolution)
+
+**Claude CLI unregistration (F2):**
+Code at uninstall.ts:181–186 calls `claude mcp remove apra-fleet --scope user` via the `run()` helper which uses `shell: 'cmd.exe'` on Windows. Matches the install-time behavior. Try-catch suppresses "not found" errors. PASS.
+
+**Confirm prompt:** Interactive readline with abort on non-'y' answer. `--yes` bypasses. PASS.
+
+### T4 — Skill Directory Removal
+
+Skill removal respects `skillMode`: removes PM dir, fleet dir, or both. Uses `fs.rmSync` with `{ recursive: true, force: true }`. Only removes if directory exists. PASS.
+
+**Fallback scan:** When `readInstallConfig()` returns empty providers and `targetLlm === 'all'`, all four providers are scanned (uninstall.ts:158). Warning logged. PASS.
+
+**Global cleanup:** When full uninstall (`targetLlm === 'all'` && `skillMode === 'all'`), removes BIN_DIR, HOOKS_DIR, SCRIPTS_DIR, and install-config.json. Preserves `~/.apra-fleet/data/` (logs/registry) for potential reinstall. PASS.
+
+---
+
+## Phase 3: Unit Tests (T5) — FAIL
+
+### Problem: T5 claims "Full unit test coverage" but progress.json still marks T5 as pending
+
+`progress.json` shows T5 status as `"pending"`. The task file (.fleet-task.md) states T5 is completed since last review. This is a bookkeeping inconsistency — but more critically, the test coverage does NOT meet T5's done criteria.
+
+### Coverage gaps (BLOCKING):
+
+The current `tests/uninstall.test.ts` has 6 tests (119 lines). Against T5's done criteria ("Full test coverage... Cover multi-provider install-config, Claude CLI removal path, fallback scan, and --yes/confirm prompt"):
+
+1. **Claude CLI unregistration path — NOT TESTED.** `child_process` is mocked but no test asserts that `execSync` is called with `claude mcp remove apra-fleet --scope user`. This was the subject of blocking finding F2 in the plan review — it must have test coverage.
+
+2. **Abort path (user declines confirmation) — NOT TESTED.** No test mocks the readline response as 'N' and verifies the process exits without mutations.
+
+3. **`--skill` flag targeting — NOT TESTED.** No test verifies that `--skill pm` removes only PM directories while leaving fleet directories intact, or vice versa.
+
+4. **`defaultModel` cleanup — NOT TESTED.** No test verifies that a matching defaultModel is removed or that a non-matching one is preserved.
+
+5. **Old format migration — NOT TESTED.** `readInstallConfig()` has logic to migrate `{ llm, skill }` to the new schema. No test covers this path.
+
+These are not obscure edge cases — they are explicitly listed in T5's description and represent the core differentiated logic of the uninstall command.
 
 ---
 
 ## Build and Tests
 
-Build: `tsc` passes cleanly. PASS.
-Tests: 65 files, 1072 passed, 6 skipped, 0 failed. PASS.
-CI: No workflow runs detected for this branch (no CI config in repo). N/A — not a regression.
+- Build (`tsc`): PASS — no errors.
+- Tests: 66 files, 1078 passed, 6 skipped, 0 failed. PASS.
+- No regressions in previously passing tests. PASS.
+- CI: No CI config in repo. N/A.
+
+---
+
+## Risk Register Compliance
+
+| Risk | Status |
+|------|--------|
+| R1 (missing config) | Implemented — fallback scan + warning. PASS. |
+| R2 (partial installs) | Implemented — skips providers with no entry. PASS. |
+| R3 (race with running server) | **NOT IMPLEMENTED** — no detect-and-abort logic exists. NOTE (non-blocking for V3, but should be addressed before merge to main). |
+| R4 (Windows paths) | Implemented — `path.join` + `shell: 'cmd.exe'`. PASS. |
+| R5 (user-edited settings) | Partially — surgical removal is correct, but no post-uninstall warning is logged listing keys that couldn't be cleanly removed (plan says "Log a post-uninstall warning"). NOTE (non-blocking). |
 
 ---
 
 ## Summary
 
-All three blocking findings (F1, F2, F3) are fully resolved. Both non-blocking notes were also incorporated. The plan is now comprehensive: it covers the multi-provider schema, Claude-specific CLI unregistration, surgical settings removal with user-customization protection, fallback scanning, confirmation prompts, and a thorough risk register. Build and tests remain green.
+**What passed:** The core implementation (T1–T4) is solid — the multi-provider config schema, shared utility extraction, surgical settings cleanup, skill directory removal, and CLI integration are all correct and well-structured. Build is green. Existing tests pass. The code matches PLAN.md's design for Phases 1 and 2.
 
-Verdict: **APPROVED** — the plan is ready for execution.
+**What must change (BLOCKING):**
+
+1. **T5 test coverage is incomplete.** At minimum, add tests for: (a) Claude CLI `execSync` call assertion, (b) abort path when user declines, (c) `--skill` flag targeting (fleet-only and pm-only), (d) `defaultModel` conditional removal. These cover the differentiated logic paths that the existing 6 tests do not exercise.
+
+2. **Update `progress.json`** to reflect actual task status (T5 completed, V3 completed) once the tests are added.
+
+**Non-blocking notes (address before merge):**
+
+- R3 (server race detection) is specified in the risk register but not implemented. Consider adding a basic PID/port check.
+- R5's "post-uninstall warning" for keys that couldn't be cleanly removed is not implemented.
