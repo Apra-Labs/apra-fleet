@@ -1,6 +1,6 @@
 # Skill Matrix
 
-Maps project + role to required skills. Used during onboarding (Step 6).
+Maps project + role to required skills. Used in onboarding (Step 6).
 
 | Project | VCS | Role | Required Skills |
 |---------|-----|------|----------------|
@@ -20,15 +20,15 @@ Maps project + role to required skills. Used during onboarding (Step 6).
 
 | Skill | Purpose |
 |-------|---------|
-| `bitbucket-devops` | Bitbucket API: create/merge PRs, manage pipelines, review code |
-| `aprapipes-devops` | ApraPipes-specific build, test, deployment |
-| `azdevops-devops` | Azure DevOps API operations (planned) |
-| `lvsm-log-analyzer-skill` | SiteManager log analysis for AVMS/BBNVR devices |
+| `bitbucket-devops` | Bitbucket API: create/merge PRs, pipelines, review |
+| `aprapipes-devops` | ApraPipes build, test, deploy |
+| `azdevops-devops` | Azure DevOps API ops (planned) |
+| `lvsm-log-analyzer-skill` | Log analysis for AVMS/BBNVR devices |
 
 ## Rules
 
-1. Skills are additive — multiple roles = union of all required skills
-2. GitHub members rarely need extra skills — gh CLI covers most operations
-3. Bitbucket/Azure DevOps members need provider-specific skills for devops/code-review (LLMs lack native API knowledge without skills)
-4. Project-specific skills layer on top of VCS skills
-5. Skills are independent of the member's LLM provider — a Gemini member needs the same project skills as a Claude member. Skill selection is driven by VCS provider and project, not LLM provider.
+1. Skills additive — roles = union of skills.
+2. GitHub rarely needs extra skills (gh CLI enough).
+3. Bitbucket/Azure DevOps need provider skills for devops/code-review (lack native API knowledge).
+4. Project-specific skills layer on top.
+5. Independent of LLM provider — Gemini/Claude need same project skills. Selection driven by VCS + project.
