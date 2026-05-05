@@ -122,9 +122,12 @@ async function startServer() {
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
   const { checkForUpdate } = await import('./services/update-check.js');
   const { purgeExpiredCredentials } = await import('./services/credential-store.js');
+  const { getStallDetector } = await import('./services/stall/index.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
+
+  let capturedClientInfo: any = null;
 
   const server = new McpServer(
     { name: `apra fleet server ${serverVersion}`, version: versionNum },
@@ -133,6 +136,15 @@ async function startServer() {
       instructions: VERBATIM_INSTRUCTIONS,
     },
   );
+
+  // Capture MCP clientInfo during initialize handshake for logging
+  const originalInitialize = (server as any).initialize?.bind(server);
+  if (originalInitialize) {
+    (server as any).initialize = async function (request: any) {
+      capturedClientInfo = request.clientInfo ?? null;
+      return originalInitialize(request);
+    };
+  }
 
   // --- Onboarding helpers ---
   // isActiveTool guards passive tools (version, shutdown_server) from consuming the banner.
@@ -242,7 +254,13 @@ async function startServer() {
   await server.connect(transport);
 
   const { FLEET_DIR } = await import('./paths.js');
-  logLine('startup', `apra-fleet ${serverVersion} started — FLEET_DIR=${FLEET_DIR}`);
+  const stallDetector = getStallDetector();
+  stallDetector.start();
+
+  const clientStr = capturedClientInfo?.name ? ` client=${capturedClientInfo.name}` : '';
+  const versionStr = capturedClientInfo?.version ? ` version=${capturedClientInfo.version}` : '';
+  const pidStr = ` pid=${process.pid} ppid=${process.ppid}`;
+  logLine('startup', `apra-fleet ${serverVersion} started${clientStr}${versionStr}${pidStr} FLEET_DIR=${FLEET_DIR}`);
 
   idleManager.start();
   void cleanupStaleTasks();
@@ -250,6 +268,6 @@ async function startServer() {
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket(); closeAllConnections(); process.exit(0); });
-  process.on('SIGTERM', () => { cleanupAuthSocket(); closeAllConnections(); process.exit(0); });
+  process.on('SIGINT', () => { cleanupAuthSocket(); closeAllConnections(); stallDetector.stop(); process.exit(0); });
+  process.on('SIGTERM', () => { cleanupAuthSocket(); closeAllConnections(); stallDetector.stop(); process.exit(0); });
 }
