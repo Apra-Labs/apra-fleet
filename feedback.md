@@ -22,7 +22,11 @@
 
 **Task 3 (Internal execute_command Wrapper) — FAIL.** The blocker states: "Need to identify how to invoke execute_command internally (not as MCP tool call). Likely call the underlying function that execute_command tool delegates to." This is the single most important architectural decision for local/remote uniformity and observability, and it's left unresolved. Two implementers could reasonably (a) import the tool handler function directly, (b) use some internal dispatch mechanism, or (c) call the shell function that underlies it. The difference matters because requirements say "the log read itself must appear in the fleet server's structured JSONL log" — only approach (a) or (b) would naturally satisfy that if the logging is baked into the tool handler. This decision should be made in Phase 0 (resilience doc) or resolved as a precondition of Task 3 with an explicit code pointer to the function to call.
 
+**Doer:** fixed — Task 3 now has a concrete "Internal API contract" section specifying `getStrategy(agent).execCommand(agent, cmd, 5000)` from `src/services/strategy.ts`, the exact shell command (`tail -c 512`), result flow (exit code handling, JSON parsing), error handling, and logging via `logLine()`. Blocker removed.
+
 **Task 4 (Polling Loop) — FAIL.** The specification says "Update `lastLlmActivityAt` on the member record via `updateAgent()`" — but `lastLlmActivityAt` doesn't exist on the Agent type until Task 6 (Phase 2). This is a hidden cross-phase dependency. Either move Task 6 into Phase 1 (before Task 4), or remove the `updateAgent()` line from Task 4 and add it to a Phase 2 task that wires the poll loop to the agent record.
+
+**Doer:** fixed — Created Task 1a in Phase 1 adding `lastLlmActivityAt` to the Agent type before Task 4. Task 6 in Phase 2 now reads "(Moved to Task 1a in Phase 1)" with a forward reference.
 
 **Task 5 (Unit Tests) — PASS.** Comprehensive coverage list matching both the requirements' test expectations and the resilience decisions. Good that it includes the "execute_command failure" case.
 
@@ -31,6 +35,8 @@
 **Task 6 (Add lastLlmActivityAt to Agent Type) — PASS.** Trivial and well-scoped, but should be in Phase 1 given the dependency from Task 4 (see above).
 
 **Task 7 (Hook into execute_prompt) — FAIL (minor).** The task says to add the entry "After sessionId is known (line ~216)" — meaning there's a window between process spawn and session ID extraction where no stall monitoring exists. The risk register acknowledges this and proposes: "Add entry with `lastActivityAt = now` on spawn (uses process start as baseline); add with real logFilePath when sessionId arrives." But Task 7 contradicts this by specifying a single add-point after sessionId. Either the risk mitigation is wrong (acceptable gap) or Task 7 needs a two-phase add: (1) provisional entry at spawn with no logFilePath, (2) update entry with real path when sessionId arrives. Pick one and make Task 7's specification match.
+
+**Doer:** fixed — Task 7 now specifies two-phase add: Phase A (provisional entry at spawn with `provisional: true`, `sessionId: null`, `logFilePath: null`) and Phase B (upgrade via `stallDetector.update()` when sessionId arrives). Task 0 resilience table updated with new "Gap between process spawn and sessionId arrival" edge case. Task 2 StallEntry type updated with `provisional: boolean` and `update()` method. Task 4 polling loop updated to skip log reading for provisional entries but still detect stalls via baseline timeout. Risk register mitigation updated to match.
 
 **Task 8 (Hook into stop_prompt) — PASS.** One line of code, idempotent, clearly specified.
 
