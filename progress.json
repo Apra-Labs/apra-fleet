@@ -2,7 +2,7 @@
   "project": "apra-fleet-241",
   "branch": "feat/stall-detector",
   "lastUpdated": "2026-05-05",
-  "notes": "Phase 1 checkpoint complete. All tasks (T1, T2, T3, T4) verified. Build passed. Tests: 1116 passed, 7 skipped. Ready for Phase 2.",
+  "notes": "Phase 2 T5+T6 complete. findLogFile implemented with mtime filter, retry logic, [inv] tiebreaker, Case A/B-Claude/B-Gemini. 22 new tests. Total: 1138 passed, 7 skipped. V2 verify checkpoint next.",
   "tasks": [
     { "id": "T1",  "title": "Fix path encoding and Gemini log directory",          "phase": 1, "tier": "cheap",    "status": "completed", "notes": "Path encoding uses -; Gemini includes /chats/" },
     { "id": "T2",  "title": "Unit tests for path encoding and log directory",       "phase": 1, "tier": "cheap",    "status": "completed", "notes": "6 tests passing" },
