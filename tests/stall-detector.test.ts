@@ -244,4 +244,42 @@ describe('StallDetector', () => {
       expect(stallCalls).toHaveLength(1);
     });
   });
+
+  describe('_poll — once-per-stall guard (stallReported)', () => {
+    it('fires stall_detected exactly once per stall period across multiple polls', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000;
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime }));
+
+      const oldTs = new Date(pastTime - 1000).toISOString();
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: oldTs });
+
+      // First poll — stall fires
+      await detector._poll();
+      const calls1 = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
+      expect(calls1).toHaveLength(1);
+
+      // Second poll — stallReported=true, must NOT fire again
+      await detector._poll();
+      const calls2 = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
+      expect(calls2).toHaveLength(1);
+    });
+
+    it('resets stallReported and lastActivityAt when activity resumes after stall', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const pastTime = Date.now() - 10_000;
+      // Start in already-stalled state
+      detector.add('member-1', makeEntry({ lastActivityAt: pastTime, stallReported: true }));
+
+      const newTs = new Date(Date.now()).toISOString();
+      mockPollLogFile.mockResolvedValue({ lastTimestamp: newTs });
+
+      await detector._poll();
+
+      const entry = detector.getEntry('member-1');
+      expect(entry?.stallReported).toBe(false);
+      expect(entry?.lastActivityAt).toBe(new Date(newTs).getTime());
+      expect(mockUpdateAgent).toHaveBeenCalledWith('member-1', { lastLlmActivityAt: newTs });
+    });
+  });
 });
