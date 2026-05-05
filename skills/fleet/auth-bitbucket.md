@@ -1,14 +1,13 @@
 # Bitbucket Authentication
 
-API tokens (app passwords) tied to a user account. Long-lived, no auto-expire.
+API tokens (app passwords) tie to a user account. They are long-lived and never expire.
 
 ## Setup
 
-1. Go to `https://id.atlassian.com/manage-profile/security/api-tokens`
-   (or Bitbucket: Settings > Personal Bitbucket settings > App passwords)
-2. Create app password with required scopes (see below)
-3. Copy token — shown only once
-4. Provide token, email, and workspace slug when prompted
+1. Go to `https://id.atlassian.com/manage-profile/security/api-tokens` or Bitbucket Settings.
+2. Create an app password with the required scopes.
+3. Copy the token; it is shown only once.
+4. Provide the token, the email, and the workspace slug when prompted.
 
 ## Deploy
 
@@ -26,7 +25,7 @@ provision_vcs_auth(member_id, provider: 'bitbucket', email: '...', api_token: 'A
 | devops | `repository:admin`, `pipeline:write`, `pullrequest:write` |
 | debugging | `repository:read` |
 
-Union of all roles assigned to the member.
+Assigned scopes are the union of all roles.
 
 ## Test
 
@@ -38,28 +37,28 @@ git ls-remote https://bitbucket.org/{workspace}/{repo}.git HEAD
 
 ## Storing tokens for reuse
 
-After provisioning VCS auth, you can store the Bitbucket API token in the credential store for direct use in `execute_command` — for example, calling the Bitbucket REST API or authenticating git operations manually.
+Store the Bitbucket API token in the credential store for use in `execute_command`. This enables calling the Bitbucket REST API or manual git authentication.
 
-**Store a Bitbucket token for reuse:**
+**Store a Bitbucket token:**
 
 ```
 credential_store_set  name=bitbucket_token
 ```
 
-**Use it in a command on a member:**
+**Use it in a command:**
 
 ```
 execute_command  command="curl -sf -u me@example.com:{{secure.bitbucket_token}} https://api.bitbucket.org/2.0/user"
 execute_command  command="git remote set-url origin https://me@example.com:{{secure.bitbucket_token}}@bitbucket.org/workspace/repo.git"
 ```
 
-The token is resolved server-side and redacted in output (`[REDACTED:bitbucket_token]`) — it never appears in the LLM conversation or command logs.
+The token resolves server-side and is redacted in the output. It never appears in the conversation or the logs.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| 401 Unauthorized | Verify email matches Atlassian account; regenerate token |
-| 403 Forbidden | Create new app password with additional scopes |
-| Repository not found | Check workspace slug in Bitbucket URL |
-| Clone prompts for password | Re-run `provision_vcs_auth` |
+| 401 Unauthorized | Verify the email matches the account; regenerate the token. |
+| 403 Forbidden | Create a new app password with additional scopes. |
+| Repository not found | Check the workspace slug in the Bitbucket URL. |
+| Clone prompts for password | Re-run `provision_vcs_auth`. |
