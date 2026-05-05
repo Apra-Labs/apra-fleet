@@ -57,22 +57,16 @@ describe('toLocalISOString', () => {
     expect(result).toContain('45:30.123');
   });
 
-  it('should adjust hours correctly from UTC to local time', () => {
-    // Using a known UTC time: 2026-05-05T10:00:00Z
-    const utcMs = new Date('2026-05-05T10:00:00Z').getTime();
-    const result = toLocalISOString(utcMs);
+  it('should match the actual local hour from new Date(ms).getHours()', () => {
+    const ms = new Date('2026-05-05T10:00:00Z').getTime();
+    const result = toLocalISOString(ms);
 
-    // Extract the hour component
     const hourMatch = result.match(/T(\d{2}):/);
     expect(hourMatch).toBeTruthy();
 
-    // The hour should reflect local time adjustment
-    if (hourMatch) {
-      const hour = parseInt(hourMatch[1]);
-      // Hour should be a valid hour (0-23)
-      expect(hour).toBeGreaterThanOrEqual(0);
-      expect(hour).toBeLessThanOrEqual(23);
-    }
+    const resultHour = parseInt(hourMatch![1]);
+    const expectedHour = new Date(ms).getHours(); // built-in local hour
+    expect(resultHour).toBe(expectedHour);
   });
 
   it('should handle midnight UTC', () => {

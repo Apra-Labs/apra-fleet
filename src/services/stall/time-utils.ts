@@ -1,6 +1,6 @@
 export function toLocalISOString(ms: number): string {
   const offset = new Date(ms).getTimezoneOffset();
-  const offsetMin = -offset;
+  const offsetMin = offset;
   const sign = offsetMin <= 0 ? '+' : '-';
   const absOffsetMin = Math.abs(offsetMin);
   const hours = Math.floor(absOffsetMin / 60);
