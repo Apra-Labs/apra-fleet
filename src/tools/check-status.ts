@@ -32,6 +32,7 @@ interface AgentStatusRow {
   busy: string;
   session: string;
   lastActivity: string;
+  lastLlmActivityAt?: string;
   branch?: string;
   cloudInfo?: CloudInfo;
   tokenUsage?: { input: number; output: number };
@@ -60,6 +61,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     busy: '-',
     session: agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : '(none)',
     lastActivity: formatTimeAgo(agent.lastUsed),
+    lastLlmActivityAt: agent.lastLlmActivityAt,
     branch: agent.lastBranch,
     tokenUsage: agent.tokenUsage,
   };
