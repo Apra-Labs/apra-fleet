@@ -16,3 +16,4 @@ node dist/index.js install     # Dev-mode install
 - Branch naming: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`
 - Commit style: `<type>(<scope>): <description>` — e.g. `fix(ssh): handle key rotation timeout`
 - Never push to `main` directly; open a PR
+- See [Architecture](docs/architecture.md) for internal structure
