@@ -184,13 +184,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     const logDir = resolveSessionLogDir(agent.llmProvider ?? 'claude', agent.workFolder);
     if (logDir) {
       try {
+        // Capture time after pid is known — old session files touched at CLI startup
+        // will have mtime before this point; genuine writes (new file or resume append) after.
+        const watcherSetupTime = Date.now();
         const watcher = fs.watch(logDir, { persistent: false }, (event: string, filename: string | null) => {
-          // Only accept 'rename' events (new file created). 'change' events fire when an
-          // existing session file is written to by the CLI at startup — those are stale logs.
-          if (event !== 'rename' || !filename?.endsWith('.jsonl')) return;
+          if (!filename?.endsWith('.jsonl')) return;
           const logPath = path.join(logDir, filename);
-          // Verify the file actually exists (rename fires for deletion too)
-          try { fs.statSync(logPath); } catch { return; }
+          try {
+            const stat = fs.statSync(logPath);
+            // Reject files whose mtime predates this session — the CLI touches old session
+            // files at startup before our watcher is set up.
+            if (stat.mtimeMs <= watcherSetupTime) return;
+          } catch { return; }
           const sessionId = filename.replace('.jsonl', '');
           stallDetector.update(agent.id, {
             sessionId,
