@@ -1,55 +1,54 @@
-# Review: fix/dep-vulns-100 — Security Vulnerability Fixes (Issue #100)
+# Review: `plan/issue-216` — Auth-Socket Flaky Test Fix
 
-**Reviewer:** Claude (reviewer role)  
-**Branch:** `fix/dep-vulns-100`  
-**Commit:** `5747b2a fix(deps): resolve security vulnerabilities (issue #100)`  
+**Reviewer:** fleet-rev (Claude)
+**Branch:** `plan/issue-216`
+**Commits reviewed:** `1f86de8` (fix), `c0cccce` (test)
 **Date:** 2026-05-06
 
 ---
 
-## Files Changed
-
-| File | Verdict | Notes |
-|---|---|---|
-| `package.json` | OK | uuid bumped from `^11.0.0` to `^14.0.0` — only change, as expected |
-| `package-lock.json` | OK | Transitive deps updated: @hono/node-server 1.19.9→1.19.14, express-rate-limit 8.2.1→8.5.0, hono 4.12.2→4.12.17, ip-address 10.0.1→10.1.0, picomatch 8.3.0→8.4.2, postcss 4.0.3→4.0.4, uuid 11→14 |
-| `GEMINI.md` | OK (fixed) | Restored to project context in `2cd5b96`. Matches origin/main. |
-
 ## Checklist
 
-### R1 — npm audit fix applied
-**PASS.** `package-lock.json` shows transitive dependency upgrades for @hono/node-server, express-rate-limit, hono, ip-address, picomatch, and postcss. All expected packages were updated.
+### 1. Correctness of `activeSockets` lifecycle
 
-### R2 — uuid bumped to v14
-**PASS.** `package.json` shows `"uuid": "^14.0.0"`. Lock file confirms resolution.
+**PASS.** `activeSockets.add(conn)` is called in the `createServer` handler (line 78), and `conn.on('close', ...)` removes it (line 79). The `close` event fires reliably after `destroy()` — Node.js guarantees `close` fires after `end`/`destroy` on a socket, so there's no leak path. Edge case: if a connection is refused before the handler fires, it never enters `activeSockets`, so no dangling reference.
 
-### R3 — uuid API compatibility
-**PASS.** Three files use uuid:
-- `src/services/strategy.ts:5` — `import { v4 as uuid } from 'uuid'`
-- `src/services/ssh.ts:5` — `import { v4 as uuid } from 'uuid'`
-- `src/tools/register-member.ts:2` — `import { v4 as uuid } from 'uuid'`
+### 2. `pendingRequests.clear()` placement
 
-All use the `v4` named export, which is fully supported in uuid v14. No API changes needed. No source files were modified — correct.
+**PASS.** Moved to line 226, before socket destruction (line 229) and before the `!socketServer` early return (line 234). This ensures cleanup always runs regardless of server state. Semantically correct: once cleanup starts, no request should survive — destroying sockets will sever in-flight connections anyway.
 
-### R4 — Tests pass
-**PASS.** `npm test` — 73 test files, 1181 tests passed, 6 skipped, 0 failures.
+### 3. No-server early return
 
-### R5 — Audit clean (HIGH severity)
-**PASS.** `npm audit` reports 0 HIGH vulnerabilities. 3 MODERATE remain (ip-address XSS in Address6 HTML methods, affecting express-rate-limit → @modelcontextprotocol/sdk). Fixing these would require downgrading @modelcontextprotocol/sdk to 1.25.3, which is a breaking change. Acceptable per requirements ("MODERATE items may remain if they cannot be addressed without breaking changes").
+**PASS.** When `!socketServer` (line 234), the function returns `Promise.resolve()` after clearing pending state and destroying sockets. This correctly skips `closingPromise` bookkeeping — there's no server to close, so no async callback to wait for. The Unix socket file unlink is still attempted (line 236), which is correct for cleanup of stale files.
 
-### R6 — File justification
-**FLAG: GEMINI.md** — ~~Modified to contain doer sprint instructions. Not related to the security fix task.~~  
-**RESOLVED** in commit `2cd5b96`. GEMINI.md has been restored to the standard project context version (matches origin/main exactly). The fix commit is clean — only touches GEMINI.md, reducing it from sprint instructions back to the README-pointing context file.
+### 4. `closingPromise = null` in async vs sync path
+
+**PASS.** `closingPromise = null` appears at line 250, inside the `onComplete` callback, which is inside the `server.close()` callback (line 245). This is async — it only fires after the server has fully closed. The synchronous path sets `socketServer = null` (line 242) immediately to signal "closing in progress" to `ensureAuthSocket`, while `closingPromise` remains non-null until the close callback fires. No synchronous overwrite issue.
+
+### 5. Test `.catch(() => {})` pattern
+
+**PASS.** At test line 321 (`passwordPromise.catch(() => {})`), this attaches a no-op rejection handler synchronously. The rejection from `waiter.reject(new Error('Auth socket closed'))` fires during `cleanupAuthSocket()` (line 322), before `expect(passwordPromise).rejects.toThrow(...)` on line 324. Without the `.catch`, the rejection would be unhandled for one microtask tick, triggering Node's unhandled-rejection warning. The `.catch` suppresses the warning without consuming the rejection — `.rejects.toThrow()` still observes it correctly because Promise rejections can have multiple handlers.
+
+### 6. Test suite — `npm test`
+
+**PASS.** All 1262 tests pass (76 test files), 0 failures. Auth-socket tests specifically: 38/38 pass in 803ms, no flakiness observed.
+
+---
+
+## Additional observations
+
+- **`closingPromise` idempotency (line 216-218):** If `cleanupAuthSocket()` is called while already closing, it returns the existing `closingPromise`. This prevents double-close and is correct. `ensureAuthSocket` also awaits `closingPromise` (line 57-59) before proceeding, preventing a race where a new server starts while the old one is still releasing the pipe.
+
+- **Client `destroy()` in tests:** All test clients now call `client.destroy()` after `client.end()`. This is the fix for the root cause — `end()` initiates a graceful FIN but keeps the socket in `TIME_WAIT`; `destroy()` forcefully tears it down so `server.close()` can complete immediately. Consistent across all 7 client usage sites in the test file.
+
+- **`cleanupAuthSocket` return type change:** `void` → `Promise<void>`. All callers updated to `await`. The `afterEach` hooks are now `async` (lines 20, 338, 403). This is a breaking API change but is correct — the old synchronous API was the bug.
+
+- **Unrelated changes present on this branch:** The branch contains many other commits (secret CLI, credential-store, network policy fixes). This review is scoped only to the two auth-socket fix commits (`1f86de8`, `c0cccce`) as specified in the task.
+
+- **No GEMINI.md or stray context files** in the two reviewed commits. Earlier commits on the branch had cleanup commits that removed such files.
 
 ---
 
 ## Verdict
 
-**APPROVED**
-
-All acceptance criteria are met:
-- uuid bumped to v14, API usage compatible (v4 export unchanged)
-- All HIGH vulnerabilities resolved via npm audit fix
-- Tests pass (1181 passed, 0 failures)
-- GEMINI.md sprint artifact reverted in `2cd5b96` — file now matches main
-- No unrelated changes remain on the branch
+**APPROVED** — All 6 checklist items verified. The `activeSockets` tracking correctly unblocks `server.close()`, `closingPromise` serialization prevents races, `pendingRequests.clear()` placement ensures deterministic cleanup, and the test `.catch` pattern correctly suppresses unhandled-rejection warnings. 1262/1262 tests pass.
