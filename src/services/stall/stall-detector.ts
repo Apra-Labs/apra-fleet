@@ -1,5 +1,5 @@
 import { updateAgent } from '../registry.js';
-import { logLine, logWarn } from '../../utils/log-helpers.js';
+import { logLine, logWarn, LogScope } from '../../utils/log-helpers.js';
 import { pollLogFile } from './stall-poller.js';
 import { toLocalISOString } from './time-utils.js';
 
@@ -69,7 +69,7 @@ export class StallDetector {
   }
 
   async _poll(): Promise<void> {
-    logLine('stall_poll_tick', JSON.stringify({
+    const scope = new LogScope('stall_poll_tick', JSON.stringify({
       activeWatched: this.stallCheckList.size,
       provisional: [...this.stallCheckList.values()].filter(e => e.provisional).length,
       members: [...this.stallCheckList.values()].map(e => e.memberName),
@@ -83,7 +83,7 @@ export class StallDetector {
         // Provisional: skip log reading, but still detect stalls via baseline timeout
         if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
           const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
-          logLine('stall_detected', JSON.stringify({
+          scope.warn(JSON.stringify({
             event: 'stall_detected',
             memberId,
             memberName: entry.memberName,
@@ -97,7 +97,7 @@ export class StallDetector {
 
       if (!entry.logFilePath) continue;
 
-      logLine('stall_poll', JSON.stringify({
+      scope.info(JSON.stringify({
         event: 'stall_poll',
         memberId,
         logPath: entry.logFilePath,
@@ -143,7 +143,7 @@ export class StallDetector {
 
       if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
         const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
-        logLine('stall_detected', JSON.stringify({
+        scope.warn(JSON.stringify({
           event: 'stall_detected',
           memberId,
           memberName: entry.memberName,

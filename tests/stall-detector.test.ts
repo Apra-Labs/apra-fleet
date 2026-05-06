@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockPollLogFile, mockUpdateAgent, mockLogLine, mockLogWarn } = vi.hoisted(() => ({
+const { mockPollLogFile, mockUpdateAgent, mockLogLine, mockLogWarn, mockScopeWarn } = vi.hoisted(() => ({
   mockPollLogFile: vi.fn(),
   mockUpdateAgent: vi.fn(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
+  mockScopeWarn: vi.fn(),
 }));
 
 vi.mock('../src/services/stall/stall-poller.js', () => ({
@@ -18,6 +19,16 @@ vi.mock('../src/services/registry.js', () => ({
 vi.mock('../src/utils/log-helpers.js', () => ({
   logLine: mockLogLine,
   logWarn: mockLogWarn,
+  LogScope: class {
+    constructor(_tag: string, _msg: string) {}
+    getInv() { return 'test'; }
+    info(_msg: string) {}
+    warn(msg: string) { mockScopeWarn(msg); }
+    error(_msg: string) {}
+    ok(_msg?: string) {}
+    fail(_msg: string) {}
+    abort(_msg: string) {}
+  },
 }));
 
 import { StallDetector, type StallEntry } from '../src/services/stall/stall-detector.js';
@@ -163,9 +174,11 @@ describe('StallDetector', () => {
 
       await detector._poll();
 
-      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
       expect(stallCalls).toHaveLength(1);
-      const logged = JSON.parse(stallCalls[0][1] as string);
+      const logged = JSON.parse(stallCalls[0][0] as string);
       expect(logged.event).toBe('stall_detected');
       expect(logged.memberId).toBe('member-1');
       expect(logged.memberName).toBe('alice');
@@ -240,7 +253,9 @@ describe('StallDetector', () => {
 
       await detector._poll();
 
-      const stallCalls = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
+      const stallCalls = mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
       expect(stallCalls).toHaveLength(1);
     });
   });
@@ -254,15 +269,17 @@ describe('StallDetector', () => {
       const oldTs = new Date(pastTime - 1000).toISOString();
       mockPollLogFile.mockResolvedValue({ lastTimestamp: oldTs });
 
+      const stallDetectedCalls = () => mockScopeWarn.mock.calls.filter((c: string[]) => {
+        try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+      });
+
       // First poll — stall fires
       await detector._poll();
-      const calls1 = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
-      expect(calls1).toHaveLength(1);
+      expect(stallDetectedCalls()).toHaveLength(1);
 
       // Second poll — stallReported=true, must NOT fire again
       await detector._poll();
-      const calls2 = mockLogLine.mock.calls.filter((c: string[]) => c[0] === 'stall_detected');
-      expect(calls2).toHaveLength(1);
+      expect(stallDetectedCalls()).toHaveLength(1);
     });
 
     it('resets stallReported and lastActivityAt when activity resumes after stall', async () => {

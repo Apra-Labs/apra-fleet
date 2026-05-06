@@ -184,18 +184,26 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     const logDir = resolveSessionLogDir(agent.llmProvider ?? 'claude', agent.workFolder);
     if (logDir) {
       try {
+        // Capture time after pid is known — old session files touched at CLI startup
+        // will have mtime before this point; genuine writes (new file or resume append) after.
+        const watcherSetupTime = Date.now();
         const watcher = fs.watch(logDir, { persistent: false }, (event: string, filename: string | null) => {
-          if (filename?.endsWith('.jsonl')) {
-            const logPath = path.join(logDir, filename);
-            const sessionId = filename.replace('.jsonl', '');
-            stallDetector.update(agent.id, {
-              sessionId,
-              logFilePath: logPath,
-              provisional: false,
-            });
-            scope.info(`stall log resolved via dir-watch: sessionId=${sessionId}`);
-            watcher.close();
-          }
+          if (!filename?.endsWith('.jsonl')) return;
+          const logPath = path.join(logDir, filename);
+          try {
+            const stat = fs.statSync(logPath);
+            // Reject files whose mtime predates this session — the CLI touches old session
+            // files at startup before our watcher is set up.
+            if (stat.mtimeMs <= watcherSetupTime) return;
+          } catch { return; }
+          const sessionId = filename.replace('.jsonl', '');
+          stallDetector.update(agent.id, {
+            sessionId,
+            logFilePath: logPath,
+            provisional: false,
+          });
+          scope.info(`stall log resolved via dir-watch: sessionId=${sessionId}`);
+          watcher.close();
         });
       } catch {
         // log dir may not exist yet — provisional entry stays until session ends
