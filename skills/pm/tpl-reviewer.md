@@ -29,6 +29,7 @@ Review scope covers all phases from Phase 1 through the current phase — not ju
 - Is the code consistent with existing patterns and conventions?
 - Are docs updated if behavior changed?
 - Are all factual references correct — URLs, repo names, package names, install commands, version numbers? Members hallucinate these; spot-check against known sources.
+- **File hygiene:** Run `git diff --name-only {{base_branch}}..{{branch}}` and scan every file in the diff. Flag CHANGES NEEDED for any file that has no business in the repo: temp/scratch files (*.tmp, *.txt, *.base64), tool/permission configs (.gemini/, .claude/settings.json, permissions.json), scripts unrelated to the project, or sprint artifacts from other sprints (plan-NNN.md, requirements-NNN.md, progress-NNN.json). Agent context files (GEMINI.md, CLAUDE.md, AGENTS.md, COPILOT-INSTRUCTIONS.md) must be gitignored, not tracked — flag if they appear in the diff. Only source code, tests, and the current sprint's tracking files (PLAN.md, progress.json, requirements.md, feedback.md, design docs) are legitimate.
 
 ## Output
 
