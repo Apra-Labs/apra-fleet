@@ -49,6 +49,8 @@ The optional Project Manager skill goes beyond simple task dispatch:
 
 Installed by default — both the fleet and PM skills are written on `apra-fleet install`. See [`skills/pm/SKILL.md`](skills/pm/SKILL.md) for details.
 
+Task state persists across PM sessions via **Beads** (`bd` CLI) — a local issue tracker installed alongside fleet. PM creates epics and tasks in Beads automatically; you can run `bd ready` or `bd list` at any time to see what's in flight.
+
 ### Provider recommendations
 
 Fleet members can run different LLM backends. Mix and match based on the role:
@@ -191,6 +193,19 @@ apra-fleet uninstall --llm claude --skill fleet
 ```
 
 If the fleet server is running, uninstall will abort and tell you to re-run with `--force`.
+
+</details>
+
+<details>
+<summary><strong>Self-update</strong></summary>
+
+Update the fleet binary to the latest release:
+
+```bash
+apra-fleet update
+```
+
+This checks the latest GitHub release, downloads the installer for your platform, and re-runs it automatically. The server restarts with the new binary. If you're already on the latest version it reports so and exits.
 
 </details>
 
