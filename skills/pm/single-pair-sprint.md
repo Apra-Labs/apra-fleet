@@ -112,8 +112,8 @@ Before kicking off execution, compose and deliver permissions for each member's 
 - Check git: `execute_command → git log --oneline -10`
 - Members may blow past VERIFY checkpoints if context gets large — dispatch a review immediately when caught
 - Long-running branches: check drift with `git log <branch>..origin/main --oneline`. If main moved, instruct rebase + retest
-- After every review verdict: create low-priority Beads tasks for unaddressed MEDIUM/LOW findings and deferred scope items (`bd create "{{item}}" -p 3 --parent {{epic-id}}` — see `backlog-item.md` for required description fields)
-- Deferred items from user ("add to backlog", "defer this"): `bd create "{{description}}" -p 3 --parent {{epic-id}}`
+- After every review verdict: create low-priority Beads tasks for unaddressed MEDIUM/LOW findings and deferred scope items (`bd create "<item>" -p 3 --parent <epic-id>` — see `backlog-item.md` for required description fields)
+- Deferred items from user ("add to backlog", "defer this"): `bd create "<description>" -p 3 --parent <epic-id>`
 
 ### Safeguards
 

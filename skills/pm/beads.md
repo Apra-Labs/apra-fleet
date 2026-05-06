@@ -90,7 +90,7 @@ bd note <epic-id> "PR: <url>"   # link PR to epic
 
 When user says "add to backlog" or "defer this":
 ```bash
-bd create "{{description}}" -p 3 --parent {{epic-id}}   # low priority
+bd create "<description>" -p 3 --parent <epic-id>   # low priority
 ```
 See `backlog-item.md` for required description fields and maintenance operations.
 
