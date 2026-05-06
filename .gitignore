@@ -23,7 +23,6 @@ CLAUDE.md
 .beads/
 .claude/settings.json
 
-# Provider agent context files (role-specific, never shared)
-GEMINI.md
-AGENTS.md
+# Provider agent context files (role-specific sprint context — not shared)
+# GEMINI.md and AGENTS.md are project deliverables (tracked); only sprint-injected variants are excluded
 COPILOT-INSTRUCTIONS.md
