@@ -71,24 +71,31 @@ const sessionStore = new Map<string, SessionEntry>();
 // ---------------------------------------------------------------------------
 // Persistent store (credentials.json)
 // ---------------------------------------------------------------------------
-const CREDENTIALS_PATH = path.join(FLEET_DIR, 'credentials.json');
+function getCredentialsPath(): string {
+  const dataDir = process.env.APRA_FLEET_DATA_DIR ?? FLEET_DIR;
+  return path.join(dataDir, 'credentials.json');
+}
 
 function loadCredentialFile(): CredentialFile {
-  if (!fs.existsSync(FLEET_DIR)) {
-    fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
+  const credentialsPath = getCredentialsPath();
+  const dataDir = path.dirname(credentialsPath);
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   }
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
+  if (!fs.existsSync(credentialsPath)) {
     return { version: '1.0', credentials: {} };
   }
-  return JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8')) as CredentialFile;
+  return JSON.parse(fs.readFileSync(credentialsPath, 'utf-8')) as CredentialFile;
 }
 
 function saveCredentialFile(file: CredentialFile): void {
-  if (!fs.existsSync(FLEET_DIR)) {
-    fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
+  const credentialsPath = getCredentialsPath();
+  const dataDir = path.dirname(credentialsPath);
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   }
-  fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(file, null, 2), { mode: 0o600 });
-  enforceOwnerOnly(CREDENTIALS_PATH);
+  fs.writeFileSync(credentialsPath, JSON.stringify(file, null, 2), { mode: 0o600 });
+  enforceOwnerOnly(credentialsPath);
 }
 
 // ---------------------------------------------------------------------------

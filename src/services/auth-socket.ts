@@ -1,4 +1,4 @@
-﻿import net from 'node:net';
+import net from 'node:net';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
@@ -15,6 +15,7 @@ const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
 interface PendingAuth {
   encryptedPassword?: string;
   createdAt: number;
+  spawned_pid?: number;
 }
 
 interface PasswordWaiter {
@@ -25,7 +26,9 @@ interface PasswordWaiter {
 
 const pendingRequests = new Map<string, PendingAuth>();
 const passwordWaiters = new Map<string, PasswordWaiter>();
+const activeSockets = new Set<net.Socket>();
 let socketServer: net.Server | null = null;
+let closingPromise: Promise<void> | null = null;
 
 export function getSocketPath(): string {
   if (process.platform === 'win32') {
@@ -36,7 +39,25 @@ export function getSocketPath(): string {
   return SOCKET_PATH;
 }
 
+function killProcess(pid: number): void {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
+  } catch {
+    // Process may have already exited
+  }
+}
+
 export async function ensureAuthSocket(): Promise<void> {
+  // If already closing, wait for it to finish before trying to start again
+  if (closingPromise) {
+    await closingPromise;
+  }
+
   if (socketServer) return;
 
   const sockPath = getSocketPath();
@@ -54,6 +75,8 @@ export async function ensureAuthSocket(): Promise<void> {
 
   const tryListen = (retriesLeft: number): Promise<void> => new Promise((resolve, reject) => {
     const server = net.createServer((conn) => {
+      activeSockets.add(conn);
+      conn.on('close', () => activeSockets.delete(conn));
       let buffer = '';
       conn.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -81,6 +104,11 @@ export async function ensureAuthSocket(): Promise<void> {
             // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
             (msg as any).password = '';
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
+            // Kill the spawned terminal process if one was launched
+            if (pending.spawned_pid) {
+              killProcess(pending.spawned_pid);
+              pending.spawned_pid = undefined;
+            }
             // Resolve any waiting tool handler
             const waiter = passwordWaiters.get(msg.member_name);
             if (waiter) {
@@ -100,9 +128,13 @@ export async function ensureAuthSocket(): Promise<void> {
     server.on('error', (err: NodeJS.ErrnoException) => {
       server.close();
       // On Windows, named pipes may not be released immediately after close.
-      // Retry a few times with a short delay before giving up.
+      // Retry a few times with increasing delays before giving up.
       if (err.code === 'EADDRINUSE' && process.platform === 'win32' && retriesLeft > 0) {
-        setTimeout(() => tryListen(retriesLeft - 1).then(resolve, reject), 100);
+        // Increase delay for later retries — earlier retries happen faster
+        const totalRetries = process.env.NODE_ENV === 'test' ? 15 : 5;
+        const delayBase = process.env.NODE_ENV === 'test' ? 100 : 250;
+        const delay = delayBase * (totalRetries - retriesLeft + 1);
+        setTimeout(() => tryListen(retriesLeft - 1).then(resolve, reject), delay);
       } else {
         reject(err);
       }
@@ -117,7 +149,10 @@ export async function ensureAuthSocket(): Promise<void> {
     });
   });
 
-  return tryListen(5);
+  // Increase retries on Windows where named pipes take longer to release
+  // In tests, we retry more aggressively; in production the default is sufficient
+  const maxRetries = process.platform === 'win32' ? (process.env.NODE_ENV === 'test' ? 10 : 5) : 0;
+  return tryListen(maxRetries);
 }
 
 export function createPendingAuth(memberName: string): void {
@@ -175,22 +210,58 @@ export function hasPendingAuth(memberName: string): boolean {
   return true;
 }
 
-export function cleanupAuthSocket(): void {
-  // Reject any pending waiters
+export function cleanupAuthSocket(): Promise<void> {
+  // If already closing, wait for it to finish.
+  // This ensures that we don't start a new server while the old one is still releasing the pipe.
+  if (closingPromise) {
+    return closingPromise;
+  }
+
+  // Reject any pending waiters immediately
   for (const [, waiter] of passwordWaiters) {
     clearTimeout(waiter.timer);
     waiter.reject(new Error('Auth socket closed'));
   }
   passwordWaiters.clear();
-
-  if (socketServer) {
-    socketServer.close();
-    socketServer = null;
-  }
-  if (process.platform !== 'win32') {
-    try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
-  }
   pendingRequests.clear();
+
+  // Destroy all active client connections immediately
+  for (const s of activeSockets) {
+    s.destroy();
+  }
+  activeSockets.clear();
+
+  if (!socketServer) {
+    if (process.platform !== 'win32') {
+      try { fs.unlinkSync(getSocketPath()); } catch { /* ignore */ }
+    }
+    return Promise.resolve();
+  }
+
+  const server = socketServer;
+  socketServer = null; // Clear immediately so ensureAuthSocket knows we are closing
+
+  closingPromise = new Promise((resolve) => {
+    server.close(() => {
+      const onComplete = () => {
+        if (process.platform !== 'win32') {
+          try { fs.unlinkSync(getSocketPath()); } catch { /* ignore */ }
+        }
+        closingPromise = null;
+        resolve();
+      };
+
+      if (process.platform === 'win32') {
+        // Windows named pipes need extra time to be fully released by the OS
+        const delay = process.env.NODE_ENV === 'test' ? 1500 : 500;
+        setTimeout(onComplete, delay);
+      } else {
+        onComplete();
+      }
+    });
+  });
+
+  return closingPromise;
 }
 
 type OobLaunchFn = (
@@ -338,22 +409,35 @@ export async function collectOobConfirm(
 }
 
 /**
- * Resolve the command to invoke this binary's `auth` subcommand.
+ * Resolve the command to invoke this binary's `auth` or `secret` subcommand.
+ * For API key mode (--api-key in extraArgs), uses `secret --set`.
  * Returns [command, ...args] suitable for spawn().
  */
 function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
   const extra = extraArgs ?? [];
+  const isApiKeyMode = extra.includes('--api-key');
+
+  // For API key mode, use `secret --set` instead of `auth --api-key`
+  let cmdArgs: string[];
+  if (isApiKeyMode) {
+    // Remove --api-key and --prompt args, use simple `secret --set <name>`
+    cmdArgs = ['secret', '--set', memberName];
+  } else {
+    // For password/confirm modes, use original `auth <mode> <name>` command
+    cmdArgs = ['auth', ...extra, memberName];
+  }
+
   // SEA binary: process.execPath is the binary itself
   try {
     const sea = require('node:sea');
     if (sea.isSea()) {
-      return { cmd: process.execPath, args: ['auth', ...extra, memberName] };
+      return { cmd: process.execPath, args: cmdArgs };
     }
   } catch { /* not SEA */ }
 
-  // Dev mode: node <path-to-index.js> auth <name>
+  // Dev mode: node <path-to-index.js> <command>
   const indexJs = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'index.js');
-  return { cmd: process.argv[0], args: [indexJs, 'auth', ...extra, memberName] };
+  return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
 function buildHeadlessFallback(memberName: string, reason: string): string {
@@ -398,7 +482,8 @@ function findLinuxTerminal(): string | null {
 }
 
 /**
- * Launch a new terminal window running `apra-fleet auth <memberName>`.
+ * Launch a new terminal window running `apra-fleet secret --set <memberName>` or `apra-fleet auth <memberName>`.
+ * Records the spawned PID in the pending request so it can be killed when credential is received.
  * Returns a user-facing message describing what happened and executes a
  * callback when the spawned terminal process exits.
  */
@@ -410,6 +495,7 @@ export function launchAuthTerminal(
   const { cmd, args } = getAuthCommand(memberName, extraArgs);
   const fullArgs = [cmd, ...args];
   let child: ChildProcess;
+  const isApiKeyMode = extraArgs?.includes('--api-key') ?? false;
 
   try {
     const platform = process.platform;
@@ -485,6 +571,10 @@ export function launchAuthTerminal(
       // The title argument to start is required.
       const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
       child = spawn('cmd', spawnArgs, { detached: true, stdio: 'ignore' });
+      if (child.pid && isApiKeyMode) {
+        const pending = pendingRequests.get(memberName);
+        if (pending) pending.spawned_pid = child.pid;
+      }
     } else {
       // Linux: find available terminal emulator. Most support an execute flag.
       const terminal = findLinuxTerminal();
@@ -496,6 +586,10 @@ export function launchAuthTerminal(
       } else {
         // xterm, x-terminal-emulator etc.
         child = spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' });
+      }
+      if (child.pid && isApiKeyMode) {
+        const pending = pendingRequests.get(memberName);
+        if (pending) pending.spawned_pid = child.pid;
       }
     }
 
