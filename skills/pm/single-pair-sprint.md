@@ -112,8 +112,8 @@ Before kicking off execution, compose and deliver permissions for each member's 
 - Check git: `execute_command → git log --oneline -10`
 - Members may blow past VERIFY checkpoints if context gets large — dispatch a review immediately when caught
 - Long-running branches: check drift with `git log <branch>..origin/main --oneline`. If main moved, instruct rebase + retest
-- After every review verdict: move unaddressed MEDIUM/LOW findings and any deferred scope items into `<project>/backlog.md` AND create low-priority Beads tasks (`bd create "<item>" -p 3 --parent <epic-id>`)
-- Deferred items from user ("add to backlog", "defer this"): `bd create "<description>" -p 3 --parent <epic-id>`
+- After every review verdict: create low-priority Beads tasks for unaddressed MEDIUM/LOW findings and deferred scope items (`bd create "{{item}}" -p 3 --parent {{epic-id}}` — see `backlog-item.md` for required description fields)
+- Deferred items from user ("add to backlog", "defer this"): `bd create "{{description}}" -p 3 --parent {{epic-id}}`
 
 ### Safeguards
 
@@ -142,7 +142,7 @@ When all phases are APPROVED:
 
    STOP: Sprint is complete. Do not merge the PR. Surface the PR URL and CI status to the user and await explicit instruction to merge.
 
-3. **Update backlog.md** — record all unresolved MEDIUM/LOW review findings and deferred items from this sprint.
+3. **Deferred items** — any unresolved MEDIUM/LOW findings or deferred scope from this sprint should already be in Beads as low-priority tasks. Verify with `bd list --all --pretty`.
 
 4. **Update status.md** — mark sprint complete, record member states. Clear `lastDispatchedPhase`.
 

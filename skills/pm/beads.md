@@ -23,19 +23,6 @@ Beads (`bd`) is PM's persistent task database across all sprints. See fleet skil
 
 ---
 
-## Why Beads
-
-| Problem (file-only) | Solution (Beads) |
-|---|---|
-| Session restart requires `/pm recover` | `bd ready` instantly shows all open tasks |
-| `backlog.md` is a flat unqueryable file | Backlog items are Beads tasks — filterable, prioritizable |
-| `progress.json` dies with the branch | Beads persists across all sprints |
-| No cross-sprint visibility | One global DB — query any project, any state |
-| Review findings lose history | Each finding is a task with full audit trail |
-| Dependencies implicit in prose | `bd dep add` makes them machine-checkable |
-
----
-
 ---
 
 ## Lifecycle Hooks
@@ -99,16 +86,17 @@ bd note <epic-id> "PR: <url>"   # link PR to epic
 
 ---
 
-## `/pm backlog` — query deferred items
+## `/pm backlog` — deferred items
 
 When user says "add to backlog" or "defer this":
 ```bash
-bd create "<description>" -p 3 --parent <epic-id>   # low priority
+bd create "{{description}}" -p 3 --parent {{epic-id}}   # low priority
 ```
+See `backlog-item.md` for required description fields and maintenance operations.
 
 When user says "show backlog" or "what's deferred":
 ```bash
-bd list --all --pretty   # full tree view including backlog
+bd list --all --pretty   # full tree view including deferred items
 ```
 
 ---

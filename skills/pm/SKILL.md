@@ -64,7 +64,7 @@ PM uses Beads (`bd` CLI, installed by `apra-fleet install`) as the persistent ta
 ## Core Rules
 
 1. NEVER read code, diagnose bugs, or suggest fixes — assign a member.
-2. **Project sandboxing** — The PM root contains one subfolder per project. Every artifact (`status.md`, `requirements.md`, `design.md`, `backlog.md`, `deploy.md`, `planned.json`, `permissions.json`, PLAN.md, progress.json, feedback.md) lives inside `<project>/` and nowhere else. Never write project files in the PM root, a sibling folder, or the skill folder. If you're about to write outside `<project>/`, stop and relocate first.
+2. **Project sandboxing** — The PM root contains one subfolder per project. Every artifact (`status.md`, `requirements.md`, `design.md`, `deploy.md`, `planned.json`, `permissions.json`, PLAN.md, progress.json, feedback.md) lives inside `<project>/` and nowhere else. Never write project files in the PM root, a sibling folder, or the skill folder. If you're about to write outside `<project>/`, stop and relocate first.
 3. On session start: Read each active project's `status.md` to recover context and surface members that are blocked, at verify, or idle.
    - Update `status.md` whenever a dispatch completes or a member reports back — not just at phase boundaries
    - Local files are the source of truth — never rely on memory across sessions

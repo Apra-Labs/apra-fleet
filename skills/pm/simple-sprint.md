@@ -19,7 +19,7 @@ Use the full sprint lifecycle (single-pair-sprint.md) for anything larger.
 3. Doer completes work, commits, and pushes
 4. PM dispatches reviewer (fresh session, `resume=false`) — send requirements + diff context
 5. Reviewer outputs verdict: APPROVED or CHANGES NEEDED
-6. On APPROVED: update `<project>/backlog.md` with any unresolved findings or deferred items, then cleanup and raise PR (see cleanup.md). STOP: Do not merge — surface the PR URL and CI status to the user and await explicit instruction.
+6. On APPROVED: create low-priority Beads tasks for any unresolved findings or deferred items (see `backlog-item.md`), then cleanup and raise PR (see cleanup.md). STOP: Do not merge — surface the PR URL and CI status to the user and await explicit instruction.
 7. On CHANGES NEEDED: send feedback to doer, re-dispatch, repeat from step 3
 
 ## Rules
