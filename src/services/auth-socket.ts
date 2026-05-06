@@ -1,4 +1,4 @@
-﻿import net from 'node:net';
+import net from 'node:net';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
-import { logError, logLine } from '../utils/log-helpers.js';
+import { logError } from '../utils/log-helpers.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -26,6 +26,7 @@ interface PasswordWaiter {
 
 const pendingRequests = new Map<string, PendingAuth>();
 const passwordWaiters = new Map<string, PasswordWaiter>();
+const activeSockets = new Set<net.Socket>();
 let socketServer: net.Server | null = null;
 let closingPromise: Promise<void> | null = null;
 
@@ -52,6 +53,11 @@ function killProcess(pid: number): void {
 }
 
 export async function ensureAuthSocket(): Promise<void> {
+  // If already closing, wait for it to finish before trying to start again
+  if (closingPromise) {
+    await closingPromise;
+  }
+
   if (socketServer) return;
 
   const sockPath = getSocketPath();
@@ -69,6 +75,8 @@ export async function ensureAuthSocket(): Promise<void> {
 
   const tryListen = (retriesLeft: number): Promise<void> => new Promise((resolve, reject) => {
     const server = net.createServer((conn) => {
+      activeSockets.add(conn);
+      conn.on('close', () => activeSockets.delete(conn));
       let buffer = '';
       conn.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -203,51 +211,54 @@ export function hasPendingAuth(memberName: string): boolean {
 }
 
 export function cleanupAuthSocket(): Promise<void> {
-  // If already closing, wait for that to complete
+  // If already closing, wait for it to finish.
+  // This ensures that we don't start a new server while the old one is still releasing the pipe.
   if (closingPromise) {
     return closingPromise;
   }
 
-  // Reject any pending waiters
+  // Reject any pending waiters immediately
   for (const [, waiter] of passwordWaiters) {
     clearTimeout(waiter.timer);
     waiter.reject(new Error('Auth socket closed'));
   }
   passwordWaiters.clear();
+  pendingRequests.clear();
+
+  // Destroy all active client connections immediately
+  for (const s of activeSockets) {
+    s.destroy();
+  }
+  activeSockets.clear();
+
+  if (!socketServer) {
+    if (process.platform !== 'win32') {
+      try { fs.unlinkSync(getSocketPath()); } catch { /* ignore */ }
+    }
+    return Promise.resolve();
+  }
+
+  const server = socketServer;
+  socketServer = null; // Clear immediately so ensureAuthSocket knows we are closing
 
   closingPromise = new Promise((resolve) => {
-    if (socketServer) {
-      const server = socketServer;
-      socketServer = null; // Clear immediately so ensureAuthSocket doesn't think it's ready
-
-      server.close(() => {
-        // On Windows, add extra delay to ensure the pipe is fully released
-        const onComplete = () => {
-          if (process.platform !== 'win32') {
-            try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
-          }
-          pendingRequests.clear();
-          closingPromise = null;
-          resolve();
-        };
-
-        if (process.platform === 'win32') {
-          // Windows named pipes need extra time to release
-          // In tests, use a longer delay to ensure full release; in production use a shorter one
-          const delay = process.env.NODE_ENV === 'test' ? 1500 : 500;
-          setTimeout(onComplete, delay);
-        } else {
-          onComplete();
+    server.close(() => {
+      const onComplete = () => {
+        if (process.platform !== 'win32') {
+          try { fs.unlinkSync(getSocketPath()); } catch { /* ignore */ }
         }
-      });
-    } else {
-      if (process.platform !== 'win32') {
-        try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
+        closingPromise = null;
+        resolve();
+      };
+
+      if (process.platform === 'win32') {
+        // Windows named pipes need extra time to be fully released by the OS
+        const delay = process.env.NODE_ENV === 'test' ? 1500 : 500;
+        setTimeout(onComplete, delay);
+      } else {
+        onComplete();
       }
-      pendingRequests.clear();
-      closingPromise = null;
-      resolve();
-    }
+    });
   });
 
   return closingPromise;

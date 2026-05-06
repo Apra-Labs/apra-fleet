@@ -92,9 +92,13 @@ describe('auth-socket', () => {
           const resp = JSON.parse(buffer.slice(0, nl));
           expect(resp.ok).toBe(true);
           client.end();
+          client.destroy();
           resolve();
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       // Password should now be resolved (encrypted)
@@ -122,10 +126,15 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          resolve(JSON.parse(buffer.slice(0, nl)));
+          const data = JSON.parse(buffer.slice(0, nl));
           client.end();
+          client.destroy();
+          resolve(data);
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       expect(resp.ok).toBe(false);
@@ -146,10 +155,15 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          resolve(JSON.parse(buffer.slice(0, nl)));
+          const data = JSON.parse(buffer.slice(0, nl));
           client.end();
+          client.destroy();
+          resolve(data);
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       expect(resp.ok).toBe(false);
@@ -170,10 +184,15 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          resolve(JSON.parse(buffer.slice(0, nl)));
+          const data = JSON.parse(buffer.slice(0, nl));
           client.end();
+          client.destroy();
+          resolve(data);
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       expect(resp.ok).toBe(false);
@@ -240,9 +259,16 @@ describe('auth-socket', () => {
         let buffer = '';
         client.on('data', (chunk) => {
           buffer += chunk.toString();
-          if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
+          if (buffer.indexOf('\n') !== -1) {
+            client.end();
+            client.destroy();
+            resolve();
+          }
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       const encPw = await passwordPromise;
@@ -271,9 +297,16 @@ describe('auth-socket', () => {
         let buffer = '';
         client.on('data', (chunk) => {
           buffer += chunk.toString();
-          if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
+          if (buffer.indexOf('\n') !== -1) {
+            client.end();
+            client.destroy();
+            resolve();
+          }
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       // Now wait � should resolve immediately since password is already there
@@ -560,8 +593,15 @@ function sendPassword(sockPath: string, memberName: string, password: string): P
     let buffer = '';
     client.on('data', (chunk) => {
       buffer += chunk.toString();
-      if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
+      if (buffer.indexOf('\n') !== -1) {
+        client.end();
+        client.destroy();
+        resolve();
+      }
     });
-    client.on('error', reject);
+    client.on('error', (err) => {
+      client.destroy();
+      reject(err);
+    });
   });
 }
