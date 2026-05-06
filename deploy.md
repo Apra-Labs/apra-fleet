@@ -29,7 +29,7 @@ gh release download <tag> --repo Apra-Labs/apra-fleet -p "apra-fleet-installer-w
 
 ### 3. Install
 ```bash
-/tmp/fleet-deploy/apra-fleet-installer-win-x64.exe install --skill
+/tmp/fleet-deploy/apra-fleet-installer-win-x64.exe install --force
 ```
 This handles shutdown, binary replacement, skill installation, and restart in one step.
 

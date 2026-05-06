@@ -1,0 +1,12 @@
+{
+  "tasks": [
+    { "id": "T1", "status": "completed", "tier": "cheap", "notes": "Shared config refactored in src/cli/config.ts and used in install.ts." },
+    { "id": "T2", "status": "completed", "tier": "cheap", "notes": "Uninstall command scaffolded in src/cli/uninstall.ts and registered in index.ts." },
+    { "id": "V1", "status": "completed", "tier": "cheap", "notes": "Build + tests pass. Pushed to origin." },
+    { "id": "T3", "status": "completed", "tier": "standard", "notes": "Surgical cleanup for defaultModel and permissions implemented." },
+    { "id": "T4", "status": "completed", "tier": "standard", "notes": "Skill directory and global file removal verified." },
+    { "id": "V2", "status": "completed", "tier": "standard", "notes": "Build and existing tests pass. Changes pushed to origin." },
+    { "id": "T5", "status": "completed", "tier": "premium", "notes": "Full test coverage implemented in tests/uninstall.test.ts including Claude CLI, abort paths, and skill flags." },
+    { "id": "V3", "status": "completed", "tier": "premium", "notes": "All tests pass. Changes pushed to origin." }
+  ]
+}

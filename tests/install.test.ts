@@ -59,39 +59,37 @@ describe('install config persistence (T5)', () => {
 
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       configPath,
-      JSON.stringify({ llm: 'claude', skill: 'all' }, null, 2),
+      expect.stringContaining('"claude":'),
       { mode: 0o600 }
     );
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === configPath);
+    const data = JSON.parse(writeCall![1] as string);
+    expect(data.providers.claude.skill).toBe('all');
+    expect(data.providers.claude.installedAt).toBeDefined();
   });
 
   it('writes custom config with --llm and --skill flags', async () => {
     await runInstall(['--llm', 'gemini', '--skill', 'none']);
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      configPath,
-      JSON.stringify({ llm: 'gemini', skill: 'none' }, null, 2),
-      { mode: 0o600 }
-    );
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === configPath);
+    const data = JSON.parse(writeCall![1] as string);
+    expect(data.providers.gemini.skill).toBe('none');
   });
 
   it('handles --llm=value and --no-skill shorthand', async () => {
     await runInstall(['--llm=codex', '--no-skill']);
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      configPath,
-      JSON.stringify({ llm: 'codex', skill: 'none' }, null, 2),
-      { mode: 0o600 }
-    );
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === configPath);
+    const data = JSON.parse(writeCall![1] as string);
+    expect(data.providers.codex.skill).toBe('none');
   });
 
   it('persists specific skill mode (fleet)', async () => {
     await runInstall(['--skill', 'fleet']);
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      configPath,
-      JSON.stringify({ llm: 'claude', skill: 'fleet' }, null, 2),
-      { mode: 0o600 }
-    );
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === configPath);
+    const data = JSON.parse(writeCall![1] as string);
+    expect(data.providers.claude.skill).toBe('fleet');
   });
 });
 
