@@ -1,89 +1,134 @@
-# Uninstall Command (#245) — V4 Re-Review
+# Uninstall Command (#245) — V5 Cumulative Review
 
-**Reviewer:** claude-opus (code reviewer)
-**Date:** 2026-05-05 19:05:00-04:00
-**Verdict:** APPROVED
-
-> See the recent git history of this file to understand the context of this review.
+**Reviewer:** fleet-rev (claude-opus-4-6)
+**Date:** 2026-05-05
+**Verdict:** CHANGES NEEDED
 
 ---
 
-## Prior Review Context
+## Build & Tests
 
-V3 review (commit 4e25a3b) issued CHANGES NEEDED with 4 blocking test gaps and 2 non-blocking notes (R3, R5). The doer addressed all findings in commit 7c1714b.
-
----
-
-## Blocking Findings Resolution (commit 7c1714b)
-
-### 1. Claude CLI execSync assertion — RESOLVED
-
-New test "calls Claude CLI to remove MCP" (uninstall.test.ts:83–94) asserts `execSync` was called with a string containing `claude mcp remove apra-fleet` and an options object. Correctly validates the F2 plan requirement. PASS.
-
-### 2. Abort path (user declines confirmation) — RESOLVED
-
-New test "aborts if user says no" (uninstall.test.ts:47–57) mocks readline response as 'n', verifies `console.log` includes "Aborted.", verifies `fs.rmSync` was NOT called. Clean abort with no mutations. PASS.
-
-### 3. --skill flag targeting — RESOLVED
-
-New test "removes only specific skills if requested" (uninstall.test.ts:96–113) covers both directions:
-- `--skill pm` asserts `rmSync` called with path matching `/pm$/` and NOT called with `/fleet$/`
-- `--skill fleet` asserts the inverse
-
-Both assertions use regex matchers on the path argument. Correctly validates T4 skill-targeting logic. PASS.
-
-### 4. defaultModel conditional removal — RESOLVED
-
-New test "removes defaultModel only if it matches fleet standard" (uninstall.test.ts:153–183) covers two scenarios:
-- Standard model value: asserts `defaultModel` is removed from written settings
-- Custom model value: asserts `defaultModel` is preserved as `'custom-model'`
-
-Uses `config.PROVIDER_STANDARD_MODELS.claude` for the match value — correctly tied to the source-of-truth constant. PASS.
+- Build (`tsc`): PASS — no errors
+- Tests: 66 files, 1087 passed, 6 skipped, 0 failed. PASS.
 
 ---
 
-## Bonus: Old Format Migration Test
+## 1. File Hygiene — BLOCKING
 
-New test "migrates old install-config format" (uninstall.test.ts:185–199) verifies that when `readFileSync` returns old `{ llm: 'gemini', skill: 'pm' }` format, the uninstall still correctly identifies and cleans up Gemini. This was gap #5 from the V3 review (non-blocking but recommended). PASS.
+`git diff --name-only origin/main..feat/uninstall-command` contains files that are not justifiable against sprint #245:
 
----
+| File | Verdict |
+|---|---|
+| `src/cli/uninstall.ts` | OK — primary deliverable |
+| `src/cli/config.ts` | OK — shared config extraction |
+| `src/cli/install.ts` | OK — refactored to use config.ts |
+| `src/cli/update.ts` | OK — migrated to new config schema |
+| `src/index.ts` | OK — dispatcher registration |
+| `tests/uninstall.test.ts` | OK — new tests |
+| `tests/install.test.ts` | OK — updated for new config schema |
+| `tests/update.test.ts` | OK — updated for new config schema |
+| `skills/pm/tpl-reviewer.md` | OK — file hygiene rule addition |
+| `.gitignore` | OK — excludes provider context files |
+| `deploy.md` | OK — `--skill` → `--force` fix |
+| `package.json` | OK — version bump |
+| `version.json` | OK — version bump |
+| `feedback.md` | OK — review artifact |
+| **`PLAN.md`** | OK — sprint tracking |
+| **`progress.json`** | OK — sprint tracking |
+| **`requirements.md`** | OK — sprint tracking |
+| `.gemini/policies/fleet.toml` | FLAGGED — deleted; was a tool config, deletion is fine |
+| `.gemini/settings.json` | FLAGGED — deleted; was a tool config, deletion is fine |
+| **`requirements-98.md`** | **BLOCKED** — stale artifact from a different sprint (#98), should not be tracked |
+| **`run_me.bat`** | **BLOCKED** — scratch/temp file, not part of sprint deliverables |
+| **`test.md`** | **BLOCKED** — scratch/temp file |
+| **`test.txt`** | **BLOCKED** — scratch/temp file |
+| **`update-progress.js`** | **BLOCKED** — scratch utility script, not part of source |
 
-## Non-Blocking Notes Resolution
-
-### R3 — Server Race Detection — RESOLVED
-
-New code at uninstall.ts:155–159 calls `isApraFleetRunning()` (imported from install.ts) and aborts with `process.exit(1)` if the server is active. Error message instructs user to run `apra-fleet stop` first. New test "aborts if apra-fleet server is running" (uninstall.test.ts:221–227) validates this path. PASS.
-
-### R5 — Post-Uninstall Warning — RESOLVED
-
-New code at uninstall.ts:236–238 prints a `⚠ Note:` block after successful uninstall, advising users to review settings files if they suspect residual config from manual modifications. This satisfies the plan's "post-uninstall warning" requirement. PASS.
-
----
-
-## Update.ts Migration (bonus fix)
-
-The doer also updated `src/cli/update.ts` (lines 76–90) to use the new multi-provider `readInstallConfig()` instead of the old flat JSON parse. The update path now reads providers from the new schema and passes `--llm` / `--skill` to the installer correctly. Test mocks in `tests/update.test.ts` were updated to match. PASS.
-
----
-
-## Build and Tests
-
-- Build (`tsc`): PASS — no errors.
-- Tests: 66 files, 1084 passed, 6 skipped, 0 failed. PASS.
-- No regressions in previously passing tests. PASS.
-- Test count increased from 1078 → 1084 (6 new uninstall tests). Matches expectations.
-- CI: No CI config in repo. N/A.
-
----
-
-## progress.json
-
-Updated: T5 marked `"completed"`, V3 marked `"completed"`. Matches actual state. PASS.
+**Action required:** Remove `requirements-98.md`, `run_me.bat`, `test.md`, `test.txt`, and `update-progress.js` from the branch (delete and commit). These are stale/scratch artifacts that should not be merged to main.
 
 ---
 
-## Summary
+## 2. Core Logic Review
 
-All 4 blocking test gaps from the V3 review have been addressed with well-structured, targeted tests. Both non-blocking notes (R3 race detection, R5 post-uninstall warning) have been implemented and tested. The bonus update.ts migration to the new config schema is correct. Build is green, all tests pass, no regressions detected.
+### 2a. `--skill` scoping — PASS
 
-Verdict: **APPROVED** — the uninstall command implementation is complete and ready for merge.
+At `uninstall.ts:201`, the `if (skillMode === 'all')` guard correctly gates both Claude CLI MCP removal and `cleanupSettings()`. When `--skill pm` or `--skill fleet` is passed, only skill directories are removed — settings, MCP, hooks, permissions, statusLine, and defaultModel are untouched. Correct per requirements.
+
+### 2b. `--force` + `--dry-run` — PASS
+
+At `uninstall.ts:161–163`: when both flags are set, the code logs "would be stopped by --force" but does NOT call `killApraFleet()`. When only `--force` (no dry-run) and server is running, it calls `killApraFleet()` and waits 500ms. When neither flag and server is running, it exits with error. All three branches are correct.
+
+### 2c. `anythingRemoved` footer — PASS
+
+At `uninstall.ts:254–261`: footer says "Uninstall complete" only when `anythingRemoved === true`; otherwise "Nothing to remove — no apra-fleet installation found for the specified scope." Correct per requirements.
+
+### 2d. SEA compatibility (readline) — PASS
+
+At `uninstall.ts:4`: `import * as readlinePromises from 'node:readline/promises'` — static import, no `import()` expression anywhere in uninstall.ts. SEA-compatible.
+
+### 2e. Settings cleanup (cleanupSettings) — PASS
+
+Correctly handles: `mcpServers`, `mcp_servers` (Codex format), `permissions.allow` filtering, `hooks.PostToolUse` filtering, `statusLine` removal, `defaultModel` conditional removal (only if matching fleet standard). All mutations gated by `!dryRun`. Changes written atomically via `writeConfig`.
+
+### 2f. Config refactor (config.ts) — PASS
+
+Shared config functions properly extracted. `readInstallConfig` handles old `{ llm, skill }` format migration, corrupt/missing file. `writeInstallConfig` merges into existing providers map. install.ts and update.ts both import from config.ts without regression.
+
+### 2g. Dynamic import in index.ts — PASS
+
+`src/index.ts:40` uses `import('./cli/uninstall.js')` — same pattern as install/auth/update. This is the correct SEA-compatible pattern for CLI subcommands (they aren't loaded at module parse time).
+
+---
+
+## 3. Test Coverage — MEDIUM
+
+### Covered:
+- Help text display
+- User abort (says 'n')
+- Dry-run (no mutations)
+- Multi-provider cleanup
+- Claude CLI MCP removal
+- `--skill pm` and `--skill fleet` targeting
+- `--llm` targeting
+- Settings key cleanup (mcpServers, permissions, hooks, statusLine)
+- defaultModel conditional removal
+- Old config format migration
+- Fallback scanning (no config file)
+- Server running abort
+
+### Missing (not blocking, but notable gaps):
+
+| Gap | Severity |
+|---|---|
+| No test for `--force` stopping a running server | MEDIUM |
+| No test for `--dry-run --force` (reports but doesn't stop) | MEDIUM |
+| No test for `anythingRemoved` false path (footer message) | LOW |
+| No test verifying `--skill pm/fleet` does NOT call `cleanupSettings` / `writeFileSync` | MEDIUM |
+| No test for `mcp_servers` (Codex format) cleanup | LOW |
+
+These are not blocking because the logic is straightforward and covered by code inspection, but they should be added before the next release.
+
+---
+
+## 4. Other Observations
+
+### 4a. Global cleanup skips `anythingRemoved` tracking — LOW
+
+At `uninstall.ts:232–252`, the global cleanup section (BIN_DIR, HOOKS_DIR, SCRIPTS_DIR, install-config.json) does NOT set `anythingRemoved = true`. If a user runs a full uninstall where only global files exist (no provider-specific artifacts), the footer will incorrectly say "Nothing to remove." This is an edge case but technically incorrect.
+
+### 4b. `readConfig` empty-content handling — LOW
+
+`config.ts:78` trims content and returns `{}` for empty strings. The original `install.ts` version did not trim. This is a minor behavioral change but safe — empty settings files are treated as empty objects either way.
+
+---
+
+## Verdict: CHANGES NEEDED
+
+### Blocking:
+1. **File hygiene** — Remove 5 stale/scratch files from the branch: `requirements-98.md`, `run_me.bat`, `test.md`, `test.txt`, `update-progress.js`
+
+### Non-blocking (recommended before merge):
+2. Add test for `--force` server stop behavior
+3. Add test for `--dry-run --force` no-stop behavior
+4. Add test verifying `--skill pm` does not touch settings/MCP
+5. Fix global cleanup `anythingRemoved` tracking (LOW)
