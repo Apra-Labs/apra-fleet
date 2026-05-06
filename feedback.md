@@ -13,7 +13,7 @@
 |---|---|---|
 | `package.json` | OK | uuid bumped from `^11.0.0` to `^14.0.0` — only change, as expected |
 | `package-lock.json` | OK | Transitive deps updated: @hono/node-server 1.19.9→1.19.14, express-rate-limit 8.2.1→8.5.0, hono 4.12.2→4.12.17, ip-address 10.0.1→10.1.0, picomatch 8.3.0→8.4.2, postcss 4.0.3→4.0.4, uuid 11→14 |
-| `GEMINI.md` | FLAG | Modified to contain doer sprint instructions. Not related to the security fix task. See below. |
+| `GEMINI.md` | OK (fixed) | Restored to project context in `2cd5b96`. Matches origin/main. |
 
 ## Checklist
 
@@ -38,14 +38,18 @@ All use the `v4` named export, which is fully supported in uuid v14. No API chan
 **PASS.** `npm audit` reports 0 HIGH vulnerabilities. 3 MODERATE remain (ip-address XSS in Address6 HTML methods, affecting express-rate-limit → @modelcontextprotocol/sdk). Fixing these would require downgrading @modelcontextprotocol/sdk to 1.25.3, which is a breaking change. Acceptable per requirements ("MODERATE items may remain if they cannot be addressed without breaking changes").
 
 ### R6 — File justification
-**FLAG: GEMINI.md** — This file was modified from generic Gemini context docs to sprint-specific doer instructions. This change is unrelated to the security vulnerability fix task. It appears to be a leftover from the doer's workspace setup. This should not be included in the PR.
+**FLAG: GEMINI.md** — ~~Modified to contain doer sprint instructions. Not related to the security fix task.~~  
+**RESOLVED** in commit `2cd5b96`. GEMINI.md has been restored to the standard project context version (matches origin/main exactly). The fix commit is clean — only touches GEMINI.md, reducing it from sprint instructions back to the README-pointing context file.
 
 ---
 
 ## Verdict
 
-**CHANGES NEEDED**
+**APPROVED**
 
-1. **Remove GEMINI.md changes from this commit.** The modification to `GEMINI.md` (rewriting it from generic Gemini context to doer sprint instructions) is unrelated to the security vulnerability fix. It should be reverted or excluded from this branch before merging.
-
-All other acceptance criteria are met: uuid is at v14, API usage is compatible, all HIGH vulnerabilities resolved, tests pass.
+All acceptance criteria are met:
+- uuid bumped to v14, API usage compatible (v4 export unchanged)
+- All HIGH vulnerabilities resolved via npm audit fix
+- Tests pass (1181 passed, 0 failures)
+- GEMINI.md sprint artifact reverted in `2cd5b96` — file now matches main
+- No unrelated changes remain on the branch
