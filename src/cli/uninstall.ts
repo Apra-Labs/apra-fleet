@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import * as readlinePromises from 'node:readline/promises';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
 import { isApraFleetRunning, killApraFleet } from './install.js';
@@ -22,7 +23,7 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
   execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
 }
 
-function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): void {
+function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean {
   const settings = readConfig(paths);
   let changed = false;
 
@@ -95,6 +96,7 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): void {
   if (changed && !dryRun) {
     writeConfig(paths, settings);
   }
+  return changed;
 }
 
 export async function runUninstall(args: string[]): Promise<void> {
@@ -181,8 +183,7 @@ Options:
   }
 
   if (!skipConfirm && !dryRun) {
-    const readline = await import('node:readline/promises');
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const rl = readlinePromises.createInterface({ input: process.stdin, output: process.stdout });
     const answer = await rl.question(`Are you sure you want to uninstall Apra Fleet? (y/N): `);
     rl.close();
     if (answer.toLowerCase() !== 'y') {
@@ -191,32 +192,39 @@ Options:
     }
   }
 
+  let anythingRemoved = false;
+
   for (const llm of providersToClean) {
     const paths = getProviderInstallConfig(llm);
     console.log(`Cleaning up ${paths.name}...`);
-    
-    if (llm === 'claude') {
-      console.log(`  - Removing MCP server via Claude CLI`);
-      if (!dryRun) {
-        try {
-          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-        } catch { /* already removed or not found */ }
+
+    if (skillMode === 'all') {
+      if (llm === 'claude') {
+        console.log(`  - Removing MCP server via Claude CLI`);
+        if (!dryRun) {
+          try {
+            run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+            anythingRemoved = true;
+          } catch { /* already removed or not found */ }
+        }
       }
+
+      if (cleanupSettings(paths, dryRun)) anythingRemoved = true;
     }
-    
-    cleanupSettings(paths, dryRun);
 
     // Skill removal (Phase 2 - Task T4)
     if (skillMode === 'all' || skillMode === 'pm') {
       if (fs.existsSync(paths.skillsDir)) {
         console.log(`  - Removing PM skills: ${paths.skillsDir}`);
         if (!dryRun) fs.rmSync(paths.skillsDir, { recursive: true, force: true });
+        anythingRemoved = true;
       }
     }
     if (skillMode === 'all' || skillMode === 'fleet') {
       if (fs.existsSync(paths.fleetSkillsDir)) {
         console.log(`  - Removing fleet skills: ${paths.fleetSkillsDir}`);
         if (!dryRun) fs.rmSync(paths.fleetSkillsDir, { recursive: true, force: true });
+        anythingRemoved = true;
       }
     }
   }
@@ -243,8 +251,12 @@ Options:
     }
   }
 
-  console.log('\nUninstall complete.');
-  console.log('\n⚠ Note: Surgical cleanup of settings (MCP, permissions, hooks) was performed.');
-  console.log('  If you manually modified these settings, some entries might remain.');
-  console.log('  Please review your provider settings files if you suspect residual config.');
+  if (anythingRemoved) {
+    console.log('\nUninstall complete.');
+    console.log('\n⚠ Note: Surgical cleanup of settings (MCP, permissions, hooks) was performed.');
+    console.log('  If you manually modified these settings, some entries might remain.');
+    console.log('  Please review your provider settings files if you suspect residual config.');
+  } else {
+    console.log('\nNothing to remove — no apra-fleet installation found for the specified scope.');
+  }
 }
