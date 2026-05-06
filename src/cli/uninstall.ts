@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { isApraFleetRunning } from './install.js';
+import { isApraFleetRunning, killApraFleet } from './install.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -108,19 +108,22 @@ Usage:
   apra-fleet uninstall --llm <provider>  Uninstall for specific provider only
   apra-fleet uninstall --skill <mode>    Uninstall specific skills (fleet|pm|all)
   apra-fleet uninstall --dry-run         Log actions without modifying files
+  apra-fleet uninstall --force           Stop running server automatically before uninstall
   apra-fleet uninstall --yes             Skip confirmation prompt
   apra-fleet uninstall --help            Show this help
 
 Options:
   --llm <provider>   Specific provider to clean up: claude, gemini, codex, copilot.
   --skill <mode>     Skills to remove: fleet, pm, or all (default).
-  --dry-run          Preview the uninstall process.
+  --dry-run          Preview the uninstall process without modifying anything.
+  --force            Automatically stop the running server before uninstalling.
   --yes              Bypass confirmation prompt.`);
     process.exit(0);
     return;
   }
 
   const dryRun = args.includes('--dry-run');
+  const force = args.includes('--force');
   const skipConfirm = args.includes('--yes');
 
   // Parse --llm
@@ -153,9 +156,17 @@ Options:
   console.log(`\nUninstalling Apra Fleet ${serverVersion}...${dryRun ? ' (DRY RUN)' : ''}\n`);
 
   if (isApraFleetRunning()) {
-    console.error('Error: apra-fleet server is currently running. Stop it first (`apra-fleet stop`) then retry uninstall.');
-    process.exit(1);
-    return;
+    if (dryRun && force) {
+      console.log('  Note: apra-fleet server is currently running (would be stopped by --force).');
+    } else if (force) {
+      killApraFleet();
+      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('  Stopped running server.');
+    } else {
+      console.error('Error: apra-fleet server is currently running.\n\n  Run with --force to stop it automatically:\n    apra-fleet uninstall --force\n');
+      process.exit(1);
+      return;
+    }
   }
 
   const installConfig = readInstallConfig();
