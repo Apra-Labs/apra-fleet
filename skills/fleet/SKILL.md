@@ -52,35 +52,9 @@ Beads (`bd` CLI) is installed automatically by `apra-fleet install`. It gives fl
 
 **Run `bd` via `Bash` on the orchestrator — never via `execute_command` on a member.**
 
-### Session-Start Rule
-
 **At the start of every session, query Beads before reading any status files.** It instantly shows all in-flight tasks across every project — no file reads required. When a user asks "what's in flight?", "what are we working on?", or similar, answer from Beads first.
 
-### Core Commands
-
-```bash
-bd init                             # init in current repo (once, idempotent)
-bd create "title" -p <0-3>          # create task (0=critical, 1=high, 2=med, 3=low)
-bd update <id> --claim              # mark in-progress (on dispatch)
-bd update <id> --done               # mark complete (on verify/approval)
-bd update <id> --note "PR: <url>"   # attach a note
-bd dep add <child-id> <parent-id>   # child blocked until parent done
-bd show <id> --tree                 # task + all dependencies
-```
-
-### Backlog Pattern
-
-When a user says "add to backlog" or "defer this":
-```bash
-bd create "<description>" -p 3 --parent <epic-id>   # low priority, stays in backlog
-```
-
-When asked "what's deferred" or "show backlog":
-```bash
-bd ready --all   # or: bd show <epic-id> --tree
-```
-
-See `beads.md` for the full reference, workflow examples, and PM integration details.
+See `beads.md` for the full command reference and workflow examples.
 
 ## Secure Credentials
 
