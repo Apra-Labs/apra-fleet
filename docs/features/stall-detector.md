@@ -1,7 +1,7 @@
 # Stall Detector — Redesign Design Document
 
 **Date:** 2026-05-05  
-**Status:** Draft v2 — post-experiment, post-review
+**Status:** Implemented — shipped in v0.1.9.0 (#241, PR #246)
 
 ---
 
