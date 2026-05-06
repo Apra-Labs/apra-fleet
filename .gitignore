@@ -14,7 +14,6 @@ materials/*
 # CLAUDE.md is already tracked (git add -f was used), so this entry only prevents
 # new untracked CLAUDE.md files from being accidentally staged — it does not untrack the existing file.
 CLAUDE.md
-CLAUDE.md
 
 # Beads / Dolt files (added by bd init)
 .dolt/
@@ -23,7 +22,8 @@ CLAUDE.md
 .beads/
 .claude/settings.json
 
-# Provider agent context files (role-specific, never shared)
+# Provider agent context files are tracked project deliverables (git add -f was used).
+# These entries prevent sprint-injected replacements from being accidentally staged.
 GEMINI.md
 AGENTS.md
 COPILOT-INSTRUCTIONS.md
