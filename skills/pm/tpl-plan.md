@@ -61,8 +61,8 @@ Cover at minimum: backward compat (changed interfaces, renamed items), security 
 
 **Monotonically non-decreasing tiers within a phase.** Within a phase, order tasks cheap → standard → premium. The PM resumes the same session across tasks in a phase — a premium task can build a large context that a cheap model cannot load. The PM may group consecutive same-tier tasks into a single dispatch streak; tier transitions trigger a new dispatch. If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary rather than violating the ordering rule. Cross-phase tier order does not matter — each phase always starts a fresh session.
 ```
-cheap → cheap → standard → standard → premium → VERIFY  ✅
-cheap → standard → cheap → VERIFY  ❌  (downgrade within phase — split into two phases)
+cheap → cheap → standard → standard → premium → VERIFY  [VALID]
+cheap → standard → cheap → VERIFY  [INVALID]  (downgrade within phase — split into two phases)
 ```
 
 ## Notes

@@ -1,6 +1,6 @@
 # Running a Sprint
 
-A sprint is a focused unit of work executed by a doer/reviewer pair against a codebase. This document covers the full lifecycle from initiation to merge.
+A sprint is a focused unit of work executed by a doer/reviewer pair against a codebase. This document covers the full lifecycle from initiation to PR raise.
 
 ## Lifecycle
 
@@ -25,7 +25,7 @@ Write `<project>/requirements.md`. Quality bar:
 
 **Branch naming:** choose a name that makes the purpose of the branch immediately clear — `sprint/<description>`, `feat/<description>`, `bug_fix/<short_description>`, etc. PM records this as `{{branch}}` in the agent context file before dispatch.
 
-1. Send `requirements.md` to doer via `send_files`
+1. Send `requirements.md` and `tpl-plan.md` to doer via `send_files`
 2. Dispatch `plan-prompt.md` via `execute_prompt` (wrapped in background Agent)
 3. Run doer-reviewer loop (see `doer-reviewer.md`) using `tpl-reviewer-plan.md` for the reviewer
 4. Iterate until plan passes quality criteria
@@ -139,6 +139,8 @@ When all phases are APPROVED:
 1. **Documentation Harvest** — Dispatch a member to extract long-term knowledge from `requirements.md`, `design.md`, and `PLAN.md` into `docs/`. Structure inside `docs/` is content-driven (e.g. `docs/architecture.md`, `docs/features/<name>.md`). Extract: architecture decisions, feature design, key trade-offs, API contracts. Do NOT extract: task lists, code-line references, debug notes, implementation steps. Member commits the docs/ output to the branch. Then dispatch reviewer to review the harvest — verify it captures durable knowledge and nothing transient slipped in. Iterate until APPROVED.
 
 2. **Cleanup and raise PR** — See cleanup.md.
+
+   STOP: Sprint is complete. Do not merge the PR. Surface the PR URL and CI status to the user and await explicit instruction to merge.
 
 3. **Update backlog.md** — record all unresolved MEDIUM/LOW review findings and deferred items from this sprint.
 
