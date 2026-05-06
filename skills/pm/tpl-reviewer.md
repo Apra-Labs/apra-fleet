@@ -29,13 +29,13 @@ Review scope covers all phases from Phase 1 through the current phase — not ju
 - Is the code consistent with existing patterns and conventions?
 - Are docs updated if behavior changed?
 - Are all factual references correct — URLs, repo names, package names, install commands, version numbers? Members hallucinate these; spot-check against known sources.
-- **File hygiene:** Run `git diff --name-only {{base_branch}}..{{branch}}`. Flag CHANGES NEEDED for files outside project scope:
+- **File hygiene:** Run `git diff --name-only {{base_branch}}..{{branch}}`. For every file added, modified, or deleted — you must be able to justify it against the sprint requirements. If you cannot, flag CHANGES NEEDED. Common unjustifiable patterns:
   - Temp/scratch: `*.tmp`, `*.txt`, `*.base64`
   - Tool/security configs: `.gemini/`, `.claude/settings.json`, `permissions.json`
   - Unrelated scripts or stale artifacts: `plan-NNN.md`, `requirements-NNN.md`, `progress-NNN.json`
   - Tracked agent context: `GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, `COPILOT-INSTRUCTIONS.md` (ensure gitignored)
 
-  Permit only source, tests, and active sprint tracking (`PLAN.md`, `progress.json`, `requirements.md`, `feedback.md`, design docs).
+  Permit only source, tests, and active sprint tracking (`PLAN.md`, `progress.json`, `requirements.md`, `feedback.md`, design docs). When in doubt, flag it.
 
 ## Output
 
