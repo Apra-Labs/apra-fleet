@@ -29,6 +29,7 @@ export interface Agent {
   lastBranch?: string;
   tokenUsage?: { input: number; output: number };
   unattended?: false | 'auto' | 'dangerous';
+  lastLlmActivityAt?: string;  // ISO 8601
 }
 
 export interface GitHubAppConfig {

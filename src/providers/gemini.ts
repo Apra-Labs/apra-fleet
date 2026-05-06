@@ -47,9 +47,12 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, model } = opts;
+    const { folder, promptFile, sessionId, unattended, model, inv } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    if (inv) {
+      instruction = `[${inv}] ${instruction}`;
+    }
     let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json --allowed-mcp-server-names "${getAllowedMcpServers()}"`;
     const rf = buildResumeFlag(sessionId);
     if (rf) {
