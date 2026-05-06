@@ -56,10 +56,10 @@ PM uses Beads (`bd` CLI, installed by `apra-fleet install`) as the persistent ta
 **Lifecycle hooks (enforced — not optional):**
 - `/pm init` → `bd init` (PM root, idempotent) + `bd create` sprint epic + record epic-id in `status.md`
 - `/pm plan` (after approval) → `bd create` one task per PLAN.md item + `bd dep add` for dependencies
-- `/pm start` / task dispatch → `bd update <id> --claim`
-- VERIFY checkpoint done → `bd update <id> --done`
+- `/pm start` / task dispatch → `bd update <id> --assignee <member> --status in_progress`
+- VERIFY checkpoint done → `bd close <id>`
 - Reviewer CHANGES NEEDED → `bd create` a task per HIGH finding
-- `/pm cleanup` → `bd update <epic-id> --done` before raising PR
+- `/pm cleanup` → `bd close <epic-id>` before raising PR
 
 ## Core Rules
 

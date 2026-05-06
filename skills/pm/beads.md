@@ -1,8 +1,6 @@
 # Beads — Persistent Task DB for PM
 
-Beads (`bd`) is installed automatically by `apra-fleet install`. It gives PM a persistent, dependency-aware task database that survives across sessions, branches, and team members — solving the core weakness of file-only sprint tracking.
-
-**PM uses `bd` via `Bash` directly — never via `execute_command` on a member.** `bd` runs on the orchestrator.
+Beads (`bd`) is PM's persistent task database across all sprints. See fleet skill `beads.md` for the command reference, execution constraints, and task priorities.
 
 ---
 
@@ -37,21 +35,6 @@ Beads (`bd`) is installed automatically by `apra-fleet install`. It gives PM a p
 | Dependencies implicit in prose | `bd dep add` makes them machine-checkable |
 
 ---
-
-## Essential Commands
-
-```bash
-bd init                               # init Beads in current dir (once per repo, idempotent)
-bd ready                              # show PM dispatch state — open tasks with no blockers
-bd create "title" -p <n>              # create task (priority: 0=critical 1=high 2=med 3=low)
-bd update <id> --status in_progress   # mark in-progress on dispatch
-bd close <id>                         # mark complete (idempotent)
-bd reopen <id>                        # reopen a closed task (e.g. CI fails post-cleanup)
-bd note <id> "text"                   # append note (PR URL, finding, blocker)
-bd dep add <child-id> <parent-id>     # child blocked until parent is done
-bd list --all --pretty                # full tree: all tasks, all statuses
-bd search "text" --status all --json  # find by title — use for dedup before create
-```
 
 ---
 

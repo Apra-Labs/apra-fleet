@@ -12,7 +12,7 @@ Beads (`bd`) is a lightweight, dependency-aware task database installed automati
 bd init                               # init Beads in current dir (once per repo, idempotent)
 bd ready                              # show all unblocked open tasks
 bd create "title" -p <n>              # create task (priority: 0=critical 1=high 2=med 3=low)
-bd update <id> --claim                # mark in-progress (also sets assignee)
+bd update <id> --assignee <member>    # assign to a member
 bd close <id>                         # mark complete (idempotent)
 bd reopen <id>                        # reopen a closed task
 bd note <id> "text"                   # append a note (e.g. PR URL, blocker reason)
@@ -29,7 +29,7 @@ bd search "text" --status all --json  # find existing issues by title (use for d
 
 | Scenario | What to do |
 |----------|-----------|
-| Tracking work across multiple fleet sessions | `bd create` a task per work item; `bd update --claim` on dispatch |
+| Tracking work across multiple fleet sessions | `bd create` a task per work item; `bd update --assignee <member> --status in_progress` on dispatch |
 | Expressing dependencies between tasks | `bd dep add <blocked> <blocker>` |
 | Session restart — instant orientation | `bd ready` — shows all in-flight tasks without reading files |
 | Linking a PR to a task | `bd update <id> --note "PR: <url>"` |
@@ -62,7 +62,7 @@ bd create "T2: add retry logic" -p 2 --parent <epic-id>        # → t2-id
 bd dep add <t2-id> <t1-id>    # T2 blocked until T1 is done
 
 # Dispatch a member to T1
-bd update <t1-id> --claim
+bd update <t1-id> --assignee <member> --status in_progress
 
 # After T1 is complete
 bd close <t1-id>
@@ -84,7 +84,7 @@ bd ready    # shows everything in-flight across ALL epics
 ```
 
 It shows:
-- What's claimed (in-progress)
+- What's in-progress
 - What's unblocked and ready to start
 - What's blocked and why
 

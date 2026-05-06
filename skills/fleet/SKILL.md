@@ -52,8 +52,6 @@ Beads (`bd` CLI) is installed automatically by `apra-fleet install`. It gives fl
 
 **Run `bd` via `Bash` on the orchestrator — never via `execute_command` on a member.**
 
-**At the start of every session, query Beads before reading any status files.** It instantly shows all in-flight tasks across every project — no file reads required. When a user asks "what's in flight?", "what are we working on?", or similar, answer from Beads first.
-
 See `beads.md` for the full command reference and workflow examples.
 
 ## Secure Credentials
