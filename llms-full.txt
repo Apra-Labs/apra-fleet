@@ -158,19 +158,39 @@ By default, `install` writes both the fleet and PM skills. Use `--skill` to cont
 <details>
 <summary><strong>Uninstall</strong></summary>
 
-Remove the files fleet wrote, then deregister the MCP server:
+Use the built-in uninstall command — it surgically removes MCP registration, permissions, hooks, status line, and skill directories without touching your other settings:
 
 ```bash
-# macOS / Linux
-rm -rf ~/.apra-fleet ~/.claude/skills/fleet ~/.claude/skills/pm
-claude mcp remove apra-fleet --scope user
+apra-fleet uninstall
 ```
 
-```powershell
-# Windows (PowerShell)
-Remove-Item -Recurse -Force $env:USERPROFILE\.apra-fleet, $env:USERPROFILE\.claude\skills\fleet, $env:USERPROFILE\.claude\skills\pm
-claude mcp remove apra-fleet --scope user
+**Options:**
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Preview what would be removed, without modifying anything |
+| `--force` | Automatically stop the running fleet server before uninstalling |
+| `--yes` | Skip the confirmation prompt |
+| `--llm <provider>` | Remove only a specific provider (`claude`, `gemini`, `codex`, `copilot`) |
+| `--skill fleet\|pm\|all` | Remove only the specified skill directories (default: `all`) |
+
+**Examples:**
+
+```bash
+# Preview the full uninstall
+apra-fleet uninstall --dry-run
+
+# Full uninstall, stop server automatically
+apra-fleet uninstall --force --yes
+
+# Remove only PM skills across all providers
+apra-fleet uninstall --skill pm
+
+# Remove only Claude's fleet skills
+apra-fleet uninstall --llm claude --skill fleet
 ```
+
+If the fleet server is running, uninstall will abort and tell you to re-run with `--force`.
 
 </details>
 

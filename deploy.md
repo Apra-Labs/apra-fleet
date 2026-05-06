@@ -40,10 +40,17 @@ This handles shutdown, binary replacement, skill installation, and restart in on
 In Claude Code: run `/mcp` to reconnect, then use `fleet_status` to confirm all members are online.
 
 ## Rollback
-The installer backs up the previous binary. To rollback:
+The installer does not create a backup — to rollback, download the previous release and re-run the installer with `--force`:
+
 ```bash
-cp ~/.apra-fleet/bin/apra-fleet.exe.bak ~/.apra-fleet/bin/apra-fleet.exe
+# Download previous version (replace <tag> with the version to roll back to, e.g. v0.1.8.1)
+gh release download <tag> --repo Apra-Labs/apra-fleet -p "apra-fleet-installer-win-x64.exe" -D /tmp/fleet-rollback
+
+# Re-install
+/tmp/fleet-rollback/apra-fleet-installer-win-x64.exe install --force
 ```
+
+After rollback, run `/mcp` in Claude Code to reconnect, then `fleet_status` to verify members are online.
 
 ## Platform binaries
 | Platform | Artifact name |
