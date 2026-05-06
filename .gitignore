@@ -15,3 +15,10 @@ materials/*
 # new untracked CLAUDE.md files from being accidentally staged — it does not untrack the existing file.
 CLAUDE.md
 CLAUDE.md
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/
+.claude/settings.json

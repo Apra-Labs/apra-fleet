@@ -30,7 +30,14 @@ Write `<project>/requirements.md`. Quality bar:
 3. Run doer-reviewer loop (see `doer-reviewer.md`) using `tpl-reviewer-plan.md` for the reviewer
 4. Iterate until plan passes quality criteria
 5. Once APPROVED: save `planned.json` in `<project>/` — this is the immutable original, never modify it
-6. Proceed to Phase 3
+6. **Beads: push plan tasks** — for each task in PLAN.md, create a Beads task and wire dependencies:
+   ```bash
+   bd create "T1.1: <title>" -p 1 --parent <epic-id> --assignee <doer>   # → task-id
+   bd create "T1.2: <title>" -p 2 --parent <epic-id> --assignee <doer>   # → task-id
+   bd dep add <T1.2-id> <T1.1-id>                       # T1.2 blocked until T1.1 done
+   ```
+   Record all task IDs in `<project>/status.md` Beads section. See `beads.md`.
+7. Proceed to Phase 3
 
 ---
 
@@ -63,11 +70,13 @@ Dispatch ONE task at `model: <tier>`. PM records `lastDispatchedPhase = nextTask
 
 ```
 PM sends task harness → dispatches doer (resume per data-driven rule, model=nextTask.tier)
+  → bd update <task-id> --status in_progress --assignee <doer>
   → doer reads progress.json → executes next pending task → commits → updates progress.json
   → hits VERIFY checkpoint → STOPS → PM reads progress.json
+  → bd close <verify-id>
   → PM dispatches REVIEWER (model=premium) → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
   → APPROVED: PM dispatches doer for next task (resume=true if same phase) → repeat
-  → CHANGES NEEDED: PM sends feedback to doer → doer fixes → PM re-dispatches REVIEWER → repeat
+  → CHANGES NEEDED: bd create "<finding>" -p 0 --parent <epic-id> --assignee <doer> per HIGH finding → PM sends feedback to doer → doer fixes → bd close <finding-id> → PM re-dispatches REVIEWER → repeat
   → all tasks done → move to next phase or completion
 ```
 
@@ -103,7 +112,8 @@ Before kicking off execution, compose and deliver permissions for each member's 
 - Check git: `execute_command → git log --oneline -10`
 - Members may blow past VERIFY checkpoints if context gets large — dispatch a review immediately when caught
 - Long-running branches: check drift with `git log <branch>..origin/main --oneline`. If main moved, instruct rebase + retest
-- After every review verdict: move unaddressed MEDIUM/LOW findings and any deferred scope items into `<project>/backlog.md`
+- After every review verdict: move unaddressed MEDIUM/LOW findings and any deferred scope items into `<project>/backlog.md` AND create low-priority Beads tasks (`bd create "<item>" -p 3 --parent <epic-id>`)
+- Deferred items from user ("add to backlog", "defer this"): `bd create "<description>" -p 3 --parent <epic-id>`
 
 ### Safeguards
 
@@ -140,7 +150,7 @@ When all phases are APPROVED:
 
 When the PM session ends unexpectedly, remote agent CLI processes are killed (SSH channel close → SIGHUP). Partial work may be uncommitted.
 
-**Step 0 — Global triage:** `fleet_status` — see which members are idle, busy, or unreachable before per-member inspection.
+**Step 0 — Global triage:** Run `bd list --all --pretty` first for PM dispatch state across all projects (no file reads needed for orientation). Then `fleet_status` to check member connectivity. **Important:** Beads reflects PM actions (dispatch/close), not member execution — always follow up with `cat progress.json` per member to confirm actual completion state. A task marked `in_progress` in Beads may be incomplete on disk if the member crashed mid-task.
 
 For each member in the project:
 1. `execute_command → cat progress.json` — what tasks are completed/pending/blocked?
