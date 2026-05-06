@@ -185,17 +185,20 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     if (logDir) {
       try {
         const watcher = fs.watch(logDir, { persistent: false }, (event: string, filename: string | null) => {
-          if (filename?.endsWith('.jsonl')) {
-            const logPath = path.join(logDir, filename);
-            const sessionId = filename.replace('.jsonl', '');
-            stallDetector.update(agent.id, {
-              sessionId,
-              logFilePath: logPath,
-              provisional: false,
-            });
-            scope.info(`stall log resolved via dir-watch: sessionId=${sessionId}`);
-            watcher.close();
-          }
+          // Only accept 'rename' events (new file created). 'change' events fire when an
+          // existing session file is written to by the CLI at startup — those are stale logs.
+          if (event !== 'rename' || !filename?.endsWith('.jsonl')) return;
+          const logPath = path.join(logDir, filename);
+          // Verify the file actually exists (rename fires for deletion too)
+          try { fs.statSync(logPath); } catch { return; }
+          const sessionId = filename.replace('.jsonl', '');
+          stallDetector.update(agent.id, {
+            sessionId,
+            logFilePath: logPath,
+            provisional: false,
+          });
+          scope.info(`stall log resolved via dir-watch: sessionId=${sessionId}`);
+          watcher.close();
         });
       } catch {
         // log dir may not exist yet — provisional entry stays until session ends
