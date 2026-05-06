@@ -18,17 +18,20 @@ gh release list --repo Apra-Labs/apra-fleet --limit 5
 ### 2. Download the binary
 ```bash
 mkdir -p /tmp/fleet-deploy
-cd /tmp/fleet-deploy
 
-# From CI artifact (branch build)
-gh run download <run-id> --repo Apra-Labs/apra-fleet -n apra-fleet-installer-win-x64.exe
+# From CI artifact (branch build) — gh run download creates a subdirectory per artifact
+gh run download <run-id> --repo Apra-Labs/apra-fleet --dir /tmp/fleet-deploy
 
-# Or from release
+# Or from release (downloads the file directly, no subdirectory)
 gh release download <tag> --repo Apra-Labs/apra-fleet -p "apra-fleet-installer-win-x64.exe" -D /tmp/fleet-deploy
 ```
 
 ### 3. Install
 ```bash
+# CI artifact: file is inside a subdirectory named after the artifact
+/tmp/fleet-deploy/apra-fleet-installer-win-x64.exe/apra-fleet-installer-win-x64.exe install --force
+
+# Release download: file is directly in the target dir
 /tmp/fleet-deploy/apra-fleet-installer-win-x64.exe install --force
 ```
 This handles shutdown, binary replacement, skill installation, and restart in one step.
