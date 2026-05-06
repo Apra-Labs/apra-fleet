@@ -319,6 +319,8 @@ describe('auth-socket', () => {
       createPendingAuth('cleanup-test');
 
       const passwordPromise = waitForPassword('cleanup-test', 5000);
+      // Suppress unhandled-rejection warning: rejection fires before expect() attaches its handler
+      passwordPromise.catch(() => {});
 
       await new Promise(r => setTimeout(r, 50));
       await cleanupAuthSocket();
