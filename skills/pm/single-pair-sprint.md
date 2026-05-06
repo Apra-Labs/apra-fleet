@@ -1,6 +1,6 @@
 # Running a Sprint
 
-A sprint is a focused unit of work executed by a doer/reviewer pair against a codebase. This document covers the full lifecycle from initiation to merge.
+A sprint is a focused unit of work executed by a doer/reviewer pair against a codebase. This document covers the full lifecycle from initiation to PR raise.
 
 ## Lifecycle
 
@@ -25,7 +25,7 @@ Write `<project>/requirements.md`. Quality bar:
 
 **Branch naming:** choose a name that makes the purpose of the branch immediately clear — `sprint/<description>`, `feat/<description>`, `bug_fix/<short_description>`, etc. PM records this as `{{branch}}` in the agent context file before dispatch.
 
-1. Send `requirements.md` to doer via `send_files`
+1. Send `requirements.md` and `tpl-plan.md` to doer via `send_files`
 2. Dispatch `plan-prompt.md` via `execute_prompt` (wrapped in background Agent)
 3. Run doer-reviewer loop (see `doer-reviewer.md`) using `tpl-reviewer-plan.md` for the reviewer
 4. Iterate until plan passes quality criteria
@@ -112,7 +112,7 @@ Before kicking off execution, compose and deliver permissions for each member's 
 - Check git: `execute_command → git log --oneline -10`
 - Members may blow past VERIFY checkpoints if context gets large — dispatch a review immediately when caught
 - Long-running branches: check drift with `git log <branch>..origin/main --oneline`. If main moved, instruct rebase + retest
-- After every review verdict: move unaddressed MEDIUM/LOW findings and any deferred scope items into `<project>/backlog.md` AND create low-priority Beads tasks (`bd create "<item>" -p 3 --parent <epic-id>`)
+- After every review verdict: create low-priority Beads tasks for unaddressed MEDIUM/LOW findings and deferred scope items (`bd create "<item>" -p 3 --parent <epic-id>` — see `backlog-item.md` for required description fields)
 - Deferred items from user ("add to backlog", "defer this"): `bd create "<description>" -p 3 --parent <epic-id>`
 
 ### Safeguards
@@ -140,7 +140,9 @@ When all phases are APPROVED:
 
 2. **Cleanup and raise PR** — See cleanup.md.
 
-3. **Update backlog.md** — record all unresolved MEDIUM/LOW review findings and deferred items from this sprint.
+   STOP: Sprint is complete. Do not merge the PR. Surface the PR URL and CI status to the user and await explicit instruction to merge.
+
+3. **Deferred items** — any unresolved MEDIUM/LOW findings or deferred scope from this sprint should already be in Beads as low-priority tasks. Verify with `bd list --all --pretty`.
 
 4. **Update status.md** — mark sprint complete, record member states. Clear `lastDispatchedPhase`.
 

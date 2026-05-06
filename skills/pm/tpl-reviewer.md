@@ -42,9 +42,9 @@ Review scope covers all phases from Phase 1 through the current phase — not ju
 Overwrite feedback.md with this structure:
 
 ```
-# <Sprint/Feature Name> — Code Review
+# {{sprint_name}} — Code Review
 
-**Reviewer:** <member name>
+**Reviewer:** {{member_name}}
 **Date:** YYYY-MM-DD HH:MM:SS+TZ
 **Verdict:** APPROVED | CHANGES NEEDED
 

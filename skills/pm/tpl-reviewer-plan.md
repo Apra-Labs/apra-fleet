@@ -25,9 +25,9 @@ If this is a re-review: run `git log --oneline -- feedback.md` then `git show <s
 Overwrite feedback.md with this structure:
 
 ```
-# <Sprint/Feature Name> — Plan Review
+# {{sprint_name}} — Plan Review
 
-**Reviewer:** <member name>
+**Reviewer:** {{member_name}}
 **Date:** YYYY-MM-DD HH:MM:SS+TZ
 **Verdict:** APPROVED | CHANGES NEEDED
 
