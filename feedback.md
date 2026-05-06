@@ -1,8 +1,8 @@
-# Uninstall Command (#245) — V5 Cumulative Review
+# Uninstall Command (#245) — V6 Final Re-Review
 
 **Reviewer:** fleet-rev (claude-opus-4-6)
 **Date:** 2026-05-05
-**Verdict:** CHANGES NEEDED
+**Verdict:** APPROVED
 
 ---
 
@@ -122,13 +122,18 @@ At `uninstall.ts:232–252`, the global cleanup section (BIN_DIR, HOOKS_DIR, SCR
 
 ---
 
-## Verdict: CHANGES NEEDED
+## Verdict: APPROVED
 
-### Blocking:
-1. **File hygiene** — Remove 5 stale/scratch files from the branch: `requirements-98.md`, `run_me.bat`, `test.md`, `test.txt`, `update-progress.js`
+### Blocking issues — RESOLVED
+
+1. **File hygiene** — The 5 stale/scratch files (`requirements-98.md`, `run_me.bat`, `test.md`, `test.txt`, `update-progress.js`) were removed in commit `43bf085`. Verified: `git diff --name-only origin/main..feat/uninstall-command` returns zero matches for these files.
+
+### Re-verification
+- **Build:** not re-run (no source changes in `43bf085`, only file deletions)
+- **Tests:** 66 files, 1087 passed, 6 skipped, 0 failed. PASS.
 
 ### Non-blocking (recommended before merge):
-2. Add test for `--force` server stop behavior
-3. Add test for `--dry-run --force` no-stop behavior
-4. Add test verifying `--skill pm` does not touch settings/MCP
-5. Fix global cleanup `anythingRemoved` tracking (LOW)
+1. Add test for `--force` server stop behavior
+2. Add test for `--dry-run --force` no-stop behavior
+3. Add test verifying `--skill pm` does not touch settings/MCP
+4. Fix global cleanup `anythingRemoved` tracking (LOW)
