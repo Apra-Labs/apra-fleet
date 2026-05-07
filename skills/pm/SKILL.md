@@ -37,16 +37,34 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 - `/pm pair <member> <member>` — Pair doer↔reviewer. Update icons (doer=circle, reviewer=square, same color) via `update_member`. See doer-reviewer.md.
 - `/pm plan <requirement>` — Triggers Phase 2 (Plan Generation). See single-pair-sprint.md. User provides requirements.md.
 - `/pm start <member>` — Begin Phase 3 execution. Before dispatch: complete doer-reviewer.md setup checklist and pre-flight checks. Plan must be APPROVED (planned.json exists in `<project>/`). Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution.
-- `/pm status <member>` — Check progress.json and git log
+- `/pm status <member>` — Check in-flight tasks (via Beads), progress.json, and git log.
 - `/pm resume <member>` — Resume after a verification checkpoint
 - `/pm deploy <member>` — Execute the project's deployment runbook. First, `receive_files` to pull `deploy.md` from the repo root or `docs/` folder via any available member. If it doesn't exist in the repo, create a copy locally from `tpl-deploy.md`, fill in the project's deploy and verify steps, then `send_files` to the doer's repo root and have them commit it before proceeding. Once deploy.md is in place, execute each step via `execute_command` on the target member, then run the Verify section to confirm the deploy succeeded.
-- `/pm recover <project>` — After PM restart: inspect each member's state and present recovery options. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md depending on sprint type.
-- `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, then raise the PR. See cleanup.md.
+- `/pm recover <project>` — After PM restart: check in-flight tasks via Beads for instant orientation, then inspect member state. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md.
+- `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, close Beads epic, then raise the PR. See cleanup.md.
+- `/pm backlog` — Query and manage deferred items via Beads. See beads.md.
+- `/pm tasks` — Show current sprint's Beads task tree (`bd show <epic-id> --tree`). See beads.md.
+
+## Beads — Persistent Task DB
+
+PM uses Beads (`bd` CLI, installed by `apra-fleet install`) as the persistent task database across all sprints. See `beads.md` for the full reference.
+
+**Session start rule:** Always run `bd ready` (from PM's own directory — the central Beads DB) before opening any `status.md`. This gives an instant cross-sprint view of what's in-flight across all projects and members — no file reading required for orientation.
+
+**Central DB rule:** PM runs `bd init` once in PM's own working directory — NOT inside each project repo. One Beads DB tracks all projects, all members, all sprints. `bd list --all --pretty` gives a global view without switching directories.
+
+**Lifecycle hooks (enforced — not optional):**
+- `/pm init` → `bd init` (PM root, idempotent) + `bd create` sprint epic + record epic-id in `status.md`
+- `/pm plan` (after approval) → `bd create` one task per PLAN.md item + `bd dep add` for dependencies
+- `/pm start` / task dispatch → `bd update <id> --assignee <member> --status in_progress`
+- VERIFY checkpoint done → `bd close <id>`
+- Reviewer CHANGES NEEDED → `bd create` a task per HIGH finding
+- `/pm cleanup` → `bd close <epic-id>` before raising PR
 
 ## Core Rules
 
 1. NEVER read code, diagnose bugs, or suggest fixes — assign a member.
-2. **Project sandboxing** — The PM root contains one subfolder per project. Every artifact (`status.md`, `requirements.md`, `design.md`, `backlog.md`, `deploy.md`, `planned.json`, `permissions.json`, PLAN.md, progress.json, feedback.md) lives inside `<project>/` and nowhere else. Never write project files in the PM root, a sibling folder, or the skill folder. If you're about to write outside `<project>/`, stop and relocate first.
+2. **Project sandboxing** — The PM root contains one subfolder per project. Every artifact (`status.md`, `requirements.md`, `design.md`, `deploy.md`, `planned.json`, `permissions.json`, PLAN.md, progress.json, feedback.md) lives inside `<project>/` and nowhere else. Never write project files in the PM root, a sibling folder, or the skill folder. If you're about to write outside `<project>/`, stop and relocate first.
 3. On session start: Read each active project's `status.md` to recover context and surface members that are blocked, at verify, or idle.
    - Update `status.md` whenever a dispatch completes or a member reports back — not just at phase boundaries
    - Local files are the source of truth — never rely on memory across sessions
@@ -64,36 +82,9 @@ If tracks are tightly coupled or share significant upfront dependencies, use sin
 
 ## Secrets & Credentials
 
-**Never pass raw secrets in `execute_prompt` prompts.** Prompt text is part of the LLM conversation and will appear in logs and chat history. Use the credential store instead.
+See fleet skill `Secure Credentials` section for the full reference.
 
-**Before dispatching a member that needs API keys or tokens:**
-
-1. Call `credential_store_set` OOB for each required secret — Fleet prompts for the value in a separate terminal, keeping it out of the conversation entirely
-2. Pass `sec://NAME` handles in the task prompt — reference the credential by name only (e.g. `"authenticate using credential github_pat"`)
-3. The member uses `{{secure.NAME}}` in its own `execute_command` calls — Fleet resolves the value server-side and redacts it from output before the LLM sees it
-
-`{{secure.NAME}}` tokens are resolved ONLY in `execute_command` and specific MCP tool params (`register_member`, `update_member`, `provision_vcs_auth`, `provision_auth`). They do NOT work in `execute_prompt` — the LLM must never see secret values. In `execute_prompt` prompts, reference the credential by NAME only (e.g. `"authenticate using credential github_pat"`) — the member then uses `{{secure.github_pat}}` in their `execute_command` calls.
-
-**Example workflow — member that needs to authenticate to GitHub:**
-
-```
-# PM: store the PAT before dispatch (OOB prompt — never in chat)
-credential_store_set  name=github_pat
-
-# PM: include in the task prompt sent via execute_prompt — reference by name only:
-"When you need to push code or call the GitHub API, authenticate using credential github_pat."
-
-# Member: resolves and uses the secret in execute_command
-execute_command  command="git remote set-url origin https://token:{{secure.github_pat}}@github.com/Org/Repo.git"
-# Output seen by LLM: https://token:[REDACTED:github_pat]@github.com/Org/Repo.git
-```
-
-**Rotating credentials mid-sprint:** `credential_store_delete name=<NAME>` then `credential_store_set name=<NAME>` — no re-provisioning or member restart required.
-
-> ⚠️ **`{{secure.NAME}}` only resolves in specific credential fields** (listed above).
-> Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the
-> token string through literally — the secret will NOT be injected, and the raw handle name
-> will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
+PM-specific rule: never pass raw secrets in `execute_prompt` prompts — reference the credential by name only (e.g. `"authenticate using credential github_pat"`). The member then uses `{{secure.github_pat}}` in its own `execute_command` calls.
 
 ## Sub-documents
 
@@ -104,25 +95,16 @@ execute_command  command="git remote set-url origin https://token:{{secure.githu
 - `context-file.md` — agent context file: provider filename lookup, role templates, delivery rules
 - `cleanup.md` — sprint cleanup command and PR raise procedure
 - `init.md` — project folder initialization
-- `tpl-*.md` — templates: plan, plan-reviewer (`tpl-reviewer-plan.md`), doer, reviewer, status, requirements, design, deploy
+- `beads.md` — Beads persistent task DB: commands, lifecycle hooks, backlog ops, cross-sprint patterns
+- `tpl-*.md` — various templates sent to members via `send_files`, never loaded into PM context — PM substitutes `{{token}}` placeholders before sending
 
 ## Model Selection
 
-Use model tiers: `cheap` for execution (commands, status, tests, deploys), `standard` for construction (code, config, devops), `premium` for planning, review, design, and architecture. The server resolves tiers to the appropriate model for each provider. User override always wins. When in doubt, prefer cheaper.
+See fleet skill `Model Tiers` section.
 
-## Member Icons
-
-Icons are auto-assigned by the server and returned in `register_member` / `list_members` / `member_detail`. Prefix every member reference in output with their icon: `🔵 alice: building auth module`.
 
 ## Provider Awareness
 
-PM manages members running different LLM providers (Claude, Gemini, Codex, Copilot). All provider differences are handled by the fleet server — PM never constructs CLI commands or reads raw config formats.
+See fleet skill `Provider Awareness` section for general provider differences.
 
-| Concern | How PM handles it |
-|---------|-------------------|
-| **Agent context file** | Provider-specific filename and templates — see `context-file.md` |
-| **Permissions** | `compose_permissions` produces provider-native config automatically — PM just calls it with role + member |
-| **Model tiers** | Use `cheap`/`standard`/`premium` — server resolves to the appropriate model for each provider |
-| **CLI commands** | Handled by the server — PM never constructs provider CLI strings directly |
-| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
-| **Attribution config** | Claude only (onboarding Step 2) — skip for all other providers |
+PM-specific: agent context file filename is provider-dependent — see `context-file.md`.

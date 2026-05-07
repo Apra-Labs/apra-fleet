@@ -7,7 +7,17 @@ import { runUpdate } from '../src/cli/update.js';
 import { serverVersion } from '../src/version.js';
 
 vi.mock('node:fs');
-vi.mock('node:os');
+vi.mock('node:os', () => {
+  const mockOs = {
+    homedir: vi.fn(() => '/mock/home'),
+    tmpdir: vi.fn(() => '/tmp'),
+    platform: vi.fn(() => 'linux'),
+  };
+  return {
+    ...mockOs,
+    default: mockOs,
+  };
+});
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(() => ({
     unref: vi.fn(),

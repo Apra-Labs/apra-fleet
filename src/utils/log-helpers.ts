@@ -53,10 +53,10 @@ function writeLog(level: 'info' | 'warn' | 'error', tag: string, maskedMsg: stri
   } catch { /* ignore */ }
 }
 
-export function logLine(tag: string, msg: string, agent?: LogAgent): void {
+export function logLine(tag: string, msg: string, agent?: LogAgent, inv?: string): void {
   const maskedMsg = maskSecrets(msg);
   try { console.error(`[fleet] ${tag} ${maskedMsg}`); } catch { /* ignore */ }
-  writeLog('info', tag, maskedMsg, agent);
+  writeLog('info', tag, maskedMsg, agent, inv);
 }
 
 export function logWarn(tag: string, msg: string, agent?: LogAgent): void {
@@ -90,6 +90,8 @@ export class LogScope {
     this.agent = agent;
     this._emit('info', entryMsg);
   }
+
+  getInv(): string { return this.inv; }
 
   info(msg: string):  void { this._emit('info',  msg); }
   warn(msg: string):  void { this._emit('warn',  msg); }

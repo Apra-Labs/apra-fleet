@@ -24,6 +24,7 @@ Usage:
   apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
+  apra-fleet uninstall                 Uninstall binary + hooks + MCP + skills
   apra-fleet auth <name>      Provide password for pending registration (auto-launched)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
@@ -35,6 +36,10 @@ if (arg === 'install') {
   import('./cli/install.js')
     .then(m => m.runInstall(process.argv.slice(3)))
     .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'uninstall') {
+  import('./cli/uninstall.js')
+    .then(m => m.runUninstall(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Uninstall failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'auth') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
@@ -117,9 +122,12 @@ async function startServer() {
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
   const { checkForUpdate } = await import('./services/update-check.js');
   const { purgeExpiredCredentials } = await import('./services/credential-store.js');
+  const { getStallDetector } = await import('./services/stall/index.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
+
+  let capturedClientInfo: any = null;
 
   const server = new McpServer(
     { name: `apra fleet server ${serverVersion}`, version: versionNum },
@@ -128,6 +136,15 @@ async function startServer() {
       instructions: VERBATIM_INSTRUCTIONS,
     },
   );
+
+  // Capture MCP clientInfo during initialize handshake for logging
+  const originalInitialize = (server as any).initialize?.bind(server);
+  if (originalInitialize) {
+    (server as any).initialize = async function (request: any) {
+      capturedClientInfo = request.clientInfo ?? null;
+      return originalInitialize(request);
+    };
+  }
 
   // --- Onboarding helpers ---
   // isActiveTool guards passive tools (version, shutdown_server) from consuming the banner.
@@ -237,7 +254,13 @@ async function startServer() {
   await server.connect(transport);
 
   const { FLEET_DIR } = await import('./paths.js');
-  logLine('startup', `apra-fleet ${serverVersion} started — FLEET_DIR=${FLEET_DIR}`);
+  const stallDetector = getStallDetector();
+  stallDetector.start();
+
+  const clientStr = capturedClientInfo?.name ? ` client=${capturedClientInfo.name}` : '';
+  const versionStr = capturedClientInfo?.version ? ` version=${capturedClientInfo.version}` : '';
+  const pidStr = ` pid=${process.pid} ppid=${process.ppid}`;
+  logLine('startup', `apra-fleet ${serverVersion} started${clientStr}${versionStr}${pidStr} FLEET_DIR=${FLEET_DIR}`);
 
   idleManager.start();
   void cleanupStaleTasks();
@@ -245,6 +268,6 @@ async function startServer() {
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket(); closeAllConnections(); process.exit(0); });
-  process.on('SIGTERM', () => { cleanupAuthSocket(); closeAllConnections(); process.exit(0); });
+  process.on('SIGINT', () => { cleanupAuthSocket(); closeAllConnections(); stallDetector.stop(); process.exit(0); });
+  process.on('SIGTERM', () => { cleanupAuthSocket(); closeAllConnections(); stallDetector.stop(); process.exit(0); });
 }

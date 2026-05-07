@@ -44,6 +44,15 @@ See sub-documents for detailed usage:
 - `troubleshooting.md` — fleet tool troubleshooting by symptom
 - `skill-matrix.md` — skill installation matrix by project + VCS + role
 - `auth-github.md`, `auth-bitbucket.md`, `auth-azdevops.md` — VCS auth provisioning per provider
+- `beads.md` — Beads persistent task DB: commands, backlog ops, session recovery patterns
+
+## Beads — Persistent Task Tracking
+
+Beads (`bd` CLI) is installed automatically by `apra-fleet install`. It gives fleet users a persistent, dependency-aware task database that survives across sessions, branches, and members.
+
+**Run `bd` via `Bash` on the orchestrator — never via `execute_command` on a member.**
+
+See `beads.md` for the full command reference and workflow examples.
 
 ## Secure Credentials
 
@@ -52,17 +61,14 @@ The `{{secure.NAME}}` pattern lets you reference stored secrets in any command w
 **How it works:**
 1. Store a secret with `credential_store_set` — Fleet opens an OOB terminal prompt, so the value never appears in chat
 2. Reference it as `{{secure.NAME}}` anywhere in a command string passed to `execute_command`, `register_member`, `update_member`, `provision_vcs_auth`, or `provision_auth`
-3. Fleet resolves the token server-side before execution; output containing the plaintext is redacted to `[REDACTED:NAME]` before results reach the LLM
+3. Fleet resolves the token server-side before execution; LLM does not see the secret.
 
 **When to use:**
 - Any API key, token, or password that a member needs in a shell command
 - Rotating credentials: `credential_store_delete` then `credential_store_set` — no re-provisioning required
 - Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
-> ⚠️ **`{{secure.NAME}}` only resolves in specific credential fields** (listed above).
-> Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the
-> token string through literally — the secret will NOT be injected, and the raw handle name
-> will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
+NOTE: **`{{secure.NAME}}` only resolves in specific credential fields** (listed above). Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the token string through literally — the secret will NOT be injected, and the raw handle name will be visible in logs. Only use `{{secure.NAME}}` in the fields documented above.
 
 **Access control (scoping):** Credentials can be scoped to specific members.
 - `members="*"` (default) — all members can access the credential
@@ -125,7 +131,7 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 - `send_files` — push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
 - `receive_files` — pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
 
-**Directories and globs:** `send_files` accepts individual file paths only — directories and glob patterns are not supported yet (see issue #98). To transfer an entire directory, tar it locally and extract on the member:
+**Directories and globs:** `send_files` accepts individual file paths only — directories and glob patterns are not supported yet. To transfer an entire directory, tar it locally and extract on the member:
 
 ```
 1. execute_command on local: tar -czf /tmp/src.tar.gz -C /path/to src/
@@ -133,7 +139,7 @@ Both `send_files` and `receive_files` are batch operations — always transfer a
 3. execute_command on member: tar -xzf src.tar.gz && rm src.tar.gz
 ```
 
-**Cross-OS transfers:** Both `send_files` and `receive_files` must work bidirectionally for Linux↔Windows transfers (fleet host on Linux, member on Windows, and vice versa).
+**Cross-OS transfers:** Both `send_files` and `receive_files` work bidirectionally for Linux↔Windows transfers (fleet host on Linux, member on Windows, and vice versa).
 
 ## Permissions
 
@@ -177,10 +183,10 @@ session. This recovery is transparent — no caller intervention required.
 
 | Provider | Session resume | Notes |
 |----------|---------------|-------|
-| Claude | ✅ Full | `claude --resume <sessionId>` |
-| Gemini | ✅ Full | Native session support |
-| Codex | ⚠️ Partial | `resume` command supported |
-| Copilot | ❌ None | Always starts fresh regardless of `resume` value |
+| Claude | Full | `claude --resume <sessionId>` |
+| Gemini | Full | Native session support |
+| Codex | Partial | `resume` command supported |
+| Copilot | None | Always starts fresh regardless of `resume` value |
 
 Session IDs are parsed from `execute_prompt` output and stored server-side per member.
 The output footer contains: `session: <sessionId>` when the provider supports it.
@@ -202,7 +208,7 @@ Per-provider flag behaviour:
 | Claude | `--permission-mode auto` | `--dangerously-skip-permissions` |
 | Gemini | None (config-file only via `compose_permissions`) | `--yolo` |
 | Codex | `--ask-for-approval auto-edit` | `--sandbox danger-full-access --ask-for-approval never` |
-| Copilot | ⚠️ Not supported — warns and runs interactively | ⚠️ Not supported |
+| Copilot | Not supported — warns and runs interactively | Not supported |
 
 Auto-approval is delivered via config files written by `compose_permissions` — call it before every dispatch.
 
@@ -241,7 +247,7 @@ When you see this notice, surface it to the user verbatim before the rest of the
 |---------|---------------|
 | **Agent context file** | Use `member_detail` → `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT-INSTRUCTIONS.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md) — skip for all other providers |
-| **Timeouts** | Gemini members are slower � use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
+| **Timeouts** | Gemini members are slower → use 2-3x timeout multiplier for `execute_prompt` dispatches to Gemini members. Minimum `timeout_s: 900` for any non-trivial task. |
 
 ## Fleet Logs
 

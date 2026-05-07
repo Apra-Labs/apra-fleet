@@ -7,6 +7,7 @@ import { tryKillPid } from '../utils/pid-helpers.js';
 import { logLine } from '../utils/log-helpers.js';
 import { inFlightAgents } from './execute-prompt.js';
 import { writeStatusline } from '../services/statusline.js';
+import { getStallDetector } from '../services/stall/index.js';
 
 export const stopPromptSchema = z.object({
   ...memberIdentifier,
@@ -25,6 +26,7 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
   const pid = getStoredPid(agent.id);
 
   await tryKillPid(agent, strategy, cmds);
+  getStallDetector().remove(agent.id);
 
   if (pid !== undefined) {
     // Poll until execute_prompt's finally block clears inFlightAgents so a

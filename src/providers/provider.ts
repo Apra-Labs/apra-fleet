@@ -25,6 +25,7 @@ export interface PromptOptions {
   unattended?: false | 'auto' | 'dangerous';
   model?: string;
   maxTurns?: number;
+  inv?: string;
 }
 
 export interface ParsedResponse {

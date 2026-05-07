@@ -1,89 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { execSync } from 'node:child_process';
-import { parse, stringify } from 'smol-toml';
+import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-
-const home = os.homedir();
-const FLEET_BASE = path.join(home, '.apra-fleet');
-const BIN_DIR = path.join(FLEET_BASE, 'bin');
-const HOOKS_DIR = path.join(FLEET_BASE, 'hooks');
-const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
-// NOTE: install NEVER writes to the data directory (~/.apra-fleet/data/).
-// Registry (registry.json) and onboarding state (onboarding.json) live there and
-// must not be touched by reinstalls or upgrades — see onboarding.ts upgrade detection.
-
-interface ProviderInstallConfig {
-  configDir: string;
-  settingsFile: string;
-  skillsDir: string;
-  fleetSkillsDir: string;
-  name: string;
-}
-
-function readConfig(paths: ProviderInstallConfig): any {
-  if (!fs.existsSync(paths.settingsFile)) return {};
-  const content = fs.readFileSync(paths.settingsFile, 'utf-8');
-  if (paths.settingsFile.endsWith('.toml')) {
-    return parse(content);
-  }
-  try {
-    return JSON.parse(content);
-  } catch {
-    return {};
-  }
-}
-
-function writeConfig(paths: ProviderInstallConfig, config: any): void {
-  fs.mkdirSync(paths.configDir, { recursive: true });
-  let content = '';
-  if (paths.settingsFile.endsWith('.toml')) {
-    content = stringify(config);
-  } else {
-    content = JSON.stringify(config, null, 2) + '\n';
-  }
-  fs.writeFileSync(paths.settingsFile, content);
-}
-
-function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
-  switch (provider) {
-    case 'gemini':
-      return {
-        configDir: path.join(home, '.gemini'),
-        settingsFile: path.join(home, '.gemini', 'settings.json'),
-        skillsDir: path.join(home, '.gemini', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.gemini', 'skills', 'fleet'),
-        name: 'Gemini',
-      };
-    case 'codex':
-      return {
-        configDir: path.join(home, '.codex'),
-        settingsFile: path.join(home, '.codex', 'config.toml'),
-        skillsDir: path.join(home, '.codex', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.codex', 'skills', 'fleet'),
-        name: 'Codex',
-      };
-    case 'copilot':
-      return {
-        configDir: path.join(home, '.copilot'),
-        settingsFile: path.join(home, '.copilot', 'settings.json'),
-        skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
-        name: 'Copilot',
-      };
-    case 'claude':
-    default:
-      return {
-        configDir: path.join(home, '.claude'),
-        settingsFile: path.join(home, '.claude', 'settings.json'),
-        skillsDir: path.join(home, '.claude', 'skills', 'pm'),
-        fleetSkillsDir: path.join(home, '.claude', 'skills', 'fleet'),
-        name: 'Claude',
-      };
-  }
-}
+import {
+  BIN_DIR,
+  HOOKS_DIR,
+  SCRIPTS_DIR,
+  getProviderInstallConfig,
+  readConfig,
+  writeConfig,
+  writeInstallConfig,
+  PROVIDER_STANDARD_MODELS,
+  ProviderInstallConfig
+} from './config.js';
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -284,13 +214,6 @@ function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   writeConfig(paths, settings);
 }
 
-const PROVIDER_STANDARD_MODELS: Record<string, string> = {
-  claude: 'claude-sonnet-4-6',
-  gemini: 'gemini-3-flash-preview',
-  codex: 'gpt-5.4',
-  copilot: 'claude-sonnet-4-5',
-};
-
 function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
   const settings = readConfig(paths);
   settings.defaultModel = standardModel;
@@ -449,7 +372,7 @@ Options:
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
-  const totalSteps = (installFleet && installPm) ? 7 : installFleet ? 6 : installPm ? 7 : 5;
+  const totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -597,16 +520,39 @@ ${killHint}
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
+  // --- Step 8: Install Beads task tracker ---
+  // shell:true required on Windows — npm global packages install as .cmd wrappers
+  // that cannot be directly spawned by Node without a shell
+  console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
+  try {
+    // Check if already installed
+    try {
+      execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
+      // already installed — skip
+    } catch {
+      // not installed — install it
+      execFileSync('npm', ['install', '-g', '@beads/bd'], { stdio: 'inherit', shell: true });
+    }
+  } catch (err) {
+    // non-fatal: warn but don't fail the install
+    console.warn('  ⚠ Beads install skipped — npm not available or install failed');
+  }
+
   // Finalize permissions
   mergePermissions(paths);
 
-  // Write install-config.json
-  const installConfig = { llm, skill: skillMode };
-  const configDir = path.join(FLEET_BASE, 'data');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(path.join(configDir, 'install-config.json'), JSON.stringify(installConfig, null, 2), { mode: 0o600 });
+  // Write install-config.json (merge provider entry)
+  writeInstallConfig(llm, skillMode);
 
   // --- Done ---
+  let beadsVersion = 'installed';
+  try {
+    const versionOut = execFileSync('bd', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
+    beadsVersion = (versionOut as string).trim() || 'installed';
+  } catch {
+    beadsVersion = 'not available';
+  }
+
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
   console.log(`
@@ -615,6 +561,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
+  Beads:       ${beadsVersion}
 
 ${instructions}${forceNote}
 `);

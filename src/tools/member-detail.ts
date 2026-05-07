@@ -155,6 +155,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const session: Record<string, unknown> = {
     id: agent.sessionId ?? null,
     lastActivity: agent.lastUsed ?? 'never',
+    lastLlmActivityAt: agent.lastLlmActivityAt ?? null,
   };
 
   try {
@@ -165,6 +166,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     const output = busyCheck.stdout.trim().toLowerCase();
     if (output.includes('fleet-busy')) {
       session.status = 'busy';
+      if (agent.lastLlmActivityAt) {
+        session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
+      }
     } else if (output.includes('other-busy')) {
       session.status = `idle (unrelated ${provider.name} processes running)`;
     } else {

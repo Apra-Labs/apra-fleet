@@ -98,9 +98,12 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, model, maxTurns } = opts;
+    const { folder, promptFile, sessionId, unattended, model, maxTurns, inv } = opts;
     const escapedFolder = escapeWindowsArg(folder);
-    const instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    if (inv) {
+      instruction = `[${inv}] ${instruction}`;
+    }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
     const setupCmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}`;

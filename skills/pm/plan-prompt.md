@@ -42,9 +42,9 @@ Rules:
 - **The plan is the elaboration, not the summary:** requirements.md uses terse human language with intentional ambiguity. PLAN.md must resolve that ambiguity — every edge case decided, every behaviour specified, every acceptance criterion precise enough that two developers would implement the same thing. Referencing requirements.md for background is fine; deferring a decision to it is not.
 - **Monotonically non-decreasing tiers within a phase:** Within a phase, order tasks cheap → standard → premium. The PM resumes the same session across tasks in a phase — a premium task can build a large context that a cheap model cannot load. The PM may group consecutive same-tier tasks into a single dispatch streak; tier transitions trigger a new dispatch. If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary. Cross-phase tier order does not matter — each phase starts a fresh session.
   ```
-  cheap → cheap → standard → standard → premium → VERIFY  ✅
-  cheap → standard → cheap → VERIFY  ❌  (downgrade within phase — split into two phases)
-  ```
+  cheap → cheap → standard → standard → premium → VERIFY  [VALID]
+  cheap → standard → cheap → VERIFY  [INVALID]  (downgrade within phase — split into two phases)
+re  ```
 
 ### PHASE 2 — FRONT-LOAD FOUNDATIONS
 

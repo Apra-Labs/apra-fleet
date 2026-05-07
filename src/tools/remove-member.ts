@@ -9,6 +9,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
+import { getStallDetector } from '../services/stall/index.js';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
@@ -118,6 +119,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
 
   const removed = removeFromRegistry(agent.id);
+  getStallDetector().remove(agent.id);
   writeStatusline();
 
   if (removed) {
