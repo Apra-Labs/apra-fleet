@@ -1,6 +1,6 @@
 {
   "name": "apra-fleet",
-  "version": "0.1.4",
+  "version": "0.1.9.0",
   "description": "MCP server for orchestrating multiple agentic AI instances like Claude, Gemini and others (called 'members') across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
@@ -47,7 +47,7 @@
     "@modelcontextprotocol/sdk": "^1.27.0",
     "smol-toml": "^1.6.1",
     "ssh2": "^1.17.0",
-    "uuid": "^11.0.0",
+    "uuid": "^14.0.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

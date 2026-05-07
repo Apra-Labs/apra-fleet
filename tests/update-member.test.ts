@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 
@@ -107,6 +107,33 @@ describe('updateMember', () => {
     });
     expect(result).toContain('❌ Credential "nonexistent_cred" not found.');
     expect(result).toContain('Member was NOT updated.');
+  });
+
+  it('stores a valid category', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.category).toBe('doers');
+  });
+
+  it('clears category when empty string is passed', async () => {
+    const member = makeTestLocalAgent({ category: 'doers' });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: '' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.category).toBeUndefined();
+  });
+
+  it('clears category when whitespace-only string is passed', async () => {
+    const member = makeTestLocalAgent({ category: 'doers' });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: '   ' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.category).toBeUndefined();
   });
 
   it('does not warn when updating a cloud member', async () => {

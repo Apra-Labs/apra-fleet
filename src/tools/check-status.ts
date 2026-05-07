@@ -3,7 +3,7 @@ import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
+import { formatAgentHost, getAgentOS, groupByCategory } from '../utils/agent-helpers.js';
 import { serverVersion } from '../version.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -236,17 +236,8 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   }
 
   // Group rows by category (category is already attached to each row)
-  const grouped = new Map<string, Array<{ row: AgentStatusRow; agent: ReturnType<typeof getAllAgents>[number] }>>();
-  for (let i = 0; i < rows.length; i++) {
-    const key = rows[i].category ?? '(uncategorized)';
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push({ row: rows[i], agent: agents[i] });
-  }
-  const sortedKeys = [...grouped.keys()].sort((a, b) => {
-    if (a === '(uncategorized)') return 1;
-    if (b === '(uncategorized)') return -1;
-    return a.localeCompare(b);
-  });
+  const combined = rows.map((row, i) => ({ row, agent: agents[i] }));
+  const { grouped, sortedKeys } = groupByCategory(combined, ({ row }) => row.category);
 
   // Compact: 1 summary line + 1 line per member, multiple fields per line
   let t = updateNotice ? `${updateNotice}\n` : '';

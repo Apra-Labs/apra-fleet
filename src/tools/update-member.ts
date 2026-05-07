@@ -120,7 +120,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
   if (input.unattended !== undefined) updates.unattended = input.unattended;
-  if (input.category !== undefined) updates.category = input.category || undefined;
+  if (input.category !== undefined) updates.category = input.category.trim() || undefined;
   if (input.host) updates.host = input.host;
   if (input.port) updates.port = input.port;
   if (input.username) updates.username = input.username;

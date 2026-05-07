@@ -5,7 +5,7 @@ import { serverVersion } from '../version.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, groupByCategory } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
 export const listMembersSchema = z.object({
@@ -96,15 +96,12 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
   }
 
   // Compact: group members by category, one group per row block
-  const grouped = new Map<string, Array<{ agent: Agent; authStatus: string }>>();
-  for (const [i, a] of agents.entries()) {
-    const key = a.category?.trim() || '(uncategorized)';
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push({ agent: a, authStatus: authStatuses[i] });
-  }
+  const combined = agents.map((agent, i) => ({ agent, authStatus: authStatuses[i] }));
+  const { grouped, sortedKeys } = groupByCategory(combined, ({ agent: a }) => a.category?.trim());
 
   let t = `${agents.length} member(s)\n`;
-  for (const [category, members] of grouped) {
+  for (const category of sortedKeys) {
+    const members = grouped.get(category)!;
     t += `\n[${category}]\n`;
     for (const { agent: a, authStatus } of members) {
       const icon = a.icon ?? DEFAULT_ICON;
