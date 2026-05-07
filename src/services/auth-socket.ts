@@ -16,6 +16,7 @@ interface PendingAuth {
   encryptedPassword?: string;
   createdAt: number;
   spawned_pid?: number;
+  persist?: boolean;
 }
 
 interface PasswordWaiter {
@@ -103,6 +104,7 @@ export async function ensureAuthSocket(): Promise<void> {
             }
             // Encrypt immediately, discard plaintext
             pending.encryptedPassword = encryptPassword(msg.password);
+            if (msg.persist !== undefined) pending.persist = !!msg.persist;
             // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
             (msg as any).password = '';
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
@@ -284,14 +286,14 @@ async function collectOobInput(
   mode: 'password' | 'api-key' | 'confirm',
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
-): Promise<{ password?: string; fallback?: string }> {
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[] },
+): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
 
   const modeArgs = mode === 'api-key' ? ['--api-key'] : mode === 'confirm' ? ['--confirm'] : [];
   const promptArgs = _opts?.prompt ? ['--prompt', _opts.prompt] : [];
-  const extraArgs = [...modeArgs, ...promptArgs];
+  const extraArgs = [...modeArgs, ...promptArgs, ...(_opts?.additionalArgs ?? [])];
   const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
 
   const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
@@ -337,8 +339,9 @@ async function collectOobInput(
       // This case should not be hit if passwordPromise always wins on success,
       // but as a safeguard, we wait for the password again.
       const pw = await passwordPromise;
+      const persist = pendingRequests.get(memberName)?.persist;
       pendingRequests.delete(memberName);
-      return { password: pw };
+      return { password: pw, persist };
     }
 
     // Handle the fallback case from the cancellation promise
@@ -355,8 +358,9 @@ async function collectOobInput(
       return raceResult;
     }
 
+    const persist = pendingRequests.get(memberName)?.persist;
     pendingRequests.delete(memberName);
-    return { password: raceResult as string };
+    return { password: raceResult as string, persist };
   } catch (err: any) {
     // Clean up the pending request if the user cancelled.
     const waiter = passwordWaiters.get(memberName);
@@ -382,8 +386,8 @@ async function collectOobInput(
 export async function collectOobPassword(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
-): Promise<{ password?: string; fallback?: string }> {
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
+): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
   return collectOobInput('password', memberName, toolName, _opts);
 }
 
@@ -394,9 +398,10 @@ export async function collectOobPassword(
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
-): Promise<{ password?: string; fallback?: string }> {
-  return collectOobInput('api-key', memberName, toolName, _opts);
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; askPersist?: boolean },
+): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
+  const additionalArgs = _opts?.askPersist ? ['--ask-persist'] : [];
+  return collectOobInput('api-key', memberName, toolName, { ...(_opts ?? {}), additionalArgs });
 }
 
 
@@ -425,8 +430,8 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
   // For API key mode, use `secret --set` instead of `auth --api-key`
   let cmdArgs: string[];
   if (isApiKeyMode) {
-    // Remove --api-key and --prompt args, use simple `secret --set <name>`
-    cmdArgs = ['secret', '--set', memberName];
+    const askPersist = extra.includes('--ask-persist');
+    cmdArgs = ['secret', '--set', memberName, ...(askPersist ? ['--ask-persist'] : [])];
   } else {
     // For password/confirm modes, use original `auth <mode> <name>` command
     cmdArgs = ['auth', ...extra, memberName];

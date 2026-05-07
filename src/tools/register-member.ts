@@ -84,7 +84,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // Out-of-band password collection for remote password auth without inline password
   let preEncryptedPassword: string | undefined;
   if (!isLocal && input.auth_type === 'password' && !input.password) {
-    const oob = await collectOobPassword(input.friendly_name, 'register_member');
+    const oob = await collectOobPassword(input.friendly_name, 'register_member', {
+      prompt: `  Enter SSH password for ${input.username}@${input.host}: `,
+    });
     if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
     preEncryptedPassword = oob.password;
   }
