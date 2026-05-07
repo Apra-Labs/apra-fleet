@@ -2,17 +2,17 @@ import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
 import type { CloudConfig } from '../services/cloud/types.js';
-import { encryptPassword } from '../utils/crypto.js';
+import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
-import { credentialResolve } from '../services/credential-store.js';
+import { credentialResolve, credentialSet } from '../services/credential-store.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
-import { collectOobPassword } from '../services/auth-socket.js';
+import { collectOobPassword, collectOobApiKey } from '../services/auth-socket.js';
 import { classifySshError } from '../utils/ssh-error-messages.js';
 
 export const registerMemberSchema = z.object({
@@ -73,10 +73,19 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
     for (const name of tokenNames) {
       const entry = credentialResolve(name, input.friendly_name);
-      if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT registered.`;
-      if ('denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;
-      if ('expired' in entry) return `❌ ${entry.expired} Member was NOT registered.`;
-      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+      if (entry && 'denied' in entry) return `❌ ${entry.denied} Member was NOT registered.`;
+      if (entry && 'expired' in entry) return `❌ ${entry.expired} Member was NOT registered.`;
+      if (entry) {
+        resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+        continue;
+      }
+      // Credential not found — auto-create via OOB
+      const oob = await collectOobApiKey(name, 'register_member', { askPersist: true });
+      if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
+      if (!oob.password) return `❌ No credential received for "${name}". Member was NOT registered.`;
+      const plaintext = decryptPassword(oob.password);
+      credentialSet(name, plaintext, !!oob.persist, 'deny');
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, plaintext);
     }
     resolvedPassword = resolved;
   }

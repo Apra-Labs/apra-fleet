@@ -171,6 +171,7 @@ async function handleDelete(args: string[]): Promise<void> {
 async function handleSet(args: string[]): Promise<void> {
   const name = args[0];
   const persist = args.includes('--persist');
+  const askPersist = args.includes('--ask-persist');
 
   if (!name) {
     console.error('Usage: apra-fleet secret --set <name> [--persist]');
@@ -197,10 +198,22 @@ async function handleSet(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  let finalPersist = persist;
+  if (askPersist && !persist) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    const answer = await new Promise<string>((resolve) => {
+      rl.question('  Persist this secret? (y/n): ', (ans) => {
+        rl.close();
+        resolve(ans);
+      });
+    });
+    finalPersist = answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
+  }
+
   const sockPath = getSocketPath();
   const waitForServer = new Promise<boolean>((resolve) => {
     const client = net.connect(sockPath, () => {
-      const msg = JSON.stringify({ type: 'auth', member_name: name, password: secretValue }) + '\n';
+      const msg = JSON.stringify({ type: 'auth', member_name: name, password: secretValue, persist: finalPersist }) + '\n';
       secretValue = '';
       client.write(msg);
     });
