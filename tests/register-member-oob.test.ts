@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
 import { encryptPassword } from '../src/utils/crypto.js';
-import { credentialResolve } from '../src/services/credential-store.js';
+import { credentialResolve, credentialDelete } from '../src/services/credential-store.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -122,6 +122,11 @@ describe('register_member: named credential auto-create (Test 4)', () => {
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    // Clean up any stale credentials from prior runs
+    credentialDelete('MyLinPass');
+    credentialDelete('PersistCred');
+    credentialDelete('SessionCred');
+    credentialDelete('FailCred');
   });
 
   afterEach(() => {
