@@ -274,6 +274,6 @@ async function startServer() {
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket(); closeAllConnections(); stallDetector.stop(); process.exit(0); });
-  process.on('SIGTERM', () => { cleanupAuthSocket(); closeAllConnections(); stallDetector.stop(); process.exit(0); });
+  process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+  process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
 }
