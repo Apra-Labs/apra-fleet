@@ -17,8 +17,8 @@ import {
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
-  afterEach(async () => {
-    await cleanupAuthSocket();
+  afterEach(() => {
+    cleanupAuthSocket();
   });
 
   describe('getSocketPath', () => {
@@ -64,9 +64,9 @@ describe('auth-socket', () => {
       expect(after).toBe(true);
     });
 
-    it('cleans up on cleanupAuthSocket', async () => {
+    it('cleans up on cleanupAuthSocket', () => {
       createPendingAuth('test-member');
-      await cleanupAuthSocket();
+      cleanupAuthSocket();
       expect(hasPendingAuth('test-member')).toBe(false);
     });
   });
@@ -92,13 +92,9 @@ describe('auth-socket', () => {
           const resp = JSON.parse(buffer.slice(0, nl));
           expect(resp.ok).toBe(true);
           client.end();
-          client.destroy();
           resolve();
         });
-        client.on('error', (err) => {
-          client.destroy();
-          reject(err);
-        });
+        client.on('error', reject);
       });
 
       // Password should now be resolved (encrypted)
@@ -106,7 +102,7 @@ describe('auth-socket', () => {
       expect(encPw).not.toBeNull();
       expect(encPw).toContain(':'); // encrypted format is iv:authTag:ciphertext
 
-      // Entry consumed ï¿½ should be gone
+      // Entry consumed — should be gone
       expect(hasPendingAuth('web1')).toBe(false);
     });
 
@@ -126,15 +122,10 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          const data = JSON.parse(buffer.slice(0, nl));
+          resolve(JSON.parse(buffer.slice(0, nl)));
           client.end();
-          client.destroy();
-          resolve(data);
         });
-        client.on('error', (err) => {
-          client.destroy();
-          reject(err);
-        });
+        client.on('error', reject);
       });
 
       expect(resp.ok).toBe(false);
@@ -155,15 +146,10 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          const data = JSON.parse(buffer.slice(0, nl));
+          resolve(JSON.parse(buffer.slice(0, nl)));
           client.end();
-          client.destroy();
-          resolve(data);
         });
-        client.on('error', (err) => {
-          client.destroy();
-          reject(err);
-        });
+        client.on('error', reject);
       });
 
       expect(resp.ok).toBe(false);
@@ -184,22 +170,17 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          const data = JSON.parse(buffer.slice(0, nl));
+          resolve(JSON.parse(buffer.slice(0, nl)));
           client.end();
-          client.destroy();
-          resolve(data);
         });
-        client.on('error', (err) => {
-          client.destroy();
-          reject(err);
-        });
+        client.on('error', reject);
       });
 
       expect(resp.ok).toBe(false);
       expect(resp.error).toContain('Invalid message');
     });
 
-    it('is idempotent ï¿½ calling ensureAuthSocket twice does not error', async () => {
+    it('is idempotent — calling ensureAuthSocket twice does not error', async () => {
       await ensureAuthSocket();
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
@@ -214,7 +195,7 @@ describe('auth-socket', () => {
         expect(fs.existsSync(sockPath)).toBe(true);
       }
 
-      await cleanupAuthSocket();
+      cleanupAuthSocket();
 
       if (process.platform !== 'win32') {
         expect(fs.existsSync(sockPath)).toBe(false);
@@ -259,16 +240,9 @@ describe('auth-socket', () => {
         let buffer = '';
         client.on('data', (chunk) => {
           buffer += chunk.toString();
-          if (buffer.indexOf('\n') !== -1) {
-            client.end();
-            client.destroy();
-            resolve();
-          }
+          if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
         });
-        client.on('error', (err) => {
-          client.destroy();
-          reject(err);
-        });
+        client.on('error', reject);
       });
 
       const encPw = await passwordPromise;
@@ -297,19 +271,12 @@ describe('auth-socket', () => {
         let buffer = '';
         client.on('data', (chunk) => {
           buffer += chunk.toString();
-          if (buffer.indexOf('\n') !== -1) {
-            client.end();
-            client.destroy();
-            resolve();
-          }
+          if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
         });
-        client.on('error', (err) => {
-          client.destroy();
-          reject(err);
-        });
+        client.on('error', reject);
       });
 
-      // Now wait ï¿½ should resolve immediately since password is already there
+      // Now wait — should resolve immediately since password is already there
       const encPw = await waitForPassword('fast-test', 1000);
       expect(encPw).toContain(':');
     });
@@ -319,19 +286,17 @@ describe('auth-socket', () => {
       createPendingAuth('cleanup-test');
 
       const passwordPromise = waitForPassword('cleanup-test', 5000);
-      // Suppress unhandled-rejection warning: rejection fires before expect() attaches its handler
-      passwordPromise.catch(() => {});
 
       await new Promise(r => setTimeout(r, 50));
-      await cleanupAuthSocket();
+      cleanupAuthSocket();
 
       await expect(passwordPromise).rejects.toThrow('Auth socket closed');
     });
   });
 
   describe('collectOobPassword', () => {
-    afterEach(async () => {
-      await cleanupAuthSocket();
+    afterEach(() => {
+      cleanupAuthSocket();
     });
 
     it('returns immediately when pending auth already has password', async () => {
@@ -400,8 +365,8 @@ describe('auth-socket', () => {
     });
   });
   describe('collectOobApiKey', () => {
-    afterEach(async () => {
-      await cleanupAuthSocket();
+    afterEach(() => {
+      cleanupAuthSocket();
     });
 
     it('launches terminal with --api-key flag', async () => {
@@ -483,7 +448,7 @@ describe('auth-socket', () => {
       });
       const result1Promise = collectOobApiKey('cancel-cred', 'credential_store_set', { launchFn: launchFn1, waitTimeoutMs: 5000 });
       // Wait for launchFn to be called (happens after ensureAuthSocket, which may retry on Windows)
-      await vi.waitFor(() => { if (!capturedOnExit) throw new Error('launch not yet called'); }, { timeout: 10000 });
+      await vi.waitFor(() => { if (!capturedOnExit) throw new Error('launch not yet called'); }, { timeout: 2000 });
       capturedOnExit!(1); // simulate user closing the terminal
       const result1 = await result1Promise;
       expect('fallback' in result1).toBe(true);
@@ -548,7 +513,7 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('launchAuthTerminal ï¿½ headless fallback', () => {
+  describe('launchAuthTerminal — headless fallback', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
     });
@@ -595,15 +560,8 @@ function sendPassword(sockPath: string, memberName: string, password: string): P
     let buffer = '';
     client.on('data', (chunk) => {
       buffer += chunk.toString();
-      if (buffer.indexOf('\n') !== -1) {
-        client.end();
-        client.destroy();
-        resolve();
-      }
+      if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
     });
-    client.on('error', (err) => {
-      client.destroy();
-      reject(err);
-    });
+    client.on('error', reject);
   });
 }
