@@ -1,7 +1,7 @@
 import net from 'node:net';
 import readline from 'node:readline';
 import { getSocketPath } from '../services/auth-socket.js';
-import { secureInput } from '../utils/secure-input.js';
+import { collectSecret } from '../utils/collect-secret.js';
 import { credentialSet, credentialList, credentialDelete, credentialUpdate, type CredentialUpdatePatch } from '../services/credential-store.js';
 
 const NAME_REGEX = /^[a-zA-Z0-9_]{1,64}$/;
@@ -172,6 +172,8 @@ async function handleSet(args: string[]): Promise<void> {
   const name = args[0];
   const persist = args.includes('--persist');
   const askPersist = args.includes('--ask-persist');
+  const promptIdx = args.indexOf('--prompt');
+  const customPrompt = promptIdx !== -1 ? args[promptIdx + 1] : undefined;
 
   if (!name) {
     console.error('Usage: apra-fleet secret --set <name> [--persist]');
@@ -184,19 +186,8 @@ async function handleSet(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  let secretValue: string;
-  try {
-    secretValue = await secureInput({ prompt: `Enter value for ${name}: ` });
-  } catch {
-    console.error('Cancelled.');
-    process.exit(1);
-    return;
-  }
-
-  if (!secretValue) {
-    console.error('✗ Empty value. Aborting.');
-    process.exit(1);
-  }
+  const displayPrompt = customPrompt ?? `Enter value for ${name}`;
+  let secretValue = await collectSecret(displayPrompt);
 
   let finalPersist = persist;
   if (askPersist && !persist) {
@@ -231,7 +222,6 @@ async function handleSet(args: string[]): Promise<void> {
           console.error(`✓ Secret delivered for ${name}. You can close this window.`);
           resolve(true);
         } else {
-          console.error(`✗ Server error: ${resp.error}`);
           resolve(false);
         }
       } catch {
@@ -256,7 +246,7 @@ async function handleSet(args: string[]): Promise<void> {
 
   if (!delivered) {
     if (!persist) {
-      console.error(`✗ No pending request for ${name}. Use --persist to store for future use.`);
+      console.error(`ℹ No waiting request — use --persist to store.`);
       process.exit(1);
     }
 

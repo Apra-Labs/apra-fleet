@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events';
 const {
   mockNetConnect,
   mockReadlineCreateInterface,
-  mockSecureInput,
+  mockCollectSecret,
   mockCredentialList,
   mockCredentialDelete,
   mockCredentialSet,
@@ -19,7 +19,7 @@ const {
 } = vi.hoisted(() => ({
   mockNetConnect: vi.fn(),
   mockReadlineCreateInterface: vi.fn(),
-  mockSecureInput: vi.fn(),
+  mockCollectSecret: vi.fn(),
   mockCredentialList: vi.fn(),
   mockCredentialDelete: vi.fn(),
   mockCredentialSet: vi.fn(),
@@ -34,8 +34,8 @@ vi.mock('node:readline', () => ({
   default: { createInterface: mockReadlineCreateInterface },
 }));
 
-vi.mock('../src/utils/secure-input.js', () => ({
-  secureInput: mockSecureInput,
+vi.mock('../src/utils/collect-secret.js', () => ({
+  collectSecret: mockCollectSecret,
 }));
 
 vi.mock('../src/services/auth-socket.js', () => ({
@@ -86,6 +86,8 @@ let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
+  vi.clearAllMocks();
+
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
     throw new ExitError(code ?? 0);
   });
@@ -96,14 +98,21 @@ beforeEach(() => {
   mockCredentialDelete.mockReturnValue(true);
   mockCredentialSet.mockReturnValue({ name: 'x', scope: 'session', network_policy: 'deny', created_at: '', allowedMembers: '*' });
   mockCredentialUpdate.mockReturnValue({ members: '*', network_policy: 'allow' });
-  mockSecureInput.mockResolvedValue('my-secret-value');
+  mockCollectSecret.mockResolvedValue('my-secret-value');
+
+  // Stub readline for --delete --all and --ask-persist paths
+  mockReadlineCreateInterface.mockReturnValue({
+    question: vi.fn((_prompt: string, cb: (ans: string) => void) => cb('n')),
+    close: vi.fn(),
+    on: vi.fn(),
+  });
 });
 
 afterEach(() => {
   exitSpy.mockRestore();
   logSpy.mockRestore();
   errSpy.mockRestore();
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 // ---------------------------------------------------------------------------
@@ -231,20 +240,16 @@ describe('runSecret --set', () => {
     expect(msg).toContain('Invalid credential name');
   });
 
-  it('exits 1 when secureInput returns empty string', async () => {
-    mockSecureInput.mockResolvedValue('');
-    await expect(runSecret(['--set', 'valid_name'])).rejects.toThrow(ExitError);
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    const msg = errSpy.mock.calls.flat().join('\n');
-    expect(msg).toContain('Empty value');
+  it('calls collectSecret with default prompt when no --prompt flag', async () => {
+    mockNetConnect.mockImplementation(() => makeErrorSocket());
+    await expect(runSecret(['--set', 'my_secret'])).rejects.toThrow(ExitError);
+    expect(mockCollectSecret).toHaveBeenCalledWith('Enter value for my_secret');
   });
 
-  it('exits 1 when secureInput is cancelled', async () => {
-    mockSecureInput.mockRejectedValue(new Error('cancelled'));
-    await expect(runSecret(['--set', 'valid_name'])).rejects.toThrow(ExitError);
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    const msg = errSpy.mock.calls.flat().join('\n');
-    expect(msg).toContain('Cancelled');
+  it('calls collectSecret with custom prompt when --prompt is given', async () => {
+    mockNetConnect.mockImplementation(() => makeErrorSocket());
+    await expect(runSecret(['--set', 'my_secret', '--prompt', 'SSH password for host'])).rejects.toThrow(ExitError);
+    expect(mockCollectSecret).toHaveBeenCalledWith('SSH password for host');
   });
 
   it('exits 1 when no server and no --persist', async () => {
@@ -252,7 +257,7 @@ describe('runSecret --set', () => {
     await expect(runSecret(['--set', 'my_secret'])).rejects.toThrow(ExitError);
     expect(exitSpy).toHaveBeenCalledWith(1);
     const msg = errSpy.mock.calls.flat().join('\n');
-    expect(msg).toContain('No pending request');
+    expect(msg).toContain('No waiting request');
     expect(msg).toContain('--persist');
   });
 

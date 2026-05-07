@@ -11,6 +11,7 @@ import {
   cleanupAuthSocket,
   collectOobPassword,
   collectOobApiKey,
+  cancelPendingAuth,
   hasGraphicalDisplay,
   hasInteractiveDesktop,
   launchAuthTerminal,
@@ -560,7 +561,7 @@ describe('auth-socket', () => {
       const onExit = vi.fn();
       const result = launchAuthTerminal('my-member', [], onExit);
       expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('! apra-fleet auth my-member');
+      expect(result).toContain('my-member');
       expect(onExit).not.toHaveBeenCalled();
     });
 
@@ -570,7 +571,7 @@ describe('auth-socket', () => {
       const onExit = vi.fn();
       const result = launchAuthTerminal('my-member', [], onExit);
       expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('! apra-fleet auth my-member');
+      expect(result).toContain('my-member');
       expect(onExit).not.toHaveBeenCalled();
     });
 
@@ -583,6 +584,83 @@ describe('auth-socket', () => {
       expect(result).toContain('worker-42');
       expect(result).not.toContain('<name>');
       expect(result).not.toContain('<member>');
+    });
+  });
+
+  describe('cancelPendingAuth', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('does nothing when no pending auth exists', () => {
+      expect(() => cancelPendingAuth('no-such-member')).not.toThrow();
+    });
+
+    it('rejects any waiting password waiter with "cancelled"', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('cancel-waiter');
+
+      const passwordPromise = waitForPassword('cancel-waiter', 5000);
+      passwordPromise.catch(() => {});
+
+      await new Promise(r => setTimeout(r, 20));
+      cancelPendingAuth('cancel-waiter');
+
+      await expect(passwordPromise).rejects.toThrow('cancelled');
+    });
+
+    it('clears pending request so hasPendingAuth returns false after cancel', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('cancel-clear');
+
+      expect(hasPendingAuth('cancel-clear')).toBe(true);
+      cancelPendingAuth('cancel-clear');
+      expect(hasPendingAuth('cancel-clear')).toBe(false);
+    });
+
+    it('clears waiter so a retry can create fresh pending auth', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('cancel-retry');
+
+      const p1 = waitForPassword('cancel-retry', 5000);
+      p1.catch(() => {});
+
+      await new Promise(r => setTimeout(r, 20));
+      cancelPendingAuth('cancel-retry');
+      await expect(p1).rejects.toThrow('cancelled');
+
+      // Should be able to create a fresh pending auth without conflict
+      createPendingAuth('cancel-retry');
+      expect(hasPendingAuth('cancel-retry')).toBe(true);
+    });
+  });
+
+  describe('waitForPassword — kills spawned PID on timeout', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('rejects with timeout error when no password arrives', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('pid-timeout');
+
+      await expect(waitForPassword('pid-timeout', 100)).rejects.toThrow('timed out');
+      expect(hasPendingAuth('pid-timeout')).toBe(false);
+    });
+
+    it('clears pending request on timeout', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('pid-clear-timeout');
+
+      await expect(waitForPassword('pid-clear-timeout', 100)).rejects.toThrow();
+      expect(hasPendingAuth('pid-clear-timeout')).toBe(false);
+    });
+  });
+
+  describe('OOB_TIMEOUT_MS constant', () => {
+    it('is exported from oob-timeout and equals 5 minutes', async () => {
+      const { OOB_TIMEOUT_MS } = await import('../src/utils/oob-timeout.js');
+      expect(OOB_TIMEOUT_MS).toBe(5 * 60 * 1000);
     });
   });
 });

@@ -196,12 +196,23 @@ export function waitForPassword(memberName: string, timeoutMs: number = 300_000)
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       passwordWaiters.delete(memberName);
+      const pending = pendingRequests.get(memberName);
+      if (pending?.spawned_pid) killProcess(pending.spawned_pid);
       pendingRequests.delete(memberName);
       reject(new Error(`Password entry timed out for ${memberName}`));
     }, timeoutMs);
 
     passwordWaiters.set(memberName, { resolve, reject, timer });
   });
+}
+
+export function cancelPendingAuth(memberName: string): void {
+  const pending = pendingRequests.get(memberName);
+  if (pending?.spawned_pid) killProcess(pending.spawned_pid);
+  const waiter = passwordWaiters.get(memberName);
+  if (waiter) { clearTimeout(waiter.timer); waiter.reject(new Error('cancelled')); }
+  passwordWaiters.delete(memberName);
+  pendingRequests.delete(memberName);
 }
 
 export function hasPendingAuth(memberName: string): boolean {
@@ -420,21 +431,26 @@ export async function collectOobConfirm(
 
 /**
  * Resolve the command to invoke this binary's `auth` or `secret` subcommand.
- * For API key mode (--api-key in extraArgs), uses `secret --set`.
+ * Confirm mode uses `auth --confirm`; all credential collection uses `secret --set`.
  * Returns [command, ...args] suitable for spawn().
  */
 function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
   const extra = extraArgs ?? [];
-  const isApiKeyMode = extra.includes('--api-key');
+  const isConfirm = extra.includes('--confirm');
 
-  // For API key mode, use `secret --set` instead of `auth --api-key`
   let cmdArgs: string[];
-  if (isApiKeyMode) {
-    const askPersist = extra.includes('--ask-persist');
-    cmdArgs = ['secret', '--set', memberName, ...(askPersist ? ['--ask-persist'] : [])];
+  if (isConfirm) {
+    cmdArgs = ['auth', '--confirm', memberName];
   } else {
-    // For password/confirm modes, use original `auth <mode> <name>` command
-    cmdArgs = ['auth', ...extra, memberName];
+    // All credential collection (password, API key) routes through `secret --set`
+    cmdArgs = ['secret', '--set', memberName];
+    const promptIdx = extra.indexOf('--prompt');
+    if (promptIdx !== -1 && promptIdx + 1 < extra.length) {
+      cmdArgs.push('--prompt', extra[promptIdx + 1]);
+    }
+    if (extra.includes('--ask-persist')) {
+      cmdArgs.push('--ask-persist');
+    }
   }
 
   // SEA binary: process.execPath is the binary itself
@@ -505,7 +521,6 @@ export function launchAuthTerminal(
   const { cmd, args } = getAuthCommand(memberName, extraArgs);
   const fullArgs = [cmd, ...args];
   let child: ChildProcess;
-  const isApiKeyMode = extraArgs?.includes('--api-key') ?? false;
 
   try {
     const platform = process.platform;
@@ -581,7 +596,7 @@ export function launchAuthTerminal(
       // The title argument to start is required.
       const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
       child = spawn('cmd', spawnArgs, { detached: true, stdio: 'ignore' });
-      if (child.pid && isApiKeyMode) {
+      if (child.pid) {
         const pending = pendingRequests.get(memberName);
         if (pending) pending.spawned_pid = child.pid;
       }
@@ -597,7 +612,7 @@ export function launchAuthTerminal(
         // xterm, x-terminal-emulator etc.
         child = spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' });
       }
-      if (child.pid && isApiKeyMode) {
+      if (child.pid) {
         const pending = pendingRequests.get(memberName);
         if (pending) pending.spawned_pid = child.pid;
       }
