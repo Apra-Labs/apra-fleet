@@ -24,6 +24,7 @@ Usage:
   apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
+  apra-fleet uninstall                 Remove binary, hooks, and MCP registration
   apra-fleet secret --set <name>       Deliver a secret to a waiting request
   apra-fleet secret --list             List secrets
   apra-fleet secret --delete <name>    Delete a secret
@@ -41,6 +42,10 @@ if (arg === 'install') {
   import('./cli/secret.js')
     .then(m => m.runSecret(process.argv.slice(3)))
     .catch(err => { logError('cli', `Secret failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'uninstall') {
+  import('./cli/uninstall.js')
+    .then(m => m.runUninstall(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Uninstall failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'auth') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
