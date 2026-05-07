@@ -29,12 +29,14 @@ const passwordWaiters = new Map<string, PasswordWaiter>();
 const activeSockets = new Set<net.Socket>();
 let socketServer: net.Server | null = null;
 let closingPromise: Promise<void> | null = null;
+let testPipeGeneration = 0;
 
 export function getSocketPath(): string {
   if (process.platform === 'win32') {
     // Note: this path is automatically scoped to the user session by Windows.
     const username = process.env.USERNAME ?? 'user';
-    return `\\\\.\\pipe\\apra-fleet-auth-${username}`;
+    const suffix = process.env.NODE_ENV === 'test' ? `-${testPipeGeneration}` : '';
+    return `\\\\.\\pipe\\apra-fleet-auth-${username}${suffix}`;
   }
   return SOCKET_PATH;
 }
@@ -247,14 +249,17 @@ export function cleanupAuthSocket(): Promise<void> {
         if (process.platform !== 'win32') {
           try { fs.unlinkSync(getSocketPath()); } catch { /* ignore */ }
         }
+        if (process.platform === 'win32' && process.env.NODE_ENV === 'test') {
+          testPipeGeneration++;
+        }
         closingPromise = null;
         resolve();
       };
 
-      if (process.platform === 'win32') {
-        // Windows named pipes need extra time to be fully released by the OS
-        const delay = process.env.NODE_ENV === 'test' ? 1500 : 500;
-        setTimeout(onComplete, delay);
+      if (process.platform === 'win32' && process.env.NODE_ENV !== 'test') {
+        // Windows named pipes need extra time to be fully released by the OS.
+        // In test mode we use unique pipe names per generation, so no delay needed.
+        setTimeout(onComplete, 500);
       } else {
         onComplete();
       }
