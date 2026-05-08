@@ -15,6 +15,7 @@ import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
+import { logLine } from '../utils/log-helpers.js';
 
 const vcsProviders: Record<string, VcsProviderService> = {
   github: githubProvider,
@@ -123,6 +124,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   writeStatusline();
 
   if (removed) {
+    logLine('remove_member', `id=${agent.id} name=${agent.friendlyName}`, agent);
     let result = `✅ Member "${agent.friendlyName}" (${agent.id}) has been removed.\n\nTo refresh the member list in your UI, run /mcp and select Reconnect.`;
     if (warnings.length > 0) {
       result += `\n\n⚠️ Warnings:\n`;

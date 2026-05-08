@@ -9,7 +9,7 @@ import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { FLEET_DIR } from '../paths.js';
 const STORED_KEY_PATH = path.join(FLEET_DIR, 'github-app.pem');
-const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/;
+const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/;
 
 export const setupGitAppSchema = z.object({
   app_id: z.string().regex(/^\d+$/, 'App ID must be numeric').describe('The GitHub App ID (numeric string)'),

@@ -7,6 +7,7 @@ import { getStrategy } from '../services/strategy.js';
 import { testAuthConnection } from '../services/ssh.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getOsCommands } from '../os/index.js';
+import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export const setupSSHKeySchema = z.object({
@@ -117,6 +118,7 @@ export async function setupSSHKey(input: SetupSSHKeyInput): Promise<string> {
       keyPath: privateKeyPath,
       encryptedPassword: undefined,
     });
+    logLine('setup_ssh_key', `id=${agent.id} name=${agent.friendlyName}`, agent);
 
     let result = `✅ SSH key authentication set up for "${agent.friendlyName}"\n\n`;
     result += `  Private key: ${privateKeyPath}\n`;

@@ -87,7 +87,7 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   }
 }
 
-const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
+const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
 export const inFlightAgents = new Set<string>();
 
@@ -134,7 +134,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   });
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
-  const resolvedWorkFolder = resolveTilde(agent.workFolder);
+  const resolvedWorkFolder = agent.agentType === 'local' ? resolveTilde(agent.workFolder) : agent.workFolder;
   const promptFilePath = agent.agentType === 'local'
     ? path.join(resolvedWorkFolder, promptFileName)
     : `${resolvedWorkFolder}/${promptFileName}`;
