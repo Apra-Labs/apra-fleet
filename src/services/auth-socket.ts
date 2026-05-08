@@ -7,6 +7,7 @@ import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
+import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -188,7 +189,7 @@ export function getPendingPassword(memberName: string): string | null {
  * Wait for a pending auth password to arrive over the socket.
  * Returns the encrypted password, or rejects on timeout.
  */
-export function waitForPassword(memberName: string, timeoutMs: number = 300_000): Promise<string> {
+export function waitForPassword(memberName: string, timeoutMs: number = OOB_TIMEOUT_MS): Promise<string> {
   // Race: password may have arrived before we started waiting
   const existing = getPendingPassword(memberName);
   if (existing) return Promise.resolve(existing);
@@ -316,7 +317,7 @@ async function collectOobInput(
     if (encPw) return { password: encPw };
     try {
       // Another process already launched the terminal, just wait for the result.
-      return { password: await waitForPassword(memberName, waitTimeoutMs ?? 300_000) };
+      return { password: await waitForPassword(memberName, waitTimeoutMs ?? OOB_TIMEOUT_MS) };
     } catch {
       return { fallback: timeoutMessage };
     }
