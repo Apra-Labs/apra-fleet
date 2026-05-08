@@ -63,7 +63,7 @@ async function resolveSecureTokens(
     return { error: 'Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.' };
   }
 
-  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
   const credentials: ResolvedCredential[] = [];
   let resolved = command;
   let match: RegExpExecArray | null;

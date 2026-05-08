@@ -5,7 +5,7 @@ import { credentialSet } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreSetSchema = z.object({
-  name: z.string().regex(/^[a-zA-Z0-9_]{1,64}$/).describe('Credential name (alphanumeric and underscores, max 64 chars)'),
+  name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).describe('Credential name (alphanumeric, underscores, hyphens, max 64 chars)'),
   prompt: z.string().describe('Prompt to display to the user when collecting the secret'),
   persist: z.boolean().default(false).describe('If true, encrypt and persist the credential across server restarts'),
   network_policy: z.enum(['allow', 'confirm', 'deny']).default('confirm').describe(

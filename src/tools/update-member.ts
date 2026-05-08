@@ -83,7 +83,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // Resolve {{secure.NAME}} tokens in password field
   let resolvedPassword = input.password;
   if (resolvedPassword) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
     let match: RegExpExecArray | null;
     let resolved = resolvedPassword;
     const tokenNames = new Set<string>();

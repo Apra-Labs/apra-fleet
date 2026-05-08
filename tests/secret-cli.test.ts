@@ -152,11 +152,10 @@ describe('runSecret: name validation via --delete', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
-  it('rejects name with hyphen', async () => {
-    await expect(runSecret(['--delete', 'bad-name'])).rejects.toThrow(ExitError);
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    const msg = errSpy.mock.calls.flat().join('\n');
-    expect(msg).toContain('Invalid credential name');
+  it('accepts name with hyphen', async () => {
+    mockCredentialDelete.mockReturnValue(true);
+    await runSecret(['--delete', 'bad-name']);
+    expect(mockCredentialDelete).toHaveBeenCalledWith('bad-name');
   });
 
   it('rejects name with space', async () => {
@@ -169,7 +168,7 @@ describe('runSecret: name validation via --delete', () => {
     await expect(runSecret(['--delete', name])).rejects.toThrow(ExitError);
     expect(exitSpy).toHaveBeenCalledWith(1);
     const msg = errSpy.mock.calls.flat().join('\n');
-    expect(msg).toContain('[a-zA-Z0-9_]{1,64}');
+    expect(msg).toContain('[a-zA-Z0-9_-]{1,64}');
   });
 });
 
@@ -294,7 +293,7 @@ describe('runSecret --delete', () => {
   });
 
   it('exits 1 when name is invalid', async () => {
-    await expect(runSecret(['--delete', 'bad-name'])).rejects.toThrow(ExitError);
+    await expect(runSecret(['--delete', 'bad name'])).rejects.toThrow(ExitError);
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 

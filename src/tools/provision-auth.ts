@@ -241,7 +241,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
 
   // Flow B: API key is provided directly
   if (input.api_key) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
     const tokenNames = new Set<string>();
     let match: RegExpExecArray | null;
     while ((match = TOKEN_RE.exec(input.api_key)) !== null) tokenNames.add(match[1]);

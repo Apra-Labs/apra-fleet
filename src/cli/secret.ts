@@ -4,7 +4,7 @@ import { getSocketPath } from '../services/auth-socket.js';
 import { collectSecret } from '../utils/collect-secret.js';
 import { credentialSet, credentialList, credentialDelete, credentialUpdate, type CredentialUpdatePatch } from '../services/credential-store.js';
 
-const NAME_REGEX = /^[a-zA-Z0-9_]{1,64}$/;
+const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export async function runSecret(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h') || args.length === 0) {
@@ -71,7 +71,7 @@ async function handleUpdate(args: string[]): Promise<void> {
 
   if (!NAME_REGEX.test(name)) {
     console.error(`✗ Invalid credential name: ${name}`);
-    console.error('  Name must match [a-zA-Z0-9_]{1,64}');
+    console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
     process.exit(1);
   }
 
@@ -155,7 +155,7 @@ async function handleDelete(args: string[]): Promise<void> {
 
     if (!NAME_REGEX.test(name)) {
       console.error(`✗ Invalid credential name: ${name}`);
-      console.error('  Name must match [a-zA-Z0-9_]{1,64}');
+      console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
       process.exit(1);
     }
 
@@ -182,7 +182,7 @@ async function handleSet(args: string[]): Promise<void> {
 
   if (!NAME_REGEX.test(name)) {
     console.error(`✗ Invalid credential name: ${name}`);
-    console.error('  Name must match [a-zA-Z0-9_]{1,64}');
+    console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
     process.exit(1);
   }
 
