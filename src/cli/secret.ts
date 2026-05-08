@@ -252,8 +252,9 @@ async function handleSet(args: string[]): Promise<void> {
 
     // Persist mode: store the secret
     try {
-      credentialSet(name, secretValue, true, 'deny');
+      credentialSet(name, secretValue, true, 'allow');
       console.error(`✓ Secret stored for ${name}.`);
+      console.error(`  ℹ Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`);
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);
       process.exit(1);
@@ -261,8 +262,9 @@ async function handleSet(args: string[]): Promise<void> {
   } else if (persist) {
     // OOB delivery + persist: store the secret
     try {
-      credentialSet(name, secretValue, true, 'deny');
+      credentialSet(name, secretValue, true, 'allow');
       console.error(`✓ Secret also stored for future use.`);
+      console.error(`  ℹ Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`);
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);
       process.exit(1);

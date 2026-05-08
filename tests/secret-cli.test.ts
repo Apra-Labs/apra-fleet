@@ -263,7 +263,7 @@ describe('runSecret --set', () => {
   it('stores credential when no server but --persist is given', async () => {
     mockNetConnect.mockImplementation(() => makeErrorSocket());
     await runSecret(['--set', 'my_secret', '--persist']);
-    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', true, 'deny');
+    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', true, 'allow');
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
