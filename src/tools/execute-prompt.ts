@@ -134,7 +134,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   });
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
-  const resolvedWorkFolder = resolveTilde(agent.workFolder);
+  const resolvedWorkFolder = agent.agentType === 'local' ? resolveTilde(agent.workFolder) : agent.workFolder;
   const promptFilePath = agent.agentType === 'local'
     ? path.join(resolvedWorkFolder, promptFileName)
     : `${resolvedWorkFolder}/${promptFileName}`;
