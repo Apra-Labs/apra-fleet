@@ -239,7 +239,6 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   }
 
   const provider = getProvider(agent.llmProvider);
-  logLine('provision_llm_auth', `provider=${provider.name}`, agent);
 
   // Flow B: API key is provided directly
   if (input.api_key) {
@@ -255,12 +254,16 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
       if ('expired' in entry) return `❌ ${entry.expired}`;
       resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
-    return provisionApiKey(agent, resolvedKey, provider);
+    const result = await provisionApiKey(agent, resolvedKey, provider);
+    if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+    return result;
   }
 
   // Flow A: OAuth credentials copy
   if (provider.oauthCredentialFiles()?.length) {
-    return provisionOAuthCopy(agent, provider);
+    const result = await provisionOAuthCopy(agent, provider);
+    if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+    return result;
   }
 
   // Fallback: OOB key collection for non-OAuth or non-copyable providers
@@ -268,5 +271,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     prompt: `Enter API key for ${provider.name} on ${agent.friendlyName}`,
   });
   if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-  return provisionApiKey(agent, decryptPassword(oob.password!), provider);
+  const result = await provisionApiKey(agent, decryptPassword(oob.password!), provider);
+  if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+  return result;
 }
