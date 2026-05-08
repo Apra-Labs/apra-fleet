@@ -79,12 +79,19 @@ export class GeminiProvider implements ProviderAdapter {
     const raw = result.stdout.trim();
     try {
       const parsed = JSON.parse(raw);
+      const stats = parsed.stats;
+      const usage =
+        stats &&
+        typeof stats.input_tokens === 'number' &&
+        typeof stats.output_tokens === 'number'
+          ? { input_tokens: stats.input_tokens, output_tokens: stats.output_tokens }
+          : undefined;
       return {
         result: parsed.response ?? parsed.result ?? raw,
         sessionId: result.code === 0 ? (parsed.session_id ?? undefined) : undefined,
         isError: parsed.is_error === true || result.code !== 0,
         raw,
-        usage: undefined,
+        usage,
       };
     } catch {
       return {

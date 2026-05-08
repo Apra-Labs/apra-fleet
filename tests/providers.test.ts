@@ -286,6 +286,28 @@ describe('GeminiProvider', () => {
     expect(resp.isError).toBe(true);
   });
 
+  it('extracts usage tokens from stats field when present', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      session_id: 'gem-sess-42',
+      stats: { input_tokens: 500, output_tokens: 120, total_tokens: 620, cached: 0 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 500, output_tokens: 120 });
+  });
+
+  it('returns undefined usage when stats field is absent', () => {
+    const payload = JSON.stringify({ response: 'gemini result', session_id: 'gem-sess-42' });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toBeUndefined();
+  });
+
+  it('returns undefined usage when stats is missing required token fields', () => {
+    const payload = JSON.stringify({ response: 'gemini result', stats: { total_tokens: 100 } });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toBeUndefined();
+  });
+
   it('does not support maxTurns', () => {
     expect(p.supportsMaxTurns()).toBe(false);
   });
