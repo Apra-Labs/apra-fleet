@@ -181,7 +181,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     }
   }
 
-  const folder = resolveTilde(input.run_from ?? agent.workFolder);
+  const rawFolder = input.run_from ?? agent.workFolder;
+  const folder = agent.agentType === 'local' ? resolveTilde(rawFolder) : rawFolder;
 
 
   // -- Long-running background task path --
