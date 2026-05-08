@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { credentialResolve, credentialUpdate } from '../services/credential-store.js';
+import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreUpdateSchema = z.object({
   name: z.string().min(1).describe('Name of the credential to update'),
@@ -31,6 +32,7 @@ export async function credentialStoreUpdate(input: CredentialStoreUpdateInput): 
   if (!updated) {
     return `❌ Credential "${input.name}" not found.`;
   }
+  logLine('credential_store_update', `name=${input.name}`);
 
   const output: Record<string, unknown> = {
     members: updated.members,

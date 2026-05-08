@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { credentialDelete } from '../services/credential-store.js';
+import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreDeleteSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).describe('Name of the credential to delete'),
@@ -9,7 +10,9 @@ export type CredentialStoreDeleteInput = z.infer<typeof credentialStoreDeleteSch
 
 export async function credentialStoreDelete(input: CredentialStoreDeleteInput): Promise<string> {
   const deleted = credentialDelete(input.name);
-  return deleted
-    ? `✅ Credential "${input.name}" deleted.`
-    : `❌ Credential "${input.name}" not found.`;
+  if (deleted) {
+    logLine('credential_store_delete', `name=${input.name}`);
+    return `✅ Credential "${input.name}" deleted.`;
+  }
+  return `❌ Credential "${input.name}" not found.`;
 }

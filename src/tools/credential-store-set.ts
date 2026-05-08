@@ -31,6 +31,7 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
         ? '*'
         : input.members.split(',').map(s => s.trim()).filter(Boolean);
       const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy, allowedMembers, input.ttl_seconds);
+      logLine('credential_store_set', `name=${input.name} persist=${input.persist}`);
       return JSON.stringify({ handle: `sec://${meta.name}`, scope: meta.scope });
     }
   }

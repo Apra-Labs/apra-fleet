@@ -6,6 +6,7 @@ import { collectOobPassword } from '../services/auth-socket.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
+import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 
 export const updateMemberSchema = z.object({
@@ -156,6 +157,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (!updated) {
     return `Failed to update member "${existing.id}".`;
   }
+  logLine('update_member', `id=${updated.id} name=${updated.friendlyName}`, updated);
   writeStatusline();
 
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;

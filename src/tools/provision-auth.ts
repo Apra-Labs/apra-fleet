@@ -13,6 +13,7 @@ import { credentialResolve } from '../services/credential-store.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
+import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -238,6 +239,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   }
 
   const provider = getProvider(agent.llmProvider);
+  logLine('provision_llm_auth', `provider=${provider.name}`, agent);
 
   // Flow B: API key is provided directly
   if (input.api_key) {

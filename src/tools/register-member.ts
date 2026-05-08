@@ -14,6 +14,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { collectOobPassword, collectOobApiKey } from '../services/auth-socket.js';
 import { classifySshError } from '../utils/ssh-error-messages.js';
+import { logLine } from '../utils/log-helpers.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -261,6 +262,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   // Persist
   addAgent(tempAgent);
+  logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
 
   let result = `✅ Member registered successfully!\n\n`;
