@@ -69,6 +69,8 @@ export class StallDetector {
   }
 
   async _poll(): Promise<void> {
+    if (this.stallCheckList.size === 0) return;
+
     const scope = new LogScope('stall_poll_tick', JSON.stringify({
       activeWatched: this.stallCheckList.size,
       provisional: [...this.stallCheckList.values()].filter(e => e.provisional).length,
