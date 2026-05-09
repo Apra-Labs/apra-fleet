@@ -62,7 +62,22 @@ jobs:
           echo "vcs=$VCS"                   >> $GITHUB_OUTPUT
           echo "toy_url=$TOY_URL"           >> $GITHUB_OUTPUT
 
-      # ── Step 2: Seed fleet credential store ───────────────────────────────
+      # ── Step 2: Build and install fleet binary on PM runner ───────────────
+      # Must come before credential seeding — seed step needs fleet on PATH.
+      # Build from source so all three platforms (Windows/Linux/macOS x86_64)
+      # work without any artifact download.
+      - name: Build and install fleet binary on PM
+        shell: bash
+        run: |
+          npm ci
+          npm run build:binary
+          BIN=$(ls dist/apra-fleet-installer-* | grep -v '\.blob$\|\.cjs$\|\.json$' | grep -v '^.*\.exe$' | head -1)
+          [ -z "$BIN" ] && BIN=$(ls dist/apra-fleet-installer-*.exe 2>/dev/null | head -1)
+          chmod +x "$BIN" 2>/dev/null || true
+          "$BIN" install --force
+          apra-fleet --version
+
+      # ── Step 3: Seed fleet credential store ───────────────────────────────
       - name: Seed fleet credential store
         shell: bash
         run: |
@@ -75,22 +90,6 @@ jobs:
           E2E_BB_USER:    ${{ secrets.E2E_BB_USER }}
           E2E_GH_TOKEN:   ${{ secrets.E2E_GH_TOKEN }}
           E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
-
-      # ── Step 3: Build and install fleet binary on PM runner ───────────────
-      # Repo is already checked out — build the SEA binary from source so all
-      # three platforms (Windows/Linux/macOS x86_64) work without any artifact
-      # download. The binary name encodes platform+arch via package-sea.mjs.
-      - name: Build fleet binary on PM
-        shell: bash
-        run: |
-          npm ci
-          npm run build:binary
-          BIN=$(ls dist/apra-fleet-installer-* | grep -v '\.exe$\|\.blob$\|\.cjs$\|\.json$' | head -1)
-          [ -z "$BIN" ] && BIN=$(ls dist/apra-fleet-installer-*.exe 2>/dev/null | head -1)
-          chmod +x "$BIN" 2>/dev/null || true
-          sudo cp "$BIN" /usr/local/bin/apra-fleet 2>/dev/null || \
-            cp "$BIN" ~/bin/apra-fleet
-          apra-fleet --version
 
 
       # ── Step 4: Render test script with suite context ─────────────────────
@@ -116,18 +115,23 @@ jobs:
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
         shell: bash
         run: |
+          # Resolve fleet binary path and write a runtime mcp config with the
+          # full path — avoids PATH lookup failures in claude's subprocess env.
+          FLEET_BIN=$(which apra-fleet 2>/dev/null || echo "$HOME/.apra-fleet/bin/apra-fleet")
+          printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN" > mcp-runtime.json
+
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
             claude \
               -p "$(cat rendered-test-script.md)" \
-              --mcp-config .github/e2e/mcp.json \
+              --mcp-config mcp-runtime.json \
               --output-format json \
               --max-turns 80 \
               > raw-output.txt 2>&1
           else
             gemini \
               --output-format stream-json \
-              --mcp-config .github/e2e/mcp.json \
+              --mcp-config mcp-runtime.json \
               -p "$(cat rendered-test-script.md)" \
               > raw-output.txt 2>&1
           fi

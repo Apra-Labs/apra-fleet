@@ -2,7 +2,7 @@
   "mcpServers": {
     "apra-fleet": {
       "type": "stdio",
-      "command": "apra-fleet",
+      "command": "C:\\Users\\akhil\\.apra-fleet\\bin\\apra-fleet.exe",
       "args": []
     }
   }
