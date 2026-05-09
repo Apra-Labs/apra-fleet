@@ -124,8 +124,6 @@ describe('saveOnboardingState', () => {
     expect(fs.existsSync(tmp)).toBe(false);
     expect(fs.existsSync(ONBOARDING_PATH)).toBe(true);
   });
-
-  });
 });
 
 describe('advanceMilestone', () => {
@@ -588,6 +586,7 @@ describe('getWelcomeBackPreamble', () => {
     const result = getWelcomeBackPreamble();
     expect(result).not.toBeNull();
     expect(result).not.toContain('NaN');
+    // SRC code returns 'unknown' when times array is empty or malformed
     expect(result).toContain('unknown');
   });
 });

@@ -28,10 +28,10 @@ describe('getAgentOrFail', () => {
     expect((found as Agent).id).toBe('uuid-123');
   });
 
-  it('returns error string when neither UUID nor name matches', () => {
-    const notFound = getAgentOrFail('nonexistent');
+  it('returns formatted error string when neither UUID nor name matches', () => {
+    const notFound = getAgentOrFail('nonexistent-id');
     expect(typeof notFound).toBe('string');
-    expect(notFound).toContain('not found');
+    expect(notFound).toBe('Member "nonexistent-id" not found.');
   });
 });
 

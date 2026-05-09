@@ -54,7 +54,16 @@ describe('escapeWindowsArg', () => {
 });
 
 describe('escapeGrepPattern', () => {
-  it('escapes all regex metacharacters', () => {
+  it('escapes all regex metacharacters individually', () => {
+    // Each of these characters MUST be escaped with a backslash
+    const chars = '.*+?^${}()|[]\\'.split('');
+    for (const char of chars) {
+      const escaped = escapeGrepPattern(char);
+      expect(escaped).toBe('\\' + char);
+    }
+  });
+
+  it('escapes a complex regex string correctly', () => {
     const input = 'a.*b+c?d^e$f{g}h(i|j)k[l]m\\n';
     const escaped = escapeGrepPattern(input);
     expect(escaped).toBe('a\\.\\*b\\+c\\?d\\^e\\$f\\{g\\}h\\(i\\|j\\)k\\[l\\]m\\\\n');
