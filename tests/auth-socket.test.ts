@@ -23,6 +23,12 @@ describe('auth-socket', () => {
   });
 
   describe('getSocketPath', () => {
+    it.skipIf(process.platform === 'win32')('returns a path under FLEET_DIR on non-Windows', () => {
+      const p = getSocketPath();
+      expect(p).toContain('auth.sock');
+      expect(p).toContain('apra-fleet');
+    });
+
     it('returns a named pipe path on Windows', () => {
       // Can only truly test on Windows, but we can verify the function exists
       expect(typeof getSocketPath()).toBe('string');
@@ -197,6 +203,15 @@ describe('auth-socket', () => {
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
       expect(hasPendingAuth('test')).toBe(true);
+    });
+
+    it.skipIf(process.platform === 'win32')('cleans up socket file on close', async () => {
+      await ensureAuthSocket();
+      const sockPath = getSocketPath();
+      expect(fs.existsSync(sockPath)).toBe(true);
+
+      await cleanupAuthSocket();
+      expect(fs.existsSync(sockPath)).toBe(false);
     });
   });
 

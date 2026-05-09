@@ -9,6 +9,21 @@ import { WindowsCommands } from '../src/os/windows.js';
 import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
 import { makeTestAgent, REGISTRY_PATH, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
+// --- Item 1: Registry file permissions ---
+
+describe('registry file permissions', () => {
+  beforeEach(() => backupAndResetRegistry());
+  afterEach(() => restoreRegistry());
+
+  it.skipIf(process.platform === 'win32')('writes registry with mode 0o600 (non-Windows)', () => {
+    // Trigger a registry write
+    addAgent(makeTestAgent({ id: 'perm-test' }));
+
+    const stat = fs.statSync(REGISTRY_PATH);
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+});
+
 // --- Item 2: friendlyName validation ---
 
 describe('friendlyName Zod validation', () => {

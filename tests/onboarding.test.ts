@@ -124,6 +124,17 @@ describe('saveOnboardingState', () => {
     expect(fs.existsSync(tmp)).toBe(false);
     expect(fs.existsSync(ONBOARDING_PATH)).toBe(true);
   });
+
+  it.skipIf(process.platform === 'win32')('writes onboarding.json with 0o600 permissions (owner-only, non-Windows)', async () => {
+    const { loadOnboardingState, saveOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    saveOnboardingState();
+
+    const stat = fs.statSync(ONBOARDING_PATH);
+    // Mask to lower 9 permission bits
+    const perms = stat.mode & 0o777;
+    expect(perms).toBe(0o600);
+  });
 });
 
 describe('advanceMilestone', () => {
