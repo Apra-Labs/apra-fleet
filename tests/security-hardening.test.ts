@@ -9,14 +9,6 @@ import { WindowsCommands } from '../src/os/windows.js';
 import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
 import { makeTestAgent, REGISTRY_PATH, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
-// --- Item 1: Registry file permissions ---
-
-describe('registry file permissions', () => {
-  beforeEach(() => backupAndResetRegistry());
-  afterEach(() => restoreRegistry());
-
-});
-
 // --- Item 2: friendlyName validation ---
 
 describe('friendlyName Zod validation', () => {
