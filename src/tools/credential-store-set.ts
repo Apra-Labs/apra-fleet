@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { collectOobApiKey, hasPendingAuth, getPendingPassword, createPendingAuth, ensureAuthSocket, getSocketPath, launchAuthTerminal } from '../services/auth-socket.js';
+import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { credentialSet } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
@@ -22,32 +22,16 @@ export const credentialStoreSetSchema = z.object({
 export type CredentialStoreSetInput = z.infer<typeof credentialStoreSetSchema>;
 
 export async function credentialStoreSet(input: CredentialStoreSetInput): Promise<string> {
-  // Check if password has already arrived from a previous call
-  if (hasPendingAuth(input.name)) {
-    const encPw = getPendingPassword(input.name);
-    if (encPw) {
-      const plaintext = decryptPassword(encPw);
-      const allowedMembers: string[] | '*' = input.members === '*'
-        ? '*'
-        : input.members.split(',').map(s => s.trim()).filter(Boolean);
-      const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy, allowedMembers, input.ttl_seconds);
-      logLine('credential_store_set', `name=${input.name} persist=${input.persist}`);
-      return JSON.stringify({ handle: `sec://${meta.name}`, scope: meta.scope });
-    }
-  }
+  const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
 
-  // No password arrived yet, so check if we should set up a fresh pending request
-  if (!hasPendingAuth(input.name)) {
-    await ensureAuthSocket();
-    createPendingAuth(input.name);
-    const waitingMsg = `Waiting for secret ${input.name}. Run: apra-fleet secret --set ${input.name}`;
-    logLine('credential_store_set', waitingMsg);
-    launchAuthTerminal(input.name, ['--api-key'], (_exitCode) => {
-      // On terminal exit, no action needed — password will be collected via socket or not
-    });
-    return waitingMsg;
-  }
+  if (result.fallback) return result.fallback;
+  if (!result.password) return `❌ No secret received for ${input.name}. Please try again.`;
 
-  // Pending auth exists but no password yet — return waiting message
-  return `Waiting for secret ${input.name}. Run: apra-fleet secret --set ${input.name}`;
+  const plaintext = decryptPassword(result.password);
+  const allowedMembers: string[] | '*' = input.members === '*'
+    ? '*'
+    : input.members.split(',').map(s => s.trim()).filter(Boolean);
+  const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy, allowedMembers, input.ttl_seconds);
+  logLine('credential_store_set', `name=${input.name} persist=${input.persist}`);
+  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secure.${meta.name}}} in commands.`;
 }

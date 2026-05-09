@@ -185,5 +185,19 @@
 ## Observations
 
 - Delivery vs. persistence: Running `apra-fleet secret --set NAME` without `--persist` delivers to a waiting OOB request but does NOT store in the vault. `{{secure.NAME}}` requires vault storage — use `--persist`.
-- `credential_store_set` with `persist=true` stores immediately and returns a handle (`sec://NAME`) without waiting for OOB entry if the value was already delivered.
+- `credential_store_set` **blocks** — when called, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `✓ NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
 - Failed resolution is always explicit — the tool returns an error and aborts. No silent pass-through of the token string.
+
+## CI / Non-Interactive Usage
+
+For CI pipelines or scripts where interactive input is unavailable, use the `-y` flag with `apra-fleet secret --set` to read the value from stdin instead of opening an OOB terminal:
+
+```bash
+# Store a secret non-interactively (value from stdin)
+echo "$TOKEN" | apra-fleet secret --set github_pat --persist -y
+
+# Pipe from a file or command substitution
+cat ~/.token | apra-fleet secret --set deploy_key --persist -y
+```
+
+The `-y` flag bypasses OOB terminal launch entirely — the value is read from stdin and stored directly. This is safe in CI because stdin is already a controlled, non-LLM channel. The same success message is returned: `✓ github_pat stored [persistent]. Use {{secure.github_pat}} in commands.`

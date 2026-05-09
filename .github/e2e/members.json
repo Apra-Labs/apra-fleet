@@ -1,0 +1,22 @@
+{
+  "windows": {
+    "host": "192.168.1.25",
+    "username": "akhil",
+    "work_folder": "C:\\Users\\akhil\\git\\apra-fleet-e2e"
+  },
+  "linux": {
+    "host": "192.168.1.102",
+    "username": "akhil",
+    "work_folder": "~/git/apra-fleet-e2e"
+  },
+  "macos": {
+    "host": "192.168.1.13",
+    "username": "akhil",
+    "work_folder": "~/git/apra-fleet-e2e"
+  },
+  "toy_projects": {
+    "github":    "https://github.com/Apra-Labs/fleet-e2e-toy",
+    "bitbucket": "https://bitbucket.org/kumaakh/fleet-e2e-toy",
+    "azdevops":  "https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy"
+  }
+}
