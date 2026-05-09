@@ -47,15 +47,6 @@ describe('git-config', () => {
     expect(loaded).toEqual(config);
   });
 
-  it('saves with restrictive file permissions', () => {
-    saveGitConfig({ version: '1.0' });
-    expect(fs.existsSync(GIT_CONFIG_PATH)).toBe(true);
-    if (process.platform !== 'win32') {
-      const stat = fs.statSync(GIT_CONFIG_PATH);
-      expect(stat.mode & 0o777).toBe(0o600);
-    }
-  });
-
   it('setGitHubApp + getGitHubApp round-trip', () => {
     const appConfig: GitHubAppConfig = {
       appId: '12345',

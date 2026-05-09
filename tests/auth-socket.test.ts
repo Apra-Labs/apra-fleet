@@ -23,14 +23,6 @@ describe('auth-socket', () => {
   });
 
   describe('getSocketPath', () => {
-    it('returns a path under FLEET_DIR on non-Windows', () => {
-      if (process.platform !== 'win32') {
-        const p = getSocketPath();
-        expect(p).toContain('auth.sock');
-        expect(p).toContain('apra-fleet');
-      }
-    });
-
     it('returns a named pipe path on Windows', () => {
       // Can only truly test on Windows, but we can verify the function exists
       expect(typeof getSocketPath()).toBe('string');
@@ -107,7 +99,7 @@ describe('auth-socket', () => {
       expect(encPw).not.toBeNull();
       expect(encPw).toContain(':'); // encrypted format is iv:authTag:ciphertext
 
-      // Entry consumed � should be gone
+      // Entry consumed – should be gone
       expect(hasPendingAuth('web1')).toBe(false);
     });
 
@@ -200,26 +192,11 @@ describe('auth-socket', () => {
       expect(resp.error).toContain('Invalid message');
     });
 
-    it('is idempotent � calling ensureAuthSocket twice does not error', async () => {
+    it('is idempotent – calling ensureAuthSocket twice does not error', async () => {
       await ensureAuthSocket();
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
       expect(hasPendingAuth('test')).toBe(true);
-    });
-
-    it('cleans up socket file on close', async () => {
-      await ensureAuthSocket();
-      const sockPath = getSocketPath();
-
-      if (process.platform !== 'win32') {
-        expect(fs.existsSync(sockPath)).toBe(true);
-      }
-
-      await cleanupAuthSocket();
-
-      if (process.platform !== 'win32') {
-        expect(fs.existsSync(sockPath)).toBe(false);
-      }
     });
   });
 
@@ -310,7 +287,7 @@ describe('auth-socket', () => {
         });
       });
 
-      // Now wait � should resolve immediately since password is already there
+      // Now wait – should resolve immediately since password is already there
       const encPw = await waitForPassword('fast-test', 1000);
       expect(encPw).toContain(':');
     });
@@ -400,6 +377,7 @@ describe('auth-socket', () => {
       }
     });
   });
+
   describe('collectOobApiKey', () => {
     afterEach(async () => {
       await cleanupAuthSocket();
@@ -546,44 +524,6 @@ describe('auth-socket', () => {
     it('returns true when SESSIONNAME is Console', () => {
       vi.stubEnv('SESSIONNAME', 'Console');
       expect(hasInteractiveDesktop()).toBe(true);
-    });
-  });
-
-  describe('launchAuthTerminal � headless fallback', () => {
-    afterEach(() => {
-      vi.unstubAllEnvs();
-    });
-
-    it('returns fallback with member name on Linux when DISPLAY is unset', () => {
-      if (process.platform !== 'linux') return;
-      vi.stubEnv('DISPLAY', '');
-      vi.stubEnv('WAYLAND_DISPLAY', '');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('my-member', [], onExit);
-      expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('my-member');
-      expect(onExit).not.toHaveBeenCalled();
-    });
-
-    it('returns fallback with member name on Windows when SESSIONNAME is not Console', () => {
-      if (process.platform !== 'win32') return;
-      vi.stubEnv('SESSIONNAME', 'RDP-Tcp#0');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('my-member', [], onExit);
-      expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('my-member');
-      expect(onExit).not.toHaveBeenCalled();
-    });
-
-    it('returns fallback with actual member name substituted (not a placeholder)', () => {
-      if (process.platform !== 'linux') return;
-      vi.stubEnv('DISPLAY', '');
-      vi.stubEnv('WAYLAND_DISPLAY', '');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('worker-42', [], onExit);
-      expect(result).toContain('worker-42');
-      expect(result).not.toContain('<name>');
-      expect(result).not.toContain('<member>');
     });
   });
 

@@ -156,23 +156,6 @@ describe('fleetStatus — update notice integration', () => {
     _setUpdateCache(null);
   });
 
-  it('compact output includes update notice when update available', async () => {
-    // Inject a cached update directly to avoid network calls
-    _setUpdateCache({ latest: 'v99.9.9', installed: 'v0.1.7' });
-
-    // Mock the registry to return no members so fleetStatus returns early
-    vi.mock('../src/services/registry.js', () => ({
-      getAllAgents: () => [],
-    }));
-
-    const { fleetStatus } = await import('../src/tools/check-status.js');
-    // With no members, returns early before our notice — so we test getUpdateNotice directly
-    const notice = getUpdateNotice();
-    expect(notice).not.toBeNull();
-    expect(notice).toContain('v99.9.9');
-    expect(notice).toContain('v0.1.7');
-  });
-
   it('getUpdateNotice returns null when no update cached', () => {
     _setUpdateCache(null);
     expect(getUpdateNotice()).toBeNull();

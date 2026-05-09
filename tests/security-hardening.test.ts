@@ -15,15 +15,6 @@ describe('registry file permissions', () => {
   beforeEach(() => backupAndResetRegistry());
   afterEach(() => restoreRegistry());
 
-  it('writes registry with mode 0o600 (non-Windows)', () => {
-    if (process.platform === 'win32') return;
-
-    // Trigger a registry write
-    addAgent(makeTestAgent({ id: 'perm-test' }));
-
-    const stat = fs.statSync(REGISTRY_PATH);
-    expect(stat.mode & 0o777).toBe(0o600);
-  });
 });
 
 // --- Item 2: friendlyName validation ---

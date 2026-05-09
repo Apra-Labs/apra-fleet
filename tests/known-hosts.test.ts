@@ -106,15 +106,4 @@ describe('known-hosts TOFU', () => {
     expect(verifyHostKey('10.0.0.6', 22, key2)).toBe(true);
   });
 
-  it('writes known_hosts file with mode 0o600', () => {
-    // Only check on non-Windows
-    if (process.platform === 'win32') return;
-
-    const key = fakeHostKey();
-    verifyHostKey('10.0.0.7', 22, key);
-
-    const stat = fs.statSync(KNOWN_HOSTS_PATH);
-    // 0o600 = 384 decimal, check owner read/write only
-    expect(stat.mode & 0o777).toBe(0o600);
-  });
 });

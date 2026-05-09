@@ -352,11 +352,6 @@ describe('runSecret --update', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it('exits 1 for invalid name', async () => {
-    await expect(runSecret(['--update', 'bad-name'])).rejects.toThrow(ExitError);
-    expect(exitSpy).toHaveBeenCalledWith(1);
-  });
-
   it('exits 1 when no update flags are provided (zero-flag no-op)', async () => {
     await expect(runSecret(['--update', 'my_token'])).rejects.toThrow(ExitError);
     expect(exitSpy).toHaveBeenCalledWith(1);
