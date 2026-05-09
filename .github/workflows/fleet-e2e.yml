@@ -1,0 +1,161 @@
+name: Fleet E2E Test Suite
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Test suite to run (s1-s6). Start with s1 to validate setup.'
+        required: true
+        type: choice
+        options: [s1, s2, s3, s4, s5, s6]
+
+jobs:
+  e2e:
+    name: 'Fleet E2E – ${{ inputs.suite }}'
+    # Runner label is derived from suites.json pm.runner field.
+    # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
+    runs-on:
+      - self-hosted
+      - ${{ inputs.suite == 's1' && 'fleet-windows' || inputs.suite == 's2' && 'fleet-linux' || inputs.suite == 's3' && 'fleet-macos' || inputs.suite == 's4' && 'fleet-windows' || inputs.suite == 's5' && 'fleet-linux' || 'fleet-macos' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Step 1: Load suite config ──────────────────────────────────────────
+      - name: Load suite config
+        id: suite
+        shell: bash
+        run: |
+          SUITE='${{ inputs.suite }}'
+          CONFIG=$(cat .github/e2e/suites.json)
+          MEMBERS=$(cat .github/e2e/members.json)
+
+          PM_PROVIDER=$(echo $CONFIG | jq -r ".suites.$SUITE.pm.provider")
+          PM_OS=$(echo $CONFIG      | jq -r ".suites.$SUITE.pm.os")
+          DOER_OS=$(echo $CONFIG    | jq -r ".suites.$SUITE.doer.os")
+          DOER_PROV=$(echo $CONFIG  | jq -r ".suites.$SUITE.doer.provider")
+          REV_OS=$(echo $CONFIG     | jq -r ".suites.$SUITE.reviewer.os")
+          REV_PROV=$(echo $CONFIG   | jq -r ".suites.$SUITE.reviewer.provider")
+          VCS=$(echo $CONFIG        | jq -r ".suites.$SUITE.vcs")
+
+          DOER_HOST=$(echo $MEMBERS   | jq -r ".$DOER_OS.host")
+          DOER_USER=$(echo $MEMBERS   | jq -r ".$DOER_OS.username")
+          DOER_FOLDER=$(echo $MEMBERS | jq -r ".$DOER_OS.work_folder")
+          REV_HOST=$(echo $MEMBERS    | jq -r ".$REV_OS.host")
+          REV_USER=$(echo $MEMBERS    | jq -r ".$REV_OS.username")
+          REV_FOLDER=$(echo $MEMBERS  | jq -r ".$REV_OS.work_folder")
+          TOY_URL=$(echo $MEMBERS     | jq -r ".toy_projects.$VCS")
+
+          echo "pm_provider=$PM_PROVIDER"   >> $GITHUB_OUTPUT
+          echo "pm_os=$PM_OS"               >> $GITHUB_OUTPUT
+          echo "doer_os=$DOER_OS"           >> $GITHUB_OUTPUT
+          echo "doer_provider=$DOER_PROV"   >> $GITHUB_OUTPUT
+          echo "doer_host=$DOER_HOST"       >> $GITHUB_OUTPUT
+          echo "doer_user=$DOER_USER"       >> $GITHUB_OUTPUT
+          echo "doer_folder=$DOER_FOLDER"   >> $GITHUB_OUTPUT
+          echo "reviewer_os=$REV_OS"        >> $GITHUB_OUTPUT
+          echo "reviewer_provider=$REV_PROV" >> $GITHUB_OUTPUT
+          echo "reviewer_host=$REV_HOST"    >> $GITHUB_OUTPUT
+          echo "reviewer_user=$REV_USER"    >> $GITHUB_OUTPUT
+          echo "reviewer_folder=$REV_FOLDER" >> $GITHUB_OUTPUT
+          echo "vcs=$VCS"                   >> $GITHUB_OUTPUT
+          echo "toy_url=$TOY_URL"           >> $GITHUB_OUTPUT
+
+      # ── Step 2: Seed fleet credential store ───────────────────────────────
+      - name: Seed fleet credential store
+        shell: bash
+        run: |
+          echo "$E2E_BB_TOKEN"    | apra-fleet secret --set e2e_bb_token    --persist -y
+          echo "$E2E_BB_USER"     | apra-fleet secret --set e2e_bb_user     --persist -y
+          echo "$E2E_GH_TOKEN"    | apra-fleet secret --set e2e_gh_token    --persist -y
+          echo "$E2E_ADO_TOKEN"   | apra-fleet secret --set e2e_ado_token   --persist -y
+        env:
+          E2E_BB_TOKEN:   ${{ secrets.E2E_BB_TOKEN }}
+          E2E_BB_USER:    ${{ secrets.E2E_BB_USER }}
+          E2E_GH_TOKEN:   ${{ secrets.E2E_GH_TOKEN }}
+          E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
+
+      # ── Step 3: Build and install fleet binary on PM runner ───────────────
+      # Repo is already checked out — build the SEA binary from source so all
+      # three platforms (Windows/Linux/macOS x86_64) work without any artifact
+      # download. The binary name encodes platform+arch via package-sea.mjs.
+      - name: Build fleet binary on PM
+        shell: bash
+        run: |
+          npm ci
+          npm run build:binary
+          BIN=$(ls dist/apra-fleet-installer-* | grep -v '\.exe$\|\.blob$\|\.cjs$\|\.json$' | head -1)
+          [ -z "$BIN" ] && BIN=$(ls dist/apra-fleet-installer-*.exe 2>/dev/null | head -1)
+          chmod +x "$BIN" 2>/dev/null || true
+          sudo cp "$BIN" /usr/local/bin/apra-fleet 2>/dev/null || \
+            cp "$BIN" ~/bin/apra-fleet
+          apra-fleet --version
+
+
+      # ── Step 4: Render test script with suite context ─────────────────────
+      - name: Render test script
+        shell: bash
+        run: |
+          sed \
+            -e 's|{{SUITE_ID}}|${{ inputs.suite }}|g' \
+            -e 's|{{PM_OS}}|${{ steps.suite.outputs.pm_os }}|g' \
+            -e 's|{{PM_PROVIDER}}|${{ steps.suite.outputs.pm_provider }}|g' \
+            -e 's|{{DOER_HOST}}|${{ steps.suite.outputs.doer_host }}|g' \
+            -e 's|{{DOER_OS}}|${{ steps.suite.outputs.doer_os }}|g' \
+            -e 's|{{DOER_PROVIDER}}|${{ steps.suite.outputs.doer_provider }}|g' \
+            -e 's|{{REVIEWER_HOST}}|${{ steps.suite.outputs.reviewer_host }}|g' \
+            -e 's|{{REVIEWER_OS}}|${{ steps.suite.outputs.reviewer_os }}|g' \
+            -e 's|{{REVIEWER_PROVIDER}}|${{ steps.suite.outputs.reviewer_provider }}|g' \
+            -e 's|{{TOY_PROJECT_URL}}|${{ steps.suite.outputs.toy_url }}|g' \
+            -e 's|{{VCS}}|${{ steps.suite.outputs.vcs }}|g' \
+            -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite }}-${{ github.run_id }}|g' \
+            .github/e2e/test-script.md > rendered-test-script.md
+
+      # ── Step 5: Run the LLM-driven test ───────────────────────────────────
+      - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
+        shell: bash
+        run: |
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          if [ "$PROVIDER" = "claude" ]; then
+            claude \
+              -p "$(cat rendered-test-script.md)" \
+              --mcp-config .github/e2e/mcp.json \
+              --output-format json \
+              --max-turns 80 \
+              > raw-output.txt 2>&1
+          else
+            gemini \
+              --output-format stream-json \
+              --mcp-config .github/e2e/mcp.json \
+              -p "$(cat rendered-test-script.md)" \
+              > raw-output.txt 2>&1
+          fi
+
+          # Extract the JSON report from the output (last JSON block)
+          grep -o '{.*}' raw-output.txt | tail -1 > results.json || echo '{"overall":"FAIL","error":"no JSON in output"}' > results.json
+
+      # ── Step 6: Post summary ───────────────────────────────────────────────
+      - name: Post job summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Fleet E2E – Suite ${{ inputs.suite }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Status | Notes |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          cat results.json | jq -r '.results[] | "| \(.test) | \(.status) | \(.notes) |"' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "| error | FAIL | could not parse results |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          OVERALL=$(cat results.json | jq -r '.overall' 2>/dev/null || echo "FAIL")
+          echo "**Overall: $OVERALL**" >> $GITHUB_STEP_SUMMARY
+
+      # ── Step 7: Upload artifacts ───────────────────────────────────────────
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ inputs.suite }}-${{ github.run_id }}
+          path: |
+            results.json
+            raw-output.txt
+            rendered-test-script.md

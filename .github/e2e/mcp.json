@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "apra-fleet": {
+      "type": "stdio",
+      "command": "apra-fleet",
+      "args": []
+    }
+  }
+}

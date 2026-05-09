@@ -1,0 +1,40 @@
+{
+  "suites": {
+    "s1": {
+      "pm":       { "os": "windows", "provider": "claude",  "runner": "fleet-windows" },
+      "doer":     { "os": "linux",   "provider": "claude" },
+      "reviewer": { "os": "macos",   "provider": "claude" },
+      "vcs": "github"
+    },
+    "s2": {
+      "pm":       { "os": "linux",   "provider": "claude",  "runner": "fleet-linux" },
+      "doer":     { "os": "windows", "provider": "gemini" },
+      "reviewer": { "os": "macos",   "provider": "gemini" },
+      "vcs": "github"
+    },
+    "s3": {
+      "pm":       { "os": "macos",   "provider": "claude",  "runner": "fleet-macos" },
+      "doer":     { "os": "linux",   "provider": "gemini" },
+      "reviewer": { "os": "windows", "provider": "claude" },
+      "vcs": "bitbucket"
+    },
+    "s4": {
+      "pm":       { "os": "windows", "provider": "gemini",  "runner": "fleet-windows" },
+      "doer":     { "os": "macos",   "provider": "claude" },
+      "reviewer": { "os": "linux",   "provider": "gemini" },
+      "vcs": "bitbucket"
+    },
+    "s5": {
+      "pm":       { "os": "linux",   "provider": "gemini",  "runner": "fleet-linux" },
+      "doer":     { "os": "windows", "provider": "claude" },
+      "reviewer": { "os": "macos",   "provider": "claude" },
+      "vcs": "azdevops"
+    },
+    "s6": {
+      "pm":       { "os": "macos",   "provider": "gemini",  "runner": "fleet-macos" },
+      "doer":     { "os": "windows", "provider": "gemini" },
+      "reviewer": { "os": "linux",   "provider": "claude" },
+      "vcs": "azdevops"
+    }
+  }
+}
