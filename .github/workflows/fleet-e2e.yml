@@ -84,10 +84,12 @@ jobs:
       - name: Seed fleet credential store
         shell: bash
         run: |
-          echo "$E2E_BB_TOKEN"    | apra-fleet secret --set e2e_bb_token    --persist -y
-          echo "$E2E_BB_USER"     | apra-fleet secret --set e2e_bb_user     --persist -y
-          echo "$E2E_GH_TOKEN"    | apra-fleet secret --set e2e_gh_token    --persist -y
-          echo "$E2E_ADO_TOKEN"   | apra-fleet secret --set e2e_ado_token   --persist -y
+          FLEET_BIN=$(which apra-fleet 2>/dev/null || echo "$HOME/.apra-fleet/bin/apra-fleet")
+          if [ "$RUNNER_OS" = "Windows" ]; then FLEET_BIN=$(cygpath -w "$FLEET_BIN"); fi
+          echo "$E2E_BB_TOKEN"    | "$FLEET_BIN" secret --set e2e_bb_token    --persist -y
+          echo "$E2E_BB_USER"     | "$FLEET_BIN" secret --set e2e_bb_user     --persist -y
+          echo "$E2E_GH_TOKEN"    | "$FLEET_BIN" secret --set e2e_gh_token    --persist -y
+          echo "$E2E_ADO_TOKEN"   | "$FLEET_BIN" secret --set e2e_ado_token   --persist -y
         env:
           E2E_BB_TOKEN:   ${{ secrets.E2E_BB_TOKEN }}
           E2E_BB_USER:    ${{ secrets.E2E_BB_USER }}
@@ -121,7 +123,14 @@ jobs:
           # Resolve fleet binary path and write a runtime mcp config with the
           # full path — avoids PATH lookup failures in claude's subprocess env.
           FLEET_BIN=$(which apra-fleet 2>/dev/null || echo "$HOME/.apra-fleet/bin/apra-fleet")
-          printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN" > mcp-runtime.json
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            FLEET_BIN=$(cygpath -w "$FLEET_BIN")
+            FLEET_BIN_JSON=$(echo "$FLEET_BIN" | sed 's/\\/\\\\/g')
+          else
+            FLEET_BIN_JSON="$FLEET_BIN"
+          fi
+          printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN_JSON" > mcp-runtime.json
+          cat mcp-runtime.json
 
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
