@@ -36,10 +36,10 @@ Add a **Unix domain socket side-channel** with an **auto-launched terminal promp
 1. Starts a UDS listener at `~/.apra-fleet/data/auth.sock`
 2. Creates a pending auth request keyed by member name
 3. Auto-launches a new terminal window running `apra-fleet auth <member-name>`
-4. **Blocks** — the tool handler awaits a Promise that resolves when the password arrives
+4. **Blocks** — the tool handler awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation fires). It does **not** return a "Waiting..." intermediate result and does not require a second call from the LLM.
 5. The user sees a password prompt in the new window, types the password (hidden input)
 6. The password flows over the socket to the MCP server, resolving the waiting Promise
-7. Registration continues and completes — all in a single tool call
+7. Registration continues and completes — all in a single tool call. On success the tool returns `✓ NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
 
 The key insight: the MCP server itself launches the terminal and blocks until the password arrives over the socket, so Claude only sees the final registration result — never the password. No retry needed.
 
@@ -240,6 +240,7 @@ unnecessarily.
 | User provides password param AND runs CLI | Password param wins, pending request ignored |
 | No display / headless server | `launchAuthTerminal` catches failure, returns manual instructions |
 | Terminal emulator not found (Linux) | Falls through gnome-terminal → xterm → x-terminal-emulator → manual fallback |
+| User closes OOB window (Windows) | Close-signal handler resolves the pending Promise with a cancellation error immediately — no 5-minute hang |
 
 ## Test Coverage
 

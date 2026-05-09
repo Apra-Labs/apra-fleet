@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "apra-fleet": {
+      "type": "stdio",
+      "command": "C:\\Users\\akhil\\.apra-fleet\\bin\\apra-fleet.exe",
+      "args": []
+    }
+  }
+}

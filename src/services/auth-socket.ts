@@ -348,12 +348,24 @@ async function collectOobInput(
     const raceResult = await Promise.race([passwordPromise, cancellationPromise]);
 
     if (raceResult === null) {
-      // This case should not be hit if passwordPromise always wins on success,
-      // but as a safeguard, we wait for the password again.
-      const pw = await passwordPromise;
-      const persist = pendingRequests.get(memberName)?.persist;
-      pendingRequests.delete(memberName);
-      return { password: pw, persist };
+      // The terminal exited with code 0 (Windows `start /wait` always exits 0, even
+      // on user-close). Wait briefly for any in-flight socket message — if the user
+      // genuinely submitted, the password arrives within milliseconds of process exit.
+      // If nothing arrives in 500 ms, treat it as a user cancellation.
+      try {
+        const pw = await Promise.race([
+          passwordPromise,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('cancelled')), 500)),
+        ]);
+        const persist = pendingRequests.get(memberName)?.persist;
+        pendingRequests.delete(memberName);
+        return { password: pw, persist };
+      } catch {
+        const waiter = passwordWaiters.get(memberName);
+        if (waiter) { clearTimeout(waiter.timer); passwordWaiters.delete(memberName); }
+        pendingRequests.delete(memberName);
+        return { fallback: cancelledMessage };
+      }
     }
 
     // Handle the fallback case from the cancellation promise
@@ -596,7 +608,7 @@ export function launchAuthTerminal(
       // terminal window to be closed. This allows us to capture the exit event.
       // The title argument to start is required.
       const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
-      child = spawn('cmd', spawnArgs, { detached: true, stdio: 'ignore' });
+      child = spawn('cmd', spawnArgs, { stdio: 'ignore' });
       if (child.pid) {
         const pending = pendingRequests.get(memberName);
         if (pending) pending.spawned_pid = child.pid;

@@ -1,142 +1,69 @@
-# Requirements: OOB Credential Collection Unification
+# OOB Credential Collection
 
-## Context
-
-Secret/password collection from the user currently has two divergent code paths:
-
-1. `src/cli/secret.ts` — `apra-fleet secret --set NAME` — has the full reveal UX (already implemented)
-2. `src/cli/auth.ts` — `apra-fleet auth <name>` — bare `secureInput()`, no reveal UX
-
-Both are spawned as OOB terminal subprocesses by `auth-socket.ts`. The split is arbitrary:
-- The fleet server blocks in both cases (via socket wait)
-- API keys already route through `secret --set`; SSH passwords route through `auth` — inconsistent
-- The reveal UX lives inline in `handleSet()` in `secret.ts` rather than as a shared utility
-
-**Goal:** One shared `collectSecret()` function used by all credential collection paths. The `auth` subcommand handles `--confirm` (network egress yes/no) only — it is NOT a credential collection path.
+Out-of-band (OOB) credential collection is how fleet gathers secrets from the user without ever exposing them to the LLM, chat history, or logs. When a tool needs a secret it doesn't have, fleet opens a separate terminal window on the user's desktop, waits for input, and receives the value over a local socket — the secret never passes through the server's main process or any log file.
 
 ---
 
-## Credential Cases
+## When OOB Is Triggered
 
-### Named / Persistent
-User explicitly sets or updates a stored credential.
-- Entry: `apra-fleet secret --set <NAME>`
-- After collection: stored in credential vault
+OOB collection is triggered in two situations:
 
-### Anonymous / Transient
-A tool call needs a credential inline (SSH password, API key, token). Collected OOB, delivered over socket, discarded.
-- Entry: OOB terminal spawned automatically → `apra-fleet secret --set <NAME> --prompt "<context>"`
-- `--prompt` overrides the display text so the user sees human-readable context:
-  - SSH: `"SSH password for akhil@192.168.1.102"`
-  - GitHub PAT: `"Enter your GitHub PAT"`
-  - API key: `"Enter API key for claude"`
+**Explicit storage** — the user directly asks fleet to store a credential:
+```
+apra-fleet secret --set MyPass
+```
+
+**Implicit / on-demand** — a tool call needs a credential it doesn't have:
+- `register_member` with SSH password auth and no password provided → OOB opens with the SSH context as the prompt
+- Any `{{secure.NAME}}` reference where `NAME` is not yet in the store → OOB opens, user is asked whether to persist the value after entry
+- `credential_store_set` tool call → OOB always opens
+
+In all cases the UX is identical — only the prompt text changes to give the user context about what they're entering.
 
 ---
 
-## UX — Already Implemented in `secret.ts`
+## The Collection UX
 
-The reveal loop (v/Esc/Enter, in-place ANSI, dim hints) is already built and working in `handleSet()`. This is the reference implementation to extract into `collectSecret()` — do not change the behaviour.
+A terminal window opens with a masked input field. The prompt describes what is being collected (e.g. `SSH password for akhil@192.168.1.102` or `Enter value for MyPass`).
 
----
+To avoid typing errors, users can press **v** to reveal the entered value in place before confirming. Pressing **Esc** clears the field and re-enters from scratch. Pressing **Enter** confirms.
 
-## What Needs to Be Built
-
-### 1. `src/utils/oob-timeout.ts` — new
-```typescript
-export const OOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-```
-Single source of truth. Imported by both `auth-socket.ts` and `collect-secret.ts`. No other timeout values for OOB credential collection may be hardcoded.
-
-### 2. `src/utils/collect-secret.ts` — new
-Extract the reveal loop out of `handleSet()` verbatim into:
-```typescript
-export async function collectSecret(prompt: string): Promise<string>
-```
-Add one thing not currently in `handleSet()`: an inactivity timeout using `OOB_TIMEOUT_MS`:
-```typescript
-const timeout = setTimeout(() => {
-  process.stderr.write('\n  ⏱ Timed out. Closing.\n');
-  process.exit(1); // treated identically to Ctrl+C by the server
-}, OOB_TIMEOUT_MS);
-// ... collect ...
-clearTimeout(timeout); // clear on successful entry
-```
-
-### 3. `src/cli/secret.ts` — two changes
-- Add `--prompt <text>` flag: when present, use it as the display prompt instead of `"Enter value for <NAME>: "`
-- Replace the inline reveal loop in `handleSet()` with `collectSecret(prompt)`
-- Everything else (persist logic, socket delivery) unchanged
-
-### 4. `src/cli/auth.ts` — strip to `--confirm` only
-Remove the password/API key collection branches entirely. Only the `--confirm` (network egress yes/no) handler remains.
-
-### 5. `src/services/auth-socket.ts` — three changes
-
-**a) `getAuthCommand()` — unify routing**
-Currently routes SSH passwords to `auth <name>` and API keys to `secret --set <name>`. Route ALL credential collection to:
-```
-secret --set <name> [--prompt "<context>"] [--ask-persist]
-```
-Remove the `auth` routing for password/API key modes.
-
-**b) `waitForPassword()` — kill PID on timeout**
-When the timeout fires, kill the spawned terminal before rejecting:
-```typescript
-const pending = pendingRequests.get(memberName);
-if (pending?.spawned_pid) killProcess(pending.spawned_pid);
-```
-Also fix existing bug: `spawned_pid` is currently only stored for API key mode (lines 584, 600). Store it for ALL credential collection modes.
-
-**c) Add `cancelPendingAuth(memberName)` — new export**
-```typescript
-export function cancelPendingAuth(memberName: string): void {
-  const pending = pendingRequests.get(memberName);
-  if (pending?.spawned_pid) killProcess(pending.spawned_pid);
-  const waiter = passwordWaiters.get(memberName);
-  if (waiter) { clearTimeout(waiter.timer); waiter.reject(new Error('cancelled')); }
-  passwordWaiters.delete(memberName);
-  pendingRequests.delete(memberName);
-}
-```
-
-### 6. `src/tools/stop-prompt.ts`
-Call `cancelPendingAuth(memberName)` when stopping a member's prompt session, so any waiting OOB terminal is also killed.
+If the terminal is left idle for 5 minutes without input it closes automatically — the waiting tool call fails cleanly, the same as if the user had pressed Ctrl+C.
 
 ---
 
-## OOB Wait Exit Conditions
+## How the Secret Is Delivered
 
-All conditions reduce to: **kill spawned PID → waiter resolved/rejected → pending request cleared**.
+Once confirmed, the value is sent over a local socket directly to the waiting fleet server process. It is never written to disk unencrypted, never appears in any log, and is zeroed from memory immediately after delivery. The terminal closes.
 
-| # | Condition | Who handles it |
-|---|-----------|----------------|
-| 1 | User enters value | Subprocess delivers via socket → waiter resolved |
-| 2 | User Ctrl+C | Subprocess exits code 1 → cancellationPromise rejects |
-| 3 | `secret --set` from another terminal | Any process delivers via socket → waiter resolved |
-| 4 | Server-side timeout | `waitForPassword` timer → `killProcess(spawned_pid)` → waiter rejected |
-| 5 | LLM StopTask / MCP disconnect | `cancelPendingAuth()` → `killProcess(spawned_pid)` → waiter rejected |
-| 6 | Subprocess inactivity | `setTimeout(process.exit(1), OOB_TIMEOUT_MS)` in `collectSecret()` → same as case 2 |
+If the user opts to persist the value (either via `--persist` flag or when prompted), it is encrypted and stored in the local credential vault. Persisted credentials are referenced as `{{secure.NAME}}` in subsequent tool calls.
 
 ---
 
-## Files to Change
+## Persistence and Network Policy
 
-| File | Change |
-|------|--------|
-| `src/utils/oob-timeout.ts` | **new** — `OOB_TIMEOUT_MS` constant |
-| `src/utils/collect-secret.ts` | **new** — extract reveal loop + add inactivity timeout |
-| `src/cli/secret.ts` | add `--prompt` flag; call `collectSecret()` |
-| `src/cli/auth.ts` | strip to `--confirm` only |
-| `src/services/auth-socket.ts` | unify routing; store `spawned_pid` always; kill PID on timeout; add `cancelPendingAuth` |
-| `src/tools/stop-prompt.ts` | call `cancelPendingAuth` on stop |
-| `tests/secret-cli.test.ts` | mock `collectSecret` instead of inline stdin stubs |
-| `tests/auth-socket.test.ts` | update command assertions; add tests for `cancelPendingAuth`, PID kill on timeout |
+A credential can be **session-only** (discarded after delivery) or **persistent** (survives server restarts). When stored persistently, a **network policy** controls how it may be used:
+
+| Policy | Effect |
+|--------|--------|
+| `allow` (default) | No restriction — credential can be used in any command |
+| `confirm` | Fleet prompts before allowing a command that uses this credential to make network calls |
+| `deny` | Commands that would make network calls while using this credential are blocked |
+
+The policy can be updated at any time without re-entering the secret:
+```
+apra-fleet secret --update MyPass --deny
+```
 
 ---
 
-## What Does NOT Change
+## Exit Conditions
 
-- The reveal UX behaviour (already correct in `secret.ts`)
-- The socket protocol (IPC between subprocess and server)
-- The `--confirm` (network egress) flow
-- The `--persist` and `--ask-persist` flags on `secret --set`
+The OOB wait resolves in any of these ways — all are handled identically by the server:
+
+1. **User enters value** — delivered via socket, waiter resolved, terminal closes
+2. **User presses Ctrl+C** — terminal exits, tool call fails with a clear error
+3. **Value delivered from another terminal** — another `apra-fleet secret --set NAME` call delivers the value; the auto-spawned terminal is closed automatically
+4. **Server-side timeout** — server gives up after 5 minutes, closes the terminal, tool call fails
+5. **LLM session stopped** — if the session that triggered OOB is cancelled, the terminal is killed immediately
+6. **Subprocess inactivity** — terminal auto-closes after 5 minutes of no input (same outcome as Ctrl+C)

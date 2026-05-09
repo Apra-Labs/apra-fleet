@@ -20,8 +20,8 @@ The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS
 2. `collectOobInput` registers a pending auth request with a 10-minute TTL via `createPendingAuth()`.
 3. It calls `launchAuthTerminal()` to open a terminal window running `apra-fleet auth <memberName>`.
 4. The launched process prompts the user, reads input with masked display (LLM cannot see it), and sends the value over the UDS as a JSON message.
-5. `waitForPassword()` races the socket delivery against a cancellation signal.
-6. On receipt, the credential is consumed from the pending store and returned to the caller.
+5. `collectOobInput` **blocks** — `waitForPassword()` awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation/timeout fires). The call does not return early with a "Waiting..." status.
+6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `✓ NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
 
 **Key property:** The UDS socket is a filesystem object — no GUI or display server is required to write to it. Any process on the machine, including one launched in a second SSH terminal, can deliver credentials.
 
@@ -67,6 +67,8 @@ export function hasInteractiveDesktop(): boolean {
 Probing (attempting a spawn and checking exit code) is what caused the misleading error in the first place. Env var checks are fast, zero-side-effect, and accurate for the cases that matter: X11/Wayland forwarding sets `$DISPLAY`, and Windows service contexts have a distinct `SESSIONNAME`.
 
 Edge case accepted: X11 forwarding where `$DISPLAY` is set but the forwarded display is unreachable. This is acceptable — if the terminal fails to launch, existing fallback logic catches it, and a user with X11 forwarding active almost certainly has a working display.
+
+**Windows OOB window close:** Closing the OOB terminal window on Windows now returns immediately with a cancellation message. Previously, closing the window caused the tool call to hang for up to 5 minutes waiting for a password that would never arrive. The fix attaches a close-signal handler so that window dismissal resolves the pending Promise with a cancellation error immediately.
 
 ---
 

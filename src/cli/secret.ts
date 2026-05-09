@@ -9,7 +9,7 @@ const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 export async function runSecret(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     console.error('Usage:');
-    console.error('  apra-fleet secret --set <name> [--persist]');
+    console.error('  apra-fleet secret --set <name> [--persist] [-y]');
     console.error('  apra-fleet secret --list');
     console.error('  apra-fleet secret --update <name> [--members <list>] [--ttl <seconds>] [--allow|--deny]');
     console.error('  apra-fleet secret --delete <name>');
@@ -172,11 +172,12 @@ async function handleSet(args: string[]): Promise<void> {
   const name = args[0];
   const persist = args.includes('--persist');
   const askPersist = args.includes('--ask-persist');
+  const nonInteractive = args.includes('-y');
   const promptIdx = args.indexOf('--prompt');
   const customPrompt = promptIdx !== -1 ? args[promptIdx + 1] : undefined;
 
   if (!name) {
-    console.error('Usage: apra-fleet secret --set <name> [--persist]');
+    console.error('Usage: apra-fleet secret --set <name> [--persist] [-y]');
     process.exit(1);
   }
 
@@ -186,8 +187,27 @@ async function handleSet(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const displayPrompt = customPrompt ?? `Enter value for ${name}`;
-  let secretValue = await collectSecret(displayPrompt);
+  let secretValue: string;
+  if (nonInteractive) {
+    secretValue = await new Promise<string>((resolve, reject) => {
+      let data = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', chunk => { data += chunk; });
+      process.stdin.on('end', () => {
+        const trimmed = data.trim();
+        if (!trimmed) {
+          console.error('✗ Empty value on stdin. Aborting.');
+          process.exit(1);
+        }
+        resolve(trimmed);
+      });
+      process.stdin.on('error', reject);
+      process.stdin.resume();
+    });
+  } else {
+    const displayPrompt = customPrompt ?? `Enter value for ${name}`;
+    secretValue = await collectSecret(displayPrompt);
+  }
 
   let finalPersist = persist;
   if (askPersist && !persist) {
