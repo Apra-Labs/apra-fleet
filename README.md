@@ -354,7 +354,7 @@ echo "$TOKEN" | apra-fleet secret --set github_pat --persist -y
 - `provision_vcs_auth` — VCS token fields (GitHub PAT, Bitbucket token, Azure DevOps PAT)
 - `provision_auth` — LLM API key fields
 
-`execute_prompt` does **not** support `{{secure.NAME}}` — secrets must never be passed to LLM prompts. In `execute_prompt`, reference credentials by name only (e.g. `"authenticate using credential github_pat"`); the member resolves the token in its own `execute_command` calls.
+`execute_prompt` does **not** support `{{secure.NAME}}` — secrets must never be passed to LLM prompts. When a task requires a secret, the PM uses `execute_command` with `{{secure.NAME}}` to run the authenticated command directly; members have no access to the credential store or fleet tools.
 
 **Credential store tools:**
 
