@@ -71,8 +71,11 @@ jobs:
         run: |
           npm ci
           npm run build:binary
-          BIN=$(ls dist/apra-fleet-installer-* | grep -v '\.blob$\|\.cjs$\|\.json$' | grep -v '^.*\.exe$' | head -1)
-          [ -z "$BIN" ] && BIN=$(ls dist/apra-fleet-installer-*.exe 2>/dev/null | head -1)
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN=$(ls dist/apra-fleet-installer-*.exe | head -1)
+          else
+            BIN=$(ls dist/apra-fleet-installer-* | grep -v -E '\.(blob|cjs|json|exe)$' | head -1)
+          fi
           chmod +x "$BIN" 2>/dev/null || true
           "$BIN" install --force
           apra-fleet --version
