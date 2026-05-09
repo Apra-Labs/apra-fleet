@@ -482,6 +482,61 @@ describe('auth-socket', () => {
     });
   });
 
+  describe('collectOobApiKey — 500ms grace period', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('returns password when it arrives within 500ms of terminal exit (code 0)', async () => {
+      // Simulate terminal closing immediately with code 0
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      const resultPromise = collectOobApiKey('grace-member', 'test_tool', { launchFn });
+
+      // Password arrives 100ms later
+      await new Promise(r => setTimeout(r, 100));
+      await sendPassword(getSocketPath(), 'grace-member', 'grace-secret');
+
+      const result = await resultPromise;
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+      expect(hasPendingAuth('grace-member')).toBe(false);
+    });
+
+    it('returns fallback when no password arrives within 500ms of terminal exit', async () => {
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      // Shorten the waitTimeoutMs for the overall call but the 500ms is hardcoded in src
+      const result = await collectOobApiKey('fail-grace', 'test_tool', { launchFn });
+      
+      expect('fallback' in result).toBe(true);
+      if ('fallback' in result) {
+        expect(result.fallback).toContain('cancelled');
+      }
+      expect(hasPendingAuth('fail-grace')).toBe(false);
+    });
+
+    it('cleans up waiter and pendingRequests on 500ms timeout', async () => {
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      await collectOobApiKey('cleanup-grace', 'test_tool', { launchFn });
+
+      expect(hasPendingAuth('cleanup-grace')).toBe(false);
+      // Waiters are internal but we can verify by starting a new one without conflict
+      createPendingAuth('cleanup-grace');
+      expect(hasPendingAuth('cleanup-grace')).toBe(true);
+    });
+  });
+
   describe('hasGraphicalDisplay', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
