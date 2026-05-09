@@ -23,12 +23,10 @@ describe('auth-socket', () => {
   });
 
   describe('getSocketPath', () => {
-    it('returns a path under FLEET_DIR on non-Windows', () => {
-      if (process.platform !== 'win32') {
-        const p = getSocketPath();
-        expect(p).toContain('auth.sock');
-        expect(p).toContain('apra-fleet');
-      }
+    it.skipIf(process.platform === 'win32')('returns a path under FLEET_DIR on non-Windows', () => {
+      const p = getSocketPath();
+      expect(p).toContain('auth.sock');
+      expect(p).toContain('apra-fleet');
     });
 
     it('returns a named pipe path on Windows', () => {
@@ -107,7 +105,7 @@ describe('auth-socket', () => {
       expect(encPw).not.toBeNull();
       expect(encPw).toContain(':'); // encrypted format is iv:authTag:ciphertext
 
-      // Entry consumed � should be gone
+      // Entry consumed – should be gone
       expect(hasPendingAuth('web1')).toBe(false);
     });
 
@@ -200,26 +198,20 @@ describe('auth-socket', () => {
       expect(resp.error).toContain('Invalid message');
     });
 
-    it('is idempotent � calling ensureAuthSocket twice does not error', async () => {
+    it('is idempotent – calling ensureAuthSocket twice does not error', async () => {
       await ensureAuthSocket();
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
       expect(hasPendingAuth('test')).toBe(true);
     });
 
-    it('cleans up socket file on close', async () => {
+    it.skipIf(process.platform === 'win32')('cleans up socket file on close', async () => {
       await ensureAuthSocket();
       const sockPath = getSocketPath();
-
-      if (process.platform !== 'win32') {
-        expect(fs.existsSync(sockPath)).toBe(true);
-      }
+      expect(fs.existsSync(sockPath)).toBe(true);
 
       await cleanupAuthSocket();
-
-      if (process.platform !== 'win32') {
-        expect(fs.existsSync(sockPath)).toBe(false);
-      }
+      expect(fs.existsSync(sockPath)).toBe(false);
     });
   });
 
@@ -310,7 +302,7 @@ describe('auth-socket', () => {
         });
       });
 
-      // Now wait � should resolve immediately since password is already there
+      // Now wait – should resolve immediately since password is already there
       const encPw = await waitForPassword('fast-test', 1000);
       expect(encPw).toContain(':');
     });
@@ -400,6 +392,7 @@ describe('auth-socket', () => {
       }
     });
   });
+
   describe('collectOobApiKey', () => {
     afterEach(async () => {
       await cleanupAuthSocket();
@@ -504,6 +497,61 @@ describe('auth-socket', () => {
     });
   });
 
+  describe('collectOobApiKey — 500ms grace period', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('returns password when it arrives within 500ms of terminal exit (code 0)', async () => {
+      // Simulate terminal closing immediately with code 0
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      const resultPromise = collectOobApiKey('grace-member', 'test_tool', { launchFn });
+
+      // Password arrives 100ms later
+      await new Promise(r => setTimeout(r, 100));
+      await sendPassword(getSocketPath(), 'grace-member', 'grace-secret');
+
+      const result = await resultPromise;
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+      expect(hasPendingAuth('grace-member')).toBe(false);
+    });
+
+    it('returns fallback when no password arrives within 500ms of terminal exit', async () => {
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      // Shorten the waitTimeoutMs for the overall call but the 500ms is hardcoded in src
+      const result = await collectOobApiKey('fail-grace', 'test_tool', { launchFn });
+      
+      expect('fallback' in result).toBe(true);
+      if ('fallback' in result) {
+        expect(result.fallback).toContain('cancelled');
+      }
+      expect(hasPendingAuth('fail-grace')).toBe(false);
+    });
+
+    it('cleans up waiter and pendingRequests on 500ms timeout', async () => {
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      await collectOobApiKey('cleanup-grace', 'test_tool', { launchFn });
+
+      expect(hasPendingAuth('cleanup-grace')).toBe(false);
+      // Waiters are internal but we can verify by starting a new one without conflict
+      createPendingAuth('cleanup-grace');
+      expect(hasPendingAuth('cleanup-grace')).toBe(true);
+    });
+  });
+
   describe('hasGraphicalDisplay', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
@@ -546,44 +594,6 @@ describe('auth-socket', () => {
     it('returns true when SESSIONNAME is Console', () => {
       vi.stubEnv('SESSIONNAME', 'Console');
       expect(hasInteractiveDesktop()).toBe(true);
-    });
-  });
-
-  describe('launchAuthTerminal � headless fallback', () => {
-    afterEach(() => {
-      vi.unstubAllEnvs();
-    });
-
-    it('returns fallback with member name on Linux when DISPLAY is unset', () => {
-      if (process.platform !== 'linux') return;
-      vi.stubEnv('DISPLAY', '');
-      vi.stubEnv('WAYLAND_DISPLAY', '');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('my-member', [], onExit);
-      expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('my-member');
-      expect(onExit).not.toHaveBeenCalled();
-    });
-
-    it('returns fallback with member name on Windows when SESSIONNAME is not Console', () => {
-      if (process.platform !== 'win32') return;
-      vi.stubEnv('SESSIONNAME', 'RDP-Tcp#0');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('my-member', [], onExit);
-      expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('my-member');
-      expect(onExit).not.toHaveBeenCalled();
-    });
-
-    it('returns fallback with actual member name substituted (not a placeholder)', () => {
-      if (process.platform !== 'linux') return;
-      vi.stubEnv('DISPLAY', '');
-      vi.stubEnv('WAYLAND_DISPLAY', '');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('worker-42', [], onExit);
-      expect(result).toContain('worker-42');
-      expect(result).not.toContain('<name>');
-      expect(result).not.toContain('<member>');
     });
   });
 

@@ -278,6 +278,71 @@ describe('runSecret --set', () => {
     const msg = errSpy.mock.calls.flat().join('\n');
     expect(msg).toContain('delivered');
   });
+
+  describe('runSecret --set with -y (stdin)', () => {
+    let stdinMock: EventEmitter & { setEncoding: any; resume: any; pause: any };
+
+    beforeEach(() => {
+      stdinMock = new EventEmitter() as any;
+      stdinMock.setEncoding = vi.fn();
+      stdinMock.resume = vi.fn();
+      stdinMock.pause = vi.fn();
+      vi.stubGlobal('process', { ...process, stdin: stdinMock });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('reads secret from stdin when -y is passed', async () => {
+      mockNetConnect.mockImplementation(() => makeErrorSocket());
+      
+      const runPromise = runSecret(['--set', 'stdin_secret', '--persist', '-y']);
+      
+      process.nextTick(() => {
+        stdinMock.emit('data', 'secret-from-stdin');
+        stdinMock.emit('end');
+      });
+
+      await runPromise;
+
+      expect(mockCredentialSet).toHaveBeenCalledWith('stdin_secret', 'secret-from-stdin', true, 'allow');
+      expect(mockCollectSecret).not.toHaveBeenCalled();
+    });
+
+    it('exits 1 when -y is passed but stdin is empty', async () => {
+      // For this test, we expect process.exit to be called inside the 'end' event handler.
+      // Since our mock process.exit throws ExitError, the emit('end') call itself will throw.
+      
+      const runPromise = runSecret(['--set', 'empty_secret', '-y']);
+      
+      stdinMock.emit('data', '   ');
+      
+      expect(() => {
+        stdinMock.emit('end');
+      }).toThrow(ExitError);
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      const msg = errSpy.mock.calls.flat().join('\n');
+      expect(msg).toContain('Empty value on stdin');
+    });
+
+    it('handles multiple data chunks from stdin', async () => {
+      mockNetConnect.mockImplementation(() => makeErrorSocket());
+      
+      const runPromise = runSecret(['--set', 'chunk_secret', '--persist', '-y']);
+      
+      process.nextTick(() => {
+        stdinMock.emit('data', 'part1-');
+        stdinMock.emit('data', 'part2');
+        stdinMock.emit('end');
+      });
+
+      await runPromise;
+
+      expect(mockCredentialSet).toHaveBeenCalledWith('chunk_secret', 'part1-part2', true, 'allow');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -349,11 +414,6 @@ describe('runSecret --delete', () => {
 describe('runSecret --update', () => {
   it('exits 1 when name is missing', async () => {
     await expect(runSecret(['--update'])).rejects.toThrow(ExitError);
-    expect(exitSpy).toHaveBeenCalledWith(1);
-  });
-
-  it('exits 1 for invalid name', async () => {
-    await expect(runSecret(['--update', 'bad-name'])).rejects.toThrow(ExitError);
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 

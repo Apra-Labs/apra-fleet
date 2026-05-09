@@ -15,9 +15,7 @@ describe('registry file permissions', () => {
   beforeEach(() => backupAndResetRegistry());
   afterEach(() => restoreRegistry());
 
-  it('writes registry with mode 0o600 (non-Windows)', () => {
-    if (process.platform === 'win32') return;
-
+  it.skipIf(process.platform === 'win32')('writes registry with mode 0o600 (non-Windows)', () => {
     // Trigger a registry write
     addAgent(makeTestAgent({ id: 'perm-test' }));
 

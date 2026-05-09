@@ -3,12 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { receiveFiles } from '../src/tools/receive-files.js';
-import { registry } from '../src/services/registry.js';
 import { makeTestLocalAgent, makeTestAgent } from './test-helpers.js';
 import * as sftp from '../src/services/sftp.js';
 import { resolveMember } from '../src/utils/resolve-member.js';
 
-vi.mock('../src/services/registry.js');
 vi.mock('../src/services/sftp.js');
 vi.mock('../src/utils/resolve-member.js');
 
