@@ -296,10 +296,10 @@ else: print('{\"test\":\"T6\",\"status\":\"FAIL\",\"notes\":\"no JSON found in s
           echo "T6 safety result: $(cat t6-result.json)"
 
       # ── Step 5c: Collect PM fleet log ─────────────────────────────────────
-      # Grab the fleet-<PID>.log that was active during this run. The stall
-      # detector writes member session log paths into this file, making it the
-      # anchor for post-mortem analysis. Member session logs are pulled by the
-      # PM Claude during T6.0 and land in logs/ via receive_files.
+      # Grab the fleet-<PID>.log with the most content from this run.
+      # install --force creates a short daemon stub log; the MCP subprocess
+      # started by claude -p has the actual execute_prompt records and is
+      # always larger. Taking max-size picks the right log.
       - name: Collect PM fleet log
         if: always()
         shell: bash
@@ -310,13 +310,110 @@ else: print('{\"test\":\"T6\",\"status\":\"FAIL\",\"notes\":\"no JSON found in s
           else
             LOG_DIR="$HOME/.apra-fleet/data/logs"
           fi
-          FLEET_LOG=$(ls -t "$LOG_DIR"/fleet-*.log 2>/dev/null | head -1)
+          # Pick the fleet log with the most bytes (the MCP subprocess log,
+          # not the tiny daemon startup stub created by install --force).
+          FLEET_LOG=$(ls "$LOG_DIR"/fleet-*.log 2>/dev/null \
+            | xargs -I{} sh -c 'echo "$(wc -c < {}) {}"' 2>/dev/null \
+            | sort -rn | awk 'NR==1{print $2}')
           if [ -n "$FLEET_LOG" ]; then
             cp "$FLEET_LOG" logs/fleet-pm.log
-            echo "Collected: $(basename $FLEET_LOG) ($(wc -c < "$FLEET_LOG") bytes)"
+            echo "Collected: $(basename $FLEET_LOG) ($(wc -c < "$FLEET_LOG") bytes, $(wc -l < "$FLEET_LOG") lines)"
           else
             echo "No fleet log found in $LOG_DIR"
           fi
+
+      # ── Step 5d: Extract telemetry ────────────────────────────────────────
+      # Compute wall/active time and token counts for PM, doer, and reviewer
+      # from the artifacts collected so far:
+      #   PM      → raw-output.txt (stream-json assistant events + result duration)
+      #   doer    → logs/doer-session.jsonl (Claude session JSONL)
+      #   reviewer→ logs/reviewer-session.jsonl
+      # Inject telemetry into results.json so it shows in the step summary.
+      - name: Extract telemetry
+        if: always()
+        shell: bash
+        run: |
+          node - << 'JSEOF'
+          const fs = require('fs');
+
+          function parseSessionJsonl(path) {
+            let tokIn=0, tokOut=0, firstTs=null, lastTs=null;
+            if (!fs.existsSync(path)) return {tokIn,tokOut,firstTs,lastTs};
+            const lines = fs.readFileSync(path,'utf8').split('\n').filter(Boolean);
+            for (const l of lines) {
+              try {
+                const obj = JSON.parse(l);
+                if (obj.type === 'assistant' && obj.message?.usage) {
+                  tokIn  += obj.message.usage.input_tokens  || 0;
+                  tokOut += obj.message.usage.output_tokens || 0;
+                }
+                if (obj.timestamp) {
+                  const t = new Date(obj.timestamp).getTime();
+                  if (!firstTs || t < firstTs) firstTs = t;
+                  if (!lastTs  || t > lastTs)  lastTs  = t;
+                }
+              } catch {}
+            }
+            return {tokIn, tokOut, firstTs, lastTs};
+          }
+
+          function parsePmRawOutput(path) {
+            let tokIn=0, tokOut=0, wallMs=0, firstTs=null, lastTs=null;
+            if (!fs.existsSync(path)) return {tokIn,tokOut,wallMs,firstTs,lastTs};
+            const lines = fs.readFileSync(path,'utf8').split('\n').filter(Boolean);
+            for (const l of lines) {
+              try {
+                const obj = JSON.parse(l);
+                // Sum tokens across all assistant turns
+                if (obj.type === 'assistant' && obj.message?.usage) {
+                  tokIn  += obj.message.usage.input_tokens  || 0;
+                  tokOut += obj.message.usage.output_tokens || 0;
+                }
+                // Wall time from result event duration_ms
+                if (obj.type === 'result' && obj.duration_ms) {
+                  wallMs = Math.max(wallMs, obj.duration_ms);
+                }
+                if (obj.timestamp) {
+                  const t = new Date(obj.timestamp).getTime();
+                  if (!firstTs || t < firstTs) firstTs = t;
+                  if (!lastTs  || t > lastTs)  lastTs  = t;
+                }
+              } catch {}
+            }
+            return {tokIn, tokOut, wallMs, firstTs, lastTs};
+          }
+
+          const pm   = parsePmRawOutput('raw-output.txt');
+          const doer = parseSessionJsonl('logs/doer-session.jsonl');
+          const rev  = parseSessionJsonl('logs/reviewer-session.jsonl');
+
+          const pmWall   = pm.firstTs && pm.lastTs ? Math.round((pm.lastTs - pm.firstTs)/1000) : Math.round(pm.wallMs/1000);
+          const pmActive = Math.round(pm.wallMs / 1000);
+          const doerWall = doer.firstTs && doer.lastTs ? Math.round((doer.lastTs - doer.firstTs)/1000) : 0;
+          const revWall  = rev.firstTs  && rev.lastTs  ? Math.round((rev.lastTs  - rev.firstTs)/1000)  : 0;
+
+          const telemetry = [
+            { role:'pm',       wall_time_s:pmWall,   active_time_s:pmActive, tokens_in:pm.tokIn,   tokens_out:pm.tokOut,   tokens_total:pm.tokIn+pm.tokOut   },
+            { role:'doer',     wall_time_s:doerWall, active_time_s:doerWall, tokens_in:doer.tokIn, tokens_out:doer.tokOut, tokens_total:doer.tokIn+doer.tokOut },
+            { role:'reviewer', wall_time_s:revWall,  active_time_s:revWall,  tokens_in:rev.tokIn,  tokens_out:rev.tokOut,  tokens_total:rev.tokIn+rev.tokOut   },
+          ];
+
+          // Inject into results.json
+          if (fs.existsSync('results.json')) {
+            try {
+              const r = JSON.parse(fs.readFileSync('results.json','utf8'));
+              r.telemetry = telemetry;
+              fs.writeFileSync('results.json', JSON.stringify(r, null, 2));
+            } catch {}
+          }
+
+          // Print table
+          console.log('\nTelemetry:');
+          console.log('Role        Wall(s)  Active(s)  Tok-in   Tok-out   Total');
+          for (const t of telemetry) {
+            console.log(`${t.role.padEnd(12)}${String(t.wall_time_s).padStart(7)}  ${String(t.active_time_s).padStart(9)}  ${String(t.tokens_in).padStart(7)}  ${String(t.tokens_out).padStart(8)}  ${String(t.tokens_total).padStart(7)}`);
+          }
+          JSEOF
 
       # ── Step 6: Post summary ───────────────────────────────────────────────
       - name: Post job summary
@@ -338,6 +435,16 @@ else: print('{\"test\":\"T6\",\"status\":\"FAIL\",\"notes\":\"no JSON found in s
           echo "" >> $GITHUB_STEP_SUMMARY
           OVERALL=$(cat results.json | jq -r '.overall' 2>/dev/null || echo "FAIL")
           echo "**Overall: $OVERALL**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Telemetry table
+          if jq -e '.telemetry' results.json > /dev/null 2>&1; then
+            echo "### Telemetry" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Role | Wall (s) | Active (s) | Tokens In | Tokens Out | Total |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|----------|------------|-----------|------------|-------|" >> $GITHUB_STEP_SUMMARY
+            cat results.json | jq -r '.telemetry[] | "| \(.role) | \(.wall_time_s) | \(.active_time_s) | \(.tokens_in) | \(.tokens_out) | \(.tokens_total) |"' >> $GITHUB_STEP_SUMMARY 2>/dev/null
+          fi
 
       # ── Step 7: Upload artifacts ───────────────────────────────────────────
       - name: Upload results
