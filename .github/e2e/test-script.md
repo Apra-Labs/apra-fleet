@@ -73,7 +73,7 @@ Verify it no longer appears in `credential_store_list`.
 Run `execute_prompt` on each member with this prompt:
 > "What operating system are you running on? Reply in exactly one sentence."
 
-Use `model_tier="economy"` for both calls — this is a trivial query and does not need a premium model.
+Use `model="cheap"` for both calls — this is a trivial query and does not need a premium model.
 
 Verify each response names the correct OS ({{DOER_OS}} and {{REVIEWER_OS}}).
 
