@@ -34,8 +34,8 @@ Register both members (doer and reviewer) as remote SSH members.
   member's LLM can approve its own tool calls without pausing to prompt.
 
 After registering, provision LLM auth on each member:
-- Provision Claude on both
-- Provision Gemini on both
+- Always provision Claude on both members.
+- Provision Gemini on a member **only if** that member's provider (shown above) is `gemini`. Skip Gemini provisioning for members whose provider is `claude`.
 
 Verify both members appear online in `fleet_status`.
 
@@ -75,12 +75,21 @@ Receive it back. Verify the content is identical.
 
 ## T3: Credential Store
 
-Create a credential named `e2e_test_cred` with a dummy value via `credential_store_set`.
-Verify it appears in `credential_store_list`.
-Update its network policy to `confirm` via `credential_store_update`.
-Verify the policy changed.
-Delete it via `credential_store_delete`.
-Verify it no longer appears in `credential_store_list`.
+Test the fleet credential store CRUD operations. Because `credential_store_set` opens a browser
+window that cannot be used in headless CI, use the fleet CLI via `execute_command` on the PM's
+own local member (or via any `execute_command` that runs locally) to seed the test credential,
+then exercise the MCP tools for the remaining operations.
+
+1. **Create** — run `execute_command` on a member with:
+   ```
+   echo "e2e-dummy-value" | apra-fleet secret --set e2e_test_cred --persist -y
+   ```
+   (If `apra-fleet` is not on PATH, use the full path `$HOME/.apra-fleet/bin/apra-fleet`.)
+2. **Read** — call `credential_store_list` and verify `e2e_test_cred` appears.
+3. **Update** — call `credential_store_update` with `name="e2e_test_cred"` and `network_policy="confirm"`.
+   Verify the policy changed by calling `credential_store_list` again.
+4. **Delete** — call `credential_store_delete` with `name="e2e_test_cred"`.
+   Verify it no longer appears in `credential_store_list`.
 
 **Record:** Did all 4 CRUD operations succeed?
 

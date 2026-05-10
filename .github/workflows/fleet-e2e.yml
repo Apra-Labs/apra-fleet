@@ -177,9 +177,38 @@ jobs:
             > results-meta.json 2>/dev/null \
             || echo '{"result":"","error":true,"terminal_reason":"no_result_line"}' > results-meta.json
           # The actual test result JSON is embedded inside the assistant's final message text.
-          # Extract the first {...} block from results-meta.json's "result" field.
-          jq -r '.result' results-meta.json | grep -oE '\{[^{}]*"overall"[^{}]*\}' | tail -1 > results.json \
+          # Use Python to extract the last valid JSON object containing "overall" from the result text.
+          jq -r '.result' results-meta.json 2>/dev/null | python3 -c "
+import sys, json, re
+text = sys.stdin.read()
+# Find the last fenced json block first
+blocks = re.findall(r'\x60{3}json\s*([\s\S]*?)\x60{3}', text)
+for b in reversed(blocks):
+    try:
+        obj = json.loads(b.strip())
+        if 'overall' in obj:
+            print(json.dumps(obj)); sys.exit(0)
+    except: pass
+# Fallback: find last JSON object with 'overall' key using depth tracking
+depth=0; start=-1; best=None
+for i,c in enumerate(text):
+    if c=='{':
+        if depth==0: start=i
+        depth+=1
+    elif c=='}':
+        depth-=1
+        if depth==0 and start>=0:
+            try:
+                obj=json.loads(text[start:i+1])
+                if 'overall' in obj: best=json.dumps(obj)
+            except: pass
+            start=-1
+if best: print(best)
+" > results.json 2>/dev/null \
             || echo '{"overall":"FAIL","error":"no JSON in stream-json final message"}' > results.json
+
+          # Ensure results.json is valid JSON
+          jq . results.json > /dev/null 2>&1 || echo '{"overall":"FAIL","error":"no JSON in stream-json final message"}' > results.json
 
           # Fallback: reconstruct from CHECKPOINT lines if final JSON is missing or lacks results
           if ! jq -e '.results' results.json > /dev/null 2>&1; then
@@ -211,7 +240,7 @@ jobs:
           printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN_JSON" > mcp-runtime.json
 
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
-          CLEANUP_PROMPT='T6 Cleanup: Check fleet_status. Remove every registered member using remove_member. Verify fleet_status shows no members remain. Output EXACTLY this JSON and nothing else: {"test":"T6","status":"PASS","notes":"brief note"} — status PASS if all removed or none were registered, FAIL otherwise.'
+          CLEANUP_PROMPT='T6 Safety Cleanup: Call fleet_status to check for registered members. For each member found, call remove_member to remove it. Then call fleet_status again to confirm no members remain. Output EXACTLY one line of JSON and nothing else before or after it: {"test":"T6","status":"PASS","notes":"<brief note>"} Set status to PASS if members were removed successfully or no members were registered. Set status to FAIL only if a remove_member call returned an error and members still remain.'
 
           if [ "$PROVIDER" = "claude" ]; then
             claude \
@@ -231,7 +260,26 @@ jobs:
           # Extract T6 result and write t6-result.json
           grep -E '"type":"result"' t6-raw.txt | tail -1 \
             | jq -r '.result // .text // ""' 2>/dev/null \
-            | grep -oE '\{[^{}]*"T6"[^{}]*\}' | tail -1 > t6-result.json \
+            | python3 -c "
+import sys, json, re
+text = sys.stdin.read()
+# Find JSON object containing 'T6'
+depth=0; start=-1; best=None
+for i,c in enumerate(text):
+    if c=='{':
+        if depth==0: start=i
+        depth+=1
+    elif c=='}':
+        depth-=1
+        if depth==0 and start>=0:
+            try:
+                obj=json.loads(text[start:i+1])
+                if 'T6' in str(obj) or 'test' in obj: best=json.dumps(obj)
+            except: pass
+            start=-1
+if best: print(best)
+else: print('{\"test\":\"T6\",\"status\":\"FAIL\",\"notes\":\"no JSON found in safety cleanup output\"}')
+" > t6-result.json 2>/dev/null \
             || echo '{"test":"T6","status":"FAIL","notes":"safety cleanup did not produce a result"}' > t6-result.json
           echo "T6 safety result: $(cat t6-result.json)"
 
