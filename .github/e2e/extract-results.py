@@ -9,7 +9,8 @@ to produce a JSON blob — the workflow owns report assembly.
 Usage: extract-results.py <raw-output.txt> [suite] [pm_os] [pm_provider]
 Writes the results JSON object to stdout.
 """
-import sys, json, re, datetime
+import sys, json, re
+from datetime import datetime, timezone
 
 
 def collect_texts(content):
@@ -73,7 +74,7 @@ def main():
             'suite':       suite,
             'pm_os':       pm_os,
             'pm_provider': pm_provider,
-            'timestamp':   datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'timestamp':   datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         },
         'results': results,
         'overall': overall,

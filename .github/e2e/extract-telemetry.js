@@ -11,16 +11,15 @@
  *
  * Injects a `telemetry` array into results.json and prints a summary table.
  */
-'use strict';
-const fs = require('fs');
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 
 // ── Parsers ────────────────────────────────────────────────────────────────
 
 function parseFleetLog(path) {
   // Returns { [memberName]: { tokIn, tokOut, durationMs, firstTs, lastTs } }
   const members = {};
-  if (!fs.existsSync(path)) return members;
-  for (const line of fs.readFileSync(path, 'utf8').split('\n')) {
+  if (!existsSync(path)) return members;
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
@@ -46,8 +45,8 @@ function parseFleetLog(path) {
 
 function parseSessionJsonl(path) {
   let tokIn = 0, tokOut = 0, firstTs = null, lastTs = null;
-  if (!fs.existsSync(path)) return { tokIn, tokOut, firstTs, lastTs };
-  for (const line of fs.readFileSync(path, 'utf8').split('\n')) {
+  if (!existsSync(path)) return { tokIn, tokOut, firstTs, lastTs };
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
@@ -67,8 +66,8 @@ function parseSessionJsonl(path) {
 
 function parsePmRawOutput(path) {
   let tokIn = 0, tokOut = 0, wallMs = 0, firstTs = null, lastTs = null;
-  if (!fs.existsSync(path)) return { tokIn, tokOut, wallMs, firstTs, lastTs };
-  for (const line of fs.readFileSync(path, 'utf8').split('\n')) {
+  if (!existsSync(path)) return { tokIn, tokOut, wallMs, firstTs, lastTs };
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
@@ -141,11 +140,11 @@ const telemetry = [
 ];
 
 // Inject into results.json
-if (fs.existsSync('results.json')) {
+if (existsSync('results.json')) {
   try {
-    const r = JSON.parse(fs.readFileSync('results.json', 'utf8'));
+    const r = JSON.parse(readFileSync('results.json', 'utf8'));
     r.telemetry = telemetry;
-    fs.writeFileSync('results.json', JSON.stringify(r, null, 2));
+    writeFileSync('results.json', JSON.stringify(r, null, 2));
   } catch {}
 }
 
