@@ -150,9 +150,9 @@ reviewed and any feedback addressed? Was a PR raised? What is the PR URL? Is CI 
 
 ---
 
-## Final Report
+## Collect member session logs
 
-Before T6 teardown runs as a separate workflow step, collect the member session logs:
+Before the workflow runs its teardown step, collect each member's LLM session log:
 
 1. On each member via `execute_command`:
    ```
@@ -163,28 +163,3 @@ Before T6 teardown runs as a separate workflow step, collect the member session 
    - Doer → local `logs/doer-session.jsonl`
    - Reviewer → local `logs/reviewer-session.jsonl`
    - Skip silently if the file is absent.
-
-Then output ONLY the following JSON — no other text before or after it:
-
-```json
-{
-  "run": {
-    "suite": "{{SUITE_ID}}",
-    "pm_os": "{{PM_OS}}",
-    "pm_provider": "{{PM_PROVIDER}}",
-    "fleet_version": "<from version tool>",
-    "timestamp": "<ISO timestamp>"
-  },
-  "results": [
-    { "test": "T1", "status": "PASS", "notes": "" },
-    { "test": "T2", "status": "PASS", "notes": "" },
-    { "test": "T3", "status": "PASS", "notes": "" },
-    { "test": "T4", "status": "PASS", "notes": "" },
-    { "test": "T5", "status": "PASS", "notes": "", "pr_url": "" }
-  ],
-  "overall": "PASS"
-}
-```
-
-Set each `status` to `"PASS"` or `"FAIL"` and fill in `notes` with a brief observation.
-Set `overall` to `"FAIL"` if any test failed.

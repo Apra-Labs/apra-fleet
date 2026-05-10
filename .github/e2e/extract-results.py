@@ -1,51 +1,19 @@
 #!/usr/bin/env python3
 """
-Extract the test results JSON from a Claude Code stream-json output file.
+Build results.json from a Claude Code stream-json output file.
 
-Usage: extract-results.py <raw-output.txt>
+The PM emits a CHECKPOINT line after each test. This script reads those
+checkpoints and assembles the final results JSON. The PM no longer needs
+to produce a JSON blob — the workflow owns report assembly.
+
+Usage: extract-results.py <raw-output.txt> [suite] [pm_os] [pm_provider]
 Writes the results JSON object to stdout.
 """
-import sys, json, re
+import sys, json, re, datetime
 
 
-def extract_json_with_overall(text):
-    """Return the last JSON object containing an 'overall' key, or None."""
-    # Prefer fenced ```json blocks (most reliable)
-    for b in reversed(re.findall(r'```json\s*([\s\S]*?)```', text)):
-        try:
-            obj = json.loads(b.strip())
-            if 'overall' in obj:
-                return obj
-        except Exception:
-            pass
-    # Fallback: depth-tracking scan for any {...} containing 'overall'
-    depth = 0; start = -1; best = None
-    for i, c in enumerate(text):
-        if c == '{':
-            if depth == 0:
-                start = i
-            depth += 1
-        elif c == '}':
-            depth -= 1
-            if depth == 0 and start >= 0:
-                try:
-                    obj = json.loads(text[start:i + 1])
-                    if 'overall' in obj:
-                        best = obj
-                except Exception:
-                    pass
-                start = -1
-    return best
-
-
-def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else 'raw-output.txt'
-    try:
-        content = open(path, encoding='utf-8', errors='replace').read()
-    except OSError:
-        print('{"overall":"FAIL","error":"raw-output.txt not found"}')
-        sys.exit(1)
-
+def collect_texts(content):
+    """Extract all text from stream-json assistant and result events."""
     result_text = ''
     all_texts = []
     for line in content.splitlines():
@@ -63,32 +31,54 @@ def main():
             for block in obj.get('message', {}).get('content', []):
                 if block.get('type') == 'text' and block.get('text'):
                     all_texts.append(block['text'])
+    return result_text, all_texts
 
-    # Try the final result text first, then all accumulated assistant text
-    for text in ([result_text] if result_text else []) + ['\n'.join(all_texts)]:
-        found = extract_json_with_overall(text)
-        if found:
-            print(json.dumps(found))
-            return
 
-    # Last resort: reconstruct from the most recent CHECKPOINT line
-    combined = '\n'.join(all_texts)
+def extract_checkpoints(texts):
+    """Return the last CHECKPOINT array found across all text blocks."""
     checkpoints = []
-    for line in combined.splitlines():
+    for line in '\n'.join(texts).splitlines():
         if line.startswith('CHECKPOINT: '):
             try:
                 cp = json.loads(line[len('CHECKPOINT: '):])
                 checkpoints.append(cp)
             except Exception:
                 pass
-    if checkpoints:
-        last = checkpoints[-1]
-        overall = 'FAIL' if any(t.get('status') == 'FAIL' for t in last) else 'PASS'
-        print(json.dumps({'results': last, 'overall': overall,
-                          'note': 'reconstructed from checkpoints'}))
-        return
+    return checkpoints[-1] if checkpoints else None
 
-    print('{"overall":"FAIL","error":"no results JSON found in output"}')
+
+def main():
+    path        = sys.argv[1] if len(sys.argv) > 1 else 'raw-output.txt'
+    suite       = sys.argv[2] if len(sys.argv) > 2 else ''
+    pm_os       = sys.argv[3] if len(sys.argv) > 3 else ''
+    pm_provider = sys.argv[4] if len(sys.argv) > 4 else ''
+
+    try:
+        content = open(path, encoding='utf-8', errors='replace').read()
+    except OSError:
+        print('{"overall":"FAIL","error":"raw-output.txt not found"}')
+        sys.exit(1)
+
+    _, all_texts = collect_texts(content)
+    results = extract_checkpoints(all_texts)
+
+    if results:
+        overall = 'FAIL' if any(t.get('status') == 'FAIL' for t in results) else 'PASS'
+    else:
+        results = []
+        overall = 'FAIL'
+
+    report = {
+        'run': {
+            'suite':       suite,
+            'pm_os':       pm_os,
+            'pm_provider': pm_provider,
+            'timestamp':   datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+        },
+        'results': results,
+        'overall': overall,
+    }
+    print(json.dumps(report, indent=2))
 
 
 if __name__ == '__main__':

@@ -136,11 +136,21 @@ jobs:
             -e 's|{{REVIEWER_FOLDER}}|${{ steps.suite.outputs.reviewer_folder }}|g' \
             .github/e2e/test-script.md > rendered-test-script.md
 
-      # ── Step 5: Run the LLM-driven test (T1–T5 + Final Report) ──────────────
+      # ── Step 5: Run the LLM-driven test (T1–T5) ──────────────────────────────
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
+        id: e2e
         shell: bash
         run: |
           bash .github/e2e/setup-mcp.sh
+
+          # Snapshot existing fleet logs before the run so we can identify
+          # the new log created by this claude -p invocation afterwards.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            LOG_DIR="$(cygpath "$USERPROFILE")/.apra-fleet/data/logs"
+          else
+            LOG_DIR="$HOME/.apra-fleet/data/logs"
+          fi
+          PRE_LOGS=$(ls "$LOG_DIR"/fleet-*.log 2>/dev/null | sort || true)
 
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
@@ -159,16 +169,46 @@ jobs:
               > raw-output.txt 2>&1 || true
           fi
 
-          python3 .github/e2e/extract-results.py raw-output.txt > results.json \
+          # Identify the fleet log created by this run (new file vs pre-snapshot).
+          POST_LOGS=$(ls "$LOG_DIR"/fleet-*.log 2>/dev/null | sort || true)
+          FLEET_LOG=$(comm -13 <(echo "$PRE_LOGS") <(echo "$POST_LOGS") | head -1 || true)
+          # Fall back to largest if diff fails (e.g. pre-snapshot was empty)
+          if [ -z "$FLEET_LOG" ]; then
+            FLEET_LOG=$(ls "$LOG_DIR"/fleet-*.log 2>/dev/null \
+              | xargs -I{} sh -c 'echo "$(wc -c < {}) {}"' 2>/dev/null \
+              | sort -rn | awk 'NR==1{print $2}' || true)
+          fi
+          echo "fleet_log=$FLEET_LOG" >> "$GITHUB_OUTPUT"
+
+          # Extract PM session ID from the stream-json system init event.
+          SESSION_ID=$(grep -m1 '"type":"system"' raw-output.txt \
+            | jq -r '.session_id // ""' 2>/dev/null || true)
+          echo "session_id=$SESSION_ID" >> "$GITHUB_OUTPUT"
+          echo "PM session_id: $SESSION_ID"
+          echo "Fleet log:     $FLEET_LOG"
+
+          # Assemble results.json from CHECKPOINT lines emitted during the run.
+          python3 .github/e2e/extract-results.py raw-output.txt \
+            '${{ inputs.suite }}' \
+            '${{ steps.suite.outputs.pm_os }}' \
+            '${{ steps.suite.outputs.pm_provider }}' \
+            > results.json \
             || echo '{"overall":"FAIL","error":"extract-results.py failed"}' > results.json
-          jq . results.json > /dev/null 2>&1 \
-            || echo '{"overall":"FAIL","error":"results.json is not valid JSON"}' > results.json
 
       # ── Step 5b: Collect PM fleet log ─────────────────────────────────────
       - name: Collect PM fleet log
         if: always()
         shell: bash
-        run: bash .github/e2e/collect-pm-log.sh
+        run: |
+          mkdir -p logs
+          FLEET_LOG='${{ steps.e2e.outputs.fleet_log }}'
+          if [ -n "$FLEET_LOG" ] && [ -f "$FLEET_LOG" ]; then
+            cp "$FLEET_LOG" logs/fleet-pm.log
+            echo "Collected: $(basename "$FLEET_LOG") ($(wc -c < logs/fleet-pm.log) bytes, $(wc -l < logs/fleet-pm.log) lines)"
+          else
+            echo "fleet_log output not set or file missing — falling back to collect-pm-log.sh"
+            bash .github/e2e/collect-pm-log.sh
+          fi
 
       # ── Step 5c: Extract telemetry ────────────────────────────────────────
       # Primary: logs/fleet-pm.log execute_prompt exit lines (in=N out=N elapsed=Nms).
