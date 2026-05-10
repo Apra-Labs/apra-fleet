@@ -93,18 +93,21 @@ The toy project is at {{TOY_PROJECT_URL}}.
 
 ### T5.2 — Pick three issues, write requirements.md
 3. Run `bd ready` in the toy repo (Beads task backlog committed in `.beads/`).
+   If `bd` is not on PATH, locate it with `which bd 2>/dev/null || find ~/.nvm -name bd 2>/dev/null | head -1`.
 4. Pick the **three oldest open issues**.
 5. Compose a `requirements.md` on the PM machine that lists those three issues, with one short paragraph per issue describing the desired outcome and acceptance criteria. Do NOT write any code yet.
 
 ### T5.3 — Drive the sprint with /pm
-6. Invoke your `/pm` skill: pair the doer (already registered as a fleet member) with the reviewer
-   (already registered), then run a **full doer → reviewer sprint to implement the contents of
-   `requirements.md`**. The sprint must include:
-   - planning phase (doer produces PLAN.md, reviewer reviews PLAN.md and writes feedback)
-   - implementation phase (doer codes on branch `{{BRANCH_PREFIX}}/<short-slug>`, runs tests, commits, pushes)
-   - code review phase (reviewer reads the diff, writes feedback)
-   - fix phase if reviewer requests changes
-   - PR phase (doer raises a PR targeting `main`)
+6. Run these `/pm` skill commands in sequence to drive the full sprint:
+   - `/pm init fleet-e2e-toy` — initialise the project folder
+   - `/pm pair <doer-member-name> <reviewer-member-name>` — set up doer/reviewer roles
+   - `/pm plan fleet-e2e-toy` — generate and approve the plan (reads `requirements.md`)
+   - `/pm start <doer-member-name>` — dispatch the doer to implement
+   - Poll `/pm status <doer-member-name>` until the doer reaches a VERIFY checkpoint, then immediately dispatch the reviewer
+   - Continue the loop (fix → review → fix as needed) until the reviewer approves
+   - `/pm cleanup fleet-e2e-toy` — raise the PR
+
+   Use `{{BRANCH_PREFIX}}` as the branch prefix when the pm skill asks for one.
 
 ### T5.4 — Verify
 7. Confirm the branch `{{BRANCH_PREFIX}}/...` exists on origin and a PR was raised.
