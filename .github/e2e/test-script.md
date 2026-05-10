@@ -72,29 +72,42 @@ Verify each response names the correct OS ({{DOER_OS}} and {{REVIEWER_OS}}).
 
 ---
 
-## T5: Full Sprint
+## T5: Full Sprint via /pm skill
 
 The toy project is at {{TOY_PROJECT_URL}}.
 
-Branch prefix for this run: `{{BRANCH_PREFIX}}` — the doer **must** name the feature branch
-`{{BRANCH_PREFIX}}/<short-slug>` (e.g. `{{BRANCH_PREFIX}}/fix-login`). This prevents
-branch name collisions when multiple suites run concurrently.
-
-1. On the doer: clone the repo (or verify it is already cloned) in the work folder
-2. Provision VCS auth ({{VCS}}) on the doer so it can push branches and raise PRs.
+### T5.1 — Doer prep
+1. On the doer: clone the toy repo into the work folder if not already cloned.
+2. Provision VCS auth ({{VCS}}) on the doer.
    If VCS is `bitbucket`: also run `git config user.email {{secure.e2e_bb_user}}` in the
-   repo via `execute_command` — the repository access token requires this bot email on commits.
-3. Pick the oldest open issue: run `bd ready` in the toy repo (Beads task backlog is committed in `.beads/` — no VCS issues API needed)
-4. Assign the doer to implement it and the reviewer to review it
-5. Run a complete doer → reviewer sprint:
-   - Doer implements on a branch named `{{BRANCH_PREFIX}}/<short-slug>`, runs tests, commits, pushes
-   - Reviewer reviews the code
-   - If approved: raise a PR targeting `main`
-6. Verify CI is green on the PR
+   repo via `execute_command`.
 
-**Record:** Was the sprint completed? Was a PR raised? What is the PR URL? Is CI green?
+### T5.2 — Pick three issues, write requirements.md
+3. Run `bd ready` in the toy repo (Beads task backlog committed in `.beads/`).
+4. Pick the **three oldest open issues**.
+5. Compose a `requirements.md` on the PM machine that lists those three issues, with one short paragraph per issue describing the desired outcome and acceptance criteria. Do NOT write any code yet.
+
+### T5.3 — Drive the sprint with /pm
+6. Invoke your `/pm` skill: pair the doer (already registered as a fleet member) with the reviewer
+   (already registered), then run a **full doer → reviewer sprint to implement the contents of
+   `requirements.md`**. The sprint must include:
+   - planning phase (doer produces PLAN.md, reviewer reviews PLAN.md and writes feedback)
+   - implementation phase (doer codes on branch `{{BRANCH_PREFIX}}/<short-slug>`, runs tests, commits, pushes)
+   - code review phase (reviewer reads the diff, writes feedback)
+   - fix phase if reviewer requests changes
+   - PR phase (doer raises a PR targeting `main`)
+
+### T5.4 — Verify
+7. Confirm the branch `{{BRANCH_PREFIX}}/...` exists on origin and a PR was raised.
+8. Verify CI is green on the PR.
+
+**Record:** Was a PLAN.md produced and reviewed? Was the implementation pushed? Was the diff
+reviewed and any feedback addressed? Was a PR raised? What is the PR URL? Is CI green?
 
 ---
+
+> **T6 ALWAYS RUNS** — even if T5 failed, partially completed, or threw an error,
+> proceed to T6 immediately and clean up. Do not skip cleanup.
 
 ## T6: Cleanup
 
@@ -131,4 +144,5 @@ Output ONLY the following JSON — no other text before or after it:
 ```
 
 Set each `status` to `"PASS"` or `"FAIL"` and fill in `notes` with a brief observation.
+T6 must always have a status (PASS / FAIL based on whether members were actually removed). It is never "SKIPPED".
 Set `overall` to `"FAIL"` if any test failed.

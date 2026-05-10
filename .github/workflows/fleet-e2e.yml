@@ -146,7 +146,8 @@ jobs:
             claude \
               -p "$(cat rendered-test-script.md)" \
               --mcp-config mcp-runtime.json \
-              --output-format json \
+              --output-format stream-json \
+              --verbose \
               --max-turns 80 \
               > raw-output.txt 2>&1
           else
@@ -157,8 +158,16 @@ jobs:
               > raw-output.txt 2>&1
           fi
 
-          # Extract the JSON report from the output (last JSON block)
-          grep -o '{.*}' raw-output.txt | tail -1 > results.json || echo '{"overall":"FAIL","error":"no JSON in output"}' > results.json
+          # stream-json emits one JSON object per line; the final {type:result,...}
+          # contains the test verdict in the assistant's last message text.
+          grep -E '"type":"result"' raw-output.txt | tail -1 \
+            | jq -c '. | {result: (.result // .text // .response // ""), error: (.is_error // false), terminal_reason: (.terminal_reason // "unknown")}' \
+            > results-meta.json 2>/dev/null \
+            || echo '{"result":"","error":true,"terminal_reason":"no_result_line"}' > results-meta.json
+          # The actual test result JSON is embedded inside the assistant's final message text.
+          # Extract the first {...} block from results-meta.json's "result" field.
+          jq -r '.result' results-meta.json | grep -oE '\{[^{}]*"overall"[^{}]*\}' | tail -1 > results.json \
+            || echo '{"overall":"FAIL","error":"no JSON in stream-json final message"}' > results.json
 
       # ── Step 6: Post summary ───────────────────────────────────────────────
       - name: Post job summary
