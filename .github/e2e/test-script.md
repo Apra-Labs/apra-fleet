@@ -44,8 +44,18 @@ After provisioning, verify `bd` is available on each member via `execute_command
 which bd 2>/dev/null || find ~/.nvm -name bd -type f 2>/dev/null | head -1
 ```
 If not found, install it: `npm install -g @beads/bd`
-Also verify `dolt` is available: `which dolt 2>/dev/null || dolt version 2>/dev/null`
-If dolt is missing, install it: `curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash`
+Also verify `dolt` is available: `which dolt 2>/dev/null || ~/bin/dolt version 2>/dev/null || dolt version 2>/dev/null`
+If dolt is missing, install it without sudo and persist the PATH:
+```
+mkdir -p ~/bin
+curl -fsSL -o /tmp/dolt.tar.gz https://github.com/dolthub/dolt/releases/latest/download/dolt-linux-amd64.tar.gz
+tar -xzf /tmp/dolt.tar.gz -C /tmp/
+mv /tmp/dolt-linux-amd64/bin/dolt ~/bin/dolt
+chmod +x ~/bin/dolt
+grep -q 'HOME/bin' ~/.profile 2>/dev/null || echo 'export PATH=$HOME/bin:$PATH' >> ~/.profile
+~/bin/dolt version
+```
+(Use `dolt-darwin-arm64.tar.gz` or `dolt-darwin-amd64.tar.gz` on macOS.)
 
 **Record:** Did both members register? Did all 4 auth provisions succeed? Are both online? Is bd available on both?
 
@@ -100,11 +110,12 @@ The toy project is at {{TOY_PROJECT_URL}}.
    repo via `execute_command`.
 
 ### T5.2 — Pick three issues, write requirements.md
-3. Run `bd ready` on the doer via `execute_command` from within the toy repo directory:
+3. Run `bd ready` on the doer via `execute_command` from within the toy repo directory,
+   with an explicit PATH so dolt is found:
    ```
-   cd <doer_work_folder>/fleet-e2e-toy && bd ready
+   cd <doer_work_folder>/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd ready
    ```
-   If `bd` is not on PATH use the full path found in T1.
+   If `bd` itself is not on PATH, substitute the full bd path found in T1.
 4. Pick the **three oldest open issues** from the output.
 5. Compose `requirements.md` on the PM machine listing those three issues — one short paragraph
    per issue describing the desired outcome and acceptance criteria. Do NOT write any code yet.
