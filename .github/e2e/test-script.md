@@ -92,10 +92,13 @@ The toy project is at {{TOY_PROJECT_URL}}.
    repo via `execute_command`.
 
 ### T5.2 — Pick three issues, write requirements.md
-3. Run `bd ready` in the toy repo (Beads task backlog committed in `.beads/`).
-   If `bd` is not on PATH, locate it with `which bd 2>/dev/null || find ~/.nvm -name bd 2>/dev/null | head -1`.
-4. Pick the **three oldest open issues**.
-5. Compose a `requirements.md` on the PM machine that lists those three issues, with one short paragraph per issue describing the desired outcome and acceptance criteria. Do NOT write any code yet.
+3. Read the Beads backlog from the cloned toy repo on the doer:
+   ```
+   execute_command → cat <doer_work_folder>/fleet-e2e-toy/.beads/issues.jsonl
+   ```
+   Parse the JSONL output to find the **three oldest open issues** (status=open, sorted by created date ascending).
+4. Compose `requirements.md` on the PM machine listing those three issues — one short paragraph
+   per issue describing the desired outcome and acceptance criteria. Do NOT write any code yet.
 
 ### T5.3 — Drive the sprint with /pm
 6. Run these `/pm` skill commands in sequence to drive the full sprint:
