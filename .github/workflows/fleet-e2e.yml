@@ -122,6 +122,8 @@ jobs:
             -e 's|{{TOY_PROJECT_URL}}|${{ steps.suite.outputs.toy_url }}|g' \
             -e 's|{{VCS}}|${{ steps.suite.outputs.vcs }}|g' \
             -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite }}-${{ github.run_id }}|g' \
+            -e 's|{{DOER_FOLDER}}|${{ steps.suite.outputs.doer_folder }}|g' \
+            -e 's|{{REVIEWER_FOLDER}}|${{ steps.suite.outputs.reviewer_folder }}|g' \
             .github/e2e/test-script.md > rendered-test-script.md
 
       # ── Step 5: Run the LLM-driven test ───────────────────────────────────
@@ -169,11 +171,72 @@ jobs:
           jq -r '.result' results-meta.json | grep -oE '\{[^{}]*"overall"[^{}]*\}' | tail -1 > results.json \
             || echo '{"overall":"FAIL","error":"no JSON in stream-json final message"}' > results.json
 
+          # Fallback: reconstruct from CHECKPOINT lines if final JSON is missing or lacks results
+          if ! jq -e '.results' results.json > /dev/null 2>&1; then
+            LAST_CHECKPOINT=$(jq -rR 'fromjson? | select(.type == "content_block_delta") | .delta.text // ""' raw-output.txt 2>/dev/null \
+              | grep '^CHECKPOINT: ' | tail -1 | sed 's/^CHECKPOINT: //' || echo '')
+            if [ -n "$LAST_CHECKPOINT" ]; then
+              OVERALL=$(echo "$LAST_CHECKPOINT" | jq -r 'if any(.[]; .status == "FAIL") then "FAIL" else "PASS" end' 2>/dev/null || echo "FAIL")
+              echo "{\"results\":$LAST_CHECKPOINT,\"overall\":\"$OVERALL\",\"note\":\"reconstructed from checkpoints — run may have been interrupted\"}" > results.json
+            fi
+          fi
+
+      # ── Step 5b: T6 safety cleanup ────────────────────────────────────────
+      # Runs even if Step 5's LLM crashes mid-T5. Removes any members that were
+      # registered but never cleaned up. Idempotent — if T6 ran inside Step 5
+      # this finds no members and exits PASS.
+      - name: T6 — Member cleanup (safety net)
+        if: always()
+        shell: bash
+        run: |
+          # Rebuild mcp-runtime.json in case Step 5 never reached that point
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
+            FLEET_BIN_WIN=$(cygpath -w "$FLEET_BIN")
+            FLEET_BIN_JSON=$(echo "$FLEET_BIN_WIN" | sed 's/\\/\\\\/g')
+          else
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet"
+            FLEET_BIN_JSON="$FLEET_BIN"
+          fi
+          printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN_JSON" > mcp-runtime.json
+
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          CLEANUP_PROMPT='T6 Cleanup: Check fleet_status. Remove every registered member using remove_member. Verify fleet_status shows no members remain. Output EXACTLY this JSON and nothing else: {"test":"T6","status":"PASS","notes":"brief note"} — status PASS if all removed or none were registered, FAIL otherwise.'
+
+          if [ "$PROVIDER" = "claude" ]; then
+            claude \
+              -p "$CLEANUP_PROMPT" \
+              --mcp-config mcp-runtime.json \
+              --output-format stream-json \
+              --max-turns 15 \
+              > t6-raw.txt 2>&1 || true
+          else
+            gemini \
+              --output-format stream-json \
+              --mcp-config mcp-runtime.json \
+              -p "$CLEANUP_PROMPT" \
+              > t6-raw.txt 2>&1 || true
+          fi
+
+          # Extract T6 result and write t6-result.json
+          grep -E '"type":"result"' t6-raw.txt | tail -1 \
+            | jq -r '.result // .text // ""' 2>/dev/null \
+            | grep -oE '\{[^{}]*"T6"[^{}]*\}' | tail -1 > t6-result.json \
+            || echo '{"test":"T6","status":"FAIL","notes":"safety cleanup did not produce a result"}' > t6-result.json
+          echo "T6 safety result: $(cat t6-result.json)"
+
       # ── Step 6: Post summary ───────────────────────────────────────────────
       - name: Post job summary
         if: always()
         shell: bash
         run: |
+          # Merge T6 safety result into results.json (overrides any T6 from Step 5)
+          if [ -f t6-result.json ] && jq -e '.' t6-result.json > /dev/null 2>&1; then
+            T6=$(cat t6-result.json)
+            jq --argjson t6 "$T6" '.results = ((.results // []) | map(select(.test != "T6"))) + [$t6]' \
+              results.json > results_merged.json 2>/dev/null && mv results_merged.json results.json || true
+          fi
+
           echo "## Fleet E2E – Suite ${{ inputs.suite }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Test | Status | Notes |" >> $GITHUB_STEP_SUMMARY
@@ -191,5 +254,9 @@ jobs:
           name: e2e-${{ inputs.suite }}-${{ github.run_id }}
           path: |
             results.json
+            results-meta.json
             raw-output.txt
+            t6-raw.txt
+            t6-result.json
             rendered-test-script.md
+            mcp-runtime.json

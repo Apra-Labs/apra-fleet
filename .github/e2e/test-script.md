@@ -17,6 +17,10 @@ For each test section below:
 1. Execute the steps using fleet tools
 2. Record your observation as either ✅ PASS or ❌ FAIL with a brief note
 3. Continue to the next test even if a test fails — do not stop early
+4. After recording each test result, emit **one line** in this exact format (no surrounding text):
+   `CHECKPOINT: [{"test":"T1","status":"PASS","notes":"..."}]`
+   Include every test completed so far. The workflow reads CHECKPOINT lines to recover partial
+   results if the run is interrupted before the Final Report.
 
 ---
 
@@ -24,7 +28,10 @@ For each test section below:
 
 Register both members (doer and reviewer) as remote SSH members.
 - Use `auth_type=key` — SSH keys are pre-configured on each machine.
-- Work folder for each: `~/git/apra-fleet-e2e` (Linux/macOS) or `C:\Users\<user>\git\apra-fleet-e2e` (Windows)
+- Work folder for doer ({{DOER_OS}}): `{{DOER_FOLDER}}`
+- Work folder for reviewer ({{REVIEWER_OS}}): `{{REVIEWER_FOLDER}}`
+- After registering each member, immediately call `update_member` with `unattended="auto"` so the
+  member's LLM can approve its own tool calls without pausing to prompt.
 
 After registering, provision LLM auth on each member:
 - Provision Claude on both
@@ -120,6 +127,14 @@ Verify `fleet_status` shows no registered members (or only the PM itself).
 
 ## Final Report
 
+For the `telemetry` field below:
+- **doer** and **reviewer**: accumulate `usage.input_tokens` / `usage.output_tokens` from each
+  `execute_prompt` response. Sum `duration_ms` for active time. Wall time = first dispatch
+  timestamp to last response timestamp.
+- **pm** (yourself): your token counts are in the stream-json result line at run end (the `usage`
+  field). Wall time = total run duration. Active time = processing time excluding waits for members.
+- Set numeric fields to 0 if unavailable.
+
 Output ONLY the following JSON — no other text before or after it:
 
 ```json
@@ -138,6 +153,11 @@ Output ONLY the following JSON — no other text before or after it:
     { "test": "T4", "status": "PASS", "notes": "" },
     { "test": "T5", "status": "PASS", "notes": "", "pr_url": "" },
     { "test": "T6", "status": "PASS", "notes": "" }
+  ],
+  "telemetry": [
+    { "role": "pm",       "wall_time_s": 0, "active_time_s": 0, "tokens_in": 0, "tokens_out": 0, "tokens_total": 0 },
+    { "role": "doer",     "wall_time_s": 0, "active_time_s": 0, "tokens_in": 0, "tokens_out": 0, "tokens_total": 0 },
+    { "role": "reviewer", "wall_time_s": 0, "active_time_s": 0, "tokens_in": 0, "tokens_out": 0, "tokens_total": 0 }
   ],
   "overall": "PASS"
 }
