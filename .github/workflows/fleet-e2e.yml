@@ -129,20 +129,23 @@ jobs:
       # ── Step 4b: Network diagnostics (temporary — remove after debugging) ──
       - name: Network diagnostics
         if: runner.os == 'Windows'
+        continue-on-error: true
         shell: bash
         run: |
-          echo "=== whoami / session ==="
+          echo "=== home / user ==="
+          echo "HOME=$HOME"
+          echo "USERPROFILE=$USERPROFILE"
           whoami
-          powershell.exe -Command "query session 2>/dev/null || true"
 
-          echo "=== routing table ==="
-          powershell.exe -Command "Get-NetRoute -AddressFamily IPv4 | Sort-Object RouteMetric | Format-Table DestinationPrefix,NextHop,InterfaceAlias,RouteMetric -AutoSize"
+          echo "=== claude config dir ==="
+          ls "$HOME/.claude/" 2>&1 || echo "MISSING: $HOME/.claude does not exist"
+          ls "$USERPROFILE/.claude/" 2>&1 || echo "MISSING: $USERPROFILE/.claude does not exist"
 
-          echo "=== active interfaces ==="
-          powershell.exe -Command "Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress | Format-Table -AutoSize"
+          echo "=== default route (which adapter?) ==="
+          route print 0.0.0.0 2>&1 | grep -A5 "0.0.0.0"
 
           echo "=== node TLS env ==="
-          node -e "console.log('HTTPS_PROXY:', process.env.HTTPS_PROXY); console.log('HTTP_PROXY:', process.env.HTTP_PROXY); console.log('NODE_TLS_REJECT_UNAUTHORIZED:', process.env.NODE_TLS_REJECT_UNAUTHORIZED); console.log('NODE_EXTRA_CA_CERTS:', process.env.NODE_EXTRA_CA_CERTS);"
+          node -e "['HTTPS_PROXY','HTTP_PROXY','NODE_TLS_REJECT_UNAUTHORIZED','NODE_EXTRA_CA_CERTS'].forEach(k=>console.log(k+'='+process.env[k]))"
 
           echo "=== minimal claude API test ==="
           claude -p "say: runner-ok" --max-turns 1 --output-format stream-json --verbose 2>&1 | tail -5
