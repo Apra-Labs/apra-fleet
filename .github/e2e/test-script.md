@@ -39,7 +39,15 @@ After registering, provision LLM auth on each member:
 
 Verify both members appear online in `fleet_status`.
 
-**Record:** Did both members register? Did all 4 auth provisions succeed? Are both online?
+After provisioning, verify `bd` is available on each member via `execute_command`:
+```
+which bd 2>/dev/null || find ~/.nvm -name bd -type f 2>/dev/null | head -1
+```
+If not found, install it: `npm install -g @beads/bd`
+Also verify `dolt` is available: `which dolt 2>/dev/null || dolt version 2>/dev/null`
+If dolt is missing, install it: `curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash`
+
+**Record:** Did both members register? Did all 4 auth provisions succeed? Are both online? Is bd available on both?
 
 ---
 
@@ -92,12 +100,13 @@ The toy project is at {{TOY_PROJECT_URL}}.
    repo via `execute_command`.
 
 ### T5.2 — Pick three issues, write requirements.md
-3. Read the Beads backlog from the cloned toy repo on the doer:
+3. Run `bd ready` on the doer via `execute_command` from within the toy repo directory:
    ```
-   execute_command → cat <doer_work_folder>/fleet-e2e-toy/.beads/issues.jsonl
+   cd <doer_work_folder>/fleet-e2e-toy && bd ready
    ```
-   Parse the JSONL output to find the **three oldest open issues** (status=open, sorted by created date ascending).
-4. Compose `requirements.md` on the PM machine listing those three issues — one short paragraph
+   If `bd` is not on PATH use the full path found in T1.
+4. Pick the **three oldest open issues** from the output.
+5. Compose `requirements.md` on the PM machine listing those three issues — one short paragraph
    per issue describing the desired outcome and acceptance criteria. Do NOT write any code yet.
 
 ### T5.3 — Drive the sprint with /pm
