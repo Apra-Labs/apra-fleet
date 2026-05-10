@@ -12,6 +12,12 @@ on:
 jobs:
   e2e:
     name: 'Fleet E2E – ${{ inputs.suite }}'
+    # Force IPv4-first DNS resolution for all Node.js processes in this job.
+    # api.anthropic.com has an AAAA record but IPv6 routing is broken on the
+    # self-hosted runners; Node 17+ prefers IPv6 by default which causes
+    # ECONNRESET on every first attempt. ipv4first eliminates that.
+    env:
+      NODE_OPTIONS: --dns-result-order=ipv4first
     # Runner label is derived from suites.json pm.runner field.
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
@@ -125,30 +131,6 @@ jobs:
             -e 's|{{DOER_FOLDER}}|${{ steps.suite.outputs.doer_folder }}|g' \
             -e 's|{{REVIEWER_FOLDER}}|${{ steps.suite.outputs.reviewer_folder }}|g' \
             .github/e2e/test-script.md > rendered-test-script.md
-
-      # ── Step 4b: Network diagnostics (temporary — remove after debugging) ──
-      - name: Network diagnostics
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: bash
-        run: |
-          echo "=== home / user ==="
-          echo "HOME=$HOME"
-          echo "USERPROFILE=$USERPROFILE"
-          whoami
-
-          echo "=== claude config dir ==="
-          ls "$HOME/.claude/" 2>&1 || echo "MISSING: $HOME/.claude does not exist"
-          ls "$USERPROFILE/.claude/" 2>&1 || echo "MISSING: $USERPROFILE/.claude does not exist"
-
-          echo "=== default route (which adapter?) ==="
-          route print 0.0.0.0 2>&1 | grep -A5 "0.0.0.0"
-
-          echo "=== node TLS env ==="
-          node -e "['HTTPS_PROXY','HTTP_PROXY','NODE_TLS_REJECT_UNAUTHORIZED','NODE_EXTRA_CA_CERTS'].forEach(k=>console.log(k+'='+process.env[k]))"
-
-          echo "=== minimal claude API test ==="
-          claude -p "say: runner-ok" --max-turns 1 --output-format stream-json --verbose 2>&1 | tail -5
 
       # ── Step 5: Run the LLM-driven test ───────────────────────────────────
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
