@@ -235,6 +235,29 @@ jobs:
             || echo '{"test":"T6","status":"FAIL","notes":"safety cleanup did not produce a result"}' > t6-result.json
           echo "T6 safety result: $(cat t6-result.json)"
 
+      # ── Step 5c: Collect PM fleet log ─────────────────────────────────────
+      # Grab the fleet-<PID>.log that was active during this run. The stall
+      # detector writes member session log paths into this file, making it the
+      # anchor for post-mortem analysis. Member session logs are pulled by the
+      # PM Claude during T6.0 and land in logs/ via receive_files.
+      - name: Collect PM fleet log
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p logs
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            LOG_DIR=$(cygpath "$USERPROFILE")/.apra-fleet/data/logs
+          else
+            LOG_DIR="$HOME/.apra-fleet/data/logs"
+          fi
+          FLEET_LOG=$(ls -t "$LOG_DIR"/fleet-*.log 2>/dev/null | head -1)
+          if [ -n "$FLEET_LOG" ]; then
+            cp "$FLEET_LOG" logs/fleet-pm.log
+            echo "Collected: $(basename $FLEET_LOG) ($(wc -c < "$FLEET_LOG") bytes)"
+          else
+            echo "No fleet log found in $LOG_DIR"
+          fi
+
       # ── Step 6: Post summary ───────────────────────────────────────────────
       - name: Post job summary
         if: always()
@@ -270,3 +293,4 @@ jobs:
             t6-result.json
             rendered-test-script.md
             mcp-runtime.json
+            logs/

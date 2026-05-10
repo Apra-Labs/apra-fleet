@@ -120,6 +120,23 @@ reviewed and any feedback addressed? Was a PR raised? What is the PR URL? Is CI 
 
 ## T6: Cleanup
 
+### T6.0 — Collect member session logs (before removal)
+
+Before removing members, copy each member's most recent LLM session log into their work folder,
+then pull it to the PM for artifact upload:
+
+1. On each member via `execute_command`:
+   ```
+   LOG=$(find ~/.claude/projects -name "*.jsonl" 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+   [ -n "$LOG" ] && cp "$LOG" session-log.jsonl || true
+   ```
+2. Use `receive_files` to pull `session-log.jsonl` from each member's work folder:
+   - Doer → local `logs/doer-session.jsonl`
+   - Reviewer → local `logs/reviewer-session.jsonl`
+   - Skip silently if the file is absent (Gemini member with no persistent log, or member never ran a prompt).
+
+### T6.1 — Remove members
+
 Remove both members from fleet.
 Verify `fleet_status` shows no registered members (or only the PM itself).
 
