@@ -22,10 +22,6 @@ jobs:
       # need multiple attempts before succeeding (e.g. Defender NIS warmup).
       # If this env var is unrecognised by claude it is silently ignored.
       CLAUDE_CODE_MAX_RETRIES: "20"
-      # LLM API keys — used by claude/gemini CLI on the PM runner.
-      # Avoids relying on stored OAuth sessions which expire between runs.
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
     # Runner label is derived from suites.json pm.runner field.
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
