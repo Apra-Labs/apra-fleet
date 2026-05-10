@@ -78,14 +78,22 @@ jobs:
           fi
           chmod +x "$BIN" 2>/dev/null || true
           "$BIN" install --force
-          apra-fleet --version
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
+          else
+            INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet"
+          fi
+          "$INSTALLED_BIN" --version
 
       # ── Step 3: Seed fleet credential store ───────────────────────────────
       - name: Seed fleet credential store
         shell: bash
         run: |
-          FLEET_BIN=$(which apra-fleet 2>/dev/null || echo "$HOME/.apra-fleet/bin/apra-fleet")
-          if [ "$RUNNER_OS" = "Windows" ]; then FLEET_BIN=$(cygpath -w "$FLEET_BIN"); fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
+          else
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet"
+          fi
           echo "$E2E_BB_TOKEN"    | "$FLEET_BIN" secret --set e2e_bb_token    --persist -y
           echo "$E2E_BB_USER"     | "$FLEET_BIN" secret --set e2e_bb_user     --persist -y
           echo "$E2E_GH_TOKEN"    | "$FLEET_BIN" secret --set e2e_gh_token    --persist -y
@@ -122,11 +130,12 @@ jobs:
         run: |
           # Resolve fleet binary path and write a runtime mcp config with the
           # full path — avoids PATH lookup failures in claude's subprocess env.
-          FLEET_BIN=$(which apra-fleet 2>/dev/null || echo "$HOME/.apra-fleet/bin/apra-fleet")
           if [ "$RUNNER_OS" = "Windows" ]; then
-            FLEET_BIN=$(cygpath -w "$FLEET_BIN")
-            FLEET_BIN_JSON=$(echo "$FLEET_BIN" | sed 's/\\/\\\\/g')
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
+            FLEET_BIN_WIN=$(cygpath -w "$FLEET_BIN")
+            FLEET_BIN_JSON=$(echo "$FLEET_BIN_WIN" | sed 's/\\/\\\\/g')
           else
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet"
             FLEET_BIN_JSON="$FLEET_BIN"
           fi
           printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN_JSON" > mcp-runtime.json
