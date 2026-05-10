@@ -27,7 +27,7 @@ For each test section below:
 ## T1: Member Registration
 
 Register both members (doer and reviewer) as remote SSH members.
-- Use `auth_type=key` — SSH keys are pre-configured on each machine.
+- Use `auth_type=password` with password credential `{{secure.APASS}}` — this is the SSH password for the `akhil` user on all member machines.
 - Work folder for doer ({{DOER_OS}}): `{{DOER_FOLDER}}`
 - Work folder for reviewer ({{REVIEWER_OS}}): `{{REVIEWER_FOLDER}}`
 - After registering each member, immediately call `update_member` with `unattended="auto"` so the
