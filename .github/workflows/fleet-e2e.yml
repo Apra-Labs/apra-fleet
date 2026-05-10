@@ -126,6 +126,27 @@ jobs:
             -e 's|{{REVIEWER_FOLDER}}|${{ steps.suite.outputs.reviewer_folder }}|g' \
             .github/e2e/test-script.md > rendered-test-script.md
 
+      # ── Step 4b: Network diagnostics (temporary — remove after debugging) ──
+      - name: Network diagnostics
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "=== whoami / session ==="
+          whoami
+          powershell.exe -Command "query session 2>/dev/null || true"
+
+          echo "=== routing table ==="
+          powershell.exe -Command "Get-NetRoute -AddressFamily IPv4 | Sort-Object RouteMetric | Format-Table DestinationPrefix,NextHop,InterfaceAlias,RouteMetric -AutoSize"
+
+          echo "=== active interfaces ==="
+          powershell.exe -Command "Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress | Format-Table -AutoSize"
+
+          echo "=== node TLS env ==="
+          node -e "console.log('HTTPS_PROXY:', process.env.HTTPS_PROXY); console.log('HTTP_PROXY:', process.env.HTTP_PROXY); console.log('NODE_TLS_REJECT_UNAUTHORIZED:', process.env.NODE_TLS_REJECT_UNAUTHORIZED); console.log('NODE_EXTRA_CA_CERTS:', process.env.NODE_EXTRA_CA_CERTS);"
+
+          echo "=== minimal claude API test ==="
+          claude -p "say: runner-ok" --max-turns 1 --output-format stream-json --verbose 2>&1 | tail -5
+
       # ── Step 5: Run the LLM-driven test ───────────────────────────────────
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
         shell: bash
