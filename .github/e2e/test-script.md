@@ -150,15 +150,9 @@ reviewed and any feedback addressed? Was a PR raised? What is the PR URL? Is CI 
 
 ---
 
-> **T6 ALWAYS RUNS** — even if T5 failed, partially completed, or threw an error,
-> proceed to T6 immediately and clean up. Do not skip cleanup.
+## Final Report
 
-## T6: Cleanup
-
-### T6.0 — Collect member session logs (before removal)
-
-Before removing members, copy each member's most recent LLM session log into their work folder,
-then pull it to the PM for artifact upload:
+Before T6 teardown runs as a separate workflow step, collect the member session logs:
 
 1. On each member via `execute_command`:
    ```
@@ -168,28 +162,9 @@ then pull it to the PM for artifact upload:
 2. Use `receive_files` to pull `session-log.jsonl` from each member's work folder:
    - Doer → local `logs/doer-session.jsonl`
    - Reviewer → local `logs/reviewer-session.jsonl`
-   - Skip silently if the file is absent (Gemini member with no persistent log, or member never ran a prompt).
+   - Skip silently if the file is absent.
 
-### T6.1 — Remove members
-
-Remove both members from fleet.
-Verify `fleet_status` shows no registered members (or only the PM itself).
-
-**Record:** Were both members removed cleanly?
-
----
-
-## Final Report
-
-For the `telemetry` field below:
-- **doer** and **reviewer**: accumulate `usage.input_tokens` / `usage.output_tokens` from each
-  `execute_prompt` response. Sum `duration_ms` for active time. Wall time = first dispatch
-  timestamp to last response timestamp.
-- **pm** (yourself): your token counts are in the stream-json result line at run end (the `usage`
-  field). Wall time = total run duration. Active time = processing time excluding waits for members.
-- Set numeric fields to 0 if unavailable.
-
-Output ONLY the following JSON — no other text before or after it:
+Then output ONLY the following JSON — no other text before or after it:
 
 ```json
 {
@@ -205,18 +180,11 @@ Output ONLY the following JSON — no other text before or after it:
     { "test": "T2", "status": "PASS", "notes": "" },
     { "test": "T3", "status": "PASS", "notes": "" },
     { "test": "T4", "status": "PASS", "notes": "" },
-    { "test": "T5", "status": "PASS", "notes": "", "pr_url": "" },
-    { "test": "T6", "status": "PASS", "notes": "" }
-  ],
-  "telemetry": [
-    { "role": "pm",       "wall_time_s": 0, "active_time_s": 0, "tokens_in": 0, "tokens_out": 0, "tokens_total": 0 },
-    { "role": "doer",     "wall_time_s": 0, "active_time_s": 0, "tokens_in": 0, "tokens_out": 0, "tokens_total": 0 },
-    { "role": "reviewer", "wall_time_s": 0, "active_time_s": 0, "tokens_in": 0, "tokens_out": 0, "tokens_total": 0 }
+    { "test": "T5", "status": "PASS", "notes": "", "pr_url": "" }
   ],
   "overall": "PASS"
 }
 ```
 
 Set each `status` to `"PASS"` or `"FAIL"` and fill in `notes` with a brief observation.
-T6 must always have a status (PASS / FAIL based on whether members were actually removed). It is never "SKIPPED".
 Set `overall` to `"FAIL"` if any test failed.

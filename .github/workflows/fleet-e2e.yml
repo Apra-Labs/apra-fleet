@@ -136,22 +136,11 @@ jobs:
             -e 's|{{REVIEWER_FOLDER}}|${{ steps.suite.outputs.reviewer_folder }}|g' \
             .github/e2e/test-script.md > rendered-test-script.md
 
-      # ── Step 5: Run the LLM-driven test ───────────────────────────────────
+      # ── Step 5: Run the LLM-driven test (T1–T5 + Final Report) ──────────────
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
         shell: bash
         run: |
-          # Resolve fleet binary path and write a runtime mcp config with the
-          # full path — avoids PATH lookup failures in claude's subprocess env.
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
-            FLEET_BIN_WIN=$(cygpath -w "$FLEET_BIN")
-            FLEET_BIN_JSON=$(echo "$FLEET_BIN_WIN" | sed 's/\\/\\\\/g')
-          else
-            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet"
-            FLEET_BIN_JSON="$FLEET_BIN"
-          fi
-          printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN_JSON" > mcp-runtime.json
-          cat mcp-runtime.json
+          bash .github/e2e/setup-mcp.sh
 
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
@@ -161,290 +150,63 @@ jobs:
               --output-format stream-json \
               --verbose \
               --max-turns 80 \
-              > raw-output.txt 2>&1
+              > raw-output.txt 2>&1 || true
           else
             gemini \
               --output-format stream-json \
               --mcp-config mcp-runtime.json \
               -p "$(cat rendered-test-script.md)" \
-              > raw-output.txt 2>&1
+              > raw-output.txt 2>&1 || true
           fi
 
-          # stream-json emits one JSON object per line; the final {type:result,...}
-          # contains the test verdict in the assistant's last message text.
-          grep -E '"type":"result"' raw-output.txt | tail -1 \
-            | jq -c '. | {result: (.result // .text // .response // ""), error: (.is_error // false), terminal_reason: (.terminal_reason // "unknown")}' \
-            > results-meta.json 2>/dev/null \
-            || echo '{"result":"","error":true,"terminal_reason":"no_result_line"}' > results-meta.json
-          # The actual test result JSON is embedded inside the assistant's final message text.
-          # Use Python to extract the last valid JSON object containing "overall" from the result text.
-          jq -r '.result' results-meta.json 2>/dev/null | python3 -c "
-import sys, json, re
-text = sys.stdin.read()
-# Find the last fenced json block first
-blocks = re.findall(r'\x60{3}json\s*([\s\S]*?)\x60{3}', text)
-for b in reversed(blocks):
-    try:
-        obj = json.loads(b.strip())
-        if 'overall' in obj:
-            print(json.dumps(obj)); sys.exit(0)
-    except: pass
-# Fallback: find last JSON object with 'overall' key using depth tracking
-depth=0; start=-1; best=None
-for i,c in enumerate(text):
-    if c=='{':
-        if depth==0: start=i
-        depth+=1
-    elif c=='}':
-        depth-=1
-        if depth==0 and start>=0:
-            try:
-                obj=json.loads(text[start:i+1])
-                if 'overall' in obj: best=json.dumps(obj)
-            except: pass
-            start=-1
-if best: print(best)
-" > results.json 2>/dev/null \
-            || echo '{"overall":"FAIL","error":"no JSON in stream-json final message"}' > results.json
+          python3 .github/e2e/extract-results.py raw-output.txt > results.json \
+            || echo '{"overall":"FAIL","error":"extract-results.py failed"}' > results.json
+          jq . results.json > /dev/null 2>&1 \
+            || echo '{"overall":"FAIL","error":"results.json is not valid JSON"}' > results.json
 
-          # Ensure results.json is valid JSON
-          jq . results.json > /dev/null 2>&1 || echo '{"overall":"FAIL","error":"no JSON in stream-json final message"}' > results.json
-
-          # Fallback: reconstruct from CHECKPOINT lines if final JSON is missing or lacks results.
-          # Claude Code stream-json uses "assistant" and "result" event types (not "content_block_delta"),
-          # so extract CHECKPOINT from those event types.
-          if ! jq -e '.results' results.json > /dev/null 2>&1; then
-            LAST_CHECKPOINT=$(jq -rR '
-              fromjson? |
-              (
-                (.type == "assistant" and .message.content[].type == "text") as $a |
-                (.type == "result") as $r |
-                if $r then .result
-                elif $a then .message.content[].text
-                else empty
-                end
-              ) // empty
-            ' raw-output.txt 2>/dev/null \
-              | grep '^CHECKPOINT: ' | tail -1 | sed 's/^CHECKPOINT: //' || echo '')
-            if [ -n "$LAST_CHECKPOINT" ]; then
-              OVERALL=$(echo "$LAST_CHECKPOINT" | jq -r 'if any(.[]; .status == "FAIL") then "FAIL" else "PASS" end' 2>/dev/null || echo "FAIL")
-              echo "{\"results\":$LAST_CHECKPOINT,\"overall\":\"$OVERALL\",\"note\":\"reconstructed from checkpoints\"}" > results.json
-            fi
-          fi
-
-      # ── Step 5b: T6 safety cleanup ────────────────────────────────────────
-      # Runs even if Step 5's LLM crashes mid-T5. Removes any members that were
-      # registered but never cleaned up. Idempotent — if T6 ran inside Step 5
-      # this finds no members and exits PASS.
-      - name: T6 — Member cleanup (safety net)
-        if: always()
-        shell: bash
-        run: |
-          # Rebuild mcp-runtime.json in case Step 5 never reached that point
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
-            FLEET_BIN_WIN=$(cygpath -w "$FLEET_BIN")
-            FLEET_BIN_JSON=$(echo "$FLEET_BIN_WIN" | sed 's/\\/\\\\/g')
-          else
-            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet"
-            FLEET_BIN_JSON="$FLEET_BIN"
-          fi
-          printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN_JSON" > mcp-runtime.json
-
-          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
-          CLEANUP_PROMPT='T6 Safety Cleanup: Call fleet_status to check for registered members. For each member found, call remove_member to remove it. Then call fleet_status again to confirm no members remain. Output EXACTLY one line of JSON and nothing else before or after it: {"test":"T6","status":"PASS","notes":"<brief note>"} Set status to PASS if members were removed successfully or no members were registered. Set status to FAIL only if a remove_member call returned an error and members still remain.'
-
-          if [ "$PROVIDER" = "claude" ]; then
-            claude \
-              -p "$CLEANUP_PROMPT" \
-              --mcp-config mcp-runtime.json \
-              --output-format stream-json \
-              --max-turns 15 \
-              > t6-raw.txt 2>&1 || true
-          else
-            gemini \
-              --output-format stream-json \
-              --mcp-config mcp-runtime.json \
-              -p "$CLEANUP_PROMPT" \
-              > t6-raw.txt 2>&1 || true
-          fi
-
-          # Extract T6 result and write t6-result.json
-          grep -E '"type":"result"' t6-raw.txt | tail -1 \
-            | jq -r '.result // .text // ""' 2>/dev/null \
-            | python3 -c "
-import sys, json, re
-text = sys.stdin.read()
-# Find JSON object containing 'T6'
-depth=0; start=-1; best=None
-for i,c in enumerate(text):
-    if c=='{':
-        if depth==0: start=i
-        depth+=1
-    elif c=='}':
-        depth-=1
-        if depth==0 and start>=0:
-            try:
-                obj=json.loads(text[start:i+1])
-                if 'T6' in str(obj) or 'test' in obj: best=json.dumps(obj)
-            except: pass
-            start=-1
-if best: print(best)
-else: print('{\"test\":\"T6\",\"status\":\"FAIL\",\"notes\":\"no JSON found in safety cleanup output\"}')
-" > t6-result.json 2>/dev/null \
-            || echo '{"test":"T6","status":"FAIL","notes":"safety cleanup did not produce a result"}' > t6-result.json
-          echo "T6 safety result: $(cat t6-result.json)"
-
-      # ── Step 5c: Collect PM fleet log ─────────────────────────────────────
-      # Grab the fleet-<PID>.log with the most content from this run.
-      # install --force creates a short daemon stub log; the MCP subprocess
-      # started by claude -p has the actual execute_prompt records and is
-      # always larger. Taking max-size picks the right log.
+      # ── Step 5b: Collect PM fleet log ─────────────────────────────────────
       - name: Collect PM fleet log
         if: always()
         shell: bash
-        run: |
-          mkdir -p logs
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            LOG_DIR=$(cygpath "$USERPROFILE")/.apra-fleet/data/logs
-          else
-            LOG_DIR="$HOME/.apra-fleet/data/logs"
-          fi
-          # Pick the fleet log with the most bytes (the MCP subprocess log,
-          # not the tiny daemon startup stub created by install --force).
-          FLEET_LOG=$(ls "$LOG_DIR"/fleet-*.log 2>/dev/null \
-            | xargs -I{} sh -c 'echo "$(wc -c < {}) {}"' 2>/dev/null \
-            | sort -rn | awk 'NR==1{print $2}')
-          if [ -n "$FLEET_LOG" ]; then
-            cp "$FLEET_LOG" logs/fleet-pm.log
-            echo "Collected: $(basename $FLEET_LOG) ($(wc -c < "$FLEET_LOG") bytes, $(wc -l < "$FLEET_LOG") lines)"
-          else
-            echo "No fleet log found in $LOG_DIR"
-          fi
+        run: bash .github/e2e/collect-pm-log.sh
 
-      # ── Step 5d: Extract telemetry ────────────────────────────────────────
-      # Compute wall/active time and token counts for PM, doer, and reviewer
-      # from the artifacts collected so far:
-      #   PM      → raw-output.txt (stream-json assistant events + result duration)
-      #   doer    → logs/doer-session.jsonl (Claude session JSONL)
-      #   reviewer→ logs/reviewer-session.jsonl
-      # Inject telemetry into results.json so it shows in the step summary.
+      # ── Step 5c: Extract telemetry ────────────────────────────────────────
+      # Primary: logs/fleet-pm.log execute_prompt exit lines (in=N out=N elapsed=Nms).
+      # Fallback: member session JSONLs.
       - name: Extract telemetry
         if: always()
         shell: bash
-        run: |
-          node - << 'JSEOF'
-          const fs = require('fs');
+        run: node .github/e2e/extract-telemetry.js
 
-          function parseSessionJsonl(path) {
-            let tokIn=0, tokOut=0, firstTs=null, lastTs=null;
-            if (!fs.existsSync(path)) return {tokIn,tokOut,firstTs,lastTs};
-            const lines = fs.readFileSync(path,'utf8').split('\n').filter(Boolean);
-            for (const l of lines) {
-              try {
-                const obj = JSON.parse(l);
-                if (obj.type === 'assistant' && obj.message?.usage) {
-                  tokIn  += obj.message.usage.input_tokens  || 0;
-                  tokOut += obj.message.usage.output_tokens || 0;
-                }
-                if (obj.timestamp) {
-                  const t = new Date(obj.timestamp).getTime();
-                  if (!firstTs || t < firstTs) firstTs = t;
-                  if (!lastTs  || t > lastTs)  lastTs  = t;
-                }
-              } catch {}
-            }
-            return {tokIn, tokOut, firstTs, lastTs};
-          }
-
-          function parsePmRawOutput(path) {
-            let tokIn=0, tokOut=0, wallMs=0, firstTs=null, lastTs=null;
-            if (!fs.existsSync(path)) return {tokIn,tokOut,wallMs,firstTs,lastTs};
-            const lines = fs.readFileSync(path,'utf8').split('\n').filter(Boolean);
-            for (const l of lines) {
-              try {
-                const obj = JSON.parse(l);
-                // Sum tokens across all assistant turns
-                if (obj.type === 'assistant' && obj.message?.usage) {
-                  tokIn  += obj.message.usage.input_tokens  || 0;
-                  tokOut += obj.message.usage.output_tokens || 0;
-                }
-                // Wall time from result event duration_ms
-                if (obj.type === 'result' && obj.duration_ms) {
-                  wallMs = Math.max(wallMs, obj.duration_ms);
-                }
-                if (obj.timestamp) {
-                  const t = new Date(obj.timestamp).getTime();
-                  if (!firstTs || t < firstTs) firstTs = t;
-                  if (!lastTs  || t > lastTs)  lastTs  = t;
-                }
-              } catch {}
-            }
-            return {tokIn, tokOut, wallMs, firstTs, lastTs};
-          }
-
-          const pm   = parsePmRawOutput('raw-output.txt');
-          const doer = parseSessionJsonl('logs/doer-session.jsonl');
-          const rev  = parseSessionJsonl('logs/reviewer-session.jsonl');
-
-          const pmWall   = pm.firstTs && pm.lastTs ? Math.round((pm.lastTs - pm.firstTs)/1000) : Math.round(pm.wallMs/1000);
-          const pmActive = Math.round(pm.wallMs / 1000);
-          const doerWall = doer.firstTs && doer.lastTs ? Math.round((doer.lastTs - doer.firstTs)/1000) : 0;
-          const revWall  = rev.firstTs  && rev.lastTs  ? Math.round((rev.lastTs  - rev.firstTs)/1000)  : 0;
-
-          const telemetry = [
-            { role:'pm',       wall_time_s:pmWall,   active_time_s:pmActive, tokens_in:pm.tokIn,   tokens_out:pm.tokOut,   tokens_total:pm.tokIn+pm.tokOut   },
-            { role:'doer',     wall_time_s:doerWall, active_time_s:doerWall, tokens_in:doer.tokIn, tokens_out:doer.tokOut, tokens_total:doer.tokIn+doer.tokOut },
-            { role:'reviewer', wall_time_s:revWall,  active_time_s:revWall,  tokens_in:rev.tokIn,  tokens_out:rev.tokOut,  tokens_total:rev.tokIn+rev.tokOut   },
-          ];
-
-          // Inject into results.json
-          if (fs.existsSync('results.json')) {
-            try {
-              const r = JSON.parse(fs.readFileSync('results.json','utf8'));
-              r.telemetry = telemetry;
-              fs.writeFileSync('results.json', JSON.stringify(r, null, 2));
-            } catch {}
-          }
-
-          // Print table
-          console.log('\nTelemetry:');
-          console.log('Role        Wall(s)  Active(s)  Tok-in   Tok-out   Total');
-          for (const t of telemetry) {
-            console.log(`${t.role.padEnd(12)}${String(t.wall_time_s).padStart(7)}  ${String(t.active_time_s).padStart(9)}  ${String(t.tokens_in).padStart(7)}  ${String(t.tokens_out).padStart(8)}  ${String(t.tokens_total).padStart(7)}`);
-          }
-          JSEOF
-
-      # ── Step 6: Post summary ───────────────────────────────────────────────
+      # ── Step 6: Post job summary ───────────────────────────────────────────
       - name: Post job summary
         if: always()
         shell: bash
+        run: SUITE='${{ inputs.suite }}' bash .github/e2e/post-summary.sh
+
+      # ── Step 7: T6 teardown ────────────────────────────────────────────────
+      # Runs always — remove any fleet members left over from the test run.
+      # Housekeeping only: result does not feed into the test report.
+      - name: T6 — Teardown
+        if: always()
+        shell: bash
         run: |
-          # Merge T6 safety result into results.json (overrides any T6 from Step 5)
-          if [ -f t6-result.json ] && jq -e '.' t6-result.json > /dev/null 2>&1; then
-            T6=$(cat t6-result.json)
-            jq --argjson t6 "$T6" '.results = ((.results // []) | map(select(.test != "T6"))) + [$t6]' \
-              results.json > results_merged.json 2>/dev/null && mv results_merged.json results.json || true
-          fi
+          bash .github/e2e/setup-mcp.sh
 
-          echo "## Fleet E2E – Suite ${{ inputs.suite }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | Status | Notes |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          cat results.json | jq -r '.results[] | "| \(.test) | \(.status) | \(.notes) |"' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "| error | FAIL | could not parse results |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          OVERALL=$(cat results.json | jq -r '.overall' 2>/dev/null || echo "FAIL")
-          echo "**Overall: $OVERALL**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          # Telemetry table
-          if jq -e '.telemetry' results.json > /dev/null 2>&1; then
-            echo "### Telemetry" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Role | Wall (s) | Active (s) | Tokens In | Tokens Out | Total |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|----------|------------|-----------|------------|-------|" >> $GITHUB_STEP_SUMMARY
-            cat results.json | jq -r '.telemetry[] | "| \(.role) | \(.wall_time_s) | \(.active_time_s) | \(.tokens_in) | \(.tokens_out) | \(.tokens_total) |"' >> $GITHUB_STEP_SUMMARY 2>/dev/null
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          if [ "$PROVIDER" = "claude" ]; then
+            claude \
+              -p "$(cat .github/e2e/t6-teardown.md)" \
+              --mcp-config mcp-runtime.json \
+              --max-turns 15 \
+              > t6-output.txt 2>&1
+          else
+            gemini \
+              --mcp-config mcp-runtime.json \
+              -p "$(cat .github/e2e/t6-teardown.md)" \
+              > t6-output.txt 2>&1
           fi
+          tail -3 t6-output.txt
 
       # ── Step 7: Upload artifacts ───────────────────────────────────────────
       - name: Upload results
@@ -454,10 +216,8 @@ else: print('{\"test\":\"T6\",\"status\":\"FAIL\",\"notes\":\"no JSON found in s
           name: e2e-${{ inputs.suite }}-${{ github.run_id }}
           path: |
             results.json
-            results-meta.json
             raw-output.txt
-            t6-raw.txt
-            t6-result.json
+            t6-output.txt
             rendered-test-script.md
             mcp-runtime.json
             logs/
