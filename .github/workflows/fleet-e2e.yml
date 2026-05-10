@@ -210,13 +210,25 @@ if best: print(best)
           # Ensure results.json is valid JSON
           jq . results.json > /dev/null 2>&1 || echo '{"overall":"FAIL","error":"no JSON in stream-json final message"}' > results.json
 
-          # Fallback: reconstruct from CHECKPOINT lines if final JSON is missing or lacks results
+          # Fallback: reconstruct from CHECKPOINT lines if final JSON is missing or lacks results.
+          # Claude Code stream-json uses "assistant" and "result" event types (not "content_block_delta"),
+          # so extract CHECKPOINT from those event types.
           if ! jq -e '.results' results.json > /dev/null 2>&1; then
-            LAST_CHECKPOINT=$(jq -rR 'fromjson? | select(.type == "content_block_delta") | .delta.text // ""' raw-output.txt 2>/dev/null \
+            LAST_CHECKPOINT=$(jq -rR '
+              fromjson? |
+              (
+                (.type == "assistant" and .message.content[].type == "text") as $a |
+                (.type == "result") as $r |
+                if $r then .result
+                elif $a then .message.content[].text
+                else empty
+                end
+              ) // empty
+            ' raw-output.txt 2>/dev/null \
               | grep '^CHECKPOINT: ' | tail -1 | sed 's/^CHECKPOINT: //' || echo '')
             if [ -n "$LAST_CHECKPOINT" ]; then
               OVERALL=$(echo "$LAST_CHECKPOINT" | jq -r 'if any(.[]; .status == "FAIL") then "FAIL" else "PASS" end' 2>/dev/null || echo "FAIL")
-              echo "{\"results\":$LAST_CHECKPOINT,\"overall\":\"$OVERALL\",\"note\":\"reconstructed from checkpoints — run may have been interrupted\"}" > results.json
+              echo "{\"results\":$LAST_CHECKPOINT,\"overall\":\"$OVERALL\",\"note\":\"reconstructed from checkpoints\"}" > results.json
             fi
           fi
 
