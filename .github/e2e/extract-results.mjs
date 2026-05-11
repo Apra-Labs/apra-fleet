@@ -34,10 +34,17 @@ for (const line of content.split('\n')) {
 
 let checkpoints = null;
 for (const text of allTexts) {
-  for (const line of text.split('\n')) {
-    if (line.startsWith('CHECKPOINT: ')) {
-      try { checkpoints = JSON.parse(line.slice('CHECKPOINT: '.length)); } catch {}
-    }
+  for (const rawLine of text.split('\n')) {
+    // Strip markdown decoration the LLM may have added: backticks, bold markers, whitespace
+    const line = rawLine.trim()
+      .replace(/^[`*_]+/, '').replace(/[`*_]+$/, '').trim();
+    // Match CHECKPOINT: with optional whitespace after colon
+    const m = line.match(/^CHECKPOINT:\s*/);
+    if (!m) continue;
+    try {
+      const parsed = JSON.parse(line.slice(m[0].length));
+      if (Array.isArray(parsed)) checkpoints = parsed;
+    } catch {}
   }
 }
 

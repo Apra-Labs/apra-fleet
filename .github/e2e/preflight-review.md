@@ -79,7 +79,7 @@ Two independent agents reviewed the workflow step-by-step on 2026-05-11.
 | # | Risk | Decision | Status |
 |---|------|----------|--------|
 | F-1 | `t6-teardown.md`: `` `T6: PASS` `` / `` `T6: FAIL` `` wrapped in backticks — LLM emits `` `T6: PASS` `` and grep match would work by accident, but intent is wrong | **Fixed**: backticks removed from output format strings | ✅ |
-| F-2 | `test-script.md` T5.3: `/pm` skills in a fenced code block — LLM may try to run them as shell commands | **Fixed**: code block removed; instructions now say "these are slash-command skill invocations, not shell commands" | ✅ |
+| F-2 | `test-script.md` T5.3: `/pm` skills in a fenced code block — LLM may try to run them as shell commands | **Deferred to pm skill**: test-script.md intentionally left as-is; pm skill should be robust to /pm invocations in code blocks | ⚠️ |
 | F-3 | `test-script.md` T5.1: sprint branch created from whatever branch was checked out, not main | **Fixed**: `git fetch origin && git checkout main && git pull origin main` added to T5.1 | ✅ |
 
 ### Session Log Collection (test-script.md)

@@ -69,14 +69,14 @@ cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd rea
 ```
 Pick the **3 oldest open issues**. Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
 
-**T5.3** Drive sprint by invoking these skills in sequence (these are slash-command skill invocations, not shell commands — do not wrap them in a code block or run them in a terminal):
-
+**T5.3** Drive sprint:
+```
 /pm init fleet-e2e-toy
 /pm pair doer reviewer
 /pm plan fleet-e2e-toy
 /pm start doer
-
-Poll /pm status doer until VERIFY, then dispatch reviewer. Continue fix→review loop until approved. Then /pm cleanup fleet-e2e-toy.
+```
+Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix→review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
 Branch prefix: `{{BRANCH_PREFIX}}`
 
 **T5.4** Verify branch `{{BRANCH_PREFIX}}/...` exists on origin, PR was raised, CI is green.
