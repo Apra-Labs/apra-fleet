@@ -7,10 +7,12 @@ on:
     tags: ['v*']
     paths-ignore:
       - 'llms-full.txt'
+      - '.github/e2e/**'
   pull_request:
     branches: [main]
     paths-ignore:
       - 'llms-full.txt'
+      - '.github/e2e/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
