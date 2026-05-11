@@ -95,12 +95,12 @@ console.log(`Fleet: ${capture(FLEET_BIN, ['--version'])}`);
 
 console.log('\n--- Verifying PM LLM auth ---');
 if (PM_PROVIDER === 'claude') {
-  const r = spawnSync('claude', ['-p', 'Reply with the single word: ready', '--max-turns', '1'],
+  const r = spawnSync('claude', ['-p', 'say: ready', '--max-turns', '1'],
     { encoding: 'utf8', shell: isWindows });
   const out = (r.stdout || '') + (r.stderr || '');
   process.stdout.write(out);
-  if (!/ready/i.test(out)) {
-    console.error('ERROR: PM claude auth failed — run provision_llm_auth on this member first.');
+  if (r.status !== 0 || !/ready/i.test(out)) {
+    console.error(`ERROR: PM claude auth failed (exit=${r.status}) — run provision_llm_auth on this member first.`);
     process.exit(1);
   }
 }
