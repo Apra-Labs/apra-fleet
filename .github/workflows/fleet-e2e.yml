@@ -160,9 +160,12 @@ jobs:
               > raw-output.txt 2>&1 || true
           fi
 
+          # python3 on Linux/macOS; python on Windows (no python3 alias).
+          PYTHON=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)
+
           # The fleet daemon reports its log file path in every fleet_status response.
           # Extract it from raw-output.txt — no filesystem heuristics needed.
-          FLEET_LOG=$(python3 .github/e2e/extract-fleet-log-path.py raw-output.txt || true)
+          FLEET_LOG=$("$PYTHON" .github/e2e/extract-fleet-log-path.py raw-output.txt || true)
           echo "fleet_log=$FLEET_LOG" >> "$GITHUB_OUTPUT"
 
           # Extract PM session ID from the stream-json system init event.
@@ -174,7 +177,7 @@ jobs:
           echo "Fleet log:     $FLEET_LOG"
 
           # Assemble results.json from CHECKPOINT lines emitted during the run.
-          python3 .github/e2e/extract-results.py raw-output.txt \
+          "$PYTHON" .github/e2e/extract-results.py raw-output.txt \
             '${{ inputs.suite }}' \
             '${{ steps.suite.outputs.pm_os }}' \
             '${{ steps.suite.outputs.pm_provider }}' \
@@ -225,14 +228,14 @@ jobs:
               -p "$(cat .github/e2e/t6-teardown.md)" \
               --mcp-config mcp-runtime.json \
               --max-turns 15 \
-              > t6-output.txt 2>&1
+              > t6-output.txt 2>&1 || true
           else
             gemini \
               --mcp-config mcp-runtime.json \
               -p "$(cat .github/e2e/t6-teardown.md)" \
-              > t6-output.txt 2>&1
+              > t6-output.txt 2>&1 || true
           fi
-          tail -3 t6-output.txt
+          tail -3 t6-output.txt || true
 
       # ── Step 7: Upload artifacts ───────────────────────────────────────────
       - name: Upload results
