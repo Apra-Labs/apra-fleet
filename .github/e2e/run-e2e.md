@@ -1,75 +1,107 @@
 # E2E Test Runbook
 
-Tests run on **fleet-e2e-win** (192.168.1.25), triggered from the PM machine via fleet `execute_command`.
-All scripts live in `.github/e2e/` in the apra-fleet repo.
+Tests are triggered by the PM on a designated runner member using fleet `execute_command`. The runner checks out the apra-fleet repo and executes the suite locally. All scripts live in `.github/e2e/`.
 
 ---
 
-## One-time setup (fleet-e2e-win)
+## Prepare
+
+Before issuing any commands, query the runner's profile:
 
 ```
-# Clone apra-fleet if not already present
-git clone https://github.com/Apra-Labs/apra-fleet.git C:/gh-fleet/apra-fleet
+member_detail <runner>
 ```
 
-Ensure these credentials are set in the fleet store **on fleet-e2e-win**:
+Note the `work_folder` and `os` — use these to construct all paths and commands below. The repo is expected at `<work_folder>/gh-fleet/apra-fleet`.
 
-| Name            | Description                        |
-|-----------------|------------------------------------|
-| `APASS`         | SSH password for akhil on members  |
-| `e2e_bb_token`  | Bitbucket token                    |
-| `e2e_bb_user`   | Bitbucket username                 |
-| `e2e_gh_token`  | GitHub token                       |
-| `e2e_ado_token` | Azure DevOps token                 |
+---
 
-Set via (on fleet-e2e-win): `echo "<value>" | apra-fleet secret --set <name> --persist -y`
+## One-time setup (on the runner)
+
+Clone the repo if not already present. Use `execute_command` with the correct syntax for the runner's OS:
+
+```
+cd <work_folder> && git clone https://github.com/Apra-Labs/apra-fleet.git gh-fleet/apra-fleet
+```
+
+Ensure these credentials are set in the fleet store **on the runner**:
+
+| Name            | Description                       |
+|-----------------|-----------------------------------|
+| `APASS`         | SSH password for akhil on members |
+| `e2e_bb_token`  | Bitbucket token                   |
+| `e2e_bb_user`   | Bitbucket username                |
+| `e2e_gh_token`  | GitHub token                      |
+| `e2e_ado_token` | Azure DevOps token                |
+
+Set via: `echo "<value>" | apra-fleet secret --set <name> --persist -y`
+
+Verify all are present: `apra-fleet secret --list`
 
 ---
 
 ## Per-run steps
 
-### 1. Provision LLM auth (from PM)
+### 1. Provision LLM auth
 
 ```
-provision_llm_auth fleet-e2e-win claude
+provision_llm_auth <runner> claude
 ```
 
-Verify with: `execute_command fleet-e2e-win "claude -p 'say: ready' --max-turns 1"`
-Only proceed if response contains `ready`.
-
-### 2. Run tests
+Verify the token is live — do not skip this:
 
 ```
-execute_command fleet-e2e-win \
-  "cd C:/gh-fleet/apra-fleet && git pull && node .github/e2e/run-e2e.mjs <suite>"
+execute_command <runner> "claude -p 'say: ready' --max-turns 1"
 ```
 
-Suites: `s1` (Windows PM) · `s2` (Linux PM) · `s3` (macOS PM)  
-Run as background task — typical duration 30–45 min.
+Only proceed if the response contains `ready`. If it does not, re-provision and retry once.
+
+### 2. Pull latest and run
+
+```
+execute_command <runner> "cd gh-fleet/apra-fleet && git pull && node .github/e2e/run-e2e.mjs <suite>"
+```
+
+Run as a **background task**. Typical duration: 30–45 min.
+
+Available suites are defined in `.github/e2e/suites.json` — check that file for suite IDs and what each covers.
 
 ### 3. Collect artifacts
 
+Once the run completes, receive output files from the runner (paths relative to the repo root):
+
 ```
-receive_files fleet-e2e-win [
-  "C:/gh-fleet/apra-fleet/e2e-out/results.json",
-  "C:/gh-fleet/apra-fleet/e2e-out/raw-output.txt",
-  "C:/gh-fleet/apra-fleet/e2e-out/logs/fleet-pm.log",
-  "C:/gh-fleet/apra-fleet/e2e-out/logs/doer-session.jsonl",
-  "C:/gh-fleet/apra-fleet/e2e-out/logs/reviewer-session.jsonl"
+receive_files <runner> [
+  "gh-fleet/apra-fleet/e2e-out/results.json",
+  "gh-fleet/apra-fleet/e2e-out/raw-output.txt",
+  "gh-fleet/apra-fleet/e2e-out/logs/fleet-pm.log",
+  "gh-fleet/apra-fleet/e2e-out/logs/doer-session.jsonl",
+  "gh-fleet/apra-fleet/e2e-out/logs/reviewer-session.jsonl"
 ]
 ```
 
-### 4. Review
+### 4. Review results
 
-- `results.json` → overall PASS/FAIL and per-test status
-- `raw-output.txt` → full PM transcript
-- `logs/fleet-pm.log` → fleet daemon timing
-- `node .github/e2e/extract-telemetry.js` from the output dir for the token/timing table
+| File | What it contains |
+|------|-----------------|
+| `e2e-out/results.json` | Overall PASS/FAIL and per-test breakdown |
+| `e2e-out/raw-output.txt` | Full PM transcript |
+| `e2e-out/logs/fleet-pm.log` | Fleet daemon per-call timing |
+| `e2e-out/logs/doer-session.jsonl` | Doer member session log |
+| `e2e-out/logs/reviewer-session.jsonl` | Reviewer member session log |
+
+For a token/timing summary table, run from the `e2e-out/` directory:
+
+```
+node ../.github/e2e/extract-telemetry.js
+```
 
 ---
 
-## Suite config
+## Suite and member config
 
-Suites are defined in `.github/e2e/suites.json`.
-Member connection details are in `.github/e2e/members.json`.
-The test template is `.github/e2e/test-script.md` — substitution happens on fleet-e2e-win at run time.
+| File | Purpose |
+|------|---------|
+| `.github/e2e/suites.json` | Suite definitions — PM/doer/reviewer roles per suite |
+| `.github/e2e/members.json` | Member IPs and work folders referenced by suites |
+| `.github/e2e/test-script.md` | Test script template — substituted at run time by `run-e2e.mjs` |
