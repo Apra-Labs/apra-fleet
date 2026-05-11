@@ -97,9 +97,7 @@ console.log('\n--- Verifying PM LLM auth ---');
 if (PM_PROVIDER === 'claude') {
   // On Windows, shell:true joins args via cmd.exe — colons and spaces must be
   // quoted inside the arg string, not by spawnSync.
-  const probeArgs = isWindows
-    ? ['-p', '"Output the word ready"', '--max-turns', '1']
-    : ['-p', 'Output the word ready', '--max-turns', '1'];
+  const probeArgs = ['-p', 'hello are you ready', '--model', 'claude-haiku-4-5', '--max-turns', '1'];
   const r = spawnSync('claude', probeArgs, { encoding: 'utf8', shell: isWindows });
   const out = (r.stdout || '') + (r.stderr || '');
   process.stdout.write(out);
