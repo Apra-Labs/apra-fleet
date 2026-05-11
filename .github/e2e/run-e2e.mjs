@@ -47,6 +47,19 @@ function get(obj, path) {
   return path.split('.').reduce((o, k) => o?.[k], obj) ?? '';
 }
 
+// Resolve a binary from PATH without a shell — needed for LLM tools on Windows
+// because shell:true routes through cmd.exe which mangles multi-word args.
+function findExe(name) {
+  const exts = isWindows ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';') : [''];
+  for (const dir of (process.env.PATH || '').split(isWindows ? ';' : ':')) {
+    for (const ext of exts) {
+      const p = join(dir.trim(), name + ext);
+      if (existsSync(p)) return p;
+    }
+  }
+  return name;
+}
+
 // ── Load config ────────────────────────────────────────────────────────────
 
 const config  = JSON.parse(readFileSync(join(E2E_DIR, 'suites.json'),  'utf8'));
@@ -95,10 +108,9 @@ console.log(`Fleet: ${capture(FLEET_BIN, ['--version'])}`);
 
 console.log('\n--- Verifying PM LLM auth ---');
 if (PM_PROVIDER === 'claude') {
-  // On Windows, shell:true joins args via cmd.exe — colons and spaces must be
-  // quoted inside the arg string, not by spawnSync.
-  const probeArgs = ['-p', 'hello are you ready', '--model', 'claude-haiku-4-5', '--max-turns', '1'];
-  const r = spawnSync('claude', probeArgs, { encoding: 'utf8', shell: isWindows });
+  const claudeExe = findExe('claude');
+  const r = spawnSync(claudeExe, ['-p', 'hello are you ready', '--model', 'claude-haiku-4-5', '--max-turns', '1'],
+    { encoding: 'utf8' });
   const out = (r.stdout || '') + (r.stderr || '');
   process.stdout.write(out);
   if (r.status !== 0 || !/ready/i.test(out)) {
@@ -140,14 +152,15 @@ writeFileSync(RENDERED_SCRIPT, rendered);
 // ── Run LLM test (T1–T5) ──────────────────────────────────────────────────
 
 console.log('\n--- Running E2E (T1–T5) ---');
-const RAW_OUTPUT = join(OUT_DIR, 'raw-output.txt');
-const [llmCmd, llmArgs] = PM_PROVIDER === 'claude'
-  ? ['claude', ['-p', rendered, '--mcp-config', 'mcp-runtime.json',
-                '--output-format', 'stream-json', '--verbose', '--max-turns', '80']]
-  : ['gemini', ['--output-format', 'stream-json', '--mcp-config', 'mcp-runtime.json', '-p', rendered]];
+const RAW_OUTPUT  = join(OUT_DIR, 'raw-output.txt');
+const MCP_CONFIG  = join(REPO_DIR, 'mcp-runtime.json');
+const llmExe      = findExe(PM_PROVIDER === 'claude' ? 'claude' : 'gemini');
+const llmArgs     = PM_PROVIDER === 'claude'
+  ? ['-p', rendered, '--mcp-config', MCP_CONFIG, '--output-format', 'stream-json', '--verbose', '--max-turns', '80']
+  : ['--output-format', 'stream-json', '--mcp-config', MCP_CONFIG, '-p', rendered];
 
-const llm = spawnSync(llmCmd, llmArgs,
-  { encoding: 'utf8', shell: isWindows, maxBuffer: 200 * 1024 * 1024 });
+const llm = spawnSync(llmExe, llmArgs,
+  { encoding: 'utf8', maxBuffer: 200 * 1024 * 1024 });
 writeFileSync(RAW_OUTPUT, (llm.stdout || '') + (llm.stderr || ''));
 
 // ── Collect fleet log ──────────────────────────────────────────────────────
@@ -175,11 +188,12 @@ spawnSync('node', [join(E2E_DIR, 'extract-telemetry.js')],
 
 console.log('\n--- T6 teardown ---');
 const t6Prompt = readFileSync(join(E2E_DIR, 't6-teardown.md'), 'utf8');
-const [t6Cmd, t6Args] = PM_PROVIDER === 'claude'
-  ? ['claude', ['-p', t6Prompt, '--mcp-config', 'mcp-runtime.json', '--max-turns', '15']]
-  : ['gemini', ['--mcp-config', 'mcp-runtime.json', '-p', t6Prompt]];
-const t6 = spawnSync(t6Cmd, t6Args,
-  { encoding: 'utf8', shell: isWindows, maxBuffer: 10 * 1024 * 1024 });
+const t6Exe    = findExe(PM_PROVIDER === 'claude' ? 'claude' : 'gemini');
+const t6Args   = PM_PROVIDER === 'claude'
+  ? ['-p', t6Prompt, '--mcp-config', MCP_CONFIG, '--max-turns', '15']
+  : ['--mcp-config', MCP_CONFIG, '-p', t6Prompt];
+const t6 = spawnSync(t6Exe, t6Args,
+  { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
 const t6Out = (t6.stdout || '') + (t6.stderr || '');
 writeFileSync(join(OUT_DIR, 't6-output.txt'), t6Out);
 console.log(t6Out.split('\n').slice(-3).join('\n'));
