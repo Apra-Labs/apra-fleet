@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 /**
  * Fleet E2E local runner — cross-platform (Windows/Linux/macOS).
- * Usage: node .github/e2e/run-e2e.mjs <suite>
+ *
+ * Usage:
+ *   node .github/e2e/run-e2e.mjs <suite>                 # full run (build + install + test)
+ *   node .github/e2e/run-e2e.mjs <suite> --install-only  # build + install, then exit (provision auth next)
+ *   node .github/e2e/run-e2e.mjs <suite> --skip-install  # skip build/install, go straight to auth check + test
+ *
  * Run from the apra-fleet repo root.
  */
 import {
@@ -16,7 +21,18 @@ const isWindows = platform === 'win32';
 const REPO_DIR  = join(fileURLToPath(import.meta.url), '../../..');
 const E2E_DIR   = join(REPO_DIR, '.github/e2e');
 const OUT_DIR   = join(REPO_DIR, 'e2e-out');
-const SUITE     = process.argv[2] || 's1';
+
+// ── Args ───────────────────────────────────────────────────────────────────
+
+const args         = process.argv.slice(2);
+const SUITE        = args.find(a => !a.startsWith('--')) || 's1';
+const INSTALL_ONLY = args.includes('--install-only');
+const SKIP_INSTALL = args.includes('--skip-install');
+
+if (INSTALL_ONLY && SKIP_INSTALL) {
+  console.error('ERROR: --install-only and --skip-install are mutually exclusive.');
+  process.exit(1);
+}
 
 mkdirSync(join(OUT_DIR, 'logs'), { recursive: true });
 
@@ -34,19 +50,6 @@ function capture(cmd, args = []) {
   return (r.stdout || '').trim();
 }
 
-function py(args) {
-  for (const bin of ['python3', 'python']) {
-    const r = spawnSync(bin, args, { encoding: 'utf8', shell: isWindows });
-    if (r.status === 0) return r.stdout || '';
-  }
-  return null;
-}
-
-// dotted-path lookup into a plain object
-function get(obj, path) {
-  return path.split('.').reduce((o, k) => o?.[k], obj) ?? '';
-}
-
 // Resolve a binary from PATH without a shell — needed for LLM tools on Windows
 // because shell:true routes through cmd.exe which mangles multi-word args.
 function findExe(name) {
@@ -60,12 +63,108 @@ function findExe(name) {
   return name;
 }
 
+// ── Result extraction (replaces extract-fleet-log-path.py) ─────────────────
+
+/**
+ * Scan a Claude stream-json file for the fleet log path.
+ * fleet_status tool results embed it as JSON { logFile: "..." }
+ * or as text "log=<path>".
+ */
+function extractFleetLogPath(rawOutputPath) {
+  if (!existsSync(rawOutputPath)) return null;
+  const content = readFileSync(rawOutputPath, 'utf8');
+  let best = null;
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+    if (obj.type !== 'user') continue;
+    for (const block of obj.message?.content ?? []) {
+      if (!block || block.type !== 'tool_result') continue;
+      for (const c of block.content ?? []) {
+        if (!c || c.type !== 'text') continue;
+        // Try structured JSON
+        try {
+          const d = JSON.parse(c.text);
+          if (d.logFile) { best = d.logFile; continue; }
+        } catch {}
+        // Try text format: log=<path>
+        const m = c.text.match(/\blog=([^\s|]+\.log)/);
+        if (m) best = m[1];
+      }
+    }
+  }
+  return best;
+}
+
+// ── Results extraction (replaces extract-results.py) ───────────────────────
+
+/**
+ * Build the results report from a Claude Code stream-json output file.
+ * The PM emits CHECKPOINT lines after each test; this assembles the report.
+ */
+function extractResults(rawOutputPath, suite, pmOs, pmProvider) {
+  if (!existsSync(rawOutputPath)) {
+    return { overall: 'FAIL', error: 'raw-output.txt not found' };
+  }
+
+  const content = readFileSync(rawOutputPath, 'utf8');
+  const allTexts = [];
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+    if (obj.type === 'result' && obj.result) {
+      allTexts.push(obj.result);
+    } else if (obj.type === 'assistant') {
+      for (const block of obj.message?.content ?? []) {
+        if (block?.type === 'text' && block.text) allTexts.push(block.text);
+      }
+    }
+  }
+
+  // Find last CHECKPOINT array across all text blocks
+  let checkpoints = null;
+  for (const text of allTexts) {
+    for (const line of text.split('\n')) {
+      if (line.startsWith('CHECKPOINT: ')) {
+        try {
+          const cp = JSON.parse(line.slice('CHECKPOINT: '.length));
+          checkpoints = cp;
+        } catch {}
+      }
+    }
+  }
+
+  const results = checkpoints ?? [];
+  const overall = results.length === 0 || results.some(t => t.status === 'FAIL') ? 'FAIL' : 'PASS';
+
+  return {
+    run: {
+      suite,
+      pm_os:       pmOs,
+      pm_provider: pmProvider,
+      timestamp:   new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+    },
+    results,
+    overall,
+  };
+}
+
 // ── Load config ────────────────────────────────────────────────────────────
 
 const config  = JSON.parse(readFileSync(join(E2E_DIR, 'suites.json'),  'utf8'));
 const members = JSON.parse(readFileSync(join(E2E_DIR, 'members.json'), 'utf8'));
 
 const s = config.suites[SUITE];
+if (!s) {
+  console.error(`ERROR: unknown suite "${SUITE}". Available: ${Object.keys(config.suites).join(', ')}`);
+  process.exit(1);
+}
+
 const PM_PROVIDER = s.pm.provider;
 const PM_OS       = s.pm.os;
 const DOER_OS     = s.doer.os;
@@ -83,28 +182,38 @@ const TOY_URL     = members.toy_projects[VCS];
 const RUN_ID        = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const BRANCH_PREFIX = `e2e-${SUITE}-${RUN_ID}`;
 
-console.log(`Suite: ${SUITE} | PM: ${PM_OS}/${PM_PROVIDER} | Run: ${RUN_ID}`);
+const modeLabel = INSTALL_ONLY ? ' [install-only]' : SKIP_INSTALL ? ' [skip-install]' : '';
+console.log(`Suite: ${SUITE} | PM: ${PM_OS}/${PM_PROVIDER} | Run: ${RUN_ID}${modeLabel}`);
 
-// ── Build + install fleet binary ───────────────────────────────────────────
+// ── Phase 1: Build + install fleet binary ──────────────────────────────────
 
-console.log('\n--- Building fleet binary ---');
-run('npm', ['ci', '--silent']);
-run('npm', ['run', 'build:binary', '--silent']);
+if (!SKIP_INSTALL) {
+  console.log('\n--- Building fleet binary ---');
+  run('npm', ['ci', '--silent']);
+  run('npm', ['run', 'build:binary', '--silent']);
 
-const BIN = readdirSync(join(REPO_DIR, 'dist')).find(f =>
-  isWindows
-    ? f.startsWith('apra-fleet-installer-') && f.endsWith('.exe')
-    : f.startsWith('apra-fleet-installer-') && !/\.(blob|cjs|json|exe)$/.test(f)
-);
-if (!BIN) throw new Error('Fleet installer binary not found in dist/');
+  const BIN = readdirSync(join(REPO_DIR, 'dist')).find(f =>
+    isWindows
+      ? f.startsWith('apra-fleet-installer-') && f.endsWith('.exe')
+      : f.startsWith('apra-fleet-installer-') && !/\.(blob|cjs|json|exe)$/.test(f)
+  );
+  if (!BIN) throw new Error('Fleet installer binary not found in dist/');
 
-run(join(REPO_DIR, 'dist', BIN), ['install', '--force']);
+  run(join(REPO_DIR, 'dist', BIN), ['install', '--force']);
 
-const HOME_DIR  = process.env.USERPROFILE || process.env.HOME || '';
-const FLEET_BIN = join(HOME_DIR, '.apra-fleet/bin', isWindows ? 'apra-fleet.exe' : 'apra-fleet');
-console.log(`Fleet: ${capture(FLEET_BIN, ['--version'])}`);
+  const HOME_DIR  = process.env.USERPROFILE || process.env.HOME || '';
+  const FLEET_BIN = join(HOME_DIR, '.apra-fleet/bin', isWindows ? 'apra-fleet.exe' : 'apra-fleet');
+  console.log(`Fleet: ${capture(FLEET_BIN, ['--version'])}`);
 
-// ── Smoke-test PM LLM auth ─────────────────────────────────────────────────
+  if (INSTALL_ONLY) {
+    console.log('\n--- Fleet installed successfully ---');
+    console.log('Next step: provision LLM auth on this member, then run:');
+    console.log(`  node .github/e2e/run-e2e.mjs ${SUITE} --skip-install`);
+    process.exit(0);
+  }
+}
+
+// ── Phase 2: Verify PM LLM auth ───────────────────────────────────────────
 
 console.log('\n--- Verifying PM LLM auth ---');
 if (PM_PROVIDER === 'claude') {
@@ -114,7 +223,9 @@ if (PM_PROVIDER === 'claude') {
   const out = (r.stdout || '') + (r.stderr || '');
   process.stdout.write(out);
   if (r.status !== 0 || !/ready/i.test(out)) {
-    console.error(`ERROR: PM claude auth failed (exit=${r.status}) — run provision_llm_auth on this member first.`);
+    console.error(`\nERROR: PM claude auth failed (exit=${r.status}).`);
+    console.error('Run provision_llm_auth on this member, then retry:');
+    console.error(`  node .github/e2e/run-e2e.mjs ${SUITE} --skip-install`);
     process.exit(1);
   }
 }
@@ -145,9 +256,9 @@ writeFileSync(RENDERED_SCRIPT, rendered);
 // ── Run LLM test (T1–T5) ──────────────────────────────────────────────────
 
 console.log('\n--- Running E2E (T1–T5) ---');
-const RAW_OUTPUT  = join(OUT_DIR, 'raw-output.txt');
-const llmExe      = findExe(PM_PROVIDER === 'claude' ? 'claude' : 'gemini');
-const llmArgs     = PM_PROVIDER === 'claude'
+const RAW_OUTPUT = join(OUT_DIR, 'raw-output.txt');
+const llmExe     = findExe(PM_PROVIDER === 'claude' ? 'claude' : 'gemini');
+const llmArgs    = PM_PROVIDER === 'claude'
   ? ['-p', rendered, '--output-format', 'stream-json', '--verbose', '--max-turns', '80']
   : ['--output-format', 'stream-json', '-p', rendered];
 
@@ -157,7 +268,7 @@ writeFileSync(RAW_OUTPUT, (llm.stdout || '') + (llm.stderr || ''));
 
 // ── Collect fleet log ──────────────────────────────────────────────────────
 
-const fleetLogPath = (py([join(E2E_DIR, 'extract-fleet-log-path.py'), RAW_OUTPUT]) || '').trim();
+const fleetLogPath = extractFleetLogPath(RAW_OUTPUT);
 if (fleetLogPath && existsSync(fleetLogPath)) {
   copyFileSync(fleetLogPath, join(OUT_DIR, 'logs/fleet-pm.log'));
   console.log(`Fleet log: ${fleetLogPath}`);
@@ -167,9 +278,8 @@ if (fleetLogPath && existsSync(fleetLogPath)) {
 
 // ── Extract results ────────────────────────────────────────────────────────
 
-const resultsJson = py([join(E2E_DIR, 'extract-results.py'), RAW_OUTPUT, SUITE, PM_OS, PM_PROVIDER]);
-writeFileSync(join(OUT_DIR, 'results.json'),
-  resultsJson || JSON.stringify({ overall: 'FAIL', error: 'extract-results.py failed' }));
+const report = extractResults(RAW_OUTPUT, SUITE, PM_OS, PM_PROVIDER);
+writeFileSync(join(OUT_DIR, 'results.json'), JSON.stringify(report, null, 2));
 
 // ── Telemetry ──────────────────────────────────────────────────────────────
 
@@ -193,10 +303,7 @@ console.log(t6Out.split('\n').slice(-3).join('\n'));
 // ── Summary ────────────────────────────────────────────────────────────────
 
 console.log('\n=== Results ===');
-try {
-  const results = JSON.parse(readFileSync(join(OUT_DIR, 'results.json'), 'utf8'));
-  console.log(`Overall: ${results.overall}`);
-  for (const t of results.results || [])
-    console.log(`  ${t.test}: ${t.status}${t.notes ? ' — ' + t.notes : ''}`);
-} catch { console.log('(could not parse results.json)'); }
+console.log(`Overall: ${report.overall}`);
+for (const t of report.results || [])
+  console.log(`  ${t.test}: ${t.status}${t.notes ? ' — ' + t.notes : ''}`);
 console.log(`\nArtifacts: ${OUT_DIR}`);

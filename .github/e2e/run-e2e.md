@@ -46,31 +46,33 @@ Verify all are present: `~/.apra-fleet/bin/apra-fleet secret --list`
 
 ## Per-run steps
 
-### 1. Provision LLM auth
+### 1. Pull latest and build + install
 
 ```
-provision_llm_auth <runner> claude
+execute_command <runner> "cd gh-fleet/apra-fleet && git pull && node .github/e2e/run-e2e.mjs <suite> --install-only"
 ```
 
-Verify the token is live — do not skip this:
+This builds the binary from source, installs it, prints the installed version, then exits. The script will tell you exactly what to do next.
+
+### 2. Provision LLM auth
 
 ```
-execute_command <runner> "claude -p 'say: ready' --max-turns 1"
+provision_llm_auth <runner> <provider>
 ```
 
-Only proceed if the response contains `ready`. If it does not, re-provision and retry once.
+Do this immediately after install completes — the fresh install is the right moment to ensure auth is valid before the test run starts.
 
-### 2. Pull latest and run
+### 3. Run the suite
 
 ```
-execute_command <runner> "cd gh-fleet/apra-fleet && git pull && node .github/e2e/run-e2e.mjs <suite>"
+execute_command <runner> "cd gh-fleet/apra-fleet && node .github/e2e/run-e2e.mjs <suite> --skip-install"
 ```
 
-Run as a **background task**. Typical duration: 30–45 min.
+Run as a **background task**. The script verifies auth internally and exits with a clear error if it fails. Typical duration: 30–45 min.
 
 Available suites are defined in `.github/e2e/suites.json` — check that file for suite IDs and what each covers.
 
-### 3. Collect artifacts
+### 4. Collect artifacts
 
 Once the run completes, receive output files from the runner (paths relative to the repo root):
 
@@ -84,7 +86,7 @@ receive_files <runner> [
 ]
 ```
 
-### 4. Review results
+### 5. Review results
 
 | File | What it contains |
 |------|-----------------|
