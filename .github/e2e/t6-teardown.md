@@ -9,7 +9,7 @@ Do not remove any other members — they belong to other projects.
 2. Call `fleet_status` to confirm neither "doer" nor "reviewer" remains.
 
 If all members were removed (or none were registered to begin with), print exactly:
-`T6: PASS`
+T6: PASS
 
 If any `remove_member` call failed and members still remain, print exactly:
-`T6: FAIL — <brief reason>`
+T6: FAIL — <brief reason>

@@ -243,6 +243,7 @@ jobs:
         shell: bash
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          cd "$RUN_DIR"
           if [ "$PROVIDER" = "claude" ]; then
             claude \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
