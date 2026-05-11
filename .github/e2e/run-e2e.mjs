@@ -120,13 +120,6 @@ if (PM_PROVIDER === 'claude') {
 }
 console.log('PM auth OK');
 
-// ── MCP config ────────────────────────────────────────────────────────────
-
-writeFileSync(
-  join(REPO_DIR, 'mcp-runtime.json'),
-  JSON.stringify({ mcpServers: { 'apra-fleet': { command: FLEET_BIN, args: ['mcp'] } } }, null, 2)
-);
-
 // ── Render test script ─────────────────────────────────────────────────────
 
 console.log('\n--- Rendering test script ---');
@@ -153,11 +146,10 @@ writeFileSync(RENDERED_SCRIPT, rendered);
 
 console.log('\n--- Running E2E (T1–T5) ---');
 const RAW_OUTPUT  = join(OUT_DIR, 'raw-output.txt');
-const MCP_CONFIG  = join(REPO_DIR, 'mcp-runtime.json');
 const llmExe      = findExe(PM_PROVIDER === 'claude' ? 'claude' : 'gemini');
 const llmArgs     = PM_PROVIDER === 'claude'
-  ? ['-p', rendered, '--mcp-config', MCP_CONFIG, '--output-format', 'stream-json', '--verbose', '--max-turns', '80']
-  : ['--output-format', 'stream-json', '--mcp-config', MCP_CONFIG, '-p', rendered];
+  ? ['-p', rendered, '--output-format', 'stream-json', '--verbose', '--max-turns', '80']
+  : ['--output-format', 'stream-json', '-p', rendered];
 
 const llm = spawnSync(llmExe, llmArgs,
   { encoding: 'utf8', maxBuffer: 200 * 1024 * 1024 });
@@ -190,8 +182,8 @@ console.log('\n--- T6 teardown ---');
 const t6Prompt = readFileSync(join(E2E_DIR, 't6-teardown.md'), 'utf8');
 const t6Exe    = findExe(PM_PROVIDER === 'claude' ? 'claude' : 'gemini');
 const t6Args   = PM_PROVIDER === 'claude'
-  ? ['-p', t6Prompt, '--mcp-config', MCP_CONFIG, '--max-turns', '15']
-  : ['--mcp-config', MCP_CONFIG, '-p', t6Prompt];
+  ? ['-p', t6Prompt, '--max-turns', '15']
+  : ['-p', t6Prompt];
 const t6 = spawnSync(t6Exe, t6Args,
   { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
 const t6Out = (t6.stdout || '') + (t6.stderr || '');
