@@ -16,6 +16,15 @@ export async function runAuth(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Reject unknown flags before prompting for user input
+  const knownFlagExact = new Set(['--confirm']);
+  for (const a of args) {
+    if (!a.startsWith('-')) continue; // positional (member name)
+    if (knownFlagExact.has(a)) continue;
+    console.error(`Error: Unknown option "${a}". Usage: apra-fleet auth --confirm <member-name>`);
+    process.exit(1);
+  }
+
   console.error(`\napra-fleet — Network Egress Confirmation\n`);
   console.error(`  Credential: ${memberName}\n`);
   console.error(`  A command using this credential is about to access the network.\n`);
