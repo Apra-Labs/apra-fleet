@@ -6,7 +6,12 @@
 # Selecting by max byte count reliably picks the right file.
 set -euo pipefail
 
-mkdir -p logs
+if [ -z "${RUN_DIR:-}" ]; then
+  echo "ERROR: RUN_DIR is not set" >&2
+  exit 1
+fi
+
+mkdir -p "$RUN_DIR/logs"
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
   LOG_DIR="$(cygpath "$USERPROFILE")/.apra-fleet/data/logs"
@@ -22,8 +27,8 @@ FLEET_LOG=$(
 )
 
 if [ -n "$FLEET_LOG" ]; then
-  cp "$FLEET_LOG" logs/fleet-pm.log
-  echo "Collected: $(basename "$FLEET_LOG") ($(wc -c < logs/fleet-pm.log) bytes, $(wc -l < logs/fleet-pm.log) lines)"
+  cp "$FLEET_LOG" "$RUN_DIR/logs/fleet-pm.log"
+  echo "Collected: $(basename "$FLEET_LOG") ($(wc -c < "$RUN_DIR/logs/fleet-pm.log") bytes, $(wc -l < "$RUN_DIR/logs/fleet-pm.log") lines)"
 else
   echo "No fleet log found in $LOG_DIR"
 fi

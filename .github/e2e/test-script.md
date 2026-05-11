@@ -6,8 +6,8 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
 | Role     | Name     | IP                | User  | Pass               | LLM                | Work Folder          |
 |----------|----------|-------------------|-------|--------------------|--------------------|----------------------|
-| doer     | doer     | {{DOER_HOST}}     | akhil | {{secure.APASS}}   | {{DOER_PROVIDER}}  | {{DOER_FOLDER}}      |
-| reviewer | reviewer | {{REVIEWER_HOST}} | akhil | {{secure.APASS}}   | {{REVIEWER_PROVIDER}} | {{REVIEWER_FOLDER}} |
+| doer     | doer     | {{DOER_HOST}}     | {{DOER_USER}} | {{secure.E2E_ACRED}}   | {{DOER_PROVIDER}}  | {{DOER_FOLDER}}      |
+| reviewer | reviewer | {{REVIEWER_HOST}} | {{REVIEWER_USER}} | {{secure.E2E_ACRED}}   | {{REVIEWER_PROVIDER}} | {{REVIEWER_FOLDER}} |
 
 ## Rules
 
@@ -49,16 +49,6 @@ Send a file containing `fleet-e2e-roundtrip` to each member, receive it back, ve
 
 ---
 
-## T3: Credential Store
-
-On pm (here)
-1. **Create** — `echo "e2e-dummy-value" | $HOME/.apra-fleet/bin/apra-fleet secret --set e2e_test_cred --persist -y`
-2. **Read** — `credential_store_list` → verify `e2e_test_cred` present.
-3. **Update** — `credential_store_update name="e2e_test_cred" network_policy="confirm"` → verify via list.
-4. **Delete** — `credential_store_delete name="e2e_test_cred"` → verify absent.
-
----
-
 ## T4: LLM Execution
 
 On each member `execute_prompt` with `model="cheap"`: `"What OS are you running on? Reply in one sentence."`
@@ -93,9 +83,47 @@ Branch prefix: `{{BRANCH_PREFIX}}`
 
 ## Collect session logs
 
-On each member:
+Throughout T1–T5 you will have dispatched one or more `execute_prompt` calls to each member. Each response includes the session ID(s) used. Collect all session IDs per member.
+
+For each session ID, locate the file on the member using the appropriate shell command:
+
+**Unix (Linux/macOS) — Claude:**
+```bash
+find ~/.claude/projects -name "<session-id>.jsonl" 2>/dev/null
 ```
-LOG=$(find ~/.claude/projects -name "*.jsonl" 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
-[ -n "$LOG" ] && cp "$LOG" session-log.jsonl || true
+**Unix (Linux/macOS) — Gemini:**
+```bash
+find ~/.gemini -name "<session-id>.jsonl" 2>/dev/null
 ```
-`receive_files`: doer → `logs/doer-session.jsonl`, reviewer → `logs/reviewer-session.jsonl`. Skip if absent.
+**Windows — Claude:**
+```powershell
+Get-ChildItem "$env:USERPROFILE\.claude\projects" -Filter "<session-id>.jsonl" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+```
+**Windows — Gemini:**
+```powershell
+Get-ChildItem "$env:USERPROFILE\.gemini" -Filter "<session-id>.jsonl" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+```
+
+Run the relevant command(s) on the member via `execute_command` to get the absolute path(s).
+
+Session files live outside the member's work_folder so `receive_files` cannot access them directly. For each session file, copy it into the work folder first, receive it, then remove the copy:
+
+```bash
+# Unix
+cp <session-path> <work-folder>/<session-id>.jsonl
+```
+```powershell
+# Windows
+Copy-Item "<session-path>" "<work-folder>\<session-id>.jsonl"
+```
+
+Then `receive_files` the file from the work folder, and delete the copy afterward:
+```bash
+rm <work-folder>/<session-id>.jsonl
+```
+
+Receive into:
+- Doer sessions → `logs/doer/<session-id>.jsonl`
+- Reviewer sessions → `logs/reviewer/<session-id>.jsonl`
+
+Skip files that don't exist on the member.

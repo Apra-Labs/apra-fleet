@@ -2,11 +2,11 @@
 
 You are running the teardown phase of an apra-fleet E2E test suite.
 
-Remove all registered fleet members so the environment is clean for the next run.
+Remove only the members registered during this test run: **doer** and **reviewer**.
+Do not remove any other members — they belong to other projects.
 
-1. Call `fleet_status` to list all registered members.
-2. For each member found, call `remove_member` to remove it.
-3. Call `fleet_status` again to confirm no members remain.
+1. For each name in `["doer", "reviewer"]`: call `remove_member` if that member exists (ignore "not found" errors).
+2. Call `fleet_status` to confirm neither "doer" nor "reviewer" remains.
 
 If all members were removed (or none were registered to begin with), print exactly:
 `T6: PASS`

@@ -28,7 +28,7 @@ Ensure these credentials are set in the fleet store **on the runner**:
 
 | Name            | Description                       |
 |-----------------|-----------------------------------|
-| `APASS`         | SSH password for akhil on members |
+| `E2E_ACRED`     | SSH password for e2e members      |
 | `e2e_bb_token`  | Bitbucket token                   |
 | `e2e_bb_user`   | Bitbucket username                |
 | `e2e_gh_token`  | GitHub token                      |
@@ -74,15 +74,16 @@ Available suites are defined in `.github/e2e/suites.json` — check that file fo
 
 ### 4. Collect artifacts
 
-Once the run completes, receive output files from the runner (paths relative to the repo root):
+The script prints `Artifacts: <path>` at the end — use that path for the exact run directory.
+Artifacts are written to `<work_folder>/../testRuns/<RUN_ID>/` (sibling of the repo checkout, never inside it).
 
 ```
 receive_files <runner> [
-  "gh-fleet/apra-fleet/e2e-out/results.json",
-  "gh-fleet/apra-fleet/e2e-out/raw-output.txt",
-  "gh-fleet/apra-fleet/e2e-out/logs/fleet-pm.log",
-  "gh-fleet/apra-fleet/e2e-out/logs/doer-session.jsonl",
-  "gh-fleet/apra-fleet/e2e-out/logs/reviewer-session.jsonl"
+  "testRuns/<RUN_ID>/results.json",
+  "testRuns/<RUN_ID>/raw-output.txt",
+  "testRuns/<RUN_ID>/logs/fleet-pm.log",
+  "testRuns/<RUN_ID>/logs/doer-session.jsonl",
+  "testRuns/<RUN_ID>/logs/reviewer-session.jsonl"
 ]
 ```
 
@@ -96,10 +97,10 @@ receive_files <runner> [
 | `e2e-out/logs/doer-session.jsonl` | Doer member session log |
 | `e2e-out/logs/reviewer-session.jsonl` | Reviewer member session log |
 
-For a token/timing summary table, run from the `e2e-out/` directory:
+For a token/timing summary table, run from the run directory:
 
 ```
-node ../.github/e2e/extract-telemetry.js
+node ../apra-fleet/.github/e2e/extract-telemetry.js
 ```
 
 ---

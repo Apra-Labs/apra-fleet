@@ -20,7 +20,8 @@
  * Fleet log exit-line format:
  *   {"ts":"...","tag":"execute_prompt","mem":"<name>","msg":"exit=0 in=N out=N elapsed=Nms"}
  */
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ── Parsers ────────────────────────────────────────────────────────────────
 
@@ -54,19 +55,31 @@ function parseFleetLog(path) {
   return members;
 }
 
-function parseSessionJsonl(path) {
-  // Token counts from member session — counts all LLM turns including internal reasoning.
+function parseSessionJsonl(dirOrFile) {
+  // Token counts from member session(s). Accepts a folder (logs/doer/, logs/reviewer/)
+  // containing one .jsonl per session, or a single .jsonl path for backwards compat.
   let tokIn = 0, tokOut = 0;
-  if (!existsSync(path)) return { tokIn, tokOut };
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj.type === 'assistant' && obj.message?.usage) {
-        tokIn  += obj.message.usage.input_tokens  || 0;
-        tokOut += obj.message.usage.output_tokens || 0;
-      }
-    } catch {}
+  if (!existsSync(dirOrFile)) return { tokIn, tokOut };
+
+  let files;
+  try {
+    files = readdirSync(dirOrFile).filter(f => f.endsWith('.jsonl'))
+      .map(f => join(dirOrFile, f));
+  } catch {
+    return { tokIn, tokOut };
+  }
+
+  for (const file of files) {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'assistant' && obj.message?.usage) {
+          tokIn  += obj.message.usage.input_tokens  || 0;
+          tokOut += obj.message.usage.output_tokens || 0;
+        }
+      } catch {}
+    }
   }
   return { tokIn, tokOut };
 }
@@ -129,8 +142,8 @@ function memberRow(key, sessionPath) {
   return { wall_time_s: wall, active_time_s: active, tokens_in: toks.tokIn, tokens_out: toks.tokOut, name: key || '' };
 }
 
-const doer = memberRow(doerKey, 'logs/doer-session.jsonl');
-const rev  = memberRow(revKey,  'logs/reviewer-session.jsonl');
+const doer = memberRow(doerKey, 'logs/doer');
+const rev  = memberRow(revKey,  'logs/reviewer');
 
 const telemetry = [
   { role: 'pm',       wall_time_s: pmWall,           active_time_s: pmActive,           tokens_in: pm.tokIn,      tokens_out: pm.tokOut,      tokens_total: pm.tokIn    + pm.tokOut    },

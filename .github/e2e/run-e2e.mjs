@@ -20,7 +20,8 @@ import { platform } from 'node:process';
 const isWindows = platform === 'win32';
 const REPO_DIR  = join(fileURLToPath(import.meta.url), '../../..');
 const E2E_DIR   = join(REPO_DIR, '.github/e2e');
-const OUT_DIR   = join(REPO_DIR, 'e2e-out');
+const RUN_ID    = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+const OUT_DIR   = join(REPO_DIR, '..', 'testRuns', RUN_ID);
 
 // ── Args ───────────────────────────────────────────────────────────────────
 
@@ -179,7 +180,6 @@ const REV_HOST    = members[REV_OS].host;
 const REV_FOLDER  = members[REV_OS].work_folder;
 const TOY_URL     = members.toy_projects[VCS];
 
-const RUN_ID        = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const BRANCH_PREFIX = `e2e-${SUITE}-${RUN_ID}`;
 
 const modeLabel = INSTALL_ONLY ? ' [install-only]' : SKIP_INSTALL ? ' [skip-install]' : '';
