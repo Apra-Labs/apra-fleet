@@ -95,8 +95,12 @@ console.log(`Fleet: ${capture(FLEET_BIN, ['--version'])}`);
 
 console.log('\n--- Verifying PM LLM auth ---');
 if (PM_PROVIDER === 'claude') {
-  const r = spawnSync('claude', ['-p', 'say: ready', '--max-turns', '1'],
-    { encoding: 'utf8', shell: isWindows });
+  // On Windows, shell:true joins args via cmd.exe — colons and spaces must be
+  // quoted inside the arg string, not by spawnSync.
+  const probeArgs = isWindows
+    ? ['-p', '"Output the word ready"', '--max-turns', '1']
+    : ['-p', 'Output the word ready', '--max-turns', '1'];
+  const r = spawnSync('claude', probeArgs, { encoding: 'utf8', shell: isWindows });
   const out = (r.stdout || '') + (r.stderr || '');
   process.stdout.write(out);
   if (r.status !== 0 || !/ready/i.test(out)) {
