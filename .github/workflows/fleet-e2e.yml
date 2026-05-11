@@ -115,6 +115,34 @@ jobs:
           E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
 
 
+      # ── Step 3b: Smoke-test PM LLM auth ──────────────────────────────────
+      # Fail fast if the runner's LLM credentials are expired or missing.
+      # Catches stale OAuth tokens before the 45-minute real test starts.
+      # Member auth (doer/reviewer) is provisioned by the PM during T1.
+      - name: Smoke-test PM LLM auth
+        shell: bash
+        run: |
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          if [ "$PROVIDER" = "claude" ]; then
+            echo "Verifying claude auth with a cheap test prompt..."
+            output=$(claude -p "Reply with the single word: ready" --max-turns 1 2>&1)
+            echo "$output"
+            if ! echo "$output" | grep -qi "ready"; then
+              echo "::error::PM claude auth failed. Run provision_llm_auth on the runner before dispatching."
+              exit 1
+            fi
+            echo "PM claude auth OK"
+          elif [ "$PROVIDER" = "gemini" ]; then
+            echo "Verifying gemini auth..."
+            output=$(gemini -p "Reply with the single word: ready" 2>&1)
+            echo "$output"
+            if ! echo "$output" | grep -qi "ready"; then
+              echo "::error::PM gemini auth failed."
+              exit 1
+            fi
+            echo "PM gemini auth OK"
+          fi
+
       # ── Step 4: Render test script with suite context ─────────────────────
       - name: Render test script
         shell: bash
