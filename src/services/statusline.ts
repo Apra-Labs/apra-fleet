@@ -7,13 +7,19 @@ import { DEFAULT_ICON } from './icons.js';
 const STATUSLINE_PATH = path.join(FLEET_DIR, 'statusline.txt');
 const STATE_PATH = path.join(FLEET_DIR, 'statusline-state.json');
 
-// Status display emoji
+// Status display emoji — keyed on base status (without parenthetical suffix)
 const STATUS_EMOJI: Record<string, string> = {
-  busy: '⚡', idle: '💤', verify: '🔍', blocked: '🚫', offline: '❌',
+  busy: '⚡', idle: '💤', verify: '🔍', blocked: '🚫', offline: '❌', unknown: '❓',
 };
 
 // Sort priority: needs-attention first
-const PRIORITY: Record<string, number> = { blocked: 0, verify: 1, busy: 2, idle: 3, offline: 4 };
+// unknown sits above busy: stall detected, PM needs to act
+const PRIORITY: Record<string, number> = { blocked: 0, verify: 1, unknown: 2, busy: 3, idle: 4, offline: 5 };
+
+/** Strip parenthetical suffix from status for emoji/priority lookup: "busy(02:14)" → "busy". */
+function baseStatus(status: string): string {
+  return status.replace(/\(.*\)$/, '');
+}
 
 /** Load last-known per-agent states from disk. */
 function loadState(): Record<string, string> {
@@ -77,10 +83,10 @@ export function writeStatusline(overrides?: Map<string, string>): void {
       status: saved[a.id] ?? 'idle',
     }));
 
-    states.sort((a, b) => (PRIORITY[a.status] ?? 99) - (PRIORITY[b.status] ?? 99));
+    states.sort((a, b) => (PRIORITY[baseStatus(a.status)] ?? 99) - (PRIORITY[baseStatus(b.status)] ?? 99));
 
     const line = states
-      .map(s => `${s.icon} ${s.name}:${STATUS_EMOJI[s.status] ?? '?'} ${s.status}`)
+      .map(s => `${s.icon} ${s.name}:${STATUS_EMOJI[baseStatus(s.status)] ?? '?'} ${s.status}`)
       .join('  ');
 
     saveState(saved);

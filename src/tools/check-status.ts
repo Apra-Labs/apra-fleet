@@ -7,6 +7,8 @@ import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
 import { serverVersion } from '../version.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
+import { getStallDetector } from '../services/stall/index.js';
+import { fmtElapsed } from '../services/stall/time-utils.js';
 import { awsProvider } from '../services/cloud/aws.js';
 import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, costWarning } from '../services/cloud/cost.js';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
@@ -36,6 +38,21 @@ interface AgentStatusRow {
   branch?: string;
   cloudInfo?: CloudInfo;
   tokenUsage?: { input: number; output: number };
+}
+
+/**
+ * Build the busy label for a member confirmed running via SSH process check.
+ * Uses the stall detector entry to show elapsed time since last log activity,
+ * or 'unknown' if the stall threshold has already fired.
+ */
+function busyLabel(agentId: string): string {
+  const entry = getStallDetector().getEntry(agentId);
+  if (!entry) return 'BUSY';
+  if (entry.stallReported) return 'unknown';
+  if (!entry.provisional) {
+    return `BUSY(${fmtElapsed(Date.now() - entry.lastActivityAt)})`;
+  }
+  return 'BUSY';
 }
 
 function formatTimeAgo(isoDate?: string): string {
@@ -113,7 +130,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
       if (busyResult.status === 'fulfilled') {
         const output = busyResult.value.stdout.trim().toLowerCase();
         if (output.includes('fleet-busy')) {
-          row.busy = 'BUSY';
+          row.busy = busyLabel(agent.id);
         } else if (output.includes('other-busy')) {
           row.busy = 'idle*';
         } else {
@@ -202,17 +219,21 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   // Count cloud-stopped members as offline for the summary
   const online = rows.filter(r => r.status === 'online').length;
 
-  // Update statusline with actual connectivity state from this check
+  // Update statusline with connectivity state from this check.
+  // For busy/unknown members the stall detector owns the statusline (it writes
+  // busy(mm:ss) or unknown on each 30s poll); we only override offline and idle
+  // so we don't clobber the richer stall-detector state.
   const statusOverrides = new Map<string, string>();
   for (let i = 0; i < agents.length; i++) {
     const row = rows[i];
     if (row.status === 'OFFLINE') {
       statusOverrides.set(agents[i].id, 'offline');
-    } else if (row.busy === 'BUSY') {
-      statusOverrides.set(agents[i].id, 'busy');
-    } else {
+    } else if (row.busy === 'idle' || row.busy === 'idle*') {
+      // SSH confirmed no fleet process running — clear any stale busy/unknown
       statusOverrides.set(agents[i].id, 'idle');
     }
+    // BUSY / BUSY(mm:ss) / unknown (stall fired but process still alive):
+    // stall detector already wrote the authoritative value — don't override
   }
   writeStatusline(statusOverrides);
 

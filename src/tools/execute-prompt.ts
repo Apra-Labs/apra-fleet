@@ -133,10 +133,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     provisional: true,
     stallReported: false,
     onStall: () => {
-      // execCommand is hung — clear busy state now so the member is usable again.
-      // Guard clearedByStall so the finally block skips the cleanup and avoids
-      // clobbering a new execute_prompt that may have already taken the member.
-      writeStatusline(new Map([[agent.id, 'idle']]));
+      // Stall detector already wrote 'unknown' to the statusline before calling here.
+      // Our job: clear in-process state so the member can accept new calls.
+      // clearedByStall prevents the eventually-resolving finally block from clobbering
+      // a new execute_prompt that may have already claimed the member.
       inFlightAgents.delete(agent.id);
       clearedByStall = true;
     },
