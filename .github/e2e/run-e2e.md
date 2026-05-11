@@ -41,7 +41,7 @@ Only proceed if response contains `ready`.
 
 ```
 execute_command fleet-e2e-win \
-  "cd C:/gh-fleet/apra-fleet && git pull && bash .github/e2e/run-e2e.sh <suite>"
+  "cd C:/gh-fleet/apra-fleet && git pull && node .github/e2e/run-e2e.mjs <suite>"
 ```
 
 Suites: `s1` (Windows PM) · `s2` (Linux PM) · `s3` (macOS PM)  
