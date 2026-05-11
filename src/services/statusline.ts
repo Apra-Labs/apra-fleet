@@ -9,12 +9,12 @@ const STATE_PATH = path.join(FLEET_DIR, 'statusline-state.json');
 
 // Status display emoji — keyed on base status (without parenthetical suffix)
 const STATUS_EMOJI: Record<string, string> = {
-  busy: '⚡', idle: '💤', verify: '🔍', blocked: '🚫', offline: '❌', unknown: '❓',
+  busy: '⚡', idle: '💤', blocked: '🚫', offline: '❌', unknown: '❓',
 };
 
 // Sort priority: needs-attention first
 // unknown sits above busy: stall detected, PM needs to act
-const PRIORITY: Record<string, number> = { blocked: 0, verify: 1, unknown: 2, busy: 3, idle: 4, offline: 5 };
+const PRIORITY: Record<string, number> = { blocked: 0, unknown: 1, busy: 2, idle: 3, offline: 4 };
 
 /** Strip parenthetical suffix from status for emoji/priority lookup: "busy(02:14)" → "busy". */
 function baseStatus(status: string): string {
