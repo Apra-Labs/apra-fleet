@@ -121,6 +121,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   }
   inFlightAgents.add(agent.id);
   const stallDetector = getStallDetector();
+  let clearedByStall = false;
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -131,6 +132,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberName: agent.friendlyName,
     provisional: true,
     stallReported: false,
+    onStall: () => {
+      // execCommand is hung — clear busy state now so the member is usable again.
+      // Guard clearedByStall so the finally block skips the cleanup and avoids
+      // clobbering a new execute_prompt that may have already taken the member.
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      inFlightAgents.delete(agent.id);
+      clearedByStall = true;
+    },
   });
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
@@ -298,9 +307,12 @@ session: ${parsed.sessionId}`;
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);
-    // Explicitly set idle (or offline for connection failures) — never rely on persisted busy state clearing itself
-    writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
-    inFlightAgents.delete(agent.id);
+    // Skip if stall detector already cleared state — a new execute_prompt may have
+    // claimed inFlightAgents and set busy again; clobbering it here would be wrong.
+    if (!clearedByStall) {
+      writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
+      inFlightAgents.delete(agent.id);
+    }
     stallDetector.remove(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }

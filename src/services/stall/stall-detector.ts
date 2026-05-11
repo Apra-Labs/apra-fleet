@@ -16,6 +16,8 @@ export interface StallEntry {
   memberName: string;
   provisional: boolean;
   stallReported: boolean;
+  // Called once when stall is confirmed — clears busy state from outside the hung execCommand
+  onStall?: () => void;
 }
 
 export class StallDetector {
@@ -90,9 +92,11 @@ export class StallDetector {
             memberId,
             memberName: entry.memberName,
             idleSecs,
+            provisional: true,
             lastActivityAt: toLocalISOString(entry.lastActivityAt),
           }));
           this.update(memberId, { stallReported: true });
+          entry.onStall?.();
         }
         continue;
       }
@@ -150,9 +154,11 @@ export class StallDetector {
           memberId,
           memberName: entry.memberName,
           idleSecs,
+          provisional: false,
           lastActivityAt: toLocalISOString(entry.lastActivityAt),
         }));
         this.update(memberId, { stallReported: true });
+        entry.onStall?.();
       }
     }
   }
