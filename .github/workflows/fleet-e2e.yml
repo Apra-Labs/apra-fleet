@@ -188,8 +188,11 @@ jobs:
               > raw-output.txt 2>&1 || true
           fi
 
-          # python3 on Linux/macOS; python on Windows (no python3 alias).
-          PYTHON=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)
+          # Verify python actually runs — on Windows the Store stub is in PATH
+          # but exits non-zero with "Python was not found". Test before using.
+          if python3 -c "import sys" > /dev/null 2>&1; then PYTHON=python3
+          elif python -c "import sys" > /dev/null 2>&1; then PYTHON=python
+          else echo "::error::No working Python found"; exit 1; fi
 
           # The fleet daemon reports its log file path in every fleet_status response.
           # Extract it from raw-output.txt — no filesystem heuristics needed.
