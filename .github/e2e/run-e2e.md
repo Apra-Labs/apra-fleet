@@ -34,9 +34,13 @@ Ensure these credentials are set in the fleet store **on the runner**:
 | `e2e_gh_token`  | GitHub token                      |
 | `e2e_ado_token` | Azure DevOps token                |
 
-Set via: `echo "<value>" | apra-fleet secret --set <name> --persist -y`
+**`apra-fleet` is never on PATH — always use the full binary path:**
+- Linux/macOS: `~/.apra-fleet/bin/apra-fleet`
+- Windows: `$env:USERPROFILE\.apra-fleet\bin\apra-fleet.exe`
 
-Verify all are present: `apra-fleet secret --list`
+Set via: `echo "<value>" | ~/.apra-fleet/bin/apra-fleet secret --set <name> --persist -y`
+
+Verify all are present: `~/.apra-fleet/bin/apra-fleet secret --list`
 
 ---
 
