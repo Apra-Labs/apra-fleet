@@ -78,7 +78,7 @@
   - update_member toggling gbrain
   - list_members showing gbrain status
 - **Files:** `tests/gbrain-client.test.ts` (new), `tests/gbrain-config.test.ts` (new)
-- **Tier:** standard
+- **Tier:** premium
 - **Done when:** All new tests pass. `npm test` passes.
 - **Blockers:** Tasks 1.1, 1.2, 1.3
 

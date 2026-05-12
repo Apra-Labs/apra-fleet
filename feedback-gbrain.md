@@ -39,3 +39,13 @@
 **Correct approach:** Create helpers in Phase 2 (new Task 2.0) so all subsequent phases use them from the start. Task 6.1 becomes a DRY audit rather than an extraction.
 
 **Doer:** fixed in commit a5d21d5 + eab88d0 — added Task 2.0 (create shared gbrain helpers) in Phase 2; reduced Task 6.1 to a DRY audit; updated Task 3.1 to reference Task 2.0 helpers.
+
+---
+
+## Finding 5: Phase 1 tier monotonicity
+
+**Issue:** Phase 1 tier sequence violates monotonicity: Task 1.1 (cheap) → Task 1.2 (cheap) → Task 1.3 (premium) → Task 1.4 (standard). A tier downgrade within the phase indicates a structural issue with task ordering or tier assignments.
+
+**Correct approach:** Promote Task 1.4 to premium tier. Tests for the premium client service (mocked child process, MCP client lifecycle, reconnection) justify premium tier. This makes the sequence: cheap → cheap → premium → premium.
+
+**Doer:** fixed in commit TBD — promoted Task 1.4 to premium tier in PLAN.md.
