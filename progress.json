@@ -4,7 +4,7 @@
   "created": "2026-05-13",
   "tasks": [
     { "id": 1, "phase": 1, "step": "T1.1: Add gbrain field to Agent interface and registry", "type": "work", "status": "completed", "tier": "cheap", "commit": "", "notes": "Added gbrain?: boolean field to Agent interface" },
-    { "id": 2, "phase": 1, "step": "T1.2: Add gbrain to register_member and update_member schemas", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 2, "phase": 1, "step": "T1.2: Add gbrain to register_member and update_member schemas", "type": "work", "status": "completed", "tier": "cheap", "commit": "", "notes": "Added gbrain field to register_member and update_member schemas; updated list_members and member_detail to display gbrain status" },
     { "id": 3, "phase": 1, "step": "T1.3: Create gbrain MCP client service", "type": "work", "status": "pending", "tier": "premium", "commit": "", "notes": "" },
     { "id": 4, "phase": 1, "step": "T1.4: Tests for Phase 1", "type": "work", "status": "pending", "tier": "premium", "commit": "", "notes": "" },
     { "id": 5, "phase": 1, "step": "VERIFY: Phase 1 — gbrain client service + config", "type": "verify", "status": "pending", "commit": "", "notes": "" },

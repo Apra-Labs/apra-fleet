@@ -85,6 +85,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         os: a.os ?? 'unknown',
         folder: a.workFolder,
         llmProvider: a.llmProvider ?? 'claude',
+        gbrain: a.gbrain ?? false,
         llm_auth: authStatuses[i],
         ssh_auth: a.agentType === 'local' ? undefined : a.authType,
         session: a.sessionId ?? null,
@@ -100,8 +101,11 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
     const icon = a.icon ?? DEFAULT_ICON;
     const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
     const authStatus = authStatuses[i];
-    
+
     t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'} | provider=${a.llmProvider ?? 'claude'}`;
+    if (a.gbrain) {
+      t += ` | gbrain=enabled`;
+    }
     if (a.agentType !== 'local') {
       t += ` | user=${a.username} | ssh=${a.authType}`;
       if (authStatus !== 'offline' && authStatus !== 'N/A') {
