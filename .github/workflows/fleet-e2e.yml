@@ -1,4 +1,5 @@
-name: Fleet E2E Test Suite`nrun-name: Fleet E2E Test Suite ${{ inputs.suite }} - ${{ github.ref_name }}
+name: Fleet E2E Test Suite
+run-name: Fleet E2E Test Suite ${{ inputs.suite }} - ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -11,7 +12,7 @@ on:
 
 jobs:
   e2e:
-    name: 'Fleet E2E – ${{ inputs.suite }}'
+    name: 'Fleet E2E - ${{ inputs.suite }}'
     # Runner label is derived from suites.json pm.runner field.
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
@@ -31,8 +32,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Create run directory ───────────────────────────────────────────────
-      # All test artifacts go here — never inside the repo checkout.
+      # -- Create run directory -----------------------------------------------
+      # All test artifacts go here - never inside the repo checkout.
       # Sibling of the checkout: <runner-work>/<repo>/testRuns/<run_id>-<attempt>
       - name: Create run directory
         shell: bash
@@ -42,11 +43,11 @@ jobs:
           echo "RUN_DIR=$RUN_DIR" >> "$GITHUB_ENV"
           echo "Run directory: $RUN_DIR"
 
-      # ── Step 1: Load suite config ──────────────────────────────────────────
+      # -- Step 1: Load suite config ------------------------------------------
       - name: Check runner prerequisites
         shell: bash
         run: |
-          # Non-interactive shells don't source .bashrc/.profile — ~/.local/bin
+          # Non-interactive shells don't source .bashrc/.profile - ~/.local/bin
           # (where claude is installed on Linux runners) is not on the default PATH.
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           jq --version || { echo "::error::jq is not installed on this runner"; exit 1; }
@@ -90,8 +91,8 @@ jobs:
           echo "vcs=$VCS"                   >> $GITHUB_OUTPUT
           echo "toy_url=$TOY_URL"           >> $GITHUB_OUTPUT
 
-      # ── Step 2: Build and install fleet binary on PM runner ───────────────
-      # Must come before credential seeding — seed step needs fleet on PATH.
+      # -- Step 2: Build and install fleet binary on PM runner ---------------
+      # Must come before credential seeding - seed step needs fleet on PATH.
       # Build from source so all three platforms (Windows/Linux/macOS x86_64)
       # work without any artifact download.
       - name: Build and install fleet binary on PM
@@ -113,7 +114,7 @@ jobs:
           fi
           "$INSTALLED_BIN" --version
 
-      # ── Step 3: Seed fleet credential store ───────────────────────────────
+      # -- Step 3: Seed fleet credential store -------------------------------
       - name: Seed fleet credential store
         shell: bash
         run: |
@@ -141,12 +142,12 @@ jobs:
           E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
           E2E_ACRED:      ${{ secrets.E2E_ACRED }}
 
-      # ── Step 3a: Clear PM claude settings of member-role residue ────────────
+      # -- Step 3a: Clear PM claude settings of member-role residue ------------
       # This runner may also be registered as a fleet member. compose_permissions
       # writes .claude/settings.local.json to the member's work_folder with
       # apra-fleet disabled. Claude Code walks up from RUN_DIR (which is nested
       # inside the work_folder) and finds that file, polluting the PM session.
-      # Delete it before the PM runs — compose_permissions recreates it on next
+      # Delete it before the PM runs - compose_permissions recreates it on next
       # member use, and the PM needs apra-fleet MCP enabled.
       - name: Clear PM claude settings of member-role residue
         shell: bash
@@ -162,7 +163,7 @@ jobs:
           done
           echo "Done."
 
-      # ── Step 3b: Smoke-test PM LLM auth + apra-fleet MCP ────────────────
+      # -- Step 3b: Smoke-test PM LLM auth + apra-fleet MCP ----------------
       # Fail fast if LLM auth is expired OR the fleet MCP server is not loaded.
       # No point running a 45-minute test without a working fleet connection.
       - name: Smoke-test PM LLM auth and fleet MCP
@@ -189,17 +190,17 @@ jobs:
             output=$(claude -p "$PROMPT" --model haiku 2>&1)
             echo "$output"
             check_mcp "$output" "claude"
-            echo "PM claude auth OK — fleet MCP responding"
+            echo "PM claude auth OK - fleet MCP responding"
           elif [ "$PROVIDER" = "gemini" ]; then
             export GEMINI_CLI_TRUST_WORKSPACE="true"; output=$(gemini -p "$PROMPT" --model auto 2>&1)
             echo "$output"
             check_mcp "$output" "gemini"
-            echo "PM gemini auth OK — fleet MCP responding"
+            echo "PM gemini auth OK - fleet MCP responding"
           fi
 
-      # ── Step 3c: Purge fleet daemon logs ──────────────────────────────────
+      # -- Step 3c: Purge fleet daemon logs ----------------------------------
       # Clear any logs from previous runs so we can collect exactly the files
-      # produced by this run — handles fleet restarts during the test cleanly.
+      # produced by this run - handles fleet restarts during the test cleanly.
       - name: Purge fleet daemon logs
         shell: bash
         run: |
@@ -211,9 +212,9 @@ jobs:
           rm -f "$LOG_DIR"/fleet-*.log
           echo "Fleet logs purged from $LOG_DIR"
 
-      # ── Step 3d: Pre-create local member work folders ────────────────────
+      # -- Step 3d: Pre-create local member work folders --------------------
       # Local members share the PM machine. Their work_folders must exist before
-      # the test runs — if they don't, the PM wastes turns doing mkdir workarounds
+      # the test runs - if they don't, the PM wastes turns doing mkdir workarounds
       # because the sandbox blocks direct filesystem ops in the LLM session.
       - name: Pre-create local member work folders
         shell: bash
@@ -231,7 +232,7 @@ jobs:
             echo "Created reviewer folder: $REV_FOLDER"
           fi
 
-      # ── Step 4: Render test script with suite context ─────────────────────
+      # -- Step 4: Render test script with suite context ---------------------
       - name: Render test script
         shell: bash
         run: |
@@ -262,7 +263,7 @@ jobs:
             -e "s|{{REVIEWER_FOLDER}}|${REVIEWER_FOLDER_SED}|g" \
             .github/e2e/test-script.md > "$RUN_DIR/rendered-test-script.md"
 
-      # ── Step 5: Run the LLM-driven test (T1–T5) ──────────────────────────────
+      # -- Step 5: Run the LLM-driven test (T1-T5) ------------------------------
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
         id: e2e
         timeout-minutes: 45
@@ -284,7 +285,7 @@ jobs:
           fi
 
           if [ ! -s "$RUN_DIR/raw-output.txt" ]; then
-            echo "::error::LLM produced no output — check auth and MCP connectivity"
+            echo "::error::LLM produced no output - check auth and MCP connectivity"
           fi
 
           # Extract PM session ID from the stream-json system init event.
@@ -301,7 +302,7 @@ jobs:
             > "$RUN_DIR/results.json" \
             || echo '{"overall":"FAIL","error":"extract-results.mjs failed"}' > "$RUN_DIR/results.json"
 
-      # ── Step 5b: Collect fleet daemon logs ────────────────────────────────
+      # -- Step 5b: Collect fleet daemon logs --------------------------------
       # Collect all fleet-*.log files produced since the purge step.
       # Multiple files appear if fleet restarted during the test; concatenate
       # them all into fleet-pm.log so extract-telemetry.js sees one stream.
@@ -317,12 +318,12 @@ jobs:
           count=$(ls "$LOG_DIR"/fleet-*.log 2>/dev/null | wc -l)
           if [ "$count" -gt 0 ]; then
             cat "$LOG_DIR"/fleet-*.log > "$RUN_DIR/logs/fleet-pm.log"
-            echo "Collected $count fleet log file(s) → fleet-pm.log ($(wc -l < "$RUN_DIR/logs/fleet-pm.log") lines)"
+            echo "Collected $count fleet log file(s) -> fleet-pm.log ($(wc -l < "$RUN_DIR/logs/fleet-pm.log") lines)"
           else
             echo "No fleet logs found in $LOG_DIR"
           fi
 
-      # ── Step 5c: Extract telemetry ────────────────────────────────────────
+      # -- Step 5c: Extract telemetry ----------------------------------------
       # Primary: logs/fleet-pm.log execute_prompt exit lines (in=N out=N elapsed=Nms).
       # Fallback: member session JSONLs.
       - name: Extract telemetry
@@ -332,7 +333,7 @@ jobs:
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
           node "$GITHUB_WORKSPACE/.github/e2e/extract-telemetry.js"
 
-      # ── Step 5d: Validate e2e test completion ─────────────────────────────
+      # -- Step 5d: Validate e2e test completion -----------------------------
       # Hard-fail the job if the LLM session produced no meaningful work:
       # 1) at least one commit was pushed to the test branch
       # 2) a pull request was raised
@@ -346,32 +347,32 @@ jobs:
           BRANCH="e2e-${{ inputs.suite }}-${{ github.run_id }}"
           FAIL=0
 
-          # 1 — commits pushed to test branch?
+          # 1 - commits pushed to test branch?
           if git ls-remote --exit-code origin "refs/heads/$BRANCH" > /dev/null 2>&1; then
-            echo "✅ commits: branch $BRANCH exists on remote"
+            echo "[OK] commits: branch $BRANCH exists on remote"
           else
-            echo "::error::FAIL — no commits pushed to $BRANCH (test stalled before first push)"
+            echo "::error::FAIL - no commits pushed to $BRANCH (test stalled before first push)"
             FAIL=1
           fi
 
-          # 2 — PR raised?
+          # 2 - PR raised?
           PR_COUNT=$(gh pr list --head "$BRANCH" --json number --jq 'length' 2>/dev/null || echo 0)
           if [ "$PR_COUNT" -gt 0 ]; then
             PR_URL=$(gh pr list --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
-            echo "✅ PR raised: $PR_URL"
+            echo "[OK] PR raised: $PR_URL"
           else
-            echo "::error::FAIL — no PR raised for $BRANCH"
+            echo "::error::FAIL - no PR raised for $BRANCH"
             FAIL=1
           fi
 
-          # 3 — PLAN.md and feedback.md committed at some point?
+          # 3 - PLAN.md and feedback.md committed at some point?
           if git fetch origin "$BRANCH" --depth=100 2>/dev/null; then
             for f in PLAN.md feedback.md; do
               HITS=$(git log "origin/$BRANCH" --oneline -- "$f" 2>/dev/null | wc -l | tr -d ' ')
               if [ "$HITS" -gt 0 ]; then
-                echo "✅ $f: found in branch history ($HITS commit(s))"
+                echo "[OK] $f: found in branch history ($HITS commit(s))"
               else
-                echo "::error::FAIL — $f was never committed to $BRANCH"
+                echo "::error::FAIL - $f was never committed to $BRANCH"
                 FAIL=1
               fi
             done
@@ -379,7 +380,7 @@ jobs:
 
           [ "$FAIL" -eq 0 ] || exit 1
 
-      # ── Step 6: Post job summary ───────────────────────────────────────────
+      # -- Step 6: Post job summary -------------------------------------------
       - name: Post job summary
         if: always()
         shell: bash
@@ -389,10 +390,10 @@ jobs:
         env:
           SUITE: ${{ inputs.suite }}
 
-      # ── Step 7: T6 teardown ────────────────────────────────────────────────
-      # Runs always — remove any fleet members left over from the test run.
+      # -- Step 7: T6 teardown ------------------------------------------------
+      # Runs always - remove any fleet members left over from the test run.
       # Housekeeping only: result does not feed into the test report.
-      - name: T6 — Teardown
+      - name: T6 - Teardown
         if: always()
         timeout-minutes: 5
         shell: bash
@@ -410,10 +411,10 @@ jobs:
           fi
           tail -3 "$RUN_DIR/t6-output.txt" || true
           if ! grep -q "T6: PASS" "$RUN_DIR/t6-output.txt" 2>/dev/null; then
-            echo "::warning::T6 teardown did not confirm success — fleet members may still be registered"
+            echo "::warning::T6 teardown did not confirm success - fleet members may still be registered"
           fi
 
-      # ── Step 8: Upload artifacts ───────────────────────────────────────────
+      # -- Step 8: Upload artifacts -------------------------------------------
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
