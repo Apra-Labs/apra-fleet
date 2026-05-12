@@ -1,0 +1,40 @@
+#!/bin/sh
+# pre-commit: reject non-ASCII characters and PowerShell escape sequences
+# in staged YAML, shell, JS/TS, and Markdown files.
+# Works on Windows (Git Bash), Linux, and macOS.
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(yml|yaml|sh|js|ts|mjs|cjs|md)$')
+[ -z "$STAGED" ] && exit 0
+
+ISSUES=$(echo "$STAGED" | while IFS= read -r file; do
+    # Non-ASCII bytes (em dashes, box-drawing, arrows, emoji, etc.)
+    if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
+        echo "non-ascii:$file"
+    fi
+    # PowerShell backtick newline/tab/CR escapes: `n `t `r
+    # Require the letter NOT be followed by a word char so that
+    # legitimate backtick-identifiers like `npm or `type are not flagged.
+    if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
+        echo "backtick:$file"
+    fi
+done)
+
+[ -z "$ISSUES" ] && exit 0
+
+echo ""
+echo "COMMIT BLOCKED -- the following files have portability issues:"
+echo ""
+echo "$STAGED" | while IFS= read -r file; do
+    if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
+        echo "  [non-ASCII] $file"
+        git show ":$file" | grep -Pn '[^\x00-\x7F]' | head -3 | sed 's/^/    /'
+    fi
+    if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
+        echo "  [PS-escape] $file"
+        git show ":$file" | grep -Pn '`[ntr](?![a-zA-Z0-9_])' | head -3 | sed 's/^/    /'
+    fi
+done
+echo ""
+echo "Fix: use ASCII only -- '-' for dashes, '->' for arrows, '[OK]' for checkmarks."
+echo "     PowerShell backtick-n/t/r are not valid bash -- use a real newline."
+exit 1
