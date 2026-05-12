@@ -7,7 +7,7 @@ on:
         description: 'Test suite to run (s1-s6). Start with s1 to validate setup.'
         required: true
         type: choice
-        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6]
+        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1]
 
 jobs:
   e2e:
@@ -24,6 +24,7 @@ jobs:
          || inputs.suite == 's3'   && 'fleet-macos'
          || inputs.suite == 's4'   && 'fleet-windows'
          || inputs.suite == 's5'   && 'fleet-linux'
+         || inputs.suite == 's7.1' && 'fleet-windows'
          || 'fleet-macos' }}
 
     steps:
@@ -420,3 +421,4 @@ jobs:
         with:
           name: e2e-${{ inputs.suite }}-${{ github.run_id }}
           path: ${{ env.RUN_DIR }}
+
