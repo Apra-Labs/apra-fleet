@@ -8,7 +8,7 @@
 
 **Impact:** `minions-dispatch` and `minions-status` don't exist at all in gbrain — the actual tools are `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work` (four tools, not two). This also changes the tool count from 10 to 12.
 
-**Doer:** fixed in commit TBD — replaced all hyphenated tool names with underscore versions; replaced `minions-dispatch`/`minions-status` with the four `jobs_*` tools throughout PLAN.md; updated tool counts and mapping notes.
+**Doer:** fixed in commit a5d21d5 + eab88d0 — replaced all hyphenated tool names with underscore versions; replaced `minions-dispatch`/`minions-status` with the four `jobs_*` tools throughout PLAN.md; updated tool counts and mapping notes.
 
 ---
 
@@ -18,7 +18,7 @@
 
 **Correct approach:** Use `<!-- OPTIONAL: gbrain -->...<!-- /OPTIONAL: gbrain -->` HTML comment markers. The PM template renderer strips these sections when gbrain is not enabled.
 
-**Doer:** fixed in commit TBD — replaced all `{{#if gbrain}}` references with `<!-- OPTIONAL: gbrain -->` marker approach; added `src/services/template-renderer.ts` to Task 5.1 file list; updated Notes section.
+**Doer:** fixed in commit a5d21d5 + eab88d0 — replaced all `{{#if gbrain}}` references with `<!-- OPTIONAL: gbrain -->` marker approach; added `src/services/template-renderer.ts` to Task 5.1 file list; updated Notes section.
 
 ---
 
@@ -28,7 +28,7 @@
 
 **Correct approach:** Add explicit `course_correction_capture` call-sites in sprint templates (`single-pair-sprint.md`, `doer-reviewer.md`) at post-iteration review checkpoints, wrapped in `<!-- OPTIONAL: gbrain -->` blocks.
 
-**Doer:** fixed in commit TBD — added Task 5.4 (wire course_correction_capture into sprint templates) with template-based approach; renumbered former Task 5.4 to Task 5.5.
+**Doer:** fixed in commit a5d21d5 + eab88d0 — added Task 5.4 (wire course_correction_capture into sprint templates) with template-based approach; renumbered former Task 5.4 to Task 5.5.
 
 ---
 
@@ -38,4 +38,4 @@
 
 **Correct approach:** Create helpers in Phase 2 (new Task 2.0) so all subsequent phases use them from the start. Task 6.1 becomes a DRY audit rather than an extraction.
 
-**Doer:** fixed in commit TBD — added Task 2.0 (create shared gbrain helpers) in Phase 2; reduced Task 6.1 to a DRY audit; updated Task 3.1 to reference Task 2.0 helpers.
+**Doer:** fixed in commit a5d21d5 + eab88d0 — added Task 2.0 (create shared gbrain helpers) in Phase 2; reduced Task 6.1 to a DRY audit; updated Task 3.1 to reference Task 2.0 helpers.
