@@ -191,7 +191,7 @@ jobs:
             check_mcp "$output" "claude"
             echo "PM claude auth OK — fleet MCP responding"
           elif [ "$PROVIDER" = "gemini" ]; then
-            output=$(gemini -p "$PROMPT" --model auto 2>&1)
+            $env:GEMINI_CLI_TRUST_WORKSPACE="true"; output=$(gemini -p "$PROMPT" --model auto 2>&1)
             echo "$output"
             check_mcp "$output" "gemini"
             echo "PM gemini auth OK — fleet MCP responding"
@@ -277,8 +277,7 @@ jobs:
               --verbose \
               --max-turns 80 \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
-          else
-            gemini \
+          else`n            $env:GEMINI_CLI_TRUST_WORKSPACE="true"; gemini \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
@@ -405,7 +404,7 @@ jobs:
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            timeout 120 gemini \
+            $env:GEMINI_CLI_TRUST_WORKSPACE="true"; timeout 120 gemini \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
@@ -421,4 +420,6 @@ jobs:
         with:
           name: e2e-${{ inputs.suite }}-${{ github.run_id }}
           path: ${{ env.RUN_DIR }}
+
+
 
