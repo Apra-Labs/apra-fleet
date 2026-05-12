@@ -278,7 +278,8 @@ jobs:
               --verbose \
               --max-turns 80 \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
-          else`n            export GEMINI_CLI_TRUST_WORKSPACE="true"; gemini \
+          else
+            export GEMINI_CLI_TRUST_WORKSPACE="true"; gemini \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
