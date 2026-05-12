@@ -69,9 +69,9 @@ After cloning (or if repo already exists), run `git fetch origin && git checkout
 
 **T5.2** Run `bd list --label e2e-testing` on doer from within the repo dir with explicit PATH:
 ```
-cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd list --label e2e-testing --status=open --pretty
+cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd list --label e2e-testing --status=open --sort priority --pretty
 ```
-Pick the **3 oldest open issues labelled e2e-testing**. Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
+Pick the **3 highest-priority open issues** (P1 before P2, alpha within same priority). Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
 
 **T5.3** Drive sprint:
 ```
