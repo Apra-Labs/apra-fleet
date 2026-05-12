@@ -45,6 +45,10 @@ jobs:
       - name: Check runner prerequisites
         shell: bash
         run: |
+          # Non-interactive shells don't source .bashrc/.profile — ensure user-local
+          # bin dirs are on PATH for all subsequent steps (e.g. ~/.local/bin/claude).
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
           jq --version || { echo "::error::jq is not installed on this runner"; exit 1; }
 
       - name: Load suite config
