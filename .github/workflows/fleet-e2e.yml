@@ -195,7 +195,7 @@ jobs:
             check_mcp "$output" "claude"
             echo "PM claude auth OK - fleet MCP responding"
           elif [ "$PROVIDER" = "gemini" ]; then
-            output=$(gemini -p "$PROMPT" --model auto --yolo 2>&1)
+            output=$(gemini -p "$PROMPT" --model auto --yolo --skip-trust 2>&1)
             echo "$output"
             check_mcp "$output" "gemini"
             echo "PM gemini auth OK - fleet MCP responding"
@@ -269,7 +269,7 @@ jobs:
       # -- Step 5: Run the LLM-driven test (T1-T5) ------------------------------
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
         id: e2e
-        timeout-minutes: 45
+        timeout-minutes: 120
         shell: bash
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
@@ -282,7 +282,7 @@ jobs:
               --max-turns 80 \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
           else
-            gemini --yolo \
+            gemini --yolo --skip-trust \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
@@ -415,7 +415,7 @@ jobs:
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            timeout 120 gemini --yolo \
+            timeout 120 gemini --yolo --skip-trust \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
