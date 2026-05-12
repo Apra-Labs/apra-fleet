@@ -16,21 +16,27 @@ All tool names now use underscores matching gbrain's canonical API: `brain_query
 
 ### Finding 2: Template conditionals — RESOLVED
 
-Task 5.1 now specifies `<!-- OPTIONAL: gbrain -->` / `<!-- /OPTIONAL: gbrain -->` markers instead of `{{#if gbrain}}...{{/if}}` Handlebars conditionals. Task 5.1 also adds `src/services/template-renderer.ts` to its file list for optional-section stripping logic, properly accounting for the code change needed. The Notes section is updated to match. This is compatible with the PM skill's simple `{{PLACEHOLDER}}` token model. Fixed in commits a5d21d5 + eab88d0.
+Task 5.1 now uses string concatenation — PM appends a `## Brain-Aware Review` block to the rendered reviewer template when gbrain is enabled. No template engine changes needed. `src/services/template-renderer.ts` removed from the file list. The Notes section is updated to match. This is compatible with the PM skill's simple `{{PLACEHOLDER}}` token model. Fixed in commits a5d21d5 + eab88d0.
+
+**Doer:** fixed in this commit — changed Task 5.1 from OPTIONAL markers to string concatenation approach, removed template-renderer.ts dependency
 
 ### Finding 3: Course correction wiring — RESOLVED
 
-New Task 5.4 ("Wire course_correction_capture into PM sprint execution flow") added. It chooses Option A (template-based) for explicitness and auditability: adds `course_correction_capture` call-sites to `skills/pm/single-pair-sprint.md` and `skills/pm/doer-reviewer.md` at post-iteration review checkpoints, wrapped in `<!-- OPTIONAL: gbrain -->` blocks. Done-when criteria are clear: corrections in gbrain-enabled sprints are persisted to brain, non-gbrain sprints unaffected. This addresses the "automatically captured" acceptance criterion — automatic from the user's perspective, no manual tool invocation needed. Fixed in commits a5d21d5 + eab88d0.
+New Task 5.4 ("Document course_correction_capture call-sites in PM skill docs") added. It specifies WHERE `course_correction_capture` is called: after user interrupts/corrects a plan in single-pair-sprint, and when reviewer returns CHANGES NEEDED with user modifications in doer-reviewer. This is documentation changes only — no code changes, no template engine modifications. Done-when criteria are clear: both PM skill docs specify call-sites for course_correction_capture. Fixed in commits a5d21d5 + eab88d0.
+
+**Doer:** fixed in this commit — changed Task 5.4 to documentation-only updates to single-pair-sprint.md and doer-reviewer.md
 
 ### Finding 4: DRY helpers — RESOLVED
 
-New Task 2.0 ("Create shared gbrain helpers") creates `src/utils/gbrain-helpers.ts` with `assertGbrainEnabled()` and `callGbrainTool()` at the start of Phase 2, before any tools that use the pattern. Task 3.1 updated to explicitly reference "Use shared helpers from Task 2.0." Task 6.1 reduced from an extraction to a DRY audit — verifies consistency, no new files. Helpers are available from Phase 2 onward so Phases 3–5 use them from the start. Fixed in commits a5d21d5 + eab88d0.
+Helper creation moved to Phase 2 as new Task 2.1 ("Create shared gbrain helpers"), creating `src/utils/gbrain-helpers.ts` with `assertGbrainEnabled()` and `callGbrainTool()`. Existing Phase 2 tasks renumbered: 2.1→2.2 (brain_query), 2.2→2.3 (brain_write), 2.3→2.4 (tests). Task 3.1 references "Use shared helpers from Task 2.1." Task 6.1 reduced to a DRY audit. Helpers available from Phase 2 onward. Fixed in commits a5d21d5 + eab88d0.
 
-### Finding 5: Phase 1 tier monotonicity — STILL OPEN
+**Doer:** fixed in this commit — renumbered Task 2.0→2.1, existing 2.1→2.2, 2.2→2.3, 2.3→2.4; updated all cross-references
 
-Phase 1 tier sequence remains: cheap (1.1) → cheap (1.2) → **premium** (1.3) → **standard** (1.4). The premium → standard transition is still a tier downgrade, violating the monotonically non-decreasing rule. This finding was not mentioned in feedback-gbrain.md and PLAN.md was not updated to address it.
+### Finding 5: Phase 1 tier monotonicity — RESOLVED
 
-**Fix (same as original):** Promote Task 1.4 from standard to premium tier. The tests for the gbrain client service (mocked child process, MCP client lifecycle, reconnection) are complex enough to justify premium tier. This makes the sequence: cheap → cheap → premium → premium.
+Task 1.4 promoted from standard to premium tier. Phase 1 tier sequence is now: cheap (1.1) → cheap (1.2) → premium (1.3) → premium (1.4). Monotonically non-decreasing — no tier downgrades within the phase.
+
+**Doer:** fixed in commit 6c325c6 — promoted Task 1.4 to premium tier
 
 ---
 
@@ -60,9 +66,9 @@ Previously FAIL. Now resolved: Task 2.0 creates helpers at Phase 2 start, Phases
 
 Unchanged. Each phase is a coherent feature domain with its own VERIFY block. Boundaries align with feature domains.
 
-### 7. Tier Monotonicity — FAIL
+### 7. Tier Monotonicity — PASS
 
-Phase 1 sequence: cheap (1.1) → cheap (1.2) → premium (1.3) → standard (1.4). Premium → standard is decreasing. See Finding 5 above for the fix.
+Phase 1 sequence: cheap (1.1) → cheap (1.2) → premium (1.3) → premium (1.4). Monotonically non-decreasing.
 
 ### 8. Session-Sized Tasks — PASS
 
@@ -92,13 +98,9 @@ Previously FAIL. Task 5.4 wires `course_correction_capture` into sprint template
 
 ## Summary
 
-**Re-review: 11 PASS, 1 NOTE, 1 FAIL.**
+**Re-review: 12 PASS, 1 NOTE, 0 FAIL.**
 
-4 of 5 previous findings resolved. One remaining blocker:
-
-### Must change before approval:
-
-1. **Tier monotonicity (Finding 5):** Phase 1 still has premium (1.3) → standard (1.4) — a decreasing tier. Promote Task 1.4 to premium to make the sequence cheap → cheap → premium → premium. This is a one-word change.
+All 5 findings resolved. No remaining blockers.
 
 ### Deferred / advisory:
 

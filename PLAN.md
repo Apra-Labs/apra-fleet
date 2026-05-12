@@ -95,7 +95,7 @@
 
 > Core knowledge layer: fleet tools that proxy gbrain's brain-query and brain-write capabilities. These are the primary value — persistent knowledge across sessions.
 
-#### Task 2.0: Create shared gbrain helpers
+#### Task 2.1: Create shared gbrain helpers
 - **Change:** Create `src/utils/gbrain-helpers.ts` with shared utilities used by all gbrain tools in Phases 2-5:
   - `assertGbrainEnabled(agent: Agent): string | null` — returns error string if gbrain not enabled on agent, null if OK
   - `callGbrainTool(toolName: string, args: Record<string, unknown>): Promise<string>` — wraps `gbrainClient.callTool` with standard error handling (gbrain not available, connection errors, etc.)
@@ -104,7 +104,7 @@
 - **Done when:** Both helpers exported. TypeScript compiles. Unit tests verify assertGbrainEnabled returns error for non-gbrain agent and null for gbrain agent. callGbrainTool wraps errors correctly.
 - **Blockers:** Task 1.3
 
-#### Task 2.1: Create `brain_query` fleet tool
+#### Task 2.2: Create `brain_query` fleet tool
 - **Change:** Create `src/tools/brain-query.ts`:
   - Schema: `memberIdentifier` (to verify gbrain is enabled on member) + `query: string` (the question to ask the brain) + `collection?: string` (optional brain collection/namespace)
   - Handler: resolve member, check `agent.gbrain === true`, call `gbrainClient.callTool('brain_query', { query, collection })`, return result
@@ -116,7 +116,7 @@
 - **Done when:** Tool registered, callable via MCP. Returns brain query results for gbrain-enabled member. Returns clear error for non-gbrain member.
 - **Blockers:** Phase 1
 
-#### Task 2.2: Create `brain_write` fleet tool
+#### Task 2.3: Create `brain_write` fleet tool
 - **Change:** Create `src/tools/brain-write.ts`:
   - Schema: `memberIdentifier` + `content: string` (knowledge to store) + `collection?: string` + `metadata?: string` (optional JSON metadata)
   - Handler: resolve member, check `agent.gbrain === true`, call `gbrainClient.callTool('brain_write', { content, collection, metadata })`, return confirmation
@@ -127,7 +127,7 @@
 - **Done when:** Tool registered, callable via MCP. Writes to brain for gbrain-enabled member. Returns clear error for non-gbrain member.
 - **Blockers:** Phase 1
 
-#### Task 2.3: Tests for brain query/write tools
+#### Task 2.4: Tests for brain query/write tools
 - **Change:** Create `tests/brain-tools.test.ts`:
   - brain_query with gbrain-enabled member returns result
   - brain_query with non-gbrain member returns error
@@ -138,7 +138,7 @@
 - **Files:** `tests/brain-tools.test.ts` (new)
 - **Tier:** standard
 - **Done when:** All tests pass. `npm test` passes.
-- **Blockers:** Tasks 2.1, 2.2
+- **Blockers:** Tasks 2.2, 2.3
 
 #### VERIFY: Phase 2 — Brain query/write tools
 - `npm run build` succeeds
@@ -159,7 +159,7 @@
   - `codeDefSchema` / `codeDef`: Find definition of a symbol. Same schema pattern.
   - `codeRefsSchema` / `codeRefs`: Find all references to a symbol. Same schema pattern.
   - All four: resolve member → check `agent.gbrain === true` → call `gbrainClient.callTool('code_callers'|'code_callees'|'code_def'|'code_refs', args)` → return result
-  - Use shared helpers from Task 2.0: `assertGbrainEnabled(agent)` for opt-in check, `callGbrainTool()` for proxying
+  - Use shared helpers from Task 2.1: `assertGbrainEnabled(agent)` for opt-in check, `callGbrainTool()` for proxying
   - Register all four in `src/index.ts`
 - **Files:** `src/tools/code-analysis.ts` (new), `src/index.ts`
 - **Tier:** standard
@@ -235,16 +235,16 @@
 > Two complementary features: (1) reviewers can query brain before approving, (2) user corrections during sprints are automatically captured to brain for future recall.
 
 #### Task 5.1: Update reviewer template with conditional brain instructions
-- **Change:** Update `skills/pm/tpl-reviewer.md` to add a conditional section for brain-aware reviews:
+- **Change:** Update `skills/pm/tpl-reviewer.md` to add a brain-aware review section:
   - Add a new section between "Context Recovery" and "Review Model": `## Brain-Aware Review (gbrain enabled)` with instructions:
     - "Before reviewing each changed file, query brain: what do we know about this module/symbol?"
     - "Use code_callers and code_refs to assess blast radius of changes"
     - "Check brain for past corrections related to the changed areas"
-  - Section is wrapped in a clearly marked optional block: `<!-- OPTIONAL: gbrain -->` / `<!-- /OPTIONAL: gbrain -->`. At template render time, PM includes the block when the member has `gbrain: true`, and strips it otherwise. This uses the same simple `{{PLACEHOLDER}}` token model the PM skill already supports — no Handlebars conditionals.
+  - Implementation: PM uses string concatenation to append the `## Brain-Aware Review` block to the rendered reviewer template when the member has `gbrain: true`. When gbrain is not enabled, the block is simply not appended. No template engine changes needed — this uses the existing `{{PLACEHOLDER}}` token model plus a post-render append.
   - Also update the "What to check" section to add: "If gbrain enabled: check brain for known issues with changed symbols"
-- **Files:** `skills/pm/tpl-reviewer.md`, `src/services/template-renderer.ts` (add optional-section stripping logic)
+- **Files:** `skills/pm/tpl-reviewer.md`
 - **Tier:** standard
-- **Done when:** Template includes brain instructions. Instructions are conditional on gbrain being enabled. Existing review flow unchanged when gbrain is not enabled.
+- **Done when:** Template includes brain instructions. PM appends the block only when gbrain is enabled. Existing review flow unchanged when gbrain is not enabled.
 - **Blockers:** None (template change, no code dependency)
 
 #### Task 5.2: Create course correction capture service
@@ -272,14 +272,14 @@
 - **Done when:** Both tools registered. Capture writes correction to brain. Recall returns relevant past corrections. Tools work without member resolution (corrections are fleet-level, not member-specific).
 - **Blockers:** Task 5.2
 
-#### Task 5.4: Wire course_correction_capture into PM sprint execution flow
-- **Change:** Update sprint templates and/or `execute_prompt` to invoke `course_correction_capture` when a user correction is detected during sprint execution:
-  - **Option A (template-based):** Add explicit `course_correction_capture` call-sites in `skills/pm/single-pair-sprint.md` and `skills/pm/doer-reviewer.md` at the post-iteration review step. After each doer iteration, if the reviewer or user has issued a correction, the template instructs PM to call `course_correction_capture` with the attempted approach and the correction.
-  - **Option B (middleware-based):** Add a lightweight hook in `src/tools/execute-prompt.ts` that pattern-matches user responses for correction signals (e.g. "no, instead…", "don't do X", "wrong approach") and automatically calls `captureCorrection()` from the course-correction service. This is transparent to the template.
-  - Choose Option A for explicitness and auditability. Add a clearly marked section in each sprint template: `<!-- OPTIONAL: gbrain -->` block with course correction capture instructions at the post-iteration checkpoint.
+#### Task 5.4: Document course_correction_capture call-sites in PM skill docs
+- **Change:** Update PM skill documentation to specify WHERE `course_correction_capture` is called:
+  - In `skills/pm/single-pair-sprint.md`: document that after a user interrupts or corrects a plan, PM calls `course_correction_capture` with the attempted approach and the correction. Add this at the post-iteration review checkpoint.
+  - In `skills/pm/doer-reviewer.md`: document that when the reviewer returns CHANGES NEEDED with user modifications, PM calls `course_correction_capture` to persist the correction to brain.
+  - These are documentation changes only — no code changes, no template engine modifications.
 - **Files:** `skills/pm/single-pair-sprint.md`, `skills/pm/doer-reviewer.md`
 - **Tier:** standard
-- **Done when:** Sprint templates include course_correction_capture call-sites. Corrections made during gbrain-enabled sprints are persisted to brain. Non-gbrain sprints are unaffected.
+- **Done when:** Both PM skill docs specify the call-sites for course_correction_capture. Documentation is clear about when captures happen. Non-gbrain sprints are unaffected.
 - **Blockers:** Tasks 5.2, 5.3
 
 #### Task 5.5: Tests for Phase 5
@@ -308,7 +308,7 @@
 > Documentation, integration wiring, and final validation that all pieces work together without breaking existing workflows.
 
 #### Task 6.1: DRY audit of gbrain helpers
-- **Change:** Audit all gbrain tools created in Phases 2-5 to verify they consistently use the shared helpers from `src/utils/gbrain-helpers.ts` (created in Task 2.0). Fix any tools that inline their own gbrain-enabled checks or error handling instead of using `assertGbrainEnabled` / `callGbrainTool`. No new files — helpers already exist.
+- **Change:** Audit all gbrain tools created in Phases 2-5 to verify they consistently use the shared helpers from `src/utils/gbrain-helpers.ts` (created in Task 2.1). Fix any tools that inline their own gbrain-enabled checks or error handling instead of using `assertGbrainEnabled` / `callGbrainTool`. No new files — helpers already exist.
 - **Files:** `src/tools/brain-query.ts`, `src/tools/brain-write.ts`, `src/tools/code-analysis.ts`, `src/tools/minions.ts`, `src/tools/course-correction.ts`
 - **Tier:** cheap
 - **Done when:** All gbrain tools use shared helpers from `src/utils/gbrain-helpers.ts`. No duplicated error handling. All tests still pass.
@@ -378,5 +378,5 @@
 - **gbrain tool name mapping**: Fleet tool names match gbrain's canonical underscore names: `brain_query`, `brain_write`, `code_callers`, `code_callees`, `code_def`, `code_refs`, `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`. No name translation needed — fleet passes tool names through directly.
 - **No fleet config file change**: gbrain server settings use environment variables (`GBRAIN_COMMAND`, `GBRAIN_ARGS`) rather than adding a new config file. Per-member opt-in uses the existing `Agent` interface field.
 - **PM gets gbrain for free**: PM accesses gbrain through fleet tools (brain_query, brain_write, etc.) — no separate gbrain MCP config needed on PM. This is the existing fleet architecture: PM calls fleet tools, fleet tools call gbrain.
-- **Reviewer template uses optional sections**: `<!-- OPTIONAL: gbrain -->...<!-- /OPTIONAL: gbrain -->` markers delineate brain-aware review instructions. The PM template renderer strips these sections when `gbrain` is not enabled for the member. This avoids Handlebars-style `{{#if}}` conditionals — the PM skill only supports simple `{{PLACEHOLDER}}` token substitution.
-- **Existing workflows unchanged**: All changes are additive. No existing tool schemas, handlers, or behaviors are modified. The only existing file modifications are: `src/types.ts` (add optional field), `src/index.ts` (add imports and registrations), tool schemas for register/update/list/detail (add optional field), `skills/pm/tpl-reviewer.md` (add conditional section), `README.md` (add section).
+- **Reviewer template uses string concatenation**: PM appends a `## Brain-Aware Review` block to the rendered reviewer template when the member has `gbrain: true`. When gbrain is not enabled, the block is simply not appended. No template engine changes needed — the PM skill's simple `{{PLACEHOLDER}}` token substitution is unchanged.
+- **Existing workflows unchanged**: All changes are additive. No existing tool schemas, handlers, or behaviors are modified. The only existing file modifications are: `src/types.ts` (add optional field), `src/index.ts` (add imports and registrations), tool schemas for register/update/list/detail (add optional field), `skills/pm/tpl-reviewer.md` (add brain-aware review block), `skills/pm/single-pair-sprint.md` and `skills/pm/doer-reviewer.md` (document course_correction_capture call-sites), `README.md` (add section).
