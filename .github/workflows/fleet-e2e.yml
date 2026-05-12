@@ -106,7 +106,8 @@ jobs:
             BIN=$(ls dist/apra-fleet-installer-* | grep -v -E '\.(blob|cjs|json|exe)$' | head -1)
           fi
           chmod +x "$BIN" 2>/dev/null || true
-          "$BIN" install --force
+          "$BIN" install --force --llm claude
+          "$BIN" install --force --llm gemini
           if [ "$RUNNER_OS" = "Windows" ]; then
             INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
           else
@@ -192,7 +193,7 @@ jobs:
             check_mcp "$output" "claude"
             echo "PM claude auth OK - fleet MCP responding"
           elif [ "$PROVIDER" = "gemini" ]; then
-            export GEMINI_CLI_TRUST_WORKSPACE="true"; output=$(gemini -p "$PROMPT" --model auto 2>&1)
+            export GEMINI_CLI_TRUST_WORKSPACE="true"; output=$(gemini -p "$PROMPT" --model auto --yolo 2>&1)
             echo "$output"
             check_mcp "$output" "gemini"
             echo "PM gemini auth OK - fleet MCP responding"
@@ -335,48 +336,54 @@ jobs:
           node "$GITHUB_WORKSPACE/.github/e2e/extract-telemetry.js"
 
       # -- Step 5d: Validate e2e test completion -----------------------------
-      # Hard-fail the job if the LLM session produced no meaningful work:
-      # 1) at least one commit was pushed to the test branch
-      # 2) a pull request was raised
-      # 3) PLAN.md and feedback.md both appear in the branch git history
+      # Hard-fail the job if the LLM session produced no meaningful work.
+      # Checks run against the TOY repo (where the PM pushes branches/PRs),
+      # not against the apra-fleet CI repo. Branch prefix match is used
+      # because the PM appends a slug (e.g. e2e-s1.2-<id>/tag-filtering).
       - name: Validate e2e test completion
         if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BRANCH="e2e-${{ inputs.suite }}-${{ github.run_id }}"
+          BRANCH_PREFIX="e2e-${{ inputs.suite }}-${{ github.run_id }}"
+          TOY_URL='${{ steps.suite.outputs.toy_url }}'
+          TOY_REPO=$(echo "$TOY_URL" | sed 's|https://github.com/||' | sed 's|https://bitbucket.org/||' | sed 's|\.git$||')
           FAIL=0
 
-          # 1 - commits pushed to test branch?
-          if git ls-remote --exit-code origin "refs/heads/$BRANCH" > /dev/null 2>&1; then
-            echo "[OK] commits: branch $BRANCH exists on remote"
+          echo "Checking toy repo: $TOY_REPO  branch prefix: $BRANCH_PREFIX"
+
+          # 1 - results.json overall verdict
+          OVERALL=$(jq -r '.overall // "MISSING"' "$RUN_DIR/results.json" 2>/dev/null || echo "MISSING")
+          if [ "$OVERALL" = "PASS" ]; then
+            echo "[OK] results.json: overall=PASS"
           else
-            echo "::error::FAIL - no commits pushed to $BRANCH (test stalled before first push)"
+            echo "::error::FAIL - results.json overall=$OVERALL (expected PASS)"
             FAIL=1
           fi
 
-          # 2 - PR raised?
-          PR_COUNT=$(gh pr list --head "$BRANCH" --json number --jq 'length' 2>/dev/null || echo 0)
-          if [ "$PR_COUNT" -gt 0 ]; then
-            PR_URL=$(gh pr list --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
+          # 2 - commits pushed to test branch in toy repo?
+          BRANCH_HIT=$(gh api "repos/$TOY_REPO/git/refs" \
+            --jq ".[] | select(.ref | startswith(\"refs/heads/$BRANCH_PREFIX\")) | .ref" \
+            2>/dev/null | head -1)
+          if [ -n "$BRANCH_HIT" ]; then
+            echo "[OK] commits: $BRANCH_HIT exists in $TOY_REPO"
+          else
+            echo "::error::FAIL - no branch matching $BRANCH_PREFIX/* found in $TOY_REPO"
+            FAIL=1
+          fi
+
+          # 3 - PR raised in toy repo?
+          PR_DATA=$(gh pr list --repo "$TOY_REPO" --state all \
+            --json headRefName,url,number \
+            --jq ".[] | select(.headRefName | startswith(\"$BRANCH_PREFIX\"))" \
+            2>/dev/null | head -1)
+          if [ -n "$PR_DATA" ]; then
+            PR_URL=$(echo "$PR_DATA" | jq -r '.url')
             echo "[OK] PR raised: $PR_URL"
           else
-            echo "::error::FAIL - no PR raised for $BRANCH"
+            echo "::error::FAIL - no PR raised matching $BRANCH_PREFIX/* in $TOY_REPO"
             FAIL=1
-          fi
-
-          # 3 - PLAN.md and feedback.md committed at some point?
-          if git fetch origin "$BRANCH" --depth=100 2>/dev/null; then
-            for f in PLAN.md feedback.md; do
-              HITS=$(git log "origin/$BRANCH" --oneline -- "$f" 2>/dev/null | wc -l | tr -d ' ')
-              if [ "$HITS" -gt 0 ]; then
-                echo "[OK] $f: found in branch history ($HITS commit(s))"
-              else
-                echo "::error::FAIL - $f was never committed to $BRANCH"
-                FAIL=1
-              fi
-            done
           fi
 
           [ "$FAIL" -eq 0 ] || exit 1
@@ -406,7 +413,7 @@ jobs:
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            export GEMINI_CLI_TRUST_WORKSPACE="true"; timeout 120 gemini \
+            export GEMINI_CLI_TRUST_WORKSPACE="true"; timeout 120 gemini --yolo \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
@@ -422,6 +429,8 @@ jobs:
         with:
           name: e2e-${{ inputs.suite }}-${{ github.run_id }}
           path: ${{ env.RUN_DIR }}
+
+
 
 
 
