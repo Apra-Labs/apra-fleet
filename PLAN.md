@@ -95,10 +95,19 @@
 
 > Core knowledge layer: fleet tools that proxy gbrain's brain-query and brain-write capabilities. These are the primary value — persistent knowledge across sessions.
 
+#### Task 2.0: Create shared gbrain helpers
+- **Change:** Create `src/utils/gbrain-helpers.ts` with shared utilities used by all gbrain tools in Phases 2-5:
+  - `assertGbrainEnabled(agent: Agent): string | null` — returns error string if gbrain not enabled on agent, null if OK
+  - `callGbrainTool(toolName: string, args: Record<string, unknown>): Promise<string>` — wraps `gbrainClient.callTool` with standard error handling (gbrain not available, connection errors, etc.)
+- **Files:** `src/utils/gbrain-helpers.ts` (new)
+- **Tier:** cheap
+- **Done when:** Both helpers exported. TypeScript compiles. Unit tests verify assertGbrainEnabled returns error for non-gbrain agent and null for gbrain agent. callGbrainTool wraps errors correctly.
+- **Blockers:** Task 1.3
+
 #### Task 2.1: Create `brain_query` fleet tool
 - **Change:** Create `src/tools/brain-query.ts`:
   - Schema: `memberIdentifier` (to verify gbrain is enabled on member) + `query: string` (the question to ask the brain) + `collection?: string` (optional brain collection/namespace)
-  - Handler: resolve member, check `agent.gbrain === true`, call `gbrainClient.callTool('brain-query', { query, collection })`, return result
+  - Handler: resolve member, check `agent.gbrain === true`, call `gbrainClient.callTool('brain_query', { query, collection })`, return result
   - Error if member doesn't have gbrain enabled: "gbrain is not enabled on this member. Use update_member to enable it."
   - Error if gbrain not running: "gbrain server is not available. Ensure it is running — see docs."
   - Register in `src/index.ts`
@@ -110,7 +119,7 @@
 #### Task 2.2: Create `brain_write` fleet tool
 - **Change:** Create `src/tools/brain-write.ts`:
   - Schema: `memberIdentifier` + `content: string` (knowledge to store) + `collection?: string` + `metadata?: string` (optional JSON metadata)
-  - Handler: resolve member, check `agent.gbrain === true`, call `gbrainClient.callTool('brain-write', { content, collection, metadata })`, return confirmation
+  - Handler: resolve member, check `agent.gbrain === true`, call `gbrainClient.callTool('brain_write', { content, collection, metadata })`, return confirmation
   - Same error handling as brain_query
   - Register in `src/index.ts`
 - **Files:** `src/tools/brain-write.ts` (new), `src/index.ts`
@@ -149,8 +158,8 @@
   - `codeCalleesSchema` / `codeCallees`: Find all callees from a symbol. Same schema pattern.
   - `codeDefSchema` / `codeDef`: Find definition of a symbol. Same schema pattern.
   - `codeRefsSchema` / `codeRefs`: Find all references to a symbol. Same schema pattern.
-  - All four: resolve member → check `agent.gbrain === true` → call `gbrainClient.callTool('code-callers'|'code-callees'|'code-def'|'code-refs', args)` → return result
-  - Shared helper: `assertGbrainEnabled(agent)` to DRY the opt-in check (reuse from Phase 2 — extract if not already shared)
+  - All four: resolve member → check `agent.gbrain === true` → call `gbrainClient.callTool('code_callers'|'code_callees'|'code_def'|'code_refs', args)` → return result
+  - Use shared helpers from Task 2.0: `assertGbrainEnabled(agent)` for opt-in check, `callGbrainTool()` for proxying
   - Register all four in `src/index.ts`
 - **Files:** `src/tools/code-analysis.ts` (new), `src/index.ts`
 - **Tier:** standard
@@ -178,28 +187,35 @@
 
 > Durable background work dispatch via gbrain's Minions. Postgres-backed crash recovery, stall detection, cascade cancel. Alternative to execute_prompt for deterministic work.
 
-#### Task 4.1: Create Minions dispatch and status tools
-- **Change:** Create `src/tools/minions.ts` with two tools:
-  - `minionsDispatchSchema` / `minionsDispatch`: Submit a job to Minions queue
+#### Task 4.1: Create Minions job queue tools
+- **Change:** Create `src/tools/minions.ts` with four tools wrapping gbrain's Minions job queue:
+  - `jobsSubmitSchema` / `jobsSubmit`: Submit a job to Minions queue
     - Schema: `memberIdentifier` + `job_type: string` + `payload: string` (JSON) + `priority?: number` (0-4, default 2) + `depends_on?: string[]` (job IDs for dependency chain)
-    - Handler: resolve member → check `agent.gbrain === true` → call `gbrainClient.callTool('minions-dispatch', { job_type, payload, priority, depends_on })` → return job ID and status
+    - Handler: resolve member → check `agent.gbrain === true` → call `gbrainClient.callTool('jobs_submit', { job_type, payload, priority, depends_on })` → return job ID and status
     - If gbrain not available or member not gbrain-enabled, return error suggesting execute_prompt as fallback
-  - `minionsStatusSchema` / `minionsStatus`: Check/cancel a Minions job
-    - Schema: `memberIdentifier` + `job_id: string` + `action?: 'status' | 'cancel'` (default 'status')
-    - Handler: resolve member → check gbrain → call `gbrainClient.callTool('minions-status', { job_id, action })` → return job state (queued/running/completed/failed/cancelled)
-  - Register both in `src/index.ts`
+  - `jobsListSchema` / `jobsList`: List jobs in the queue
+    - Schema: `memberIdentifier` + `status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'` + `limit?: number`
+    - Handler: resolve member → check gbrain → call `gbrainClient.callTool('jobs_list', { status, limit })` → return job list
+  - `jobsStatsSchema` / `jobsStats`: Get aggregate job queue statistics
+    - Schema: `memberIdentifier`
+    - Handler: resolve member → check gbrain → call `gbrainClient.callTool('jobs_stats', {})` → return queue stats (counts by status, avg duration, etc.)
+  - `jobsWorkSchema` / `jobsWork`: Claim and execute the next available job
+    - Schema: `memberIdentifier` + `job_type?: string` (optional filter)
+    - Handler: resolve member → check gbrain → call `gbrainClient.callTool('jobs_work', { job_type })` → return claimed job details
+  - Register all four in `src/index.ts`
 - **Files:** `src/tools/minions.ts` (new), `src/index.ts`
 - **Tier:** standard
-- **Done when:** Both tools registered. Dispatch returns job ID. Status returns job state. Cancel stops a job. Error messages guide user when gbrain unavailable.
+- **Done when:** All four tools registered. Submit returns job ID. List returns filtered jobs. Stats returns queue metrics. Work claims next job. Error messages guide user when gbrain unavailable.
 - **Blockers:** Phase 1
 
 #### Task 4.2: Tests for Minions tools
 - **Change:** Create `tests/minions.test.ts`:
-  - Dispatch job on gbrain-enabled member returns job ID
-  - Dispatch on non-gbrain member returns error with fallback suggestion
-  - Status check returns job state
-  - Cancel action returns confirmation
-  - Dispatch with depends_on passes dependency chain
+  - jobs_submit on gbrain-enabled member returns job ID
+  - jobs_submit on non-gbrain member returns error with fallback suggestion
+  - jobs_list returns filtered job list
+  - jobs_stats returns queue metrics
+  - jobs_work claims next available job
+  - jobs_submit with depends_on passes dependency chain
   - Mock gbrainClient.callTool
 - **Files:** `tests/minions.test.ts` (new)
 - **Tier:** standard
@@ -209,7 +225,7 @@
 #### VERIFY: Phase 4 — Minions integration
 - `npm run build` succeeds
 - `npm test` passes
-- minions_dispatch and minions_status tools appear in MCP tool list
+- jobs_submit, jobs_list, jobs_stats, jobs_work tools appear in MCP tool list
 - Routing guidance documented: deterministic work → Minions, judgment work → execute_prompt
 
 ---
@@ -224,9 +240,9 @@
     - "Before reviewing each changed file, query brain: what do we know about this module/symbol?"
     - "Use code_callers and code_refs to assess blast radius of changes"
     - "Check brain for past corrections related to the changed areas"
-  - Section is wrapped in a conditional marker: `{{#if gbrain}}...{{/if}}` (matching existing template variable pattern)
+  - Section is wrapped in a clearly marked optional block: `<!-- OPTIONAL: gbrain -->` / `<!-- /OPTIONAL: gbrain -->`. At template render time, PM includes the block when the member has `gbrain: true`, and strips it otherwise. This uses the same simple `{{PLACEHOLDER}}` token model the PM skill already supports — no Handlebars conditionals.
   - Also update the "What to check" section to add: "If gbrain enabled: check brain for known issues with changed symbols"
-- **Files:** `skills/pm/tpl-reviewer.md`
+- **Files:** `skills/pm/tpl-reviewer.md`, `src/services/template-renderer.ts` (add optional-section stripping logic)
 - **Tier:** standard
 - **Done when:** Template includes brain instructions. Instructions are conditional on gbrain being enabled. Existing review flow unchanged when gbrain is not enabled.
 - **Blockers:** None (template change, no code dependency)
@@ -256,7 +272,17 @@
 - **Done when:** Both tools registered. Capture writes correction to brain. Recall returns relevant past corrections. Tools work without member resolution (corrections are fleet-level, not member-specific).
 - **Blockers:** Task 5.2
 
-#### Task 5.4: Tests for Phase 5
+#### Task 5.4: Wire course_correction_capture into PM sprint execution flow
+- **Change:** Update sprint templates and/or `execute_prompt` to invoke `course_correction_capture` when a user correction is detected during sprint execution:
+  - **Option A (template-based):** Add explicit `course_correction_capture` call-sites in `skills/pm/single-pair-sprint.md` and `skills/pm/doer-reviewer.md` at the post-iteration review step. After each doer iteration, if the reviewer or user has issued a correction, the template instructs PM to call `course_correction_capture` with the attempted approach and the correction.
+  - **Option B (middleware-based):** Add a lightweight hook in `src/tools/execute-prompt.ts` that pattern-matches user responses for correction signals (e.g. "no, instead…", "don't do X", "wrong approach") and automatically calls `captureCorrection()` from the course-correction service. This is transparent to the template.
+  - Choose Option A for explicitness and auditability. Add a clearly marked section in each sprint template: `<!-- OPTIONAL: gbrain -->` block with course correction capture instructions at the post-iteration checkpoint.
+- **Files:** `skills/pm/single-pair-sprint.md`, `skills/pm/doer-reviewer.md`
+- **Tier:** standard
+- **Done when:** Sprint templates include course_correction_capture call-sites. Corrections made during gbrain-enabled sprints are persisted to brain. Non-gbrain sprints are unaffected.
+- **Blockers:** Tasks 5.2, 5.3
+
+#### Task 5.5: Tests for Phase 5
 - **Change:** Create `tests/course-correction.test.ts`:
   - captureCorrection writes to brain with correct format
   - captureCorrection no-ops when gbrain unavailable
@@ -281,21 +307,18 @@
 
 > Documentation, integration wiring, and final validation that all pieces work together without breaking existing workflows.
 
-#### Task 6.1: Extract shared gbrain utility
-- **Change:** Review all gbrain tools created in Phases 2-5 and extract shared patterns into `src/utils/gbrain-helpers.ts`:
-  - `assertGbrainEnabled(agent: Agent): string | null` — returns error string if gbrain not enabled, null if OK
-  - `callGbrainTool(toolName: string, args: Record<string, unknown>): Promise<string>` — wraps gbrainClient.callTool with standard error handling
-  - Refactor all gbrain tools to use these helpers (DRY)
-- **Files:** `src/utils/gbrain-helpers.ts` (new), `src/tools/brain-query.ts`, `src/tools/brain-write.ts`, `src/tools/code-analysis.ts`, `src/tools/minions.ts`, `src/tools/course-correction.ts`
+#### Task 6.1: DRY audit of gbrain helpers
+- **Change:** Audit all gbrain tools created in Phases 2-5 to verify they consistently use the shared helpers from `src/utils/gbrain-helpers.ts` (created in Task 2.0). Fix any tools that inline their own gbrain-enabled checks or error handling instead of using `assertGbrainEnabled` / `callGbrainTool`. No new files — helpers already exist.
+- **Files:** `src/tools/brain-query.ts`, `src/tools/brain-write.ts`, `src/tools/code-analysis.ts`, `src/tools/minions.ts`, `src/tools/course-correction.ts`
 - **Tier:** cheap
-- **Done when:** All gbrain tools use shared helpers. No duplicated error handling. All tests still pass.
+- **Done when:** All gbrain tools use shared helpers from `src/utils/gbrain-helpers.ts`. No duplicated error handling. All tests still pass.
 - **Blockers:** Phases 2-5
 
 #### Task 6.2: Wire gbrain client lifecycle into server startup/shutdown
 - **Change:** In `src/index.ts`:
   - Import gbrain client service
   - On SIGINT/SIGTERM: call `gbrainClient.disconnect()` before process exit
-  - Register all gbrain tools (brain_query, brain_write, code_callers, code_callees, code_def, code_refs, minions_dispatch, minions_status, course_correction_capture, course_correction_recall) — verify all are present
+  - Register all gbrain tools (brain_query, brain_write, code_callers, code_callees, code_def, code_refs, jobs_submit, jobs_list, jobs_stats, jobs_work, course_correction_capture, course_correction_recall) — verify all are present
   - Lazy initialization: gbrain client connects on first tool call, not on server startup (so fleet starts fast even without gbrain)
 - **Files:** `src/index.ts`
 - **Tier:** standard
@@ -306,7 +329,7 @@
 - **Change:** Add gbrain section to `README.md`:
   - Installation: how to install/run gbrain alongside fleet
   - Configuration: `GBRAIN_COMMAND` env var, per-member `gbrain: true` opt-in
-  - Available tools: brain_query, brain_write, code_callers, code_callees, code_def, code_refs, minions_dispatch, minions_status, course_correction_capture, course_correction_recall
+  - Available tools: brain_query, brain_write, code_callers, code_callees, code_def, code_refs, jobs_submit, jobs_list, jobs_stats, jobs_work, course_correction_capture, course_correction_recall
   - Routing guidance: when to use Minions vs execute_prompt
   - PGLite vs Postgres: what each supports
   - Reviewer workflow: how brain-aware reviews work
@@ -317,7 +340,7 @@
 
 #### Task 6.4: Final integration tests
 - **Change:** Create `tests/gbrain-integration.test.ts`:
-  - Verify all 10 gbrain tools are registered on server (mock server)
+  - Verify all 12 gbrain tools are registered on server (mock server)
   - Verify fleet starts without gbrain (no crash, tools return appropriate errors)
   - Verify existing tools (execute_prompt, list_members, etc.) work unchanged
   - Verify agent with gbrain: true serializes/deserializes correctly in registry
@@ -332,7 +355,7 @@
 - `npm test` passes (all tests, including new integration tests)
 - README has gbrain documentation
 - Fleet starts cleanly without gbrain running
-- All 10 gbrain tools registered
+- All 12 gbrain tools registered
 - Existing fleet workflows unchanged
 - Token overhead < 1% validated
 
@@ -346,14 +369,14 @@
 | gbrain process not running | All gbrain tools return errors | Lazy connect + clear error messages guiding user to start gbrain |
 | Minions requires Postgres (PGLite insufficient) | Minions dispatch fails | Document requirement; minions tools check availability before accepting jobs |
 | gbrain tool names change between versions | Fleet tools call wrong tool names | Pin known tool names; validate available tools on connect; version check |
-| Token overhead from 10 new tool schemas | Exceeds 1% budget | Measure schema token count vs existing; gbrain tools use compact descriptions |
+| Token overhead from 12 new tool schemas | Exceeds 1% budget | Measure schema token count vs existing; gbrain tools use compact descriptions |
 | Child process management on Windows | Spawn/kill semantics differ | Use Node.js child_process with `shell: true` on Windows; test on Windows |
 | Course correction capture adds latency | Slows sprint execution | Capture is fire-and-forget (no await on brain write in hot path) |
 
 ## Notes
 
-- **gbrain tool name mapping**: Fleet tool names use underscores (fleet convention), gbrain uses hyphens. Mapping: `brain_query` → `brain-query`, `code_callers` → `code-callers`, etc. This is handled in the gbrain client service or individual tool handlers.
+- **gbrain tool name mapping**: Fleet tool names match gbrain's canonical underscore names: `brain_query`, `brain_write`, `code_callers`, `code_callees`, `code_def`, `code_refs`, `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`. No name translation needed — fleet passes tool names through directly.
 - **No fleet config file change**: gbrain server settings use environment variables (`GBRAIN_COMMAND`, `GBRAIN_ARGS`) rather than adding a new config file. Per-member opt-in uses the existing `Agent` interface field.
 - **PM gets gbrain for free**: PM accesses gbrain through fleet tools (brain_query, brain_write, etc.) — no separate gbrain MCP config needed on PM. This is the existing fleet architecture: PM calls fleet tools, fleet tools call gbrain.
-- **Reviewer template uses conditional blocks**: `{{#if gbrain}}...{{/if}}` — the PM skill already uses `{{PLACEHOLDER}}` variables in templates. The conditional needs to be resolved at template render time in the PM skill's template engine. If the PM skill doesn't support conditionals, the brain instructions can be placed in a clearly marked optional section that reviewers skip when gbrain is not enabled.
+- **Reviewer template uses optional sections**: `<!-- OPTIONAL: gbrain -->...<!-- /OPTIONAL: gbrain -->` markers delineate brain-aware review instructions. The PM template renderer strips these sections when `gbrain` is not enabled for the member. This avoids Handlebars-style `{{#if}}` conditionals — the PM skill only supports simple `{{PLACEHOLDER}}` token substitution.
 - **Existing workflows unchanged**: All changes are additive. No existing tool schemas, handlers, or behaviors are modified. The only existing file modifications are: `src/types.ts` (add optional field), `src/index.ts` (add imports and registrations), tool schemas for register/update/list/detail (add optional field), `skills/pm/tpl-reviewer.md` (add conditional section), `README.md` (add section).
