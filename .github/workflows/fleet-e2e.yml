@@ -22,7 +22,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ── Create run directory ───────────────────────────────────────────────
+      # All test artifacts go here — never inside the repo checkout.
+      # Sibling of the checkout: <runner-work>/<repo>/testRuns/<run_id>-<attempt>
+      - name: Create run directory
+        shell: bash
+        run: |
+          RUN_DIR="$(dirname "$GITHUB_WORKSPACE")/testRuns/${{ github.run_id }}-${{ github.run_attempt }}"
+          mkdir -p "$RUN_DIR/logs"
+          echo "RUN_DIR=$RUN_DIR" >> "$GITHUB_ENV"
+          echo "Run directory: $RUN_DIR"
+
       # ── Step 1: Load suite config ──────────────────────────────────────────
+      - name: Check runner prerequisites
+        shell: bash
+        run: |
+          jq --version || { echo "::error::jq is not installed on this runner"; exit 1; }
+
       - name: Load suite config
         id: suite
         shell: bash
@@ -71,95 +87,252 @@ jobs:
         run: |
           npm ci
           npm run build:binary
-          BIN=$(ls dist/apra-fleet-installer-* | grep -v '\.blob$\|\.cjs$\|\.json$' | grep -v '^.*\.exe$' | head -1)
-          [ -z "$BIN" ] && BIN=$(ls dist/apra-fleet-installer-*.exe 2>/dev/null | head -1)
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN=$(ls dist/apra-fleet-installer-*.exe | head -1)
+          else
+            BIN=$(ls dist/apra-fleet-installer-* | grep -v -E '\.(blob|cjs|json|exe)$' | head -1)
+          fi
           chmod +x "$BIN" 2>/dev/null || true
           "$BIN" install --force
-          apra-fleet --version
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
+          else
+            INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet"
+          fi
+          "$INSTALLED_BIN" --version
 
       # ── Step 3: Seed fleet credential store ───────────────────────────────
       - name: Seed fleet credential store
         shell: bash
         run: |
-          echo "$E2E_BB_TOKEN"    | apra-fleet secret --set e2e_bb_token    --persist -y
-          echo "$E2E_BB_USER"     | apra-fleet secret --set e2e_bb_user     --persist -y
-          echo "$E2E_GH_TOKEN"    | apra-fleet secret --set e2e_gh_token    --persist -y
-          echo "$E2E_ADO_TOKEN"   | apra-fleet secret --set e2e_ado_token   --persist -y
+          check_secret() { [ -n "$1" ] || { echo "::error::$2 secret is not set or is empty"; exit 1; }; }
+          check_secret "$E2E_ACRED"     "E2E_ACRED"
+          check_secret "$E2E_GH_TOKEN"  "E2E_GH_TOKEN"
+          check_secret "$E2E_BB_TOKEN"  "E2E_BB_TOKEN"
+          check_secret "$E2E_BB_USER"   "E2E_BB_USER"
+          check_secret "$E2E_ADO_TOKEN" "E2E_ADO_TOKEN"
+
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
+          else
+            FLEET_BIN="$HOME/.apra-fleet/bin/apra-fleet"
+          fi
+          echo "$E2E_BB_TOKEN"    | "$FLEET_BIN" secret --set e2e_bb_token    --persist -y
+          echo "$E2E_BB_USER"     | "$FLEET_BIN" secret --set e2e_bb_user     --persist -y
+          echo "$E2E_GH_TOKEN"    | "$FLEET_BIN" secret --set e2e_gh_token    --persist -y
+          echo "$E2E_ADO_TOKEN"   | "$FLEET_BIN" secret --set e2e_ado_token   --persist -y
+          echo "$E2E_ACRED"       | "$FLEET_BIN" secret --set E2E_ACRED       --persist -y
         env:
           E2E_BB_TOKEN:   ${{ secrets.E2E_BB_TOKEN }}
           E2E_BB_USER:    ${{ secrets.E2E_BB_USER }}
           E2E_GH_TOKEN:   ${{ secrets.E2E_GH_TOKEN }}
           E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
+          E2E_ACRED:      ${{ secrets.E2E_ACRED }}
 
+      # ── Step 3a: Clear PM claude settings of member-role residue ────────────
+      # This runner may also be registered as a fleet member. compose_permissions
+      # writes .claude/settings.local.json to the member's work_folder with
+      # apra-fleet disabled. Claude Code walks up from RUN_DIR (which is nested
+      # inside the work_folder) and finds that file, polluting the PM session.
+      # Delete it before the PM runs — compose_permissions recreates it on next
+      # member use, and the PM needs apra-fleet MCP enabled.
+      - name: Clear PM claude settings of member-role residue
+        shell: bash
+        run: |
+          dir="$GITHUB_WORKSPACE"
+          while [ "$(dirname "$dir")" != "$dir" ]; do
+            dir="$(dirname "$dir")"
+            cfg="$dir/.claude/settings.local.json"
+            if [ -f "$cfg" ]; then
+              rm -f "$cfg"
+              echo "Removed: $cfg"
+            fi
+          done
+          echo "Done."
+
+      # ── Step 3b: Smoke-test PM LLM auth + apra-fleet MCP ────────────────
+      # Fail fast if LLM auth is expired OR the fleet MCP server is not loaded.
+      # No point running a 45-minute test without a working fleet connection.
+      - name: Smoke-test PM LLM auth and fleet MCP
+        shell: bash
+        run: |
+          PROMPT="What is the version of the apra-fleet MCP server installed? If the tool is not available reply with: not installed"
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          check_mcp() {
+            local output="$1" provider="$2"
+            if echo "$output" | grep -qi "not installed"; then
+              echo "::error::apra-fleet MCP not loaded on $provider. Ensure fleet is installed on this runner."
+              exit 1
+            fi
+            if ! echo "$output" | grep -qE 'v[0-9]+\.[0-9]+'; then
+              echo "::error::apra-fleet MCP responded but version not recognised. Output: $output"
+              exit 1
+            fi
+          }
+          if [ "$PROVIDER" = "claude" ]; then
+            output=$(claude -p "$PROMPT" --model haiku 2>&1)
+            echo "$output"
+            check_mcp "$output" "claude"
+            echo "PM claude auth OK — fleet MCP responding"
+          elif [ "$PROVIDER" = "gemini" ]; then
+            output=$(gemini -p "$PROMPT" --model auto 2>&1)
+            echo "$output"
+            check_mcp "$output" "gemini"
+            echo "PM gemini auth OK — fleet MCP responding"
+          fi
+
+      # ── Step 3c: Purge fleet daemon logs ──────────────────────────────────
+      # Clear any logs from previous runs so we can collect exactly the files
+      # produced by this run — handles fleet restarts during the test cleanly.
+      - name: Purge fleet daemon logs
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            LOG_DIR="$(cygpath "$USERPROFILE")/.apra-fleet/data/logs"
+          else
+            LOG_DIR="$HOME/.apra-fleet/data/logs"
+          fi
+          rm -f "$LOG_DIR"/fleet-*.log
+          echo "Fleet logs purged from $LOG_DIR"
 
       # ── Step 4: Render test script with suite context ─────────────────────
       - name: Render test script
         shell: bash
         run: |
+          # Folder paths may contain backslashes (Windows) which GNU sed interprets
+          # as escape sequences (\U = uppercase, \a = BEL, etc.) in replacements.
+          # Escape each backslash to \\ before passing to sed.
+          DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
+          REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
+          DOER_FOLDER_SED="${DOER_FOLDER//\\/\\\\}"
+          REVIEWER_FOLDER_SED="${REVIEWER_FOLDER//\\/\\\\}"
+
           sed \
             -e 's|{{SUITE_ID}}|${{ inputs.suite }}|g' \
             -e 's|{{PM_OS}}|${{ steps.suite.outputs.pm_os }}|g' \
             -e 's|{{PM_PROVIDER}}|${{ steps.suite.outputs.pm_provider }}|g' \
             -e 's|{{DOER_HOST}}|${{ steps.suite.outputs.doer_host }}|g' \
+            -e 's|{{DOER_USER}}|${{ steps.suite.outputs.doer_user }}|g' \
             -e 's|{{DOER_OS}}|${{ steps.suite.outputs.doer_os }}|g' \
             -e 's|{{DOER_PROVIDER}}|${{ steps.suite.outputs.doer_provider }}|g' \
             -e 's|{{REVIEWER_HOST}}|${{ steps.suite.outputs.reviewer_host }}|g' \
+            -e 's|{{REVIEWER_USER}}|${{ steps.suite.outputs.reviewer_user }}|g' \
             -e 's|{{REVIEWER_OS}}|${{ steps.suite.outputs.reviewer_os }}|g' \
             -e 's|{{REVIEWER_PROVIDER}}|${{ steps.suite.outputs.reviewer_provider }}|g' \
             -e 's|{{TOY_PROJECT_URL}}|${{ steps.suite.outputs.toy_url }}|g' \
             -e 's|{{VCS}}|${{ steps.suite.outputs.vcs }}|g' \
             -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite }}-${{ github.run_id }}|g' \
-            .github/e2e/test-script.md > rendered-test-script.md
+            -e "s|{{DOER_FOLDER}}|${DOER_FOLDER_SED}|g" \
+            -e "s|{{REVIEWER_FOLDER}}|${REVIEWER_FOLDER_SED}|g" \
+            .github/e2e/test-script.md > "$RUN_DIR/rendered-test-script.md"
 
-      # ── Step 5: Run the LLM-driven test ───────────────────────────────────
+      # ── Step 5: Run the LLM-driven test (T1–T5) ──────────────────────────────
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
+        id: e2e
         shell: bash
         run: |
-          # Resolve fleet binary path and write a runtime mcp config with the
-          # full path — avoids PATH lookup failures in claude's subprocess env.
-          FLEET_BIN=$(which apra-fleet 2>/dev/null || echo "$HOME/.apra-fleet/bin/apra-fleet")
-          printf '{"mcpServers":{"apra-fleet":{"type":"stdio","command":"%s","args":[]}}}\n' "$FLEET_BIN" > mcp-runtime.json
-
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          cd "$RUN_DIR"
           if [ "$PROVIDER" = "claude" ]; then
             claude \
-              -p "$(cat rendered-test-script.md)" \
-              --mcp-config mcp-runtime.json \
-              --output-format json \
+              -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
+              --output-format stream-json \
+              --verbose \
               --max-turns 80 \
-              > raw-output.txt 2>&1
+              > "$RUN_DIR/raw-output.txt" 2>&1 || true
           else
             gemini \
               --output-format stream-json \
-              --mcp-config mcp-runtime.json \
-              -p "$(cat rendered-test-script.md)" \
-              > raw-output.txt 2>&1
+              -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
+              > "$RUN_DIR/raw-output.txt" 2>&1 || true
           fi
 
-          # Extract the JSON report from the output (last JSON block)
-          grep -o '{.*}' raw-output.txt | tail -1 > results.json || echo '{"overall":"FAIL","error":"no JSON in output"}' > results.json
+          if [ ! -s "$RUN_DIR/raw-output.txt" ]; then
+            echo "::error::LLM produced no output — check auth and MCP connectivity"
+          fi
 
-      # ── Step 6: Post summary ───────────────────────────────────────────────
+          # Extract PM session ID from the stream-json system init event.
+          SESSION_ID=$(grep -m1 '"type":"system"' "$RUN_DIR/raw-output.txt" \
+            | jq -r '.session_id // ""' 2>/dev/null || true)
+          echo "session_id=$SESSION_ID" >> "$GITHUB_OUTPUT"
+          echo "PM session_id: $SESSION_ID"
+
+          # Assemble results.json from CHECKPOINT lines emitted during the run.
+          node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" "$RUN_DIR/raw-output.txt" \
+            '${{ inputs.suite }}' \
+            '${{ steps.suite.outputs.pm_os }}' \
+            '${{ steps.suite.outputs.pm_provider }}' \
+            > "$RUN_DIR/results.json" \
+            || echo '{"overall":"FAIL","error":"extract-results.mjs failed"}' > "$RUN_DIR/results.json"
+
+      # ── Step 5b: Collect fleet daemon logs ────────────────────────────────
+      # Collect all fleet-*.log files produced since the purge step.
+      # Multiple files appear if fleet restarted during the test; concatenate
+      # them all into fleet-pm.log so extract-telemetry.js sees one stream.
+      - name: Collect fleet daemon logs
+        if: always()
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            LOG_DIR="$(cygpath "$USERPROFILE")/.apra-fleet/data/logs"
+          else
+            LOG_DIR="$HOME/.apra-fleet/data/logs"
+          fi
+          count=$(ls "$LOG_DIR"/fleet-*.log 2>/dev/null | wc -l)
+          if [ "$count" -gt 0 ]; then
+            cat "$LOG_DIR"/fleet-*.log > "$RUN_DIR/logs/fleet-pm.log"
+            echo "Collected $count fleet log file(s) → fleet-pm.log ($(wc -l < "$RUN_DIR/logs/fleet-pm.log") lines)"
+          else
+            echo "No fleet logs found in $LOG_DIR"
+          fi
+
+      # ── Step 5c: Extract telemetry ────────────────────────────────────────
+      # Primary: logs/fleet-pm.log execute_prompt exit lines (in=N out=N elapsed=Nms).
+      # Fallback: member session JSONLs.
+      - name: Extract telemetry
+        if: always()
+        shell: bash
+        run: |
+          [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
+          node "$GITHUB_WORKSPACE/.github/e2e/extract-telemetry.js"
+
+      # ── Step 6: Post job summary ───────────────────────────────────────────
       - name: Post job summary
         if: always()
         shell: bash
         run: |
-          echo "## Fleet E2E – Suite ${{ inputs.suite }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | Status | Notes |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          cat results.json | jq -r '.results[] | "| \(.test) | \(.status) | \(.notes) |"' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "| error | FAIL | could not parse results |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          OVERALL=$(cat results.json | jq -r '.overall' 2>/dev/null || echo "FAIL")
-          echo "**Overall: $OVERALL**" >> $GITHUB_STEP_SUMMARY
+          [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
+          node "$GITHUB_WORKSPACE/.github/e2e/post-summary.mjs"
+        env:
+          SUITE: ${{ inputs.suite }}
 
-      # ── Step 7: Upload artifacts ───────────────────────────────────────────
+      # ── Step 7: T6 teardown ────────────────────────────────────────────────
+      # Runs always — remove any fleet members left over from the test run.
+      # Housekeeping only: result does not feed into the test report.
+      - name: T6 — Teardown
+        if: always()
+        shell: bash
+        run: |
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          if [ "$PROVIDER" = "claude" ]; then
+            claude \
+              -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
+              --max-turns 15 \
+              > "$RUN_DIR/t6-output.txt" 2>&1 || true
+          else
+            timeout 120 gemini \
+              -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
+              > "$RUN_DIR/t6-output.txt" 2>&1 || true
+          fi
+          tail -3 "$RUN_DIR/t6-output.txt" || true
+          if ! grep -q "T6: PASS" "$RUN_DIR/t6-output.txt" 2>/dev/null; then
+            echo "::warning::T6 teardown did not confirm success — fleet members may still be registered"
+          fi
+
+      # ── Step 8: Upload artifacts ───────────────────────────────────────────
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-${{ inputs.suite }}-${{ github.run_id }}
-          path: |
-            results.json
-            raw-output.txt
-            rendered-test-script.md
+          path: ${{ env.RUN_DIR }}

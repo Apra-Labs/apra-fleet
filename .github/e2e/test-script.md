@@ -1,134 +1,131 @@
-# Fleet E2E Test Run
+# Fleet E2E – {{SUITE_ID}}
 
-You are a Fleet PM running an automated end-to-end test of apra-fleet.
+PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
-**Your environment:**
-- PM machine: {{PM_OS}} (this machine)
-- PM provider: {{PM_PROVIDER}}
-- Doer member: {{DOER_HOST}} ({{DOER_OS}}) — provider: {{DOER_PROVIDER}}
-- Reviewer member: {{REVIEWER_HOST}} ({{REVIEWER_OS}}) — provider: {{REVIEWER_PROVIDER}}
-- Toy project: {{TOY_PROJECT_URL}} ({{VCS}})
-- Fleet version: call the `version` tool to get this
+## Members
 
-All SSH credentials and LLM API keys are pre-stored in the fleet credential store.
-Use `{{secure.NAME}}` references as needed. Do NOT ask for any passwords or tokens.
+| Role     | Name     | IP                | User  | Pass               | LLM                | Work Folder          |
+|----------|----------|-------------------|-------|--------------------|--------------------|----------------------|
+| doer     | doer     | {{DOER_HOST}}     | {{DOER_USER}} | {{secure.E2E_ACRED}}   | {{DOER_PROVIDER}}  | {{DOER_FOLDER}}      |
+| reviewer | reviewer | {{REVIEWER_HOST}} | {{REVIEWER_USER}} | {{secure.E2E_ACRED}}   | {{REVIEWER_PROVIDER}} | {{REVIEWER_FOLDER}} |
 
-For each test section below:
-1. Execute the steps using fleet tools
-2. Record your observation as either ✅ PASS or ❌ FAIL with a brief note
-3. Continue to the next test even if a test fails — do not stop early
+## Rules
+
+- Run every test even if earlier ones fail.
+- After each test emit one line in this exact format (no backticks, no code block):
+  CHECKPOINT: [{"test":"T1","status":"PASS","notes":"..."}]
+  Always include every test completed so far in the array.
 
 ---
 
 ## T1: Member Registration
 
-Register both members (doer and reviewer) as remote SSH members.
-- Use `auth_type=key` — SSH keys are pre-configured on each machine.
-- Work folder for each: `~/git/apra-fleet-e2e` (Linux/macOS) or `C:\Users\<user>\git\apra-fleet-e2e` (Windows)
+Register both members (`auth_type=password`, credentials from table). After each: `update_member unattended="auto"`.
 
-After registering, provision LLM auth on each member:
-- Provision Claude on both
-- Provision Gemini on both
+Provision LLM AUTH on both members. 
 
-Verify both members appear online in `fleet_status`.
+Verify both online in `fleet_status`.
 
-**Record:** Did both members register? Did all 4 auth provisions succeed? Are both online?
+On each member verify `bd`: `which bd 2>/dev/null || find ~/.nvm -name bd -type f 2>/dev/null | head -1`
+If missing: `npm install -g @beads/bd`
+
+Verify `dolt`: `which dolt 2>/dev/null || ~/bin/dolt version 2>/dev/null`
+If missing:
+```
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/x86_64/amd64/')
+mkdir -p ~/bin
+curl -fsSL -o /tmp/dolt.tar.gz https://github.com/dolthub/dolt/releases/latest/download/dolt-${OS}-${ARCH}.tar.gz
+tar -xzf /tmp/dolt.tar.gz -C /tmp/ && mv /tmp/dolt-${OS}-${ARCH}/bin/dolt ~/bin/ && chmod +x ~/bin/dolt
+grep -q 'HOME/bin' ~/.profile 2>/dev/null || echo 'export PATH=$HOME/bin:$PATH' >> ~/.profile
+~/bin/dolt version
+```
 
 ---
 
 ## T2: Basic Execution
 
-Run `echo "e2e-ok-$(hostname)"` on each member via `execute_command`.
-Verify each response contains the string `e2e-ok-`.
-
-Send a small text file (create it with content `fleet-e2e-roundtrip`) to each member.
-Receive it back. Verify the content is identical.
-
-**Record:** Did commands execute on both members? Did file round-trip correctly for both?
-
----
-
-## T3: Credential Store
-
-Create a credential named `e2e_test_cred` with a dummy value via `credential_store_set`.
-Verify it appears in `credential_store_list`.
-Update its network policy to `confirm` via `credential_store_update`.
-Verify the policy changed.
-Delete it via `credential_store_delete`.
-Verify it no longer appears in `credential_store_list`.
-
-**Record:** Did all 4 CRUD operations succeed?
+On each member: `echo "e2e-ok-$(hostname)"` — verify `e2e-ok-` in response.
+Send a file containing `fleet-e2e-roundtrip` to each member, receive it back, verify content matches.
 
 ---
 
 ## T4: LLM Execution
 
-Run `execute_prompt` on each member with this prompt:
-> "What operating system are you running on? Reply in exactly one sentence."
-
-Verify each response names the correct OS ({{DOER_OS}} and {{REVIEWER_OS}}).
-
-**Record:** Did both prompts execute? Did each response name the correct OS?
+On each member `execute_prompt` with `model="cheap"`: `"What OS are you running on? Reply in one sentence."`
+Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS}}).
 
 ---
 
-## T5: Full Sprint
+## T5: Sprint via /pm
 
-The toy project is at {{TOY_PROJECT_URL}}.
+**T5.1** On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
+If `bitbucket`: `git config user.email {{secure.e2e_bb_user}}` in repo dir.
+After cloning (or if repo already exists), run `git fetch origin && git checkout main && git pull origin main` inside the repo dir to ensure the sprint starts from the latest main.
 
-Branch prefix for this run: `{{BRANCH_PREFIX}}` — the doer **must** name the feature branch
-`{{BRANCH_PREFIX}}/<short-slug>` (e.g. `{{BRANCH_PREFIX}}/fix-login`). This prevents
-branch name collisions when multiple suites run concurrently.
+**T5.2** Run `bd ready` on doer from within the repo dir with explicit PATH:
+```
+cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd ready
+```
+Pick the **3 oldest open issues**. Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
 
-1. On the doer: clone the repo (or verify it is already cloned) in the work folder
-2. Provision VCS auth ({{VCS}}) on the doer so it can push branches and raise PRs.
-   If VCS is `bitbucket`: also run `git config user.email {{secure.e2e_bb_user}}` in the
-   repo via `execute_command` — the repository access token requires this bot email on commits.
-3. Pick the oldest open issue: run `bd ready` in the toy repo (Beads task backlog is committed in `.beads/` — no VCS issues API needed)
-4. Assign the doer to implement it and the reviewer to review it
-5. Run a complete doer → reviewer sprint:
-   - Doer implements on a branch named `{{BRANCH_PREFIX}}/<short-slug>`, runs tests, commits, pushes
-   - Reviewer reviews the code
-   - If approved: raise a PR targeting `main`
-6. Verify CI is green on the PR
+**T5.3** Drive sprint:
+```
+/pm init fleet-e2e-toy
+/pm pair doer reviewer
+/pm plan fleet-e2e-toy
+/pm start doer
+```
+Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix→review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
+Branch prefix: `{{BRANCH_PREFIX}}`
 
-**Record:** Was the sprint completed? Was a PR raised? What is the PR URL? Is CI green?
-
----
-
-## T6: Cleanup
-
-Remove both members from fleet.
-Verify `fleet_status` shows no registered members (or only the PM itself).
-
-**Record:** Were both members removed cleanly?
+**T5.4** Verify branch `{{BRANCH_PREFIX}}/...` exists on origin, PR was raised, CI is green.
 
 ---
 
-## Final Report
+## Collect session logs
 
-Output ONLY the following JSON — no other text before or after it:
+Throughout T1–T5 you will have dispatched one or more `execute_prompt` calls to each member. Each response includes the session ID(s) used. Collect all session IDs per member.
 
-```json
-{
-  "run": {
-    "suite": "{{SUITE_ID}}",
-    "pm_os": "{{PM_OS}}",
-    "pm_provider": "{{PM_PROVIDER}}",
-    "fleet_version": "<from version tool>",
-    "timestamp": "<ISO timestamp>"
-  },
-  "results": [
-    { "test": "T1", "status": "PASS", "notes": "" },
-    { "test": "T2", "status": "PASS", "notes": "" },
-    { "test": "T3", "status": "PASS", "notes": "" },
-    { "test": "T4", "status": "PASS", "notes": "" },
-    { "test": "T5", "status": "PASS", "notes": "", "pr_url": "" },
-    { "test": "T6", "status": "PASS", "notes": "" }
-  ],
-  "overall": "PASS"
-}
+For each session ID, locate the file on the member using the appropriate shell command:
+
+**Unix (Linux/macOS) — Claude:**
+```bash
+find ~/.claude/projects -name "<session-id>.jsonl" 2>/dev/null
+```
+**Unix (Linux/macOS) — Gemini:**
+```bash
+find ~/.gemini -name "<session-id>.jsonl" 2>/dev/null
+```
+**Windows — Claude:**
+```powershell
+Get-ChildItem "$env:USERPROFILE\.claude\projects" -Filter "<session-id>.jsonl" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+```
+**Windows — Gemini:**
+```powershell
+Get-ChildItem "$env:USERPROFILE\.gemini" -Filter "<session-id>.jsonl" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
 ```
 
-Set each `status` to `"PASS"` or `"FAIL"` and fill in `notes` with a brief observation.
-Set `overall` to `"FAIL"` if any test failed.
+Run the relevant command(s) on the member via `execute_command` to get the absolute path(s).
+
+Session files live outside the member's work_folder so `receive_files` cannot access them directly. For each session file, copy it into the work folder first, receive it, then remove the copy:
+
+```bash
+# Unix
+cp <session-path> <work-folder>/<session-id>.jsonl
+```
+```powershell
+# Windows
+Copy-Item "<session-path>" "<work-folder>\<session-id>.jsonl"
+```
+
+Then `receive_files` the file from the work folder, and delete the copy afterward:
+```bash
+rm <work-folder>/<session-id>.jsonl
+```
+
+Receive into:
+- Doer sessions → `logs/doer/<session-id>.jsonl`
+- Reviewer sessions → `logs/reviewer/<session-id>.jsonl`
+
+Skip files that don't exist on the member.

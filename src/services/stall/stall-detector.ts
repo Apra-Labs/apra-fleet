@@ -1,7 +1,8 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn, LogScope } from '../../utils/log-helpers.js';
 import { pollLogFile } from './stall-poller.js';
-import { toLocalISOString } from './time-utils.js';
+import { toLocalISOString, fmtElapsed } from './time-utils.js';
+import { writeStatusline } from '../statusline.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_STALL_THRESHOLD_MS = 120_000;
@@ -16,6 +17,8 @@ export interface StallEntry {
   memberName: string;
   provisional: boolean;
   stallReported: boolean;
+  // Called once when stall is confirmed — clears busy state from outside the hung execCommand
+  onStall?: () => void;
 }
 
 export class StallDetector {
@@ -90,9 +93,14 @@ export class StallDetector {
             memberId,
             memberName: entry.memberName,
             idleSecs,
+            provisional: true,
             lastActivityAt: toLocalISOString(entry.lastActivityAt),
           }));
+          writeStatusline(new Map([[memberId, 'unknown']]));
           this.update(memberId, { stallReported: true });
+          entry.onStall?.();
+        } else if (!entry.stallReported) {
+          writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
         }
         continue;
       }
@@ -125,7 +133,7 @@ export class StallDetector {
 
       const ts = new Date(lastTimestamp).getTime();
       if (!isNaN(ts) && ts > entry.lastActivityAt) {
-        // Activity advanced — update and reset counters
+        // Activity advanced — update and reset counters, then reflect fresh elapsed in statusline
         this.update(memberId, {
           lastActivityAt: ts,
           consecutiveIdleCycles: 0,
@@ -133,6 +141,7 @@ export class StallDetector {
           stallReported: false,
         });
         updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
+        writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - ts)})`]]));
         continue;
       }
 
@@ -150,9 +159,15 @@ export class StallDetector {
           memberId,
           memberName: entry.memberName,
           idleSecs,
+          provisional: false,
           lastActivityAt: toLocalISOString(entry.lastActivityAt),
         }));
+        writeStatusline(new Map([[memberId, 'unknown']]));
         this.update(memberId, { stallReported: true });
+        entry.onStall?.();
+      } else if (!entry.stallReported) {
+        // Show steadily increasing elapsed time so PM can gauge staleness
+        writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
       }
     }
   }

@@ -7,12 +7,12 @@
   "linux": {
     "host": "192.168.1.102",
     "username": "akhil",
-    "work_folder": "~/git/apra-fleet-e2e"
+    "work_folder": "/home/akhil/git/apra-fleet-e2e"
   },
   "macos": {
     "host": "192.168.1.13",
     "username": "akhil",
-    "work_folder": "~/git/apra-fleet-e2e"
+    "work_folder": "/Users/akhil/git/apra-fleet-e2e"
   },
   "toy_projects": {
     "github":    "https://github.com/Apra-Labs/fleet-e2e-toy",

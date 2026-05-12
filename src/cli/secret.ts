@@ -187,6 +187,15 @@ async function handleSet(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Validate flags before prompting for user input
+  const knownFlagExact = new Set(['--persist', '--ask-persist', '-y', '--prompt']);
+  for (const a of args.slice(1)) {
+    if (!a.startsWith('-')) continue; // positional value (e.g. value for --prompt)
+    if (knownFlagExact.has(a)) continue;
+    console.error(`Error: Unknown option "${a}". Run 'apra-fleet secret --help' for usage.`);
+    process.exit(1);
+  }
+
   let secretValue: string;
   if (nonInteractive) {
     secretValue = await new Promise<string>((resolve, reject) => {
