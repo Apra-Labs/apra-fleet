@@ -1,164 +1,104 @@
 # gbrain Integration — Plan Re-Review
 
 **Reviewer:** fleet-reviewer
-**Date:** 2026-05-13 20:30:00+05:30
+**Date:** 2026-05-13 20:00:00+05:30
 **Verdict:** CHANGES NEEDED
 
----
-
-## Previous Findings Resolution
-
-### Finding 1: gbrain tool names (checks 14, 16) — RESOLVED
-
-**Doer fixed in:** a5d21d5, eab88d0
-
-All tool names now use underscores matching gbrain's canonical API: `brain_query`, `brain_write`, `code_callers`, `code_callees`, `code_def`, `code_refs`, `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`. The Notes section confirms "No name translation needed — fleet passes tool names through directly." Phase 4 was correctly expanded from 2 tools (`minions_dispatch`, `minions_status`) to 4 tools matching gbrain's actual `jobs_*` API (`jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`). Tool counts updated throughout (10 → 12). All `callTool` references in Tasks 2.1, 2.2, 3.1, 4.1, 6.2, 6.3, 6.4, and the Notes section are consistent.
-
-### Finding 2: Reviewer template conditionals (check 17) — RESOLVED
-
-**Doer fixed in:** eab88d0
-
-Task 5.1 now specifies `<!-- OPTIONAL: gbrain -->` / `<!-- /OPTIONAL: gbrain -->` markers instead of `{{#if gbrain}}...{{/if}}`. The Notes section is updated to match. Task 5.1 also adds `src/services/template-renderer.ts` to its file list for the stripping logic, which properly accounts for the code change needed. This is compatible with the PM skill's simple `{{PLACEHOLDER}}` token model.
-
-### Finding 3: Course correction wiring (checks 13, 18) — RESOLVED
-
-**Doer fixed in:** eab88d0
-
-New Task 5.4 "Wire course_correction_capture into PM sprint execution flow" added. Explicitly chooses Option A (template-based) for auditability. Adds `course_correction_capture` call-sites to `skills/pm/single-pair-sprint.md` and `skills/pm/doer-reviewer.md` at post-iteration checkpoints. Uses the same `<!-- OPTIONAL: gbrain -->` block pattern for conditional inclusion. The task's "done when" criteria are clear: corrections in gbrain-enabled sprints are persisted, non-gbrain sprints unaffected. This addresses the "automatically captured" acceptance criterion.
-
-### Finding 4: DRY ordering (checks 3, 5) — RESOLVED
-
-**Doer fixed in:** eab88d0
-
-New Task 2.0 "Create shared gbrain helpers" added at the start of Phase 2 with `assertGbrainEnabled` and `callGbrainTool` in `src/utils/gbrain-helpers.ts`. Task 3.1 updated to reference "Use shared helpers from Task 2.0" instead of the vague "extract if not already shared." Task 6.1 reduced from extraction to a DRY audit/verification pass — it no longer creates new files, just verifies consistency. Helpers are available from Phase 2 onward, so Phases 3–5 use them from the start.
-
-### Finding 5: Tier monotonicity (check 7) — NOT RESOLVED
-
-Phase 1 tier sequence is still: cheap (1.1) → cheap (1.2) → **premium** (1.3) → **standard** (1.4). Premium → standard is decreasing. The original review requested either reordering Task 1.3 to the end (cheap → cheap → standard → premium) or promoting Task 1.4 to premium. Neither change was made. The task order, tier assignments, and descriptions are identical to the original plan for Phase 1.
+> See the recent git history of this file to understand the context of this review.
 
 ---
 
-## Full Plan Review
+## Finding Resolution
 
-### 1. Done Criteria Clarity
+### Finding 1: gbrain tool names — RESOLVED
 
-**PASS.** Every task has explicit "done when" criteria. New tasks (2.0, 5.4) also have clear criteria. Phase VERIFY blocks remain testable and unambiguous.
+All tool names now use underscores matching gbrain's canonical API: `brain_query`, `brain_write`, `code_callers`, `code_callees`, `code_def`, `code_refs`, `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`. The old `minions-dispatch` / `minions-status` references are replaced by four `jobs_*` tools. Tool counts updated from 10 to 12 throughout. The Notes section confirms "No name translation needed — fleet passes tool names through directly." All `callTool` references across Tasks 2.1, 2.2, 3.1, 4.1, 6.2, 6.3, 6.4, and Notes are consistent. Fixed in commits a5d21d5 + eab88d0.
 
----
+### Finding 2: Template conditionals — RESOLVED
 
-### 2. Cohesion / Coupling
+Task 5.1 now specifies `<!-- OPTIONAL: gbrain -->` / `<!-- /OPTIONAL: gbrain -->` markers instead of `{{#if gbrain}}...{{/if}}` Handlebars conditionals. Task 5.1 also adds `src/services/template-renderer.ts` to its file list for optional-section stripping logic, properly accounting for the code change needed. The Notes section is updated to match. This is compatible with the PM skill's simple `{{PLACEHOLDER}}` token model. Fixed in commits a5d21d5 + eab88d0.
 
-**PASS.** Phase structure unchanged. New Task 2.0 (helpers) is correctly placed — it's foundational for its phase and reused downstream. Task 5.4 (sprint wiring) is correctly scoped to Phase 5 alongside the other course-correction work.
+### Finding 3: Course correction wiring — RESOLVED
 
----
+New Task 5.4 ("Wire course_correction_capture into PM sprint execution flow") added. It chooses Option A (template-based) for explicitness and auditability: adds `course_correction_capture` call-sites to `skills/pm/single-pair-sprint.md` and `skills/pm/doer-reviewer.md` at post-iteration review checkpoints, wrapped in `<!-- OPTIONAL: gbrain -->` blocks. Done-when criteria are clear: corrections in gbrain-enabled sprints are persisted to brain, non-gbrain sprints unaffected. This addresses the "automatically captured" acceptance criterion — automatic from the user's perspective, no manual tool invocation needed. Fixed in commits a5d21d5 + eab88d0.
 
-### 3. Shared Abstractions First
+### Finding 4: DRY helpers — RESOLVED
 
-**PASS.** Task 2.0 now creates the shared helpers before any tools are implemented. Task 3.1 explicitly references "Use shared helpers from Task 2.0." The previous finding is resolved.
+New Task 2.0 ("Create shared gbrain helpers") creates `src/utils/gbrain-helpers.ts` with `assertGbrainEnabled()` and `callGbrainTool()` at the start of Phase 2, before any tools that use the pattern. Task 3.1 updated to explicitly reference "Use shared helpers from Task 2.0." Task 6.1 reduced from an extraction to a DRY audit — verifies consistency, no new files. Helpers are available from Phase 2 onward so Phases 3–5 use them from the start. Fixed in commits a5d21d5 + eab88d0.
 
----
+### Finding 5: Phase 1 tier monotonicity — STILL OPEN
 
-### 4. Riskiest Assumption Validated First
+Phase 1 tier sequence remains: cheap (1.1) → cheap (1.2) → **premium** (1.3) → **standard** (1.4). The premium → standard transition is still a tier downgrade, violating the monotonically non-decreasing rule. This finding was not mentioned in feedback-gbrain.md and PLAN.md was not updated to address it.
 
-**PASS.** Phase 1 still addresses MCP protocol compatibility, child process lifecycle, and reconnection before any tools are built.
-
----
-
-### 5. DRY / Reuse of Early Abstractions
-
-**PASS.** Task 2.0 creates helpers at Phase 2 start. Task 6.1 is now a verification audit, not a retroactive extraction. Phases 3–5 import helpers from the start.
+**Fix (same as original):** Promote Task 1.4 from standard to premium tier. The tests for the gbrain client service (mocked child process, MCP client lifecycle, reconnection) are complex enough to justify premium tier. This makes the sequence: cheap → cheap → premium → premium.
 
 ---
 
-### 6. Phase Boundaries at Cohesion Boundaries
+## Plan Quality (13 Standard Criteria)
 
-**PASS.** Boundaries still align with feature domains. No change from original assessment.
+### 1. Done Criteria Clarity — PASS
 
----
+Every task has explicit "done when" criteria with compilation checks, test pass conditions, and observable behaviors. New tasks (2.0, 5.4) also have clear, testable criteria. Phase VERIFY blocks remain unambiguous.
 
-### 7. Tier Monotonicity
+### 2. Cohesion / Coupling — PASS
 
-**FAIL.** Phase 1 tier sequence: cheap (1.1) → cheap (1.2) → premium (1.3) → standard (1.4). Premium → standard is decreasing. This was finding #5 from the original review and was not addressed.
+Phase structure unchanged and well-scoped. Task 2.0 improves cohesion in Phase 2 — helpers introduced alongside their first consumers. Task 5.4 correctly scoped to Phase 5 with the other course-correction work.
 
-**Fix:** Promote Task 1.4 to premium tier. Tests for the premium client service (mocked child process, MCP client lifecycle, reconnection) justify premium tier. This makes the sequence: cheap → cheap → premium → premium.
+### 3. Shared Abstractions First — PASS
 
----
+Previously NOTE/FAIL. Now resolved: Task 2.0 creates helpers before any tool implementation. Task 3.1 explicitly references them.
 
-### 8. Session-Sized Tasks
+### 4. Riskiest Assumption Validated First — PASS
 
-**PASS.** All tasks remain appropriately scoped. New tasks (2.0, 5.4) are small and focused.
+Unchanged. Phase 1 Task 1.3 validates MCP protocol compatibility, child process lifecycle, and reconnection before any tools are built.
 
----
+### 5. DRY / Reuse of Early Abstractions — PASS
 
-### 9. Dependencies Satisfied in Order
+Previously FAIL. Now resolved: Task 2.0 creates helpers at Phase 2 start, Phases 3–5 reuse them, Task 6.1 audits for consistency.
 
-**PASS.** Task 2.0 depends on 1.3 (gbrain client) — correct. Task 5.4 depends on 5.2 and 5.3 — correct. No circular dependencies introduced.
+### 6. Phase Boundaries at Cohesion Boundaries — PASS
 
----
+Unchanged. Each phase is a coherent feature domain with its own VERIFY block. Boundaries align with feature domains.
 
-### 10. Vague / Ambiguous Tasks
+### 7. Tier Monotonicity — FAIL
 
-**NOTE.** Task 5.2 correction format still underspecified (same as original review). Low risk — noted for implementer.
+Phase 1 sequence: cheap (1.1) → cheap (1.2) → premium (1.3) → standard (1.4). Premium → standard is decreasing. See Finding 5 above for the fix.
 
----
+### 8. Session-Sized Tasks — PASS
 
-### 11. Hidden Dependencies
+All tasks appropriately scoped. New tasks (2.0: one file; 5.4: two template files) are small and focused.
 
-**PASS.** The previous hidden dependency (Task 5.1 depending on `{{#if}}` support that doesn't exist) is resolved. Task 5.1 now uses `<!-- OPTIONAL -->` markers and explicitly lists `src/services/template-renderer.ts` in its file list. Task 5.4 lists the sprint template files it will modify. No hidden dependencies remain.
+### 9. Dependencies Satisfied in Order — PASS
 
----
+Unchanged, and new tasks have correct blockers: Task 2.0 blocked on 1.3 (needs gbrain client), Task 5.4 blocked on 5.2 and 5.3. No circular dependencies.
 
-### 12. Risk Register
+### 10. Vague / Ambiguous Tasks — NOTE
 
-**PASS.** Risk register updated to reflect 12 tools (was 10). All 7 risks still have actionable mitigations.
+Task 5.2 (course correction service) still lacks a concrete format example for the "structured knowledge" written to brain. Low risk — reasonable implementations would converge — but a format example would help the implementer.
 
----
+### 11. Hidden Dependencies — PASS
 
-### 13. Alignment with Requirements Intent
+Previously NOTE. The hidden dependency on `{{#if}}` support is resolved — Task 5.1 uses `<!-- OPTIONAL -->` markers and explicitly lists `src/services/template-renderer.ts` in its file list.
 
-**PASS.** Task 5.4 addresses "automatically captured" by wiring `course_correction_capture` into sprint templates. PM will call the tool at post-iteration checkpoints when gbrain is enabled. This is "automatic" from the user's perspective — no manual invocation needed.
+### 12. Risk Register — PASS
 
----
+Seven risks with actionable mitigations. Tool counts updated to reflect 12 tools. No new risks introduced by the plan changes.
 
-### 14. gbrain Tool Name Mapping
+### 13. Alignment with Requirements Intent — PASS
 
-**PASS.** All tool names use underscores matching gbrain's canonical names. The Notes section confirms direct passthrough with no translation layer. All references are consistent across tasks, VERIFY blocks, and documentation tasks.
-
----
-
-### 15. Graceful Degradation Without gbrain
-
-**PASS.** No changes to degradation behavior. Lazy connect, opt-in per member, clear errors, silent no-op for corrections. Task 6.4 still tests startup without gbrain.
-
----
-
-### 16. gbrain MCP Tool Name Accuracy
-
-**PASS.** Phase 4 now correctly wraps `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work` — matching gbrain's actual API. The old `minions_dispatch` / `minions_status` naming is fully replaced.
-
----
-
-### 17. Reviewer Template Conditionals
-
-**PASS.** Task 5.1 uses `<!-- OPTIONAL: gbrain -->` / `<!-- /OPTIONAL: gbrain -->` markers. Template renderer will strip these sections when gbrain is not enabled. Compatible with the PM skill's `{{PLACEHOLDER}}` substitution system. Notes section confirms the approach.
-
----
-
-### 18. Course Correction Automatic Capture
-
-**PASS.** Task 5.4 adds explicit `course_correction_capture` call-sites to `single-pair-sprint.md` and `doer-reviewer.md` using `<!-- OPTIONAL: gbrain -->` blocks. This provides automatic capture within gbrain-enabled sprints. Option A (template-based) was chosen for explicitness and auditability — the right call given fleet's current architecture.
+Previously FAIL. Task 5.4 wires `course_correction_capture` into sprint templates at post-iteration checkpoints, meeting the "automatically captured" acceptance criterion.
 
 ---
 
 ## Summary
 
-**Re-review: 14 PASS, 1 NOTE, 1 FAIL.**
+**Re-review: 11 PASS, 1 NOTE, 1 FAIL.**
 
 4 of 5 previous findings resolved. One remaining blocker:
 
 ### Must change before approval:
 
-1. **Tier monotonicity (check 7):** Phase 1 still has premium (1.3) → standard (1.4) — a decreasing tier sequence. Promote Task 1.4 to premium tier to make the sequence cheap → cheap → premium → premium.
+1. **Tier monotonicity (Finding 5):** Phase 1 still has premium (1.3) → standard (1.4) — a decreasing tier. Promote Task 1.4 to premium to make the sequence cheap → cheap → premium → premium. This is a one-word change.
 
 ### Deferred / advisory:
 
