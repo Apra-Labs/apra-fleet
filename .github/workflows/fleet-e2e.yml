@@ -12,17 +12,6 @@ on:
 jobs:
   e2e:
     name: 'Fleet E2E – ${{ inputs.suite }}'
-    # Force IPv4-first DNS resolution for all Node.js processes in this job.
-    # api.anthropic.com has an AAAA record but IPv6 routing is broken on the
-    # self-hosted runners; Node 17+ prefers IPv6 by default which causes
-    # ECONNRESET on every first attempt. ipv4first eliminates that.
-    timeout-minutes: 120
-    env:
-      NODE_OPTIONS: --dns-result-order=ipv4first
-      # Increase API retry ceiling from 10 to 20 — helps on connections that
-      # need multiple attempts before succeeding (e.g. Defender NIS warmup).
-      # If this env var is unrecognised by claude it is silently ignored.
-      CLAUDE_CODE_MAX_RETRIES: "20"
     # Runner label is derived from suites.json pm.runner field.
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
