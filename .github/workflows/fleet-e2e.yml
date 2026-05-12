@@ -164,6 +164,10 @@ jobs:
       - name: Smoke-test PM LLM auth and fleet MCP
         shell: bash
         run: |
+          # Run from RUN_DIR (sibling of GITHUB_WORKSPACE checkout) so Claude cannot
+          # read repo files like package.json and cannot pick up any settings.local.json
+          # written into the checkout tree by a prior member-role compose_permissions.
+          cd "$RUN_DIR"
           PROMPT="What is the version of the apra-fleet MCP server installed? If the tool is not available reply with: not installed"
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           check_mcp() {
