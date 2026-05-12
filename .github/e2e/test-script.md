@@ -1,4 +1,4 @@
-# Fleet E2E – {{SUITE_ID}}
+# Fleet E2E - {{SUITE_ID}}
 
 PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
@@ -21,7 +21,7 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 ## T1: Member Registration
 
 Register both members. For each:
-- If `host` is `"local"`: `register_member(member_name=..., work_folder=...)` — no host/username/password needed.
+- If `host` is `"local"`: `register_member(member_name=..., work_folder=...)` - no host/username/password needed.
 - If `host` is an IP address: `register_member(member_name=..., host=..., username=..., password={{secure.E2E_ACRED}}, auth_type="password", work_folder=...)`
 
 After each: `update_member unattended="auto"`.
@@ -49,7 +49,7 @@ grep -q 'HOME/bin' ~/.profile 2>/dev/null || echo 'export PATH=$HOME/bin:$PATH' 
 
 ## T2: Basic Execution
 
-On each member: `echo "e2e-ok-$(hostname)"` — verify `e2e-ok-` in response.
+On each member: `echo "e2e-ok-$(hostname)"` - verify `e2e-ok-` in response.
 Send a file containing `fleet-e2e-roundtrip` to each member, receive it back, verify content matches.
 
 ---
@@ -67,11 +67,11 @@ Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS
 If `bitbucket`: `git config user.email {{secure.e2e_bb_user}}` in repo dir.
 After cloning (or if repo already exists), run `git fetch origin && git checkout main && git pull origin main` inside the repo dir to ensure the sprint starts from the latest main.
 
-**T5.2** Run `bd ready` on doer from within the repo dir with explicit PATH:
+**T5.2** Run `bd list --label e2e-testing` on doer from within the repo dir with explicit PATH:
 ```
-cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd ready
+cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd list --label e2e-testing --status=open --pretty
 ```
-Pick the **3 oldest open issues**. Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
+Pick the **3 oldest open issues labelled e2e-testing**. Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
 
 **T5.3** Drive sprint:
 ```
@@ -80,7 +80,7 @@ Pick the **3 oldest open issues**. Write `requirements.md` on PM (one paragraph 
 /pm plan fleet-e2e-toy
 /pm start doer
 ```
-Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix→review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
+Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix->review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
 Branch prefix: `{{BRANCH_PREFIX}}`
 
 **T5.4** Verify branch `{{BRANCH_PREFIX}}/...` exists on origin, PR was raised, CI is green.
@@ -89,23 +89,23 @@ Branch prefix: `{{BRANCH_PREFIX}}`
 
 ## Collect session logs
 
-Throughout T1–T5 you will have dispatched one or more `execute_prompt` calls to each member. Each response includes the session ID(s) used. Collect all session IDs per member.
+Throughout T1-T5 you will have dispatched one or more `execute_prompt` calls to each member. Each response includes the session ID(s) used. Collect all session IDs per member.
 
 For each session ID, locate the file on the member using the appropriate shell command:
 
-**Unix (Linux/macOS) — Claude:**
+**Unix (Linux/macOS) - Claude:**
 ```bash
 find ~/.claude/projects -name "<session-id>.jsonl" 2>/dev/null
 ```
-**Unix (Linux/macOS) — Gemini:**
+**Unix (Linux/macOS) - Gemini:**
 ```bash
 find ~/.gemini -name "<session-id>.jsonl" 2>/dev/null
 ```
-**Windows — Claude:**
+**Windows - Claude:**
 ```powershell
 Get-ChildItem "$env:USERPROFILE\.claude\projects" -Filter "<session-id>.jsonl" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
 ```
-**Windows — Gemini:**
+**Windows - Gemini:**
 ```powershell
 Get-ChildItem "$env:USERPROFILE\.gemini" -Filter "<session-id>.jsonl" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
 ```
@@ -129,7 +129,7 @@ rm <work-folder>/<session-id>.jsonl
 ```
 
 Receive into:
-- Doer sessions → `logs/doer/<session-id>.jsonl`
-- Reviewer sessions → `logs/reviewer/<session-id>.jsonl`
+- Doer sessions -> `logs/doer/<session-id>.jsonl`
+- Reviewer sessions -> `logs/reviewer/<session-id>.jsonl`
 
 Skip files that don't exist on the member.
