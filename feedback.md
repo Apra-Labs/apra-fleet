@@ -1,107 +1,151 @@
-# gbrain Integration — Plan Re-Review
+# gbrain Integration — Phase 1 Code Review
 
 **Reviewer:** fleet-reviewer
-**Date:** 2026-05-13 20:00:00+05:30
+**Date:** 2026-05-13
 **Verdict:** CHANGES NEEDED
 
-> See the recent git history of this file to understand the context of this review.
+---
+
+## 1. Types — `src/types.ts` (T1.1)
+
+**PASS.** `gbrain?: boolean` added to `Agent` interface at line 33. Optional field, no migration needed — existing agents without the field are `undefined` (falsy). Follows the same pattern as other optional Agent fields (`unattended`, `llmProvider`, etc.). TypeScript compiles cleanly.
 
 ---
 
-## Finding Resolution
+## 2. Tool Schemas — register/update/list/detail (T1.2)
 
-### Finding 1: gbrain tool names — RESOLVED
+### register-member.ts — PASS
 
-All tool names now use underscores matching gbrain's canonical API: `brain_query`, `brain_write`, `code_callers`, `code_callees`, `code_def`, `code_refs`, `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`. The old `minions-dispatch` / `minions-status` references are replaced by four `jobs_*` tools. Tool counts updated from 10 to 12 throughout. The Notes section confirms "No name translation needed — fleet passes tool names through directly." All `callTool` references across Tasks 2.1, 2.2, 3.1, 4.1, 6.2, 6.3, 6.4, and Notes are consistent. Fixed in commits a5d21d5 + eab88d0.
+`gbrain` added to `registerMemberSchema` as `z.boolean().optional().default(false)`. Passed through to agent creation at line 176 (`gbrain: input.gbrain ?? false`). Follows existing patterns for `llm_provider` and `unattended` fields. Default false is correct — gbrain is opt-in.
 
-### Finding 2: Template conditionals — RESOLVED
+### update-member.ts — PASS
 
-Task 5.1 now uses string concatenation — PM appends a `## Brain-Aware Review` block to the rendered reviewer template when gbrain is enabled. No template engine changes needed. `src/services/template-renderer.ts` removed from the file list. The Notes section is updated to match. This is compatible with the PM skill's simple `{{PLACEHOLDER}}` token model. Fixed in commits a5d21d5 + eab88d0.
+`gbrain` added to `updateMemberSchema` as `z.boolean().optional()`. Toggled at line 124 with `if (input.gbrain !== undefined)` guard — same pattern used for `unattended` and `llmProvider`. Correctly allows setting to both `true` and `false`.
 
-**Doer:** fixed in this commit — changed Task 5.1 from OPTIONAL markers to string concatenation approach, removed template-renderer.ts dependency
+### list-members.ts — PASS
 
-### Finding 3: Course correction wiring — RESOLVED
+JSON format includes `gbrain: a.gbrain ?? false` in the member object. Compact format conditionally appends `| gbrain=enabled` only when truthy — avoids noise for non-gbrain members. Clean integration into existing display logic.
 
-New Task 5.4 ("Document course_correction_capture call-sites in PM skill docs") added. It specifies WHERE `course_correction_capture` is called: after user interrupts/corrects a plan in single-pair-sprint, and when reviewer returns CHANGES NEEDED with user modifications in doer-reviewer. This is documentation changes only — no code changes, no template engine modifications. Done-when criteria are clear: both PM skill docs specify call-sites for course_correction_capture. Fixed in commits a5d21d5 + eab88d0.
+### member-detail.ts — PASS
 
-**Doer:** fixed in this commit — changed Task 5.4 to documentation-only updates to single-pair-sprint.md and doer-reviewer.md
+JSON includes `gbrain: agent.gbrain ?? false`. Display string conditionally appends `| gbrain=enabled`. Follows the same conditional display pattern used in list-members.
 
-### Finding 4: DRY helpers — RESOLVED
+### Backward Compatibility — PASS
 
-Helper creation moved to Phase 2 as new Task 2.1 ("Create shared gbrain helpers"), creating `src/utils/gbrain-helpers.ts` with `assertGbrainEnabled()` and `callGbrainTool()`. Existing Phase 2 tasks renumbered: 2.1→2.2 (brain_query), 2.2→2.3 (brain_write), 2.3→2.4 (tests). Task 3.1 references "Use shared helpers from Task 2.1." Task 6.1 reduced to a DRY audit. Helpers available from Phase 2 onward. Fixed in commits a5d21d5 + eab88d0.
-
-**Doer:** fixed in this commit — renumbered Task 2.0→2.1, existing 2.1→2.2, 2.2→2.3, 2.3→2.4; updated all cross-references
-
-### Finding 5: Phase 1 tier monotonicity — RESOLVED
-
-Task 1.4 promoted from standard to premium tier. Phase 1 tier sequence is now: cheap (1.1) → cheap (1.2) → premium (1.3) → premium (1.4). Monotonically non-decreasing — no tier downgrades within the phase.
-
-**Doer:** fixed in commit 6c325c6 — promoted Task 1.4 to premium tier
+All four tools default `gbrain` to `false` when the field is absent (`a.gbrain ?? false`). Existing members without the field will display correctly. No breaking changes to existing tool schemas — `gbrain` is optional in all schemas.
 
 ---
 
-## Plan Quality (13 Standard Criteria)
+## 3. MCP Client Service — `src/services/gbrain-client.ts` (T1.3)
 
-### 1. Done Criteria Clarity — PASS
+### Architecture — PASS
 
-Every task has explicit "done when" criteria with compilation checks, test pass conditions, and observable behaviors. New tasks (2.0, 5.4) also have clear, testable criteria. Phase VERIFY blocks remain unambiguous.
+Singleton pattern via `getGbrainClient()` with `_resetGbrainClient()` for testing. Lazy connect on first `callTool` invocation. Clean separation of concerns.
 
-### 2. Cohesion / Coupling — PASS
+### Configuration — PASS
 
-Phase structure unchanged and well-scoped. Task 2.0 improves cohesion in Phase 2 — helpers introduced alongside their first consumers. Task 5.4 correctly scoped to Phase 5 with the other course-correction work.
+Respects `GBRAIN_COMMAND` and `GBRAIN_ARGS` env vars with sensible defaults (`npx -y gbrain`). Constructor accepts options override. `GBRAIN_ARGS` split on space — simple but adequate for typical args.
 
-### 3. Shared Abstractions First — PASS
+### Connection Lifecycle — PASS
 
-Previously NOTE/FAIL. Now resolved: Task 2.0 creates helpers before any tool implementation. Task 3.1 explicitly references them.
+- `connect()` is idempotent (no-op if already connected)
+- Validates connection by listing available tools via `client.listTools()`
+- `disconnect()` handles already-disconnected state and swallows close errors (process may be dead)
+- State is fully reset on disconnect (client, transport, tools, connected flag)
 
-### 4. Riskiest Assumption Validated First — PASS
+### Lazy Reconnect — PASS
 
-Unchanged. Phase 1 Task 1.3 validates MCP protocol compatibility, child process lifecycle, and reconnection before any tools are built.
+`callTool()` checks `!this.connected || !this.client` and reconnects transparently. On unexpected errors during tool calls, marks connection as stale (resets state) so next call triggers reconnect. Good resilience pattern.
 
-### 5. DRY / Reuse of Early Abstractions — PASS
+### Error Handling — PASS
 
-Previously FAIL. Now resolved: Task 2.0 creates helpers at Phase 2 start, Phases 3–5 reuse them, Task 6.1 audits for consistency.
+Three distinct error paths:
+1. Connect failure: "gbrain is not available — is the process running?"
+2. Tool returns `isError: true`: extracts text content and rethrows with tool name
+3. Connection drops mid-call: marks stale, throws with "connection may have dropped"
 
-### 6. Phase Boundaries at Cohesion Boundaries — PASS
+Error messages are user-actionable. The `startsWith('gbrain tool')` check in the catch block correctly differentiates tool-level errors (rethrown as-is) from transport errors (trigger stale state).
 
-Unchanged. Each phase is a coherent feature domain with its own VERIFY block. Boundaries align with feature domains.
+### Content Extraction — PASS
 
-### 7. Tier Monotonicity — PASS
+Handles both array content (filters for `type: 'text'`, joins with newline) and non-array content (`String(result.content ?? '')`). Type narrowing via inline type predicate is correct.
 
-Phase 1 sequence: cheap (1.1) → cheap (1.2) → premium (1.3) → premium (1.4). Monotonically non-decreasing.
+### Minor Note — NOTE
 
-### 8. Session-Sized Tasks — PASS
+`getAvailableTools()` returns a defensive copy (`[...this.availableTools]`), which is good practice. The available tools list is populated on connect but never refreshed — acceptable for Phase 1 since gbrain's tool set is stable during a session.
 
-All tasks appropriately scoped. New tasks (2.0: one file; 5.4: two template files) are small and focused.
+---
 
-### 9. Dependencies Satisfied in Order — PASS
+## 4. Test Coverage (T1.4)
 
-Unchanged, and new tasks have correct blockers: Task 2.0 blocked on 1.3 (needs gbrain client), Task 5.4 blocked on 5.2 and 5.3. No circular dependencies.
+### gbrain-client.test.ts — PASS (13 tests)
 
-### 10. Vague / Ambiguous Tasks — NOTE
+Covers all critical paths:
+- Initial state (disconnected, no tools)
+- Connect lifecycle (connect, idempotent reconnect, disconnect, disconnect when not connected)
+- `callTool` — success, lazy connect, error result, connection drop, connect failure
+- Singleton behavior (same instance, reset creates new)
+- Defensive copy of available tools
 
-Task 5.2 (course correction service) still lacks a concrete format example for the "structured knowledge" written to brain. Low risk — reasonable implementations would converge — but a format example would help the implementer.
+Mocking strategy is correct: MCP SDK `Client` and `StdioClientTransport` are mocked at module level. Mock reset in `beforeEach` ensures test isolation.
 
-### 11. Hidden Dependencies — PASS
+### gbrain-config.test.ts — PASS with gap (5 tests)
 
-Previously NOTE. The hidden dependency on `{{#if}}` support is resolved — Task 5.1 uses `<!-- OPTIONAL -->` markers and explicitly lists `src/services/template-renderer.ts` in its file list.
+Tests cover:
+- Register with `gbrain: true` persists
+- Register without gbrain defaults to falsy
+- Local agent supports gbrain
+- Update to enable gbrain
+- Update to disable gbrain
 
-### 12. Risk Register — PASS
+### Test Gap — FAIL
 
-Seven risks with actionable mitigations. Tool counts updated to reflect 12 tools. No new risks introduced by the plan changes.
+**Missing: `list_members` and `member_detail` gbrain display tests.** PLAN.md T1.4 explicitly lists "list_members showing gbrain status" as a done-when criterion. Neither `listMembers` nor `memberDetail` are imported or tested in `gbrain-config.test.ts`. The display logic (compact format conditional `| gbrain=enabled`, JSON format `gbrain` field) has no test coverage.
 
-### 13. Alignment with Requirements Intent — PASS
+**Required fix:** Add tests to `gbrain-config.test.ts` that:
+1. Call `listMembers()` with a gbrain-enabled agent and verify the output contains `gbrain=enabled` (compact) and `"gbrain": true` (JSON)
+2. Call `listMembers()` with a non-gbrain agent and verify `gbrain=enabled` does NOT appear
+3. Call `memberDetail()` with a gbrain-enabled agent and verify the output contains `gbrain=enabled`
 
-Previously FAIL. Task 5.4 wires `course_correction_capture` into sprint templates at post-iteration checkpoints, meeting the "automatically captured" acceptance criterion.
+---
+
+## 5. Security
+
+**PASS.** No secrets exposed. No unsafe operations. `gbrain` field is a simple boolean — no injection surface. Child process spawned with user-controlled command/args from env vars, which is the standard pattern for MCP server configuration.
+
+---
+
+## 6. Build & Existing Tests
+
+**PASS.** `npm run build` succeeds with zero errors. `npm test` shows 2 failures in `tests/time-utils.test.ts` which are pre-existing timezone-dependent failures unrelated to this changeset. All 1242 passing tests continue to pass, including the 18 new gbrain tests.
+
+---
+
+## 7. PLAN.md Spec Compliance
+
+| Spec Item | Status |
+|---|---|
+| T1.1: `gbrain?: boolean` on Agent | DONE |
+| T1.2: register_member with gbrain | DONE |
+| T1.2: update_member toggle gbrain | DONE |
+| T1.2: list_members shows gbrain | DONE (code), MISSING (tests) |
+| T1.2: member_detail shows gbrain | DONE (code), MISSING (tests) |
+| T1.3: Singleton, lazy connect | DONE |
+| T1.3: StdioClientTransport spawn | DONE |
+| T1.3: Tool validation on connect | DONE |
+| T1.3: callTool proxy | DONE |
+| T1.3: isConnected/getAvailableTools | DONE |
+| T1.3: disconnect kills process | DONE |
+| T1.3: Reconnect on crash | DONE |
+| T1.3: Clear error messages | DONE |
+| T1.4: 18 new tests | DONE (but missing list/detail display tests) |
+| VERIFY: build succeeds | DONE |
+| VERIFY: tests pass | DONE (pre-existing failures only) |
 
 ---
 
 ## Summary
 
-**Re-review: 12 PASS, 1 NOTE, 0 FAIL.**
+Phase 1 implementation is solid. Code quality is high, error handling is thorough, patterns match existing codebase conventions, and backward compatibility is maintained. The MCP client service is well-designed with proper lifecycle management and reconnection logic.
 
-All 5 findings resolved. No remaining blockers.
-
-### Deferred / advisory:
-
-- Task 5.2 correction format could be more concrete (check 10) — low risk, note for implementer.
+**One blocking issue:** Missing test coverage for `list_members` and `member_detail` gbrain display output, which is explicitly required by PLAN.md T1.4. Add 3-4 tests covering compact and JSON format gbrain display, then this is ready to merge.
