@@ -264,6 +264,7 @@ jobs:
       # ── Step 5: Run the LLM-driven test (T1–T5) ──────────────────────────────
       - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
         id: e2e
+        timeout-minutes: 45
         shell: bash
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
@@ -393,6 +394,7 @@ jobs:
       # Housekeeping only: result does not feed into the test report.
       - name: T6 — Teardown
         if: always()
+        timeout-minutes: 5
         shell: bash
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
