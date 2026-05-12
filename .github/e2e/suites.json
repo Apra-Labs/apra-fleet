@@ -35,6 +35,24 @@
       "doer":     { "os": "windows", "provider": "gemini" },
       "reviewer": { "os": "linux",   "provider": "claude" },
       "vcs": "azdevops"
+    },
+    "s1.1": {
+      "pm":       { "os": "windows",               "provider": "claude", "runner": "fleet-windows" },
+      "doer":     { "os": "local_doer_windows",    "provider": "claude" },
+      "reviewer": { "os": "local_reviewer_windows","provider": "claude" },
+      "vcs": "github"
+    },
+    "s1.2": {
+      "pm":       { "os": "linux",                 "provider": "claude", "runner": "fleet-linux" },
+      "doer":     { "os": "local_doer_linux",      "provider": "claude" },
+      "reviewer": { "os": "local_reviewer_linux",  "provider": "claude" },
+      "vcs": "github"
+    },
+    "s1.3": {
+      "pm":       { "os": "macos",                 "provider": "claude", "runner": "fleet-macos" },
+      "doer":     { "os": "local_doer_macos",      "provider": "claude" },
+      "reviewer": { "os": "local_reviewer_macos",  "provider": "claude" },
+      "vcs": "github"
     }
   }
 }

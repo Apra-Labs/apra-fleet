@@ -7,7 +7,7 @@ on:
         description: 'Test suite to run (s1-s6). Start with s1 to validate setup.'
         required: true
         type: choice
-        options: [s1, s2, s3, s4, s5, s6]
+        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6]
 
 jobs:
   e2e:
@@ -16,7 +16,15 @@ jobs:
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
       - self-hosted
-      - ${{ inputs.suite == 's1' && 'fleet-windows' || inputs.suite == 's2' && 'fleet-linux' || inputs.suite == 's3' && 'fleet-macos' || inputs.suite == 's4' && 'fleet-windows' || inputs.suite == 's5' && 'fleet-linux' || 'fleet-macos' }}
+      - ${{ inputs.suite == 's1'   && 'fleet-windows'
+         || inputs.suite == 's1.1' && 'fleet-windows'
+         || inputs.suite == 's1.2' && 'fleet-linux'
+         || inputs.suite == 's1.3' && 'fleet-macos'
+         || inputs.suite == 's2'   && 'fleet-linux'
+         || inputs.suite == 's3'   && 'fleet-macos'
+         || inputs.suite == 's4'   && 'fleet-windows'
+         || inputs.suite == 's5'   && 'fleet-linux'
+         || 'fleet-macos' }}
 
     steps:
       - name: Checkout
@@ -56,10 +64,10 @@ jobs:
           VCS=$(echo $CONFIG        | jq -r ".suites.$SUITE.vcs")
 
           DOER_HOST=$(echo $MEMBERS   | jq -r ".$DOER_OS.host")
-          DOER_USER=$(echo $MEMBERS   | jq -r ".$DOER_OS.username")
+          DOER_USER=$(echo $MEMBERS   | jq -r ".$DOER_OS.username // empty")
           DOER_FOLDER=$(echo $MEMBERS | jq -r ".$DOER_OS.work_folder")
           REV_HOST=$(echo $MEMBERS    | jq -r ".$REV_OS.host")
-          REV_USER=$(echo $MEMBERS    | jq -r ".$REV_OS.username")
+          REV_USER=$(echo $MEMBERS    | jq -r ".$REV_OS.username  // empty")
           REV_FOLDER=$(echo $MEMBERS  | jq -r ".$REV_OS.work_folder")
           TOY_URL=$(echo $MEMBERS     | jq -r ".toy_projects.$VCS")
 

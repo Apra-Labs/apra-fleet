@@ -20,7 +20,11 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
 ## T1: Member Registration
 
-Register both members (`auth_type=password`, credentials from table). After each: `update_member unattended="auto"`.
+Register both members. For each:
+- If `host` is `"local"`: `register_member(member_name=..., work_folder=...)` — no host/username/password needed.
+- If `host` is an IP address: `register_member(member_name=..., host=..., username=..., password={{secure.E2E_ACRED}}, auth_type="password", work_folder=...)`
+
+After each: `update_member unattended="auto"`.
 
 Provision LLM AUTH on both members. 
 

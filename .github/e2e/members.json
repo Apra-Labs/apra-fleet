@@ -14,6 +14,30 @@
     "username": "akhil",
     "work_folder": "/Users/akhil/git/apra-fleet-e2e"
   },
+  "local_doer_windows": {
+    "host": "local",
+    "work_folder": "C:\\Users\\akhil\\git\\apra-fleet-e2e-doer"
+  },
+  "local_reviewer_windows": {
+    "host": "local",
+    "work_folder": "C:\\Users\\akhil\\git\\apra-fleet-e2e-rev"
+  },
+  "local_doer_linux": {
+    "host": "local",
+    "work_folder": "/home/akhil/git/apra-fleet-e2e-doer"
+  },
+  "local_reviewer_linux": {
+    "host": "local",
+    "work_folder": "/home/akhil/git/apra-fleet-e2e-rev"
+  },
+  "local_doer_macos": {
+    "host": "local",
+    "work_folder": "/Users/akhil/git/apra-fleet-e2e-doer"
+  },
+  "local_reviewer_macos": {
+    "host": "local",
+    "work_folder": "/Users/akhil/git/apra-fleet-e2e-rev"
+  },
   "toy_projects": {
     "github":    "https://github.com/Apra-Labs/fleet-e2e-toy",
     "bitbucket": "https://bitbucket.org/kumaakh/fleet-e2e-toy",
