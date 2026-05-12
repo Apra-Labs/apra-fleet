@@ -48,4 +48,4 @@
 
 **Correct approach:** Promote Task 1.4 to premium tier. Tests for the premium client service (mocked child process, MCP client lifecycle, reconnection) justify premium tier. This makes the sequence: cheap → cheap → premium → premium.
 
-**Doer:** fixed in commit TBD — promoted Task 1.4 to premium tier in PLAN.md.
+**Doer:** fixed in commit f29375c — promoted Task 1.4 to premium tier in PLAN.md.
