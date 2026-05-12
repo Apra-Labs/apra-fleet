@@ -13,6 +13,8 @@ on:
 jobs:
   e2e:
     name: 'Fleet E2E - ${{ inputs.suite }}'
+    env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
     # Runner label is derived from suites.json pm.runner field.
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
@@ -193,7 +195,7 @@ jobs:
             check_mcp "$output" "claude"
             echo "PM claude auth OK - fleet MCP responding"
           elif [ "$PROVIDER" = "gemini" ]; then
-            export GEMINI_CLI_TRUST_WORKSPACE="true"; output=$(gemini -p "$PROMPT" --model auto --yolo 2>&1)
+            output=$(gemini -p "$PROMPT" --model auto --yolo 2>&1)
             echo "$output"
             check_mcp "$output" "gemini"
             echo "PM gemini auth OK - fleet MCP responding"
@@ -280,7 +282,7 @@ jobs:
               --max-turns 80 \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
           else
-            export GEMINI_CLI_TRUST_WORKSPACE="true"; gemini \
+            gemini --yolo \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
@@ -394,7 +396,7 @@ jobs:
         shell: bash
         run: |
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
-          node "$GITHUB_WORKSPACE/.github/e2e/post-summary.mjs"
+          node "$GITHUB_WORKSPACE/.github/post-summary.mjs"
         env:
           SUITE: ${{ inputs.suite }}
 
@@ -413,7 +415,7 @@ jobs:
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            export GEMINI_CLI_TRUST_WORKSPACE="true"; timeout 120 gemini --yolo \
+            timeout 120 gemini --yolo \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
@@ -429,11 +431,3 @@ jobs:
         with:
           name: e2e-${{ inputs.suite }}-${{ github.run_id }}
           path: ${{ env.RUN_DIR }}
-
-
-
-
-
-
-
-
