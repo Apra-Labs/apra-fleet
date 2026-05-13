@@ -42,6 +42,7 @@ export const registerMemberSchema = z.object({
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
   llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
   unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false (default) = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  gbrain: z.boolean().optional().default(false).describe('Enable gbrain integration for this member (default: false)'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -174,6 +175,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     cloud: cloudConfig,
     llmProvider: input.llm_provider ?? 'claude',
     unattended: input.unattended ?? false,
+    gbrain: input.gbrain ?? false,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---

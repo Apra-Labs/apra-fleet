@@ -3,6 +3,14 @@
 ## Context Recovery
 Before starting any review: `git log --oneline {{base_branch}}..{{branch}}`
 
+## Brain-Aware Review (gbrain enabled)
+
+If the project has gbrain enabled, run these steps before reviewing each changed file:
+
+- Query brain for known context: "what do we know about this module/symbol?" — use `brain_query` with the file or symbol name to surface prior findings, architectural notes, and past corrections.
+- Use `code_callers` and `code_refs` to assess blast radius of changes — a small change to a widely-called function warrants deeper scrutiny.
+- Check brain for past corrections related to the changed areas: query `course_correction_recall` (or `brain_query` on the `course-corrections` collection) with the module name to surface any prior user-corrected approaches before flagging findings.
+
 ## Review Model
 You are reviewing work tracked in PLAN.md and progress.json.
 
@@ -29,6 +37,7 @@ Review scope covers all phases from Phase 1 through the current phase — not ju
 - Is the code consistent with existing patterns and conventions?
 - Are docs updated if behavior changed?
 - Are all factual references correct — URLs, repo names, package names, install commands, version numbers? Members hallucinate these; spot-check against known sources.
+- **If gbrain enabled:** check brain for known issues with changed symbols — run `brain_query` (or `course_correction_recall`) on key changed symbols to surface any previously-recorded corrections before flagging findings.
 - **File hygiene:** Run `git diff --name-only {{base_branch}}..{{branch}}`. For every file added, modified, or deleted — you must be able to justify it against the sprint requirements. If you cannot, flag CHANGES NEEDED. Common unjustifiable patterns:
   - Temp/scratch: `*.tmp`, `*.txt`, `*.base64`
   - Tool/security configs: `.gemini/`, `.claude/settings.json`, `permissions.json`

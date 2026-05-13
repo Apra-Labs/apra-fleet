@@ -39,6 +39,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     username: agent.username ?? undefined,
     os,
     folder: agent.workFolder,
+    gbrain: agent.gbrain ?? false,
   };
 
   // -- Cloud Info (parallel with connectivity check) --
@@ -257,7 +258,8 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
-  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
+  const gbrainStr = agent.gbrain ? ' | gbrain=enabled' : '';
+  let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}${gbrainStr}\n`;
   const tokenStr = agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}${tokenStr}\n`;
   const branchStr = branch ? ` | branch=${branch}` : '';

@@ -123,6 +123,17 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const { brainQuerySchema, brainQuery } = await import('./tools/brain-query.js');
+  const { brainWriteSchema, brainWrite } = await import('./tools/brain-write.js');
+  const { codeDefSchema, codeDef } = await import('./tools/code-def.js');
+  const { codeRefsSchema, codeRefs } = await import('./tools/code-refs.js');
+  const { codeCallersSchema, codeCallers } = await import('./tools/code-callers.js');
+  const { codeCalleesSchema, codeCallees } = await import('./tools/code-callees.js');
+  const { jobsSubmitSchema, jobsSubmit } = await import('./tools/jobs-submit.js');
+  const { jobsListSchema, jobsList } = await import('./tools/jobs-list.js');
+  const { jobsStatsSchema, jobsStats } = await import('./tools/jobs-stats.js');
+  const { jobsWorkSchema, jobsWork } = await import('./tools/jobs-work.js');
+  const { courseCorrectionCaptureSchema, courseCorrectionCapture, courseCorrectionRecallSchema, courseCorrectionRecall } = await import('./tools/course-correction.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -255,6 +266,26 @@ async function startServer() {
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
 
+  // --- gbrain tools ---
+  server.tool('brain_query', 'Query the gbrain knowledge base for a member. Member must have gbrain enabled.', brainQuerySchema.shape, wrapTool('brain_query', (input) => brainQuery(input as any)));
+  server.tool('brain_write', 'Write knowledge to the gbrain brain for a member. Member must have gbrain enabled.', brainWriteSchema.shape, wrapTool('brain_write', (input) => brainWrite(input as any)));
+
+  // --- code analysis tools ---
+  server.tool('code_def', 'Find the definition of a symbol in the member\'s codebase. Member must have gbrain enabled.', codeDefSchema.shape, wrapTool('code_def', (input) => codeDef(input as any)));
+  server.tool('code_refs', 'Find all references to a symbol in the member\'s codebase. Member must have gbrain enabled.', codeRefsSchema.shape, wrapTool('code_refs', (input) => codeRefs(input as any)));
+  server.tool('code_callers', 'Find all callers of a function in the member\'s codebase. Member must have gbrain enabled.', codeCallersSchema.shape, wrapTool('code_callers', (input) => codeCallers(input as any)));
+  server.tool('code_callees', 'Find all callees of a function in the member\'s codebase. Member must have gbrain enabled.', codeCalleesSchema.shape, wrapTool('code_callees', (input) => codeCallees(input as any)));
+
+  // --- Minions job queue tools ---
+  server.tool('jobs_submit', 'Submit a task to the Minions job queue. Member must have gbrain enabled. For immediate work, use execute_prompt instead.', jobsSubmitSchema.shape, wrapTool('jobs_submit', (input) => jobsSubmit(input as any)));
+  server.tool('jobs_list', 'List jobs in the Minions queue, optionally filtered by status. Member must have gbrain enabled.', jobsListSchema.shape, wrapTool('jobs_list', (input) => jobsList(input as any)));
+  server.tool('jobs_stats', 'Get aggregate job queue statistics (counts by status, avg duration). Member must have gbrain enabled.', jobsStatsSchema.shape, wrapTool('jobs_stats', (input) => jobsStats(input as any)));
+  server.tool('jobs_work', 'Mark a Minions job as complete with a result. Member must have gbrain enabled.', jobsWorkSchema.shape, wrapTool('jobs_work', (input) => jobsWork(input as any)));
+
+  // --- Course correction tools ---
+  server.tool('course_correction_capture', 'Persist a course correction to the brain so future agents avoid the same mistake. No member or gbrain check needed — global brain op.', courseCorrectionCaptureSchema.shape, wrapTool('course_correction_capture', (input) => courseCorrectionCapture(input as any)));
+  server.tool('course_correction_recall', 'Recall past course corrections from the brain. Returns relevant past corrections or empty string if none found.', courseCorrectionRecallSchema.shape, wrapTool('course_correction_recall', (input) => courseCorrectionRecall(input as any)));
+
   // --- Start Server ---
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -274,6 +305,15 @@ async function startServer() {
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
-  process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+  const { getGbrainClient } = await import('./services/gbrain-client.js');
+  const gracefulShutdown = () => {
+    cleanupAuthSocket().then(async () => {
+      closeAllConnections();
+      stallDetector.stop();
+      await getGbrainClient().disconnect();
+      process.exit(0);
+    });
+  };
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
 }
