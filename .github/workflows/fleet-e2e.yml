@@ -15,7 +15,6 @@ jobs:
     name: 'Fleet E2E - ${{ inputs.suite }}'
     env:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
-      ANTHROPIC_API_KEY: ${{ secrets.E2E_ACRED }}
     # Runner label is derived from suites.json pm.runner field.
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
