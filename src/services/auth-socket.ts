@@ -1,4 +1,4 @@
-﻿import net from 'node:net';
+import net from 'node:net';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
@@ -7,6 +7,7 @@ import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
+import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -15,6 +16,8 @@ const MAX_BUFFER_SIZE = 64 * 1024; // 64KB — reject oversized messages
 interface PendingAuth {
   encryptedPassword?: string;
   createdAt: number;
+  spawned_pid?: number;
+  persist?: boolean;
 }
 
 interface PasswordWaiter {
@@ -25,18 +28,40 @@ interface PasswordWaiter {
 
 const pendingRequests = new Map<string, PendingAuth>();
 const passwordWaiters = new Map<string, PasswordWaiter>();
+const activeSockets = new Set<net.Socket>();
 let socketServer: net.Server | null = null;
+let closingPromise: Promise<void> | null = null;
+let testPipeGeneration = 0;
 
 export function getSocketPath(): string {
   if (process.platform === 'win32') {
     // Note: this path is automatically scoped to the user session by Windows.
     const username = process.env.USERNAME ?? 'user';
-    return `\\\\.\\pipe\\apra-fleet-auth-${username}`;
+    const suffix = process.env.NODE_ENV === 'test' ? `-${testPipeGeneration}` : '';
+    return `\\\\.\\pipe\\apra-fleet-auth-${username}${suffix}`;
   }
   return SOCKET_PATH;
 }
 
+function killProcess(pid: number): void {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
+  } catch {
+    // Process may have already exited
+  }
+}
+
 export async function ensureAuthSocket(): Promise<void> {
+  // If already closing, wait for it to finish before trying to start again
+  if (closingPromise) {
+    await closingPromise;
+  }
+
   if (socketServer) return;
 
   const sockPath = getSocketPath();
@@ -54,6 +79,8 @@ export async function ensureAuthSocket(): Promise<void> {
 
   const tryListen = (retriesLeft: number): Promise<void> => new Promise((resolve, reject) => {
     const server = net.createServer((conn) => {
+      activeSockets.add(conn);
+      conn.on('close', () => activeSockets.delete(conn));
       let buffer = '';
       conn.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -78,9 +105,15 @@ export async function ensureAuthSocket(): Promise<void> {
             }
             // Encrypt immediately, discard plaintext
             pending.encryptedPassword = encryptPassword(msg.password);
+            if (msg.persist !== undefined) pending.persist = !!msg.persist;
             // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
             (msg as any).password = '';
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
+            // Kill the spawned terminal process if one was launched
+            if (pending.spawned_pid) {
+              killProcess(pending.spawned_pid);
+              pending.spawned_pid = undefined;
+            }
             // Resolve any waiting tool handler
             const waiter = passwordWaiters.get(msg.member_name);
             if (waiter) {
@@ -100,9 +133,13 @@ export async function ensureAuthSocket(): Promise<void> {
     server.on('error', (err: NodeJS.ErrnoException) => {
       server.close();
       // On Windows, named pipes may not be released immediately after close.
-      // Retry a few times with a short delay before giving up.
+      // Retry a few times with increasing delays before giving up.
       if (err.code === 'EADDRINUSE' && process.platform === 'win32' && retriesLeft > 0) {
-        setTimeout(() => tryListen(retriesLeft - 1).then(resolve, reject), 100);
+        // Increase delay for later retries — earlier retries happen faster
+        const totalRetries = process.env.NODE_ENV === 'test' ? 15 : 5;
+        const delayBase = process.env.NODE_ENV === 'test' ? 100 : 250;
+        const delay = delayBase * (totalRetries - retriesLeft + 1);
+        setTimeout(() => tryListen(retriesLeft - 1).then(resolve, reject), delay);
       } else {
         reject(err);
       }
@@ -117,7 +154,10 @@ export async function ensureAuthSocket(): Promise<void> {
     });
   });
 
-  return tryListen(5);
+  // Increase retries on Windows where named pipes take longer to release
+  // In tests, we retry more aggressively; in production the default is sufficient
+  const maxRetries = process.platform === 'win32' ? (process.env.NODE_ENV === 'test' ? 10 : 5) : 0;
+  return tryListen(maxRetries);
 }
 
 export function createPendingAuth(memberName: string): void {
@@ -149,7 +189,7 @@ export function getPendingPassword(memberName: string): string | null {
  * Wait for a pending auth password to arrive over the socket.
  * Returns the encrypted password, or rejects on timeout.
  */
-export function waitForPassword(memberName: string, timeoutMs: number = 300_000): Promise<string> {
+export function waitForPassword(memberName: string, timeoutMs: number = OOB_TIMEOUT_MS): Promise<string> {
   // Race: password may have arrived before we started waiting
   const existing = getPendingPassword(memberName);
   if (existing) return Promise.resolve(existing);
@@ -157,12 +197,23 @@ export function waitForPassword(memberName: string, timeoutMs: number = 300_000)
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       passwordWaiters.delete(memberName);
+      const pending = pendingRequests.get(memberName);
+      if (pending?.spawned_pid) killProcess(pending.spawned_pid);
       pendingRequests.delete(memberName);
       reject(new Error(`Password entry timed out for ${memberName}`));
     }, timeoutMs);
 
     passwordWaiters.set(memberName, { resolve, reject, timer });
   });
+}
+
+export function cancelPendingAuth(memberName: string): void {
+  const pending = pendingRequests.get(memberName);
+  if (pending?.spawned_pid) killProcess(pending.spawned_pid);
+  const waiter = passwordWaiters.get(memberName);
+  if (waiter) { clearTimeout(waiter.timer); waiter.reject(new Error('cancelled')); }
+  passwordWaiters.delete(memberName);
+  pendingRequests.delete(memberName);
 }
 
 export function hasPendingAuth(memberName: string): boolean {
@@ -175,22 +226,61 @@ export function hasPendingAuth(memberName: string): boolean {
   return true;
 }
 
-export function cleanupAuthSocket(): void {
-  // Reject any pending waiters
+export function cleanupAuthSocket(): Promise<void> {
+  // If already closing, wait for it to finish.
+  // This ensures that we don't start a new server while the old one is still releasing the pipe.
+  if (closingPromise) {
+    return closingPromise;
+  }
+
+  // Reject any pending waiters immediately
   for (const [, waiter] of passwordWaiters) {
     clearTimeout(waiter.timer);
     waiter.reject(new Error('Auth socket closed'));
   }
   passwordWaiters.clear();
-
-  if (socketServer) {
-    socketServer.close();
-    socketServer = null;
-  }
-  if (process.platform !== 'win32') {
-    try { fs.unlinkSync(getSocketPath()); } catch { /* already gone */ }
-  }
   pendingRequests.clear();
+
+  // Destroy all active client connections immediately
+  for (const s of activeSockets) {
+    s.destroy();
+  }
+  activeSockets.clear();
+
+  if (!socketServer) {
+    if (process.platform !== 'win32') {
+      try { fs.unlinkSync(getSocketPath()); } catch { /* ignore */ }
+    }
+    return Promise.resolve();
+  }
+
+  const server = socketServer;
+  socketServer = null; // Clear immediately so ensureAuthSocket knows we are closing
+
+  closingPromise = new Promise((resolve) => {
+    server.close(() => {
+      const onComplete = () => {
+        if (process.platform !== 'win32') {
+          try { fs.unlinkSync(getSocketPath()); } catch { /* ignore */ }
+        }
+        if (process.platform === 'win32' && process.env.NODE_ENV === 'test') {
+          testPipeGeneration++;
+        }
+        closingPromise = null;
+        resolve();
+      };
+
+      if (process.platform === 'win32' && process.env.NODE_ENV !== 'test') {
+        // Windows named pipes need extra time to be fully released by the OS.
+        // In test mode we use unique pipe names per generation, so no delay needed.
+        setTimeout(onComplete, 500);
+      } else {
+        onComplete();
+      }
+    });
+  });
+
+  return closingPromise;
 }
 
 type OobLaunchFn = (
@@ -208,14 +298,14 @@ async function collectOobInput(
   mode: 'password' | 'api-key' | 'confirm',
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
-): Promise<{ password?: string; fallback?: string }> {
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[] },
+): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
 
   const modeArgs = mode === 'api-key' ? ['--api-key'] : mode === 'confirm' ? ['--confirm'] : [];
   const promptArgs = _opts?.prompt ? ['--prompt', _opts.prompt] : [];
-  const extraArgs = [...modeArgs, ...promptArgs];
+  const extraArgs = [...modeArgs, ...promptArgs, ...(_opts?.additionalArgs ?? [])];
   const inputType = mode === 'api-key' ? 'API key' : mode === 'confirm' ? 'confirmation' : 'Password';
 
   const timeoutMessage = `❌ Password entry timed out for ${memberName}. Call ${toolName} again to retry.`;
@@ -227,7 +317,7 @@ async function collectOobInput(
     if (encPw) return { password: encPw };
     try {
       // Another process already launched the terminal, just wait for the result.
-      return { password: await waitForPassword(memberName, waitTimeoutMs ?? 300_000) };
+      return { password: await waitForPassword(memberName, waitTimeoutMs ?? OOB_TIMEOUT_MS) };
     } catch {
       return { fallback: timeoutMessage };
     }
@@ -258,11 +348,24 @@ async function collectOobInput(
     const raceResult = await Promise.race([passwordPromise, cancellationPromise]);
 
     if (raceResult === null) {
-      // This case should not be hit if passwordPromise always wins on success,
-      // but as a safeguard, we wait for the password again.
-      const pw = await passwordPromise;
-      pendingRequests.delete(memberName);
-      return { password: pw };
+      // The terminal exited with code 0 (Windows `start /wait` always exits 0, even
+      // on user-close). Wait briefly for any in-flight socket message — if the user
+      // genuinely submitted, the password arrives within milliseconds of process exit.
+      // If nothing arrives in 500 ms, treat it as a user cancellation.
+      try {
+        const pw = await Promise.race([
+          passwordPromise,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('cancelled')), 500)),
+        ]);
+        const persist = pendingRequests.get(memberName)?.persist;
+        pendingRequests.delete(memberName);
+        return { password: pw, persist };
+      } catch {
+        const waiter = passwordWaiters.get(memberName);
+        if (waiter) { clearTimeout(waiter.timer); passwordWaiters.delete(memberName); }
+        pendingRequests.delete(memberName);
+        return { fallback: cancelledMessage };
+      }
     }
 
     // Handle the fallback case from the cancellation promise
@@ -279,8 +382,9 @@ async function collectOobInput(
       return raceResult;
     }
 
+    const persist = pendingRequests.get(memberName)?.persist;
     pendingRequests.delete(memberName);
-    return { password: raceResult as string };
+    return { password: raceResult as string, persist };
   } catch (err: any) {
     // Clean up the pending request if the user cancelled.
     const waiter = passwordWaiters.get(memberName);
@@ -306,8 +410,8 @@ async function collectOobInput(
 export async function collectOobPassword(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
-): Promise<{ password?: string; fallback?: string }> {
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
+): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
   return collectOobInput('password', memberName, toolName, _opts);
 }
 
@@ -318,9 +422,10 @@ export async function collectOobPassword(
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string },
-): Promise<{ password?: string; fallback?: string }> {
-  return collectOobInput('api-key', memberName, toolName, _opts);
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; askPersist?: boolean },
+): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
+  const additionalArgs = _opts?.askPersist ? ['--ask-persist'] : [];
+  return collectOobInput('api-key', memberName, toolName, { ...(_opts ?? {}), additionalArgs });
 }
 
 
@@ -338,22 +443,40 @@ export async function collectOobConfirm(
 }
 
 /**
- * Resolve the command to invoke this binary's `auth` subcommand.
+ * Resolve the command to invoke this binary's `auth` or `secret` subcommand.
+ * Confirm mode uses `auth --confirm`; all credential collection uses `secret --set`.
  * Returns [command, ...args] suitable for spawn().
  */
 function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
   const extra = extraArgs ?? [];
+  const isConfirm = extra.includes('--confirm');
+
+  let cmdArgs: string[];
+  if (isConfirm) {
+    cmdArgs = ['auth', '--confirm', memberName];
+  } else {
+    // All credential collection (password, API key) routes through `secret --set`
+    cmdArgs = ['secret', '--set', memberName];
+    const promptIdx = extra.indexOf('--prompt');
+    if (promptIdx !== -1 && promptIdx + 1 < extra.length) {
+      cmdArgs.push('--prompt', extra[promptIdx + 1]);
+    }
+    if (extra.includes('--ask-persist')) {
+      cmdArgs.push('--ask-persist');
+    }
+  }
+
   // SEA binary: process.execPath is the binary itself
   try {
     const sea = require('node:sea');
     if (sea.isSea()) {
-      return { cmd: process.execPath, args: ['auth', ...extra, memberName] };
+      return { cmd: process.execPath, args: cmdArgs };
     }
   } catch { /* not SEA */ }
 
-  // Dev mode: node <path-to-index.js> auth <name>
+  // Dev mode: node <path-to-index.js> <command>
   const indexJs = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'index.js');
-  return { cmd: process.argv[0], args: [indexJs, 'auth', ...extra, memberName] };
+  return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
 function buildHeadlessFallback(memberName: string, reason: string): string {
@@ -398,7 +521,8 @@ function findLinuxTerminal(): string | null {
 }
 
 /**
- * Launch a new terminal window running `apra-fleet auth <memberName>`.
+ * Launch a new terminal window running `apra-fleet secret --set <memberName>` or `apra-fleet auth <memberName>`.
+ * Records the spawned PID in the pending request so it can be killed when credential is received.
  * Returns a user-facing message describing what happened and executes a
  * callback when the spawned terminal process exits.
  */
@@ -484,7 +608,11 @@ export function launchAuthTerminal(
       // terminal window to be closed. This allows us to capture the exit event.
       // The title argument to start is required.
       const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
-      child = spawn('cmd', spawnArgs, { detached: true, stdio: 'ignore' });
+      child = spawn('cmd', spawnArgs, { stdio: 'ignore' });
+      if (child.pid) {
+        const pending = pendingRequests.get(memberName);
+        if (pending) pending.spawned_pid = child.pid;
+      }
     } else {
       // Linux: find available terminal emulator. Most support an execute flag.
       const terminal = findLinuxTerminal();
@@ -496,6 +624,10 @@ export function launchAuthTerminal(
       } else {
         // xterm, x-terminal-emulator etc.
         child = spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' });
+      }
+      if (child.pid) {
+        const pending = pendingRequests.get(memberName);
+        if (pending) pending.spawned_pid = child.pid;
       }
     }
 

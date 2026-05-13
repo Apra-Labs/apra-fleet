@@ -87,7 +87,7 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   }
 }
 
-const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/;
+const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
 export const inFlightAgents = new Set<string>();
 
@@ -121,6 +121,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   }
   inFlightAgents.add(agent.id);
   const stallDetector = getStallDetector();
+  let clearedByStall = false;
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -131,10 +132,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberName: agent.friendlyName,
     provisional: true,
     stallReported: false,
+    onStall: () => {
+      // Stall detector already wrote 'unknown' to the statusline before calling here.
+      // Our job: clear in-process state so the member can accept new calls.
+      // clearedByStall prevents the eventually-resolving finally block from clobbering
+      // a new execute_prompt that may have already claimed the member.
+      inFlightAgents.delete(agent.id);
+      clearedByStall = true;
+    },
   });
 
   const tmpDir = agent.agentType === 'local' ? os.tmpdir() : '/tmp';
-  const resolvedWorkFolder = resolveTilde(agent.workFolder);
+  const resolvedWorkFolder = agent.agentType === 'local' ? resolveTilde(agent.workFolder) : agent.workFolder;
   const promptFilePath = agent.agentType === 'local'
     ? path.join(resolvedWorkFolder, promptFileName)
     : `${resolvedWorkFolder}/${promptFileName}`;
@@ -298,9 +307,12 @@ session: ${parsed.sessionId}`;
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);
-    // Explicitly set idle (or offline for connection failures) — never rely on persisted busy state clearing itself
-    writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
-    inFlightAgents.delete(agent.id);
+    // Skip if stall detector already cleared state — a new execute_prompt may have
+    // claimed inFlightAgents and set busy again; clobbering it here would be wrong.
+    if (!clearedByStall) {
+      writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
+      inFlightAgents.delete(agent.id);
+    }
     stallDetector.remove(agent.id);
     await deletePromptFile(agent, strategy, promptFilePath);
   }

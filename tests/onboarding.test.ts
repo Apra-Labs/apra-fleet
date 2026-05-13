@@ -125,8 +125,7 @@ describe('saveOnboardingState', () => {
     expect(fs.existsSync(ONBOARDING_PATH)).toBe(true);
   });
 
-  it('writes onboarding.json with 0o600 permissions (owner-only, non-Windows)', async () => {
-    if (process.platform === 'win32') return;
+  it.skipIf(process.platform === 'win32')('writes onboarding.json with 0o600 permissions (owner-only, non-Windows)', async () => {
     const { loadOnboardingState, saveOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
     saveOnboardingState();
@@ -598,6 +597,7 @@ describe('getWelcomeBackPreamble', () => {
     const result = getWelcomeBackPreamble();
     expect(result).not.toBeNull();
     expect(result).not.toContain('NaN');
+    // SRC code returns 'unknown' when times array is empty or malformed
     expect(result).toContain('unknown');
   });
 });

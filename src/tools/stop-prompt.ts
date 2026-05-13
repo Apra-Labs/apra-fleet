@@ -8,6 +8,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { inFlightAgents } from './execute-prompt.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getStallDetector } from '../services/stall/index.js';
+import { cancelPendingAuth } from '../services/auth-socket.js';
 
 export const stopPromptSchema = z.object({
   ...memberIdentifier,
@@ -25,6 +26,7 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
 
   const pid = getStoredPid(agent.id);
 
+  cancelPendingAuth(agent.friendlyName);
   await tryKillPid(agent, strategy, cmds);
   getStallDetector().remove(agent.id);
 

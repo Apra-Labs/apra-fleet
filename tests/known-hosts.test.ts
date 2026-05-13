@@ -106,10 +106,7 @@ describe('known-hosts TOFU', () => {
     expect(verifyHostKey('10.0.0.6', 22, key2)).toBe(true);
   });
 
-  it('writes known_hosts file with mode 0o600', () => {
-    // Only check on non-Windows
-    if (process.platform === 'win32') return;
-
+  it.skipIf(process.platform === 'win32')('writes known_hosts file with mode 0o600', () => {
     const key = fakeHostKey();
     verifyHostKey('10.0.0.7', 22, key);
 

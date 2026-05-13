@@ -155,6 +155,17 @@ Options:
     }
   }
 
+  // Reject unknown flags before any prompting
+  const knownFlagPrefixes = ['--llm=', '--skill='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--dry-run', '--force', '--yes', '--help', '-h']);
+  for (const a of args) {
+    if (knownFlagExact.has(a)) continue;
+    if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
+    if (!a.startsWith('-')) continue; // positional value (e.g. provider name after --llm)
+    console.error(`Error: Unknown option "${a}". Run 'apra-fleet uninstall --help' for usage.`);
+    process.exit(1);
+  }
+
   console.log(`\nUninstalling Apra Fleet ${serverVersion}...${dryRun ? ' (DRY RUN)' : ''}\n`);
 
   if (isApraFleetRunning()) {

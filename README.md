@@ -308,7 +308,7 @@ Apra Fleet is an MCP server that agentic coding systems connect to. It manages a
 | `setup_git_app` | One-time setup: register a GitHub App for scoped git token minting |
 | `provision_vcs_auth` | Deploy VCS credentials to a member (GitHub App, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Remove deployed VCS credentials from a member |
-| `credential_store_set` | Store a secret credential for use in commands (entered OOB — never in chat) |
+| `credential_store_set` | Store a secret credential for use in commands — opens an OOB terminal and blocks until entered (never in chat). Use `apra-fleet secret --set NAME -y` for CI/non-interactive input from stdin. |
 | `credential_store_list` | List stored credential names (values are never returned) |
 | `credential_store_delete` | Delete a stored credential |
 
@@ -328,14 +328,22 @@ Secrets never enter the LLM conversation or logs. Fleet's credential store keeps
 **Three-step workflow:**
 
 ```
-# 1. Store once — Fleet opens an OOB terminal prompt, never asks in chat
-credential_store_set  name=github_pat
+# 1. Store once — Fleet opens an OOB terminal and BLOCKS until you enter the secret.
+#    No "Waiting..." intermediate response. Returns only after you've entered the value:
+#    ✓ github_pat stored [persistent]. Use {{secure.github_pat}} in commands.
+credential_store_set  name=github_pat  persist=true
 
 # 2. Use in execute_command — {{secure.NAME}} is resolved only in commands, never in prompts
 execute_command  command="curl -H 'Authorization: Bearer {{secure.github_pat}}' https://api.github.com/user"
 
 # 3. Output is automatically redacted before it reaches the LLM
 # Output: Authorization: Bearer [REDACTED:github_pat]
+```
+
+**CI / non-interactive usage:** Use the `-y` flag with the CLI to read the secret from stdin instead of opening an OOB terminal window:
+
+```bash
+echo "$TOKEN" | apra-fleet secret --set github_pat --persist -y
 ```
 
 **Tools that support `{{secure.NAME}}` token substitution:**
@@ -346,13 +354,13 @@ execute_command  command="curl -H 'Authorization: Bearer {{secure.github_pat}}' 
 - `provision_vcs_auth` — VCS token fields (GitHub PAT, Bitbucket token, Azure DevOps PAT)
 - `provision_auth` — LLM API key fields
 
-`execute_prompt` does **not** support `{{secure.NAME}}` — secrets must never be passed to LLM prompts. In `execute_prompt`, reference credentials by name only (e.g. `"authenticate using credential github_pat"`); the member resolves the token in its own `execute_command` calls.
+`execute_prompt` does **not** support `{{secure.NAME}}` — secrets must never be passed to LLM prompts. When a task requires a secret, the PM uses `execute_command` with `{{secure.NAME}}` to run the authenticated command directly; members have no access to the credential store or fleet tools.
 
 **Credential store tools:**
 
 | Tool | What it does |
 |------|-------------|
-| `credential_store_set` | Prompt for a secret OOB and store it encrypted under a name |
+| `credential_store_set` | Open an OOB terminal, block until the secret is entered, then store it encrypted under a name. Returns `✓ NAME stored [session/persistent]. Use {{secure.NAME}} in commands.` |
 | `credential_store_list` | List stored credential names — values are never returned |
 | `credential_store_delete` | Remove a stored credential by name |
 
@@ -497,6 +505,7 @@ When registering a remote member with password authentication, you don't need to
 - Works on macOS (Terminal.app), Windows (cmd), and Linux (gnome-terminal/xterm)
 - Headless or unsupported environments get a manual command fallback
 - Supports password rotation via `update_member`
+- On Windows, closing the OOB window returns immediately with a cancellation message — no longer hangs
 
 See [`docs/adr-oob-password.md`](docs/adr-oob-password.md) for the design rationale.
 

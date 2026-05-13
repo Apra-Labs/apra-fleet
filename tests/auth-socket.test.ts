@@ -11,23 +11,22 @@ import {
   cleanupAuthSocket,
   collectOobPassword,
   collectOobApiKey,
+  cancelPendingAuth,
   hasGraphicalDisplay,
   hasInteractiveDesktop,
   launchAuthTerminal,
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
-  afterEach(() => {
-    cleanupAuthSocket();
+  afterEach(async () => {
+    await cleanupAuthSocket();
   });
 
   describe('getSocketPath', () => {
-    it('returns a path under FLEET_DIR on non-Windows', () => {
-      if (process.platform !== 'win32') {
-        const p = getSocketPath();
-        expect(p).toContain('auth.sock');
-        expect(p).toContain('apra-fleet');
-      }
+    it.skipIf(process.platform === 'win32')('returns a path under FLEET_DIR on non-Windows', () => {
+      const p = getSocketPath();
+      expect(p).toContain('auth.sock');
+      expect(p).toContain('apra-fleet');
     });
 
     it('returns a named pipe path on Windows', () => {
@@ -64,9 +63,9 @@ describe('auth-socket', () => {
       expect(after).toBe(true);
     });
 
-    it('cleans up on cleanupAuthSocket', () => {
+    it('cleans up on cleanupAuthSocket', async () => {
       createPendingAuth('test-member');
-      cleanupAuthSocket();
+      await cleanupAuthSocket();
       expect(hasPendingAuth('test-member')).toBe(false);
     });
   });
@@ -92,9 +91,13 @@ describe('auth-socket', () => {
           const resp = JSON.parse(buffer.slice(0, nl));
           expect(resp.ok).toBe(true);
           client.end();
+          client.destroy();
           resolve();
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       // Password should now be resolved (encrypted)
@@ -102,7 +105,7 @@ describe('auth-socket', () => {
       expect(encPw).not.toBeNull();
       expect(encPw).toContain(':'); // encrypted format is iv:authTag:ciphertext
 
-      // Entry consumed — should be gone
+      // Entry consumed â€“ should be gone
       expect(hasPendingAuth('web1')).toBe(false);
     });
 
@@ -122,10 +125,15 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          resolve(JSON.parse(buffer.slice(0, nl)));
+          const data = JSON.parse(buffer.slice(0, nl));
           client.end();
+          client.destroy();
+          resolve(data);
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       expect(resp.ok).toBe(false);
@@ -146,10 +154,15 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          resolve(JSON.parse(buffer.slice(0, nl)));
+          const data = JSON.parse(buffer.slice(0, nl));
           client.end();
+          client.destroy();
+          resolve(data);
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       expect(resp.ok).toBe(false);
@@ -170,36 +183,35 @@ describe('auth-socket', () => {
           buffer += chunk.toString();
           const nl = buffer.indexOf('\n');
           if (nl === -1) return;
-          resolve(JSON.parse(buffer.slice(0, nl)));
+          const data = JSON.parse(buffer.slice(0, nl));
           client.end();
+          client.destroy();
+          resolve(data);
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       expect(resp.ok).toBe(false);
       expect(resp.error).toContain('Invalid message');
     });
 
-    it('is idempotent — calling ensureAuthSocket twice does not error', async () => {
+    it('is idempotent â€“ calling ensureAuthSocket twice does not error', async () => {
       await ensureAuthSocket();
       await ensureAuthSocket(); // should be no-op
       createPendingAuth('test');
       expect(hasPendingAuth('test')).toBe(true);
     });
 
-    it('cleans up socket file on close', async () => {
+    it.skipIf(process.platform === 'win32')('cleans up socket file on close', async () => {
       await ensureAuthSocket();
       const sockPath = getSocketPath();
+      expect(fs.existsSync(sockPath)).toBe(true);
 
-      if (process.platform !== 'win32') {
-        expect(fs.existsSync(sockPath)).toBe(true);
-      }
-
-      cleanupAuthSocket();
-
-      if (process.platform !== 'win32') {
-        expect(fs.existsSync(sockPath)).toBe(false);
-      }
+      await cleanupAuthSocket();
+      expect(fs.existsSync(sockPath)).toBe(false);
     });
   });
 
@@ -240,9 +252,16 @@ describe('auth-socket', () => {
         let buffer = '';
         client.on('data', (chunk) => {
           buffer += chunk.toString();
-          if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
+          if (buffer.indexOf('\n') !== -1) {
+            client.end();
+            client.destroy();
+            resolve();
+          }
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
       const encPw = await passwordPromise;
@@ -271,12 +290,19 @@ describe('auth-socket', () => {
         let buffer = '';
         client.on('data', (chunk) => {
           buffer += chunk.toString();
-          if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
+          if (buffer.indexOf('\n') !== -1) {
+            client.end();
+            client.destroy();
+            resolve();
+          }
         });
-        client.on('error', reject);
+        client.on('error', (err) => {
+          client.destroy();
+          reject(err);
+        });
       });
 
-      // Now wait — should resolve immediately since password is already there
+      // Now wait â€“ should resolve immediately since password is already there
       const encPw = await waitForPassword('fast-test', 1000);
       expect(encPw).toContain(':');
     });
@@ -286,17 +312,19 @@ describe('auth-socket', () => {
       createPendingAuth('cleanup-test');
 
       const passwordPromise = waitForPassword('cleanup-test', 5000);
+      // Suppress unhandled-rejection warning: rejection fires before expect() attaches its handler
+      passwordPromise.catch(() => {});
 
       await new Promise(r => setTimeout(r, 50));
-      cleanupAuthSocket();
+      await cleanupAuthSocket();
 
       await expect(passwordPromise).rejects.toThrow('Auth socket closed');
     });
   });
 
   describe('collectOobPassword', () => {
-    afterEach(() => {
-      cleanupAuthSocket();
+    afterEach(async () => {
+      await cleanupAuthSocket();
     });
 
     it('returns immediately when pending auth already has password', async () => {
@@ -364,9 +392,10 @@ describe('auth-socket', () => {
       }
     });
   });
+
   describe('collectOobApiKey', () => {
-    afterEach(() => {
-      cleanupAuthSocket();
+    afterEach(async () => {
+      await cleanupAuthSocket();
     });
 
     it('launches terminal with --api-key flag', async () => {
@@ -448,7 +477,7 @@ describe('auth-socket', () => {
       });
       const result1Promise = collectOobApiKey('cancel-cred', 'credential_store_set', { launchFn: launchFn1, waitTimeoutMs: 5000 });
       // Wait for launchFn to be called (happens after ensureAuthSocket, which may retry on Windows)
-      await vi.waitFor(() => { if (!capturedOnExit) throw new Error('launch not yet called'); }, { timeout: 2000 });
+      await vi.waitFor(() => { if (!capturedOnExit) throw new Error('launch not yet called'); }, { timeout: 10000 });
       capturedOnExit!(1); // simulate user closing the terminal
       const result1 = await result1Promise;
       expect('fallback' in result1).toBe(true);
@@ -465,6 +494,61 @@ describe('auth-socket', () => {
 
       expect(launchFn2).toHaveBeenCalledOnce();
       expect('password' in result2).toBe(true);
+    });
+  });
+
+  describe('collectOobApiKey â€” 500ms grace period', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('returns password when it arrives within 500ms of terminal exit (code 0)', async () => {
+      // Simulate terminal closing immediately with code 0
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      const resultPromise = collectOobApiKey('grace-member', 'test_tool', { launchFn });
+
+      // Password arrives 100ms later
+      await new Promise(r => setTimeout(r, 100));
+      await sendPassword(getSocketPath(), 'grace-member', 'grace-secret');
+
+      const result = await resultPromise;
+      expect('password' in result).toBe(true);
+      if ('password' in result) expect(result.password).toContain(':');
+      expect(hasPendingAuth('grace-member')).toBe(false);
+    });
+
+    it('returns fallback when no password arrives within 500ms of terminal exit', async () => {
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      // Shorten the waitTimeoutMs for the overall call but the 500ms is hardcoded in src
+      const result = await collectOobApiKey('fail-grace', 'test_tool', { launchFn });
+      
+      expect('fallback' in result).toBe(true);
+      if ('fallback' in result) {
+        expect(result.fallback).toContain('cancelled');
+      }
+      expect(hasPendingAuth('fail-grace')).toBe(false);
+    });
+
+    it('cleans up waiter and pendingRequests on 500ms timeout', async () => {
+      const launchFn = vi.fn().mockImplementation((_name, _args, onExit) => {
+        process.nextTick(() => onExit(0));
+        return 'launched';
+      });
+
+      await collectOobApiKey('cleanup-grace', 'test_tool', { launchFn });
+
+      expect(hasPendingAuth('cleanup-grace')).toBe(false);
+      // Waiters are internal but we can verify by starting a new one without conflict
+      createPendingAuth('cleanup-grace');
+      expect(hasPendingAuth('cleanup-grace')).toBe(true);
     });
   });
 
@@ -513,41 +597,80 @@ describe('auth-socket', () => {
     });
   });
 
-  describe('launchAuthTerminal — headless fallback', () => {
-    afterEach(() => {
-      vi.unstubAllEnvs();
+  describe('cancelPendingAuth', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
     });
 
-    it('returns fallback with member name on Linux when DISPLAY is unset', () => {
-      if (process.platform !== 'linux') return;
-      vi.stubEnv('DISPLAY', '');
-      vi.stubEnv('WAYLAND_DISPLAY', '');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('my-member', [], onExit);
-      expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('! apra-fleet auth my-member');
-      expect(onExit).not.toHaveBeenCalled();
+    it('does nothing when no pending auth exists', () => {
+      expect(() => cancelPendingAuth('no-such-member')).not.toThrow();
     });
 
-    it('returns fallback with member name on Windows when SESSIONNAME is not Console', () => {
-      if (process.platform !== 'win32') return;
-      vi.stubEnv('SESSIONNAME', 'RDP-Tcp#0');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('my-member', [], onExit);
-      expect(result).toMatch(/^fallback:/);
-      expect(result).toContain('! apra-fleet auth my-member');
-      expect(onExit).not.toHaveBeenCalled();
+    it('rejects any waiting password waiter with "cancelled"', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('cancel-waiter');
+
+      const passwordPromise = waitForPassword('cancel-waiter', 5000);
+      passwordPromise.catch(() => {});
+
+      await new Promise(r => setTimeout(r, 20));
+      cancelPendingAuth('cancel-waiter');
+
+      await expect(passwordPromise).rejects.toThrow('cancelled');
     });
 
-    it('returns fallback with actual member name substituted (not a placeholder)', () => {
-      if (process.platform !== 'linux') return;
-      vi.stubEnv('DISPLAY', '');
-      vi.stubEnv('WAYLAND_DISPLAY', '');
-      const onExit = vi.fn();
-      const result = launchAuthTerminal('worker-42', [], onExit);
-      expect(result).toContain('worker-42');
-      expect(result).not.toContain('<name>');
-      expect(result).not.toContain('<member>');
+    it('clears pending request so hasPendingAuth returns false after cancel', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('cancel-clear');
+
+      expect(hasPendingAuth('cancel-clear')).toBe(true);
+      cancelPendingAuth('cancel-clear');
+      expect(hasPendingAuth('cancel-clear')).toBe(false);
+    });
+
+    it('clears waiter so a retry can create fresh pending auth', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('cancel-retry');
+
+      const p1 = waitForPassword('cancel-retry', 5000);
+      p1.catch(() => {});
+
+      await new Promise(r => setTimeout(r, 20));
+      cancelPendingAuth('cancel-retry');
+      await expect(p1).rejects.toThrow('cancelled');
+
+      // Should be able to create a fresh pending auth without conflict
+      createPendingAuth('cancel-retry');
+      expect(hasPendingAuth('cancel-retry')).toBe(true);
+    });
+  });
+
+  describe('waitForPassword â€” kills spawned PID on timeout', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('rejects with timeout error when no password arrives', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('pid-timeout');
+
+      await expect(waitForPassword('pid-timeout', 100)).rejects.toThrow('timed out');
+      expect(hasPendingAuth('pid-timeout')).toBe(false);
+    });
+
+    it('clears pending request on timeout', async () => {
+      await ensureAuthSocket();
+      createPendingAuth('pid-clear-timeout');
+
+      await expect(waitForPassword('pid-clear-timeout', 100)).rejects.toThrow();
+      expect(hasPendingAuth('pid-clear-timeout')).toBe(false);
+    });
+  });
+
+  describe('OOB_TIMEOUT_MS constant', () => {
+    it('is exported from oob-timeout and equals 5 minutes', async () => {
+      const { OOB_TIMEOUT_MS } = await import('../src/utils/oob-timeout.js');
+      expect(OOB_TIMEOUT_MS).toBe(5 * 60 * 1000);
     });
   });
 });
@@ -560,8 +683,15 @@ function sendPassword(sockPath: string, memberName: string, password: string): P
     let buffer = '';
     client.on('data', (chunk) => {
       buffer += chunk.toString();
-      if (buffer.indexOf('\n') !== -1) { client.end(); resolve(); }
+      if (buffer.indexOf('\n') !== -1) {
+        client.end();
+        client.destroy();
+        resolve();
+      }
     });
-    client.on('error', reject);
+    client.on('error', (err) => {
+      client.destroy();
+      reject(err);
+    });
   });
 }

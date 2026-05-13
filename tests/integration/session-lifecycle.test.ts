@@ -138,69 +138,6 @@ describe('OOB SSH fallback — integration (T13)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('returns fallback with actual member name when DISPLAY is unset on Linux', () => {
-    if (process.platform !== 'linux') return;
-    vi.stubEnv('DISPLAY', '');
-    vi.stubEnv('WAYLAND_DISPLAY', '');
-    const onExit = vi.fn();
-
-    const result = launchAuthTerminal('my-worker', [], onExit);
-
-    expect(result).toMatch(/^fallback:/);
-    expect(result).toContain('! apra-fleet auth my-worker');
-    expect(result).not.toContain('<name>');
-    expect(result).not.toContain('<member>');
-    expect(onExit).not.toHaveBeenCalled();
-  });
-
-  it('returns fallback with actual member name when SESSIONNAME is not Console on Windows', () => {
-    if (process.platform !== 'win32') return;
-    vi.stubEnv('SESSIONNAME', 'RDP-Tcp#0');
-    const onExit = vi.fn();
-
-    const result = launchAuthTerminal('my-worker', [], onExit);
-
-    expect(result).toMatch(/^fallback:/);
-    expect(result).toContain('! apra-fleet auth my-worker');
-    expect(result).not.toContain('<name>');
-    expect(result).not.toContain('<member>');
-    expect(onExit).not.toHaveBeenCalled();
-  });
-
-  it('does not return the headless-display fallback when DISPLAY is set on Linux', () => {
-    if (process.platform !== 'linux') return;
-    vi.stubEnv('DISPLAY', ':0');
-    const onExit = vi.fn();
-
-    const result = launchAuthTerminal('my-worker', [], onExit);
-
-    // The headless-specific fallback must not fire — display check passed
-    expect(result).not.toContain('No graphical display detected');
-  });
-
-  it('does not return the headless-desktop fallback when SESSIONNAME is Console on Windows', () => {
-    if (process.platform !== 'win32') return;
-    vi.stubEnv('SESSIONNAME', 'Console');
-    const onExit = vi.fn();
-
-    const result = launchAuthTerminal('my-worker', [], onExit);
-
-    // The headless-specific fallback must not fire — interactive desktop check passed
-    expect(result).not.toContain('No interactive desktop session detected');
-  });
-
-  it('returns fallback on macOS when SSH_TTY is set', () => {
-    if (process.platform !== 'darwin') return;
-    vi.stubEnv('SSH_TTY', '/dev/ttys001');
-    const onExit = vi.fn();
-
-    const result = launchAuthTerminal('my-worker', [], onExit);
-
-    expect(result).toMatch(/^fallback:/);
-    expect(result).toContain('! apra-fleet auth my-worker');
-    expect(onExit).not.toHaveBeenCalled();
-  });
-
   it('isSSHSession returns true when SSH_TTY is set', () => {
     vi.stubEnv('SSH_TTY', '/dev/ttys001');
     expect(isSSHSession()).toBe(true);

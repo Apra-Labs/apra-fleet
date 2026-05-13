@@ -16,7 +16,7 @@ import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 
-const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
 
 function resolveSecureField(value: string, callingMember: string): { resolved: string } | { error: string } {
   const tokenNames = new Set<string>();

@@ -115,7 +115,7 @@ export class LogScope {
 export function maskSecrets(text: string): string {
   try {
     return text
-      .replace(/\{\{secure\.[a-zA-Z0-9_]{1,64}\}\}/g, '[REDACTED]')
+      .replace(/\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/g, '[REDACTED]')
       .replace(/sec:\/\/[a-zA-Z0-9_]+/g, '[REDACTED]');
   } catch {
     return text;

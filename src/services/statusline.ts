@@ -8,13 +8,19 @@ import { groupByCategory } from '../utils/agent-helpers.js';
 const STATUSLINE_PATH = path.join(FLEET_DIR, 'statusline.txt');
 const STATE_PATH = path.join(FLEET_DIR, 'statusline-state.json');
 
-// Status display emoji
+// Status display emoji — keyed on base status (without parenthetical suffix)
 const STATUS_EMOJI: Record<string, string> = {
-  busy: '⚡', idle: '💤', verify: '🔍', blocked: '🚫', offline: '❌',
+  busy: '⚡', idle: '💤', offline: '❌', unknown: '❓',
 };
 
 // Sort priority: needs-attention first
-const PRIORITY: Record<string, number> = { blocked: 0, verify: 1, busy: 2, idle: 3, offline: 4 };
+// unknown sits above busy: stall detected, PM needs to act
+const PRIORITY: Record<string, number> = { unknown: 0, busy: 1, idle: 2, offline: 3 };
+
+/** Strip parenthetical suffix from status for emoji/priority lookup: "busy(02:14)" → "busy". */
+function baseStatus(status: string): string {
+  return status.replace(/\(.*\)$/, '');
+}
 
 /** Load last-known per-agent states from disk. */
 function loadState(): Record<string, string> {

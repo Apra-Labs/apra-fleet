@@ -63,7 +63,7 @@ async function resolveSecureTokens(
     return { error: 'Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.' };
   }
 
-  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
   const credentials: ResolvedCredential[] = [];
   let resolved = command;
   let match: RegExpExecArray | null;
@@ -181,7 +181,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     }
   }
 
-  const folder = resolveTilde(input.run_from ?? agent.workFolder);
+  const rawFolder = input.run_from ?? agent.workFolder;
+  const folder = agent.agentType === 'local' ? resolveTilde(rawFolder) : rawFolder;
 
 
   // -- Long-running background task path --

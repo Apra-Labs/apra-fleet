@@ -66,10 +66,8 @@ describe('pidWrapWindows string structure', () => {
 
 // ─── pidWrapUnix execution tests (Unix only) ─────────────────────────────────
 
-const unixTest = process.platform === 'win32' ? it.skip : it;
-
 describe('pidWrapUnix execution', () => {
-  unixTest('emits FLEET_PID as first stdout line before command output', () => {
+  it.skipIf(process.platform === 'win32')('emits FLEET_PID as first stdout line before command output', () => {
     // sleep 0.05 ensures the inner command's output comes after the PID line
     const cmd = pidWrapUnix('sleep 0.05 && printf "hello\\n"');
     const result = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: 5000 });
@@ -78,7 +76,7 @@ describe('pidWrapUnix execution', () => {
     expect(lines[1]).toBe('hello');
   });
 
-  unixTest('emitted PID is a positive integer', () => {
+  it.skipIf(process.platform === 'win32')('emitted PID is a positive integer', () => {
     const cmd = pidWrapUnix('sleep 0.05');
     const result = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: 5000 });
     const lines = result.stdout.trim().split('\n').filter(Boolean);
@@ -87,13 +85,13 @@ describe('pidWrapUnix execution', () => {
     expect(pid).toBeGreaterThan(0);
   });
 
-  unixTest('propagates exit code 0 from successful inner command', () => {
+  it.skipIf(process.platform === 'win32')('propagates exit code 0 from successful inner command', () => {
     const cmd = pidWrapUnix('true');
     const result = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
   });
 
-  unixTest('propagates non-zero exit code from inner command', () => {
+  it.skipIf(process.platform === 'win32')('propagates non-zero exit code from inner command', () => {
     const cmd = pidWrapUnix('bash -c "exit 7"');
     const result = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(7);

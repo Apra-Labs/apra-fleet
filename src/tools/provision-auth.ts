@@ -13,6 +13,7 @@ import { credentialResolve } from '../services/credential-store.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
+import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -241,7 +242,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
 
   // Flow B: API key is provided directly
   if (input.api_key) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_]{1,64})\}\}/g;
+    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
     const tokenNames = new Set<string>();
     let match: RegExpExecArray | null;
     while ((match = TOKEN_RE.exec(input.api_key)) !== null) tokenNames.add(match[1]);
@@ -253,12 +254,16 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
       if ('expired' in entry) return `❌ ${entry.expired}`;
       resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
-    return provisionApiKey(agent, resolvedKey, provider);
+    const result = await provisionApiKey(agent, resolvedKey, provider);
+    if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+    return result;
   }
 
   // Flow A: OAuth credentials copy
   if (provider.oauthCredentialFiles()?.length) {
-    return provisionOAuthCopy(agent, provider);
+    const result = await provisionOAuthCopy(agent, provider);
+    if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+    return result;
   }
 
   // Fallback: OOB key collection for non-OAuth or non-copyable providers
@@ -266,5 +271,7 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     prompt: `Enter API key for ${provider.name} on ${agent.friendlyName}`,
   });
   if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
-  return provisionApiKey(agent, decryptPassword(oob.password!), provider);
+  const result = await provisionApiKey(agent, decryptPassword(oob.password!), provider);
+  if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+  return result;
 }
