@@ -305,6 +305,15 @@ async function startServer() {
   void checkForUpdate();
 
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
-  process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
-  process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+  const { getGbrainClient } = await import('./services/gbrain-client.js');
+  const gracefulShutdown = () => {
+    cleanupAuthSocket().then(async () => {
+      closeAllConnections();
+      stallDetector.stop();
+      await getGbrainClient().disconnect();
+      process.exit(0);
+    });
+  };
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
 }
