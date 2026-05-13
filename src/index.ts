@@ -125,6 +125,10 @@ async function startServer() {
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
   const { brainQuerySchema, brainQuery } = await import('./tools/brain-query.js');
   const { brainWriteSchema, brainWrite } = await import('./tools/brain-write.js');
+  const { codeDefSchema, codeDef } = await import('./tools/code-def.js');
+  const { codeRefsSchema, codeRefs } = await import('./tools/code-refs.js');
+  const { codeCallersSchema, codeCallers } = await import('./tools/code-callers.js');
+  const { codeCalleesSchema, codeCallees } = await import('./tools/code-callees.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -260,6 +264,12 @@ async function startServer() {
   // --- gbrain tools ---
   server.tool('brain_query', 'Query the gbrain knowledge base for a member. Member must have gbrain enabled.', brainQuerySchema.shape, wrapTool('brain_query', (input) => brainQuery(input as any)));
   server.tool('brain_write', 'Write knowledge to the gbrain brain for a member. Member must have gbrain enabled.', brainWriteSchema.shape, wrapTool('brain_write', (input) => brainWrite(input as any)));
+
+  // --- code analysis tools ---
+  server.tool('code_def', 'Find the definition of a symbol in the member\'s codebase. Member must have gbrain enabled.', codeDefSchema.shape, wrapTool('code_def', (input) => codeDef(input as any)));
+  server.tool('code_refs', 'Find all references to a symbol in the member\'s codebase. Member must have gbrain enabled.', codeRefsSchema.shape, wrapTool('code_refs', (input) => codeRefs(input as any)));
+  server.tool('code_callers', 'Find all callers of a function in the member\'s codebase. Member must have gbrain enabled.', codeCallersSchema.shape, wrapTool('code_callers', (input) => codeCallers(input as any)));
+  server.tool('code_callees', 'Find all callees of a function in the member\'s codebase. Member must have gbrain enabled.', codeCalleesSchema.shape, wrapTool('code_callees', (input) => codeCallees(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
