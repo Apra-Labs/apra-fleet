@@ -558,6 +558,89 @@ Pairs two members — one builds, one reviews. The PM handles git transport betw
 | `/pm pair <member> <member>` | Pair doer and reviewer |
 | `/pm deploy <member>` | Run deployment steps |
 
+## gbrain Integration
+
+[gbrain](https://github.com/Apra-Labs/gbrain) is a knowledge and code intelligence server that fleet members can connect to for persistent memory, semantic code search, and durable async job execution.
+
+### Installation
+
+gbrain is launched automatically via `npx -y gbrain` on first use. To use a custom binary, set environment variables before starting apra-fleet:
+
+```bash
+export GBRAIN_COMMAND=/path/to/gbrain
+export GBRAIN_ARGS="--port 9000"   # space-separated args (optional)
+```
+
+### Per-member opt-in
+
+gbrain is opt-in per member. Enable it when registering or updating a member:
+
+```
+"Register alice with gbrain enabled"
+"Update alice — enable gbrain"
+```
+
+Equivalent tool calls:
+- `register_member` with `gbrain: true`
+- `update_member` with `gbrain: true`
+
+### Available tools (12)
+
+**Brain (knowledge base)**
+
+| Tool | Description |
+|------|-------------|
+| `brain_query` | Query the member's knowledge base with a natural-language search |
+| `brain_write` | Write a fact or document into the member's knowledge base |
+
+**Code analysis**
+
+| Tool | Description |
+|------|-------------|
+| `code_def` | Find the definition of a symbol in the member's codebase |
+| `code_refs` | Find all references to a symbol |
+| `code_callers` | Find all callers of a function |
+| `code_callees` | Find all callees (functions called by) a function |
+
+**Minions job queue**
+
+| Tool | Description |
+|------|-------------|
+| `jobs_submit` | Submit a task to the durable async job queue |
+| `jobs_list` | List jobs, optionally filtered by status |
+| `jobs_stats` | Get aggregate job statistics (counts by status, average duration) |
+| `jobs_work` | Mark a job as complete with a result |
+
+**Course correction (global — no gbrain member check)**
+
+| Tool | Description |
+|------|-------------|
+| `course_correction_capture` | Persist a course correction so future agents avoid the same mistake |
+| `course_correction_recall` | Recall past course corrections by semantic search query |
+
+### Routing guidance
+
+- **`jobs_submit`** — use for durable async work that can survive process restarts (long-running tasks, CI jobs, batch processing). Results are polled via `jobs_list` / `jobs_work`.
+- **`execute_prompt`** — use for interactive, real-time LLM tasks where you need a live response. Not durable across restarts.
+
+Rule of thumb: if the work takes longer than a single prompt session or must survive crashes, use `jobs_submit`. For everything else, use `execute_prompt`.
+
+### PGLite vs Postgres
+
+gbrain stores data in a local PGLite database by default. This is suitable for local development and single-member setups.
+
+For **Minions job queue** features (`jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`), a full **Postgres** instance is required — PGLite does not support the concurrent access patterns the job queue relies on. Set `GBRAIN_DB_URL` to a Postgres connection string to use Postgres.
+
+### Reviewer workflow
+
+When a reviewer member has `gbrain: true`, the PM skill automatically appends brain-aware instructions to the reviewer template. The reviewer will:
+
+1. Query `brain_query` for past corrections relevant to the diff being reviewed
+2. Surface any matching patterns as part of the review feedback
+3. Call `course_correction_capture` if the review uncovers a new mistake pattern worth preserving
+
+This creates a feedback loop where reviewer insights accumulate in the brain and improve future reviews automatically.
+
 ## Troubleshooting
 
 **Member shows as offline?**
