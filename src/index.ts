@@ -133,6 +133,7 @@ async function startServer() {
   const { jobsListSchema, jobsList } = await import('./tools/jobs-list.js');
   const { jobsStatsSchema, jobsStats } = await import('./tools/jobs-stats.js');
   const { jobsWorkSchema, jobsWork } = await import('./tools/jobs-work.js');
+  const { courseCorrectionCaptureSchema, courseCorrectionCapture, courseCorrectionRecallSchema, courseCorrectionRecall } = await import('./tools/course-correction.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -280,6 +281,10 @@ async function startServer() {
   server.tool('jobs_list', 'List jobs in the Minions queue, optionally filtered by status. Member must have gbrain enabled.', jobsListSchema.shape, wrapTool('jobs_list', (input) => jobsList(input as any)));
   server.tool('jobs_stats', 'Get aggregate job queue statistics (counts by status, avg duration). Member must have gbrain enabled.', jobsStatsSchema.shape, wrapTool('jobs_stats', (input) => jobsStats(input as any)));
   server.tool('jobs_work', 'Mark a Minions job as complete with a result. Member must have gbrain enabled.', jobsWorkSchema.shape, wrapTool('jobs_work', (input) => jobsWork(input as any)));
+
+  // --- Course correction tools ---
+  server.tool('course_correction_capture', 'Persist a course correction to the brain so future agents avoid the same mistake. No member or gbrain check needed — global brain op.', courseCorrectionCaptureSchema.shape, wrapTool('course_correction_capture', (input) => courseCorrectionCapture(input as any)));
+  server.tool('course_correction_recall', 'Recall past course corrections from the brain. Returns relevant past corrections or empty string if none found.', courseCorrectionRecallSchema.shape, wrapTool('course_correction_recall', (input) => courseCorrectionRecall(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

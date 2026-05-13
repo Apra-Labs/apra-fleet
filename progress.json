@@ -21,7 +21,7 @@
     { "id": 16, "phase": 4, "step": "VERIFY: Phase 4 — Minions integration", "type": "verify", "status": "completed", "commit": "43a92e5", "notes": "APPROVED by fleet-reviewer. All 6 criteria passed." },
     { "id": 17, "phase": 5, "step": "T5.1: Update reviewer template with conditional brain instructions", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "Added Brain-Aware Review section and gbrain check to What to check list" },
     { "id": 18, "phase": 5, "step": "T5.2: Create course correction capture service", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "captureCorrection + recallCorrections; silent no-op on gbrain unavailable" },
-    { "id": 19, "phase": 5, "step": "T5.3: Create course_correction fleet tools", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 19, "phase": 5, "step": "T5.3: Create course_correction fleet tools", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "course_correction_capture + course_correction_recall; both registered in index.ts" },
     { "id": 20, "phase": 5, "step": "T5.4: Wire course_correction_capture into PM sprint flow", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
     { "id": 21, "phase": 5, "step": "T5.5: Tests for Phase 5", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
     { "id": 22, "phase": 5, "step": "VERIFY: Phase 5 — Reviewer template + course correction", "type": "verify", "status": "pending", "commit": "", "notes": "" },
