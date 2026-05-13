@@ -396,7 +396,7 @@ jobs:
         shell: bash
         run: |
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
-          node "$GITHUB_WORKSPACE/.github/post-summary.mjs"
+          node "$GITHUB_WORKSPACE/.github/e2e/post-summary.mjs"
         env:
           SUITE: ${{ inputs.suite }}
 
