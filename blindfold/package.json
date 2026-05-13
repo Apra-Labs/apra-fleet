@@ -1,0 +1,58 @@
+{
+  "name": "blindfold",
+  "version": "0.1.0",
+  "description": "Secure credential vault for AI agents — OOB collection, encryption, and token resolution that keeps secrets out of LLM context windows",
+  "author": "Apra Labs",
+  "homepage": "https://github.com/Apra-Labs/blindfold",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Apra-Labs/blindfold.git"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "blindfold": "dist/cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "import": "./dist/mcp/server.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@inquirer/password": "^5.0.11",
+    "zod": "^3.25.0"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.0.18"
+  }
+}
