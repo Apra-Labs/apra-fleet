@@ -23,7 +23,7 @@
     { "id": 18, "phase": 5, "step": "T5.2: Create course correction capture service", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "captureCorrection + recallCorrections; silent no-op on gbrain unavailable" },
     { "id": 19, "phase": 5, "step": "T5.3: Create course_correction fleet tools", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "course_correction_capture + course_correction_recall; both registered in index.ts" },
     { "id": 20, "phase": 5, "step": "T5.4: Wire course_correction_capture into PM sprint flow", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "Documented call-sites in single-pair-sprint.md and doer-reviewer.md" },
-    { "id": 21, "phase": 5, "step": "T5.5: Tests for Phase 5", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 21, "phase": 5, "step": "T5.5: Tests for Phase 5", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "6 tests: captureCorrection x2, recallCorrections x2, tool routing x2 — all green" },
     { "id": 22, "phase": 5, "step": "VERIFY: Phase 5 — Reviewer template + course correction", "type": "verify", "status": "pending", "commit": "", "notes": "" },
     { "id": 23, "phase": 6, "step": "T6.1: DRY audit of gbrain helpers", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
     { "id": 24, "phase": 6, "step": "T6.2: Wire gbrain client lifecycle into server startup/shutdown", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
