@@ -204,3 +204,101 @@ The finding is resolved. Commit bc85296 adds 6 tests to `tests/gbrain-config.tes
 - `member_detail` JSON output includes `gbrain` field — VERIFIED
 
 All 11 tests in `tests/gbrain-config.test.ts` pass (`npm test -- tests/gbrain-config.test.ts`). The original finding is fully addressed. Phase 1 code review is complete.
+
+---
+
+# gbrain Integration — Phase 3 Code Review — APPROVED
+
+**Reviewer:** fleet-reviewer (Claude Opus 4.6)  
+**Date:** 2026-05-13  
+**Branch:** feat/gbrain-integration  
+**Commit reviewed:** 13c49b3  
+**Verdict:** APPROVED
+
+---
+
+## Files Reviewed
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `src/tools/code-def.ts` | 20 | `code_def` fleet tool |
+| `src/tools/code-refs.ts` | 20 | `code_refs` fleet tool |
+| `src/tools/code-callers.ts` | 20 | `code_callers` fleet tool |
+| `src/tools/code-callees.ts` | 20 | `code_callees` fleet tool |
+| `tests/code-analysis-tools.test.ts` | 150 | 11 tests covering all four tools |
+| `src/index.ts` (lines 128-131, 269-272) | — | Tool imports and registration |
+
+---
+
+## Review Checklist
+
+### 1. Consistent resolve → assertGbrainEnabled → callGbrainTool pattern — PASS
+
+All four tools follow the identical three-step pattern:
+1. `resolveMember(input.member_id, input.member_name)` — early return on error string
+2. `assertGbrainEnabled(agentOrError)` — early return on error string
+3. `callGbrainTool('<tool_name>', { symbol: input.symbol })` — delegate to gbrain
+
+This matches the Phase 2 `brain_query` / `brain_write` pattern exactly.
+
+### 2. All 4 registered in `src/index.ts` — PASS
+
+- Imports: dynamic `await import()` at lines 128-131
+- Registration: `server.tool()` calls at lines 269-272 under `// --- code analysis tools ---`
+- Descriptions mention gbrain-enabled prerequisite
+- All wrapped with `wrapTool()` for onboarding integration
+
+### 3. Schema correctness — PASS
+
+All four schemas use:
+- `...memberIdentifier` spread for `member_id` / `member_name`
+- `symbol: z.string().describe(...)` with tool-specific descriptions
+
+Descriptions are appropriately distinct:
+- `code_def`: "The symbol (function, class, variable, etc.) to find the definition of"
+- `code_refs`: "The symbol to find all references to"
+- `code_callers`: "The function to find callers of"
+- `code_callees`: "The function to find callees of"
+
+### 4. gbrain tool names match canonical API — PASS
+
+Tool names passed to `callGbrainTool()`: `code_def`, `code_refs`, `code_callers`, `code_callees` — all underscore-separated, matching the plan.
+
+### 5. Shared helpers reused — PASS
+
+All four files import `assertGbrainEnabled` and `callGbrainTool` from `../utils/gbrain-helpers.js`. No reimplementation of error handling or gbrain client access.
+
+### 6. Test coverage — PASS (11/11 passing)
+
+| Tool | Happy path | Disabled | Not-found |
+|------|-----------|----------|-----------|
+| `code_def` | Yes | Yes | Yes |
+| `code_refs` | Yes | Yes | Yes |
+| `code_callers` | Yes | Yes | No |
+| `code_callees` | Yes | Yes | Yes |
+
+- `code_callers` omits the not-found test. The code path is identical across all four tools (same `resolveMember` call), so this is cosmetic, not a risk.
+- Mock isolation is correct: `vi.mock` of gbrain-client, `beforeEach`/`afterEach` registry backup/restore.
+- All 11 tests pass.
+
+### 7. DRY / duplication — ACCEPTABLE
+
+The four tool files are nearly identical (~20 lines each), differing only in naming and `symbol` description string. A factory function could reduce this to a single file, but:
+- Separate files keep each tool self-contained and easy to locate
+- Consistent with Phase 2's approach (`brain-query.ts` / `brain-write.ts`)
+- No logic duplication that could diverge dangerously
+
+No action needed.
+
+---
+
+## Minor observations (non-blocking)
+
+1. **Missing not-found test for `code_callers`**: Cosmetic gap — the code path is exercised identically by the other three suites.
+2. **`as any` casts in `index.ts`**: All four `server.tool` registrations use `input as any`. This is a pre-existing pattern used by all other tools, not introduced by this PR.
+
+---
+
+## Summary
+
+Phase 3 is clean, consistent, and well-tested. All four code analysis tools follow the established pattern, schemas are correct, shared helpers are reused, and all 11 tests pass. No issues found.
