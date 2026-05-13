@@ -30,6 +30,6 @@
     { "id": 25, "phase": 6, "step": "T6.3: Documentation", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "Added '## gbrain Integration' section to README: installation, per-member opt-in, 12 tools table, routing guidance, PGLite vs Postgres, reviewer workflow." },
     { "id": 26, "phase": 6, "step": "T6.4: Final integration tests", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "13 tests: all 12 tools registered, gbrain unavailable errors, existing tools unaffected, registry round-trip, schema overhead < 50% and < 20KB." },
     { "id": 27, "phase": 6, "step": "T6.5: Comparative test — gbrain vs no-gbrain mode", "type": "work", "status": "completed", "tier": "standard", "commit": "", "notes": "13 tests: with-gbrain full workflow (brain/code/jobs/course-correction), without-gbrain actionable errors with update_member guidance, side-by-side comparison." },
-    { "id": 28, "phase": 6, "step": "VERIFY: Phase 6 — Documentation + integration", "type": "verify", "status": "pending", "commit": "", "notes": "" }
+    { "id": 28, "phase": 6, "step": "VERIFY: Phase 6 — Documentation + integration", "type": "verify", "status": "completed", "commit": "", "notes": "tsc clean. 1317 tests pass (2 pre-existing timezone failures in time-utils.test.ts unrelated to gbrain). All 12 gbrain tools delivered. Phase 6 complete." }
   ]
 }
