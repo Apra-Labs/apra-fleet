@@ -90,7 +90,7 @@ export class ClaudeProvider implements ProviderAdapter {
           if (r) return r;
         }
       } else {
-        // Single object — old Claude Code format
+        // Single object - old Claude Code format
         return {
           result: parsed.result ?? parsed.response ?? raw,
           sessionId: parsed.session_id,
@@ -99,7 +99,7 @@ export class ClaudeProvider implements ProviderAdapter {
           usage: extractUsage(parsed.usage),
         };
       }
-    } catch { /* not valid JSON — try line-by-line JSONL below */ }
+    } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
     // JSONL format (Claude Code 2.1.113+): one JSON object per line
     for (const line of raw.split('\n')) {
@@ -154,7 +154,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } } }];
+    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
   }
 
   supportsOAuthCopy(): boolean {
@@ -182,7 +182,7 @@ export class ClaudeProvider implements ProviderAdapter {
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
     // Native claude.exe (2.1.113+) does not inherit stdout via ProcessStartInfo.
     // Direct shell execution ensures stdout is captured through the PowerShell pipe.
-    // $pid is the shell PID — killing it also kills claude as a direct child.
+    // $pid is the shell PID - killing it also kills claude as a direct child.
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
   }
 
