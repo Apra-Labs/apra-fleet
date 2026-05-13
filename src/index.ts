@@ -123,6 +123,8 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const { brainQuerySchema, brainQuery } = await import('./tools/brain-query.js');
+  const { brainWriteSchema, brainWrite } = await import('./tools/brain-write.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -254,6 +256,10 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- gbrain tools ---
+  server.tool('brain_query', 'Query the gbrain knowledge base for a member. Member must have gbrain enabled.', brainQuerySchema.shape, wrapTool('brain_query', (input) => brainQuery(input as any)));
+  server.tool('brain_write', 'Write knowledge to the gbrain brain for a member. Member must have gbrain enabled.', brainWriteSchema.shape, wrapTool('brain_write', (input) => brainWrite(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
