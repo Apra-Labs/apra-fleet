@@ -302,3 +302,93 @@ No action needed.
 ## Summary
 
 Phase 3 is clean, consistent, and well-tested. All four code analysis tools follow the established pattern, schemas are correct, shared helpers are reused, and all 11 tests pass. No issues found.
+
+---
+
+# gbrain Integration — Phase 4 Code Review — APPROVED
+
+**Reviewer:** fleet-reviewer (Claude Opus 4.6)  
+**Date:** 2026-05-13  
+**Branch:** feat/gbrain-integration  
+**Commit reviewed:** 232b3be  
+**Verdict:** APPROVED
+
+---
+
+## Files Reviewed
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `src/tools/jobs-submit.ts` | 24 | `jobs_submit` fleet tool |
+| `src/tools/jobs-list.ts` | 22 | `jobs_list` fleet tool |
+| `src/tools/jobs-stats.ts` | 19 | `jobs_stats` fleet tool |
+| `src/tools/jobs-work.ts` | 24 | `jobs_work` fleet tool |
+| `tests/jobs-tools.test.ts` | 191 | 15 tests covering all four tools |
+| `src/index.ts` (lines 132-135, 279-282) | — | Tool imports and registration |
+
+---
+
+## Review Checklist
+
+### 1. All 4 tools registered in `src/index.ts` — PASS
+
+- Imports: dynamic `await import()` at lines 132-135
+- Registration: `server.tool()` calls at lines 279-282
+- Descriptions are clear and mention the gbrain-enabled prerequisite
+- All wrapped with `wrapTool()` for onboarding integration
+
+### 2. Schema correctness — PASS
+
+| Tool | Required params | Optional params | Correct |
+|------|----------------|-----------------|---------|
+| `jobs_submit` | `task` (string) | `priority` (number) | Yes |
+| `jobs_list` | — | `status` (string) | Yes |
+| `jobs_stats` | — | — | Yes |
+| `jobs_work` | `job_id` (string), `result` (string) | — | Yes |
+
+All schemas include `...memberIdentifier` spread for member resolution. Priority description documents the scale (0=critical, 4=backlog, default 2). Status filter documents valid values.
+
+### 3. gbrain tool names match canonical API — PASS
+
+Tool names passed to `callGbrainTool()`: `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work` — all underscore-separated, matching the plan exactly.
+
+### 4. Shared helpers used — PASS
+
+All four files import `assertGbrainEnabled` and `callGbrainTool` from `../utils/gbrain-helpers.js`. Same resolve → assert → call pattern as Phases 2 and 3.
+
+### 5. Test coverage — PASS (15/15 passing)
+
+| Tool | Happy path | Optional params | Disabled | Not-found | Server unavailable |
+|------|-----------|----------------|----------|-----------|-------------------|
+| `jobs_submit` | Yes | Yes (priority) | Yes | Yes | Yes |
+| `jobs_list` | Yes | Yes (status) | Yes | — | — |
+| `jobs_stats` | Yes | — | Yes | Yes | — |
+| `jobs_work` | Yes | — | Yes | Yes | Yes |
+
+- `jobs_submit` tests the `execute_prompt` fallback suggestion in the disabled-member error — good UX coverage.
+- `jobs_submit` and `jobs_work` both test server-unavailable scenarios via mock rejection.
+- Mock isolation correct: `vi.mock` of gbrain-client, `beforeEach`/`afterEach` registry backup/restore.
+- All 15 tests pass (vitest, 284ms total).
+
+### 6. No unsafe parameter passthrough — PASS
+
+- All parameters are Zod-typed (strings and numbers) — no arbitrary object passthrough.
+- `jobs_submit` uses conditional spread for `priority` (`input.priority !== undefined`) — correctly handles `0` as a valid priority value rather than falsy-checking.
+- `jobs_list` uses truthy check for `status` (`input.status`) — acceptable since empty string is not a valid status value.
+- `jobs_work` passes `job_id` and `result` as explicit named properties, not spread from raw input.
+- Error handling delegated to `callGbrainTool` helper with try/catch and user-friendly messages.
+
+---
+
+## Observations (non-blocking)
+
+1. **Smart priority handling in `jobs_submit`**: Uses `input.priority !== undefined` rather than a truthy check, correctly preserving `priority: 0` (critical). Good attention to detail.
+2. **Helpful fallback in `jobs_submit`**: The disabled-member error appends "For immediate work, use execute_prompt instead." — this is the only jobs tool that does this, which makes sense since submit is the primary entry point.
+3. **`as any` casts in `index.ts`**: Pre-existing pattern, not introduced by this PR.
+4. **Consistent structure**: All four files follow the same ~20-line pattern established in Phases 2 and 3.
+
+---
+
+## Summary
+
+Phase 4 is clean, consistent, and well-tested. All four jobs tools follow the established pattern, schemas are correct with appropriate required/optional fields, shared helpers are reused, parameter handling is safe, and all 15 tests pass. No issues found. Phase 4 is ready to merge.
