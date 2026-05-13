@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { runInstall, installGbrain, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -176,5 +176,127 @@ describe('install step 8 — Beads task tracker', () => {
 
     logSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+});
+
+describe('installGbrain()', () => {
+  const mockHome = '/mock/home';
+  const gbrainDir = path.join(mockHome, 'gbrain');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('skips with warning when bun not found', () => {
+    vi.mocked(execFileSync).mockImplementation((cmd: any) => {
+      if (cmd === 'bun') throw new Error('bun: command not found');
+      return undefined as any;
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    installGbrain();
+
+    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warns).toContain('bun not found');
+
+    // git clone should not be called
+    const cloneCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'git' && Array.isArray(c[1]) && c[1].includes('clone')
+    );
+    expect(cloneCall).toBeUndefined();
+  });
+
+  it('skips with "already installed" when gbrain --version succeeds', () => {
+    // bun --version succeeds; gbrainDir exists; gbrain --version succeeds
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => p.toString() === gbrainDir);
+    vi.mocked(execFileSync).mockReturnValue('1.0.0\n' as any);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    installGbrain();
+
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).toContain('already installed');
+
+    // git clone should not be called
+    const cloneCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'git' && Array.isArray(c[1]) && c[1].includes('clone')
+    );
+    expect(cloneCall).toBeUndefined();
+  });
+
+  it('calls git clone when gbrainDir does not exist', () => {
+    // bun --version succeeds; gbrainDir does NOT exist
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(execFileSync).mockReturnValue(undefined as any);
+
+    installGbrain();
+
+    const cloneCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'git' && Array.isArray(c[1]) && c[1].includes('clone')
+    );
+    expect(cloneCall).toBeDefined();
+    expect(cloneCall![1]).toContain(gbrainDir);
+  });
+
+  it('calls bun install and bun link after cloning', () => {
+    // bun --version succeeds; gbrainDir does NOT exist
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(execFileSync).mockReturnValue(undefined as any);
+
+    installGbrain();
+
+    const bunInstallCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'bun' && Array.isArray(c[1]) && c[1][0] === 'install'
+    );
+    expect(bunInstallCall).toBeDefined();
+
+    const bunLinkCall = vi.mocked(execFileSync).mock.calls.find(
+      c => c[0] === 'bun' && Array.isArray(c[1]) && c[1][0] === 'link'
+    );
+    expect(bunLinkCall).toBeDefined();
+  });
+});
+
+describe('--with-gbrain flag parsing', () => {
+  it('--with-gbrain is in knownFlagExact (no unknown flag error)', async () => {
+    // Minimal setup to get past flag validation — we just want to confirm no process.exit(1) for unknown flag
+    vi.mocked(os.homedir).mockReturnValue('/mock/home');
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      return false;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+      return '';
+    });
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+    vi.mocked(fs.mkdirSync).mockImplementation(() => undefined as any);
+    vi.mocked(fs.chmodSync).mockImplementation(() => {});
+    vi.mocked(fs.copyFileSync).mockImplementation(() => {});
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {});
+    _setSeaOverride(false);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(execFileSync).mockReturnValue(undefined as any);
+
+    // Should not throw or call process.exit with error
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any);
+    await runInstall(['--with-gbrain']);
+    // process.exit(1) should NOT have been called (unknown flag path)
+    const errorExits = exitSpy.mock.calls.filter(c => c[0] === 1);
+    expect(errorExits).toHaveLength(0);
+
+    exitSpy.mockRestore();
+    _setSeaOverride(null);
+    _setManifestOverride(null);
   });
 });

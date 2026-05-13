@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
@@ -276,6 +277,57 @@ export function killApraFleet(): void {
   }
 }
 
+export function installGbrain(): void {
+  const homeDir = os.homedir();
+  const gbrainDir = path.join(homeDir, 'gbrain');
+
+  // Step 1: Check bun is available
+  try {
+    execFileSync('bun', ['--version'], { stdio: 'pipe', shell: true });
+  } catch {
+    console.warn('  ⚠ gbrain install skipped — bun not found. Install bun first: https://bun.sh');
+    return;
+  }
+
+  // Step 2: Check if already installed
+  if (fs.existsSync(gbrainDir)) {
+    // Already cloned — just verify it works
+    try {
+      execFileSync('gbrain', ['--version'], { stdio: 'pipe', shell: true });
+      console.log('  ✓ gbrain already installed');
+      return;
+    } catch {
+      // Exists but not in PATH — re-link
+      console.log('  gbrain dir exists, re-linking...');
+    }
+  } else {
+    // Clone
+    console.log('  Cloning gbrain...');
+    execFileSync('git', ['clone', 'https://github.com/garrytan/gbrain.git', gbrainDir], { stdio: 'inherit', shell: true });
+  }
+
+  // Step 3: bun install + bun link
+  console.log('  Running bun install...');
+  try {
+    execFileSync('bun', ['install'], { cwd: gbrainDir, stdio: 'inherit', shell: true });
+  } catch {
+    // postinstall script fails on Windows — benign, packages are still installed
+  }
+  console.log('  Linking gbrain CLI...');
+  execFileSync('bun', ['link'], { cwd: gbrainDir, stdio: 'inherit', shell: true });
+
+  // Step 4: verify
+  let gbrainVersion = 'installed';
+  try {
+    const v = execFileSync('gbrain', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
+    gbrainVersion = (v as string).trim() || 'installed';
+  } catch {
+    gbrainVersion = 'linked (restart shell to use gbrain in PATH)';
+  }
+  console.log(`  ✓ gbrain ${gbrainVersion}`);
+  console.log('  Next: run `gbrain init` to create your brain database.');
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard — must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -292,6 +344,7 @@ Usage:
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --force           Stop a running server before installing
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot
+  apra-fleet install --with-gbrain    Install gbrain alongside fleet (git clone + bun link)
   apra-fleet install --help            Show this help
 
 Options:
@@ -359,9 +412,12 @@ Options:
   // Parse --force flag
   const force = args.includes('--force');
 
+  // Parse --with-gbrain flag
+  const withGbrain = args.includes('--with-gbrain');
+
   // Reject unknown flags to catch typos early
   const knownFlagPrefixes = ['--llm=', '--skill='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--help', '-h']);
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--with-gbrain', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -372,7 +428,8 @@ Options:
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
-  const totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const baseSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const totalSteps = withGbrain ? baseSteps + 1 : baseSteps;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -523,7 +580,7 @@ ${killHint}
   // --- Step 8: Install Beads task tracker ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
-  console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
+  console.log(`  [${baseSteps}/${totalSteps}] Installing Beads task tracker...`);
   try {
     // Check if already installed
     try {
@@ -536,6 +593,12 @@ ${killHint}
   } catch (err) {
     // non-fatal: warn but don't fail the install
     console.warn('  ⚠ Beads install skipped — npm not available or install failed');
+  }
+
+  // --- Step 9: Install gbrain (optional) ---
+  if (withGbrain) {
+    console.log(`  [${totalSteps}/${totalSteps}] Installing gbrain...`);
+    installGbrain();
   }
 
   // Finalize permissions
@@ -553,6 +616,16 @@ ${killHint}
     beadsVersion = 'not available';
   }
 
+  let gbrainStatus = '';
+  if (withGbrain) {
+    try {
+      const gv = execFileSync('gbrain', ['--version'], { stdio: 'pipe', encoding: 'utf-8', shell: true });
+      gbrainStatus = (gv as string).trim() || 'installed';
+    } catch {
+      gbrainStatus = 'linked (restart shell to use gbrain in PATH)';
+    }
+  }
+
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
   console.log(`
@@ -561,7 +634,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
-  Beads:       ${beadsVersion}
+  Beads:       ${beadsVersion}${withGbrain ? `\n  gbrain:      ${gbrainStatus}` : ''}
 
 ${instructions}${forceNote}
 `);
