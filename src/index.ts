@@ -129,6 +129,10 @@ async function startServer() {
   const { codeRefsSchema, codeRefs } = await import('./tools/code-refs.js');
   const { codeCallersSchema, codeCallers } = await import('./tools/code-callers.js');
   const { codeCalleesSchema, codeCallees } = await import('./tools/code-callees.js');
+  const { jobsSubmitSchema, jobsSubmit } = await import('./tools/jobs-submit.js');
+  const { jobsListSchema, jobsList } = await import('./tools/jobs-list.js');
+  const { jobsStatsSchema, jobsStats } = await import('./tools/jobs-stats.js');
+  const { jobsWorkSchema, jobsWork } = await import('./tools/jobs-work.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -270,6 +274,12 @@ async function startServer() {
   server.tool('code_refs', 'Find all references to a symbol in the member\'s codebase. Member must have gbrain enabled.', codeRefsSchema.shape, wrapTool('code_refs', (input) => codeRefs(input as any)));
   server.tool('code_callers', 'Find all callers of a function in the member\'s codebase. Member must have gbrain enabled.', codeCallersSchema.shape, wrapTool('code_callers', (input) => codeCallers(input as any)));
   server.tool('code_callees', 'Find all callees of a function in the member\'s codebase. Member must have gbrain enabled.', codeCalleesSchema.shape, wrapTool('code_callees', (input) => codeCallees(input as any)));
+
+  // --- Minions job queue tools ---
+  server.tool('jobs_submit', 'Submit a task to the Minions job queue. Member must have gbrain enabled. For immediate work, use execute_prompt instead.', jobsSubmitSchema.shape, wrapTool('jobs_submit', (input) => jobsSubmit(input as any)));
+  server.tool('jobs_list', 'List jobs in the Minions queue, optionally filtered by status. Member must have gbrain enabled.', jobsListSchema.shape, wrapTool('jobs_list', (input) => jobsList(input as any)));
+  server.tool('jobs_stats', 'Get aggregate job queue statistics (counts by status, avg duration). Member must have gbrain enabled.', jobsStatsSchema.shape, wrapTool('jobs_stats', (input) => jobsStats(input as any)));
+  server.tool('jobs_work', 'Mark a Minions job as complete with a result. Member must have gbrain enabled.', jobsWorkSchema.shape, wrapTool('jobs_work', (input) => jobsWork(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
