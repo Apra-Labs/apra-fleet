@@ -1,3 +1,84 @@
+# gbrain Integration — Phase 2 Code Review
+
+**Reviewer:** fleet-reviewer (Claude Opus 4.6)
+**Date:** 2026-05-13
+**Branch:** feat/gbrain-integration
+**Commits reviewed:** e663a17, f7b7d82, 2977df5
+**Verdict:** APPROVED
+
+---
+
+## Files Reviewed
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `src/utils/gbrain-helpers.ts` | 29 | `assertGbrainEnabled()` + `callGbrainTool()` shared helpers |
+| `src/tools/brain-query.ts` | 24 | `brain_query` fleet tool |
+| `src/tools/brain-write.ts` | 26 | `brain_write` fleet tool |
+| `tests/brain-tools.test.ts` | 146 | 11 tests covering both tools |
+| `src/index.ts` (lines 126-127, 261-262) | — | Tool registration |
+
+---
+
+## Review Checklist
+
+### 1. `assertGbrainEnabled` — PASS
+- Correctly gates on `agent.gbrain` flag (line 9: `if (!agent.gbrain)`)
+- Handles both `false` and `undefined` (the `Agent` type declares `gbrain?: boolean`)
+- Error message is clear and actionable: directs user to `update_member`
+- Return type `string | null` is clean — no exceptions for a config check
+
+### 2. `callGbrainTool` — PASS
+- Error normalization is correct: `instanceof Error` check with `String(err)` fallback
+- Catches the specific `'gbrain is not available'` substring for a user-friendly message
+- Generic errors include the tool name for debuggability
+- Correctly uses the singleton via `getGbrainClient()`
+
+### 3. `brain_query` tool — PASS
+- Schema uses `memberIdentifier` spread + `query` (required) + `collection` (optional) — correct
+- Resolves member first, then checks gbrain enabled — correct order
+- Conditionally spreads `collection` only when truthy — avoids sending `undefined` keys to MCP
+
+### 4. `brain_write` tool — PASS
+- Schema: `content` (required) + `collection` (optional) + `metadata` (optional) — correct
+- Same resolve → assert → call pattern as `brain_query` — consistent
+- Optional fields conditionally spread — no `undefined` pollution
+- Note: the task description mentions `tags` as an optional field, but it is not present in the gbrain server's API or the implementation plan. The omission is correct.
+
+### 5. Tool registration in `src/index.ts` — PASS
+- Both tools imported at lines 126-127
+- Both registered at lines 261-262 under the `--- gbrain tools ---` section
+- Descriptions are clear and mention the gbrain-enabled prerequisite
+- Both wrapped with `wrapTool()` for onboarding integration
+
+### 6. Tests — PASS (11/11 passing)
+- **Happy path:** both tools tested with basic args and with all optional args
+- **Disabled member:** tested with `gbrain: false` and with `gbrain` omitted (undefined)
+- **Member not found:** tested for both tools
+- **Server unavailable:** tested for both tools — verifies friendly error message
+- **Mock isolation:** clean `vi.mock` of gbrain-client, `beforeEach`/`afterEach` registry backup/restore
+- Coverage is thorough for the helper + tool layer
+
+### 7. TypeScript types — PASS
+- No `any` in new files (`gbrain-helpers.ts`, `brain-query.ts`, `brain-write.ts`, `brain-tools.test.ts`)
+- `args` parameter typed as `Record<string, unknown>` — appropriate for MCP tool args
+- Zod schemas with `z.infer` for input types — no manual type duplication
+- The `as any` casts in `src/index.ts` tool registration (e.g., `(input) => brainQuery(input as any)`) are pre-existing pattern used by all other tools — not introduced by this PR
+
+### 8. Security — PASS
+- `query` and `content` are passed through to MCP as structured arguments, not interpolated into strings or commands
+- MCP protocol handles serialization — no injection vector
+- No user input used in file paths, shell commands, or SQL
+- Error messages don't leak internal state beyond the tool name
+
+---
+
+## Summary
+
+Phase 2 is clean, well-structured, and follows the established patterns in the codebase. The helpers (`assertGbrainEnabled`, `callGbrainTool`) provide proper DRY abstraction as prescribed by the plan. Both tools have consistent schema design, correct error handling flow, and thorough test coverage. No issues found.
+
+---
+
 # gbrain Integration — Plan Re-Review
 
 **Reviewer:** fleet-reviewer
@@ -108,19 +189,18 @@ All 5 findings resolved. No remaining blockers.
 
 ---
 
-## Phase 1 Code Review — Finding
+## Phase 1 Code Review — Re-Review
 
-**Reviewer:** fleet-reviewer (commit 4870ccc)
-**Verdict:** CHANGES NEEDED
+**Reviewer:** fleet-reviewer (commit bc85296)
+**Verdict:** APPROVED
 
-Missing test coverage for `list_members` and `member_detail` gbrain display output per PLAN.md T1.4. Tests existed for registry persistence and update_member, but did not verify that the compact text output includes `gbrain=enabled` or that JSON output includes the `gbrain` field.
+The finding is resolved. Commit bc85296 adds 6 tests to `tests/gbrain-config.test.ts`:
 
-**Doer:** fixed — added 6 new tests to `tests/gbrain-config.test.ts` covering:
-- `list_members` compact output includes `gbrain=enabled` when enabled
-- `list_members` compact output omits `gbrain=enabled` when not enabled  
-- `list_members` JSON output includes `gbrain` field
-- `member_detail` compact output includes `gbrain=enabled` when enabled
-- `member_detail` compact output omits `gbrain=enabled` when not enabled
-- `member_detail` JSON output includes `gbrain` field
+- `list_members` compact output includes `gbrain=enabled` when enabled — VERIFIED
+- `list_members` compact output omits `gbrain=enabled` when not enabled — VERIFIED
+- `list_members` JSON output includes `gbrain` field — VERIFIED
+- `member_detail` compact output includes `gbrain=enabled` when enabled — VERIFIED
+- `member_detail` compact output omits `gbrain=enabled` when not enabled — VERIFIED
+- `member_detail` JSON output includes `gbrain` field — VERIFIED
 
-All 11 tests in gbrain-config.test.ts now pass.
+All 11 tests in `tests/gbrain-config.test.ts` pass (`npm test -- tests/gbrain-config.test.ts`). The original finding is fully addressed. Phase 1 code review is complete.
