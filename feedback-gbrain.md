@@ -49,3 +49,33 @@
 **Correct approach:** Promote Task 1.4 to premium tier. Tests for the premium client service (mocked child process, MCP client lifecycle, reconnection) justify premium tier. This makes the sequence: cheap → cheap → premium → premium.
 
 **Doer:** fixed — promoted Task 1.4 tier from standard to premium. Sequence is now cheap → cheap → premium → premium.
+
+---
+
+## Phase 1 Code Re-Review
+
+**Verdict: APPROVED**
+
+**Date:** 2026-05-13
+**Trigger:** Re-review after doer addressed CHANGES NEEDED from commit 4870ccc (missing listMembers/memberDetail display tests).
+**Fix commit:** bc85296 — added 6 new tests to `tests/gbrain-config.test.ts`.
+
+### Checklist
+
+- [x] `npm run build` — passes clean
+- [x] `npm test` — 1317 passed, 2 failed (pre-existing time-utils, known/acceptable), 13 skipped
+- [x] 6 display tests cover all required scenarios:
+  1. listMembers compact shows `gbrain=enabled` for gbrain member
+  2. listMembers compact omits `gbrain=enabled` for non-gbrain member
+  3. listMembers JSON includes `gbrain` field
+  4. memberDetail compact shows `gbrain=enabled` for gbrain member
+  5. memberDetail compact omits `gbrain=enabled` for non-gbrain member
+  6. memberDetail JSON includes `gbrain` field
+- [x] Source scan (types.ts, register-member.ts, update-member.ts, list-members.ts, member-detail.ts, gbrain-client.ts) — clean, consistent, no issues
+
+### Notes
+
+- Tests use proper mocking (mockTestConnection, mockExecCommand) for memberDetail probes
+- Compact display correctly shows gbrain only when enabled (reduces noise)
+- JSON display always includes the field for programmatic consumers
+- All Phase 1 tasks (T1.1–T1.4) are complete and verified
