@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Test suite to run (s1-s6). Start with s1 to validate setup.'
+        description: 'Test suite to run. s1.1/s1.2/s1.3 = local-only variants; s7.1 = all-Gemini.'
         required: true
         type: choice
         options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1]
@@ -15,6 +15,7 @@ jobs:
     name: 'Fleet E2E - ${{ inputs.suite }}'
     env:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
+      ANTHROPIC_API_KEY: ${{ secrets.E2E_ACRED }}
     # Runner label is derived from suites.json pm.runner field.
     # Each self-hosted runner must be registered with label fleet-windows / fleet-linux / fleet-macos.
     runs-on:
@@ -180,6 +181,10 @@ jobs:
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           check_mcp() {
             local output="$1" provider="$2"
+            if echo "$output" | grep -qi "not logged in\|please run.*login\|authentication"; then
+              echo "::error::$provider auth expired on this runner. Provision auth before re-running."
+              exit 1
+            fi
             if echo "$output" | grep -qi "not installed"; then
               echo "::error::apra-fleet MCP not loaded on $provider. Ensure fleet is installed on this runner."
               exit 1
@@ -350,10 +355,10 @@ jobs:
         run: |
           BRANCH_PREFIX="e2e-${{ inputs.suite }}-${{ github.run_id }}"
           TOY_URL='${{ steps.suite.outputs.toy_url }}'
-          TOY_REPO=$(echo "$TOY_URL" | sed 's|https://github.com/||' | sed 's|https://bitbucket.org/||' | sed 's|\.git$||')
+          VCS='${{ steps.suite.outputs.vcs }}'
           FAIL=0
 
-          echo "Checking toy repo: $TOY_REPO  branch prefix: $BRANCH_PREFIX"
+          echo "Checking toy repo: $TOY_URL  branch prefix: $BRANCH_PREFIX  vcs: $VCS"
 
           # 1 - results.json overall verdict
           OVERALL=$(jq -r '.overall // "MISSING"' "$RUN_DIR/results.json" 2>/dev/null || echo "MISSING")
@@ -364,28 +369,33 @@ jobs:
             FAIL=1
           fi
 
-          # 2 - commits pushed to test branch in toy repo?
-          BRANCH_HIT=$(gh api "repos/$TOY_REPO/git/refs" \
-            --jq ".[] | select(.ref | startswith(\"refs/heads/$BRANCH_PREFIX\")) | .ref" \
-            2>/dev/null | head -1)
-          if [ -n "$BRANCH_HIT" ]; then
-            echo "[OK] commits: $BRANCH_HIT exists in $TOY_REPO"
-          else
-            echo "::error::FAIL - no branch matching $BRANCH_PREFIX/* found in $TOY_REPO"
-            FAIL=1
-          fi
+          # 2 & 3 - branch and PR checks (GitHub only - Bitbucket/AzDevOps validation TBD)
+          if [ "$VCS" = "github" ]; then
+            TOY_REPO=$(echo "$TOY_URL" | sed 's|https://github.com/||' | sed 's|\.git$||')
 
-          # 3 - PR raised in toy repo?
-          PR_DATA=$(gh pr list --repo "$TOY_REPO" --state all \
-            --json headRefName,url,number \
-            --jq ".[] | select(.headRefName | startswith(\"$BRANCH_PREFIX\"))" \
-            2>/dev/null | head -1)
-          if [ -n "$PR_DATA" ]; then
-            PR_URL=$(echo "$PR_DATA" | jq -r '.url')
-            echo "[OK] PR raised: $PR_URL"
+            BRANCH_HIT=$(gh api "repos/$TOY_REPO/git/refs" \
+              --jq ".[] | select(.ref | startswith(\"refs/heads/$BRANCH_PREFIX\")) | .ref" \
+              2>/dev/null | head -1)
+            if [ -n "$BRANCH_HIT" ]; then
+              echo "[OK] commits: $BRANCH_HIT exists in $TOY_REPO"
+            else
+              echo "::error::FAIL - no branch matching $BRANCH_PREFIX/* found in $TOY_REPO"
+              FAIL=1
+            fi
+
+            PR_DATA=$(gh pr list --repo "$TOY_REPO" --state all \
+              --json headRefName,url,number \
+              --jq ".[] | select(.headRefName | startswith(\"$BRANCH_PREFIX\"))" \
+              2>/dev/null | head -1)
+            if [ -n "$PR_DATA" ]; then
+              PR_URL=$(echo "$PR_DATA" | jq -r '.url')
+              echo "[OK] PR raised: $PR_URL"
+            else
+              echo "::error::FAIL - no PR raised matching $BRANCH_PREFIX/* in $TOY_REPO"
+              FAIL=1
+            fi
           else
-            echo "::error::FAIL - no PR raised matching $BRANCH_PREFIX/* in $TOY_REPO"
-            FAIL=1
+            echo "::warning::Branch/PR validation skipped for vcs=$VCS (not yet implemented)"
           fi
 
           [ "$FAIL" -eq 0 ] || exit 1
@@ -412,6 +422,7 @@ jobs:
           if [ "$PROVIDER" = "claude" ]; then
             claude \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
+              --model haiku \
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
