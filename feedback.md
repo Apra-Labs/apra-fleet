@@ -50,3 +50,22 @@ New `## gbrain Integration` section covers: installation (`npx -y gbrain` auto-l
 | 6 | DRY audit, lifecycle, docs, final tests | (hardening, no new tools) | 26 |
 
 **Totals:** 12 tools, 1317+ tests, backward compatible, additive-only. Phase 6 and the full gbrain integration are approved.
+
+---
+
+## Independent Verification (2026-05-13)
+
+**Reviewer:** Claude Opus 4.6 (second pass)
+
+Re-ran full test suite: **84 test files, 1332 tests** (1317 passed, 2 failed, 13 skipped). The 2 failures remain in `time-utils.test.ts` (pre-existing, file untouched on this branch).
+
+All 7 review criteria verified independently:
+1. **12 gbrain tools registered** in `src/index.ts` — confirmed (lines 126–137 imports, 269–287 registrations)
+2. **SIGINT/SIGTERM** calls `getGbrainClient().disconnect()` — confirmed (lines 308–318)
+3. **README** tool names and env vars match implementation — confirmed
+4. **Integration tests** (13 tests) assert all 12 tool names, schemas, and token overhead — confirmed
+5. **Comparative tests** (12 tests) demonstrate with/without gbrain contrast with `update_member` guidance — confirmed
+6. **No regressions** — existing tools unchanged, additive-only — confirmed
+7. **Exactly 12 tools** — confirmed: `brain_query`, `brain_write`, `code_def`, `code_refs`, `code_callers`, `code_callees`, `jobs_submit`, `jobs_list`, `jobs_stats`, `jobs_work`, `course_correction_capture`, `course_correction_recall`
+
+**Verdict: APPROVED — no issues found.**
