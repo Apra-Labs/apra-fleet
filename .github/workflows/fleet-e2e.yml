@@ -110,8 +110,7 @@ jobs:
             BIN=$(ls dist/apra-fleet-installer-* | grep -v -E '\.(blob|cjs|json|exe)$' | head -1)
           fi
           chmod +x "$BIN" 2>/dev/null || true
-          "$BIN" install --force --llm claude
-          "$BIN" install --force --llm gemini
+          "$BIN" install --force --llm ${{ steps.suite.outputs.pm_provider }}
           if [ "$RUNNER_OS" = "Windows" ]; then
             INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
           else
@@ -190,7 +189,7 @@ jobs:
               echo "::error::apra-fleet MCP not loaded on $provider. Ensure fleet is installed on this runner."
               exit 1
             fi
-            if ! echo "$output" | grep -qE 'v[0-9]+\.[0-9]+'; then
+            if ! echo "$output" | grep -qE 'v?[0-9]+\.[0-9]+'; then
               echo "::error::apra-fleet MCP responded but version not recognised. Output: $output"
               exit 1
             fi
