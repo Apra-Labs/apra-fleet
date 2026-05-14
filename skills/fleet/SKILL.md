@@ -23,7 +23,7 @@ This skill defines how to interact with fleet infrastructure: registering and on
 | `receive_files` | Pull files from a member's work folder |
 | `monitor_task` | Check status of a long-running background task on any member. The `auto_stop` parameter and GPU utilization polling are cloud-only features. |
 | `compose_permissions` | Generate and deliver provider-native permission config |
-| `provision_llm_auth` | Provision LLM authentication for a **remote** member (copies OAuth credentials or deploys API key over SSH). **Local members:** use `apra-fleet auth --oauth` (Claude) or `apra-fleet auth --api-key` (all providers) on the PM machine instead  -  local members read credentials directly from disk. |
+| `provision_llm_auth` | Provision LLM authentication for a **remote** member. For local members use `apra-fleet auth --oauth` (Claude) or `apra-fleet auth --api-key` (all providers) on the PM machine instead. |
 | `provision_vcs_auth` | Provision VCS credentials (GitHub, Bitbucket, Azure DevOps) |
 | `revoke_vcs_auth` | Revoke VCS credentials |
 | `setup_ssh_key` | Migrate remote member from password to key-based auth |

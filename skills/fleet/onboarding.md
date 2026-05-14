@@ -19,15 +19,11 @@ If the LLM CLI is not installed or the command fails, use `update_llm_cli` to in
 
 ## Step 1.7: Provision LLM Auth
 
-Ensure the member can authenticate to its LLM provider before dispatching any prompt.
+**Remote members:** Call `provision_llm_auth`. Pass `api_key` for non-Claude providers or pay-per-use billing; omit it for Claude Max (copies OAuth credentials from this machine).
 
-**Remote members:** Call `provision_llm_auth`. It handles both flows automatically  -  see `tools-infrastructure.md` for Flow A (OAuth credential copy, Claude only) and Flow B (API key, all providers). The tool runs a verification step and reports the result.
-
-**Local members:** `provision_llm_auth` does not apply  -  local members read credentials directly from disk. Run once on the PM machine:
-- Claude: `apra-fleet auth --oauth [--llm claude] <token | secure.NAME>`
+**Local members:** `provision_llm_auth` does not apply. Run once on the PM machine:
+- Claude: `apra-fleet auth --oauth <token | secure.NAME>`
 - All providers: `apra-fleet auth --api-key [--llm <provider>] <key | secure.NAME>`
-
-After this step, verify auth by running the provider's hello-world command on the member via `execute_command` (e.g. `claude -p "hello" --max-turns 1`).
 
 ## Step 2: Disable AI Attribution
 
