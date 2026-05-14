@@ -170,7 +170,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
         return `❌ Blocked: credential "${cred.name}" has network_policy=deny and the command contains a network tool.`;
       }
       if (cred.network_policy === 'confirm') {
-        const { confirmed, terminalUnavailable } = await collectOobConfirm(cred.name);
+        const { confirmed, terminalUnavailable } = await collectOobConfirm(cred.name, { command: input.command, memberName: agent.friendlyName });
         if (!confirmed) {
           const reason = terminalUnavailable
             ? 'could not be confirmed (terminal unavailable)'

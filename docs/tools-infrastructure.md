@@ -76,7 +76,8 @@ OOB (out-of-band) network egress confirmation. When a credential is stored with 
 The terminal shows:
 ```
   Credential "MY-CRED-NAME" is about to send data over the network.
-  Review the execute_command call in your agent before confirming.
+  Command:    curl -X POST https://api.example.com -d "{{secure.MY-CRED-NAME}}"
+  Member:     fleet-dev
 
   Type "yes" to allow network access:
 ```

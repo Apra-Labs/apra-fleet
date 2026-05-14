@@ -435,9 +435,19 @@ export async function collectOobApiKey(
  */
 export async function collectOobConfirm(
   credentialName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; command?: string; memberName?: string },
 ): Promise<{ confirmed: boolean; terminalUnavailable: boolean }> {
-  const result = await collectOobInput('confirm', credentialName, 'execute_command', _opts);
+  const additionalArgs: string[] = [];
+  if (_opts?.command) {
+    additionalArgs.push('--context', _opts.command.slice(0, 200));
+  }
+  if (_opts?.memberName) {
+    additionalArgs.push('--on', _opts.memberName);
+  }
+  const result = await collectOobInput('confirm', credentialName, 'execute_command', {
+    ..._opts,
+    additionalArgs: additionalArgs.length > 0 ? additionalArgs : undefined,
+  });
   if (result.fallback) return { confirmed: false, terminalUnavailable: true };
   return { confirmed: Boolean(result.password), terminalUnavailable: false };
 }

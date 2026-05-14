@@ -353,7 +353,7 @@ describe('execute_command: network egress policy', () => {
       timeout_s: 5,
     });
 
-    expect(mockCollectOobConfirm).toHaveBeenCalledWith(name);
+    expect(mockCollectOobConfirm).toHaveBeenCalledWith(name, expect.objectContaining({ command: expect.any(String), memberName: expect.any(String) }));
     expect(result).toContain('Exit code: 0');
 
     credentialDelete(name);
