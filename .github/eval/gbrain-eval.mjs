@@ -91,30 +91,41 @@ async function main() {
   // Slug format: eval/<fact-id>. Content uses YAML frontmatter for tagging.
   console.log('=== Seeding facts ===');
   for (const fact of FACTS) {
-    await client.callTool({
+    const seedResult = await client.callTool({
       name: 'put_page',
       arguments: {
         slug: `eval/${fact.id}`,
         content: `---\ntags: [eval]\n---\n${fact.content}`,
       },
     });
-    console.log(`  [seed] ${fact.id}`);
+    const seedText = extractText(seedResult);
+    console.log(`  [seed] ${fact.id}: ${seedText.slice(0, 60)}`);
   }
 
-  // Small delay — BM25 index is synchronous but let writes settle
-  await new Promise(r => setTimeout(r, 500));
+  // Wait for writes to settle (FTS index is built synchronously in PGLite)
+  await new Promise(r => setTimeout(r, 2000));
 
   // -- Query -----------------------------------------------------------------
-  // gbrain exposes keyword-only full-text search as "search".
+  // Try both "search" (pure BM25) and "query" (hybrid, falls back to keyword)
+  // to find the most reliable retrieval method in no-embedding mode.
   console.log('\n=== Recall queries ===');
   const rows = [];
 
   for (const fact of FACTS) {
-    const result = await client.callTool({
+    // Try "search" first; fall back to "query" with expand:false
+    let result = await client.callTool({
       name: 'search',
       arguments: { query: fact.query, limit: 5 },
     });
-    const text = extractText(result);
+    let text = extractText(result);
+    // If search returned nothing, try query (hybrid with BM25 fallback)
+    if (!text || text === '[]' || text.trim() === '') {
+      result = await client.callTool({
+        name: 'query',
+        arguments: { query: fact.query, expand: false, limit: 5 },
+      });
+      text = extractText(result);
+    }
     const hit = scoreHit(text, fact.keywords);
     rows.push({ id: fact.id, query: fact.query, hit, snippet: text.slice(0, 120).replace(/\n/g, ' ') });
     console.log(`  [${hit ? 'HIT ' : 'MISS'}] ${fact.id}: ${fact.query}`);
