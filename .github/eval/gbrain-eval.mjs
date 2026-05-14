@@ -72,7 +72,7 @@ async function main() {
 
   const transport = new StdioClientTransport({
     command: gbrain,
-    args: ['mcp'],
+    args: ['serve'],
     env: {
       ...process.env,
       // Ensure bun bin dir is on PATH so gbrain shebang resolves

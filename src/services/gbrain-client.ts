@@ -7,8 +7,8 @@ export interface GbrainClientOptions {
   env?: Record<string, string>;
 }
 
-const DEFAULT_COMMAND = 'npx';
-const DEFAULT_ARGS = ['-y', 'gbrain'];
+const DEFAULT_COMMAND = 'gbrain';
+const DEFAULT_ARGS = ['serve'];
 
 let instance: GbrainClient | null = null;
 
