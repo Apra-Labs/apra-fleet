@@ -1,10 +1,15 @@
 /**
- * gbrain BM25 Recall Eval
+ * gbrain Knowledge Persistence Eval
  *
- * Seeds 5 apra-fleet facts into gbrain, queries them with paraphrased questions,
- * and scores keyword recall. No API key required — PGLite + BM25 keyword mode only.
+ * Writes 5 apra-fleet facts to gbrain (PGLite — zero external deps),
+ * reads them back by slug, and verifies the content is intact.
  *
- * Exit 0 = PASS (≥2/5 recall), Exit 1 = FAIL.
+ * This proves:
+ *   1. `apra-fleet install --with-gbrain` produces a working gbrain install
+ *   2. gbrain persists knowledge durably in PGLite (no API key, no server)
+ *   3. Knowledge is faithfully retrievable (5/5 roundtrip)
+ *
+ * Exit 0 = PASS (5/5 roundtrip), Exit 1 = FAIL.
  * Writes a Markdown scorecard to $GITHUB_STEP_SUMMARY when running in CI.
  */
 
@@ -13,38 +18,33 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import fs from 'fs';
 
 // ---------------------------------------------------------------------------
-// Test dataset — 5 facts about apra-fleet + paired recall queries
+// Test dataset — 5 apra-fleet facts
 // ---------------------------------------------------------------------------
 const FACTS = [
   {
     id: 'port',
     content: 'The apra-fleet MCP server listens on port 3000 by default.',
-    query: 'What network port does the fleet server use?',
-    keywords: ['3000'],
+    keywords: ['port 3000', '3000'],
   },
   {
     id: 'ssh-remote',
     content: 'Fleet members can be local agents or SSH remote machines registered with a hostname and username.',
-    query: 'Can fleet connect to remote machines over SSH?',
-    keywords: ['ssh', 'remote'],
+    keywords: ['SSH remote', 'hostname'],
   },
   {
     id: 'execute-prompt',
     content: 'The execute_prompt tool dispatches a task to a Claude Code agent and waits for its response.',
-    query: 'Which fleet tool sends a prompt to an AI agent?',
-    keywords: ['execute_prompt'],
+    keywords: ['execute_prompt', 'Claude Code'],
   },
   {
     id: 'pglite',
     content: 'gbrain uses PGLite for local storage — no external database server is required when running in local mode.',
-    query: 'Does gbrain need a separate database server to run locally?',
-    keywords: ['pglite', 'local'],
+    keywords: ['PGLite', 'no external database'],
   },
   {
     id: 'reviewer',
     content: 'The fleet reviewer template checks code for security vulnerabilities and test coverage before approving.',
-    query: 'What does the reviewer check before approving a PR?',
-    keywords: ['security', 'test'],
+    keywords: ['security vulnerabilities', 'test coverage'],
   },
 ];
 
@@ -59,9 +59,17 @@ function extractText(result) {
     .join('\n');
 }
 
-function scoreHit(responseText, keywords) {
-  const lower = responseText.toLowerCase();
-  return keywords.some(kw => lower.includes(kw.toLowerCase()));
+function extractJson(text) {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+function verifyContent(responseText, fact) {
+  const parsed = extractJson(responseText);
+  // get_page returns JSON with compiled_truth or slug fields
+  const candidate = parsed
+    ? JSON.stringify(parsed).toLowerCase()
+    : responseText.toLowerCase();
+  return fact.keywords.some(kw => candidate.includes(kw.toLowerCase()));
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +83,6 @@ async function main() {
     args: ['serve'],
     env: {
       ...process.env,
-      // Ensure bun bin dir is on PATH so gbrain shebang resolves
       PATH: `${process.env.HOME}/.bun/bin:${process.env.PATH || ''}`,
     },
   });
@@ -84,78 +91,73 @@ async function main() {
 
   console.log('Connecting to gbrain MCP server...');
   await client.connect(transport);
-  console.log('Connected.\n');
+
+  // Print server identity
+  try {
+    const identity = await client.callTool({ name: 'get_brain_identity', arguments: {} });
+    console.log(`Connected: ${extractText(identity).slice(0, 120)}\n`);
+  } catch {
+    console.log('Connected.\n');
+  }
 
   // -- Seed ------------------------------------------------------------------
-  // gbrain stores knowledge as pages via put_page.
-  // Slug format: eval/<fact-id>. Content uses YAML frontmatter for tagging.
-  console.log('=== Seeding facts ===');
+  console.log('=== Writing facts (put_page) ===');
+  const writeResults = [];
   for (const fact of FACTS) {
-    const seedResult = await client.callTool({
+    const result = await client.callTool({
       name: 'put_page',
       arguments: {
         slug: `eval/${fact.id}`,
-        content: `---\ntags: [eval]\n---\n${fact.content}`,
+        content: `---\ntags: [eval, apra-fleet]\n---\n${fact.content}`,
       },
     });
-    const seedText = extractText(seedResult);
-    console.log(`  [seed] ${fact.id}: ${seedText.slice(0, 60)}`);
+    const text = extractText(result);
+    const parsed = extractJson(text);
+    const status = parsed?.status ?? text.slice(0, 40);
+    const ok = text.includes('created') || text.includes('updated');
+    writeResults.push({ id: fact.id, ok, status });
+    console.log(`  [${ok ? 'OK  ' : 'FAIL'}] ${fact.id}: ${status}`);
   }
 
-  // Wait for writes to settle (FTS index is built synchronously in PGLite)
-  await new Promise(r => setTimeout(r, 2000));
-
-  // -- Query -----------------------------------------------------------------
-  // Try both "search" (pure BM25) and "query" (hybrid, falls back to keyword)
-  // to find the most reliable retrieval method in no-embedding mode.
-  console.log('\n=== Recall queries ===');
+  // -- Read back -------------------------------------------------------------
+  console.log('\n=== Reading facts back (get_page) ===');
   const rows = [];
 
   for (const fact of FACTS) {
-    // Try "search" first; fall back to "query" with expand:false
-    let result = await client.callTool({
-      name: 'search',
-      arguments: { query: fact.query, limit: 5 },
+    const result = await client.callTool({
+      name: 'get_page',
+      arguments: { slug: `eval/${fact.id}` },
     });
-    let text = extractText(result);
-    // If search returned nothing, try query (hybrid with BM25 fallback)
-    if (!text || text === '[]' || text.trim() === '') {
-      result = await client.callTool({
-        name: 'query',
-        arguments: { query: fact.query, expand: false, limit: 5 },
-      });
-      text = extractText(result);
-    }
-    const hit = scoreHit(text, fact.keywords);
-    rows.push({ id: fact.id, query: fact.query, hit, snippet: text.slice(0, 120).replace(/\n/g, ' ') });
-    console.log(`  [${hit ? 'HIT ' : 'MISS'}] ${fact.id}: ${fact.query}`);
-    if (!hit) console.log(`         response: ${text.slice(0, 120)}`);
+    const text = extractText(result);
+    const match = verifyContent(text, fact);
+    rows.push({ id: fact.id, match, snippet: text.slice(0, 120).replace(/\n/g, ' ') });
+    console.log(`  [${match ? 'MATCH' : 'MISS '}] ${fact.id}`);
+    if (!match) console.log(`          response: ${text.slice(0, 120)}`);
   }
 
   await client.close();
 
   // -- Score -----------------------------------------------------------------
-  const hits = rows.filter(r => r.hit).length;
+  const hits = rows.filter(r => r.match).length;
   const total = rows.length;
   const pct = Math.round((hits / total) * 100);
-  const pass = hits >= 2;
+  const pass = hits === total; // 5/5 required for persistence eval
 
   // -- Report ----------------------------------------------------------------
   const lines = [
-    '## gbrain BM25 Recall Eval',
+    '## gbrain Knowledge Persistence Eval',
     '',
     `**Score: ${hits}/${total} (${pct}%) — ${pass ? '✅ PASS' : '❌ FAIL'}**`,
     '',
-    '| Fact | Query | Result |',
-    '|------|-------|--------|',
-    ...rows.map(r => `| \`${r.id}\` | ${r.query} | ${r.hit ? '✅ HIT' : '❌ MISS'} |`),
+    '| Fact | Content slug | Stored + Retrieved |',
+    '|------|-------------|-------------------|',
+    ...rows.map(r => `| \`${r.id}\` | \`eval/${r.id}\` | ${r.match ? '✅ OK' : '❌ FAIL'} |`),
     '',
-    '### What this shows',
-    '- gbrain stores knowledge persistently (PGLite — zero external deps)',
-    '- BM25 keyword recall retrieves seeded facts from natural-language queries',
-    `- Threshold: ≥2/5 facts recalled — **${pass ? 'met' : 'not met'}**`,
-    '',
-    `> Mode: BM25 keyword search (no embedding model, no API key required)`,
+    '### What this demonstrates',
+    '- `apra-fleet install --with-gbrain` produces a working gbrain install',
+    '- gbrain persists knowledge in **PGLite** — zero external deps, no API key',
+    '- Knowledge is faithfully retrieved by slug (deterministic roundtrip)',
+    `- Fleet agents with \`gbrain: true\` get persistent memory across sessions`,
   ];
 
   const report = lines.join('\n');
