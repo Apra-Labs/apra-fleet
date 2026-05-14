@@ -151,19 +151,35 @@ function writeAssetFile(destPath: string, content: string): void {
   fs.writeFileSync(destPath, content);
 }
 
-function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any): void {
+// Gemini CLI uses different hook event names than Claude CLI.
+const GEMINI_HOOK_NAME_MAP: Record<string, string> = {
+  PostToolUse:      'AfterTool',
+  PreToolUse:       'BeforeTool',
+  UserPromptSubmit: 'BeforeAgent',
+  Stop:             'SessionEnd',
+  PreCompact:       'PreCompress',
+};
+
+function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provider: LlmProvider): void {
   const settings = readConfig(paths);
   settings.hooks = settings.hooks || {};
-  settings.hooks.PostToolUse = settings.hooks.PostToolUse || [];
 
-  for (const newHook of hooksConfig.hooks.PostToolUse || []) {
-    const idx = (settings.hooks.PostToolUse as any[]).findIndex(
-      (h: any) => h.matcher === newHook.matcher
-    );
-    if (idx >= 0) {
-      settings.hooks.PostToolUse[idx] = newHook;
-    } else {
-      settings.hooks.PostToolUse.push(newHook);
+  for (const [claudeName, hookEntries] of Object.entries(hooksConfig.hooks || {})) {
+    const eventName = provider === 'gemini'
+      ? (GEMINI_HOOK_NAME_MAP[claudeName] ?? claudeName)
+      : claudeName;
+
+    settings.hooks[eventName] = settings.hooks[eventName] || [];
+
+    for (const newHook of hookEntries as any[]) {
+      const idx = (settings.hooks[eventName] as any[]).findIndex(
+        (h: any) => h.matcher === newHook.matcher
+      );
+      if (idx >= 0) {
+        settings.hooks[eventName][idx] = newHook;
+      } else {
+        settings.hooks[eventName].push(newHook);
+      }
     }
   }
 
@@ -446,7 +462,7 @@ ${killHint}
   const installedHooksConfig = JSON.parse(
     fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
   );
-  mergeHooksConfig(paths, installedHooksConfig);
+  mergeHooksConfig(paths, installedHooksConfig, llm);
 
   const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
   configureStatusline(paths, statuslineScript);
