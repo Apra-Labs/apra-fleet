@@ -68,12 +68,20 @@ Used for pay-per-use billing. Works with all providers.
 ## apra-fleet secret --confirm
 
 ```
-apra-fleet secret --confirm <member-name>
+apra-fleet secret --confirm <credential-name>
 ```
 
-OOB (out-of-band) network egress confirmation. When a credential is stored with `network_policy: 'confirm'`, fleet automatically opens a new terminal running this command before executing any `{{secure.NAME}}` substitution that would send the credential over the network. The user must type `yes` to allow the command to proceed.
+OOB (out-of-band) network egress confirmation. When a credential is stored with `network_policy: 'confirm'`, fleet automatically opens a new terminal running this command - passing the **credential name** - before executing any `{{secure.NAME}}` substitution that would send that credential over the network.
 
-This is invoked automatically by the fleet server - you do not need to call it manually.
+The terminal shows:
+```
+  Credential "MY-CRED-NAME" is about to send data over the network.
+  Review the execute_command call in your agent before confirming.
+
+  Type "yes" to allow network access:
+```
+
+The user types `yes` to allow, or closes the window / types anything else to block. This is invoked automatically by the fleet server - you do not need to call it manually.
 
 ## apra-fleet auth (CLI)
 

@@ -14,7 +14,7 @@ export async function runSecret(args: string[]): Promise<void> {
     console.error('  apra-fleet secret --update <name> [--members <list>] [--ttl <seconds>] [--allow|--deny]');
     console.error('  apra-fleet secret --delete <name>');
     console.error('  apra-fleet secret --delete --all');
-    console.error('  apra-fleet secret --confirm <member-name>');
+    console.error('  apra-fleet secret --confirm <credential-name>');
     process.exit(args.length === 0 ? 1 : 0);
   }
 
@@ -35,16 +35,16 @@ export async function runSecret(args: string[]): Promise<void> {
 }
 
 async function handleConfirm(args: string[]): Promise<void> {
-  const memberName = args.find((a) => !a.startsWith('-'));
+  const credentialName = args.find((a) => !a.startsWith('-'));
 
-  if (!memberName) {
-    console.error('Usage: apra-fleet secret --confirm <member-name>');
+  if (!credentialName) {
+    console.error('Usage: apra-fleet secret --confirm <credential-name>');
     process.exit(1);
   }
 
   console.error(`\napra-fleet - Network Egress Confirmation\n`);
-  console.error(`  Credential: ${memberName}\n`);
-  console.error(`  A command using this credential is about to access the network.\n`);
+  console.error(`  Credential "${credentialName}" is about to send data over the network.\n`);
+  console.error(`  Review the execute_command call in your agent before confirming.\n`);
 
   let inputValue: string;
   try {
@@ -73,7 +73,7 @@ async function handleConfirm(args: string[]): Promise<void> {
 
   await new Promise<void>((resolve, reject) => {
     const client = net.connect(sockPath, () => {
-      const msg = JSON.stringify({ type: 'auth', member_name: memberName, password: inputValue }) + '\n';
+      const msg = JSON.stringify({ type: 'auth', member_name: credentialName, password: inputValue }) + '\n';
       inputValue = '';
       client.write(msg);
     });
