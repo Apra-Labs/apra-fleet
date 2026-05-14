@@ -1,6 +1,6 @@
 # Infrastructure Tools
 
-One-time setup and maintenance tools — provisioning authentication, migrating to SSH keys, and updating the LLM CLI.
+One-time setup and maintenance tools  -  provisioning authentication, migrating to SSH keys, and updating the LLM CLI.
 
 ## provision_llm_auth
 
@@ -22,7 +22,7 @@ The correct env var name is automatically determined from the member's `llm_prov
 | Codex | `OPENAI_API_KEY` |
 | Copilot | `COPILOT_GITHUB_TOKEN` |
 
-### Flow A — Copy Master Credentials (Claude only, no `api_key`)
+### Flow A  -  Copy Master Credentials (Claude only, no `api_key`)
 
 Used when the user has a Claude Max subscription. Copies `~/.claude/.credentials.json` from this machine to the remote member. **Only supported for Claude members.** For all other providers, use Flow B.
 
@@ -36,13 +36,13 @@ Used when the user has a Claude Max subscription. Copies `~/.claude/.credentials
 **Output:** Reports whether credentials were deployed and whether the auth test passed. Includes advisory notes for near-expiry or expired-refreshable tokens.
 
 **Fails if:**
-- Member is not a Claude member — returns error with correct `api_key` env var for that provider.
-- No credentials file exists on the master machine — prompts the user to run `/login` or use `api_key` instead.
-- Token is expired with no refresh token — blocks deployment and suggests running `/login`.
+- Member is not a Claude member  -  returns error with correct `api_key` env var for that provider.
+- No credentials file exists on the master machine  -  prompts the user to run `/login` or use `api_key` instead.
+- Token is expired with no refresh token  -  blocks deployment and suggests running `/login`.
 
-**Token validation:** Before deploying, `provision_llm_auth` checks the OAuth token's expiry. If the token is expired but has a refresh token, deployment proceeds — the member's CLI will auto-refresh on first use. If near-expiry, a warning is appended to the output.
+**Token validation:** Before deploying, `provision_llm_auth` checks the OAuth token's expiry. If the token is expired but has a refresh token, deployment proceeds  -  the member's CLI will auto-refresh on first use. If near-expiry, a warning is appended to the output.
 
-### Flow B — API Key (`api_key` provided, all providers)
+### Flow B  -  API Key (`api_key` provided, all providers)
 
 Used for pay-per-use billing. Works with all providers.
 
@@ -60,14 +60,57 @@ Used for pay-per-use billing. Works with all providers.
 
 **Output:** Reports whether the API key was provisioned, visible in a new shell, and whether the auth check passed.
 
-### Future: Flow C — SSH Tunnel OAuth (backlog)
-
-For users who need per-member OAuth without sharing credentials, a future flow will use SSH port forwarding to tunnel the provider's login callback server to the user's local machine.
-
 **Important notes:**
 - Both flows verify the member is online before proceeding.
 - `member_detail` detects all auth methods: credentials file (Claude OAuth) and API key env var (per-provider).
 - If `execute_prompt` returns an auth error for a member, call `provision_llm_auth` for that member to restore credentials, then resume the prompt with `resume=true`.
+
+## apra-fleet auth (CLI)
+
+The `apra-fleet auth` CLI command handles two distinct auth scenarios.
+
+### apra-fleet auth --confirm
+
+```
+apra-fleet auth --confirm <member-name>
+```
+
+OOB (out-of-band) network egress confirmation. When a credential is stored with `network_policy: 'confirm'`, fleet automatically opens a new terminal running this command before executing any `{{secure.NAME}}` substitution that would send the credential over the network. The user must type `yes` to allow the command to proceed.
+
+This is invoked automatically by the fleet server  -  you do not need to call it manually.
+
+### apra-fleet auth --oauth
+
+```
+apra-fleet auth --oauth [--llm <provider>] <token>
+apra-fleet auth --oauth [--llm <provider>] secure.<name>
+apra-fleet auth --oauth [--llm <provider>] --secure <name>
+```
+
+Writes an OAuth setup token directly to the provider's credential file on **this machine**. Designed for CI runners (e.g. GitHub Actions) where the fleet server and its members share the same machine and `provision_llm_auth`'s SSH-based credential copy is not applicable.
+
+**Supported providers:** Claude only. Gemini and other providers use API keys (`GEMINI_API_KEY` etc.)  -  use `provision_llm_auth api_key=...` instead.
+
+**Token sources:**
+- Raw token as a positional arg: `apra-fleet auth --oauth sk-ant-oat01-...`
+- `secure.<name>`: resolves from the **persistent** credential store (seeded with `apra-fleet secret --set <name> --persist`)
+- `--secure <name>`: flag form of the same
+
+**Provider auto-detection:** If `--llm` is omitted, the single installed provider is used. Falls back to `claude` if ambiguous.
+
+**What it writes (Claude):** deep-merges `{ "claudeAiOauth": { "accessToken": "<token>" } }` into `~/.claude/.credentials.json` without touching other fields. Creates the file if absent.
+
+**Typical CI workflow:**
+
+```yaml
+- name: Seed credential store
+  run: echo "${{ secrets.E2E_CLAUDE_1YR_TOK }}" | apra-fleet secret --set MY-CLAUDE-1YR-TOK --persist -y
+
+- name: Init Claude auth on runner
+  run: apra-fleet auth --oauth secure.MY-CLAUDE-1YR-TOK
+```
+
+After this step, `provision_llm_auth` (Flow A) works normally for any local member registered on this runner because the machine already has valid credentials.
 
 ## setup_ssh_key
 
@@ -81,28 +124,28 @@ Generates an RSA-4096 key pair and migrates a remote member from password-based 
 
 **What it does:**
 
-1. **Rejects local members** — SSH key setup is not applicable; local members don't use SSH.
-2. **Rejects members already using key auth** — no-op if already migrated.
+1. **Rejects local members**  -  SSH key setup is not applicable; local members don't use SSH.
+2. **Rejects members already using key auth**  -  no-op if already migrated.
 3. **Generates an RSA-4096 key pair** using Node's `crypto.generateKeyPairSync()`.
 4. **Saves keys locally:**
    - Private key: `~/.apra-fleet/data/keys/{agent-id}_rsa` (mode 0600)
    - Public key: `~/.apra-fleet/data/keys/{agent-id}_rsa.pub`
-5. **Deploys the public key to the remote** — runs a series of commands via the existing password-based SSH connection:
+5. **Deploys the public key to the remote**  -  runs a series of commands via the existing password-based SSH connection:
    - `mkdir -p ~/.ssh && chmod 700 ~/.ssh`
    - `touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`
    - Appends the public key to `authorized_keys`
-6. **Tests key-based login** — creates a temporary member config with key auth and runs `echo "key-auth-ok"` to verify.
-7. **Updates the member registration** — switches `authType` to `"key"`, stores `keyPath`, and removes `encryptedPassword`.
+6. **Tests key-based login**  -  creates a temporary member config with key auth and runs `echo "key-auth-ok"` to verify.
+7. **Updates the member registration**  -  switches `authType` to `"key"`, stores `keyPath`, and removes `encryptedPassword`.
 
 **Output:** Paths to the generated key files and confirmation of successful key-based login.
 
-**Key design: one key per member.** Each member gets its own key pair. This allows granular revocation — you can remove one member's key from `authorized_keys` without affecting others.
+**Key design: one key per member.** Each member gets its own key pair. This allows granular revocation  -  you can remove one member's key from `authorized_keys` without affecting others.
 
 **Failure handling:** If any step fails (key deployment, test login), the member remains on password auth. The error message indicates what went wrong, and the password-based connection still works.
 
 ## update_llm_cli
 
-Updates or installs the LLM CLI on one or all fleet members. Respects each member's `llm_provider` — uses the correct install and update commands per provider.
+Updates or installs the LLM CLI on one or all fleet members. Respects each member's `llm_provider`  -  uses the correct install and update commands per provider.
 
 **Parameters:**
 
@@ -122,7 +165,7 @@ Updates or installs the LLM CLI on one or all fleet members. Respects each membe
    - If the CLI is found: runs the provider's update command.
    - If the CLI is not found and `install_if_missing` is `false`: reports "not found" with guidance.
    - Gets the new version after the operation to confirm.
-   - Compares old vs new — marks "Already up to date" if unchanged.
+   - Compares old vs new  -  marks "Already up to date" if unchanged.
 
 **Install commands per provider and OS:**
 
@@ -135,8 +178,8 @@ Updates or installs the LLM CLI on one or all fleet members. Respects each membe
 
 **PATH handling:** On Linux/macOS, binaries installed in `~/.local/bin` may not be in PATH for non-interactive SSH sessions. All CLI commands are prefixed with `export PATH="$HOME/.local/bin:$PATH"` to ensure the binary is found.
 
-**Output:** A report showing each member with `oldVersion → newVersion` (or `Installed: version` for fresh installs) and success/failure status.
+**Output:** A report showing each member with `oldVersion -> newVersion` (or `Installed: version` for fresh installs) and success/failure status.
 
 **Timeout:** Update has a 2-minute timeout; install has a 3-minute timeout per member.
 
-**Note:** Offline members are silently skipped when updating all members — they don't appear as errors in the report, they simply aren't included.
+**Note:** Offline members are silently skipped when updating all members  -  they don't appear as errors in the report, they simply aren't included.
