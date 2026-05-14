@@ -19,11 +19,7 @@ If the LLM CLI is not installed or the command fails, use `update_llm_cli` to in
 
 ## Step 1.7: Provision LLM Auth
 
-**Remote members:** Call `provision_llm_auth`.
-
-**Local members:** `provision_llm_auth` does not apply. Run once on the PM machine:
-- Claude: `apra-fleet auth --oauth <token | secure.NAME>`
-- All providers: `apra-fleet auth --api-key [--llm <provider>] <key | secure.NAME>`
+Call `provision_llm_auth`. Skip for local members - they inherit auth from the PM machine.
 
 ## Step 2: Disable AI Attribution
 
