@@ -1,5 +1,7 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+// MCP client types are imported lazily inside connect() to avoid loading the
+// client SDK (and its ajv/ajv-formats transitive deps) at server startup time.
+// Loading it eagerly caused the fleet binary to crash on Linux SEA when the
+// MCP client SDK's AJV integration ran top-level initialisation code.
 
 export interface GbrainClientOptions {
   command?: string;
@@ -13,8 +15,8 @@ const DEFAULT_ARGS = ['serve'];
 let instance: GbrainClient | null = null;
 
 export class GbrainClient {
-  private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
+  private client: any | null = null;
+  private transport: any | null = null;
   private availableTools: string[] = [];
   private connected = false;
   private options: Required<GbrainClientOptions>;
@@ -30,6 +32,10 @@ export class GbrainClient {
   async connect(): Promise<void> {
     if (this.connected) return;
 
+    // Lazy-load MCP client SDK — keeps it out of the server startup path
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
     this.transport = new StdioClientTransport({
       command: this.options.command,
       args: this.options.args,
@@ -43,7 +49,7 @@ export class GbrainClient {
 
     // Validate connection by listing available tools
     const result = await this.client.listTools();
-    this.availableTools = result.tools.map((t) => t.name);
+    this.availableTools = result.tools.map((t: { name: string }) => t.name);
   }
 
   async disconnect(): Promise<void> {
@@ -78,16 +84,16 @@ export class GbrainClient {
       if (result.isError) {
         const text = Array.isArray(result.content)
           ? result.content
-              .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-              .map((c) => c.text)
+              .filter((c: any): c is { type: 'text'; text: string } => c.type === 'text')
+              .map((c: any) => c.text)
               .join('\n')
           : String(result.content);
         throw new Error(`gbrain tool '${toolName}' returned error: ${text}`);
       }
       if (Array.isArray(result.content)) {
         return result.content
-          .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-          .map((c) => c.text)
+          .filter((c: any): c is { type: 'text'; text: string } => c.type === 'text')
+          .map((c: any) => c.text)
           .join('\n');
       }
       return String(result.content ?? '');
