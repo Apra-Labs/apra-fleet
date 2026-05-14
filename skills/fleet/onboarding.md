@@ -19,7 +19,7 @@ If the LLM CLI is not installed or the command fails, use `update_llm_cli` to in
 
 ## Step 1.7: Provision LLM Auth
 
-**Remote members:** Call `provision_llm_auth`. Pass `api_key` for non-Claude providers or pay-per-use billing; omit it for Claude Max (copies OAuth credentials from this machine).
+**Remote members:** Call `provision_llm_auth`.
 
 **Local members:** `provision_llm_auth` does not apply. Run once on the PM machine:
 - Claude: `apra-fleet auth --oauth <token | secure.NAME>`
