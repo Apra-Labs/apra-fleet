@@ -87,11 +87,16 @@ async function main() {
   console.log('Connected.\n');
 
   // -- Seed ------------------------------------------------------------------
+  // gbrain stores knowledge as pages via put_page.
+  // Slug format: eval/<fact-id>. Content uses YAML frontmatter for tagging.
   console.log('=== Seeding facts ===');
   for (const fact of FACTS) {
     await client.callTool({
-      name: 'brain_write',
-      arguments: { content: fact.content, collection: 'eval' },
+      name: 'put_page',
+      arguments: {
+        slug: `eval/${fact.id}`,
+        content: `---\ntags: [eval]\n---\n${fact.content}`,
+      },
     });
     console.log(`  [seed] ${fact.id}`);
   }
@@ -100,13 +105,14 @@ async function main() {
   await new Promise(r => setTimeout(r, 500));
 
   // -- Query -----------------------------------------------------------------
+  // gbrain exposes keyword-only full-text search as "search".
   console.log('\n=== Recall queries ===');
   const rows = [];
 
   for (const fact of FACTS) {
     const result = await client.callTool({
-      name: 'brain_query',
-      arguments: { query: fact.query, collection: 'eval' },
+      name: 'search',
+      arguments: { query: fact.query, limit: 5 },
     });
     const text = extractText(result);
     const hit = scoreHit(text, fact.keywords);
