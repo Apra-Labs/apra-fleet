@@ -65,19 +65,26 @@ Used for pay-per-use billing. Works with all providers.
 - `member_detail` detects all auth methods: credentials file (Claude OAuth) and API key env var (per-provider).
 - If `execute_prompt` returns an auth error for a member, call `provision_llm_auth` for that member to restore credentials, then resume the prompt with `resume=true`.
 
-## apra-fleet auth (CLI)
-
-The `apra-fleet auth` CLI command handles two distinct auth scenarios.
-
-### apra-fleet auth --confirm
+## apra-fleet secret --confirm
 
 ```
-apra-fleet auth --confirm <member-name>
+apra-fleet secret --confirm <member-name>
 ```
 
 OOB (out-of-band) network egress confirmation. When a credential is stored with `network_policy: 'confirm'`, fleet automatically opens a new terminal running this command before executing any `{{secure.NAME}}` substitution that would send the credential over the network. The user must type `yes` to allow the command to proceed.
 
-This is invoked automatically by the fleet server  -  you do not need to call it manually.
+This is invoked automatically by the fleet server - you do not need to call it manually.
+
+## apra-fleet auth (CLI)
+
+Local credential provisioning for this machine. Designed for CI runners (e.g. GitHub Actions) where the fleet PM and its members share the same machine and `provision_llm_auth`'s SSH-based flows are not applicable.
+
+All forms support the same token sources:
+- Raw token as a positional arg
+- `secure.<name>` - resolves from the **persistent** credential store (seeded with `apra-fleet secret --set <name> --persist`)
+- `--secure <name>` - flag form of the same
+
+`--llm` is optional: the single installed provider is used; falls back to `claude` if ambiguous.
 
 ### apra-fleet auth --oauth
 
@@ -87,30 +94,53 @@ apra-fleet auth --oauth [--llm <provider>] secure.<name>
 apra-fleet auth --oauth [--llm <provider>] --secure <name>
 ```
 
-Writes an OAuth setup token directly to the provider's credential file on **this machine**. Designed for CI runners (e.g. GitHub Actions) where the fleet server and its members share the same machine and `provision_llm_auth`'s SSH-based credential copy is not applicable.
+Writes an OAuth setup token to the provider's credential file. **Claude only** - deep-merges
+`{ "claudeAiOauth": { "accessToken": "<token>" } }` into `~/.claude/.credentials.json` without
+touching other fields. Creates the file if absent. For Gemini use `--api-key` instead.
 
-**Supported providers:** Claude only. Gemini and other providers use API keys (`GEMINI_API_KEY` etc.)  -  use `provision_llm_auth api_key=...` instead.
+### apra-fleet auth --api-key
 
-**Token sources:**
-- Raw token as a positional arg: `apra-fleet auth --oauth sk-ant-oat01-...`
-- `secure.<name>`: resolves from the **persistent** credential store (seeded with `apra-fleet secret --set <name> --persist`)
-- `--secure <name>`: flag form of the same
+```
+apra-fleet auth --api-key [--llm <provider>] <key>
+apra-fleet auth --api-key [--llm <provider>] secure.<name>
+apra-fleet auth --api-key [--llm <provider>] --secure <name>
+```
 
-**Provider auto-detection:** If `--llm` is omitted, the single installed provider is used. Falls back to `claude` if ambiguous.
+Sets the provider API key on this machine. Works for all providers.
 
-**What it writes (Claude):** deep-merges `{ "claudeAiOauth": { "accessToken": "<token>" } }` into `~/.claude/.credentials.json` without touching other fields. Creates the file if absent.
+| Provider | Env Var |
+|----------|---------|
+| Claude | `ANTHROPIC_API_KEY` |
+| Gemini | `GEMINI_API_KEY` |
+| Codex | `OPENAI_API_KEY` |
+| Copilot | `COPILOT_GITHUB_TOKEN` |
 
-**Typical CI workflow:**
+- **Linux:** appends `export VAR=...` to `~/.bashrc` and `~/.profile` (replacing any existing entry)
+- **macOS:** same, plus `~/.zshrc`
+- **Windows:** sets a persistent user-level environment variable via PowerShell
+
+Because `getCleanEnv()` sources login shell profiles (`bash -l`), keys written here are available
+to local fleet members on the same machine without extra configuration.
+
+**Typical CI workflow (Claude subscription):**
 
 ```yaml
 - name: Seed credential store
   run: echo "${{ secrets.E2E_CLAUDE_1YR_TOK }}" | apra-fleet secret --set MY-CLAUDE-1YR-TOK --persist -y
-
 - name: Init Claude auth on runner
   run: apra-fleet auth --oauth secure.MY-CLAUDE-1YR-TOK
 ```
 
-After this step, `provision_llm_auth` (Flow A) works normally for any local member registered on this runner because the machine already has valid credentials.
+**Typical CI workflow (Gemini API key):**
+
+```yaml
+- name: Seed credential store
+  run: echo "${{ secrets.GEMINI_API_KEY }}" | apra-fleet secret --set MY-GEMINI-KEY --persist -y
+- name: Init Gemini auth on runner
+  run: apra-fleet auth --api-key --llm gemini secure.MY-GEMINI-KEY
+```
+
+After either step, `provision_llm_auth` works normally for any local member registered on this runner.
 
 ## setup_ssh_key
 

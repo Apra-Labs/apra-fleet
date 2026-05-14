@@ -443,8 +443,8 @@ export async function collectOobConfirm(
 }
 
 /**
- * Resolve the command to invoke this binary's `auth` or `secret` subcommand.
- * Confirm mode uses `auth --confirm`; all credential collection uses `secret --set`.
+ * Resolve the command to invoke this binary's `secret` subcommand.
+ * Confirm mode uses `secret --confirm`; all credential collection uses `secret --set`.
  * Returns [command, ...args] suitable for spawn().
  */
 function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
@@ -453,7 +453,7 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
 
   let cmdArgs: string[];
   if (isConfirm) {
-    cmdArgs = ['auth', '--confirm', memberName];
+    cmdArgs = ['secret', '--confirm', memberName];
   } else {
     // All credential collection (password, API key) routes through `secret --set`
     cmdArgs = ['secret', '--set', memberName];
@@ -480,7 +480,7 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
 }
 
 function buildHeadlessFallback(memberName: string, reason: string): string {
-  return `fallback:${reason}\n\nRun this in a separate terminal:\n  ! apra-fleet auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+  return `fallback:${reason}\n\nRun this in a separate terminal:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
 }
 
 /**
