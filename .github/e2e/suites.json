@@ -159,6 +159,38 @@
                                                  "os":  "local_reviewer_windows",
                                                  "provider":  "gemini"
                                              }
+                            },
+                   "s7.2":  {
+                                "pm":  {
+                                           "os":  "linux",
+                                           "provider":  "gemini",
+                                           "runner":  "fleet-linux"
+                                       },
+                                "doer":  {
+                                             "os":  "local_doer_linux",
+                                             "provider":  "gemini"
+                                         },
+                                "reviewer":  {
+                                                 "os":  "local_reviewer_linux",
+                                                 "provider":  "gemini"
+                                             },
+                                "vcs":  "github"
+                            },
+                   "s7.3":  {
+                                "pm":  {
+                                           "os":  "macos",
+                                           "provider":  "gemini",
+                                           "runner":  "fleet-macos"
+                                       },
+                                "doer":  {
+                                             "os":  "local_doer_macos",
+                                             "provider":  "gemini"
+                                         },
+                                "reviewer":  {
+                                                 "os":  "local_reviewer_macos",
+                                                 "provider":  "gemini"
+                                             },
+                                "vcs":  "github"
                             }
                }
 }
