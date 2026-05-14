@@ -77,6 +77,7 @@ PM sends task harness → dispatches doer (resume per data-driven rule, model=ne
   → PM dispatches REVIEWER (model=premium) → reviewer reads deliverables + diff → commits verdict to feedback.md → pushes
   → APPROVED: PM dispatches doer for next task (resume=true if same phase) → repeat
   → CHANGES NEEDED: bd create "<finding>" -p 0 --parent <epic-id> --assignee <doer> per HIGH finding → PM sends feedback to doer → doer fixes → bd close <finding-id> → PM re-dispatches REVIEWER → repeat
+  → If user interrupts or corrects the plan mid-sprint: call `course_correction_capture` with the attempted approach and the user-specified correction before resuming. This persists the correction to brain so future agents avoid the same mistake.
   → all tasks done → move to next phase or completion
 ```
 

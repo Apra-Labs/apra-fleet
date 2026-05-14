@@ -1,0 +1,77 @@
+name: gbrain Eval
+
+# Demonstrates gbrain value: seeds apra-fleet facts, runs BM25 recall queries,
+# and posts a scorecard to the job summary.
+#
+# Triggers:
+#   - Automatically on push to feat/gbrain* branches
+#   - Manually via workflow_dispatch (can be run on any branch)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'feat/gbrain*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gbrain-eval:
+    name: gbrain BM25 Recall Eval
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies (for MCP SDK)
+        run: npm ci
+
+      # ── Install bun ─────────────────────────────────────────────────────────
+      - name: Install bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      # ── Install gbrain ───────────────────────────────────────────────────────
+      # Mirrors what `apra-fleet install --with-gbrain` does on a real member:
+      # git clone → bun install → bun link → gbrain available on PATH
+      - name: Install gbrain
+        run: |
+          git clone https://github.com/garrytan/gbrain.git ~/gbrain
+          cd ~/gbrain
+          ~/.bun/bin/bun install --frozen-lockfile
+          ~/.bun/bin/bun link
+          echo "Installed: $(~/.bun/bin/gbrain --version 2>&1 || ~/.bun/bin/bun run ~/gbrain/src/cli.ts --version 2>&1 || echo unknown)"
+
+      # ── Initialize gbrain (PGLite, no embedding — BM25 keyword mode) ────────
+      # Write config directly (avoids interactive prompts) then run migrate-only
+      # to create the schema. No API key or embedding model needed.
+      - name: Initialize gbrain (PGLite, BM25 mode)
+        run: |
+          mkdir -p ~/.gbrain
+          printf '{"engine":"pglite","database_path":"%s/.gbrain/brain.pglite"}\n' "$HOME" > ~/.gbrain/config.json
+          cat ~/.gbrain/config.json
+          # Apply schema migrations only — does not clobber config or prompt for keys
+          gbrain init --migrate-only || ~/.bun/bin/bun run ~/gbrain/src/cli.ts init --migrate-only
+          echo "gbrain ready (PGLite + BM25 keyword mode)"
+
+      # ── Run eval ─────────────────────────────────────────────────────────────
+      # Seeds 5 apra-fleet facts, runs 5 recall queries, scores keyword overlap.
+      # Writes Markdown scorecard to $GITHUB_STEP_SUMMARY.
+      # Exit 1 if fewer than 2/5 facts recalled (hard failure).
+      - name: Run gbrain recall eval
+        run: node .github/eval/gbrain-eval.mjs
+        env:
+          GBRAIN_CMD: gbrain

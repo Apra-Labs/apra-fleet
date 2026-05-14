@@ -1,4 +1,4 @@
-name: Fleet E2E Test Suite
+name: Fleet E2E Test Suite (compat)
 
 on:
   workflow_dispatch:

@@ -50,6 +50,7 @@ Verify reviewer is at the correct commit before starting review:
 5. PM reads verdict:
    - **APPROVED** → proceed to next phase (or sprint completion if all phases done)
    - **CHANGES NEEDED** → PM sends feedback to doer → doer fixes → back to step 1 → PM re-dispatches REVIEWER
+     - If the user has provided a modification or correction to the original plan alongside the CHANGES NEEDED verdict: call `course_correction_capture` with `attempted` = the original approach and `correction` = the user-specified change before re-dispatching. This persists the correction to brain so future sprints and agents avoid the same mistake.
 6. Loop until all phases APPROVED
 7. **Sprint completion** — See cleanup.md.
 
