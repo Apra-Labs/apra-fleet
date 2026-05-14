@@ -296,6 +296,26 @@ describe('GeminiProvider', () => {
     expect(resp.usage).toEqual({ input_tokens: 500, output_tokens: 120 });
   });
 
+  it('extracts usage tokens from usage field (Gemini v0.42.0 format)', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      session_id: 'gem-sess-99',
+      usage: { input_tokens: 300, output_tokens: 80 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 300, output_tokens: 80 });
+  });
+
+  it('usage field takes priority over stats field when both present', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      usage: { input_tokens: 10, output_tokens: 20 },
+      stats: { input_tokens: 999, output_tokens: 999 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 10, output_tokens: 20 });
+  });
+
   it('returns undefined usage when stats field is absent', () => {
     const payload = JSON.stringify({ response: 'gemini result', session_id: 'gem-sess-42' });
     const resp = p.parseResponse(makeResult(payload));
