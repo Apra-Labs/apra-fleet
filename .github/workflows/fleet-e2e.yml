@@ -168,25 +168,6 @@ jobs:
           done
           echo "Done."
 
-      # -- Step 3a2: Write PM Claude permissions for run directory -----------
-      # The PM runs from RUN_DIR (outside the repo checkout). Claude Code's
-      # Write/Bash tools are blocked for paths outside the working directory
-      # unless explicitly allowed. Write settings.local.json into RUN_DIR
-      # so the PM can create local staging files (e.g. for send_files in T2).
-      - name: Write PM Claude permissions for run directory
-        shell: bash
-        run: |
-          mkdir -p "$RUN_DIR/.claude"
-          cat > "$RUN_DIR/.claude/settings.local.json" << EOF
-          {
-            "permissions": {
-              "allow": ["Write($RUN_DIR/**)", "Bash($RUN_DIR/**)"],
-              "deny": []
-            }
-          }
-          EOF
-          echo "Wrote PM permissions to $RUN_DIR/.claude/settings.local.json"
-
       # -- Step 3b: Smoke-test PM LLM auth + apra-fleet MCP ----------------
       # Fail fast if LLM auth is expired OR the fleet MCP server is not loaded.
       # No point running a 45-minute test without a working fleet connection.
@@ -305,6 +286,7 @@ jobs:
               --output-format stream-json \
               --verbose \
               --max-turns 80 \
+              --add-dir "$RUN_DIR" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
           else
             gemini --yolo --skip-trust \
