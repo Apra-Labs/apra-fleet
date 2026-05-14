@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Test suite to run. s1.1/s1.2/s1.3 = local-only variants; s7.1 = all-Gemini.'
+        description: 'Test suite to run. s1.1/s1.2/s1.3 = local-only variants; s7.1/s7.2/s7.3 = all-Gemini.'
         required: true
         type: choice
-        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1]
+        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3]
 
 jobs:
   e2e:
@@ -28,6 +28,8 @@ jobs:
          || inputs.suite == 's4'   && 'fleet-windows'
          || inputs.suite == 's5'   && 'fleet-linux'
          || inputs.suite == 's7.1' && 'fleet-windows'
+         || inputs.suite == 's7.2' && 'fleet-linux'
+         || inputs.suite == 's7.3' && 'fleet-macos'
          || 'fleet-macos' }}
 
     steps:
@@ -165,6 +167,25 @@ jobs:
             fi
           done
           echo "Done."
+
+      # -- Step 3a2: Write PM Claude permissions for run directory -----------
+      # The PM runs from RUN_DIR (outside the repo checkout). Claude Code's
+      # Write/Bash tools are blocked for paths outside the working directory
+      # unless explicitly allowed. Write settings.local.json into RUN_DIR
+      # so the PM can create local staging files (e.g. for send_files in T2).
+      - name: Write PM Claude permissions for run directory
+        shell: bash
+        run: |
+          mkdir -p "$RUN_DIR/.claude"
+          cat > "$RUN_DIR/.claude/settings.local.json" << EOF
+          {
+            "permissions": {
+              "allow": ["Write($RUN_DIR/**)", "Bash($RUN_DIR/**)"],
+              "deny": []
+            }
+          }
+          EOF
+          echo "Wrote PM permissions to $RUN_DIR/.claude/settings.local.json"
 
       # -- Step 3b: Smoke-test PM LLM auth + apra-fleet MCP ----------------
       # Fail fast if LLM auth is expired OR the fleet MCP server is not loaded.
