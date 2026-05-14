@@ -16,5 +16,6 @@ export async function codeCallees(input: CodeCalleesInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('code_callees', { symbol: input.symbol });
+  // gbrain exposes callees via the "query" tool with near_symbol anchor.
+  return callGbrainTool('query', { query: `functions called by ${input.symbol}`, near_symbol: input.symbol, walk_depth: 1 });
 }

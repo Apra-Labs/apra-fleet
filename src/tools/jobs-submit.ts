@@ -17,8 +17,10 @@ export async function jobsSubmit(input: JobsSubmitInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return `${gbrainError} For immediate work, use execute_prompt instead.`;
 
-  return callGbrainTool('jobs_submit', {
-    task: input.task,
+  // gbrain's internal job queue is exposed via "submit_job".
+  return callGbrainTool('submit_job', {
+    name: 'autopilot-cycle',
+    data: { task: input.task },
     ...(input.priority !== undefined ? { priority: input.priority } : {}),
   });
 }

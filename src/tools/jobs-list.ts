@@ -16,7 +16,8 @@ export async function jobsList(input: JobsListInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('jobs_list', {
+  // gbrain's internal job queue is exposed via "list_jobs".
+  return callGbrainTool('list_jobs', {
     ...(input.status ? { status: input.status } : {}),
   });
 }

@@ -16,5 +16,6 @@ export async function codeDef(input: CodeDefInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('code_def', { symbol: input.symbol });
+  // gbrain exposes symbol lookup via the "query" tool with near_symbol anchor.
+  return callGbrainTool('query', { near_symbol: input.symbol, walk_depth: 1, detail: 'high' });
 }

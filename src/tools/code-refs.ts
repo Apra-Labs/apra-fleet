@@ -16,5 +16,6 @@ export async function codeRefs(input: CodeRefsInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('code_refs', { symbol: input.symbol });
+  // gbrain exposes cross-references via the "query" tool with near_symbol + walk.
+  return callGbrainTool('query', { near_symbol: input.symbol, walk_depth: 2 });
 }

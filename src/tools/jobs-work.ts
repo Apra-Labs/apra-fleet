@@ -17,8 +17,10 @@ export async function jobsWork(input: JobsWorkInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('jobs_work', {
-    job_id: input.job_id,
-    result: input.result,
+  // gbrain manages job lifecycle internally; there is no manual job completion
+  // tool. Persist the result as a brain page under the jobs namespace instead.
+  return callGbrainTool('put_page', {
+    slug: `jobs/${input.job_id}`,
+    content: `---\ntags: [jobs, completed]\n---\n${input.result}`,
   });
 }

@@ -21,7 +21,7 @@ beforeEach(() => {
 afterEach(() => restoreRegistry());
 
 // ---------------------------------------------------------------------------
-// jobs_submit
+// jobs_submit — delegates to gbrain "submit_job" (autopilot-cycle)
 // ---------------------------------------------------------------------------
 
 describe('jobs_submit', () => {
@@ -32,7 +32,10 @@ describe('jobs_submit', () => {
 
     const result = await jobsSubmit({ member_id: agent.id, task: 'run the tests' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('jobs_submit', { task: 'run the tests' });
+    expect(mockCallTool).toHaveBeenCalledWith('submit_job', {
+      name: 'autopilot-cycle',
+      data: { task: 'run the tests' },
+    });
     expect(result).toBe('job_id: abc-123, status: queued');
   });
 
@@ -43,7 +46,11 @@ describe('jobs_submit', () => {
 
     await jobsSubmit({ member_id: agent.id, task: 'urgent work', priority: 0 });
 
-    expect(mockCallTool).toHaveBeenCalledWith('jobs_submit', { task: 'urgent work', priority: 0 });
+    expect(mockCallTool).toHaveBeenCalledWith('submit_job', {
+      name: 'autopilot-cycle',
+      data: { task: 'urgent work' },
+      priority: 0,
+    });
   });
 
   it('returns error with fallback suggestion for non-gbrain member', async () => {
@@ -76,7 +83,7 @@ describe('jobs_submit', () => {
 });
 
 // ---------------------------------------------------------------------------
-// jobs_list
+// jobs_list — delegates to gbrain "list_jobs"
 // ---------------------------------------------------------------------------
 
 describe('jobs_list', () => {
@@ -87,7 +94,7 @@ describe('jobs_list', () => {
 
     const result = await jobsList({ member_id: agent.id });
 
-    expect(mockCallTool).toHaveBeenCalledWith('jobs_list', {});
+    expect(mockCallTool).toHaveBeenCalledWith('list_jobs', {});
     expect(result).toContain('queued');
   });
 
@@ -98,7 +105,7 @@ describe('jobs_list', () => {
 
     await jobsList({ member_id: agent.id, status: 'running' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('jobs_list', { status: 'running' });
+    expect(mockCallTool).toHaveBeenCalledWith('list_jobs', { status: 'running' });
   });
 
   it('returns error when member does not have gbrain enabled', async () => {
@@ -113,7 +120,7 @@ describe('jobs_list', () => {
 });
 
 // ---------------------------------------------------------------------------
-// jobs_stats
+// jobs_stats — delegates to gbrain "list_jobs" with limit for summary view
 // ---------------------------------------------------------------------------
 
 describe('jobs_stats', () => {
@@ -124,7 +131,7 @@ describe('jobs_stats', () => {
 
     const result = await jobsStats({ member_id: agent.id });
 
-    expect(mockCallTool).toHaveBeenCalledWith('jobs_stats', {});
+    expect(mockCallTool).toHaveBeenCalledWith('list_jobs', { limit: 100 });
     expect(result).toBe('queued: 3, running: 1, completed: 42');
   });
 
@@ -147,18 +154,21 @@ describe('jobs_stats', () => {
 });
 
 // ---------------------------------------------------------------------------
-// jobs_work
+// jobs_work — stores job result as a brain page under jobs/ namespace
 // ---------------------------------------------------------------------------
 
 describe('jobs_work', () => {
-  it('completes a job for gbrain-enabled member', async () => {
+  it('stores job result for gbrain-enabled member', async () => {
     const agent = makeTestAgent({ gbrain: true });
     addAgent(agent);
     mockCallTool.mockResolvedValue('job abc-123 marked complete');
 
     const result = await jobsWork({ member_id: agent.id, job_id: 'abc-123', result: 'done' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('jobs_work', { job_id: 'abc-123', result: 'done' });
+    expect(mockCallTool).toHaveBeenCalledWith('put_page', {
+      slug: 'jobs/abc-123',
+      content: expect.stringContaining('done'),
+    });
     expect(result).toBe('job abc-123 marked complete');
   });
 

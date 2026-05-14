@@ -15,11 +15,11 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// captureCorrection service
+// captureCorrection service — stores via gbrain "put_page"
 // ---------------------------------------------------------------------------
 
 describe('captureCorrection', () => {
-  it('calls brain_write with correctly formatted message', async () => {
+  it('calls put_page with correctly formatted message', async () => {
     mockCallTool.mockResolvedValue('ok');
 
     await captureCorrection({
@@ -29,10 +29,13 @@ describe('captureCorrection', () => {
       reason: 'merge commits clutter the log',
     });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_write', expect.objectContaining({
-      content: 'On repo owner/repo, approach "use merge" was attempted. User corrected to "use rebase". Because: merge commits clutter the log',
-      collection: 'course-corrections',
+    expect(mockCallTool).toHaveBeenCalledWith('put_page', expect.objectContaining({
+      slug: expect.stringContaining('course-corrections/'),
+      content: expect.stringContaining('use merge'),
     }));
+    const callArgs = mockCallTool.mock.calls[0][1] as { content: string };
+    expect(callArgs.content).toContain('use rebase');
+    expect(callArgs.content).toContain('merge commits clutter the log');
   });
 
   it('is silent no-op when gbrain is unavailable — does not throw', async () => {
@@ -48,18 +51,17 @@ describe('captureCorrection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// recallCorrections service
+// recallCorrections service — queries via gbrain "search"
 // ---------------------------------------------------------------------------
 
 describe('recallCorrections', () => {
-  it('calls brain_query and returns result', async () => {
+  it('calls search and returns result', async () => {
     mockCallTool.mockResolvedValue('past correction: avoid X because Y');
 
     const result = await recallCorrections({ query: 'rebase strategy' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_query', expect.objectContaining({
+    expect(mockCallTool).toHaveBeenCalledWith('search', expect.objectContaining({
       query: expect.stringContaining('rebase strategy'),
-      collection: 'course-corrections',
     }));
     expect(result).toBe('past correction: avoid X because Y');
   });
@@ -89,9 +91,9 @@ describe('course_correction_capture tool', () => {
       member_name: 'alice',
     });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_write', expect.objectContaining({
+    expect(mockCallTool).toHaveBeenCalledWith('put_page', expect.objectContaining({
+      slug: expect.stringContaining('course-corrections/'),
       content: expect.stringContaining('do X'),
-      collection: 'course-corrections',
     }));
     expect(result).toBe('Course correction captured.');
   });
@@ -107,9 +109,8 @@ describe('course_correction_recall tool', () => {
 
     const result = await courseCorrectionRecall({ query: 'git workflow', repo: 'owner/repo' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_query', expect.objectContaining({
+    expect(mockCallTool).toHaveBeenCalledWith('search', expect.objectContaining({
       query: expect.stringContaining('git workflow'),
-      collection: 'course-corrections',
     }));
     expect(result).toBe('use rebase not merge');
   });

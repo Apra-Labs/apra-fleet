@@ -15,5 +15,7 @@ export async function jobsStats(input: JobsStatsInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('jobs_stats', {});
+  // gbrain does not expose a dedicated stats endpoint; delegate to list_jobs
+  // and let the caller interpret the counts from the returned job list.
+  return callGbrainTool('list_jobs', { limit: 100 });
 }

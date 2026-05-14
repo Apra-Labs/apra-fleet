@@ -20,11 +20,15 @@ export async function captureCorrection(context: CourseCorrectionContext): Promi
   if (context.reason) parts.push(`Because: ${context.reason}`);
   const content = parts.join(' ');
 
-  const writeArgs: Record<string, unknown> = { content, collection: 'course-corrections' };
-  if (context.member) writeArgs['member'] = context.member;
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const memberTag = context.member ? `\nmember: ${context.member}` : '';
+  const frontmatter = `---\ntags: [course-corrections]${memberTag}\n---\n`;
 
   try {
-    await getGbrainClient().callTool('brain_write', writeArgs);
+    await getGbrainClient().callTool('put_page', {
+      slug: `course-corrections/${ts}`,
+      content: frontmatter + content,
+    });
   } catch {
     // Silent no-op — gbrain may not be running
   }
@@ -41,7 +45,7 @@ export async function recallCorrections(context: { repo?: string; query: string 
   const query = queryParts.join(' ');
 
   try {
-    return await getGbrainClient().callTool('brain_query', { query, collection: 'course-corrections' });
+    return await getGbrainClient().callTool('search', { query });
   } catch {
     return '';
   }

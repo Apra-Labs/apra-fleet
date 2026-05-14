@@ -18,9 +18,17 @@ export async function brainWrite(input: BrainWriteInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('brain_write', {
-    content: input.content,
-    ...(input.collection ? { collection: input.collection } : {}),
-    ...(input.metadata ? { metadata: input.metadata } : {}),
+  // gbrain stores pages via put_page. Generate a unique slug under the
+  // collection namespace (or "notes" if none given). Metadata is embedded
+  // in YAML frontmatter inside the content.
+  const ns = input.collection ?? 'notes';
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const slug = `${ns}/${ts}`;
+  const frontmatter = input.metadata
+    ? `---\ntags: [${ns}]\nmetadata: ${input.metadata}\n---\n`
+    : `---\ntags: [${ns}]\n---\n`;
+  return callGbrainTool('put_page', {
+    slug,
+    content: frontmatter + input.content,
   });
 }

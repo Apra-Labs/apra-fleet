@@ -21,7 +21,7 @@ beforeEach(() => {
 afterEach(() => restoreRegistry());
 
 // ---------------------------------------------------------------------------
-// code_def
+// code_def — delegates to gbrain "query" with near_symbol anchor
 // ---------------------------------------------------------------------------
 
 describe('code_def', () => {
@@ -32,7 +32,7 @@ describe('code_def', () => {
 
     const result = await codeDef({ member_id: agent.id, symbol: 'foo' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('code_def', { symbol: 'foo' });
+    expect(mockCallTool).toHaveBeenCalledWith('query', { near_symbol: 'foo', walk_depth: 1, detail: 'high' });
     expect(result).toBe('src/utils/foo.ts:10 — function foo() {}');
   });
 
@@ -55,7 +55,7 @@ describe('code_def', () => {
 });
 
 // ---------------------------------------------------------------------------
-// code_refs
+// code_refs — delegates to gbrain "query" with near_symbol + walk_depth 2
 // ---------------------------------------------------------------------------
 
 describe('code_refs', () => {
@@ -66,7 +66,7 @@ describe('code_refs', () => {
 
     const result = await codeRefs({ member_id: agent.id, symbol: 'foo' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('code_refs', { symbol: 'foo' });
+    expect(mockCallTool).toHaveBeenCalledWith('query', { near_symbol: 'foo', walk_depth: 2 });
     expect(result).toBe('3 references found');
   });
 
@@ -89,7 +89,7 @@ describe('code_refs', () => {
 });
 
 // ---------------------------------------------------------------------------
-// code_callers
+// code_callers — delegates to gbrain "query" with near_symbol + callers query
 // ---------------------------------------------------------------------------
 
 describe('code_callers', () => {
@@ -100,7 +100,11 @@ describe('code_callers', () => {
 
     const result = await codeCallers({ member_id: agent.id, symbol: 'bar' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('code_callers', { symbol: 'bar' });
+    expect(mockCallTool).toHaveBeenCalledWith('query', {
+      query: 'callers of bar',
+      near_symbol: 'bar',
+      walk_depth: 1,
+    });
     expect(result).toBe('2 callers found');
   });
 
@@ -116,7 +120,7 @@ describe('code_callers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// code_callees
+// code_callees — delegates to gbrain "query" with near_symbol + callees query
 // ---------------------------------------------------------------------------
 
 describe('code_callees', () => {
@@ -127,7 +131,11 @@ describe('code_callees', () => {
 
     const result = await codeCallees({ member_id: agent.id, symbol: 'baz' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('code_callees', { symbol: 'baz' });
+    expect(mockCallTool).toHaveBeenCalledWith('query', {
+      query: 'functions called by baz',
+      near_symbol: 'baz',
+      walk_depth: 1,
+    });
     expect(result).toBe('5 callees found');
   });
 

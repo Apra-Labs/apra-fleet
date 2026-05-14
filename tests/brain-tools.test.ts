@@ -19,7 +19,7 @@ beforeEach(() => {
 afterEach(() => restoreRegistry());
 
 // ---------------------------------------------------------------------------
-// brain_query
+// brain_query — delegates to gbrain "search" (BM25 keyword search)
 // ---------------------------------------------------------------------------
 
 describe('brain_query', () => {
@@ -30,18 +30,18 @@ describe('brain_query', () => {
 
     const result = await brainQuery({ member_id: agent.id, query: 'what is life?' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_query', { query: 'what is life?' });
+    expect(mockCallTool).toHaveBeenCalledWith('search', { query: 'what is life?' });
     expect(result).toBe('The answer is 42');
   });
 
-  it('passes collection when provided', async () => {
+  it('appends collection as tag filter when provided', async () => {
     const agent = makeTestAgent({ gbrain: true });
     addAgent(agent);
     mockCallTool.mockResolvedValue('result');
 
     await brainQuery({ member_id: agent.id, query: 'hello', collection: 'docs' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_query', { query: 'hello', collection: 'docs' });
+    expect(mockCallTool).toHaveBeenCalledWith('search', { query: 'hello tags:docs' });
   });
 
   it('returns error when member does not have gbrain enabled', async () => {
@@ -83,7 +83,7 @@ describe('brain_query', () => {
 });
 
 // ---------------------------------------------------------------------------
-// brain_write
+// brain_write — delegates to gbrain "put_page" with slug + frontmatter
 // ---------------------------------------------------------------------------
 
 describe('brain_write', () => {
@@ -94,11 +94,14 @@ describe('brain_write', () => {
 
     const result = await brainWrite({ member_id: agent.id, content: 'important knowledge' });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_write', { content: 'important knowledge' });
+    expect(mockCallTool).toHaveBeenCalledWith('put_page', expect.objectContaining({
+      slug: expect.stringContaining('notes/'),
+      content: expect.stringContaining('important knowledge'),
+    }));
     expect(result).toBe('Stored successfully');
   });
 
-  it('passes collection and metadata when provided', async () => {
+  it('uses collection as namespace in slug and frontmatter', async () => {
     const agent = makeTestAgent({ gbrain: true });
     addAgent(agent);
     mockCallTool.mockResolvedValue('ok');
@@ -106,15 +109,17 @@ describe('brain_write', () => {
     await brainWrite({
       member_id: agent.id,
       content: 'stuff',
-      collection: 'notes',
+      collection: 'docs',
       metadata: '{"source":"test"}',
     });
 
-    expect(mockCallTool).toHaveBeenCalledWith('brain_write', {
-      content: 'stuff',
-      collection: 'notes',
-      metadata: '{"source":"test"}',
-    });
+    expect(mockCallTool).toHaveBeenCalledWith('put_page', expect.objectContaining({
+      slug: expect.stringContaining('docs/'),
+      content: expect.stringContaining('stuff'),
+    }));
+    const callArgs = mockCallTool.mock.calls[0][1] as { content: string };
+    expect(callArgs.content).toContain('tags: [docs]');
+    expect(callArgs.content).toContain('{"source":"test"}');
   });
 
   it('returns error when member does not have gbrain enabled', async () => {

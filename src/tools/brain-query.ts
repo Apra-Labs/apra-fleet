@@ -17,8 +17,8 @@ export async function brainQuery(input: BrainQueryInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('brain_query', {
-    query: input.query,
-    ...(input.collection ? { collection: input.collection } : {}),
-  });
+  // gbrain exposes keyword-only full-text search as "search".
+  // The collection filter is not natively supported; pass as part of the query.
+  const q = input.collection ? `${input.query} tags:${input.collection}` : input.query;
+  return callGbrainTool('search', { query: q });
 }

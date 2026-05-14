@@ -16,5 +16,6 @@ export async function codeCallers(input: CodeCallersInput): Promise<string> {
   const gbrainError = assertGbrainEnabled(agentOrError);
   if (gbrainError) return gbrainError;
 
-  return callGbrainTool('code_callers', { symbol: input.symbol });
+  // gbrain exposes callers via the "query" tool with near_symbol anchor.
+  return callGbrainTool('query', { query: `callers of ${input.symbol}`, near_symbol: input.symbol, walk_depth: 1 });
 }
