@@ -48,9 +48,14 @@ async function handleConfirm(args: string[]): Promise<void> {
   const memberContext = onIdx !== -1 && onIdx + 1 < args.length ? args[onIdx + 1] : undefined;
 
   console.error(`\napra-fleet - Network Egress Confirmation\n`);
-  console.error(`  Credential "${credentialName}" is about to send data over the network.`);
-  if (commandContext) console.error(`  Command:    ${commandContext}`);
-  if (memberContext) console.error(`  Member:     ${memberContext}`);
+  if (commandContext && memberContext) {
+    console.error(`  This command on ${memberContext} will send credential "${credentialName}" over the network:`);
+    console.error(`  ${commandContext}`);
+  } else {
+    console.error(`  Credential "${credentialName}" will be sent over the network.`);
+    if (memberContext) console.error(`  Member:  ${memberContext}`);
+    if (commandContext) console.error(`  Command: ${commandContext}`);
+  }
   console.error('');
 
   let inputValue: string;

@@ -75,12 +75,13 @@ OOB (out-of-band) network egress confirmation. When a credential is stored with 
 
 The terminal shows:
 ```
-  Credential "MY-CRED-NAME" is about to send data over the network.
-  Command:    curl -X POST https://api.example.com -d "{{secure.MY-CRED-NAME}}"
-  Member:     fleet-dev
+  This command on fleet-dev will send credential "MY-CRED-NAME" over the network:
+  curl -X POST https://api.example.com -d "{{secure.MY-CRED-NAME}}"
 
   Type "yes" to allow network access:
 ```
+
+The user types `yes` to allow, or closes the window / types anything else to deny.
 
 The user types `yes` to allow, or closes the window / types anything else to block. This is invoked automatically by the fleet server - you do not need to call it manually.
 
