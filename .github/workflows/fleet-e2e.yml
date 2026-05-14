@@ -164,7 +164,7 @@ jobs:
               echo "::error::apra-fleet MCP not loaded on $provider. Ensure fleet is installed on this runner."
               exit 1
             fi
-            if ! echo "$output" | grep -qE 'v[0-9]+\.[0-9]+'; then
+            if ! echo "$output" | grep -qE 'v?[0-9]+\.[0-9]+'; then
               echo "::error::apra-fleet MCP responded but version not recognised. Output: $output"
               exit 1
             fi
