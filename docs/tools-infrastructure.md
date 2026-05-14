@@ -81,9 +81,17 @@ The terminal shows:
   Type "yes" to allow network access:
 ```
 
-The user types `yes` to allow, or closes the window / types anything else to deny.
+The user types `yes` to allow, or closes the window / types anything else to deny. This is invoked automatically by the fleet server - you do not need to call it manually.
 
-The user types `yes` to allow, or closes the window / types anything else to block. This is invoked automatically by the fleet server - you do not need to call it manually.
+**Headless fallback:** When no graphical terminal is available (SSH session, CI runner, Windows service), the fleet server cannot open a terminal. Instead, the agent surfaces a fallback message showing the command context and asks the user to run the confirm command manually in a second terminal:
+
+```
+  This command on fleet-dev will send credential "MY-CRED-NAME" over the network:
+  curl -X POST https://api.example.com -d "{{secure.MY-CRED-NAME}}"
+
+Run this in a separate terminal to confirm:
+  ! apra-fleet secret --confirm MY-CRED-NAME
+```
 
 ## apra-fleet auth (CLI)
 
