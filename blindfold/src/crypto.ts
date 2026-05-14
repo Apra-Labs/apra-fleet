@@ -59,7 +59,11 @@ export function encryptPassword(plaintext: string): string {
 }
 
 export function decryptPassword(ciphertext: string): string {
-  const [ivHex, authTagHex, encrypted] = ciphertext.split(':');
+  const parts = ciphertext.split(':');
+  if (parts.length < 3 || !parts[0] || !parts[1]) {
+    throw new Error('Invalid ciphertext format: expected iv:authTag:encrypted');
+  }
+  const [ivHex, authTagHex, encrypted] = parts;
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
 

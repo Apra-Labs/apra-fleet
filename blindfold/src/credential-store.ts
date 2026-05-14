@@ -185,6 +185,10 @@ export function getTaskCredentials(taskId: string): TaskCredential[] {
   return taskCredentials.get(taskId) ?? [];
 }
 
+export function clearTaskCredentials(taskId: string): void {
+  taskCredentials.delete(taskId);
+}
+
 export function credentialResolve(
   name: string,
   callingMember?: string,
@@ -311,7 +315,7 @@ export function purgeExpiredCredentials(): void {
   const now = Date.now();
   let changed = false;
   for (const [name, record] of Object.entries(file.credentials)) {
-    if (record.expiresAt && now > new Date(record.expiresAt).getTime()) {
+    if (record.expiresAt && now >= new Date(record.expiresAt).getTime()) {
       delete file.credentials[name];
       sessionStore.delete(name);
       changed = true;
@@ -323,6 +327,12 @@ export function purgeExpiredCredentials(): void {
       saveCredentialFile(file);
     } catch {
       // best-effort
+    }
+  }
+
+  for (const [name, entry] of sessionStore) {
+    if (entry.expiresAt && now >= new Date(entry.expiresAt).getTime()) {
+      sessionStore.delete(name);
     }
   }
 }

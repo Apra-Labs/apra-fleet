@@ -12,7 +12,7 @@ export type ResolveSecureInput = z.infer<typeof resolveSecureSchema>;
 
 export async function resolveSecureHandler(input: ResolveSecureInput): Promise<string> {
   if (!containsSecureTokens(input.text)) {
-    return JSON.stringify({ resolved: input.text, redact_patterns: [] });
+    return JSON.stringify({ resolved: input.text, redact_markers: [] });
   }
 
   const result = resolveSecureTokens(input.text, {
@@ -27,6 +27,6 @@ export async function resolveSecureHandler(input: ResolveSecureInput): Promise<s
 
   return JSON.stringify({
     resolved: result.resolved,
-    redact_patterns: result.credentials.map(c => c.plaintext),
+    redact_markers: result.credentials.map(c => `[REDACTED:${c.name}]`),
   });
 }

@@ -6,30 +6,30 @@ describe('validateCredentials', () => {
     expect(validateCredentials('not json')).toBeNull();
   });
 
-  it('returns null for missing claudeAiOauth', () => {
+  it('returns null for missing expiresAt', () => {
     expect(validateCredentials('{}')).toBeNull();
   });
 
-  it('returns null for missing expiresAt', () => {
-    expect(validateCredentials(JSON.stringify({ claudeAiOauth: {} }))).toBeNull();
+  it('returns null for nested-only expiresAt (no top-level)', () => {
+    expect(validateCredentials(JSON.stringify({ claudeAiOauth: { expiresAt: new Date().toISOString() } }))).toBeNull();
   });
 
   it('returns valid for far-future expiry', () => {
     const future = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
-    const result = validateCredentials(JSON.stringify({ claudeAiOauth: { expiresAt: future } }));
+    const result = validateCredentials(JSON.stringify({ expiresAt: future }));
     expect(result).toEqual({ status: 'valid' });
   });
 
   it('returns near-expiry when within 1 hour', () => {
     const nearFuture = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    const result = validateCredentials(JSON.stringify({ claudeAiOauth: { expiresAt: nearFuture } }));
+    const result = validateCredentials(JSON.stringify({ expiresAt: nearFuture }));
     expect(result?.status).toBe('near-expiry');
   });
 
   it('returns expired-refreshable when expired with refresh token', () => {
     const past = new Date(Date.now() - 60 * 1000).toISOString();
     const result = validateCredentials(JSON.stringify({
-      claudeAiOauth: { expiresAt: past, refreshToken: 'rt' },
+      expiresAt: past, refreshToken: 'rt',
     }));
     expect(result).toEqual({ status: 'expired-refreshable' });
   });
@@ -37,7 +37,7 @@ describe('validateCredentials', () => {
   it('returns expired-no-refresh when expired without refresh token', () => {
     const past = new Date(Date.now() - 60 * 1000).toISOString();
     const result = validateCredentials(JSON.stringify({
-      claudeAiOauth: { expiresAt: past },
+      expiresAt: past,
     }));
     expect(result).toEqual({ status: 'expired-no-refresh' });
   });

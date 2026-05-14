@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialResolve, credentialUpdate } from '../../credential-store.js';
+import { credentialUpdate } from '../../credential-store.js';
 import { getLogger } from '../../config.js';
 
 export const credentialUpdateSchema = z.object({
@@ -14,11 +14,6 @@ export type CredentialUpdateInput = z.infer<typeof credentialUpdateSchema>;
 export async function credentialUpdateHandler(input: CredentialUpdateInput): Promise<string> {
   if (input.members === undefined && input.ttl_seconds === undefined && input.network_policy === undefined) {
     return 'No fields to update — specify at least one of: members, ttl_seconds, network_policy.';
-  }
-
-  const existing = credentialResolve(input.name);
-  if (!existing) {
-    return `Credential "${input.name}" not found.`;
   }
 
   const updates: { members?: string; expiresAt?: number | null; network_policy?: 'allow' | 'confirm' | 'deny' } = {};

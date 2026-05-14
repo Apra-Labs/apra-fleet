@@ -23,38 +23,48 @@ export async function startMcpServer(): Promise<void> {
     { capabilities: { logging: {} } },
   );
 
-  server.tool(
+  server.registerTool(
     'credential_store_set',
-    'Collect a secret from the user out-of-band and store it securely. Returns a {{secure.NAME}} handle for use in other tool parameters.',
-    credentialSetSchema.shape,
+    {
+      description: 'Collect a secret from the user out-of-band and store it securely. Returns a {{secure.NAME}} handle for use in other tool parameters.',
+      inputSchema: credentialSetSchema,
+    },
     async (input) => ({ content: [{ type: 'text', text: await credentialSetHandler(input as any) }] }),
   );
 
-  server.tool(
+  server.registerTool(
     'credential_store_list',
-    'List all stored credentials (metadata only — values are never exposed).',
-    credentialListSchema.shape,
+    {
+      description: 'List all stored credentials (metadata only — values are never exposed).',
+      inputSchema: credentialListSchema,
+    },
     async () => ({ content: [{ type: 'text', text: await credentialListHandler() }] }),
   );
 
-  server.tool(
+  server.registerTool(
     'credential_store_delete',
-    'Delete a stored credential by name.',
-    credentialDeleteSchema.shape,
+    {
+      description: 'Delete a stored credential by name.',
+      inputSchema: credentialDeleteSchema,
+    },
     async (input) => ({ content: [{ type: 'text', text: await credentialDeleteHandler(input as any) }] }),
   );
 
-  server.tool(
+  server.registerTool(
     'credential_store_update',
-    'Update credential metadata (member scope, TTL, or network policy).',
-    credentialUpdateSchema.shape,
+    {
+      description: 'Update credential metadata (member scope, TTL, or network policy).',
+      inputSchema: credentialUpdateSchema,
+    },
     async (input) => ({ content: [{ type: 'text', text: await credentialUpdateHandler(input as any) }] }),
   );
 
-  server.tool(
+  server.registerTool(
     'resolve_secure',
-    'Resolve {{secure.NAME}} tokens in text to their credential values. Returns resolved text and redaction patterns.',
-    resolveSecureSchema.shape,
+    {
+      description: 'Resolve {{secure.NAME}} tokens in text to their credential values. Returns resolved text and redaction markers.',
+      inputSchema: resolveSecureSchema,
+    },
     async (input) => ({ content: [{ type: 'text', text: await resolveSecureHandler(input as any) }] }),
   );
 
