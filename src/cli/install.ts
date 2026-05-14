@@ -169,6 +169,11 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
       ? (GEMINI_HOOK_NAME_MAP[claudeName] ?? claudeName)
       : claudeName;
 
+    // Remove stale Claude-style key if we're writing under a different Gemini name.
+    if (provider === 'gemini' && claudeName in GEMINI_HOOK_NAME_MAP && claudeName !== eventName) {
+      delete settings.hooks[claudeName];
+    }
+
     settings.hooks[eventName] = settings.hooks[eventName] || [];
 
     for (const newHook of hookEntries as any[]) {
