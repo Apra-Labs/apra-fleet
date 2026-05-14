@@ -199,6 +199,7 @@ function mergePermissions(paths: ProviderInstallConfig): void {
     'Agent(*)',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
+    `Read(${path.join(paths.configDir, 'skills').replace(/\\/g, '/')}/**)`,
   ];
 
   settings.permissions = settings.permissions || {};

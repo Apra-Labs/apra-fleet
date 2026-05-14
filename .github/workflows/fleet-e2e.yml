@@ -146,24 +146,22 @@ jobs:
           E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
           E2E_ACRED:      ${{ secrets.E2E_ACRED }}
 
-      # -- Step 3a: Clear PM claude settings of member-role residue ------------
+      # -- Step 3a: Prepare clean PM environment --------------------------------
       # This runner may also be registered as a fleet member. compose_permissions
-      # writes .claude/settings.local.json to the member's work_folder with
-      # apra-fleet disabled. Claude Code walks up from RUN_DIR (which is nested
-      # inside the work_folder) and finds that file, polluting the PM session.
-      # Delete it before the PM runs - compose_permissions recreates it on next
-      # member use, and the PM needs apra-fleet MCP enabled.
-      - name: Clear PM claude settings of member-role residue
+      # writes provider-specific settings files to parent directories that the
+      # PM LLM process can pick up and be polluted by. Remove them before the
+      # PM runs so it starts with a clean slate.
+      - name: Prepare clean PM environment
         shell: bash
         run: |
+          # Remove residue from previous member roles in any parent directory
           dir="$GITHUB_WORKSPACE"
           while [ "$(dirname "$dir")" != "$dir" ]; do
             dir="$(dirname "$dir")"
-            cfg="$dir/.claude/settings.local.json"
-            if [ -f "$cfg" ]; then
-              rm -f "$cfg"
-              echo "Removed: $cfg"
-            fi
+            # Clean Claude residue
+            [ -f "$dir/.claude/settings.local.json" ] && rm -v "$dir/.claude/settings.local.json"
+            # Clean Gemini residue
+            [ -f "$dir/.gemini/settings.json" ] && rm -v "$dir/.gemini/settings.json"
           done
           echo "Done."
 
@@ -288,16 +286,6 @@ jobs:
               --add-dir "$RUN_DIR" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
           else
-            # Setup Gemini skills mount for YOLO mode
-            if [ "$PROVIDER" = "gemini" ]; then
-              if [ "$RUNNER_OS" = "Windows" ]; then
-                # Gemini MIC sandbox expects Windows paths with forward slashes
-                WIN_HOME=$(cygpath -m "$USERPROFILE")
-                export SANDBOX_MOUNTS="${WIN_HOME}/.gemini/skills:${WIN_HOME}/.gemini/skills:ro"
-              else
-                export SANDBOX_MOUNTS="$HOME/.gemini/skills:$HOME/.gemini/skills:ro"
-              fi
-            fi
             gemini --skip-trust \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
@@ -437,16 +425,6 @@ jobs:
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            # Setup Gemini skills mount for YOLO mode
-            if [ "$PROVIDER" = "gemini" ]; then
-              if [ "$RUNNER_OS" = "Windows" ]; then
-                # Gemini MIC sandbox expects Windows paths with forward slashes
-                WIN_HOME=$(cygpath -m "$USERPROFILE")
-                export SANDBOX_MOUNTS="${WIN_HOME}/.gemini/skills:${WIN_HOME}/.gemini/skills:ro"
-              else
-                export SANDBOX_MOUNTS="$HOME/.gemini/skills:$HOME/.gemini/skills:ro"
-              fi
-            fi
             timeout 120 gemini --skip-trust \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
