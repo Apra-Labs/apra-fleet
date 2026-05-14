@@ -18,19 +18,26 @@ if (!existsSync(rawOutputPath)) {
 const content = readFileSync(rawOutputPath, 'utf8');
 const allTexts = [];
 
+let currentMessage = '';
 for (const line of content.split('\n')) {
   const trimmed = line.trim();
   if (!trimmed) continue;
   let obj;
   try { obj = JSON.parse(trimmed); } catch { continue; }
+
   if (obj.type === 'result' && obj.result) {
+    if (currentMessage) { allTexts.push(currentMessage); currentMessage = ''; }
     allTexts.push(obj.result);
   } else if (obj.type === 'assistant') {
+    if (currentMessage) { allTexts.push(currentMessage); currentMessage = ''; }
     for (const block of obj.message?.content ?? []) {
       if (block?.type === 'text' && block.text) allTexts.push(block.text);
     }
+  } else if (obj.type === 'message' && obj.role === 'assistant' && typeof obj.content === 'string') {
+    currentMessage += obj.content;
   }
 }
+if (currentMessage) { allTexts.push(currentMessage); }
 
 let checkpoints = null;
 for (const text of allTexts) {

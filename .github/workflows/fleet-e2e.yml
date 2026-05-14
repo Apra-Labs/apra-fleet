@@ -288,6 +288,16 @@ jobs:
               --add-dir "$RUN_DIR" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
           else
+            # Setup Gemini skills mount for YOLO mode
+            if [ "$PROVIDER" = "gemini" ]; then
+              if [ "$RUNNER_OS" = "Windows" ]; then
+                # Gemini MIC sandbox expects Windows paths with forward slashes
+                WIN_HOME=$(cygpath -m "$USERPROFILE")
+                export SANDBOX_MOUNTS="${WIN_HOME}/.gemini/skills:${WIN_HOME}/.gemini/skills:ro"
+              else
+                export SANDBOX_MOUNTS="$HOME/.gemini/skills:$HOME/.gemini/skills:ro"
+              fi
+            fi
             gemini --skip-trust \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
@@ -427,6 +437,16 @@ jobs:
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
+            # Setup Gemini skills mount for YOLO mode
+            if [ "$PROVIDER" = "gemini" ]; then
+              if [ "$RUNNER_OS" = "Windows" ]; then
+                # Gemini MIC sandbox expects Windows paths with forward slashes
+                WIN_HOME=$(cygpath -m "$USERPROFILE")
+                export SANDBOX_MOUNTS="${WIN_HOME}/.gemini/skills:${WIN_HOME}/.gemini/skills:ro"
+              else
+                export SANDBOX_MOUNTS="$HOME/.gemini/skills:$HOME/.gemini/skills:ro"
+              fi
+            fi
             timeout 120 gemini --skip-trust \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
