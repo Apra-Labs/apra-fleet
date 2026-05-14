@@ -201,7 +201,7 @@ jobs:
             check_mcp "$output" "claude"
             echo "PM claude auth OK - fleet MCP responding"
           elif [ "$PROVIDER" = "gemini" ]; then
-            output=$(gemini -p "$PROMPT" --model auto --yolo --skip-trust 2>&1)
+            output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1)
             echo "$output"
             check_mcp "$output" "gemini"
             echo "PM gemini auth OK - fleet MCP responding"
@@ -289,7 +289,7 @@ jobs:
               --add-dir "$RUN_DIR" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
           else
-            gemini --yolo --skip-trust \
+            gemini --skip-trust \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
               > "$RUN_DIR/raw-output.txt" 2>&1 || true
@@ -428,7 +428,7 @@ jobs:
               --max-turns 15 \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            timeout 120 gemini --yolo --skip-trust \
+            timeout 120 gemini --skip-trust \
               -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" \
               > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
