@@ -3,7 +3,7 @@ import { escapeShellArg, escapePowerShellArg } from './shell-escape.js';
 import type { ResolvedCredential, ResolveOptions } from './types.js';
 
 export const SECURE_TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-const SEC_HANDLE_RE = /sec:\/\/[a-zA-Z0-9_]+/;
+export const SEC_HANDLE_RE = /sec:\/\/[a-zA-Z0-9_]+/;
 
 export function containsSecureTokens(text: string): boolean {
   SECURE_TOKEN_RE.lastIndex = 0;

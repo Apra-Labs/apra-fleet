@@ -1,6 +1,6 @@
 // Configuration
 export { initBlindfold, getConfig, getDataDir, getLogger, resetConfig } from './config.js';
-export type { BlindfolConfig, Logger, SecureInputOptions, CredentialMeta, CredentialUpdatePatch, CredentialUpdateResult, ResolvedCredential, ResolveOptions, CredentialStatus } from './types.js';
+export type { BlindfoldConfig, Logger, SecureInputOptions, CredentialMeta, CredentialUpdatePatch, CredentialUpdateResult, ResolvedCredential, ResolveOptions, CredentialStatus } from './types.js';
 
 // Encryption
 export { encryptPassword, decryptPassword } from './crypto.js';
@@ -15,6 +15,7 @@ export {
   purgeExpiredCredentials,
   registerTaskCredentials,
   getTaskCredentials,
+  clearTaskCredentials,
   _clearSessionStore,
 } from './credential-store.js';
 
@@ -25,6 +26,7 @@ export {
   redactOutput,
   containsSecureTokens,
   SECURE_TOKEN_RE,
+  SEC_HANDLE_RE,
 } from './token-resolver.js';
 
 // Shell Security

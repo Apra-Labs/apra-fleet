@@ -164,7 +164,7 @@ describe('MCP tool handlers', () => {
       });
       const parsed = JSON.parse(result);
       expect(parsed.resolved).toContain('secret-val');
-      expect(parsed.redact_patterns).toContain('secret-val');
+      expect(parsed.redact_markers).toContain('[REDACTED:MY_TOKEN]');
     });
 
     it('returns text unchanged when no tokens present', async () => {
@@ -174,7 +174,7 @@ describe('MCP tool handlers', () => {
       });
       const parsed = JSON.parse(result);
       expect(parsed.resolved).toBe('just plain text');
-      expect(parsed.redact_patterns).toEqual([]);
+      expect(parsed.redact_markers).toEqual([]);
     });
 
     it('returns error for missing credential', async () => {

@@ -207,7 +207,13 @@ async function handleSet(args: string[]): Promise<void> {
     });
   } else {
     const displayPrompt = customPrompt ?? `Enter value for ${name}`;
-    secretValue = await collectSecret(displayPrompt);
+    try {
+      secretValue = await collectSecret(displayPrompt);
+    } catch (err: any) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+      return; // unreachable — satisfies TypeScript definite assignment
+    }
   }
 
   let finalPersist = persist;
@@ -222,6 +228,7 @@ async function handleSet(args: string[]): Promise<void> {
     finalPersist = answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
   }
 
+  const valueForPersist = secretValue;
   const sockPath = getSocketPath();
   const waitForServer = new Promise<boolean>((resolve) => {
     const client = net.connect(sockPath, () => {
@@ -270,7 +277,7 @@ async function handleSet(args: string[]): Promise<void> {
     }
 
     try {
-      credentialSet(name, secretValue, true, 'allow');
+      credentialSet(name, valueForPersist, true, 'allow');
       console.error(`✓ Secret stored for ${name}.`);
       console.error(`  ℹ Network policy: allow. Use 'blindfold secret --update ${name} --deny' to restrict.`);
     } catch (err: any) {
@@ -279,7 +286,7 @@ async function handleSet(args: string[]): Promise<void> {
     }
   } else if (persist) {
     try {
-      credentialSet(name, secretValue, true, 'allow');
+      credentialSet(name, valueForPersist, true, 'allow');
       console.error(`✓ Secret also stored for future use.`);
       console.error(`  ℹ Network policy: allow. Use 'blindfold secret --update ${name} --deny' to restrict.`);
     } catch (err: any) {

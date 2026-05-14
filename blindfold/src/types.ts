@@ -4,7 +4,7 @@ export interface Logger {
   error(tag: string, msg: string): void;
 }
 
-export interface BlindfolConfig {
+export interface BlindfoldConfig {
   dataDir: string;
   productName: string;
   logger: Logger;

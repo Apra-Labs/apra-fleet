@@ -1,6 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
-import type { BlindfolConfig, Logger } from './types.js';
+import type { BlindfoldConfig, Logger } from './types.js';
 
 class ConsoleLogger implements Logger {
   constructor(private prefix: string) {}
@@ -11,9 +11,9 @@ class ConsoleLogger implements Logger {
 
 const DEFAULT_DATA_DIR = path.join(os.homedir(), '.blindfold', 'data');
 
-let _config: BlindfolConfig | null = null;
+let _config: BlindfoldConfig | null = null;
 
-export function initBlindfold(overrides: Partial<BlindfolConfig> = {}): BlindfolConfig {
+export function initBlindfold(overrides: Partial<BlindfoldConfig> = {}): BlindfoldConfig {
   _config = {
     dataDir: overrides.dataDir ?? process.env.BLINDFOLD_DATA_DIR ?? DEFAULT_DATA_DIR,
     productName: overrides.productName ?? 'blindfold',
@@ -24,7 +24,7 @@ export function initBlindfold(overrides: Partial<BlindfolConfig> = {}): Blindfol
   return _config;
 }
 
-export function getConfig(): BlindfolConfig {
+export function getConfig(): BlindfoldConfig {
   if (!_config) return initBlindfold();
   return _config;
 }

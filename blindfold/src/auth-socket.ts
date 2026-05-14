@@ -101,7 +101,7 @@ export async function ensureAuthSocket(): Promise<void> {
             }
             pending.encryptedPassword = encryptPassword(msg.password);
             if (msg.persist !== undefined) pending.persist = !!msg.persist;
-            (msg as any).password = '';
+            // Security boundary is UDS file permissions (0o600), not in-memory zeroing of JS strings
             conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
             if (pending.spawned_pid) {
               killProcess(pending.spawned_pid);
@@ -386,10 +386,9 @@ export async function collectOobConfirm(
   return { confirmed: Boolean(result.password), terminalUnavailable: false };
 }
 
-function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string; args: string[] } {
+async function getAuthCommand(memberName: string, extraArgs?: string[]): Promise<{ cmd: string; args: string[] }> {
   const extra = extraArgs ?? [];
   const isConfirm = extra.includes('--confirm');
-  const productName = getConfig().productName;
 
   let cmdArgs: string[];
   if (isConfirm) {
@@ -406,13 +405,14 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
   }
 
   try {
-    const sea = require('node:sea');
+    const sea = await import('node:sea');
     if (sea.isSea()) {
       return { cmd: process.execPath, args: cmdArgs };
     }
   } catch { /* not SEA */ }
 
-  const indexJs = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'cli', 'index.js');
+  const { fileURLToPath } = await import('node:url');
+  const indexJs = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'cli', 'index.js');
   return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
@@ -448,73 +448,101 @@ export function launchAuthTerminal(
   extraArgs: string[] | undefined,
   onExit: (code: number | null) => void,
 ): string {
-  const { cmd, args } = getAuthCommand(memberName, extraArgs);
-  const fullArgs = [cmd, ...args];
-  let child: ChildProcess;
+  const platform = process.platform;
   const productName = getConfig().productName;
+
+  // Validate memberName to prevent command injection (AppleScript / shell)
+  if (!/^[a-zA-Z0-9_-]+$/.test(memberName)) {
+    return buildHeadlessFallback(memberName, 'Invalid member name — only alphanumeric, underscore, and hyphen characters are allowed.');
+  }
+
+  // Perform synchronous headless checks before kicking off the async launch
+  if (platform === 'win32' && !hasInteractiveDesktop()) {
+    return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).');
+  }
+  if (platform === 'linux' && !hasGraphicalDisplay()) {
+    return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).');
+  }
+  if (platform === 'darwin' && isSSHSession()) {
+    return buildHeadlessFallback(memberName, 'SSH session detected — no terminal emulator available (SSH_TTY is set).');
+  }
+
+  // For Linux with a display, check for a terminal emulator synchronously so we can return a meaningful fallback
+  if (platform === 'linux') {
+    const terminal = findLinuxTerminal();
+    if (!terminal) {
+      return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${productName} auth ${memberName}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    }
+  }
+
+  // Kick off async resolution; the security boundary is UDS file permissions, not in-memory zeroing
+  _launchAuthTerminalAsync(memberName, extraArgs, productName, platform, onExit).catch((err: any) => {
+    getLogger().error('auth_socket', `Failed to launch auth terminal: ${err?.message}`);
+    onExit(1);
+  });
+  return 'launched';
+}
+
+async function _launchAuthTerminalAsync(
+  memberName: string,
+  extraArgs: string[] | undefined,
+  productName: string,
+  platform: string,
+  onExit: (code: number | null) => void,
+): Promise<void> {
+  const { cmd, args } = await getAuthCommand(memberName, extraArgs);
+  const fullArgs = [cmd, ...args];
   const log = getLogger();
 
+  let child: ChildProcess;
+
   try {
-    const platform = process.platform;
-
-    if (platform === 'win32' && !hasInteractiveDesktop()) {
-      return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).');
-    }
-
-    if (platform === 'linux' && !hasGraphicalDisplay()) {
-      return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).');
-    }
-
-    if (platform === 'darwin' && isSSHSession()) {
-      return buildHeadlessFallback(memberName, 'SSH session detected — no terminal emulator available (SSH_TTY is set).');
-    }
-
     if (platform === 'darwin') {
-      (async () => {
-        let exitCode = 1;
-        const tmpFile = path.join(os.tmpdir(), `${productName}-auth-exit-${Date.now()}`);
-        try {
-          const command = [...fullArgs, `; echo $? > "${tmpFile}"`].join(' ');
-          const appleScript = `
-            tell application "Terminal"
-                activate
-                set w to do script "${command.replace(/"/g, '\\"')}"
-                delay 1
-                repeat while busy of w
-                    delay 0.5
-                end repeat
-            end tell
-          `;
+      const tmpFile = path.join(os.tmpdir(), `${productName}-auth-exit-${Date.now()}`);
+      let exitCode = 1;
+      try {
+        const command = [...fullArgs, `; echo $? > "${tmpFile}"`].join(' ');
+        // Escape double-quotes inside the AppleScript string literal
+        const escapedCommand = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const appleScript = `
+          tell application "Terminal"
+              activate
+              set w to do script "${escapedCommand}"
+              delay 1
+              repeat while busy of w
+                  delay 0.5
+              end repeat
+          end tell
+        `;
 
-          const child = spawn('osascript', ['-']);
-          child.stdin.write(appleScript);
-          child.stdin.end();
+        const child = spawn('osascript', ['-']);
+        child.stdin.write(appleScript);
+        child.stdin.end();
 
-          child.on('close', async (code) => {
-            if (code !== 0) {
-              onExit(1);
-              return;
-            }
-            try {
-              const codeStr = await fsPromises.readFile(tmpFile, 'utf-8');
-              exitCode = parseInt(codeStr.trim(), 10);
-              if (isNaN(exitCode)) exitCode = 1;
-            } catch {
-              exitCode = 1;
-            } finally {
-              await fsPromises.unlink(tmpFile).catch(() => {});
-              onExit(exitCode);
-            }
-          });
-          child.on('error', (err) => {
-            log.error('auth_socket', `Failed to launch osascript for auth: ${err.message}`);
+        child.on('close', async (code) => {
+          if (code !== 0) {
             onExit(1);
-          });
-        } catch (e) {
+            return;
+          }
+          try {
+            const codeStr = await fsPromises.readFile(tmpFile, 'utf-8');
+            exitCode = parseInt(codeStr.trim(), 10);
+            if (isNaN(exitCode)) exitCode = 1;
+          } catch {
+            exitCode = 1;
+          } finally {
+            await fsPromises.unlink(tmpFile).catch(() => {});
+            onExit(exitCode);
+          }
+        });
+        child.on('error', (err) => {
+          log.error('auth_socket', `Failed to launch osascript for auth: ${err.message}`);
           onExit(1);
-        }
-      })();
-      return 'launched';
+        });
+      } catch {
+        onExit(1);
+      }
+      return;
     } else if (platform === 'win32') {
       const spawnArgs = ['/c', 'start', `${productName} Password Entry`, '/wait', ...fullArgs];
       child = spawn('cmd', spawnArgs, { stdio: 'ignore' });
@@ -523,9 +551,13 @@ export function launchAuthTerminal(
         if (pending) pending.spawned_pid = child.pid;
       }
     } else {
+      // Linux: terminal availability was already checked synchronously in launchAuthTerminal
       const terminal = findLinuxTerminal();
       if (!terminal) {
-        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+        // Shouldn't happen — already checked — but guard defensively
+        log.error('auth_socket', `Could not find a terminal emulator for ${memberName}: ${[cmd, ...args].join(' ')}`);
+        onExit(1);
+        return;
       }
       if (terminal === 'gnome-terminal') {
         child = spawn(terminal, ['--', ...fullArgs], { detached: true, stdio: 'ignore' });
@@ -544,9 +576,8 @@ export function launchAuthTerminal(
       onExit(1);
     });
     child.unref();
-
-    return 'launched';
   } catch (err: any) {
-    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    log.error('auth_socket', `Could not open a terminal window for ${memberName}: ${err?.message}`);
+    onExit(1);
   }
 }
