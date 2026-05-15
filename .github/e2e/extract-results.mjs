@@ -12,17 +12,16 @@ if (!rawOutputPath) {
 const runDir = rawOutputPath.split(/[\\/]/).slice(0, -1).join('/');
 
 if (!existsSync(rawOutputPath)) {
-  process.stdout.write(JSON.stringify({ overall: 'FAIL', error: `file not found: ${rawOutputPath}` }, null, 2) + '\n');
+  process.stdout.write(JSON.stringify({ overall: 'FAIL', error: \ile not found: \ }, null, 2) + '\n');
   process.exit(0);
 }
 
 const content = readFileSync(rawOutputPath, 'utf8');
-const allTexts = [];
 
-// 1. Extract PM text and token usage from stream-json output
+// 1. Reassemble ALL assistant text from ALL turns and chunks
+let allAssistantText = '';
 let pmTokensIn = 0;
 let pmTokensOut = 0;
-let currentMessage = '';
 
 for (const line of content.split('\n')) {
   const trimmed = line.trim();
@@ -30,25 +29,23 @@ for (const line of content.split('\n')) {
   let obj;
   try { obj = JSON.parse(trimmed); } catch { continue; }
 
-  // Claude stream-json: end-of-session result carries cumulative usage
+  // PM Usage (Claude/Gemini compatible)
   if (obj.type === 'result' && obj.usage) {
     pmTokensIn += (obj.usage.input ?? obj.usage.input_tokens ?? 0);
     pmTokensOut += (obj.usage.output ?? obj.usage.output_tokens ?? 0);
   }
 
+  // Content reassembly
   if (obj.type === 'result' && obj.result) {
-    if (currentMessage) { allTexts.push(currentMessage); currentMessage = ''; }
-    allTexts.push(obj.result);
+    allAssistantText += '\n' + obj.result;
   } else if (obj.type === 'assistant') {
-    if (currentMessage) { allTexts.push(currentMessage); currentMessage = ''; }
     for (const block of obj.message?.content ?? []) {
-      if (block?.type === 'text' && block.text) allTexts.push(block.text);
+      if (block?.type === 'text' && block.text) allAssistantText += '\n' + block.text;
     }
   } else if (obj.type === 'message' && obj.role === 'assistant' && typeof obj.content === 'string') {
-    currentMessage += obj.content;
+    allAssistantText += obj.content;
   }
 }
-if (currentMessage) { allTexts.push(currentMessage); }
 
 // 2. Sum member telemetry from ground-truth JSONL logs
 const telemetry = [
@@ -79,28 +76,22 @@ function sumMemberLogs(role) {
   return { tokens_in: in_t, tokens_out: out_t };
 }
 
-const doerStats = sumMemberLogs('doer');
-telemetry.push({ role: 'doer', ...doerStats });
+telemetry.push({ role: 'doer', ...sumMemberLogs('doer') });
+telemetry.push({ role: 'reviewer', ...sumMemberLogs('reviewer') });
 
-const reviewerStats = sumMemberLogs('reviewer');
-telemetry.push({ role: 'reviewer', ...reviewerStats });
-
-// 3. Reassemble fragmented PM JSON chunks and extract checkpoints
-let checkpoints = null;
-for (const text of allTexts) {
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim().replace(/^[\*_]+/, '').replace(/[*_]+$/, '').trim();
-    const m = line.match(/^CHECKPOINT:\s*/);
-    if (!m) continue;
-    try {
-      const parsed = JSON.parse(line.slice(m[0].length));
-      if (Array.isArray(parsed)) checkpoints = parsed;
-    } catch {}
-  }
+// 3. Extract Checkpoints from the giant reassembled string
+// We look for all CHECKPOINT: [...] patterns and take the last valid one.
+let checkpoints = [];
+const regex = /CHECKPOINT:\s*(\[.*?\])/g;
+let match;
+while ((match = regex.exec(allAssistantText)) !== null) {
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (Array.isArray(parsed)) checkpoints = parsed;
+  } catch {}
 }
 
-const results = checkpoints ?? [];
-const overall = results.length === 0 || results.some(t => t.status === 'FAIL') ? 'FAIL' : 'PASS';
+const overall = checkpoints.length === 0 || checkpoints.some(t => t.status === 'FAIL') ? 'FAIL' : 'PASS';
 
 const report = {
   run: {
@@ -109,7 +100,7 @@ const report = {
     pm_provider: pmProvider,
     timestamp:   new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
   },
-  results,
+  results: checkpoints,
   overall,
   telemetry,
 };

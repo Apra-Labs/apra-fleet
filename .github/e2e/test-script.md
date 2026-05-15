@@ -61,21 +61,22 @@ Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS
 
 ---
 
-## T5: Sprint via /pm
+## T5: Sprint via /pm (Primary Session Only)
 
-The orchestrator must coordinate the sprint using the /pm skill. 
-**T5.1** On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
-If `bitbucket`: `git config user.email {{secure.e2e_bb_user}}` in repo dir.
-After cloning (or if repo already exists), run `git fetch origin && git checkout main && git pull origin main` inside the repo dir to ensure the sprint starts from the latest main.
-Read @projects.md for active projects, then follow the pm skill.
+**FORBIDDEN**: You are strictly forbidden from using 'invoke_agent' or the 'Agent' tool for any part of T5. You MUST issue all /pm commands directly in this top-level conversation. Delegation to subagents is a violation of test protocol.
 
-**T5.2** Run `bd ready` on doer from within the repo dir with explicit PATH:
-```
-cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd ready
-```
-Pick the **3 oldest open issues**. Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
+**MANDATORY**: You MUST call 'activate_skill(name="pm")' at the start of T5.3.
+
+**T5.1** Setup Repo. On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
+After cloning, run `git fetch origin && git checkout main && git pull origin main` to ensure latest main.
+
+**T5.2** Discover Issues. Run `bd ready` on doer. Pick 3 issues. Write `requirements.md` on PM.
 
 **T5.3** Drive sprint:
+Call `activate_skill(name="pm")`.
+CHECKPOINT: [{"test":"T5-skill-loaded","status":"PASS","notes":"PM skill activated in primary session"}]
+
+Issue PM commands:
 ```
 /pm init fleet-e2e-toy
 /pm pair doer reviewer
@@ -85,7 +86,7 @@ Pick the **3 oldest open issues**. Write `requirements.md` on PM (one paragraph 
 Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix->review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
 Branch prefix: `{{BRANCH_PREFIX}}`
 
-**T5.4** Verify branch `{{BRANCH_PREFIX}}/...` exists on origin, PR was raised, CI is green.
+**T5.4** Verify branch exists on origin, PR was raised.
 
 ---
 
