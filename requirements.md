@@ -148,45 +148,21 @@ No existing parameter on either tool is reshaped or renamed. Both new parameters
 - (w) The substitution engine module is imported by both `send_files` and `execute_prompt` handlers. No duplicate scan / validate / transform logic exists elsewhere. Verifiable by grep / AST check.
 - (x) Lint or import-graph check enforces: engine module does NOT import from credential-store, and credential-store does NOT import from engine.
 
-**Schema & documentation scope (must all land in Task 1's PR).**
+**Schema & doc scope (all in Task 1's PR).**
 
-The substitution feature is not "done" until every surface that *describes* the tools reflects the new behaviour. Without this, the new parameter is invisible to LLM callers and the deprecated flag isn't truly removed.
+- **MCP schemas:** `send_files` gains optional `substitutions: { [key: string]: string }`. `execute_prompt` gains the same; also removes `dangerously_skip_permissions`.
+- **Skill docs to update:** `skills/fleet/SKILL.md`, `skills/fleet/troubleshooting.md`, `skills/pm/SKILL.md`, `skills/pm/doer-reviewer.md`. Document `substitutions` on both tools, add the secrets-boundary callout, and purge `dangerously_skip_permissions` references.
+- **PR gates (must pass):**
+  - `grep -r dangerously_skip_permissions` across repo + skills returns zero.
+  - `grep -rE 'PM substitutes|\{\{token\}\}'` across `skills/pm/` returns zero.
+  - Existing `send_files` / `execute_prompt` callers compile and test suite is green (new parameter is optional, so no behavioural change for them).
+- **Out of scope:** migrating existing client-side-substituting callers to the new parameter.
 
-- **MCP tool schemas** (JSON Schema the MCP server exposes -- what the LLM sees via `tools/list`):
-  - `send_files`: add optional `substitutions: { [key: string]: string }`. Description references the grammar, validate-then-transform behaviour, and the secrets-boundary invariant.
-  - `execute_prompt`: add optional `substitutions: { [key: string]: string }` with the same description shape. **Remove** the `dangerously_skip_permissions` property entirely from the schema.
-- **Fleet skill (`skills/fleet/`):**
-  - `SKILL.md` "File Transfer" section -- document `substitutions` for `send_files`.
-  - `SKILL.md` "Dispatch Rules" / "execute_prompt ..." sections -- document `substitutions` for `execute_prompt`, including the staged-prompt-file detail.
-  - `SKILL.md` new sub-section or callout (next to "Secure Credentials"): "[SECURE] Substitution does NOT resolve `{{secure.NAME}}` -- secrets only flow through the credential fields listed above. Token grammar excludes `.` precisely so `secure.*` cannot be a substitution key."
-  - `SKILL.md` "Unattended Execution Modes" -- drop any remaining mention of `dangerously_skip_permissions` on the dispatch tool itself; the `update_member(unattended='dangerous')` path is the only documented route.
-  - `troubleshooting.md` -- add entries for `substitution failed` (unresolved tokens) and `invalid substitutions` (reserved/malformed keys).
-- **PM skill (`skills/pm/`):**
-  - `SKILL.md` sub-documents list -- the line *"tpl-*.md -- various templates sent to members via `send_files`, never loaded into PM context -- PM substitutes `{{token}}` placeholders before sending"* is now wrong about who substitutes. Replace with: *"...PM passes a `substitutions` map to `send_files` / `execute_prompt`; fleet performs the substitution server-side. PM never reads the template content."*
-  - `SKILL.md` Core Rule 9 -- drop the `dangerously_skip_permissions` sentence; keep the rest of the rule intact.
-  - `doer-reviewer.md` -- grep for `dangerously_skip_permissions` and remove. Verify nothing else implies the flag is still valid.
-- **Code search audit (gates the PR):**
-  - `grep -r dangerously_skip_permissions` across the apra-fleet repo and all skill folders -> expected: zero matches after the PR (except possibly an entry in a CHANGELOG / migration note).
-  - `grep -r 'PM substitutes' OR '{{token}}'` across `skills/pm/` -> ensure stale prose about client-side substitution is gone.
-- **Caller audit:**
-  - Every current `send_files` and `execute_prompt` caller in the apra-fleet repo and its e2e suites still works without modification (the new parameter is optional). Confirmed by running the existing test suite.
-  - Any caller that today does *client-side* substitution before calling these tools is left untouched in this sprint -- migration of those callers is a follow-up sprint, not part of Task 1. Task 1's job is to make the feature available; downstream adoption is gated separately.
+**Cleanup -- remove `dangerously_skip_permissions` from `execute_prompt`:**
 
-**Cleanup (bundled into Task 1).**
-
-While we're touching `execute_prompt`'s schema to add `substitutions`, **remove** the deprecated `dangerously_skip_permissions` parameter entirely:
-
-- It's already a documented no-op -- the schema description says "DEPRECATED: use update_member(unattended='dangerous') instead. This field is ignored and will be removed in a future version."
-- A `dangerously_*` flag in a public API is a security-readability hazard: a casual reader (or an LLM) might think setting it does what it says.
-- The replacement path (`update_member(unattended='dangerous')`) is well-documented in fleet `SKILL.md`.
-
-**Cleanup FRs:**
-
-- Remove `dangerously_skip_permissions` from the `execute_prompt` schema.
-- Remove the parameter's handling code (if any beyond ignoring) and the deprecation message in server output.
-- Grep audit: no caller in the codebase still passes it. If any does, fix them in the same PR.
-- Fleet `SKILL.md` and `pm/SKILL.md` text updated to drop references to the flag.
-- One regression test: a caller passing `dangerously_skip_permissions: true` to `execute_prompt` gets a schema-validation error (not a silent no-op).
+- Drop from MCP schema and any server handler code.
+- Drop all references in `skills/fleet/` and `skills/pm/`.
+- Regression test: passing `dangerously_skip_permissions: true` now returns a schema-validation error (not a silent no-op).
 
 **Open questions (remaining -- see end of file).**
 
