@@ -7,7 +7,7 @@ export const activateSkillSchema = z.object({
   name: z.string().describe('The name of the skill to activate (e.g. "pm", "fleet")'),
 });
 
-export type ActivateSkillInput = z.infer/<typeof activateSkillSchema>;
+export type ActivateSkillInput = z.infer<typeof activateSkillSchema>;
 
 export async function activateSkill(input: ActivateSkillInput): Promise<string> {
   const home = os.homedir();
