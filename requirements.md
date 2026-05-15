@@ -194,13 +194,16 @@ No existing parameter on either tool is reshaped or renamed. Both new parameters
 name: <role>
 description: <one-line summary the dispatcher reads>
 tools: [<tool list>]
-model: standard | premium
 ---
 
 <system-prompt body: role rules, behaviors, output format>
 ```
 
 Body content is the current `tpl-*.md` text with `{{token}}` placeholders removed -- runtime parameters now flow via Task 1's `substitutions` on the dispatch prompt.
+
+**No `model:` in frontmatter.** Model tier is chosen by PM at dispatch time from the planner's `tasks[i].tier`. Pinning a model in the agent file would defeat tier-streak batching (where PM groups consecutive same-tier tasks under one cheaper model). The agent body may include guidance like "this role is normally dispatched at premium tier" as informational text, but it does not force a model.
+
+**File layout.** One file per agent at `.claude/agents/<name>.md`. No agent-specific subfolders. If an agent's body needs supporting docs (long examples, error catalogues, etc.), those live elsewhere in the repo and the body references them by relative path -- same pattern skills use for sub-docs. Claude loads them on demand when the body cites them. For the 4 roles in this sprint, a single file each suffices.
 
 **Install paths.**
 
@@ -217,18 +220,27 @@ Gemini members (requires research, decided as part of Task 2):
 
 **Dispatch flow (how PM uses these).**
 
-PM calls:
+PM dispatches at **tier-streak grain** -- a run of consecutive same-tier tasks within a phase, ending at the next tier transition or VERIFY. The doer reads `progress.json` on the member to find the next pending task and works through the streak.
+
 ```
 execute_prompt(
   member,
-  prompt="You are the doer. Read .claude/agents/doer.md. Task: {{task_id}}. Branch: {{branch}}. Base: {{base_branch}}.",
-  substitutions={ task_id: "T3.2", branch: "feat/x", base_branch: "main" }
+  prompt="Adopt the doer role defined in .claude/agents/doer.md. Continue executing pending tasks in Phase {{phase}}. Read progress.json on each turn to find the next pending task. Stop at VERIFY or when the next pending task's tier differs from the model you were dispatched with. Branch: {{branch}}, base: {{base_branch}}.",
+  substitutions={ phase: "3", branch: "feat/x", base_branch: "main" },
+  model: "standard",
+  resume: true
 )
 ```
 
-The member's session reads the agent file and acts per its role. PM never opens the agent file. Runtime parameters land in the prompt via Task 1's substitution engine, server-side.
+The member's session reads the agent file once at the start of the dispatch, adopts the role, then loops over pending tasks. PM never opens the agent file. Runtime parameters land in the prompt via Task 1's substitution engine, server-side.
 
-**Role switch.** One member can play multiple roles across a sprint. Role change is signaled by the next dispatch prompt naming a different role. Use `resume=false` on the first dispatch of a new role -- existing pm rule, unchanged.
+**Role activation mechanism (v1: file-reading).**
+
+Claude Code's native subagent invocation (`Agent(subagent_type=doer)`) loads the agent definition automatically -- but only from inside a CLI session. There is no external entry point on the CLI today for fleet to invoke a specific subagent across the wire. So v1 uses file-reading: the dispatch prompt names the role and its definition file by exact path; the member's main session reads the file and adopts the role.
+
+To make file-reading reliable: every dispatch prompt MUST begin with the canonical line `Adopt the <role> role defined in .claude/agents/<role>.md.` -- exact wording, exact path. This is codified in pm skill's dispatch helpers (touched as part of Task 3's split). If Anthropic later ships an external invoke-subagent entry point, we switch to that and retire the canonical-line convention.
+
+**Role switch.** One member can play multiple roles across a sprint. Role change is signaled by the next dispatch prompt naming a different role file. Use `resume=false` on the first dispatch of a new role -- existing pm rule, unchanged. The fresh session re-reads the new agent file from scratch.
 
 **Tool allow-lists per role (initial defaults).**
 
