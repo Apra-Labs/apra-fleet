@@ -191,11 +191,15 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
   writeConfig(paths, settings);
 }
 
+
+
 function mergePermissions(paths: ProviderInstallConfig): void {
   const settings = readConfig(paths);
 
   const requiredPerms = [
     'mcp__apra-fleet__*',
+    'activate_skill(*)',
+    'tracker_*',
     'Agent(*)',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
