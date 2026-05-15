@@ -334,7 +334,7 @@ jobs:
       # -- Step 5c: Extract telemetry ----------------------------------------
       # Primary: logs/fleet-pm.log execute_prompt exit lines (in=N out=N elapsed=Nms).
       # Fallback: member session JSONLs.
-      - name: Extract telemetry
+      - name: Print extraction script version`n        if: always()`n        shell: bash`n        run: |`n          ls -l .github/e2e/extract-results.mjs`n          cat .github/e2e/extract-results.mjs | head -n 20`n`n      - name: Extract telemetry
         if: always()
         shell: bash
         run: |
