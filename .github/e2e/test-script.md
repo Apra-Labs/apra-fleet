@@ -63,6 +63,8 @@ Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS
 
 ## T5: Sprint via /pm
 
+The orchestrator must coordinate the sprint using the PM skill. To ensure persistent access to /pm commands and tracking artifacts, coordination should be handled directly in the primary session. Do not delegate the high-level coordination loop to secondary agents.
+
 Read @projects.md for active projects, then follow the pm skill.
 
 CHECKPOINT: [{"test":"T5","status":"PASS","notes":"Sprint completed, PR raised and verified"}]
