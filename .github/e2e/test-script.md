@@ -26,7 +26,7 @@ Register both members. For each:
 
 After each: `update_member unattended="auto"`.
 
-Provision LLM AUTH on both members. 
+Provision LLM AUTH on both members.
 
 Verify both online in `fleet_status`.
 
@@ -66,6 +66,7 @@ Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS
 **CRITICAL REQUIREMENT**: You MUST use the PM skill via `activate_skill(name="pm")` for ALL sprint operations.
 Single-turn implementations are FORBIDDEN. The Doer MUST operate under the PM workflow with proper planning and progress tracking artifacts.
 The Doer MUST produce `PLAN.md` and `progress.json` in the repo directory before writing any implementation code.
+DO NOT delegate the /pm loop to subagents. The PM skill MUST be driven directly in this conversation -- no `Agent(...)` calls for PM commands.
 
 **T5.1** On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
 If `bitbucket`: `git config user.email {{secure.e2e_bb_user}}` in repo dir.
@@ -96,13 +97,23 @@ execute_command(member_name="doer", command="ls -la {{DOER_FOLDER}}/fleet-e2e-to
 ```
 Both files MUST exist before proceeding. If either is missing, re-run `/pm plan fleet-e2e-toy`.
 
-CHECKPOINT: [{"test":"T5-planning","status":"PASS","notes":"PLAN.md and progress.json confirmed on doer"}]
+Verify `tracker_*` tools were called during planning. Check the PM log for calls to `tracker_create`, `tracker_update`, or similar `tracker_*` tools. If none are present, the plan did not use proper workflow tracking -- treat T5 as FAIL.
 
-Step 3 - Implement (only after Planning Complete checkpoint above):
+CHECKPOINT: [{"test":"T5-planning","status":"PASS","notes":"PLAN.md and progress.json confirmed on doer; tracker_* tools seen in PM log"}]
+
+Step 3 - Implement (only after T5-planning checkpoint above):
 ```
 /pm start doer
 ```
-Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix->review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
+Poll `/pm status doer` until doer reaches VERIFY status.
+
+CHECKPOINT: [{"test":"T5-doer","status":"PASS","notes":"Doer reached VERIFY; implementation committed on branch"}]
+
+Dispatch reviewer and continue fix->review loop until approved.
+
+CHECKPOINT: [{"test":"T5-reviewer","status":"PASS","notes":"Reviewer APPROVED; PR raised"}]
+
+Then `/pm cleanup fleet-e2e-toy`.
 Branch prefix: `{{BRANCH_PREFIX}}`
 
 **T5.4** Verify branch `{{BRANCH_PREFIX}}/...` exists on origin, PR was raised, CI is green.
