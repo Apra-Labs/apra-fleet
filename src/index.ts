@@ -123,6 +123,7 @@ async function startServer() {
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
   const { stopPromptSchema, stopPrompt } = await import('./tools/stop-prompt.js');
+  const { activateSkillSchema, activateSkill } = await import('./tools/activate-skill.js');
   const { versionSchema, version } = await import('./tools/version.js');
   const { credentialStoreSetSchema, credentialStoreSet } = await import('./tools/credential-store-set.js');
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
@@ -253,6 +254,7 @@ async function startServer() {
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Optionally stop the cloud instance automatically when the task completes.', monitorTaskSchema.shape, wrapTool('monitor_task', (input) => monitorTask(input as any)));
 
   // --- Agent Lifecycle ---
+  server.tool('activate_skill', 'Activates a specialized agent skill by name.', activateSkillSchema.shape, wrapTool('activate_skill', (input) => activateSkill(input as any)));
   server.tool('stop_prompt', 'Kill the active LLM process on a member. Always call TaskStop on the dispatching background agent after calling this.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
   // --- Credential Store ---
   server.tool('credential_store_set', 'Collect a secret from the user out-of-band and store it. Returns a handle (sec://NAME) and scope. Use {{secure.NAME}} tokens in execute_command to inject the value.', credentialStoreSetSchema.shape, wrapTool('credential_store_set', (input) => credentialStoreSet(input as any)));
