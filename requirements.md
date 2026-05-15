@@ -282,7 +282,7 @@ These mirror today's `compose_permissions` profiles but are now declarative in t
 
 **Done criteria.**
 
-- 4 agent files in the canonical installer-asset location (path decided in Task 5; flagged below).
+- 4 agent files committed at `agents/<name>.md` in the apra-fleet repo root (sibling to `skills/`). One source file per agent, used by the installer for both Claude and Gemini members.
 - Each file valid YAML frontmatter + body, ASCII-only.
 - `execute_prompt` schema gains optional `agent: string` parameter. Per-provider translation implemented and tested:
   - **Claude:** invocation includes `--agent <name>`.
@@ -296,12 +296,11 @@ These mirror today's `compose_permissions` profiles but are now declarative in t
 - Installer ships agent files to both `~/.claude/agents/` and `~/.gemini/agents/` per the member's `llmProvider`. (Implementation handed to Task 5; this task specifies the requirement.)
 - Substitution-then-prepend ordering documented and tested: substitutions are applied to the prompt BEFORE Gemini's `@<name>` is prepended.
 
-**Open questions.**
-
-1. **Canonical repo location for installer-shipped agent files.** Candidates: `templates/agents/`, `default-agents/`, `installer-assets/agents/`. Resolved in Task 5; flag as a Task 2 dependency for the doer.
+**Open questions.** None.
 
 **Resolved.**
 
+- **Canonical repo location.** [OK] `agents/<name>.md` at the apra-fleet repo root, sibling to `skills/`. One source file per agent. The installer copies each to the member at `~/.claude/agents/<name>.md` and/or `~/.gemini/agents/<name>.md` depending on the member's `llmProvider`. Task 5 owns the routing implementation.
 - **Gemini native agents support.** [OK] Confirmed at geminicli.com/docs/core/subagents/. Path: `~/.gemini/agents/<name>.md` (user) and `<repo>/.gemini/agents/<name>.md` (project). Activation via `@<name>` in prompt. Fleet absorbs the asymmetry vs Claude's `--agent` flag.
 
 ---
@@ -337,10 +336,10 @@ These mirror today's `compose_permissions` profiles but are now declarative in t
 
 **Scope hooks.**
 - Audit `install.cjs` (and any other installer files) for where each artifact lands.
-- Verify user-level agents land in `~/.claude/agents/` (Claude) and Gemini equivalent.
+- **Route `agents/*.md` from the repo root to both `~/.claude/agents/<name>.md` and `~/.gemini/agents/<name>.md` based on the member's `llmProvider`.** Single source per agent in the repo; installer fans out to per-provider directories on the member. Decided in Task 2.
 - Verify skill files land in `~/.claude/skills/` and don't shadow project-level overrides.
 - Verify Beads, hooks, settings.json updates go to correct locations on Win / Linux / macOS.
-- Verify uninstall path is clean.
+- Verify uninstall path is clean (including removal of the agents files).
 
 ---
 
