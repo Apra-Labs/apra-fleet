@@ -123,7 +123,6 @@ async function startServer() {
   const { cloudControlSchema, cloudControl } = await import('./tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('./tools/monitor-task.js');
   const { stopPromptSchema, stopPrompt } = await import('./tools/stop-prompt.js');
-  const { activateSkillSchema, activateSkill } = await import('./tools/activate-skill.js');
   const { versionSchema, version } = await import('./tools/version.js');
   const { credentialStoreSetSchema, credentialStoreSet } = await import('./tools/credential-store-set.js');
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
