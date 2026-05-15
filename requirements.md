@@ -205,29 +205,40 @@ Body content is the current `tpl-*.md` text with `{{token}}` placeholders remove
 
 **File layout.** One file per agent at `.claude/agents/<name>.md`. No agent-specific subfolders. If an agent's body needs supporting docs (long examples, error catalogues, etc.), those live elsewhere in the repo and the body references them by relative path -- same pattern skills use for sub-docs. Claude loads them on demand when the body cites them. For the 4 roles in this sprint, a single file each suffices.
 
-**Install paths.**
+**Install paths (decided -- both providers symmetric).**
 
-Claude members (well-defined, Claude Code native):
+Claude members (Claude Code native):
 - User-level defaults: `~/.claude/agents/<name>.md` -- installed by apra-fleet installer.
 - Project overrides: `<repo>/.claude/agents/<name>.md` -- committed per-project when customization is needed.
 - Resolution: project beats user (Claude Code's standard precedence).
 
-Gemini members (requires research, decided as part of Task 2):
-- Investigate whether current Gemini CLI has a native `agents/` folder convention.
-- If yes: mirror the Claude layout at `~/.gemini/agents/<name>.md` + `<repo>/.gemini/agents/<name>.md`.
-- If no: fall back to a project-level `GEMINI.md` that carries the role content for the active role, plus PM-driven role selection via the dispatch prompt. Document the limitation in `skills/fleet/SKILL.md`.
-- Time-box the research to half a day. If blocked, ship the fallback and file a follow-up beads issue.
+Gemini members (Gemini CLI native, confirmed at geminicli.com/docs/core/subagents/):
+- User-level defaults: `~/.gemini/agents/<name>.md`.
+- Project overrides: `<repo>/.gemini/agents/<name>.md`.
+- Same precedence: project beats user.
 
-**Role activation mechanism -- native via `claude --agent`.**
+Both providers' agent file format (frontmatter + system-prompt body) is compatible enough that the four shipped agent files can be near-identical between `.claude/agents/` and `.gemini/agents/`. The installer ships both pairs from the same canonical source in the apra-fleet repo (location to be decided in Task 5).
 
-Claude CLI supports `--agent <name>` as a CLI flag that sets the agent for the entire session. The session is born adopting that agent's system prompt and tool allow-list -- no in-prompt instruction needed, no canonical-line convention, no risk of the LLM failing to assume the role. This is the external invoke-subagent entry point earlier drafts assumed didn't exist.
+**Role activation mechanism -- native, but asymmetric per provider.**
 
-**`execute_prompt` schema extension (Task 2's scope).** Add an optional `agent: string` parameter to `execute_prompt`. When set, fleet invokes the underlying CLI with `--agent <agent>` (Claude) and the equivalent for Gemini (TBD by the Gemini research). When absent, behaviour is unchanged.
+Both Claude CLI and Gemini CLI support native subagent activation, but via different mechanisms:
+
+| Provider | Mechanism | Surface |
+|---|---|---|
+| Claude | `claude --agent <name>` -- CLI flag, sets the agent for the whole session at invocation. | Flag |
+| Gemini | `@<name>` mention inside the prompt -- selects the agent for that prompt. | In-prompt |
+
+Either way the session is born (or re-asserted) adopting the named agent's system prompt and tool allow-list. No in-prompt "read this file" instruction needed; no risk of the LLM failing to assume the role.
+
+**`execute_prompt` schema extension (Task 2's scope).** Add an optional `agent: string` parameter to `execute_prompt`. When set, fleet absorbs the provider asymmetry: PM passes a single provider-neutral `agent` value, fleet translates per the member's `llmProvider`.
 
 Fleet must:
-- Pass `--agent <name>` to `claude` for Claude members.
-- For Gemini: research the equivalent flag (research deliverable of this task). If Gemini lacks a native equivalent, fleet falls back to writing the agent file as `GEMINI.md` for the session and documents the limitation in `skills/fleet/SKILL.md`.
-- Validate that the named agent file exists on the member before dispatch -- if not, return a clear error instead of invoking with a missing agent. Resolution order matches Claude's native precedence: `<repo>/.claude/agents/<name>.md` then `~/.claude/agents/<name>.md`.
+
+- **For Claude members:** invoke `claude --agent <name> [--resume <id>] -p "<prompt>"`. The `--agent` flag goes on the CLI; the prompt itself is untouched.
+- **For Gemini members:** invoke `gemini -p "@<name> <prompt>"`. Fleet prepends `@<name> ` to the prompt string. **The prepend happens on every dispatch** (not just the first), because each Gemini prompt is independent -- the role must be re-asserted to remain active across turns.
+- **Substitution interaction:** the substitution engine (Task 1) runs on the prompt BEFORE provider wrapping. So for Gemini, the order is: substitute `{{tokens}}` -> then prepend `@<name>` -> then pass to CLI. The `@<name>` itself is added by fleet (not by the caller) and is not subject to substitution.
+- **Validation before dispatch:** verify the named agent file exists on the member at `<repo>/.<provider>/agents/<name>.md` or `~/.<provider>/agents/<name>.md`. If neither exists, return a clear error and do not invoke the CLI.
+- **No collision concern with Gemini's `@`-mention:** our substitution grammar (`{{name}}`, names match `[A-Za-z_][A-Za-z0-9_]*`, no `.`) does not overlap with Gemini's `@<name>` syntax. Fleet's prepend is purely a string concatenation, post-substitution.
 
 **Dispatch flow (how PM uses these).**
 
@@ -273,17 +284,25 @@ These mirror today's `compose_permissions` profiles but are now declarative in t
 
 - 4 agent files in the canonical installer-asset location (path decided in Task 5; flagged below).
 - Each file valid YAML frontmatter + body, ASCII-only.
-- `execute_prompt` schema gains optional `agent: string` parameter. Fleet passes `--agent <name>` to `claude` for Claude members. For Gemini: native equivalent identified and used, OR fallback documented.
-- Validation: `execute_prompt` with an unknown `agent` value returns a clear error before invoking the CLI (no silent `claude --agent` failure on the member).
-- Dispatch dry-run on apra-fleet-reorg: `execute_prompt(agent="doer", ...)` runs end-to-end on a trivial real task. Member's invocation is verifiably `claude --agent doer ...` (check fleet logs). No PM-side `tpl-*` read occurs.
+- `execute_prompt` schema gains optional `agent: string` parameter. Per-provider translation implemented and tested:
+  - **Claude:** invocation includes `--agent <name>`.
+  - **Gemini:** invocation prepends `@<name> ` to the prompt; verified the prepend happens on EVERY dispatch (resume=true continuations included), not just the first.
+- Validation: `execute_prompt` with an `agent` value not present on the member returns a clear error before invoking any CLI. Test both providers.
+- Dispatch dry-runs end-to-end on real trivial tasks:
+  - Claude path: tested on apra-fleet-reorg. Fleet log shows `claude --agent doer ...`.
+  - Gemini path: tested on a gemini member (fleet-dev or fleet-dev2). Fleet log shows `gemini -p "@doer ..."`.
+  - Neither dry-run reads any PM-side `tpl-*` file.
 - The 4 source files in `skills/pm/` deleted.
-- Gemini install path decided and documented in `skills/fleet/SKILL.md`.
-- Installer behaviour for agent files specified; implementation handed to Task 5.
+- Installer ships agent files to both `~/.claude/agents/` and `~/.gemini/agents/` per the member's `llmProvider`. (Implementation handed to Task 5; this task specifies the requirement.)
+- Substitution-then-prepend ordering documented and tested: substitutions are applied to the prompt BEFORE Gemini's `@<name>` is prepended.
 
 **Open questions.**
 
 1. **Canonical repo location for installer-shipped agent files.** Candidates: `templates/agents/`, `default-agents/`, `installer-assets/agents/`. Resolved in Task 5; flag as a Task 2 dependency for the doer.
-2. **Gemini native agents support.** Unknown until research. Half-day time-box; fall back to GEMINI.md-equivalent if blocked.
+
+**Resolved.**
+
+- **Gemini native agents support.** [OK] Confirmed at geminicli.com/docs/core/subagents/. Path: `~/.gemini/agents/<name>.md` (user) and `<repo>/.gemini/agents/<name>.md` (project). Activation via `@<name>` in prompt. Fleet absorbs the asymmetry vs Claude's `--agent` flag.
 
 ---
 
