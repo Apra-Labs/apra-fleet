@@ -12,7 +12,7 @@ if (!rawOutputPath) {
 const runDir = rawOutputPath.split(/[\\/]/).slice(0, -1).join('/');
 
 if (!existsSync(rawOutputPath)) {
-  process.stdout.write(JSON.stringify({ overall: 'FAIL', error: \ile not found: \ }, null, 2) + '\n');
+  process.stdout.write(JSON.stringify({ overall: 'FAIL', error: `file not found: ${rawOutputPath}` }, null, 2) + '\n');
   process.exit(0);
 }
 
