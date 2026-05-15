@@ -63,6 +63,10 @@ Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS
 
 ## T5: Sprint via /pm
 
+**CRITICAL REQUIREMENT**: You MUST use the PM skill via `activate_skill(name="pm")` for ALL sprint operations.
+Single-turn implementations are FORBIDDEN. The Doer MUST operate under the PM workflow with proper planning and progress tracking artifacts.
+The Doer MUST produce `PLAN.md` and `progress.json` in the repo directory before writing any implementation code.
+
 **T5.1** On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
 If `bitbucket`: `git config user.email {{secure.e2e_bb_user}}` in repo dir.
 After cloning (or if repo already exists), run `git fetch origin && git checkout main && git pull origin main` inside the repo dir to ensure the sprint starts from the latest main.
@@ -73,11 +77,29 @@ cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd lis
 ```
 Pick the **3 highest-priority open issues** (P1 before P2, alpha within same priority). Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
 
-**T5.3** Drive sprint:
+**T5.3** Drive sprint using the PM skill. You MUST call `activate_skill(name="pm")` before issuing any PM commands:
+
+Step 1 - Initialize:
 ```
+activate_skill(name="pm")
 /pm init fleet-e2e-toy
 /pm pair doer reviewer
+```
+
+Step 2 - Plan (MANDATORY - do NOT skip or combine with start):
+```
 /pm plan fleet-e2e-toy
+```
+Wait for the plan to complete. Verify that `PLAN.md` and `progress.json` exist in the doer's repo directory by running:
+```
+execute_command(member_name="doer", command="ls -la {{DOER_FOLDER}}/fleet-e2e-toy/PLAN.md {{DOER_FOLDER}}/fleet-e2e-toy/progress.json")
+```
+Both files MUST exist before proceeding. If either is missing, re-run `/pm plan fleet-e2e-toy`.
+
+CHECKPOINT: [{"test":"T5-planning","status":"PASS","notes":"PLAN.md and progress.json confirmed on doer"}]
+
+Step 3 - Implement (only after Planning Complete checkpoint above):
+```
 /pm start doer
 ```
 Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix->review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
