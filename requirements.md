@@ -218,6 +218,17 @@ Gemini members (requires research, decided as part of Task 2):
 - If no: fall back to a project-level `GEMINI.md` that carries the role content for the active role, plus PM-driven role selection via the dispatch prompt. Document the limitation in `skills/fleet/SKILL.md`.
 - Time-box the research to half a day. If blocked, ship the fallback and file a follow-up beads issue.
 
+**Role activation mechanism -- native via `claude --agent`.**
+
+Claude CLI supports `--agent <name>` as a CLI flag that sets the agent for the entire session. The session is born adopting that agent's system prompt and tool allow-list -- no in-prompt instruction needed, no canonical-line convention, no risk of the LLM failing to assume the role. This is the external invoke-subagent entry point earlier drafts assumed didn't exist.
+
+**`execute_prompt` schema extension (Task 2's scope).** Add an optional `agent: string` parameter to `execute_prompt`. When set, fleet invokes the underlying CLI with `--agent <agent>` (Claude) and the equivalent for Gemini (TBD by the Gemini research). When absent, behaviour is unchanged.
+
+Fleet must:
+- Pass `--agent <name>` to `claude` for Claude members.
+- For Gemini: research the equivalent flag (research deliverable of this task). If Gemini lacks a native equivalent, fleet falls back to writing the agent file as `GEMINI.md` for the session and documents the limitation in `skills/fleet/SKILL.md`.
+- Validate that the named agent file exists on the member before dispatch -- if not, return a clear error instead of invoking with a missing agent. Resolution order matches Claude's native precedence: `<repo>/.claude/agents/<name>.md` then `~/.claude/agents/<name>.md`.
+
 **Dispatch flow (how PM uses these).**
 
 PM dispatches at **tier-streak grain** -- a run of consecutive same-tier tasks within a phase, ending at the next tier transition or VERIFY. The doer reads `progress.json` on the member to find the next pending task and works through the streak.
@@ -225,22 +236,17 @@ PM dispatches at **tier-streak grain** -- a run of consecutive same-tier tasks w
 ```
 execute_prompt(
   member,
-  prompt="Adopt the doer role defined in .claude/agents/doer.md. Continue executing pending tasks in Phase {{phase}}. Read progress.json on each turn to find the next pending task. Stop at VERIFY or when the next pending task's tier differs from the model you were dispatched with. Branch: {{branch}}, base: {{base_branch}}.",
+  agent="doer",
+  prompt="Continue Phase {{phase}}. Read progress.json on each turn for the next pending task. Stop at VERIFY or when the next task's tier differs from the model you were dispatched with. Branch: {{branch}}, base: {{base_branch}}.",
   substitutions={ phase: "3", branch: "feat/x", base_branch: "main" },
   model: "standard",
   resume: true
 )
 ```
 
-The member's session reads the agent file once at the start of the dispatch, adopts the role, then loops over pending tasks. PM never opens the agent file. Runtime parameters land in the prompt via Task 1's substitution engine, server-side.
+The member's CLI is launched as `claude --agent doer --resume <session> -p "<rendered prompt>"`. The session natively adopts the doer role from `.claude/agents/doer.md`. The prompt carries only runtime context (which phase, which branch). PM never opens the agent file.
 
-**Role activation mechanism (v1: file-reading).**
-
-Claude Code's native subagent invocation (`Agent(subagent_type=doer)`) loads the agent definition automatically -- but only from inside a CLI session. There is no external entry point on the CLI today for fleet to invoke a specific subagent across the wire. So v1 uses file-reading: the dispatch prompt names the role and its definition file by exact path; the member's main session reads the file and adopts the role.
-
-To make file-reading reliable: every dispatch prompt MUST begin with the canonical line `Adopt the <role> role defined in .claude/agents/<role>.md.` -- exact wording, exact path. This is codified in pm skill's dispatch helpers (touched as part of Task 3's split). If Anthropic later ships an external invoke-subagent entry point, we switch to that and retire the canonical-line convention.
-
-**Role switch.** One member can play multiple roles across a sprint. Role change is signaled by the next dispatch prompt naming a different role file. Use `resume=false` on the first dispatch of a new role -- existing pm rule, unchanged. The fresh session re-reads the new agent file from scratch.
+**Role switch.** One member can play multiple roles across a sprint. Role change = different `agent` value on the next dispatch + `resume=false` (fresh session, since the agent definition is set at session start and switching mid-session is not supported). The fresh session is born as the new role. Existing pm rule about `resume=false` on role switch is unchanged in intent; the mechanism is now CLI-flag-based rather than file-swap-based.
 
 **Tool allow-lists per role (initial defaults).**
 
@@ -267,7 +273,9 @@ These mirror today's `compose_permissions` profiles but are now declarative in t
 
 - 4 agent files in the canonical installer-asset location (path decided in Task 5; flagged below).
 - Each file valid YAML frontmatter + body, ASCII-only.
-- A dispatch dry-run: PM uses the new doer agent for a trivial real task on member apra-fleet-reorg. End-to-end works, no PM-side `tpl-*` read occurs.
+- `execute_prompt` schema gains optional `agent: string` parameter. Fleet passes `--agent <name>` to `claude` for Claude members. For Gemini: native equivalent identified and used, OR fallback documented.
+- Validation: `execute_prompt` with an unknown `agent` value returns a clear error before invoking the CLI (no silent `claude --agent` failure on the member).
+- Dispatch dry-run on apra-fleet-reorg: `execute_prompt(agent="doer", ...)` runs end-to-end on a trivial real task. Member's invocation is verifiably `claude --agent doer ...` (check fleet logs). No PM-side `tpl-*` read occurs.
 - The 4 source files in `skills/pm/` deleted.
 - Gemini install path decided and documented in `skills/fleet/SKILL.md`.
 - Installer behaviour for agent files specified; implementation handed to Task 5.
