@@ -328,6 +328,42 @@ describe('GeminiProvider', () => {
     expect(resp.usage).toBeUndefined();
   });
 
+  it('extracts usage when stats uses input/output keys (Gemini v0.42.0)', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      stats: { input: 100, output: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
+  it('extracts usage when usage uses input/output keys (Gemini v0.42.0)', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      usage: { input: 100, output: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
+  it('extracts usage from tokens field with input_tokens/output_tokens keys', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      tokens: { input_tokens: 100, output_tokens: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
+  it('extracts usage from tokens field with input/output keys', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      tokens: { input: 100, output: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
   it('does not support maxTurns', () => {
     expect(p.supportsMaxTurns()).toBe(false);
   });

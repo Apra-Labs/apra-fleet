@@ -23,6 +23,16 @@ export function getAllowedMcpServers(): string {
   }
 }
 
+function extractUsage(u: any): { input_tokens: number; output_tokens: number } | undefined {
+  if (!u) return undefined;
+  const input = u.input_tokens ?? u.input;
+  const output = u.output_tokens ?? u.output;
+  if (typeof input === 'number' && typeof output === 'number') {
+    return { input_tokens: input, output_tokens: output };
+  }
+  return undefined;
+}
+
 export class GeminiProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'gemini';
   readonly processName = 'gemini';
@@ -79,13 +89,7 @@ export class GeminiProvider implements ProviderAdapter {
     const raw = result.stdout.trim();
     try {
       const parsed = JSON.parse(raw);
-      const stats = parsed.usage ?? parsed.stats;
-      const usage =
-        stats &&
-        typeof stats.input_tokens === 'number' &&
-        typeof stats.output_tokens === 'number'
-          ? { input_tokens: stats.input_tokens, output_tokens: stats.output_tokens }
-          : undefined;
+      const usage = extractUsage(parsed.usage ?? parsed.stats ?? parsed.tokens);
       return {
         result: parsed.response ?? parsed.result ?? raw,
         sessionId: result.code === 0 ? (parsed.session_id ?? undefined) : undefined,
@@ -192,6 +196,10 @@ export class GeminiProvider implements ProviderAdapter {
     return ['GEMINI_API_KEY'];
   }
 
+  authEnvVarForToken(_token: string): string {
+    return this.authEnvVar;
+  }
+
 
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
@@ -208,3 +216,4 @@ export class GeminiProvider implements ProviderAdapter {
     return `--skip-trust -p "${promptLiteral}"`;
   }
 }
+
