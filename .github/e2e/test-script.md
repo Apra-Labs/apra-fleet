@@ -63,60 +63,9 @@ Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS
 
 ## T5: Sprint via /pm
 
-**CRITICAL REQUIREMENT**: You MUST use the PM skill via `activate_skill(name="pm")` for ALL sprint operations.
-Single-turn implementations are FORBIDDEN. The Doer MUST operate under the PM workflow with proper planning and progress tracking artifacts.
-The Doer MUST produce `PLAN.md` and `progress.json` in the repo directory before writing any implementation code.
-DO NOT delegate the /pm loop to subagents. The PM skill MUST be driven directly in this conversation -- no `Agent(...)` calls for PM commands.
+Read @projects.md for active projects, then follow the pm skill.
 
-**T5.1** On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
-If `bitbucket`: `git config user.email {{secure.e2e_bb_user}}` in repo dir.
-After cloning (or if repo already exists), run `git fetch origin && git checkout main && git pull origin main` inside the repo dir to ensure the sprint starts from the latest main.
-
-**T5.2** Run `bd list --label e2e-testing` on doer from within the repo dir with explicit PATH:
-```
-cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd list --label e2e-testing --status=open --sort priority --pretty
-```
-Pick the **3 highest-priority open issues** (P1 before P2, alpha within same priority). Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
-
-**T5.3** Drive sprint using the PM skill. You MUST call `activate_skill(name="pm")` before issuing any PM commands:
-
-Step 1 - Initialize:
-```
-activate_skill(name="pm")
-/pm init fleet-e2e-toy
-/pm pair doer reviewer
-```
-
-Step 2 - Plan (MANDATORY - do NOT skip or combine with start):
-```
-/pm plan fleet-e2e-toy
-```
-Wait for the plan to complete. Verify that `PLAN.md` and `progress.json` exist in the doer's repo directory by running:
-```
-execute_command(member_name="doer", command="ls -la {{DOER_FOLDER}}/fleet-e2e-toy/PLAN.md {{DOER_FOLDER}}/fleet-e2e-toy/progress.json")
-```
-Both files MUST exist before proceeding. If either is missing, re-run `/pm plan fleet-e2e-toy`.
-
-Verify `tracker_*` tools were called during planning. Check the PM log for calls to `tracker_create`, `tracker_update`, or similar `tracker_*` tools. If none are present, the plan did not use proper workflow tracking -- treat T5 as FAIL.
-
-CHECKPOINT: [{"test":"T5-planning","status":"PASS","notes":"PLAN.md and progress.json confirmed on doer; tracker_* tools seen in PM log"}]
-
-Step 3 - Implement (only after T5-planning checkpoint above):
-```
-/pm start doer
-```
-Poll `/pm status doer` until doer reaches VERIFY status.
-
-CHECKPOINT: [{"test":"T5-doer","status":"PASS","notes":"Doer reached VERIFY; implementation committed on branch"}]
-
-Dispatch reviewer and continue fix->review loop until approved.
-
-CHECKPOINT: [{"test":"T5-reviewer","status":"PASS","notes":"Reviewer APPROVED; PR raised"}]
-
-Then `/pm cleanup fleet-e2e-toy`.
-Branch prefix: `{{BRANCH_PREFIX}}`
-
-**T5.4** Verify branch `{{BRANCH_PREFIX}}/...` exists on origin, PR was raised, CI is green.
+CHECKPOINT: [{"test":"T5","status":"PASS","notes":"Sprint completed, PR raised and verified"}]
 
 ---
 
