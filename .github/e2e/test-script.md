@@ -63,11 +63,29 @@ Verify response names the correct OS (doer: {{DOER_OS}}, reviewer: {{REVIEWER_OS
 
 ## T5: Sprint via /pm
 
-The orchestrator must coordinate the sprint using the PM skill. To ensure persistent access to /pm commands and tracking artifacts, coordination should be handled directly in the primary session. Do not delegate the high-level coordination loop to secondary agents.
-
+The orchestrator must coordinate the sprint using the /pm skill. 
+**T5.1** On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
+If `bitbucket`: `git config user.email {{secure.e2e_bb_user}}` in repo dir.
+After cloning (or if repo already exists), run `git fetch origin && git checkout main && git pull origin main` inside the repo dir to ensure the sprint starts from the latest main.
 Read @projects.md for active projects, then follow the pm skill.
 
-CHECKPOINT: [{"test":"T5","status":"PASS","notes":"Sprint completed, PR raised and verified"}]
+**T5.2** Run `bd ready` on doer from within the repo dir with explicit PATH:
+```
+cd {{DOER_FOLDER}}/fleet-e2e-toy && PATH=$HOME/bin:$HOME/.local/bin:$PATH bd ready
+```
+Pick the **3 oldest open issues**. Write `requirements.md` on PM (one paragraph per issue, acceptance criteria, no code).
+
+**T5.3** Drive sprint:
+```
+/pm init fleet-e2e-toy
+/pm pair doer reviewer
+/pm plan fleet-e2e-toy
+/pm start doer
+```
+Poll `/pm status doer` until VERIFY, then dispatch reviewer. Continue fix->review loop until approved. Then `/pm cleanup fleet-e2e-toy`.
+Branch prefix: `{{BRANCH_PREFIX}}`
+
+**T5.4** Verify branch `{{BRANCH_PREFIX}}/...` exists on origin, PR was raised, CI is green.
 
 ---
 
