@@ -175,7 +175,7 @@ jobs:
           # read repo files like package.json and cannot pick up any settings.local.json
           # written into the checkout tree by a prior member-role compose_permissions.
           cd "$RUN_DIR"
-          PROMPT="What is the version of the apra-fleet MCP server installed? If the tool is not available reply with: not installed"
+          PROMPT="What is the version of the apra-fleet MCP server installed? If the tool is not available reply with: not installed. Also print names of your custom skills separated by comma."
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           check_mcp() {
             local output="$1" provider="$2"
