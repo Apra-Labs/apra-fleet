@@ -170,15 +170,100 @@ No existing parameter on either tool is reshaped or renamed. Both new parameters
 
 ### Task 2 -- Define the 4 role agents (planner, plan-reviewer, doer, reviewer)
 
-**Status:** stub -- to be elaborated.
+**Status:** drafted 2026-05-15.
 
-**Scope hooks.**
-- Convert `plan-prompt.md` -> `planner` agent definition.
-- Convert `tpl-reviewer-plan.md` -> `plan-reviewer` agent definition.
-- Convert `tpl-doer.md` -> `doer` agent definition.
-- Convert `tpl-reviewer.md` -> `reviewer` agent definition.
-- Each must work on both Claude (`.claude/agents/<name>.md`) and Gemini members. Gemini's analogue needs research -- Gemini CLI's agent/persona mechanism is not 1:1 with Claude subagents.
-- Installation path: apra-fleet installer ships defaults to `~/.claude/agents/` (and the Gemini equivalent) on each member during onboarding. Projects can override at `<project>/.claude/agents/`.
+**Motivation.** Today the four roles live as `skills/pm/tpl-*.md` files inside PM's skill folder, sent to each member as `CLAUDE.md` per dispatch. That couples roles to PM's filesystem, makes them invisible to project-level customization, and forces PM to read them to do substitution (now handled by Task 1). Moving roles to a member-side, version-controlled location at `.claude/agents/<name>.md` gives three benefits:
+
+- Roles live where they execute (on the member).
+- Projects override defaults per-repo (audit trail, PR-reviewable rule changes).
+- The installer ships them as first-class artifacts.
+
+**The four agents.**
+
+| Agent | Source today | Role |
+|---|---|---|
+| planner | `skills/pm/plan-prompt.md` | Reads requirements; produces PLAN.md with tiered tasks. |
+| plan-reviewer | `skills/pm/tpl-reviewer-plan.md` | Reviews PLAN.md against requirements; writes feedback.md verdict. |
+| doer | `skills/pm/tpl-doer.md` | Executes plan tasks; commits; stops at VERIFY. |
+| reviewer | `skills/pm/tpl-reviewer.md` | Reviews diff against plan + requirements; writes feedback.md verdict. |
+
+**File format (both providers, same schema).**
+
+```
+---
+name: <role>
+description: <one-line summary the dispatcher reads>
+tools: [<tool list>]
+model: standard | premium
+---
+
+<system-prompt body: role rules, behaviors, output format>
+```
+
+Body content is the current `tpl-*.md` text with `{{token}}` placeholders removed -- runtime parameters now flow via Task 1's `substitutions` on the dispatch prompt.
+
+**Install paths.**
+
+Claude members (well-defined, Claude Code native):
+- User-level defaults: `~/.claude/agents/<name>.md` -- installed by apra-fleet installer.
+- Project overrides: `<repo>/.claude/agents/<name>.md` -- committed per-project when customization is needed.
+- Resolution: project beats user (Claude Code's standard precedence).
+
+Gemini members (requires research, decided as part of Task 2):
+- Investigate whether current Gemini CLI has a native `agents/` folder convention.
+- If yes: mirror the Claude layout at `~/.gemini/agents/<name>.md` + `<repo>/.gemini/agents/<name>.md`.
+- If no: fall back to a project-level `GEMINI.md` that carries the role content for the active role, plus PM-driven role selection via the dispatch prompt. Document the limitation in `skills/fleet/SKILL.md`.
+- Time-box the research to half a day. If blocked, ship the fallback and file a follow-up beads issue.
+
+**Dispatch flow (how PM uses these).**
+
+PM calls:
+```
+execute_prompt(
+  member,
+  prompt="You are the doer. Read .claude/agents/doer.md. Task: {{task_id}}. Branch: {{branch}}. Base: {{base_branch}}.",
+  substitutions={ task_id: "T3.2", branch: "feat/x", base_branch: "main" }
+)
+```
+
+The member's session reads the agent file and acts per its role. PM never opens the agent file. Runtime parameters land in the prompt via Task 1's substitution engine, server-side.
+
+**Role switch.** One member can play multiple roles across a sprint. Role change is signaled by the next dispatch prompt naming a different role. Use `resume=false` on the first dispatch of a new role -- existing pm rule, unchanged.
+
+**Tool allow-lists per role (initial defaults).**
+
+| Role | Tools |
+|---|---|
+| planner | Read, Grep, Glob, Bash (read-only git), Write (PLAN.md only) |
+| plan-reviewer | Read, Grep, Glob, Bash (read-only git), Write (feedback.md only) |
+| doer | full editor surface (Read, Edit, Write, Bash, Grep, Glob, ...) |
+| reviewer | Read, Grep, Glob, Bash (git + test runners), Write (feedback.md only) |
+
+These mirror today's `compose_permissions` profiles but are now declarative in the agent file. **Security boundary remains `compose_permissions`** -- the agent's `tools:` list is informational for the LLM, not enforced. No security regression from this task.
+
+**Content conversion (in Task 2's PR).**
+
+- `skills/pm/plan-prompt.md` body -> `agents/planner.md` body.
+- `skills/pm/tpl-reviewer-plan.md` body -> `agents/plan-reviewer.md` body.
+- `skills/pm/tpl-doer.md` body -> `agents/doer.md` body.
+- `skills/pm/tpl-reviewer.md` body -> `agents/reviewer.md` body.
+- Strip `{{token}}` placeholders from the bodies (parameters now flow via dispatch substitutions).
+- Add frontmatter per the schema above.
+- Delete the four source files in `skills/pm/`. Source of truth moves to the agent files. PM skill files referencing them get updated in Task 3's split.
+
+**Done criteria.**
+
+- 4 agent files in the canonical installer-asset location (path decided in Task 5; flagged below).
+- Each file valid YAML frontmatter + body, ASCII-only.
+- A dispatch dry-run: PM uses the new doer agent for a trivial real task on member apra-fleet-reorg. End-to-end works, no PM-side `tpl-*` read occurs.
+- The 4 source files in `skills/pm/` deleted.
+- Gemini install path decided and documented in `skills/fleet/SKILL.md`.
+- Installer behaviour for agent files specified; implementation handed to Task 5.
+
+**Open questions.**
+
+1. **Canonical repo location for installer-shipped agent files.** Candidates: `templates/agents/`, `default-agents/`, `installer-assets/agents/`. Resolved in Task 5; flag as a Task 2 dependency for the doer.
+2. **Gemini native agents support.** Unknown until research. Half-day time-box; fall back to GEMINI.md-equivalent if blocked.
 
 ---
 
