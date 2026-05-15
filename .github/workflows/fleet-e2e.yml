@@ -1,5 +1,5 @@
 name: Fleet E2E Test Suite
-run-name: Fleet E2E Test Suite ${{ inputs.suite || 's7.1' }} - ${{ github.ref_name }}
+run-name: Fleet E2E Test Suite ${{ inputs.suite }} - ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -9,27 +9,25 @@ on:
         required: true
         type: choice
         options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3]
-  push:
-    branches: [ 'e2e/local-only' ]
 
 jobs:
   e2e:
-    name: 'Fleet E2E - ${{ inputs.suite || "s7.1" }}'
+    name: 'Fleet E2E - ${{ inputs.suite }}'
     env:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
     runs-on:
       - self-hosted
-      - ${{ (inputs.suite || 's7.1') == 's1'   && 'fleet-windows'
-         || (inputs.suite || 's7.1') == 's1.1' && 'fleet-windows'
-         || (inputs.suite || 's7.1') == 's1.2' && 'fleet-linux'
-         || (inputs.suite || 's7.1') == 's1.3' && 'fleet-macos'
-         || (inputs.suite || 's7.1') == 's2'   && 'fleet-linux'
-         || (inputs.suite || 's7.1') == 's3'   && 'fleet-macos'
-         || (inputs.suite || 's7.1') == 's4'   && 'fleet-windows'
-         || (inputs.suite || 's7.1') == 's5'   && 'fleet-linux'
-         || (inputs.suite || 's7.1') == 's7.1' && 'fleet-windows'
-         || (inputs.suite || 's7.1') == 's7.2' && 'fleet-linux'
-         || (inputs.suite || 's7.1') == 's7.3' && 'fleet-macos'
+      - ${{ inputs.suite == 's1'   && 'fleet-windows'
+         || inputs.suite == 's1.1' && 'fleet-windows'
+         || inputs.suite == 's1.2' && 'fleet-linux'
+         || inputs.suite == 's1.3' && 'fleet-macos'
+         || inputs.suite == 's2'   && 'fleet-linux'
+         || inputs.suite == 's3'   && 'fleet-macos'
+         || inputs.suite == 's4'   && 'fleet-windows'
+         || inputs.suite == 's5'   && 'fleet-linux'
+         || inputs.suite == 's7.1' && 'fleet-windows'
+         || inputs.suite == 's7.2' && 'fleet-linux'
+         || inputs.suite == 's7.3' && 'fleet-macos'
          || 'fleet-macos' }}
 
     steps:
@@ -54,7 +52,7 @@ jobs:
         id: suite
         shell: bash
         run: |
-          SUITE='${{ inputs.suite || "s7.1" }}'
+          SUITE='${{ inputs.suite }}'
           CONFIG=$(cat .github/e2e/suites.json)
           MEMBERS=$(cat .github/e2e/members.json)
 
@@ -189,7 +187,7 @@ jobs:
           REVIEWER_FOLDER_SED="${REVIEWER_FOLDER//\\/\\\\}"
 
           sed \
-            -e 's|{{SUITE_ID}}|${{ inputs.suite || "s7.1" }}|g' \
+            -e 's|{{SUITE_ID}}|${{ inputs.suite }}|g' \
             -e 's|{{PM_OS}}|${{ steps.suite.outputs.pm_os }}|g' \
             -e 's|{{PM_PROVIDER}}|${{ steps.suite.outputs.pm_provider }}|g' \
             -e 's|{{DOER_HOST}}|${{ steps.suite.outputs.doer_host }}|g' \
@@ -202,7 +200,7 @@ jobs:
             -e 's|{{REVIEWER_PROVIDER}}|${{ steps.suite.outputs.reviewer_provider }}|g' \
             -e 's|{{TOY_PROJECT_URL}}|${{ steps.suite.outputs.toy_url }}|g' \
             -e 's|{{VCS}}|${{ steps.suite.outputs.vcs }}|g' \
-            -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite || "s7.1" }}-${{ github.run_id }}|g' \
+            -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite }}-${{ github.run_id }}|g' \
             -e "s|{{DOER_FOLDER}}|${DOER_FOLDER_SED}|g" \
             -e "s|{{REVIEWER_FOLDER}}|${REVIEWER_FOLDER_SED}|g" \
             .github/e2e/test-script.md > "$RUN_DIR/rendered-test-script.md"
@@ -235,7 +233,7 @@ jobs:
 
           # Assemble results.json
           node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" "$RUN_DIR/raw-output.txt" \
-            '${{ inputs.suite || "s7.1" }}' \
+            '${{ inputs.suite }}' \
             '${{ steps.suite.outputs.pm_os }}' \
             '${{ steps.suite.outputs.pm_provider }}' \
             > "$RUN_DIR/results.json" \
@@ -252,20 +250,13 @@ jobs:
           fi
           cat "$LOG_DIR"/fleet-*.log > "$RUN_DIR/logs/fleet-pm.log" 2>/dev/null || true
 
-      - name: Print extraction script version
-        if: always()
-        shell: bash
-        run: |
-          ls -l .github/e2e/extract-results.mjs
-          head -n 20 .github/e2e/extract-results.mjs
-
       - name: Extract telemetry
         if: always()
         shell: bash
         run: |
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
           node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" "raw-output.txt" \
-            '${{ inputs.suite || "s7.1" }}' \
+            '${{ inputs.suite }}' \
             '${{ steps.suite.outputs.pm_os }}' \
             '${{ steps.suite.outputs.pm_provider }}' \
             > results.json
@@ -276,7 +267,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BRANCH_PREFIX="e2e-${{ inputs.suite || 's7.1' }}-${{ github.run_id }}"
+          BRANCH_PREFIX="e2e-${{ inputs.suite }}-${{ github.run_id }}"
           TOY_URL='${{ steps.suite.outputs.toy_url }}'
           FAIL=0
           OVERALL=$(jq -r '.overall // "MISSING"' "$RUN_DIR/results.json" 2>/dev/null || echo "MISSING")
@@ -290,7 +281,7 @@ jobs:
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
           node "$GITHUB_WORKSPACE/.github/e2e/post-summary.mjs"
         env:
-          SUITE: ${{ inputs.suite || 's7.1' }}
+          SUITE: ${{ inputs.suite }}
 
       - name: T6 - Teardown
         if: always()
@@ -308,5 +299,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-${{ inputs.suite || 's7.1' }}-${{ github.run_id }}
+          name: e2e-${{ inputs.suite }}-${{ github.run_id }}
           path: ${{ env.RUN_DIR }}
