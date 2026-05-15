@@ -201,6 +201,8 @@ function mergePermissions(paths: ProviderInstallConfig): void {
     'activate_skill(*)',
     'tracker_*',
     'Agent(*)',
+      'activate_skill(*)',
+      'tracker_*',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${path.join(paths.configDir, 'skills').replace(/\\/g, '/')}/**)`,

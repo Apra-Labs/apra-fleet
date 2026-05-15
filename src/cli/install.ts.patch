@@ -1,0 +1,25 @@
+
+function mergePermissions(paths: ProviderInstallConfig): void {
+  const settings = readConfig(paths);
+
+  const requiredPerms = [
+    'mcp__apra-fleet__*',
+    'activate_skill(*)',
+    'tracker_*',
+    'Agent(*)',
+    `Read(d{paths.skillsDir.replace(/\\\/g, '/')}/**)`,
+    `Read(${paths.fleetSkillsDir.replace(/\\\/g, '/')}/**)`,
+    `Read(d{path.join(home, '.skills').replace(/\\\/g, '/')}/**)`,
+  ];
+
+  settings.permissions = settings.permissions || {};
+  settings.permissions.allow = settings.permissions.allow || [];
+  const existing = new Set(settings.permissions.allow as string[]);
+  for (const perm of requiredPerms) {
+    if (!existing.has(perm)) {
+      settings.permissions.allow.push(perm);
+    }
+  }
+
+  writeConfig(paths, settings);
+}
