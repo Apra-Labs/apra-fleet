@@ -32,8 +32,8 @@ for (const line of content.split('\n')) {
 
   // Claude stream-json: end-of-session result carries cumulative usage
   if (obj.type === 'result' && obj.usage) {
-    pmTokensIn += (obj.usage.input_tokens ?? 0);
-    pmTokensOut += (obj.usage.output_tokens ?? 0);
+    pmTokensIn += (obj.usage.input ?? obj.usage.input_tokens ?? 0);
+    pmTokensOut += (obj.usage.output ?? obj.usage.output_tokens ?? 0);
   }
 
   if (obj.type === 'result' && obj.result) {
