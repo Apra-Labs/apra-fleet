@@ -89,6 +89,9 @@ export interface ProviderAdapter {
   oauthSettingsMerge(): Record<string, unknown> | null;
   oauthEnvVarsToUnset(): string[];
 
+  /** Returns the correct environment variable name for the given API key/token. */
+  authEnvVarForToken(token: string): string;
+
 
   // Windows / PowerShell prompt building helpers
   /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
@@ -100,4 +103,5 @@ export interface ProviderAdapter {
    *  Returns e.g. `-p "LITERAL"` for Claude/Gemini/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
 }
+
 

@@ -173,6 +173,10 @@ export class CopilotProvider implements ProviderAdapter {
     return [];
   }
 
+  authEnvVarForToken(_token: string): string {
+    return this.authEnvVar;
+  }
+
 
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
@@ -189,3 +193,4 @@ export class CopilotProvider implements ProviderAdapter {
     return `-p "${promptLiteral}"`;
   }
 }
+

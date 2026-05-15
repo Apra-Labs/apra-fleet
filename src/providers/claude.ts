@@ -177,6 +177,10 @@ export class ClaudeProvider implements ProviderAdapter {
     return [];
   }
 
+  authEnvVarForToken(token: string): string {
+    return token.startsWith('sk-ant-') ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
+  }
+
 
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
@@ -194,3 +198,4 @@ export class ClaudeProvider implements ProviderAdapter {
     return `-p "${promptLiteral}"`;
   }
 }
+
