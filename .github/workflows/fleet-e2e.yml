@@ -216,6 +216,7 @@ jobs:
           if [ "$PROVIDER" = "claude" ]; then
             claude \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
+              --model sonnet \
               --output-format stream-json \
               --verbose \
               --max-turns 80 \
