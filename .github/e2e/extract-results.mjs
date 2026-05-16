@@ -2,52 +2,65 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const [rawOutputPath, suite, pmOs, pmProvider] = process.argv.slice(2);
+const args = process.argv.slice(2);
 
-if (!rawOutputPath) {
-  process.stderr.write('Usage: extract-results.mjs <raw-output.txt> <suite> <pm_os> <pm_provider>\n');
+if (args.length < 4) {
+  process.stderr.write('Usage: extract-results.mjs <suite> <pm_os> <pm_provider> <raw-file1> [raw-file2 ...]\n');
   process.exit(1);
 }
 
-const runDir = rawOutputPath.split(/[\\/]/).slice(0, -1).join('/');
+const [suite, pmOs, pmProvider, ...rawFiles] = args;
 
-if (!existsSync(rawOutputPath)) {
-  process.stdout.write(JSON.stringify({ overall: 'FAIL', error: `file not found: ${rawOutputPath}` }, null, 2) + '\n');
-  process.exit(0);
+const runDir = rawFiles[0].split(/[\\/]/).slice(0, -1).join('/');
+
+function processRawFile(filePath) {
+  let assistantText = '';
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  if (!existsSync(filePath)) {
+    return { assistantText, tokensIn, tokensOut };
+  }
+
+  const content = readFileSync(filePath, 'utf8');
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+
+    if (obj.type === 'result' && obj.usage) {
+      tokensIn += (obj.usage.input ?? obj.usage.input_tokens ?? 0);
+      tokensOut += (obj.usage.output ?? obj.usage.output_tokens ?? 0);
+    }
+
+    if (obj.type === 'result' && obj.result) {
+      assistantText += '\n' + obj.result;
+    } else if (obj.type === 'assistant') {
+      for (const block of obj.message?.content ?? []) {
+        if (block?.type === 'text' && block.text) assistantText += '\n' + block.text;
+      }
+    } else if (obj.type === 'message' && obj.role === 'assistant' && typeof obj.content === 'string') {
+      assistantText += obj.content;
+    }
+  }
+
+  return { assistantText, tokensIn, tokensOut };
 }
 
-const content = readFileSync(rawOutputPath, 'utf8');
-
-// 1. Reassemble ALL assistant text from ALL turns and chunks
 let allAssistantText = '';
 let pmTokensIn = 0;
 let pmTokensOut = 0;
 
-for (const line of content.split('\n')) {
-  const trimmed = line.trim();
-  if (!trimmed) continue;
-  let obj;
-  try { obj = JSON.parse(trimmed); } catch { continue; }
-
-  // PM Usage (Claude/Gemini compatible)
-  if (obj.type === 'result' && obj.usage) {
-    pmTokensIn += (obj.usage.input ?? obj.usage.input_tokens ?? 0);
-    pmTokensOut += (obj.usage.output ?? obj.usage.output_tokens ?? 0);
-  }
-
-  // Content reassembly
-  if (obj.type === 'result' && obj.result) {
-    allAssistantText += '\n' + obj.result;
-  } else if (obj.type === 'assistant') {
-    for (const block of obj.message?.content ?? []) {
-      if (block?.type === 'text' && block.text) allAssistantText += '\n' + block.text;
-    }
-  } else if (obj.type === 'message' && obj.role === 'assistant' && typeof obj.content === 'string') {
-    allAssistantText += obj.content;
-  }
+for (const filePath of rawFiles) {
+  const result = processRawFile(filePath);
+  allAssistantText += result.assistantText;
+  pmTokensIn += result.tokensIn;
+  pmTokensOut += result.tokensOut;
 }
 
-// 2. Sum member telemetry from ground-truth JSONL logs
+// Sum member telemetry from ground-truth JSONL logs
 const telemetry = [
   { role: 'pm', tokens_in: pmTokensIn, tokens_out: pmTokensOut }
 ];
@@ -79,15 +92,23 @@ function sumMemberLogs(role) {
 telemetry.push({ role: 'doer', ...sumMemberLogs('doer') });
 telemetry.push({ role: 'reviewer', ...sumMemberLogs('reviewer') });
 
-// 3. Extract Checkpoints from the giant reassembled string
-// We look for all CHECKPOINT: [...] patterns and take the last valid one.
+// Extract Checkpoints from all phases merged
 let checkpoints = [];
 const regex = /CHECKPOINT:\s*(\[.*?\])/g;
 let match;
 while ((match = regex.exec(allAssistantText)) !== null) {
   try {
     const parsed = JSON.parse(match[1]);
-    if (Array.isArray(parsed)) checkpoints = parsed;
+    if (Array.isArray(parsed)) {
+      for (const cp of parsed) {
+        const existing = checkpoints.findIndex(c => c.test === cp.test);
+        if (existing >= 0) {
+          checkpoints[existing] = cp;
+        } else {
+          checkpoints.push(cp);
+        }
+      }
+    }
   } catch {}
 }
 

@@ -178,7 +178,7 @@ jobs:
             mkdir -p "$REV_FOLDER"
           fi
 
-      - name: Render test script
+      - name: Render test scripts
         shell: bash
         run: |
           DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
@@ -186,68 +186,126 @@ jobs:
           DOER_FOLDER_SED="${DOER_FOLDER//\\/\\\\}"
           REVIEWER_FOLDER_SED="${REVIEWER_FOLDER//\\/\\\\}"
 
-          sed \
-            -e 's|{{SUITE_ID}}|${{ inputs.suite }}|g' \
-            -e 's|{{PM_OS}}|${{ steps.suite.outputs.pm_os }}|g' \
-            -e 's|{{PM_PROVIDER}}|${{ steps.suite.outputs.pm_provider }}|g' \
-            -e 's|{{DOER_HOST}}|${{ steps.suite.outputs.doer_host }}|g' \
-            -e 's|{{DOER_USER}}|${{ steps.suite.outputs.doer_user }}|g' \
-            -e 's|{{DOER_OS}}|${{ steps.suite.outputs.doer_os }}|g' \
-            -e 's|{{DOER_PROVIDER}}|${{ steps.suite.outputs.doer_provider }}|g' \
-            -e 's|{{REVIEWER_HOST}}|${{ steps.suite.outputs.reviewer_host }}|g' \
-            -e 's|{{REVIEWER_USER}}|${{ steps.suite.outputs.reviewer_user }}|g' \
-            -e 's|{{REVIEWER_OS}}|${{ steps.suite.outputs.reviewer_os }}|g' \
-            -e 's|{{REVIEWER_PROVIDER}}|${{ steps.suite.outputs.reviewer_provider }}|g' \
-            -e 's|{{TOY_PROJECT_URL}}|${{ steps.suite.outputs.toy_url }}|g' \
-            -e 's|{{VCS}}|${{ steps.suite.outputs.vcs }}|g' \
-            -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite }}-${{ github.run_id }}|g' \
-            -e "s|{{DOER_FOLDER}}|${DOER_FOLDER_SED}|g" \
-            -e "s|{{REVIEWER_FOLDER}}|${REVIEWER_FOLDER_SED}|g" \
-            .github/e2e/test-script.md > "$RUN_DIR/rendered-test-script.md"
+          SED_ARGS=(
+            -e 's|{{SUITE_ID}}|${{ inputs.suite }}|g'
+            -e 's|{{PM_OS}}|${{ steps.suite.outputs.pm_os }}|g'
+            -e 's|{{PM_PROVIDER}}|${{ steps.suite.outputs.pm_provider }}|g'
+            -e 's|{{DOER_HOST}}|${{ steps.suite.outputs.doer_host }}|g'
+            -e 's|{{DOER_USER}}|${{ steps.suite.outputs.doer_user }}|g'
+            -e 's|{{DOER_OS}}|${{ steps.suite.outputs.doer_os }}|g'
+            -e 's|{{DOER_PROVIDER}}|${{ steps.suite.outputs.doer_provider }}|g'
+            -e 's|{{REVIEWER_HOST}}|${{ steps.suite.outputs.reviewer_host }}|g'
+            -e 's|{{REVIEWER_USER}}|${{ steps.suite.outputs.reviewer_user }}|g'
+            -e 's|{{REVIEWER_OS}}|${{ steps.suite.outputs.reviewer_os }}|g'
+            -e 's|{{REVIEWER_PROVIDER}}|${{ steps.suite.outputs.reviewer_provider }}|g'
+            -e 's|{{TOY_PROJECT_URL}}|${{ steps.suite.outputs.toy_url }}|g'
+            -e 's|{{VCS}}|${{ steps.suite.outputs.vcs }}|g'
+            -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite }}-${{ github.run_id }}|g'
+            -e "s|{{DOER_FOLDER}}|${DOER_FOLDER_SED}|g"
+            -e "s|{{REVIEWER_FOLDER}}|${REVIEWER_FOLDER_SED}|g"
+          )
 
-      - name: Run fleet e2e (${{ steps.suite.outputs.pm_provider }})
-        id: e2e
+          sed "${SED_ARGS[@]}" .github/e2e/setup-script.md > "$RUN_DIR/rendered-setup.md"
+          sed "${SED_ARGS[@]}" .github/e2e/sprint-script.md > "$RUN_DIR/rendered-sprint.md"
+
+      - name: Run fleet e2e - setup phase (${{ steps.suite.outputs.pm_provider }})
+        id: e2e_setup
         timeout-minutes: 120
         shell: bash
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
+          REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
           cd "$RUN_DIR"
           LLM_EXIT=0
           if [ "$PROVIDER" = "claude" ]; then
             claude \
-              -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
+              -p "$(cat "$RUN_DIR/rendered-setup.md")" \
               --model sonnet \
               --output-format stream-json \
               --verbose \
               --max-turns 80 \
               --add-dir "$RUN_DIR" \
-              > "$RUN_DIR/raw-output.txt" 2>&1 || LLM_EXIT=$?
+              --add-dir "$HOME/.claude" \
+              --add-dir "$(dirname "$DOER_FOLDER")" \
+              --add-dir "$(dirname "$REVIEWER_FOLDER")" \
+              > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           else
+            # <<GEMINI-DIRS: verify flag name + config dir with gemini-specialist>>
             gemini --skip-trust \
               --output-format stream-json \
-              -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
-              > "$RUN_DIR/raw-output.txt" 2>&1 || LLM_EXIT=$?
+              --include-directories "$RUN_DIR,$HOME/.claude,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              -p "$(cat "$RUN_DIR/rendered-setup.md")" \
+              > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           fi
 
-          # Extract PM session ID
-          SESSION_ID=$(grep -m1 '"type":"system"' "$RUN_DIR/raw-output.txt" \
+          if [ "$LLM_EXIT" -ne 0 ]; then
+            echo "::error::LLM CLI ($PROVIDER) setup phase exited with code $LLM_EXIT"
+            RAW="$RUN_DIR/raw-setup.txt"
+            R=$(grep '"type":"result"' "$RAW" | tail -1)
+            if [ -n "$R" ]; then
+              echo "$R" | jq -r '"reason : " + (.subtype // "?") + (if .is_error then "  (is_error)" else "" end), "errors : " + ((.errors // []) | join("; ") | if . == "" then "(none)" else . end), "message: " + ((.result // "(no final text)") | gsub("\n";" ") | .[0:300])'
+            else
+              echo "(no result line -- LLM produced no final output)"
+            fi
+            exit "$LLM_EXIT"
+          fi
+
+      - name: Run fleet e2e - sprint phase (${{ steps.suite.outputs.pm_provider }})
+        id: e2e_sprint
+        timeout-minutes: 120
+        shell: bash
+        run: |
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
+          REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
+          cd "$RUN_DIR"
+          LLM_EXIT=0
+          if [ "$PROVIDER" = "claude" ]; then
+            claude \
+              -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
+              --model sonnet \
+              --output-format stream-json \
+              --verbose \
+              --max-turns 80 \
+              --add-dir "$RUN_DIR" \
+              --add-dir "$HOME/.claude" \
+              --add-dir "$(dirname "$DOER_FOLDER")" \
+              --add-dir "$(dirname "$REVIEWER_FOLDER")" \
+              > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
+          else
+            # <<GEMINI-DIRS: verify flag name + config dir with gemini-specialist>>
+            gemini --skip-trust \
+              --output-format stream-json \
+              --include-directories "$RUN_DIR,$HOME/.claude,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
+              > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
+          fi
+
+          # Extract PM session ID from sprint phase
+          SESSION_ID=$(grep -m1 '"type":"system"' "$RUN_DIR/raw-sprint.txt" \
             | jq -r '.session_id // ""' 2>/dev/null || true)
           echo "session_id=$SESSION_ID" >> "$GITHUB_OUTPUT"
 
-          # Assemble results.json
-          node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" "$RUN_DIR/raw-output.txt" \
+          # Assemble results.json from both phases
+          node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" \
             '${{ inputs.suite }}' \
             '${{ steps.suite.outputs.pm_os }}' \
             '${{ steps.suite.outputs.pm_provider }}' \
+            "$RUN_DIR/raw-setup.txt" \
+            "$RUN_DIR/raw-sprint.txt" \
             > "$RUN_DIR/results.json" \
             || echo '{"overall":"FAIL"}' > "$RUN_DIR/results.json"
 
-          # Fail loud if the LLM CLI itself exited non-zero. Without this the
-          # step would report success even when the LLM never ran a turn.
           if [ "$LLM_EXIT" -ne 0 ]; then
-            echo "::error::LLM CLI ($PROVIDER) exited with code $LLM_EXIT -- e2e run did not complete."
-            echo "--- raw-output.txt (first 40 lines) ---"
-            head -40 "$RUN_DIR/raw-output.txt" || true
+            echo "::error::LLM CLI ($PROVIDER) sprint phase exited with code $LLM_EXIT"
+            RAW="$RUN_DIR/raw-sprint.txt"
+            R=$(grep '"type":"result"' "$RAW" | tail -1)
+            if [ -n "$R" ]; then
+              echo "$R" | jq -r '"reason : " + (.subtype // "?") + (if .is_error then "  (is_error)" else "" end), "errors : " + ((.errors // []) | join("; ") | if . == "" then "(none)" else . end), "message: " + ((.result // "(no final text)") | gsub("\n";" ") | .[0:300])'
+            else
+              echo "(no result line -- LLM produced no final output)"
+            fi
             exit "$LLM_EXIT"
           fi
 
@@ -267,10 +325,12 @@ jobs:
         shell: bash
         run: |
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
-          node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" "raw-output.txt" \
+          node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" \
             '${{ inputs.suite }}' \
             '${{ steps.suite.outputs.pm_os }}' \
             '${{ steps.suite.outputs.pm_provider }}' \
+            "$RUN_DIR/raw-setup.txt" \
+            "$RUN_DIR/raw-sprint.txt" \
             > results.json
 
       - name: Validate e2e test completion
