@@ -22,6 +22,9 @@ CLAUDE.md
 .beads/
 .claude/settings.json
 
+# E2E test fixtures (local only, never commit)
+.e2e-fixtures/
+
 # Provider agent context files are tracked project deliverables (git add -f was used).
 # These entries prevent sprint-injected replacements from being accidentally staged.
 GEMINI.md
