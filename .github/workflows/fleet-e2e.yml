@@ -229,6 +229,8 @@ jobs:
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
           REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
+          CFG_DIR="$HOME/.$PROVIDER"
+          [ "$RUNNER_OS" = "Windows" ] && CFG_DIR="$(cygpath -w "$CFG_DIR")"
           cd "$RUN_DIR"
           LLM_EXIT=0
           if [ "$PROVIDER" = "claude" ]; then
@@ -246,7 +248,7 @@ jobs:
           else
             gemini --skip-trust \
               --output-format stream-json \
-              --include-directories "$RUN_DIR,$HOME/.$PROVIDER,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              --include-directories "$RUN_DIR,$CFG_DIR,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-setup.md")" \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           fi
@@ -272,6 +274,8 @@ jobs:
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
           REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
+          CFG_DIR="$HOME/.$PROVIDER"
+          [ "$RUNNER_OS" = "Windows" ] && CFG_DIR="$(cygpath -w "$CFG_DIR")"
           cd "$RUN_DIR"
           LLM_EXIT=0
           if [ "$PROVIDER" = "claude" ]; then
@@ -289,7 +293,7 @@ jobs:
           else
             gemini --skip-trust \
               --output-format stream-json \
-              --include-directories "$RUN_DIR,$HOME/.$PROVIDER,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              --include-directories "$RUN_DIR,$CFG_DIR,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           fi
