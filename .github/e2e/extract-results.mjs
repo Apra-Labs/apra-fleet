@@ -17,9 +17,11 @@ function processRawFile(filePath) {
   let assistantText = '';
   let tokensIn = 0;
   let tokensOut = 0;
+  let cacheCreate = 0;
+  let cacheRead = 0;
 
   if (!existsSync(filePath)) {
-    return { assistantText, tokensIn, tokensOut };
+    return { assistantText, tokensIn, tokensOut, cacheCreate, cacheRead };
   }
 
   const content = readFileSync(filePath, 'utf8');
@@ -30,9 +32,13 @@ function processRawFile(filePath) {
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
 
-    if (obj.type === 'result' && obj.usage) {
-      tokensIn += (obj.usage.input ?? obj.usage.input_tokens ?? 0);
-      tokensOut += (obj.usage.output ?? obj.usage.output_tokens ?? 0);
+    // Sum usage across every assistant event (not just the final result turn)
+    if (obj.type === 'assistant' && obj.message?.usage) {
+      const u = obj.message.usage;
+      tokensIn += (u.input_tokens ?? 0);
+      tokensOut += (u.output_tokens ?? 0);
+      cacheCreate += (u.cache_creation_input_tokens ?? 0);
+      cacheRead += (u.cache_read_input_tokens ?? 0);
     }
 
     if (obj.type === 'result' && obj.result) {
@@ -46,24 +52,30 @@ function processRawFile(filePath) {
     }
   }
 
-  return { assistantText, tokensIn, tokensOut };
+  return { assistantText, tokensIn, tokensOut, cacheCreate, cacheRead };
 }
 
-let allAssistantText = '';
-let pmTokensIn = 0;
-let pmTokensOut = 0;
+// Phase labels: index 0 = setup, index 1 = sprint, extras get phase<n>
+const phaseLabels = ['setup', 'sprint'];
 
-for (const filePath of rawFiles) {
-  const result = processRawFile(filePath);
+let allAssistantText = '';
+const pmPhases = [];
+
+for (let i = 0; i < rawFiles.length; i++) {
+  const label = phaseLabels[i] ?? `phase${i + 1}`;
+  const result = processRawFile(rawFiles[i]);
   allAssistantText += result.assistantText;
-  pmTokensIn += result.tokensIn;
-  pmTokensOut += result.tokensOut;
+  pmPhases.push({
+    role: `pm-${label}`,
+    tokens_in: result.tokensIn,
+    tokens_out: result.tokensOut,
+    cache_creation_input_tokens: result.cacheCreate,
+    cache_read_input_tokens: result.cacheRead,
+  });
 }
 
 // Sum member telemetry from ground-truth JSONL logs
-const telemetry = [
-  { role: 'pm', tokens_in: pmTokensIn, tokens_out: pmTokensOut }
-];
+const telemetry = [...pmPhases];
 
 function sumMemberLogs(role) {
   let in_t = 0;
