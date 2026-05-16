@@ -4,22 +4,6 @@ Automated end-to-end test of the apra-fleet product. This phase registers member
 
 PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
-## Members
-
-- **doer** (name: `doer`, provider: {{DOER_PROVIDER}})
-  - Host: {{DOER_HOST}} (local if value is "local", otherwise a remote test machine)
-  - Username: {{DOER_USER}}
-  - Work folder: {{DOER_FOLDER}}
-  - Credentials resolved from the fleet credential store key E2E_ACRED
-  - Auth: for remote members, prefer auth_type=key via setup_ssh_key as primary; password ({{secure.E2E_ACRED}}) as explicit secondary fallback
-
-- **reviewer** (name: `reviewer`, provider: {{REVIEWER_PROVIDER}})
-  - Host: {{REVIEWER_HOST}} (local if value is "local", otherwise a remote test machine)
-  - Username: {{REVIEWER_USER}}
-  - Work folder: {{REVIEWER_FOLDER}}
-  - Credentials resolved from the fleet credential store key E2E_ACRED
-  - Auth: for remote members, prefer auth_type=key via setup_ssh_key as primary; password ({{secure.E2E_ACRED}}) as explicit secondary fallback
-
 ## Rules
 
 - Run every test in this phase even if earlier ones fail.
@@ -31,21 +15,36 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
 ## T1: Member Registration
 
-Register both members. For each:
-- If `host` is `"local"`: `register_member(member_name=..., work_folder=...)` - no host/username/password needed.
-- If `host` is an IP address: first attempt `setup_ssh_key(member_name=..., host=..., username=..., password={{secure.E2E_ACRED}})` then `register_member(member_name=..., host=..., username=..., auth_type="key", work_folder=...)`. If key setup fails, fall back to `register_member(member_name=..., host=..., username=..., password={{secure.E2E_ACRED}}, auth_type="password", work_folder=...)`.
+for local members skip Host, Username and password details
+for remote members use {{secure.E2E_ACRED}} as password first and then `setup_ssh_key`
 
-After each: `update_member unattended="auto"`.
+### doer
+/pm register a {{DOER_TYPE}} member doer. Details:
+- Provider: {{DOER_PROVIDER}}
+- Host: {{DOER_HOST}}
+- Username: {{DOER_USER}}
+- Work folder: {{DOER_FOLDER}}
 
-Provision LLM AUTH on both members.
+### reviewer
+/pm register a {{REVIEWER_TYPE}} member named reviewer. Details:
+- Provider: {{REVIEWER_PROVIDER}}
+- Host: {{REVIEWER_HOST}}
+- Username: {{REVIEWER_USER}}
+- Work folder: {{REVIEWER_FOLDER}}
 
-Verify both online in `fleet_status`.
+### After registering each member
 
-On each member verify `bd`: `which bd 2>/dev/null || find ~/.nvm -name bd -type f 2>/dev/null | head -1`
-If missing: `npm install -g @beads/bd`
+- Call `update_member` for the member with `unattended="auto"`.
+- Provision LLM auth on the member.
 
-Verify `dolt`: `which dolt 2>/dev/null || ~/bin/dolt version 2>/dev/null`
-If missing:
+Then confirm both members show online in `fleet_status`.
+
+### Verify tools on each member
+
+Check `bd` is installed: run `which bd`. If it is missing, run `npm install -g @beads/bd`.
+
+Check `dolt` is installed: run `which dolt || ~/bin/dolt version`. If it is missing, install it:
+
 ```
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m | sed 's/x86_64/amd64/')
@@ -60,8 +59,10 @@ grep -q 'HOME/bin' ~/.profile 2>/dev/null || echo 'export PATH=$HOME/bin:$PATH' 
 
 ## T2: Basic Execution
 
-On each member: `echo "e2e-ok-$(hostname)"` - verify `e2e-ok-` in response.
-Send a file containing `fleet-e2e-roundtrip` to each member, receive it back, verify content matches.
-Write scratch files into the run directory (current working directory), not /tmp.
+On each member, run `echo "e2e-ok-$(hostname)"` and confirm the output contains `e2e-ok-`.
+
+Send a file containing `fleet-e2e-roundtrip` to each member, receive it back, and confirm the content matches.
+
+Write any scratch files into the run directory (the current working directory), not /tmp.
 
 ---

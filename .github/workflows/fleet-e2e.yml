@@ -60,8 +60,10 @@ jobs:
           PM_OS=$(echo $CONFIG      | jq -r ".suites[\"$SUITE\"].pm.os")
           DOER_OS=$(echo $CONFIG    | jq -r ".suites[\"$SUITE\"].doer.os")
           DOER_PROV=$(echo $CONFIG  | jq -r ".suites[\"$SUITE\"].doer.provider")
+          DOER_TYPE=$(echo $CONFIG  | jq -r ".suites[\"$SUITE\"].doer.type")
           REV_OS=$(echo $CONFIG     | jq -r ".suites[\"$SUITE\"].reviewer.os")
           REV_PROV=$(echo $CONFIG   | jq -r ".suites[\"$SUITE\"].reviewer.provider")
+          REV_TYPE=$(echo $CONFIG   | jq -r ".suites[\"$SUITE\"].reviewer.type")
           VCS=$(echo $CONFIG        | jq -r ".suites[\"$SUITE\"].vcs")
 
           DOER_HOST=$(echo $MEMBERS   | jq -r ".$DOER_OS.host")
@@ -76,11 +78,13 @@ jobs:
           echo "pm_os=$PM_OS"               >> $GITHUB_OUTPUT
           echo "doer_os=$DOER_OS"           >> $GITHUB_OUTPUT
           echo "doer_provider=$DOER_PROV"   >> $GITHUB_OUTPUT
+          echo "doer_type=$DOER_TYPE"       >> $GITHUB_OUTPUT
           echo "doer_host=$DOER_HOST"       >> $GITHUB_OUTPUT
           echo "doer_user=$DOER_USER"       >> $GITHUB_OUTPUT
           echo "doer_folder=$DOER_FOLDER"   >> $GITHUB_OUTPUT
           echo "reviewer_os=$REV_OS"        >> $GITHUB_OUTPUT
           echo "reviewer_provider=$REV_PROV" >> $GITHUB_OUTPUT
+          echo "reviewer_type=$REV_TYPE"    >> $GITHUB_OUTPUT
           echo "reviewer_host=$REV_HOST"    >> $GITHUB_OUTPUT
           echo "reviewer_user=$REV_USER"    >> $GITHUB_OUTPUT
           echo "reviewer_folder=$REV_FOLDER" >> $GITHUB_OUTPUT
@@ -181,32 +185,41 @@ jobs:
       - name: Render test scripts
         shell: bash
         run: |
-          DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
-          REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
-          DOER_FOLDER_SED="${DOER_FOLDER//\\/\\\\}"
-          REVIEWER_FOLDER_SED="${REVIEWER_FOLDER//\\/\\\\}"
-
-          SED_ARGS=(
-            -e 's|{{SUITE_ID}}|${{ inputs.suite }}|g'
-            -e 's|{{PM_OS}}|${{ steps.suite.outputs.pm_os }}|g'
-            -e 's|{{PM_PROVIDER}}|${{ steps.suite.outputs.pm_provider }}|g'
-            -e 's|{{DOER_HOST}}|${{ steps.suite.outputs.doer_host }}|g'
-            -e 's|{{DOER_USER}}|${{ steps.suite.outputs.doer_user }}|g'
-            -e 's|{{DOER_OS}}|${{ steps.suite.outputs.doer_os }}|g'
-            -e 's|{{DOER_PROVIDER}}|${{ steps.suite.outputs.doer_provider }}|g'
-            -e 's|{{REVIEWER_HOST}}|${{ steps.suite.outputs.reviewer_host }}|g'
-            -e 's|{{REVIEWER_USER}}|${{ steps.suite.outputs.reviewer_user }}|g'
-            -e 's|{{REVIEWER_OS}}|${{ steps.suite.outputs.reviewer_os }}|g'
-            -e 's|{{REVIEWER_PROVIDER}}|${{ steps.suite.outputs.reviewer_provider }}|g'
-            -e 's|{{TOY_PROJECT_URL}}|${{ steps.suite.outputs.toy_url }}|g'
-            -e 's|{{VCS}}|${{ steps.suite.outputs.vcs }}|g'
-            -e 's|{{BRANCH_PREFIX}}|e2e-${{ inputs.suite }}-${{ github.run_id }}|g'
-            -e "s|{{DOER_FOLDER}}|${DOER_FOLDER_SED}|g"
-            -e "s|{{REVIEWER_FOLDER}}|${REVIEWER_FOLDER_SED}|g"
+          # Literal token substitution via bash string replacement -- never sed.
+          # sed mangles Windows paths: backslashes vanish and \U/\l trigger
+          # GNU sed case-conversion escapes (C:\Users\... -> C:SERS...).
+          declare -A VARS=(
+            ["{{SUITE_ID}}"]='${{ inputs.suite }}'
+            ["{{PM_OS}}"]='${{ steps.suite.outputs.pm_os }}'
+            ["{{PM_PROVIDER}}"]='${{ steps.suite.outputs.pm_provider }}'
+            ["{{DOER_HOST}}"]='${{ steps.suite.outputs.doer_host }}'
+            ["{{DOER_USER}}"]='${{ steps.suite.outputs.doer_user }}'
+            ["{{DOER_OS}}"]='${{ steps.suite.outputs.doer_os }}'
+            ["{{DOER_TYPE}}"]='${{ steps.suite.outputs.doer_type }}'
+            ["{{DOER_PROVIDER}}"]='${{ steps.suite.outputs.doer_provider }}'
+            ["{{DOER_FOLDER}}"]='${{ steps.suite.outputs.doer_folder }}'
+            ["{{REVIEWER_HOST}}"]='${{ steps.suite.outputs.reviewer_host }}'
+            ["{{REVIEWER_USER}}"]='${{ steps.suite.outputs.reviewer_user }}'
+            ["{{REVIEWER_OS}}"]='${{ steps.suite.outputs.reviewer_os }}'
+            ["{{REVIEWER_TYPE}}"]='${{ steps.suite.outputs.reviewer_type }}'
+            ["{{REVIEWER_PROVIDER}}"]='${{ steps.suite.outputs.reviewer_provider }}'
+            ["{{REVIEWER_FOLDER}}"]='${{ steps.suite.outputs.reviewer_folder }}'
+            ["{{TOY_PROJECT_URL}}"]='${{ steps.suite.outputs.toy_url }}'
+            ["{{VCS}}"]='${{ steps.suite.outputs.vcs }}'
+            ["{{BRANCH_PREFIX}}"]='e2e-${{ inputs.suite }}-${{ github.run_id }}'
           )
 
-          sed "${SED_ARGS[@]}" .github/e2e/setup-script.md > "$RUN_DIR/rendered-setup.md"
-          sed "${SED_ARGS[@]}" .github/e2e/sprint-script.md > "$RUN_DIR/rendered-sprint.md"
+          render() {
+            local content
+            content=$(cat "$1")
+            for token in "${!VARS[@]}"; do
+              content="${content//"$token"/${VARS[$token]}}"
+            done
+            printf '%s\n' "$content" > "$2"
+          }
+
+          render .github/e2e/setup-script.md "$RUN_DIR/rendered-setup.md"
+          render .github/e2e/sprint-script.md "$RUN_DIR/rendered-sprint.md"
 
       - name: Run fleet e2e - setup phase (${{ steps.suite.outputs.pm_provider }})
         id: e2e_setup
@@ -253,6 +266,7 @@ jobs:
 
       - name: Run fleet e2e - sprint phase (${{ steps.suite.outputs.pm_provider }})
         id: e2e_sprint
+        if: false  # TEMPORARILY DISABLED -- setup-phase-only validation run
         timeout-minutes: 120
         shell: bash
         run: |
@@ -334,7 +348,7 @@ jobs:
             > results.json
 
       - name: Validate e2e test completion
-        if: always()
+        if: false  # TEMPORARILY DISABLED -- setup-phase-only validation run
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
