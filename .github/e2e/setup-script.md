@@ -6,6 +6,8 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
 ## Rules
 
+- Do all work directly in this top-level conversation. Do not use the Agent
+  tool or spawn sub-agents -- run every fleet call and command yourself.
 - Run every test in this phase even if earlier ones fail.
 - After each test emit one line in this exact format (no backticks, no code block):
   CHECKPOINT: [{"test":"T1","status":"PASS","notes":"..."}]
