@@ -212,18 +212,20 @@ jobs:
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           cd "$RUN_DIR"
+          LLM_EXIT=0
           if [ "$PROVIDER" = "claude" ]; then
             claude \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
               --output-format stream-json \
+              --verbose \
               --max-turns 80 \
               --add-dir "$RUN_DIR" \
-              > "$RUN_DIR/raw-output.txt" 2>&1 || true
+              > "$RUN_DIR/raw-output.txt" 2>&1 || LLM_EXIT=$?
           else
             gemini --skip-trust \
               --output-format stream-json \
               -p "$(cat "$RUN_DIR/rendered-test-script.md")" \
-              > "$RUN_DIR/raw-output.txt" 2>&1 || true
+              > "$RUN_DIR/raw-output.txt" 2>&1 || LLM_EXIT=$?
           fi
 
           # Extract PM session ID
@@ -238,6 +240,15 @@ jobs:
             '${{ steps.suite.outputs.pm_provider }}' \
             > "$RUN_DIR/results.json" \
             || echo '{"overall":"FAIL"}' > "$RUN_DIR/results.json"
+
+          # Fail loud if the LLM CLI itself exited non-zero. Without this the
+          # step would report success even when the LLM never ran a turn.
+          if [ "$LLM_EXIT" -ne 0 ]; then
+            echo "::error::LLM CLI ($PROVIDER) exited with code $LLM_EXIT -- e2e run did not complete."
+            echo "--- raw-output.txt (first 40 lines) ---"
+            head -40 "$RUN_DIR/raw-output.txt" || true
+            exit "$LLM_EXIT"
+          fi
 
       - name: Collect fleet daemon logs
         if: always()
