@@ -267,7 +267,6 @@ jobs:
 
       - name: Run fleet e2e - sprint phase (${{ steps.suite.outputs.pm_provider }})
         id: e2e_sprint
-        if: false  # TEMPORARILY DISABLED -- setup-phase-only validation run
         timeout-minutes: 120
         shell: bash
         run: |
@@ -350,7 +349,7 @@ jobs:
             > results.json
 
       - name: Validate e2e test completion
-        if: false  # TEMPORARILY DISABLED -- setup-phase-only validation run
+        if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
