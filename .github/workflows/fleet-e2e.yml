@@ -239,15 +239,14 @@ jobs:
               --verbose \
               --max-turns 80 \
               --add-dir "$RUN_DIR" \
-              --add-dir "$HOME/.claude" \
+              --add-dir "$HOME/.$PROVIDER" \
               --add-dir "$(dirname "$DOER_FOLDER")" \
               --add-dir "$(dirname "$REVIEWER_FOLDER")" \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           else
-            # <<GEMINI-DIRS: verify flag name + config dir with gemini-specialist>>
             gemini --skip-trust \
               --output-format stream-json \
-              --include-directories "$RUN_DIR,$HOME/.claude,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              --include-directories "$RUN_DIR,$HOME/.$PROVIDER,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-setup.md")" \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           fi
@@ -283,15 +282,14 @@ jobs:
               --verbose \
               --max-turns 80 \
               --add-dir "$RUN_DIR" \
-              --add-dir "$HOME/.claude" \
+              --add-dir "$HOME/.$PROVIDER" \
               --add-dir "$(dirname "$DOER_FOLDER")" \
               --add-dir "$(dirname "$REVIEWER_FOLDER")" \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           else
-            # <<GEMINI-DIRS: verify flag name + config dir with gemini-specialist>>
             gemini --skip-trust \
               --output-format stream-json \
-              --include-directories "$RUN_DIR,$HOME/.claude,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              --include-directories "$RUN_DIR,$HOME/.$PROVIDER,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           fi
