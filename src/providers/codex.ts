@@ -3,6 +3,9 @@ import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 
+// Known exception: Codex CLI cannot take a caller-supplied session ID.
+// It uses a positional 'resume' keyword; session discovery relies on the mtime-scan
+// fallback in find-log-file.ts. This is intentionally not changed by the session-id fix.
 export class CodexProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'codex';
   readonly processName = 'codex';

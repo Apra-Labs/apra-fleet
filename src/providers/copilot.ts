@@ -4,6 +4,9 @@ import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { logWarn } from '../utils/log-helpers.js';
 
+// Known exception: Copilot CLI cannot take a caller-supplied session ID.
+// It uses --continue (no ID); session discovery relies on the mtime-scan fallback
+// in find-log-file.ts. This is intentionally not changed by the session-id fix.
 export class CopilotProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'copilot';
   readonly processName = 'copilot';

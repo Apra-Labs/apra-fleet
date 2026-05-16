@@ -98,7 +98,7 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
@@ -117,7 +117,7 @@ export class WindowsCommands implements OsCommands {
       argList += ` --max-turns ${maxTurns ?? 50}`;
     }
     if (sessionId && provider.supportsResume()) {
-      const rf = provider.resumeFlag(sessionId);
+      const rf = provider.resumeFlag(sessionId, resuming);
       if (rf) argList += ` ${rf}`;
     }
     if (unattended === 'auto') {
@@ -238,7 +238,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
     return [
-      `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join "\`r\`n"`,
+      `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join [Environment]::NewLine`,
       `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
       `$gcFile = "$env:USERPROFILE\\${credFileName}.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "\${u}:F"`,
       `git config --global --replace-all 'credential.${credUrl}.helper' ''`,

@@ -18,10 +18,19 @@ export function buildResumeFlag(sessionId: string | undefined, fallback = ''): s
   return fallback;
 }
 
+/**
+ * Build a `--session-id <id>` flag for starting a new session with a caller-minted ID.
+ * @param sessionId - The raw session ID (will be sanitized)
+ */
+export function buildSessionIdFlag(sessionId: string): string {
+  return `--session-id "${sanitizeSessionId(sessionId)}"`;
+}
+
 export interface PromptOptions {
   folder: string;
   promptFile: string;
   sessionId?: string;
+  resuming?: boolean;
   unattended?: false | 'auto' | 'dangerous';
   model?: string;
   maxTurns?: number;
@@ -63,7 +72,7 @@ export interface ProviderAdapter {
   // Session management
   supportsResume(): boolean;
   supportsMaxTurns(): boolean;
-  resumeFlag(sessionId?: string): string;
+  resumeFlag(sessionId?: string, resuming?: boolean): string;
 
   // Model tier mapping
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string>;

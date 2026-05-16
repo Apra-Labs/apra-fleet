@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
-import { buildResumeFlag } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -57,16 +57,17 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, model, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, inv } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
     let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json --allowed-mcp-server-names "${getAllowedMcpServers()}"`;
-    const rf = buildResumeFlag(sessionId);
-    if (rf) {
-      cmd += ` ${rf}`;
+    if (resuming && sessionId) {
+      cmd += ` ${buildResumeFlag(sessionId)}`;
+    } else if (sessionId) {
+      cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
     if (unattended === 'dangerous') {
       cmd += ` ${this.skipPermissionsFlag()}`;
@@ -116,8 +117,9 @@ export class GeminiProvider implements ProviderAdapter {
     return false;
   }
 
-  resumeFlag(sessionId?: string): string {
-    return buildResumeFlag(sessionId, '--resume latest');
+  resumeFlag(sessionId?: string, resuming?: boolean): string {
+    if (!sessionId) return '';
+    return resuming ? buildResumeFlag(sessionId) : buildSessionIdFlag(sessionId);
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {

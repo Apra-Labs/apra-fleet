@@ -356,6 +356,100 @@ describe('executePrompt', () => {
   });
 });
 
+describe('session-id collision fix', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('fresh session command contains --session-id <uuid>, never -c', async () => {
+    const member = makeTestAgent({ friendlyName: 'fresh-sid' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'any' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    const cmd = mockExecCommand.mock.calls[1][0];
+    expect(cmd).toMatch(/--session-id "[0-9a-f-]+"/);
+    expect(cmd).not.toContain(' -c');
+    expect(cmd).not.toContain('--resume');
+  });
+
+  it('resumed session command contains --resume <stored-id>, never -c', async () => {
+    const member = makeTestAgent({ friendlyName: 'resume-sid', sessionId: 'stored-sess-42' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'stored-sess-42' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    const cmd = mockExecCommand.mock.calls[1][0];
+    expect(cmd).toContain('--resume "stored-sess-42"');
+    expect(cmd).not.toContain(' -c');
+    expect(cmd).not.toContain('--session-id');
+  });
+
+  it('resume=true with no stored ID mints fresh --session-id, not -c', async () => {
+    const member = makeTestAgent({ friendlyName: 'resume-no-id' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'any' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    const cmd = mockExecCommand.mock.calls[1][0];
+    expect(cmd).toMatch(/--session-id "[0-9a-f-]+"/);
+    expect(cmd).not.toContain(' -c');
+    expect(cmd).not.toContain('--resume');
+  });
+
+  it('session-id mismatch: does not persist wrong id', async () => {
+    const member = makeTestAgent({ friendlyName: 'mismatch-sid' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'wrong-id-from-cli' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    const updated = getAgent(member.id);
+    expect(updated?.sessionId).not.toBe('wrong-id-from-cli');
+  });
+
+  it('session-id match: persists the minted id', async () => {
+    const member = makeTestAgent({ friendlyName: 'match-sid', sessionId: 'stored-id' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'stored-id' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    const updated = getAgent(member.id);
+    expect(updated?.sessionId).toBe('stored-id');
+  });
+});
+
 describe('kill-before-retry (T5)', () => {
   let memberId: string;
 

@@ -1,5 +1,6 @@
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
 import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -32,7 +33,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
@@ -40,8 +41,10 @@ export class ClaudeProvider implements ProviderAdapter {
       instruction = `[${inv}] ${instruction}`;
     }
     let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
-    if (sessionId) {
-      cmd += ' -c';
+    if (resuming && sessionId) {
+      cmd += ` ${buildResumeFlag(sessionId)}`;
+    } else if (sessionId) {
+      cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
     if (unattended === 'auto') {
       cmd += ' --permission-mode auto';
@@ -123,8 +126,9 @@ export class ClaudeProvider implements ProviderAdapter {
     return true;
   }
 
-  resumeFlag(sessionId?: string): string {
-    return sessionId ? '-c' : '';
+  resumeFlag(sessionId?: string, resuming?: boolean): string {
+    if (!sessionId) return '';
+    return resuming ? buildResumeFlag(sessionId) : buildSessionIdFlag(sessionId);
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {

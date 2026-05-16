@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -12,7 +13,7 @@ import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { getStallDetector, resolveSessionLogPath, resolveSessionLogDir } from '../services/stall/index.js';
+import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -165,19 +166,23 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
 
+  const resuming = !!(input.resume && agent.sessionId && provider.supportsResume());
+  const mintedId = (provider.name === 'claude' || provider.name === 'gemini')
+    ? (resuming ? agent.sessionId! : uuid())
+    : (resuming ? agent.sessionId : undefined);
+
   const promptOpts = {
     folder: resolvedWorkFolder,
     promptFile: promptFileName,
+    sessionId: mintedId,
+    resuming,
     unattended: agent.unattended,
     model: resolvedModel,
     maxTurns: input.max_turns,
     inv: scope.getInv(),
   };
 
-  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, {
-    ...promptOpts,
-    sessionId: input.resume && agent.sessionId ? agent.sessionId : undefined,
-  });
+  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
 
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
@@ -187,36 +192,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   // Write the prompt to the unique prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, input.prompt);
-  
+
   const onPidCaptured = (pid: number) => {
     scope.info(`pid=${pid}`);
-    const logDir = resolveSessionLogDir(agent.llmProvider ?? 'claude', agent.workFolder);
-    if (logDir) {
+    if (mintedId) {
       try {
-        // Capture time after pid is known — old session files touched at CLI startup
-        // will have mtime before this point; genuine writes (new file or resume append) after.
-        const watcherSetupTime = Date.now();
-        const watcher = fs.watch(logDir, { persistent: false }, (event: string, filename: string | null) => {
-          if (!filename?.endsWith('.jsonl')) return;
-          const logPath = path.join(logDir, filename);
-          try {
-            const stat = fs.statSync(logPath);
-            // Reject files whose mtime predates this session — the CLI touches old session
-            // files at startup before our watcher is set up.
-            if (stat.mtimeMs <= watcherSetupTime) return;
-          } catch { return; }
-          const sessionId = filename.replace('.jsonl', '');
-          stallDetector.update(agent.id, {
-            sessionId,
-            logFilePath: logPath,
-            provisional: false,
-          });
-          scope.info(`stall log resolved via dir-watch: sessionId=${sessionId}`);
-          watcher.close();
+        const logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, agent.workFolder);
+        stallDetector.update(agent.id, {
+          sessionId: mintedId,
+          logFilePath: logPath,
+          provisional: false,
         });
-      } catch {
-        // log dir may not exist yet — provisional entry stays until session ends
-      }
+      } catch { /* copilot/codex: no log path resolution */ }
     }
   };
 
@@ -239,11 +226,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
 
-    // Stale session retry — immediate, without session ID
+    // Stale session retry — fresh session ID, no resume
     if (result.code !== 0 && input.resume && agent.sessionId) {
       scope.info(`[${resolvedModel}] retrying — stale session`);
       await tryKillPid(agent, strategy, cmds);
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
       parsed = provider.parseResponse(result);
       if (parsed.usage) _epUsage = parsed.usage;
@@ -254,7 +242,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       scope.info(`[${resolvedModel}] retrying — server overloaded`);
       await tryKillPid(agent, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
       parsed = provider.parseResponse(result);
       if (parsed.usage) _epUsage = parsed.usage;
@@ -265,14 +254,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       return buildFailureMessage(agent.friendlyName, result, provider);
     }
 
-    // Update session ID and last used
-    touchAgent(agent.id, parsed.sessionId);
-    if (parsed.sessionId) {
-      stallDetector.update(agent.id, {
-        sessionId: parsed.sessionId,
-        logFilePath: resolveSessionLogPath(agent.llmProvider ?? 'claude', parsed.sessionId, agent.workFolder),
-        provisional: false,
-      });
+    // Session-id assertion: returned id must match the one we minted/resumed
+    if (mintedId && parsed.sessionId && parsed.sessionId !== mintedId) {
+      scope.info(`session-id mismatch: expected=${mintedId} got=${parsed.sessionId} -- not persisting`);
+      touchAgent(agent.id, undefined);
+    } else {
+      touchAgent(agent.id, mintedId ?? parsed.sessionId);
+    }
+    if (mintedId) {
+      try {
+        stallDetector.update(agent.id, {
+          sessionId: mintedId,
+          logFilePath: resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, agent.workFolder),
+          provisional: false,
+        });
+      } catch { /* copilot/codex: no log path resolution */ }
     }
     clearStoredPid(agent.id);
 
