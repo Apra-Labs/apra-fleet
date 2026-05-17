@@ -221,6 +221,19 @@ jobs:
           render .github/e2e/setup-script.md "$RUN_DIR/rendered-setup.md"
           render .github/e2e/sprint-script.md "$RUN_DIR/rendered-sprint.md"
 
+      - name: Seed PM permissions
+        shell: bash
+        run: |
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          if [ "$PROVIDER" = "claude" ]; then
+            mkdir -p "$RUN_DIR/.claude"
+            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/claude.settings.json" "$RUN_DIR/.claude/settings.json"
+          else
+            mkdir -p "$RUN_DIR/.gemini"
+            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/settings.json"
+          fi
+          echo "Seeded $PROVIDER PM permissions into $RUN_DIR"
+
       - name: Run fleet e2e - setup phase (${{ steps.suite.outputs.pm_provider }})
         id: e2e_setup
         timeout-minutes: 120
@@ -249,6 +262,7 @@ jobs:
             gemini --skip-trust \
               --output-format stream-json \
               --include-directories "$RUN_DIR,$CFG_DIR,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              --allowed-mcp-server-names apra-fleet \
               -p "$(cat "$RUN_DIR/rendered-setup.md")" \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           fi
@@ -293,6 +307,7 @@ jobs:
             gemini --skip-trust \
               --output-format stream-json \
               --include-directories "$RUN_DIR,$CFG_DIR,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
+              --allowed-mcp-server-names apra-fleet \
               -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           fi

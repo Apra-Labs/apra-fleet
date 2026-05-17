@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)", "Bash(gh:*)", "Bash(bd:*)",
+      "Bash(npm:*)", "Bash(node:*)", "Bash(jq:*)",
+      "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)",
+      "Bash(cat:*)", "Bash(echo:*)", "Bash(ls:*)",
+      "Read", "Write", "Edit", "Glob", "Grep",
+      "Skill", "ToolSearch", "TodoWrite",
+      "mcp__apra-fleet__*"
+    ]
+  }
+}
