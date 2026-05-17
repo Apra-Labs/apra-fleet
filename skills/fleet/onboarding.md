@@ -4,7 +4,7 @@ After `register_member`, run these 8 steps before dispatching any work.
 
 ## Step 1: Setup SSH Key Auth (remote members only)
 
-Check `member_detail` — if member type is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
+Check `member_detail`  -  if member type is `remote` and `authType` is `password`, run `setup_ssh_key` to migrate to key-based authentication. Skip entirely for local members or members already on key auth.
 
 ## Step 1.5: Verify CLI Installation
 
@@ -17,19 +17,23 @@ Use `member_detail` to determine `llmProvider` and `os`. Run `execute_command` w
 
 If the LLM CLI is not installed or the command fails, use `update_llm_cli` to install it before proceeding. Do not attempt any prompt dispatch until the CLI is confirmed.
 
+## Step 1.7: Provision LLM Auth
+
+Call `provision_llm_auth`. Skip for local members - they inherit auth from the PM machine.
+
 ## Step 2: Disable AI Attribution
 
 **Claude only.** Write `{"attribution":{"commit":"","pr":""}}` to `.claude/settings.json` in the member's work folder via `execute_command`. Merge if file already exists.
 
-Gemini, Codex, and Copilot do not support attribution config — skip this step for those providers.
+Gemini, Codex, and Copilot do not support attribution config  -  skip this step for those providers.
 
 ## Step 3: Detect VCS Provider
 
 Run on the member: `git remote -v`
 
-- `github.com` → GitHub
-- `bitbucket.org` → Bitbucket
-- `dev.azure.com` → Azure DevOps
+- `github.com` -> GitHub
+- `bitbucket.org` -> Bitbucket
+- `dev.azure.com` -> Azure DevOps
 
 No remotes? Ask the user for VCS provider and repo URL.
 
@@ -39,7 +43,7 @@ Ask the user. Roles: development, code-review, testing, devops, debugging. A mem
 
 ## Step 5: Setup VCS Auth
 
-Verify auth, provision if needed. See auth-{provider}.md for provider-specific steps and required scopes per role. Skip for local members — they inherit the user's native git credentials.
+Verify auth, provision if needed. See auth-{provider}.md for provider-specific steps and required scopes per role. Skip for local members  -  they inherit the user's native git credentials.
 
 ## Step 6: Check/Install Required Skills
 
@@ -47,7 +51,7 @@ Look up the member's project + VCS + roles in skill-matrix.md. Install any missi
 
 ## Step 7: Add Fleet Ephemeral Files to .gitignore
 
-Run `execute_command → echo '.fleet-task.md' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
+Run `execute_command -> echo '.fleet-task.md' >> .gitignore` on the member's work folder. These are ephemeral prompt delivery files managed by the fleet server and must never be committed to the repo.
 
 ## Step 8: Update Member Status File
 
@@ -69,17 +73,17 @@ If the task you are about to dispatch requires an API key, token, or password (e
 **Why:** `execute_prompt` prompts are visible in the LLM conversation. Passing raw secrets there exposes them in logs and chat history. The credential store keeps the plaintext out of the LLM entirely.
 
 **Steps:**
-1. Call `credential_store_set` with a descriptive name (e.g., `github_pat`, `npm_token`, `openai_key`) — Fleet opens an OOB terminal prompt for the value
-2. Pass the `sec://NAME` handle in the task prompt — reference by name only (e.g. `"authenticate using credential github_pat"`). The secret value is only injected server-side when `{{secure.NAME}}` appears in an `execute_command` call — never in AI prompt text.
-3. The member uses `{{secure.NAME}}` in `execute_command` — Fleet resolves the value server-side and redacts it from output before the LLM sees it
+1. Call `credential_store_set` with a descriptive name (e.g., `github_pat`, `npm_token`, `openai_key`)  -  Fleet opens an OOB terminal prompt for the value
+2. Pass the `sec://NAME` handle in the task prompt  -  reference by name only (e.g. `"authenticate using credential github_pat"`). The secret value is only injected server-side when `{{secure.NAME}}` appears in an `execute_command` call  -  never in AI prompt text.
+3. The member uses `{{secure.NAME}}` in `execute_command`  -  Fleet resolves the value server-side and redacts it from output before the LLM sees it
 
-**Example — dispatching a member that needs to push code to GitHub:**
+**Example  -  dispatching a member that needs to push code to GitHub:**
 
 ```
 # PM stores the token before dispatch
 credential_store_set  name=github_pat
 
-# PM includes in the task prompt — reference by name only:
+# PM includes in the task prompt  -  reference by name only:
 "When pushing code to GitHub, authenticate using credential github_pat."
 
 # Member uses it in a command transparently

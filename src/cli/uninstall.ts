@@ -64,16 +64,19 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
     }
   }
 
-  // 3. Hooks
-  if (settings.hooks?.PostToolUse) {
-    const originalCount = settings.hooks.PostToolUse.length;
-    const filtered = (settings.hooks.PostToolUse as any[]).filter(h => 
-      !h.matcher?.includes('apra-fleet')
-    );
-    if (filtered.length !== originalCount) {
-      console.log(`  - Removing ${originalCount - filtered.length} fleet hooks`);
-      if (!dryRun) settings.hooks.PostToolUse = filtered;
-      changed = true;
+  // 3. Hooks — Claude uses "PostToolUse", Gemini uses "AfterTool"
+  const hookEventNames = ['PostToolUse', 'AfterTool'];
+  for (const eventName of hookEventNames) {
+    if (settings.hooks?.[eventName]) {
+      const originalCount = settings.hooks[eventName].length;
+      const filtered = (settings.hooks[eventName] as any[]).filter(h =>
+        !h.matcher?.includes('apra-fleet')
+      );
+      if (filtered.length !== originalCount) {
+        console.log(`  - Removing ${originalCount - filtered.length} fleet hooks (${eventName})`);
+        if (!dryRun) settings.hooks[eventName] = filtered;
+        changed = true;
+      }
     }
   }
 

@@ -7,7 +7,12 @@
       "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(rm:*)",
       "Bash(find:*)", "Bash(wc:*)", "Bash(sort:*)", "Bash(diff:*)",
       "Bash(echo:*)", "Bash(touch:*)", "Bash(chmod:*)",
-      "Bash(curl:*)", "Bash(tar:*)", "Bash(unzip:*)"
+      "Bash(curl:*)", "Bash(tar:*)", "Bash(unzip:*)",
+      "Bash(grep:*)", "Bash(sed:*)", "Bash(awk:*)",
+      "Bash(tee:*)", "Bash(xargs:*)", "Bash(sleep:*)",
+      "Bash(kill:*)", "Bash(pkill:*)",
+      "Bash(bash:*)", "Bash(sh:*)",
+      "Bash(gh:*)", "Bash(jq:*)"
     ]
   }
 }

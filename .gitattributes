@@ -1,0 +1,13 @@
+# Normalise all text files to LF in the repository.
+# Git converts to native line endings on checkout (Windows gets CRLF locally)
+# but the canonical stored form is always LF.
+* text=auto eol=lf
+
+# Binary files - no conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.zip binary
+*.exe binary
+*.node binary

@@ -21,7 +21,7 @@ export const composePermissionsSchema = z.object({
 
 export type ComposePermissionsInput = z.infer<typeof composePermissionsSchema>;
 
-// Stack marker files → profile keys
+// Stack marker files -> profile keys
 const STACK_MAP: Record<string, string> = {
   'package.json': 'node',
   'Cargo.toml': 'rust',
@@ -45,7 +45,7 @@ const CO_OCCURRENCE: Record<string, string[]> = {
   'Bash(python:*)': ['Bash(python3:*)'],
 };
 
-// Never auto-grant — require user escalation
+// Never auto-grant - require user escalation
 const NEVER_AUTO_GRANT = new Set([
   'Bash(sudo:*)', 'Bash(su:*)', 'Bash(env:*)', 'Bash(printenv:*)',
   'Bash(nc:*)', 'Bash(nmap:*)', 'Bash(chmod 777:*)',
@@ -95,17 +95,23 @@ function saveLedger(projectFolder: string, ledger: Ledger): void {
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + '\n');
 }
 
-async function detectStacks(agent: Agent): Promise<string[]> {
+async function detectStacks(agent: Agent, projectSubdir?: string): Promise<string[]> {
   const strategy = getStrategy(agent);
   const markers = Object.keys(STACK_MAP).join(' ');
-  const result = await strategy.execCommand(`ls ${markers} 2>/dev/null || true`, 10000);
+  // Resolve the directory to check on the member: prefer <workFolder>/<projectSubdir>,
+  // fall back to workFolder root. Using an absolute cd ensures remote (SSH) members
+  // check the right directory instead of defaulting to their home directory.
+  const checkDir = projectSubdir
+    ? `${agent.workFolder}/${projectSubdir}`.replace(/\\/g, '/')
+    : agent.workFolder.replace(/\\/g, '/');
+  const result = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls ${markers} 2>/dev/null || true`, 10000);
   const found = new Set<string>();
   for (const line of result.stdout.split('\n')) {
     const file = line.trim();
     if (STACK_MAP[file]) found.add(STACK_MAP[file]);
   }
-  // .sln/.csproj need glob — check separately
-  const dotnetCheck = await strategy.execCommand('ls *.sln *.csproj 2>/dev/null || true', 5000);
+  // .sln/.csproj need glob - check separately
+  const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, 5000);
   if (dotnetCheck.stdout.trim()) found.add('dotnet');
   return [...found];
 }
@@ -219,7 +225,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   }
 
   // Proactive compose mode
-  const stacks = await detectStacks(agent);
+  const projectSubdir = input.project_folder ? path.basename(input.project_folder) : undefined;
+  const stacks = await detectStacks(agent, projectSubdir);
 
   // Update ledger stacks
   if (input.project_folder) {

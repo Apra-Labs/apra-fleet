@@ -1,4 +1,4 @@
-# OOB Auth — Terminal Mechanism and SSH/Headless Fallback
+# OOB Auth -- Terminal Mechanism and SSH/Headless Fallback
 
 Covers the design of the out-of-band credential collection system and the SSH/headless fix shipped in Sprint 1 (#106).
 
@@ -6,35 +6,35 @@ Covers the design of the out-of-band credential collection system and the SSH/he
 
 ## Background: Why OOB Auth Exists
 
-Credentials (passwords, API keys, confirmation prompts) must not pass through the LLM — the model must never see plaintext secrets. The OOB (out-of-band) mechanism collects credentials in a separate UI context, passes them over a local socket, and delivers them to the fleet server without them appearing in the prompt stream.
+Credentials (passwords, API keys, confirmation prompts) must not pass through the LLM -- the model must never see plaintext secrets. The OOB (out-of-band) mechanism collects credentials in a separate UI context, passes them over a local socket, and delivers them to the fleet server without them appearing in the prompt stream.
 
 ---
 
 ## Unix Domain Socket (UDS) Architecture
 
-The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS) or a Windows named pipe equivalent. This is a filesystem object — any process running as the same user on the same machine can reach it.
+The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS) or a Windows named pipe equivalent. This is a filesystem object -- any process running as the same user on the same machine can reach it.
 
 **Flow:**
 
 1. A tool requiring a credential calls `collectOobInput()` (in `src/services/auth-socket.ts`).
 2. `collectOobInput` registers a pending auth request with a 10-minute TTL via `createPendingAuth()`.
-3. It calls `launchAuthTerminal()` to open a terminal window running `apra-fleet auth <memberName>`.
+3. It calls `launchAuthTerminal()` to open a terminal window running `apra-fleet secret --set <memberName>`.
 4. The launched process prompts the user, reads input with masked display (LLM cannot see it), and sends the value over the UDS as a JSON message.
-5. `collectOobInput` **blocks** — `waitForPassword()` awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation/timeout fires). The call does not return early with a "Waiting..." status.
-6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `✓ NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
+5. `collectOobInput` **blocks** -- `waitForPassword()` awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation/timeout fires). The call does not return early with a "Waiting..." status.
+6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `[OK] NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
 
-**Key property:** The UDS socket is a filesystem object — no GUI or display server is required to write to it. Any process on the machine, including one launched in a second SSH terminal, can deliver credentials.
+**Key property:** The UDS socket is a filesystem object -- no GUI or display server is required to write to it. Any process on the machine, including one launched in a second SSH terminal, can deliver credentials.
 
 ---
 
-## Display Detection — The #106 Fix
+## Display Detection -- The #106 Fix
 
 ### Problem
 
-`launchAuthTerminal` attempted GUI terminal emulators in order (`gnome-terminal → xterm → x-terminal-emulator`) on Linux. On SSH sessions:
+`launchAuthTerminal` attempted GUI terminal emulators in order (`gnome-terminal -> xterm -> x-terminal-emulator`) on Linux. On SSH sessions:
 
 - `which gnome-terminal` succeeds even when `$DISPLAY` is unset (the binary exists but can't connect).
-- Spawn succeeds → process exits immediately → **"❌ Password entry cancelled"** error fires.
+- Spawn succeeds -> process exits immediately -> **"[FAIL] Password entry cancelled"** error fires.
 - The error implies the user cancelled, not that the environment is headless.
 
 The same issue on Windows: `start /wait cmd.exe` opens a window on the physical console, invisible to the SSH user.
@@ -60,36 +60,46 @@ export function hasInteractiveDesktop(): boolean {
 
 - **Linux, `$DISPLAY` and `$WAYLAND_DISPLAY` both unset:** Skip all GUI terminal emulators. Return actionable fallback message.
 - **Windows, `SESSIONNAME !== 'Console'`:** Skip `cmd.exe start /wait`. Return actionable fallback message.
-- **GUI desktop (display available):** Unchanged — auto-launches terminal as before.
+- **GUI desktop (display available):** Unchanged -- auto-launches terminal as before.
 
 ### Why check env vars rather than probing the socket
 
 Probing (attempting a spawn and checking exit code) is what caused the misleading error in the first place. Env var checks are fast, zero-side-effect, and accurate for the cases that matter: X11/Wayland forwarding sets `$DISPLAY`, and Windows service contexts have a distinct `SESSIONNAME`.
 
-Edge case accepted: X11 forwarding where `$DISPLAY` is set but the forwarded display is unreachable. This is acceptable — if the terminal fails to launch, existing fallback logic catches it, and a user with X11 forwarding active almost certainly has a working display.
+Edge case accepted: X11 forwarding where `$DISPLAY` is set but the forwarded display is unreachable. This is acceptable -- if the terminal fails to launch, existing fallback logic catches it, and a user with X11 forwarding active almost certainly has a working display.
 
 **Windows OOB window close:** Closing the OOB terminal window on Windows now returns immediately with a cancellation message. Previously, closing the window caused the tool call to hang for up to 5 minutes waiting for a password that would never arrive. The fix attaches a close-signal handler so that window dismissal resolves the pending Promise with a cancellation error immediately.
 
 ---
 
-## The `! apra-fleet auth <name>` Pattern
+## The `! apra-fleet secret --set <name>` Pattern
 
 On headless environments, the fallback message instructs the user to run:
 
 ```
-! apra-fleet auth <actual-member-name>
+! apra-fleet secret --set <actual-member-name>
 ```
 
-The `!` prefix is the Claude Code "run in shell" operator — it executes the command in the user's terminal without passing it to the LLM. This is the **single-terminal approach**: the user does not need to open a second window; they run the auth command inline in the same Claude Code session.
+The `!` prefix is the Claude Code "run in shell" operator -- it executes the command in the user's terminal without passing it to the LLM. This is the **single-terminal approach**: the user does not need to open a second window; they run the secret collection command inline in the same Claude Code session.
 
-The message includes the **actual member name** (not a placeholder). The member name is available at the point `launchAuthTerminal` is called — it is passed as the `memberName` parameter.
+The message includes the **actual member name** (not a placeholder). The member name is available at the point `launchAuthTerminal` is called -- it is passed as the `memberName` parameter.
 
-**Full fallback message text (Linux headless):**
+**Full fallback message text (Linux headless, credential-collection mode):**
 ```
 fallback:No graphical display detected (SSH or headless session).
 
-Run this in a separate terminal:
-  ! apra-fleet auth <memberName>
+Run this in a separate terminal to provide the credential:
+  ! apra-fleet secret --set <memberName>
+
+Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+```
+
+**Full fallback message text (Linux headless, egress-confirm mode):**
+```
+fallback:No graphical display detected (SSH or headless session).
+
+Run this in a separate terminal to confirm:
+  ! apra-fleet secret --confirm <memberName>
 
 Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
 ```
@@ -100,7 +110,7 @@ The `fallback:` prefix is a protocol marker consumed by `collectOobInput` to dis
 
 ## Fallback: Second Terminal
 
-When the `!` operator isn't available or the user is in a non-Claude Code context, the fallback instruction is to open a second terminal and run `apra-fleet auth <memberName>` there. Because the UDS socket is a filesystem object, the second terminal's `apra-fleet auth` process connects to the same socket and delivers the credential to the waiting fleet server — no GUI required.
+When the `!` operator isn't available or the user is in a non-Claude Code context, the fallback instruction is to open a second terminal and run `apra-fleet secret --set <memberName>` there. Because the UDS socket is a filesystem object, the second terminal's `apra-fleet secret --set` process connects to the same socket and delivers the credential to the waiting fleet server -- no GUI required.
 
 ---
 
