@@ -71,32 +71,37 @@ CHECKPOINT: {"id":"T3-done","status":"PASS","notes":"sprint phase finished"}
 
 ## Collect Session Logs
 
-Throughout this phase you will dispatch `execute_prompt` calls to members. Each response includes the session ID(s) used. Collect all session IDs per member from this phase AND the setup phase (session IDs from setup phase output are available in the run directory as raw-setup.txt).
+During this phase you dispatched `execute_prompt` calls to members. Each response gives you the session ID it used. Collect every session ID per member, from this phase and the setup phase (setup-phase session IDs are in the run directory as `raw-setup.txt`).
 
-For each session ID, the transcript path is deterministic:
+Each member's transcript file lives in the LLM's own log directory. How you find it depends on the member's provider.
 
-**Claude**: `~/.claude/projects/<slug-of-work-folder>/<session-id>.jsonl`
-where `<slug-of-work-folder>` is the work_folder path with `/` replaced by `-` and leading slash removed (e.g., `/home/user/fleet-work` becomes `home-user-fleet-work`).
+**Claude member -- the path is exact:**
 
-<<GEMINI-TRANSCRIPT-PATH: pending gemini-specialist review>>
+`~/.claude/projects/<slug>/<session-id>.jsonl`
 
-The script already knows each member's work_folder and session-id -- use the deterministic path directly. Do NOT use `find`, `locate`, or any recursive search.
+`<slug>` is the member's work_folder with every `/` (or `\` on Windows) replaced by `-` and any leading slash dropped. Example: `/home/user/fleet-work` becomes `home-user-fleet-work`.
 
-Session files live outside the member's work_folder so `receive_files` cannot access them directly. For each session file, stage a temporary copy for transfer into the work folder, receive it, then remove the staged copy:
+**Gemini member -- match on the session ID:**
+
+`~/.gemini/tmp/*/chats/session-*-<id8>.jsonl`
+
+`<id8>` is the first 8 characters of the session ID. Gemini does not name the file by work_folder or by the full ID, so list that glob -- the 8-character ID prefix identifies the file uniquely.
+
+Use the exact path (Claude) or the glob (Gemini). Do NOT run a recursive search (`find`, `locate`) -- a single fixed-depth glob in the directory above is all that is needed.
+
+Session files live outside the member's work_folder, so `receive_files` cannot reach them directly. For each file: copy it into the member's work_folder, `receive_files` it, then delete the copy.
 
 ```bash
-# Unix - stage temporary copy
-cp ~/.claude/projects/<slug>/<session-id>.jsonl <work-folder>/<session-id>.jsonl
+# Unix
+cp <transcript-path> <work-folder>/<session-id>.jsonl
 ```
 ```powershell
-# Windows - stage temporary copy
-Copy-Item "$env:USERPROFILE\.claude\projects\<slug>\<session-id>.jsonl" "<work-folder>\<session-id>.jsonl"
+# Windows
+Copy-Item "<transcript-path>" "<work-folder>\<session-id>.jsonl"
 ```
-
-Then `receive_files` the file from the work folder, and remove the staged copy afterward.
 
 Receive into:
 - Doer sessions -> `logs/doer/<session-id>.jsonl`
 - Reviewer sessions -> `logs/reviewer/<session-id>.jsonl`
 
-Skip files that do not exist on the member.
+Skip any session whose file does not exist on the member.
