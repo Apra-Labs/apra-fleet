@@ -117,7 +117,7 @@ telemetry.push({ role: 'reviewer', ...sumMemberLogs('reviewer') });
 
 // Extract checkpoints: one JSON object per "CHECKPOINT:" line
 let checkpoints = [];
-const regex = /CHECKPOINT:[ \t]*(\{[^\n]*\})/g;
+const regex = /CHECKPOINT:\s*(\{[\s\S]*?\})/g;
 let match;
 while ((match = regex.exec(allAssistantText)) !== null) {
   try {
