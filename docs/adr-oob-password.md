@@ -10,17 +10,17 @@
 
 ## Context
 
-When `register_member` is called with `auth_type: "password"`, the password is passed as a tool parameter and enters Claude's conversation context. Claude can see, recall, and replay it for the rest of the session. This is a security concern — passwords should never enter the AI's context window.
+When `register_member` is called with `auth_type: "password"`, the password is passed as a tool parameter and enters Claude's conversation context. Claude can see, recall, and replay it for the rest of the session. This is a security concern -- passwords should never enter the AI's context window.
 
 ### Problem
 
 ```
-User → "register web1, password auth, password is hunter2"
-                                                  ↑
+User -> "register web1, password auth, password is hunter2"
+                                                  ^
                             Now visible in Claude's context forever
 ```
 
-The MCP tool parameter path is: user message → Claude → tool call JSON → MCP server. The password travels through the AI model at every step.
+The MCP tool parameter path is: user message -> Claude -> tool call JSON -> MCP server. The password travels through the AI model at every step.
 
 ### Constraints
 
@@ -35,30 +35,30 @@ Add a **Unix domain socket side-channel** with an **auto-launched terminal promp
 
 1. Starts a UDS listener at `~/.apra-fleet/data/auth.sock`
 2. Creates a pending auth request keyed by member name
-3. Auto-launches a new terminal window running `apra-fleet auth <member-name>`
-4. **Blocks** — the tool handler awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation fires). It does **not** return a "Waiting..." intermediate result and does not require a second call from the LLM.
+3. Auto-launches a new terminal window running `apra-fleet secret --set <member-name>`
+4. **Blocks** -- the tool handler awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation fires). It does **not** return a "Waiting..." intermediate result and does not require a second call from the LLM.
 5. The user sees a password prompt in the new window, types the password (hidden input)
 6. The password flows over the socket to the MCP server, resolving the waiting Promise
-7. Registration continues and completes — all in a single tool call. On success the tool returns `✓ NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
+7. Registration continues and completes -- all in a single tool call. On success the tool returns `[OK] NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
 
-The key insight: the MCP server itself launches the terminal and blocks until the password arrives over the socket, so Claude only sees the final registration result — never the password. No retry needed.
+The key insight: the MCP server itself launches the terminal and blocks until the password arrives over the socket, so Claude only sees the final registration result -- never the password. No retry needed.
 
 ## Architecture
 
 ### New Components
 
 ```
-src/services/auth-socket.ts   — UDS server, pending auth state, terminal launcher
-src/cli/auth.ts                — CLI subcommand for hidden password input
-tests/auth-socket.test.ts      — 18 unit tests
+src/services/auth-socket.ts   -- UDS server, pending auth state, terminal launcher
+src/cli/secret.ts              -- CLI subcommand for credential input and egress confirmation
+tests/auth-socket.test.ts      -- 18 unit tests
 ```
 
 ### Modified Components
 
 ```
-src/index.ts                   — auth CLI dispatch, cleanup on SIGINT/SIGTERM
-src/tools/register-member.ts   — out-of-band flow before connectivity test
-src/tools/update-member.ts     — out-of-band flow when switching to password auth; rotate_password schema field
+src/index.ts                   -- auth CLI dispatch, cleanup on SIGINT/SIGTERM
+src/tools/register-member.ts   -- out-of-band flow before connectivity test
+src/tools/update-member.ts     -- out-of-band flow when switching to password auth; rotate_password schema field
 ```
 
 ### Data Flow
@@ -69,16 +69,16 @@ sequenceDiagram
     participant Claude as Claude (AI Model)
     participant MCP as MCP Server<br/>(apra-fleet)
     participant Socket as Auth Socket<br/>(auth.sock)
-    participant Terminal as New Terminal<br/>(apra-fleet auth)
+    participant Terminal as New Terminal<br/>(apra-fleet secret --set)
 
     User->>Claude: "Register web1, password auth, host 192.168.0.108"
     Claude->>MCP: register_member(name="web1", auth_type="password", host="...", ...)<br/>No password param
 
-    Note over MCP: auth_type=password && !password<br/>→ trigger out-of-band flow
+    Note over MCP: auth_type=password && !password<br/>-> trigger out-of-band flow
 
     MCP->>Socket: ensureAuthSocket()<br/>Start UDS listener
     MCP->>MCP: createPendingAuth("web1")
-    MCP->>Terminal: spawn gnome-terminal / Terminal.app / cmd<br/>running: apra-fleet auth web1
+    MCP->>Terminal: spawn gnome-terminal / Terminal.app / cmd<br/>running: apra-fleet secret --set web1
     MCP->>MCP: await waitForPassword("web1")<br/>Blocks until password arrives
 
     Note over Terminal: User types password<br/>(hidden input, * echo)
@@ -90,7 +90,7 @@ sequenceDiagram
     Note over Terminal: "Password received.<br/>You can close this window."
     Terminal->>Terminal: exit
 
-    Note over MCP: waitForPassword resolved → encrypted pw<br/>Proceed with registration (connectivity, OS detect, etc.)
+    Note over MCP: waitForPassword resolved -> encrypted pw<br/>Proceed with registration (connectivity, OS detect, etc.)
 
     MCP-->>Claude: "Member registered successfully!"
     Claude-->>User: Shows registration result
@@ -115,7 +115,7 @@ graph TB
         end
 
         subgraph "Spawned Terminal"
-            CLI[apra-fleet auth &lt;name&gt;<br/>cli/auth.ts]
+            CLI[apra-fleet secret --set &lt;name&gt;<br/>src/cli/secret.ts]
             HP[Hidden Password Input<br/>stdin raw mode]
         end
     end
@@ -146,9 +146,9 @@ Newline-delimited JSON over Unix domain socket:
 
 | Direction | Message |
 |-----------|---------|
-| Client → Server | `{"type":"auth","member_name":"web1","password":"hunter2"}\n` |
-| Server → Client (success) | `{"type":"ack","ok":true}\n` |
-| Server → Client (error) | `{"type":"ack","ok":false,"error":"No pending auth for \"web1\""}\n` |
+| Client -> Server | `{"type":"auth","member_name":"web1","password":"hunter2"}\n` |
+| Server -> Client (success) | `{"type":"ack","ok":true}\n` |
+| Server -> Client (error) | `{"type":"ack","ok":false,"error":"No pending auth for \"web1\""}\n` |
 
 ### Terminal Auto-Launch
 
@@ -157,7 +157,7 @@ Platform detection via `process.platform`:
 | Platform | Strategy |
 |----------|----------|
 | **Linux** | Try in order: `gnome-terminal --`, `xterm -e`, `x-terminal-emulator -e`. Detect via `which`. |
-| **macOS** | `osascript` → Terminal.app `do script` |
+| **macOS** | `osascript` -> Terminal.app `do script` |
 | **Windows** | `start cmd /c` |
 | **Headless** | Fallback: return manual instructions for Claude to relay |
 
@@ -185,7 +185,7 @@ Binary path resolution:
 collection even when the caller is just echoing the current auth type (e.g., an LLM updating an
 unrelated field like `work_folder` and mirroring back the existing auth state).
 
-The naive fix — adding a guard `existing.authType !== 'password'` — eliminates the false trigger but
+The naive fix -- adding a guard `existing.authType !== 'password'` -- eliminates the false trigger but
 also eliminates the only secure path for password rotation. Inline passwords passed via the `password`
 parameter enter the AI's context window and persist for the rest of the session, making OOB the only
 safe option for rotating credentials.
@@ -210,7 +210,7 @@ unnecessarily.
 |---|---|---|---|---|---|---|
 | 1 | password | _(none)_ | _(none)_ | _(none)_ | No | No auth change |
 | 2 | password | _(none)_ | provided | _(none)_ | No | Inline pw update |
-| 3a | password | `password` | _(none)_ | _(none)_ | **No** | LLM echo — bug fixed |
+| 3a | password | `password` | _(none)_ | _(none)_ | **No** | LLM echo -- bug fixed |
 | 3b | password | _(none)_ | _(none)_ | `true` | **Yes** | Secure rotation via OOB |
 | 3c | password | `password` | _(none)_ | `true` | **Yes** | Redundant but honored |
 | 3d | password | _(none)_ | provided | `true` | No | Inline wins over flag |
@@ -223,10 +223,10 @@ unnecessarily.
 
 ## Backwards Compatibility
 
-- `password` parameter remains optional — direct passing still works for automation/scripts
+- `password` parameter remains optional -- direct passing still works for automation/scripts
 - If `password` is provided, the current in-band flow is used unchanged (no socket, no terminal)
 - No changes to SSH, crypto, registry, or strategy layers
-- The `auth` CLI subcommand also works standalone (user can run it manually if auto-launch fails)
+- The `secret` CLI subcommand also works standalone (user can run `apra-fleet secret --set <name>` manually if auto-launch fails)
 
 ## Edge Cases
 
@@ -239,8 +239,8 @@ unnecessarily.
 | Password arrives before Claude retries | Encrypted password stored, returned immediately on next call |
 | User provides password param AND runs CLI | Password param wins, pending request ignored |
 | No display / headless server | `launchAuthTerminal` catches failure, returns manual instructions |
-| Terminal emulator not found (Linux) | Falls through gnome-terminal → xterm → x-terminal-emulator → manual fallback |
-| User closes OOB window (Windows) | Close-signal handler resolves the pending Promise with a cancellation error immediately — no 5-minute hang |
+| Terminal emulator not found (Linux) | Falls through gnome-terminal -> xterm -> x-terminal-emulator -> manual fallback |
+| User closes OOB window (Windows) | Close-signal handler resolves the pending Promise with a cancellation error immediately -- no 5-minute hang |
 
 ## Test Coverage
 
@@ -273,7 +273,7 @@ Write password to a temp file, MCP server reads it. Rejected: race conditions, c
 
 ### 3. Prompt within the MCP tool call
 
-Have the MCP server block and prompt on its own stdin. Rejected: MCP servers communicate over stdio — stdin is the MCP transport, not a user terminal.
+Have the MCP server block and prompt on its own stdin. Rejected: MCP servers communicate over stdio -- stdin is the MCP transport, not a user terminal.
 
 ### 4. Separate HTTP server
 
@@ -281,8 +281,8 @@ Run a localhost HTTP endpoint for password submission. Rejected: opens a network
 
 ## Verification
 
-1. `npm run build` — zero type errors
-2. `npm test` — 18/18 new tests pass, 272 existing tests pass
-3. Manual test: register with `auth_type=password`, no password → terminal pops up → enter password → retry succeeds
-4. Manual test (headless): `DISPLAY=` → returns manual instructions instead of auto-launching
-5. Manual test (backwards compat): register with password in params → works as before
+1. `npm run build` -- zero type errors
+2. `npm test` -- 18/18 new tests pass, 272 existing tests pass
+3. Manual test: register with `auth_type=password`, no password -> terminal pops up -> enter password -> retry succeeds
+4. Manual test (headless): `DISPLAY=` -> returns manual instructions instead of auto-launching
+5. Manual test (backwards compat): register with password in params -> works as before
