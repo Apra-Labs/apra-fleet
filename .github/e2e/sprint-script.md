@@ -6,87 +6,72 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
 ## Members
 
-- **doer** (name: `doer`, provider: {{DOER_PROVIDER}}, work folder: {{DOER_FOLDER}})
-- **reviewer** (name: `reviewer`, provider: {{REVIEWER_PROVIDER}}, work folder: {{REVIEWER_FOLDER}})
+- **doer** (name: `doer`, provider: {{DOER_PROVIDER}})
+- **reviewer** (name: `reviewer`, provider: {{REVIEWER_PROVIDER}})
 
-## Rules
+## Checkpoints
 
-- Run every test in this phase even if earlier ones fail.
-- After each test or state transition emit one line in this exact format (no backticks, no code block):
-  CHECKPOINT: [{"test":"T5-...","status":"PASS","notes":"..."}]
-  Always include every test completed so far **in this phase** in the array.
+When you finish a step, print one line, exactly like this, as plain text (no code block, no backticks):
+
+  CHECKPOINT: {"id":"T3-repo-setup","status":"PASS","notes":"one short note"}
+
+- One line per step. One JSON object, not an array. Print it once.
+- If a step fails, print it with `"status":"FAIL"` and move on to the next step.
+- The steps are: `T3-repo-setup`, `T3-discover`, `T3-sprint`, `T3-pr-verified`, `T3-done`.
+- Print `T3-done` last, only after the other four. If `T3-done` is missing, the phase failed.
 
 ---
 
-## T5: Sprint via /pm (Primary Session Only)
+## T3: Run a Sprint with /pm
 
-**FORBIDDEN**: You are strictly forbidden from using 'invoke_agent' or the 'Agent' tool for any part of T5. You MUST issue all /pm commands directly in this top-level conversation. Delegation to subagents is a violation of test protocol.
+Run a full sprint on the toy repo using the pm skill. Do all of it yourself in this conversation -- no sub-agents. Do not stop or wait for anyone: when a step finishes, start the next one.
 
-**MANDATORY**: You MUST call 'activate_skill(name="pm")' at the start of T5.3.
+### T3.1 Set up the repo
 
-### T5.1 Setup Repo
+On the doer: clone {{TOY_PROJECT_URL}} into its work folder if needed, then `git fetch origin && git checkout main && git pull`. Provision {{VCS}} auth.
 
-On doer: clone toy repo into work folder if needed. Provision VCS auth ({{VCS}}).
-After cloning, run `git fetch origin && git checkout main && git pull origin main` to ensure latest main.
+CHECKPOINT: {"id":"T3-repo-setup","status":"PASS","notes":"..."}
 
-CHECKPOINT: [{"test":"T5-repo-setup","status":"PASS","notes":"Toy repo cloned and VCS auth provisioned"}]
+### T3.2 Pick the work
 
-### T5.2 Discover Issues
+Run `bd ready` on the doer. Pick 3 P1 issues. Write `requirements.md` for them into the current working directory.
 
-Run `bd ready` on doer. Pick 3 issues. Write `requirements.md` into the run directory (current working directory).
+CHECKPOINT: {"id":"T3-discover","status":"PASS","notes":"..."}
 
-CHECKPOINT: [{"test":"T5-repo-setup","status":"PASS","notes":"..."},{"test":"T5-discover","status":"PASS","notes":"3 issues selected from bd ready"}]
+### T3.3 Run the sprint
 
-### T5.3 Drive Sprint
+Activate the pm skill, then run:
 
-Call `activate_skill(name="pm")`.
-
-CHECKPOINT: [{"test":"T5-repo-setup","status":"PASS","notes":"..."},{"test":"T5-discover","status":"PASS","notes":"..."},{"test":"T5-skill-loaded","status":"PASS","notes":"PM skill activated in primary session"}]
-
-Issue PM commands:
 ```
 /pm init fleet-e2e-toy
 /pm pair doer reviewer
-/pm plan fleet-e2e-toy
-/pm start doer
+/pm plan fleet-e2e-toy using the doer
+/pm start sprint
 ```
 
-Branch prefix: `{{BRANCH_PREFIX}}`
+Branch prefix: `{{BRANCH_PREFIX}}`.
 
-#### Poll Loop
+The pm skill runs the doer/reviewer loop. Follow it until the sprint is approved, then run `/pm cleanup fleet-e2e-toy`.
 
-Poll `/pm status doer` to track sprint progress.
+CHECKPOINT: {"id":"T3-sprint","status":"PASS","notes":"..."}
 
-- **Max poll iterations**: 20
-- **Poll interval**: wait approximately 30 seconds between polls (use a brief pause or perform useful work between status checks)
-- **Done conditions**:
-  - `approved` -> sprint completed successfully, proceed to T5.4
-  - `max-iterations` or iteration count reaches 20 -> CHECKPOINT FAIL with reason "poll timeout: sprint did not reach approved state within 20 iterations"
+### T3.4 Check the result
 
-**State transitions and actions during polling**:
-- When status shows `VERIFY` or `needs_review`: dispatch reviewer with `/pm start reviewer`
-- When status shows `CHANGES_REQUESTED` or `needs_fix`: dispatch doer with `/pm start doer`
-- When status shows `approved`: exit poll loop, sprint complete
+Confirm a branch with prefix `{{BRANCH_PREFIX}}` exists on origin and a PR was raised.
 
-CHECKPOINT at each state transition (append to array):
-- On reviewer dispatch: add `{"test":"T5-review-dispatched","status":"PASS","notes":"reviewer dispatched at iteration N"}`
-- On fix dispatch: add `{"test":"T5-fix-dispatched","status":"PASS","notes":"doer re-dispatched at iteration N"}`
-- On approved: add `{"test":"T5-sprint-approved","status":"PASS","notes":"sprint approved at iteration N"}`
-- On poll timeout: add `{"test":"T5-sprint-approved","status":"FAIL","notes":"poll timeout after 20 iterations, last state: <state>"}`
+CHECKPOINT: {"id":"T3-pr-verified","status":"PASS","notes":"..."}
 
-After sprint completes (or fails): `/pm cleanup fleet-e2e-toy`
+### Done
 
-### T5.4 Verify Branch and PR
+Print this only after the four steps above are done:
 
-Verify branch with prefix `{{BRANCH_PREFIX}}` exists on origin. Verify a PR was raised.
-
-CHECKPOINT: append `{"test":"T5-pr-verified","status":"PASS","notes":"branch and PR confirmed on origin"}`
+CHECKPOINT: {"id":"T3-done","status":"PASS","notes":"sprint phase finished"}
 
 ---
 
 ## Collect Session Logs
 
-Throughout this phase you dispatched `execute_prompt` calls to members. Each response includes the session ID(s) used. Collect all session IDs per member from this phase AND the setup phase (session IDs from setup phase output are available in the run directory as raw-setup.txt).
+Throughout this phase you will dispatch `execute_prompt` calls to members. Each response includes the session ID(s) used. Collect all session IDs per member from this phase AND the setup phase (session IDs from setup phase output are available in the run directory as raw-setup.txt).
 
 For each session ID, the transcript path is deterministic:
 

@@ -115,27 +115,34 @@ function sumMemberLogs(role) {
 telemetry.push({ role: 'doer', ...sumMemberLogs('doer') });
 telemetry.push({ role: 'reviewer', ...sumMemberLogs('reviewer') });
 
-// Extract Checkpoints from all phases merged
+// Extract checkpoints: one JSON object per "CHECKPOINT:" line
 let checkpoints = [];
-const regex = /CHECKPOINT:\s*(\[.*?\])/g;
+const regex = /CHECKPOINT:[ \t]*(\{[^\n]*\})/g;
 let match;
 while ((match = regex.exec(allAssistantText)) !== null) {
   try {
-    const parsed = JSON.parse(match[1]);
-    if (Array.isArray(parsed)) {
-      for (const cp of parsed) {
-        const existing = checkpoints.findIndex(c => c.test === cp.test);
-        if (existing >= 0) {
-          checkpoints[existing] = cp;
-        } else {
-          checkpoints.push(cp);
-        }
-      }
+    const cp = JSON.parse(match[1]);
+    if (cp && cp.id) {
+      const existing = checkpoints.findIndex(c => c.id === cp.id);
+      if (existing >= 0) checkpoints[existing] = cp;
+      else checkpoints.push(cp);
     }
   } catch {}
 }
 
-const overall = checkpoints.length === 0 || checkpoints.some(t => t.status === 'FAIL') ? 'FAIL' : 'PASS';
+// A phase passes only if its terminal checkpoint was emitted.
+const TERMINALS = { setup: 'T2-done', sprint: 'T3-done' };
+const requiredTerminals = [];
+for (let i = 0; i < rawFiles.length; i++) {
+  const label = phaseLabels[i];
+  if (label && TERMINALS[label] && existsSync(rawFiles[i])) {
+    requiredTerminals.push(TERMINALS[label]);
+  }
+}
+const ids = new Set(checkpoints.map(c => c.id));
+const missingTerminals = requiredTerminals.filter(t => !ids.has(t));
+const hasFail = checkpoints.some(c => c.status === 'FAIL');
+const overall = (checkpoints.length === 0 || hasFail || missingTerminals.length > 0) ? 'FAIL' : 'PASS';
 
 const report = {
   run: {
@@ -146,6 +153,7 @@ const report = {
   },
   results: checkpoints,
   overall,
+  missing_terminals: missingTerminals,
   telemetry,
 };
 

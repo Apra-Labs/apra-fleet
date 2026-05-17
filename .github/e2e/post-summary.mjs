@@ -13,27 +13,31 @@ let report = {};
 try {
   report = JSON.parse(readFileSync('results.json', 'utf8'));
 } catch {
-  append(`## Fleet E2E – Suite ${suite}`);
+  append(`## Fleet E2E - Suite ${suite}`);
   append('');
-  append('**Overall: FAIL** — could not read results.json');
+  append('**Overall: FAIL** -- could not read results.json');
   process.exit(0);
 }
 
-append(`## Fleet E2E – Suite ${suite}`);
+append(`## Fleet E2E - Suite ${suite}`);
 append('');
-append('| Test | Status | Notes |');
+append('| Step | Status | Notes |');
 append('|------|--------|-------|');
 
 for (const t of report.results ?? []) {
   const notes = (t.notes ?? '').replace(/\|/g, '\\|');
-  append(`| ${t.test} | ${t.status} | ${notes} |`);
+  append(`| ${t.id} | ${t.status} | ${notes} |`);
 }
 if (!(report.results ?? []).length) {
-  append('| — | — | No test results recorded |');
+  append('| - | - | No step results recorded |');
 }
 
 append('');
 append(`**Overall: ${report.overall ?? 'FAIL'}**`);
+if (Array.isArray(report.missing_terminals) && report.missing_terminals.length > 0) {
+  append('');
+  append(`**Incomplete:** missing terminal checkpoint(s): ${report.missing_terminals.join(', ')}`);
+}
 append('');
 
 if (Array.isArray(report.telemetry) && report.telemetry.length > 0) {

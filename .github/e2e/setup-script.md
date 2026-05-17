@@ -4,14 +4,18 @@ Automated end-to-end test of the apra-fleet product. This phase registers member
 
 PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
-## Rules
+Do all work yourself in this conversation -- no sub-agents. If a step fails, move on to the next one.
 
-- Do all work directly in this top-level conversation. Do not use the Agent
-  tool or spawn sub-agents -- run every fleet call and command yourself.
-- Run every test in this phase even if earlier ones fail.
-- After each test emit one line in this exact format (no backticks, no code block):
-  CHECKPOINT: [{"test":"T1","status":"PASS","notes":"..."}]
-  Always include every test completed so far **in this phase** in the array.
+## Checkpoints
+
+When you finish a step, print one line, exactly like this, as plain text (no code block, no backticks):
+
+  CHECKPOINT: {"id":"T1","status":"PASS","notes":"one short note"}
+
+- One line per step. One JSON object, not an array. Print it once.
+- If a step fails, print it with `"status":"FAIL"` and move on to the next step.
+- The steps are: `T1`, `T2`, `T2-done`.
+- Print `T2-done` last, only after T1 and T2. If `T2-done` is missing, the phase failed.
 
 ---
 
@@ -57,6 +61,8 @@ grep -q 'HOME/bin' ~/.profile 2>/dev/null || echo 'export PATH=$HOME/bin:$PATH' 
 ~/bin/dolt version
 ```
 
+CHECKPOINT: {"id":"T1","status":"PASS","notes":"..."}
+
 ---
 
 ## T2: Basic Execution
@@ -67,4 +73,10 @@ Send a file containing `fleet-e2e-roundtrip` to each member, receive it back, an
 
 Write any scratch files into the run directory (the current working directory), not /tmp.
 
----
+CHECKPOINT: {"id":"T2","status":"PASS","notes":"..."}
+
+### Done
+
+Print this only after T1 and T2 are done:
+
+CHECKPOINT: {"id":"T2-done","status":"PASS","notes":"setup phase finished"}
