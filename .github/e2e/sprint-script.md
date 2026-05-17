@@ -46,12 +46,12 @@ Activate the pm skill, then run:
 /pm init fleet-e2e-toy
 /pm pair doer reviewer
 /pm plan fleet-e2e-toy using the doer
-/pm start sprint
+/pm start doer
 ```
 
 Branch prefix: `{{BRANCH_PREFIX}}`.
 
-The pm skill runs the doer/reviewer loop. Follow it until the sprint is approved, then run `/pm cleanup fleet-e2e-toy`.
+The pm skill runs the doer/reviewer loop. After `/pm start doer`, keep driving that loop yourself: when the doer reaches review, dispatch the reviewer; when the reviewer asks for changes, dispatch the doer again. Repeat until the reviewer approves, then run `/pm cleanup fleet-e2e-toy`. Do not stop until the sprint is approved.
 
 CHECKPOINT: {"id":"T3-sprint","status":"PASS","notes":"..."}
 
