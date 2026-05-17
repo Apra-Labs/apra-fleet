@@ -24,7 +24,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
-    "integration": "tsc && npx tsx tests/integration.test.ts"
+    "integration": "tsc && npx tsx tests/integration.test.ts",
+    "prepare": "node scripts/install-hooks.mjs"
   },
   "keywords": [
     "ai-agent",

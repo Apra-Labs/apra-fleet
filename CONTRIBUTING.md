@@ -4,7 +4,7 @@ Thank you for your interest in contributing! This document explains how to get i
 
 ## Reporting Bugs
 
-Use the [Bug Report](https://github.com/Apra-Labs/apra-fleet/issues/new/choose) issue template on GitHub. Include as much detail as possible — reproduction steps, environment info, and error output are especially helpful.
+Use the [Bug Report](https://github.com/Apra-Labs/apra-fleet/issues/new/choose) issue template on GitHub. Include as much detail as possible -- reproduction steps, environment info, and error output are especially helpful.
 
 ## Requesting Features
 
@@ -20,6 +20,8 @@ cd apra-fleet
 npm install
 npm run build
 ```
+
+`npm install` auto-installs the git pre-commit hook via the `prepare` script. To install manually, run `node scripts/install-hooks.mjs`. The hook lives at `.github/hooks/pre-commit`.
 
 ## Running Tests
 
@@ -62,7 +64,7 @@ Examples:
 
 1. Fork the repo and create your branch from `main`.
 2. Make your changes, following the code style notes below.
-3. Run `npm run build` and `npm test` — both must pass.
+3. Run `npm run build` and `npm test` -- both must pass.
 4. Open a PR against `main` using the PR template.
 5. A maintainer will review your PR. Address any feedback.
 6. Once approved, a maintainer will merge it.
@@ -70,9 +72,10 @@ Examples:
 ## Code Style
 
 - **Language:** TypeScript. Match the style of surrounding code.
-- **Formatting:** No enforced formatter currently — keep indentation and style consistent with existing files.
+- **Formatting:** No enforced formatter currently -- keep indentation and style consistent with existing files.
 - **No unnecessary abstractions:** Prefer simple, direct code over premature generalization.
 - **Error handling:** Only handle errors at real system boundaries (user input, SSH, external APIs). Don't add fallbacks for scenarios that can't happen.
+- **ASCII only:** No non-ASCII characters in committed files. Use `--` for em-dashes, `->` for arrows, `[OK]` for checkmarks.
 
 ## For AI Agents
 
@@ -86,22 +89,22 @@ Build and install from source without touching the packaged binary:
 npm run build && node dist/index.js install
 ```
 
-This registers the MCP server from your local `dist/` build. Skill files are read from `skills/` on disk — no rebuild needed to iterate on them.
+This registers the MCP server from your local `dist/` build. Skill files are read from `skills/` on disk -- no rebuild needed to iterate on them.
 
 ### File map
 
 | Path | What it contains |
 |------|-----------------|
 | `src/` | TypeScript source for the MCP server, CLI commands, and providers |
-| `skills/fleet/` | Fleet skill — tools for managing members, tasks, and files |
-| `skills/pm/` | PM skill — orchestration patterns, doer-reviewer loop, deploy flows |
+| `skills/fleet/` | Fleet skill -- tools for managing members, tasks, and files |
+| `skills/pm/` | PM skill -- orchestration patterns, doer-reviewer loop, deploy flows |
 | `hooks/` | Shell hooks that run on Claude Code events (statusline, pre-push, etc.) |
-| `CLAUDE.md` | Role-specific instructions (not committed — each agent has its own) |
+| `CLAUDE.md` | Role-specific instructions (not committed -- each agent has its own) |
 | `AGENTS.md` | Shared project context for all agents |
 
 ### Testing skill changes
 
-Skills are Markdown files — edits take effect immediately without a rebuild. After editing `skills/fleet/` or `skills/pm/`:
+Skills are Markdown files -- edits take effect immediately without a rebuild. After editing `skills/fleet/` or `skills/pm/`:
 
 1. Save the file.
 2. In Claude Code, run `/mcp` to reload the MCP server.
@@ -124,7 +127,7 @@ The PM agent delegates tasks to doer members and assigns a separate reviewer. Co
 | Feature sprint | `feat/<desc>` | `feat/install-ux-and-docs` |
 | Sprint (generic) | `sprint/<desc>` | `sprint/q2-hardening` |
 
-Agent-driven work always happens on a sprint branch — never directly on `main`.
+Agent-driven work always happens on a sprint branch -- never directly on `main`.
 
 ## License
 

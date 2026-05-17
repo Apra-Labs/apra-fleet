@@ -630,6 +630,86 @@ describe('runInstall multi-provider', () => {
     logSpy.mockRestore();
   });
 
+  // ── Gemini hook name translation ──────────────────────────────────────────
+
+  it('translates PostToolUse -> AfterTool in Gemini settings.json', async () => {
+    const hooksConfig = {
+      hooks: {
+        PostToolUse: [{ matcher: 'mcp__apra-fleet__register_member', hooks: [{ type: 'command', command: 'bash hook.sh' }] }],
+      },
+    };
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify(hooksConfig);
+      return '';
+    });
+
+    await runInstall(['--llm', 'gemini']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(geminiSettings)
+    );
+    const hooksWrite = writes.find(c => c[1].toString().includes('AfterTool'));
+    expect(hooksWrite).toBeDefined();
+    const parsed = JSON.parse(hooksWrite![1].toString());
+    expect(parsed.hooks.AfterTool).toBeDefined();
+    expect(parsed.hooks.PostToolUse).toBeUndefined();
+  });
+
+  it('deletes stale PostToolUse key when reinstalling for Gemini', async () => {
+    const fileState = new Map<string, string>();
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+
+    // Pre-seed settings.json with a stale PostToolUse entry
+    fileState.set(
+      geminiSettings,
+      JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'mcp__apra-fleet__register_member', hooks: [] }] } })
+    );
+
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (fileState.has(ps)) return true;
+      return false;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (fileState.has(ps)) return fileState.get(ps)!;
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.0' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({
+        hooks: { PostToolUse: [{ matcher: 'mcp__apra-fleet__register_member', hooks: [{ type: 'command', command: 'bash hook.sh' }] }] },
+      });
+      return '';
+    });
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
+
+    await runInstall(['--llm', 'gemini']);
+
+    const finalContent = fileState.get(geminiSettings);
+    expect(finalContent).toBeDefined();
+    const parsed = JSON.parse(finalContent!);
+    expect(parsed.hooks.PostToolUse).toBeUndefined();
+    expect(parsed.hooks.AfterTool).toBeDefined();
+  });
+
+  it('mergePermissions adds catch-all skills directory permission for Gemini', async () => {
+    await runInstall(['--llm', 'gemini']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(geminiSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastContent = writes.at(-1)![1].toString();
+    // Catch-all: ~/.gemini/skills/** (covers user-defined and bundled skills beyond pm/ and fleet/)
+    expect(lastContent).toContain('/mock/home/.gemini/skills/**');
+  });
+
   it('-h prints usage and exits 0 with no side effects', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});

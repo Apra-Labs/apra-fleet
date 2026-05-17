@@ -14,6 +14,7 @@ node dist/index.js install     # Dev-mode install
 ## Conventions
 
 - Branch naming: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`
-- Commit style: `<type>(<scope>): <description>` — e.g. `fix(ssh): handle key rotation timeout`
+- Commit style: `<type>(<scope>): <description>` - e.g. `fix(ssh): handle key rotation timeout`
 - Never push to `main` directly; open a PR
 - See [Architecture](docs/architecture.md) for internal structure
+- ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.

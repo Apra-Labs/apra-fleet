@@ -1,0 +1,61 @@
+#!/bin/sh
+# pre-commit: portability checks on staged files.
+#
+# Non-ASCII check: YAML, shell, and Markdown only.
+#   Rationale: GitHub Actions parses YAML, bash runs shell scripts, and Markdown
+#   is rendered across platforms -- non-ASCII characters cause silent failures or
+#   rendering differences. TypeScript/JS files are excluded because Node.js handles
+#   UTF-8 fine and emoji in user-facing output strings is intentional.
+#
+# PowerShell backtick-n/t/r check: all staged text file types.
+#   Rationale: backtick-n is a PS escape that silently becomes a literal newline
+#   in bash, breaking scripts on Linux runners.
+#
+# Works on Windows (Git Bash), Linux, and macOS.
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$STAGED" ] && exit 0
+
+# Files where non-ASCII is banned
+ASCII_FILES=$(echo "$STAGED" | grep -E '\.(yml|yaml|sh|md)$')
+# Files where PS backtick escapes are banned
+BACKTICK_FILES=$(echo "$STAGED" | grep -E '\.(yml|yaml|sh|js|ts|mjs|cjs|md)$')
+
+ISSUES=$(
+  echo "$ASCII_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
+      echo "non-ascii:$file"
+    fi
+  done
+  echo "$BACKTICK_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
+      echo "backtick:$file"
+    fi
+  done
+)
+
+[ -z "$ISSUES" ] && exit 0
+
+echo ""
+echo "COMMIT BLOCKED -- the following files have portability issues:"
+echo ""
+echo "$ASCII_FILES" | while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
+    echo "  [non-ASCII] $file"
+    git show ":$file" | grep -Pn '[^\x00-\x7F]' | head -3 | sed 's/^/    /'
+  fi
+done
+echo "$BACKTICK_FILES" | while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
+    echo "  [PS-escape] $file"
+    git show ":$file" | grep -Pn '`[ntr](?![a-zA-Z0-9_])' | head -3 | sed 's/^/    /'
+  fi
+done
+echo ""
+echo "Fix: use ASCII only in YAML/shell/Markdown -- '-' for dashes, '->' for arrows."
+echo "     PowerShell backtick-n/t/r are not valid bash -- use a real newline."
+exit 1

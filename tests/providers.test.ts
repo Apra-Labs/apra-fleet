@@ -4,7 +4,7 @@ import { GeminiProvider } from '../src/providers/gemini.js';
 import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
 import { getProvider } from '../src/providers/index.js';
-import { buildResumeFlag } from '../src/providers/provider.js';
+import { buildResumeFlag, buildSessionIdFlag } from '../src/providers/provider.js';
 import type { SSHExecResult } from '../src/types.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -64,17 +64,25 @@ describe('ClaudeProvider', () => {
     expect(cmd).not.toContain('--dangerously-skip-permissions');
   });
 
-  it('builds prompt command with session resume using -c (#108)', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'sess-abc' });
-    expect(cmd).toMatch(/\s-c(\s|$)/);
+  it('builds prompt command with new session using --session-id', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'sess-abc', resuming: false });
+    expect(cmd).toContain('--session-id "sess-abc"');
+    expect(cmd).not.toContain('-c');
     expect(cmd).not.toContain('--resume');
-    expect(cmd).not.toContain('sess-abc');
   });
 
-  it('builds prompt command without sessionId emits neither -c nor --resume', () => {
+  it('builds prompt command with resume using --resume', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'sess-abc', resuming: true });
+    expect(cmd).toContain('--resume "sess-abc"');
+    expect(cmd).not.toContain('-c');
+    expect(cmd).not.toContain('--session-id');
+  });
+
+  it('builds prompt command without sessionId emits no session flags', () => {
     const cmd = p.buildPromptCommand({ ...BASE_OPTS });
     expect(cmd).not.toMatch(/\s-c(\s|$)/);
     expect(cmd).not.toContain('--resume');
+    expect(cmd).not.toContain('--session-id');
   });
 
   it('builds prompt command with unattended=dangerous', () => {
@@ -137,8 +145,12 @@ describe('ClaudeProvider', () => {
     expect(p.supportsMaxTurns()).toBe(true);
   });
 
-  it('resumeFlag with sessionId returns -c (#108)', () => {
-    expect(p.resumeFlag('ses-1')).toBe('-c');
+  it('resumeFlag with resuming=true returns --resume', () => {
+    expect(p.resumeFlag('ses-1', true)).toBe('--resume "ses-1"');
+  });
+
+  it('resumeFlag with resuming=false returns --session-id', () => {
+    expect(p.resumeFlag('ses-1', false)).toBe('--session-id "ses-1"');
   });
 
   it('resumeFlag without sessionId returns empty string', () => {
@@ -224,9 +236,16 @@ describe('GeminiProvider', () => {
     expect(cmd).not.toContain('--yolo');
   });
 
-  it('builds prompt command with session resume (sanitized + quoted)', () => {
-    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id' });
+  it('builds prompt command with new session using --session-id', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id', resuming: false });
+    expect(cmd).toContain('--session-id "any-id"');
+    expect(cmd).not.toContain('--resume');
+  });
+
+  it('builds prompt command with resume using --resume', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, sessionId: 'any-id', resuming: true });
     expect(cmd).toContain('--resume "any-id"');
+    expect(cmd).not.toContain('--session-id');
   });
 
   it('unattended=auto does not add a flag and does not warn (handled by settings file)', () => {
@@ -296,6 +315,26 @@ describe('GeminiProvider', () => {
     expect(resp.usage).toEqual({ input_tokens: 500, output_tokens: 120 });
   });
 
+  it('extracts usage tokens from usage field (Gemini v0.42.0 format)', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      session_id: 'gem-sess-99',
+      usage: { input_tokens: 300, output_tokens: 80 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 300, output_tokens: 80 });
+  });
+
+  it('usage field takes priority over stats field when both present', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      usage: { input_tokens: 10, output_tokens: 20 },
+      stats: { input_tokens: 999, output_tokens: 999 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 10, output_tokens: 20 });
+  });
+
   it('returns undefined usage when stats field is absent', () => {
     const payload = JSON.stringify({ response: 'gemini result', session_id: 'gem-sess-42' });
     const resp = p.parseResponse(makeResult(payload));
@@ -308,13 +347,56 @@ describe('GeminiProvider', () => {
     expect(resp.usage).toBeUndefined();
   });
 
+  it('extracts usage when stats uses input/output keys (Gemini v0.42.0)', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      stats: { input: 100, output: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
+  it('extracts usage when usage uses input/output keys (Gemini v0.42.0)', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      usage: { input: 100, output: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
+  it('extracts usage from tokens field with input_tokens/output_tokens keys', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      tokens: { input_tokens: 100, output_tokens: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
+  it('extracts usage from tokens field with input/output keys', () => {
+    const payload = JSON.stringify({
+      response: 'gemini result',
+      tokens: { input: 100, output: 50 },
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.usage).toEqual({ input_tokens: 100, output_tokens: 50 });
+  });
+
   it('does not support maxTurns', () => {
     expect(p.supportsMaxTurns()).toBe(false);
   });
 
-  it('resumeFlag uses actual session ID when provided (sanitized + quoted)', () => {
-    expect(p.resumeFlag()).toBe('--resume latest');
-    expect(p.resumeFlag('gem-sess-42')).toBe('--resume "gem-sess-42"');
+  it('resumeFlag with resuming=true returns --resume', () => {
+    expect(p.resumeFlag('gem-sess-42', true)).toBe('--resume "gem-sess-42"');
+  });
+
+  it('resumeFlag with resuming=false returns --session-id', () => {
+    expect(p.resumeFlag('gem-sess-42', false)).toBe('--session-id "gem-sess-42"');
+  });
+
+  it('resumeFlag without sessionId returns empty string (no --resume latest)', () => {
+    expect(p.resumeFlag()).toBe('');
   });
 
   it('maps model tiers', () => {
@@ -691,6 +773,72 @@ describe('buildResumeFlag', () => {
   it('rejects malicious session IDs', () => {
     expect(() => buildResumeFlag('$(whoami)')).toThrow('Invalid session ID');
     expect(() => buildResumeFlag('id;rm -rf /')).toThrow('Invalid session ID');
+  });
+});
+
+// ─── buildSessionIdFlag shared helper ────────────────────────────────────────
+
+describe('buildSessionIdFlag', () => {
+  it('returns --session-id with sanitized and quoted ID', () => {
+    expect(buildSessionIdFlag('sess-abc-123')).toBe('--session-id "sess-abc-123"');
+  });
+
+  it('rejects malicious session IDs', () => {
+    expect(() => buildSessionIdFlag('$(whoami)')).toThrow('Invalid session ID');
+    expect(() => buildSessionIdFlag('id;rm -rf /')).toThrow('Invalid session ID');
+  });
+});
+
+// ─── Cross-OS consistency (Linux buildPromptCommand vs Windows resumeFlag) ──
+
+describe('cross-OS session flag consistency', () => {
+  it('Claude: buildPromptCommand and resumeFlag produce consistent flags for new session', () => {
+    const p = new ClaudeProvider();
+    const sid = 'test-session-id';
+    const cmd = p.buildPromptCommand({ folder: '/work', promptFile: '.fleet-task.md', sessionId: sid, resuming: false });
+    const winFlag = p.resumeFlag(sid, false);
+    expect(cmd).toContain('--session-id "test-session-id"');
+    expect(winFlag).toBe('--session-id "test-session-id"');
+  });
+
+  it('Claude: buildPromptCommand and resumeFlag produce consistent flags for resumed session', () => {
+    const p = new ClaudeProvider();
+    const sid = 'test-session-id';
+    const cmd = p.buildPromptCommand({ folder: '/work', promptFile: '.fleet-task.md', sessionId: sid, resuming: true });
+    const winFlag = p.resumeFlag(sid, true);
+    expect(cmd).toContain('--resume "test-session-id"');
+    expect(winFlag).toBe('--resume "test-session-id"');
+  });
+
+  it('Gemini: buildPromptCommand and resumeFlag produce consistent flags for new session', () => {
+    const p = new GeminiProvider();
+    const sid = 'gem-session-id';
+    const cmd = p.buildPromptCommand({ folder: '/work', promptFile: '.fleet-task.md', sessionId: sid, resuming: false });
+    const winFlag = p.resumeFlag(sid, false);
+    expect(cmd).toContain('--session-id "gem-session-id"');
+    expect(winFlag).toBe('--session-id "gem-session-id"');
+  });
+
+  it('Gemini: buildPromptCommand and resumeFlag produce consistent flags for resumed session', () => {
+    const p = new GeminiProvider();
+    const sid = 'gem-session-id';
+    const cmd = p.buildPromptCommand({ folder: '/work', promptFile: '.fleet-task.md', sessionId: sid, resuming: true });
+    const winFlag = p.resumeFlag(sid, true);
+    expect(cmd).toContain('--resume "gem-session-id"');
+    expect(winFlag).toBe('--resume "gem-session-id"');
+  });
+});
+
+// ─── Claude dispatch: resume with no stored ID ─────────────────────────────
+
+describe('Claude dispatch: resume with no stored session ID', () => {
+  it('produces --session-id (fresh), not -c, when resume=true but no stored ID', () => {
+    const p = new ClaudeProvider();
+    const sid = 'fresh-uuid';
+    const cmd = p.buildPromptCommand({ folder: '/work', promptFile: '.fleet-task.md', sessionId: sid, resuming: false });
+    expect(cmd).toContain('--session-id "fresh-uuid"');
+    expect(cmd).not.toContain('-c');
+    expect(cmd).not.toContain('--resume');
   });
 });
 

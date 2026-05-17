@@ -1,5 +1,6 @@
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
 import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -32,7 +33,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
@@ -40,8 +41,10 @@ export class ClaudeProvider implements ProviderAdapter {
       instruction = `[${inv}] ${instruction}`;
     }
     let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
-    if (sessionId) {
-      cmd += ' -c';
+    if (resuming && sessionId) {
+      cmd += ` ${buildResumeFlag(sessionId)}`;
+    } else if (sessionId) {
+      cmd += ` ${buildSessionIdFlag(sessionId)}`;
     }
     if (unattended === 'auto') {
       cmd += ' --permission-mode auto';
@@ -90,7 +93,7 @@ export class ClaudeProvider implements ProviderAdapter {
           if (r) return r;
         }
       } else {
-        // Single object — old Claude Code format
+        // Single object - old Claude Code format
         return {
           result: parsed.result ?? parsed.response ?? raw,
           sessionId: parsed.session_id,
@@ -99,7 +102,7 @@ export class ClaudeProvider implements ProviderAdapter {
           usage: extractUsage(parsed.usage),
         };
       }
-    } catch { /* not valid JSON — try line-by-line JSONL below */ }
+    } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
     // JSONL format (Claude Code 2.1.113+): one JSON object per line
     for (const line of raw.split('\n')) {
@@ -123,8 +126,9 @@ export class ClaudeProvider implements ProviderAdapter {
     return true;
   }
 
-  resumeFlag(sessionId?: string): string {
-    return sessionId ? '-c' : '';
+  resumeFlag(sessionId?: string, resuming?: boolean): string {
+    if (!sessionId) return '';
+    return resuming ? buildResumeFlag(sessionId) : buildSessionIdFlag(sessionId);
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
@@ -154,7 +158,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } } }];
+    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
   }
 
   supportsOAuthCopy(): boolean {
@@ -177,12 +181,16 @@ export class ClaudeProvider implements ProviderAdapter {
     return [];
   }
 
+  authEnvVarForToken(token: string): string {
+    return token.startsWith('sk-ant-') ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
+  }
+
 
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
     // Native claude.exe (2.1.113+) does not inherit stdout via ProcessStartInfo.
     // Direct shell execution ensures stdout is captured through the PowerShell pipe.
-    // $pid is the shell PID — killing it also kills claude as a direct child.
+    // $pid is the shell PID - killing it also kills claude as a direct child.
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
   }
 
@@ -194,3 +202,4 @@ export class ClaudeProvider implements ProviderAdapter {
     return `-p "${promptLiteral}"`;
   }
 }
+

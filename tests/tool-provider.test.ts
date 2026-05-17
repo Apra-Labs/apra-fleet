@@ -176,7 +176,7 @@ describe('provisionAuth — API key per provider', () => {
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
       const provider = providers.getProvider(llmProvider);
-      const result = await provisionAuth({ member_id: member.id, api_key: 'test-key-12345' });
+      const result = await provisionAuth({ member_id: member.id, api_key: llmProvider === 'claude' ? 'sk-ant-12345' : 'test-key-12345' });
 
       expect(result).toContain('API key provisioned');
 
@@ -185,6 +185,20 @@ describe('provisionAuth — API key per provider', () => {
     });
   }
 
+  
+  it('provisions Claude setup token using CLAUDE_CODE_OAUTH_TOKEN', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-setup', llmProvider: 'claude' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const result = await provisionAuth({ member_id: member.id, api_key: 'cl-code-12345' });
+    expect(result).toContain('API key provisioned');
+
+    const cmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(cmds.some(c => c.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(true);
+    expect(cmds.some(c => c.includes('ANTHROPIC_API_KEY'))).toBe(false);
+  });
   it('uses OOB API key entry for non-Claude providers without api_key', async () => {
     const geminiProvider = providers.getProvider('gemini');
     const spy = vi.spyOn(geminiProvider, 'oauthCredentialFiles').mockReturnValue(null);

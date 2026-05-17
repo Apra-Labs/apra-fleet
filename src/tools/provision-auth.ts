@@ -158,7 +158,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter): Prom
 async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderAdapter): Promise<string> {
   const cmds = getOsCommands(getAgentOS(agent));
   const strategy = getStrategy(agent);
-  const envVarName = provider.authEnvVar;
+  const envVarName = provider.authEnvVarForToken(apiKey);
   const commands = cmds.setEnv(envVarName, apiKey);
 
   const errors: string[] = [];

@@ -80,10 +80,11 @@ if (platform === 'win32') {
   }
 }
 
-// macOS: strip existing signature before postject
+// macOS: strip existing signature before postject, then ensure writable
 if (platform === 'darwin') {
   console.log('  [2.5/3] Stripping macOS codesign...');
   execSync(`codesign --remove-signature "${outputBinary}"`, { stdio: 'inherit' });
+  execSync(`chmod u+w "${outputBinary}"`, { stdio: 'inherit' });
 }
 
 // Step 3: Inject blob with postject

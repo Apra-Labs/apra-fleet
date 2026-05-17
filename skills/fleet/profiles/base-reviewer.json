@@ -2,11 +2,13 @@
   "permissions": {
     "allow": [
       "Read", "Glob", "Grep",
-      "Write(docs/**)", "Write(feedback.md)", "Write(feedback-*.md)",
-      "Edit(docs/**)", "Edit(feedback.md)", "Edit(feedback-*.md)",
+      "Write(docs/**)", "Write(feedback.md)", "Write(feedback-*.md)", "Write(progress.json)",
+      "Edit(docs/**)", "Edit(feedback.md)", "Edit(feedback-*.md)", "Edit(progress.json)",
       "Bash(git:*)",
       "Bash(which:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
-      "Bash(find:*)", "Bash(wc:*)"
+      "Bash(find:*)", "Bash(wc:*)", "Bash(sort:*)", "Bash(diff:*)",
+      "Bash(echo:*)", "Bash(grep:*)",
+      "Bash(gh:*)", "Bash(jq:*)"
     ]
   }
 }
