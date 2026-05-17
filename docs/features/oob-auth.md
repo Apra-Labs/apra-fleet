@@ -84,17 +84,25 @@ The `!` prefix is the Claude Code "run in shell" operator -- it executes the com
 
 The message includes the **actual member name** (not a placeholder). The member name is available at the point `launchAuthTerminal` is called -- it is passed as the `memberName` parameter.
 
-**Full fallback message text (Linux headless):**
+**Full fallback message text (Linux headless, credential-collection mode):**
 ```
 fallback:No graphical display detected (SSH or headless session).
 
-Run this in a separate terminal:
+Run this in a separate terminal to provide the credential:
   ! apra-fleet secret --set <memberName>
 
 Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
 ```
 
-For the egress-confirm fallback (network egress confirmation), the fallback message instructs: `! apra-fleet secret --confirm <memberName>`.
+**Full fallback message text (Linux headless, egress-confirm mode):**
+```
+fallback:No graphical display detected (SSH or headless session).
+
+Run this in a separate terminal to confirm:
+  ! apra-fleet secret --confirm <memberName>
+
+Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+```
 
 The `fallback:` prefix is a protocol marker consumed by `collectOobInput` to distinguish the fallback path from a successful terminal launch. It is stripped before the message reaches the user.
 

@@ -673,6 +673,49 @@ describe('auth-socket', () => {
       expect(OOB_TIMEOUT_MS).toBe(5 * 60 * 1000);
     });
   });
+
+  describe('buildHeadlessFallback -- mode-aware (via launchAuthTerminal)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    });
+
+    function stubHeadless() {
+      // Force the headless branch on whichever platform the test runs on
+      if (process.platform === 'win32') {
+        vi.stubEnv('SESSIONNAME', '');
+      } else if (process.platform === 'darwin') {
+        vi.stubEnv('SSH_TTY', '/dev/ttys000');
+      } else {
+        vi.stubEnv('DISPLAY', '');
+        vi.stubEnv('WAYLAND_DISPLAY', '');
+      }
+    }
+
+    it('emits --set and "provide the credential" wording for credential-collection mode (no extraArgs)', () => {
+      stubHeadless();
+      const msg = launchAuthTerminal('my-member', [], () => {});
+      expect(msg).toContain('! apra-fleet secret --set my-member');
+      expect(msg).toContain('to provide the credential:');
+      expect(msg).not.toContain('--confirm');
+    });
+
+    it('emits --set and "provide the credential" wording for API-key mode (--api-key flag)', () => {
+      stubHeadless();
+      const msg = launchAuthTerminal('my-member', ['--api-key'], () => {});
+      expect(msg).toContain('! apra-fleet secret --set my-member');
+      expect(msg).toContain('to provide the credential:');
+      expect(msg).not.toContain('--confirm');
+    });
+
+    it('emits --confirm and "to confirm" wording for egress-confirm mode', () => {
+      stubHeadless();
+      const msg = launchAuthTerminal('my-member', ['--confirm'], () => {});
+      expect(msg).toContain('! apra-fleet secret --confirm my-member');
+      expect(msg).toContain('to confirm:');
+      expect(msg).not.toContain('--set');
+    });
+  });
 });
 
 function sendPassword(sockPath: string, memberName: string, password: string): Promise<void> {

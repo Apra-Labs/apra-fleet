@@ -489,14 +489,18 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
   return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
-function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }): string {
+function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }, extraArgs?: string[]): string {
+  const isConfirm = extraArgs?.includes('--confirm') ?? false;
   let contextLines = '';
   if (context?.onMember && context?.command) {
     contextLines = `\n\n  This command on ${context.onMember} will send credential "${memberName}" over the network:\n  ${context.command}`;
   } else if (context?.command) {
     contextLines = `\n\n  Command: ${context.command}`;
   }
-  return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+  if (isConfirm) {
+    return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+  }
+  return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to provide the credential:\n  ! apra-fleet secret --set ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
 }
 
 /**
@@ -563,15 +567,15 @@ export function launchAuthTerminal(
     const platform = process.platform;
 
     if (platform === 'win32' && !hasInteractiveDesktop()) {
-      return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).', fallbackContext);
+      return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).', fallbackContext, extraArgs);
     }
 
     if (platform === 'linux' && !hasGraphicalDisplay()) {
-      return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).', fallbackContext);
+      return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).', fallbackContext, extraArgs);
     }
 
     if (platform === 'darwin' && isSSHSession()) {
-      return buildHeadlessFallback(memberName, 'SSH session detected — no terminal emulator available (SSH_TTY is set).', fallbackContext);
+      return buildHeadlessFallback(memberName, 'SSH session detected -- no terminal emulator available (SSH_TTY is set).', fallbackContext, extraArgs);
     }
 
     if (platform === 'darwin') {
