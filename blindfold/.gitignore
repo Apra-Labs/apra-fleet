@@ -1,3 +1,6 @@
 node_modules/
 dist/
 *.tsbuildinfo
+blindfold-linux-*
+blindfold-darwin-*
+blindfold-win-*

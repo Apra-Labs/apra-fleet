@@ -30,11 +30,17 @@
     "README.md",
     "LICENSE"
   ],
+  "keywords": ["mcp", "credentials", "secrets", "ai-agents", "claude", "oob", "vault"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
+    "build:binary": "node scripts/build-sea.mjs",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -52,6 +58,8 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.5.0",
     "vitest": "^4.0.18"
   }
