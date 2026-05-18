@@ -89,8 +89,12 @@ separate terminal, never the chat -- uses it once to set up SSH key-based auth,
 then forgets it. Every connection after that is key-based.
 
 Intel Mac users: build from source -- see [Development](#development).
-Install details (what it writes, the `--skill` flag, uninstall, self-update) are
-in [docs/install.md](docs/install.md).
+Install details (what it writes, the `--skill` flag, uninstall) are in
+[docs/install.md](docs/install.md).
+
+**Staying current is one command.** `apra-fleet update` checks GitHub for the
+latest release and installs it in place -- or tells you that you are already up
+to date. See [keeping Fleet updated](docs/features/update.md).
 
 ## How it works
 
@@ -243,7 +247,8 @@ is one such skill. To build your own, start with
 
 | Topic | Link |
 |-------|------|
-| Install, uninstall, update | [docs/install.md](docs/install.md) |
+| Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
+| Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
