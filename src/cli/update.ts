@@ -89,7 +89,9 @@ export async function runUpdate(): Promise<void> {
       console.warn(`Warning: Could not parse install-config.json, using defaults.`);
     }
 
-    const args = ['install', '--llm', targetLlm, '--skill', targetSkill];
+    // --force so the spawned installer stops the running server before
+    // replacing the binary; without it the running-process guard aborts.
+    const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill];
     const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore' });
     installer.unref();
     process.exit(0);

@@ -32,7 +32,7 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 | **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` |
 | **Session storage** | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) |
 | **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, web search, MCP tools | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents |
-| **Context window** | 200K (Sonnet) / 1M (Opus 4.6) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
+| **Context window** | 200K (Sonnet) / 1M (Opus 4.7) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
 
 ---
 
@@ -56,7 +56,7 @@ Features available in non-Claude providers that Claude lacks natively.
 
 | Feature | Available In | Not In Claude | Impact on Fleet |
 |---------|-------------|--------------|-----------------|
-| **1M token native context** | Gemini | Claude caps at 200K (Sonnet), 1M only on Opus 4.6 | Gemini members can ingest larger codebases in single pass |
+| **1M token native context** | Gemini | Claude caps at 200K (Sonnet), 1M only on Opus 4.7 | Gemini members can ingest larger codebases in single pass |
 | **Built-in Google Search** | Gemini | Claude needs external MCP tool | Gemini agents can web-search natively -- useful for researching APIs, docs |
 | **Output schema enforcement** | Codex (`--output-schema <file>`) | Claude | Codex can guarantee response conforms to a JSON Schema -- enables structured extraction |
 | **Multi-model marketplace** | Copilot (Claude + GPT models) | Claude | Copilot users choose between Claude and GPT families without switching CLI |
