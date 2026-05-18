@@ -70,8 +70,12 @@ Then load it in Claude Code with `/mcp` and register your first members:
 
 Add remote machines whenever you are ready:
 
-> "Register 192.168.1.10 as `build-server`. Username akhil, password auth,
-> work folder `/home/akhil/projects/myapp`."
+> "Register 192.168.1.10 as `build-server`. Username akhil, work folder
+> `/home/akhil/projects/myapp`."
+
+Fleet securely collects the machine's password out-of-band -- you type it into a
+separate terminal, never the chat -- uses it once to set up SSH key-based auth,
+then forgets it. Every connection after that is key-based.
 
 Intel Mac users: build from source -- see [Development](#development).
 Install details (what it writes, the `--skill` flag, uninstall, self-update) are
