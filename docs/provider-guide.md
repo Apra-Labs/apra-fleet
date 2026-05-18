@@ -8,7 +8,7 @@ Fleet supports Claude, Gemini, Codex, and Copilot. Members can run different pro
 
 ## Provider strengths
 
-- **Claude** -- Balanced coding and reasoning; fine-grained per-tool permissions via `settings.local.json`; OAuth credentials are copyable across members.
+- **Claude** -- Balanced coding and reasoning; fine-grained per-tool permissions via `settings.local.json`.
 - **Gemini** -- 1M-token native context window; built-in Google Search for researching APIs and docs without an external tool.
 - **Codex** -- Structured-output enforcement via `--output-schema`; native subagent parallelism for concurrent subtasks with less orchestration overhead.
 - **Copilot** -- Multi-model marketplace (Claude + GPT families in one CLI); auto-compaction keeps sessions running indefinitely.
@@ -24,9 +24,7 @@ Fleet supports Claude, Gemini, Codex, and Copilot. Members can run different pro
 ## Gotchas worth knowing
 
 - **`max_turns` is Claude-only.** On Gemini, Codex, and Copilot, use `timeout_s` instead to bound execution time.
-- **Gemini can silently truncate large outputs.** If a task produces very large responses, split it into smaller units.
 - **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
-- **OAuth credential copy is Claude-to-Claude only.** For other providers, supply an API key via the provider's env var (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`) or complete an interactive login on the member.
 
 ---
 

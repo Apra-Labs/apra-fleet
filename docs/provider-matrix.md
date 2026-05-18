@@ -22,7 +22,7 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 | **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) |
 | **Skip permissions** | `--dangerously-skip-permissions` | `--yolo` / `-y` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` |
 | **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
-| **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Google OAuth (browser-based, not copyable) | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) |
+| **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Google OAuth (browser-based) | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) |
 | **Version check** | `claude --version` | `gemini --version` | `codex --version` | `copilot --version` |
 | **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` |
 | **Install cmd (macOS)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `brew install --cask codex` | `brew install --cask copilot` |
@@ -76,9 +76,8 @@ Known limitations when using non-Claude providers in a fleet.
 | **No `--max-turns`** | Gemini, Codex, Copilot | Can't bound execution by turn count | Use `timeout_s` as the primary execution guard. `max_turns` is Claude-only and ignored for other providers. |
 | **No caller-minted session ID** | Codex, Copilot | Fleet cannot pass a specific session ID for targeted resume | Fleet mints a UUID and passes `--session-id <id>` (new session) or `--resume <id>` (resumed session) for Claude and Gemini. Codex and Copilot resume the most-recent local session via a generic flag (`codex exec resume`, `--continue`). |
 | **NDJSON vs single JSON** | Codex | Response format differs from other providers | CodexProvider parser collects NDJSON events and extracts the final result + metadata from the last event. Transparent to tool code via `provider.parseResponse()`. |
-| **OAuth credential copy doesn't work** | Gemini, Codex, Copilot | `provision_llm_auth` Flow A (copy `~/.claude/.credentials.json`) is Claude-only | For non-Claude providers: use the `api_key` parameter with the provider's env var (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`). OAuth/login must be done interactively on the member. |
+| **OAuth credential copy doesn't work** | Codex, Copilot | `provision_llm_auth` Flow A (copy `~/.claude/.credentials.json`) is Claude-only | For Codex and Copilot: use the `api_key` parameter with the provider's env var (`OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`). OAuth/login must be done interactively on the member. |
 | **Different credential file locations** | All | Credential paths differ per provider | `provider.credentialPath` supplies the correct path per provider. `credentialFileCheck` is Claude-specific (OAuth credentials); non-Claude providers rely on API key env var detection. |
-| **Gemini output truncation** | Gemini | Responses silently truncate at ~8K tokens (known bug) | Document limitation. For large outputs, consider splitting tasks into smaller units. |
 | **Copilot 64K context limit** | Copilot | Smallest context window -- may struggle with large PLAN.md + codebase | Recommend Copilot for smaller, focused tasks. Auto-compaction helps but summarization loses detail. |
 | **Copilot requires paid subscription** | Copilot | Not free-tier friendly | Copilot requires GitHub Copilot Pro/Business/Enterprise. No free API key path. |
 | **Codex message quotas** | Codex | Rolling 5-hour message windows instead of token budgets | Long sprints may hit quota limits. Spread work across time or use API key tier. |

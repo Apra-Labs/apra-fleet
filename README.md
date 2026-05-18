@@ -208,7 +208,7 @@ A fleet that has run in production:
 ```
 pm-1      Opus 4.7     orchestrator
 doer-1    Sonnet 4.6   feature work
-doer-2    Gemini       large-context tasks
+doer-2    Gemini 3 Pro large-context tasks
 reviewer  Opus 4.7     final review
 ```
 
@@ -220,7 +220,7 @@ Provider strengths, role recommendations, and gotchas:
 The Project Manager skill is installed by default and drives structured,
 multi-step work: planning with your approval, doer-reviewer loops, verification
 checkpoints, and git-synced progress. Task state persists across sessions via
-**Beads**, the bundled open-source issue tracker (`bd` CLI, installed alongside Fleet) -- run `bd ready` any time to see
+[**Beads**](docs/beads.md), the bundled open-source issue tracker (`bd` CLI, installed alongside Fleet) -- run `bd ready` any time to see
 what is in flight.
 
 | Command | Does |
@@ -246,14 +246,14 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | Topic | Link |
 |-------|------|
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
-| Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
-| Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
-| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
-| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Choosing a provider | [docs/provider-guide.md](docs/provider-guide.md) |
-| Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
-| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
+| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
+| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
+| Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
+| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
+| Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 
 ## Community
