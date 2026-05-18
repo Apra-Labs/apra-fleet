@@ -63,7 +63,9 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
 ```
 
-Then load it in Claude Code with `/mcp` and register your first members:
+Then load it in your favorite LLM CLI (claude, gemini, ...) using `/mcp`.
+
+Now register your first members:
 
 > "Register a local member called `doer`. Register another called `reviewer`.
 > Pair them."
@@ -89,7 +91,7 @@ sequenceDiagram
     participant PM as PM (orchestrator)
     participant Doer
     participant Reviewer
-    You->>PM: "Add a note sharing system; have it reviewed"
+    You->>PM: "Add a note sharing system, have it reviewed"
     Note over PM,Reviewer: Plan
     PM->>Doer: draft a plan
     Doer-->>PM: plan
@@ -110,7 +112,8 @@ sequenceDiagram
 
 A sprint runs in two reviewed phases: the **plan** is drafted, reviewed, and
 approved by you before any code is written; then the **build** is executed and
-every diff is reviewed. The PM orchestrator talks to members through Fleet's MCP
+every phase of development is reviewed against all the project documents
+(requirements, plan, design, etc.). The PM orchestrator talks to members through Fleet's MCP
 tools; Fleet carries the work to each member -- locally as a child process, or
 remotely over SSH. Agents sync state through git (`PLAN.md`, `progress.json`,
 `feedback.md`), so progress survives restarts.
