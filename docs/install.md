@@ -91,6 +91,39 @@ control exactly which skills are installed:
 | `install --skill none` | neither |
 | `install --no-skill` | neither (same as `--skill none`) |
 
+## Install for Gemini and other providers
+
+By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
+flag to install for a different provider instead:
+
+```bash
+apra-fleet install --llm gemini      # Gemini CLI
+apra-fleet install --llm codex       # OpenAI Codex CLI
+apra-fleet install --llm copilot     # GitHub Copilot CLI
+apra-fleet install --llm claude      # Claude Code (the default)
+```
+
+`--llm` decides which provider's configuration the installer writes to. The MCP
+server registration, hooks, statusline, permissions, and skills all go into that
+provider's config directory -- for example `~/.gemini/` for Gemini -- instead of
+`~/.claude/`. To support more than one provider on the same machine, run
+`install` once per provider.
+
+`--llm` combines with `--skill`, e.g. `apra-fleet install --llm gemini --skill
+pm`. Supported values: `claude` (default), `gemini`, `codex`, `copilot`.
+
+After a non-Claude install, load the server by restarting that provider's CLI --
+only Claude Code uses `/mcp`.
+
+### Gemini note
+
+`apra-fleet install --llm gemini` prints a one-time warning: the Gemini CLI does
+not support background agents, so when Gemini runs as the PM/orchestrator, fleet
+operations run **sequentially** -- one dispatch at a time, with no parallel
+fan-out. Gemini works well as a doer or reviewer, and as an orchestrator for
+serial workflows; for heavily parallel orchestration, Claude dispatches in
+parallel. This is a property of the Gemini CLI, not a Fleet limitation.
+
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,

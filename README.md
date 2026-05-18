@@ -68,6 +68,10 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
 ```
 
+> Installing for **Gemini**, Codex, or Copilot instead of Claude? Add the
+> `--llm` flag -- see
+> [Install for Gemini and other providers](docs/install.md#install-for-gemini-and-other-providers).
+
 Then load it in your favorite LLM CLI (claude, gemini, ...) using `/mcp`.
 
 Now register your first members:
