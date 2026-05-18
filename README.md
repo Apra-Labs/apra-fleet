@@ -183,7 +183,7 @@ review would wave through. Mix by role:
 
 | Role | Recommended | Why |
 |------|-------------|-----|
-| PM (orchestrator) | Claude (Opus or Sonnet) | Most thoroughly tested for planning. |
+| PM (orchestrator) | Claude Opus/Sonnet, or Gemini `gemini-3.1-pro-preview` / `gemini-3-flash-preview` | Both plan and orchestrate well -- Gemini's orchestration support improved substantially in recent releases. |
 | Doer | Any provider | Sonnet, Gemini, Codex, Copilot -- mix freely. |
 | Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
 
