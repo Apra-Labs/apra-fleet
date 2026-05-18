@@ -31,17 +31,18 @@ fixes loop back, and a clean diff lands -- driven by the **PM skill**. That is
 ## See it in one example
 
 ```
-You:    Pair local-1 and local-2. local-1 builds the auth module,
-        local-2 reviews it.
+You:    Add a note sharing system to workshop-dev.
+        Have workshop-rev review it.
 
-Fleet:  doer (local-1)      writes auth module, commits, hits checkpoint
-        reviewer (local-2)  reads the diff -> 2 findings, 1 blocking
-        doer (local-1)      applies fixes, re-commits
-        PM                  review clean -> handed back to you
+Fleet:  workshop-dev   plans the feature, writes the code, commits, hits checkpoint
+        workshop-rev   reviews the diff -> findings go back
+        workshop-dev   applies the fixes, re-commits
+        PM             review clean -> opens a PR, handed back to you
 ```
 
-Every change gets a second pair of eyes before it reaches yours. This runs on a
-**single machine** (two local agents) just as well as across a network.
+That is the run in the video above. Every change gets a second pair of eyes
+before it reaches yours -- and it works on a **single machine** (two local
+members) just as well as across a network.
 
 ## Quick start
 
