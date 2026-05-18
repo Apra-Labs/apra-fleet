@@ -244,7 +244,7 @@ is one such skill. To build your own, start with
 | Topic | Link |
 |-------|------|
 | Install, uninstall, update | [docs/install.md](docs/install.md) |
-| Registering members and SSH | [docs/ssh-setup.md](docs/ssh-setup.md) |
+| Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Provider matrix | [docs/provider-matrix.md](docs/provider-matrix.md) |
