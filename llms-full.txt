@@ -8,12 +8,15 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 
-### One goal. A team of AI agents that plan, build, review each other's work, and run across every machine you own.
+### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
 
-Apra Fleet is an open-source **MCP server** that turns AI coding agents
-(Claude Code, Gemini, Codex, Copilot) into a coordinated team instead of a lone
-assistant. Need more horsepower? Fleet reaches across every machine on your
-network over SSH -- no dashboards, no orchestration YAML, just conversation.
+Apra Fleet is an open-source **MCP server** that turns AI agents (Claude
+Code, Gemini, Codex, Copilot) into a coordinated team instead of a lone
+assistant. Any job that needs more than one agent -- software sprints,
+customer-support triage, cost and operations-efficiency analysis,
+infrastructure surveys -- becomes a fleet you direct in plain conversation.
+Need more horsepower? Fleet reaches across every machine on your network
+over SSH -- no dashboards, no orchestration YAML.
 
 **The agents need not share a vendor.** A Claude agent and a Gemini agent can
 work the same sprint -- one writes, the other reviews -- so a different model,
@@ -155,7 +158,12 @@ To write your own skill, see [docs/writing-skills.md](docs/writing-skills.md).
   -- all in parallel.
 - Use a beefy cloud VM for compilation while coding from your laptop.
 - Spin up isolated workspaces on one machine without them stepping on each other.
-- Non-coding ops: log triage, patch fan-out, infrastructure surveys.
+- Customer-support triage: agents classify, draft replies, and escalate
+  tickets in parallel.
+- Cost and operations-efficiency analysis: fan out data gathering across
+  sources, consolidate findings.
+- Infrastructure surveys, log triage, and patch fan-out across many
+  machines.
 
 ## Cost
 
@@ -178,6 +186,16 @@ runs on a lighter, cheaper tier. Two more mechanisms compound the savings:
   shell commands, which cost zero LLM tokens.
 - **Smart sessions** -- Fleet decides whether to resume an existing session
   (reusing cached context) or start fresh, rather than re-sending history.
+
+**Token spend is measured, not estimated.** Fleet records token usage per
+member and per role -- PM, doer, reviewer -- so a team can see and analyze
+where their spend actually goes. Fleet's end-to-end CI suite exercises this
+in full: a complete reviewed sprint -- discover issues, plan, doer-reviewer
+loop, PR raised with green CI -- emits a per-role token breakdown (in one
+such run: PM ~6K, doer ~191K, reviewer ~19K, ~215K total). Those toy-repo
+figures are not a benchmark -- they show the measurement method works end
+to end. The point is the instrument: Fleet makes token cost something you
+can attribute and reason about, not guess at.
 
 Setup is a one-time cost; the recurring cost is the work itself. See the
 [FAQ](docs/FAQ.md) for the full breakdown.
@@ -219,6 +237,13 @@ Provider strengths, role recommendations, and gotchas:
 [docs/provider-guide.md](docs/provider-guide.md).
 
 ## The PM skill
+
+The **PM skill** is Fleet's reference workflow for **software development**
+-- it ships today, fully built out. It is one skill on a general
+substrate: the same primitives -- members, tasks, git/SSH transport,
+doer-reviewer pairing -- coordinate agents for support triage, cost
+analysis, ops surveys, or any multi-agent job. PM is the worked example;
+the platform is the point.
 
 The Project Manager skill is installed by default and drives structured,
 multi-step work: planning with your approval, doer-reviewer loops, verification
