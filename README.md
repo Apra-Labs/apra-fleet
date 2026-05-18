@@ -89,21 +89,31 @@ sequenceDiagram
     participant PM as PM (orchestrator)
     participant Doer
     participant Reviewer
-    You->>PM: "Pair doer and reviewer on the auth module"
-    PM->>Doer: dispatch task + plan
+    You->>PM: "Add a note sharing system; have it reviewed"
+    Note over PM,Reviewer: Plan
+    PM->>Doer: draft a plan
+    Doer-->>PM: plan
+    PM->>Reviewer: review the plan
+    Reviewer-->>PM: plan feedback
+    PM-->>You: plan for approval
+    You-->>PM: approved
+    Note over PM,Reviewer: Build
+    PM->>Doer: execute the plan
     Doer->>Doer: write code, commit, reach checkpoint
     Doer-->>PM: checkpoint
     PM->>Reviewer: review the diff
     Reviewer-->>PM: findings
     PM->>Doer: apply fixes
     Doer-->>PM: done
-    PM-->>You: reviewed, passing code
+    PM-->>You: reviewed code + PR
 ```
 
-The PM orchestrator talks to members through Fleet's MCP tools; Fleet carries the
-work to each member -- locally as a child process, or remotely over SSH. Agents
-sync state through git (`PLAN.md`, `progress.json`, `feedback.md`), so progress
-survives restarts.
+A sprint runs in two reviewed phases: the **plan** is drafted, reviewed, and
+approved by you before any code is written; then the **build** is executed and
+every diff is reviewed. The PM orchestrator talks to members through Fleet's MCP
+tools; Fleet carries the work to each member -- locally as a child process, or
+remotely over SSH. Agents sync state through git (`PLAN.md`, `progress.json`,
+`feedback.md`), so progress survives restarts.
 
 ## What you can build on top
 
