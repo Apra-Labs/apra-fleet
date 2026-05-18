@@ -15,6 +15,11 @@ already passed a second set of eyes. Need more horsepower? Fleet reaches across
 every machine on your network over SSH -- no dashboards, no orchestration YAML,
 just conversation.
 
+**The agents need not share a vendor.** A Claude agent and a Gemini agent can
+work the same sprint -- one writes, the other reviews -- so a different model,
+with different blind spots, checks every change. Cross-provider collaboration is
+a built-in quality mechanism, not an afterthought.
+
 > A *member* is one working folder plus one LLM CLI -- local or remote.
 > A fleet is however many of those you register, working in concert.
 
@@ -169,9 +174,12 @@ Setup is a one-time cost; the recurring cost is the work itself. See the
 
 When *not* to use Fleet: a one-off single-file change needs no second agent.
 
-## Providers
+## Mix providers in one fleet
 
-Fleet members can each run a different LLM backend. Mix by role:
+Every member runs its own LLM backend, and they collaborate across vendors. Put
+a Claude doer with a Gemini reviewer, or the reverse -- the reviewer's model
+disagrees with the doer's by construction, so it catches issues a same-model
+review would wave through. Mix by role:
 
 | Role | Recommended | Why |
 |------|-------------|-----|
