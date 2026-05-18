@@ -213,8 +213,8 @@ doer-2    Gemini       large-context tasks
 reviewer  Opus 4.7     final review
 ```
 
-Full capability comparison and provider gotchas:
-[docs/provider-matrix.md](docs/provider-matrix.md).
+Provider strengths, role recommendations, and gotchas:
+[docs/provider-guide.md](docs/provider-guide.md).
 
 ## The PM skill
 
@@ -252,7 +252,7 @@ is one such skill. To build your own, start with
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
-| Provider matrix | [docs/provider-matrix.md](docs/provider-matrix.md) |
+| Choosing a provider | [docs/provider-guide.md](docs/provider-guide.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |

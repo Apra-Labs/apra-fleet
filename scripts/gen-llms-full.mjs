@@ -1,49 +1,81 @@
 #!/usr/bin/env node
 /**
- * gen-llms-full.mjs — generates llms-full.txt at the repo root.
+ * gen-llms-full.mjs -- generates llms-full.txt at the repo root.
  *
- * Reads the five canonical docs listed in llms.txt, wraps each in an XML
- * <doc> element, and writes the result to llms-full.txt so LLM clients can
- * fetch the full content in a single request (llmstxt.org convention).
+ * Reads llms.txt, extracts every markdown link from list items, filters to
+ * local files that exist on disk (skips http/https/mailto and missing paths),
+ * and concatenates those docs into llms-full.txt wrapped in XML elements
+ * (llmstxt.org convention).
  *
- * No external dependencies — uses only Node built-ins.
+ * No external dependencies -- uses only Node built-ins.
  * Run: node scripts/gen-llms-full.mjs
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 
-const docs = [
-  {
-    path: 'README.md',
-    title: 'Readme',
-    desc: 'Installation, configuration, member registration, and day-to-day usage for operators.',
-  },
-  {
-    path: 'docs/vocabulary.md',
-    title: 'Vocabulary',
-    desc: 'Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.',
-  },
-  {
-    path: 'docs/provider-matrix.md',
-    title: 'Provider Matrix',
-    desc: 'Which LLM providers are supported, their capabilities, and how to configure them.',
-  },
-  {
-    path: 'docs/FAQ.md',
-    title: 'FAQ',
-    desc: 'Common questions about setup, troubleshooting, and the doer-reviewer loop.',
-  },
-  {
-    path: 'docs/architecture.md',
-    title: 'Architecture',
-    desc: 'How the fleet hub, MCP server, and members interact at a system level.',
-  },
-];
+// --- Parse llms.txt ---
+
+const llmsTxtPath = join(root, 'llms.txt');
+if (!existsSync(llmsTxtPath)) {
+  console.error('ERROR: llms.txt not found at repo root');
+  process.exit(1);
+}
+
+const llmsTxt = readFileSync(llmsTxtPath, 'utf-8');
+
+// Extract project title and summary from H1 and blockquote
+const h1Match = llmsTxt.match(/^#\s+(.+)/m);
+const bqMatch = llmsTxt.match(/^>\s+(.+)/m);
+const projectTitle = h1Match ? h1Match[1].trim() : 'Apra Fleet';
+const projectSummary = bqMatch ? bqMatch[1].trim() : '';
+
+// Parse list-item markdown links: - [Title](url): description
+// Also handles lines without a trailing description.
+const LINK_RE = /^\s*-\s+\[([^\]]+)\]\(([^)]+)\)(?::\s*(.+))?/gm;
+
+const seen = new Set();
+const docs = [];
+
+let match;
+while ((match = LINK_RE.exec(llmsTxt)) !== null) {
+  const title = match[1].trim();
+  const rawUrl = match[2].trim();
+  const desc = match[3] ? match[3].trim() : '';
+
+  // Skip external links
+  if (/^https?:\/\//i.test(rawUrl) || /^mailto:/i.test(rawUrl)) {
+    continue;
+  }
+
+  // Strip fragment
+  const urlNoFragment = rawUrl.replace(/#.*$/, '');
+  if (!urlNoFragment) continue;
+
+  const resolvedPath = join(root, urlNoFragment);
+
+  // Skip missing files silently
+  if (!existsSync(resolvedPath)) {
+    continue;
+  }
+
+  // De-duplicate by resolved path
+  if (seen.has(resolvedPath)) continue;
+  seen.add(resolvedPath);
+
+  docs.push({ path: urlNoFragment, title, desc });
+}
+
+if (docs.length === 0) {
+  console.error('ERROR: llms.txt contains zero usable local links');
+  process.exit(1);
+}
+
+// --- Build llms-full.txt ---
 
 function escapeXml(str) {
   return str
@@ -58,7 +90,7 @@ const docBlocks = docs.map(({ path, title, desc }) => {
   return `  <doc title="${escapeXml(title)}" desc="${escapeXml(desc)}">\n${content.trimEnd()}\n  </doc>`;
 });
 
-const output = `<project title="Apra Fleet" summary="AI-managed fleet orchestration for Claude Code — run, update, and coordinate multiple Claude Code agents from a single hub.">
+const output = `<project title="${escapeXml(projectTitle)}" summary="${escapeXml(projectSummary)}">
   <docs>
 ${docBlocks.join('\n\n')}
   </docs>
