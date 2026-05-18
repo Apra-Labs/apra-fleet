@@ -3,6 +3,7 @@ import path from 'node:path';
 import { FLEET_DIR } from '../paths.js';
 import { getAllAgents } from './registry.js';
 import { DEFAULT_ICON } from './icons.js';
+import { groupByCategory } from '../utils/agent-helpers.js';
 
 const STATUSLINE_PATH = path.join(FLEET_DIR, 'statusline.txt');
 const STATE_PATH = path.join(FLEET_DIR, 'statusline-state.json');
@@ -81,13 +82,23 @@ export function writeStatusline(overrides?: Map<string, string>): void {
       icon: a.icon ?? DEFAULT_ICON,
       name: a.friendlyName,
       status: saved[a.id] ?? 'idle',
+      category: a.category?.trim() || '(uncategorized)',
     }));
 
-    states.sort((a, b) => (PRIORITY[baseStatus(a.status)] ?? 99) - (PRIORITY[baseStatus(b.status)] ?? 99));
-
-    const line = states
-      .map(s => `${s.icon} ${s.name}:${STATUS_EMOJI[baseStatus(s.status)] ?? '?'} ${s.status}`)
-      .join('  ');
+    // Group by category, sort within each group by priority
+    const { grouped, sortedKeys } = groupByCategory(states, s => s.category);
+    for (const members of grouped.values()) {
+      members.sort((a, b) => (PRIORITY[a.status] ?? 99) - (PRIORITY[b.status] ?? 99));
+    }
+    const categoryParts: string[] = [];
+    for (const category of sortedKeys) {
+      const members = grouped.get(category)!;
+      const membersStr = members
+        .map(s => `${s.icon} ${s.name}:${STATUS_EMOJI[s.status] ?? '?'} ${s.status}`)
+        .join('  ');
+      categoryParts.push(`[${category}]: ${membersStr}`);
+    }
+    const line = categoryParts.join('  |  ');
 
     saveState(saved);
     fs.writeFileSync(STATUSLINE_PATH, line + '\n', { mode: 0o600 });
