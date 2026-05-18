@@ -1,13 +1,43 @@
 # Apra Fleet
 
-> AI-managed fleet orchestration for Claude Code — run, update, and coordinate multiple Claude Code agents from a single hub.
+> AI-managed fleet orchestration for Claude Code -- run, update, and coordinate multiple Claude Code agents from a single hub.
 
 Apra Fleet is a multi-agent orchestration layer that lets a PM agent delegate work to a fleet of Claude Code instances via MCP tools, Git, and SSH. Each fleet member runs its own Claude Code session; the PM agent controls lifecycle, skills, and task assignment. Members can run different LLM backends (Claude, Gemini, Codex, Copilot) and be mixed freely within a single fleet.
 
-## Docs
+## Overview
 
-- [Readme](README.md): Installation, configuration, member registration, and day-to-day usage for operators.
-- [Vocabulary](docs/vocabulary.md): Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.
-- [Provider Matrix](docs/provider-matrix.md): Which LLM providers are supported, their capabilities, and how to configure them.
-- [FAQ](docs/FAQ.md): Common questions about setup, troubleshooting, and the doer-reviewer loop.
+- [Readme](README.md): Project overview, installation, member registration, and day-to-day usage for operators.
+- [Vocabulary](docs/vocabulary.md): Shared terminology -- member, task, skill, PM, fleet, doer/reviewer pattern.
 - [Architecture](docs/architecture.md): How the fleet hub, MCP server, and members interact at a system level.
+
+## Setup
+
+- [Install](docs/install.md): Installation, uninstallation, and the --llm/--skill flags.
+- [Update](docs/features/update.md): Keeping Fleet and its members updated.
+- [SSH Setup](docs/ssh-setup.md): Enabling SSH access on a remote machine.
+- [Out-of-Band Auth](docs/features/oob-auth.md): Securely managing credentials and passwords for fleet members.
+- [Git Authentication](docs/design-git-auth.md): How git authentication works across fleet members.
+
+## Features
+
+- [Provider Guide](docs/provider-guide.md): Choosing an LLM provider -- strengths, role recommendations, and gotchas.
+- [Cloud Compute](docs/cloud-compute.md): AWS and cloud compute integration for fleet members.
+- [Writing Skills](docs/writing-skills.md): How to write your own skill for use in the fleet.
+- [PM Skill](skills/pm/SKILL.md): The Project Manager skill reference -- commands, usage, and patterns.
+- [Beads](docs/beads.md): How Fleet uses Beads -- the bundled open-source issue tracker and the PM skill's persistent task database.
+
+## Help
+
+- [FAQ](docs/FAQ.md): Frequently asked questions about setup, troubleshooting, and the doer-reviewer loop.
+- [Troubleshooting](docs/troubleshooting.md): Common symptoms and fixes.
+
+## Project
+
+- [Roadmap](ROADMAP.md): What is planned next for Apra Fleet.
+- [Contributing](CONTRIBUTING.md): How to contribute code, docs, and skills.
+
+## Community
+
+- [GitHub Discussions](https://github.com/apra-labs/apra-fleet/discussions): Community Q&A and announcements.
+- [Releases](https://github.com/apra-labs/apra-fleet/releases): Release notes and changelog.
+- [Issues](https://github.com/apra-labs/apra-fleet/issues): Bug reports and feature requests.

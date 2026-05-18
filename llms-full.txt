@@ -1,6 +1,6 @@
-<project title="Apra Fleet" summary="AI-managed fleet orchestration for Claude Code — run, update, and coordinate multiple Claude Code agents from a single hub.">
+<project title="Apra Fleet" summary="AI-managed fleet orchestration for Claude Code -- run, update, and coordinate multiple Claude Code agents from a single hub.">
   <docs>
-  <doc title="Readme" desc="Installation, configuration, member registration, and day-to-day usage for operators.">
+  <doc title="Readme" desc="Project overview, installation, member registration, and day-to-day usage for operators.">
 # Apra Fleet
 
 [![CI](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml)
@@ -8,15 +8,15 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 
-### One conversation. A team of AI agents that plan, build, review each other's work, and run across every machine you own.
+### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
 
-Apra Fleet is an open-source **MCP server** that turns AI coding agents
-(Claude Code, Gemini, Codex, Copilot) into a coordinated team instead of a lone
-assistant. Describe a goal -- a Project Manager agent breaks it down, dispatches
-the work, pairs a reviewer against every change, and hands you code that has
-already passed a second set of eyes. Need more horsepower? Fleet reaches across
-every machine on your network over SSH -- no dashboards, no orchestration YAML,
-just conversation.
+Apra Fleet is an open-source **MCP server** that turns AI agents (Claude
+Code, Gemini, Codex, Copilot) into a coordinated team instead of a lone
+assistant. Any job that needs more than one agent -- software sprints,
+customer-support triage, cost and operations-efficiency analysis,
+infrastructure surveys -- becomes a fleet you direct in plain conversation.
+Need more horsepower? Fleet reaches across every machine on your network
+over SSH -- no dashboards, no orchestration YAML.
 
 **The agents need not share a vendor.** A Claude agent and a Gemini agent can
 work the same sprint -- one writes, the other reviews -- so a different model,
@@ -31,7 +31,7 @@ a built-in quality mechanism, not an afterthought.
 [![Apra Fleet -- a doer-reviewer sprint, start to finish](https://img.youtube.com/vi/SGdHvIkSbY8/hqdefault.jpg)](https://youtu.be/SGdHvIkSbY8)
 
 Two agents ship a feature end to end: one plans and writes, the other reviews,
-fixes loop back, and a clean diff lands -- driven by the **PM skill**. That is
+findings loop back, and a clean diff lands -- driven by the **PM skill**. That is
 *one* of the workflows Fleet makes possible; the rest are below.
 
 ---
@@ -39,18 +39,14 @@ fixes loop back, and a clean diff lands -- driven by the **PM skill**. That is
 ## See it in one example
 
 ```
-You:    Add a note sharing system to workshop-dev.
-        Have workshop-rev review it.
-
-Fleet:  workshop-dev   plans the feature, writes the code, commits, hits checkpoint
-        workshop-rev   reviews the diff -> findings go back
-        workshop-dev   applies the fixes, re-commits
-        PM             review clean -> opens a PR, handed back to you
+/pm add 2 local members at c:\projects cloned from <git-url> -- a developer and a reviewer -- and pair them
+/pm init project_icarus
+/pm plan ./feature.md
+/pm start the implementation sprint
+/pm status
 ```
 
-That is the run in the video above. Every change gets a second pair of eyes
-before it reaches yours -- and it works on a **single machine** (two local
-members) just as well as across a network.
+You describe the goal, approve the plan once, and Fleet runs the doer-reviewer loop to a reviewed PR.
 
 ## Quick start
 
@@ -82,6 +78,12 @@ Now register your first members:
 > "Register a local member called `doer`. Register another called `reviewer`.
 > Pair them."
 
+Verify it worked:
+
+> "Show me fleet status."
+
+You should see both members listed with status online or idle.
+
 Add remote machines whenever you are ready:
 
 > "Register 192.168.1.10 as `build-server`. Username akhil, work folder
@@ -108,7 +110,7 @@ sequenceDiagram
     participant Doer
     participant Reviewer
     You->>PM: "Add a note sharing system, have it reviewed"
-    loop Plan -- revise until the reviewer signs off
+    loop Plan: revise until the reviewer signs off
         PM->>Doer: draft / revise the plan
         Doer-->>PM: plan
         PM->>Reviewer: review the plan
@@ -116,7 +118,7 @@ sequenceDiagram
     end
     PM-->>You: plan for approval
     You-->>PM: approved
-    loop Build -- revise until the review is clean
+    loop Build: revise until the review is clean
         PM->>Doer: execute / fix the task
         Doer->>Doer: write code, commit, reach checkpoint
         PM->>Reviewer: review the changes
@@ -156,7 +158,12 @@ To write your own skill, see [docs/writing-skills.md](docs/writing-skills.md).
   -- all in parallel.
 - Use a beefy cloud VM for compilation while coding from your laptop.
 - Spin up isolated workspaces on one machine without them stepping on each other.
-- Non-coding ops: log triage, patch fan-out, infrastructure surveys.
+- Customer-support triage: agents classify, draft replies, and escalate
+  tickets in parallel.
+- Cost and operations-efficiency analysis: fan out data gathering across
+  sources, consolidate findings.
+- Infrastructure surveys, log triage, and patch fan-out across many
+  machines.
 
 ## Cost
 
@@ -179,6 +186,16 @@ runs on a lighter, cheaper tier. Two more mechanisms compound the savings:
   shell commands, which cost zero LLM tokens.
 - **Smart sessions** -- Fleet decides whether to resume an existing session
   (reusing cached context) or start fresh, rather than re-sending history.
+
+**Token spend is measured, not estimated.** Fleet records token usage per
+member and per role -- PM, doer, reviewer -- so a team can see and analyze
+where their spend actually goes. Fleet's end-to-end CI suite exercises this
+in full: a complete reviewed sprint -- discover issues, plan, doer-reviewer
+loop, PR raised with green CI -- emits a per-role token breakdown (in one
+such run: PM ~6K, doer ~191K, reviewer ~19K, ~215K total). Those toy-repo
+figures are not a benchmark -- they show the measurement method works end
+to end. The point is the instrument: Fleet makes token cost something you
+can attribute and reason about, not guess at.
 
 Setup is a one-time cost; the recurring cost is the work itself. See the
 [FAQ](docs/FAQ.md) for the full breakdown.
@@ -212,53 +229,59 @@ A fleet that has run in production:
 ```
 pm-1      Opus 4.7     orchestrator
 doer-1    Sonnet 4.6   feature work
-doer-2    Gemini       large-context tasks
+doer-2    Gemini 3 Pro large-context tasks
 reviewer  Opus 4.7     final review
 ```
 
-Full capability comparison and provider gotchas:
-[docs/provider-matrix.md](docs/provider-matrix.md).
+Provider strengths, role recommendations, and gotchas:
+[docs/provider-guide.md](docs/provider-guide.md).
 
 ## The PM skill
+
+The **PM skill** is Fleet's reference workflow for **software development**
+-- it ships today, fully built out. It is one skill on a general
+substrate: the same primitives -- members, tasks, git/SSH transport,
+doer-reviewer pairing -- coordinate agents for support triage, cost
+analysis, ops surveys, or any multi-agent job. PM is the worked example;
+the platform is the point.
 
 The Project Manager skill is installed by default and drives structured,
 multi-step work: planning with your approval, doer-reviewer loops, verification
 checkpoints, and git-synced progress. Task state persists across sessions via
-**Beads** (`bd` CLI, installed alongside Fleet) -- run `bd ready` any time to see
+[**Beads**](docs/beads.md), the bundled open-source issue tracker (`bd` CLI, installed alongside Fleet) -- run `bd ready` any time to see
 what is in flight.
 
 | Command | Does |
 |---------|------|
-| `/pm init <project>` | Initialize a project. |
+| `/pm init <project>` | Initialize a project folder and templates. |
 | `/pm pair <member> <member>` | Pair a doer with a reviewer. |
 | `/pm plan <requirement>` | Draft a plan for your approval. |
-| `/pm start <member>` | Begin execution. |
-| `/pm status <member>` | Check in-flight work. |
-| `/pm cleanup <project>` | Finish up and raise a PR. |
+| `/pm start <member>` | Begin execution; dispatches doer with plan and task harness. |
+| `/pm status <member>` | Check in-flight tasks, progress, and git log. |
+| `/pm resume <member>` | Resume after a verification checkpoint. |
+| `/pm deploy <member>` | Execute the project deployment runbook. |
+| `/pm recover <project>` | Re-orient after a PM restart; reads in-flight tasks and member state. |
+| `/pm cleanup <project>` | Finish the sprint, close tasks, and raise a PR. |
+| `/pm backlog` | Query and manage deferred items via Beads. |
+| `/pm tasks` | Show the current sprint task tree. |
 
 See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
 
-## Anatomy of a skill
-
-A skill is a markdown file plus optional helper scripts in your provider's skills
-directory (for Claude, `~/.claude/skills/`). It uses Fleet's MCP tools
-(`register_member`, `execute_prompt`, `send_files`, ...) to coordinate agents. PM
-is one such skill. To build your own, start with
-[docs/writing-skills.md](docs/writing-skills.md).
+Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/writing-skills.md).
 
 ## Documentation
 
 | Topic | Link |
 |-------|------|
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
-| Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
-| Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
-| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
-| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
-| Provider matrix | [docs/provider-matrix.md](docs/provider-matrix.md) |
-| Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
-| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Choosing a provider | [docs/provider-guide.md](docs/provider-guide.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
+| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
+| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
+| Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
+| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
+| Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 
 ## Community
@@ -288,7 +311,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 Apache 2.0 -- see [LICENSE](LICENSE).
   </doc>
 
-  <doc title="Vocabulary" desc="Shared terminology — member, task, skill, PM, fleet, doer/reviewer pattern.">
+  <doc title="Vocabulary" desc="Shared terminology -- member, task, skill, PM, fleet, doer/reviewer pattern.">
 <!-- llm-context: Defines the terminology used throughout apra-fleet — member, fleet, PM, doer, reviewer, provider, session, etc. Consult this first when you encounter an unfamiliar fleet-specific term to avoid misinterpreting user requests. -->
 <!-- keywords: vocabulary, terminology, member, fleet, PM, doer, reviewer, provider, session, agent, orchestrator -->
 <!-- see-also: architecture.md (how these concepts relate), ../README.md (practical usage) -->
@@ -348,146 +371,6 @@ PM (orchestrator)
 PM spawns **subagents** to interact with **members**. A subagent is ephemeral (dies after task). A member is persistent (registered, has sessions, has state).
 
 Members with different **providers** are interchangeable from the PM's perspective — same tools, same dispatch pattern, different CLI underneath.
-  </doc>
-
-  <doc title="Provider Matrix" desc="Which LLM providers are supported, their capabilities, and how to configure them.">
-<!-- llm-context: This is the reference table comparing LLM provider capabilities in apra-fleet (Claude, Gemini, Codex, Copilot). Consult when a user asks which provider supports a feature, what the limitations are, or which provider to choose for a role (PM, doer, reviewer). -->
-<!-- keywords: provider, Claude, Gemini, Codex, Copilot, capabilities, max_turns, timeout, permissions, NDJSON, truncation, comparison -->
-<!-- see-also: ../README.md (provider setup instructions), FAQ.md (common provider questions) -->
-
-# Provider Matrix
-
-Reference tables for all LLM providers supported by Apra Fleet. Extracted from `docs/multi-provider-plan.md`.
-
-> Tracking issues: #26 (Gemini), #27 (OpenAI Codex), #35 (GitHub Copilot)
-
----
-
-## Strategic Comparison
-
-| Feature | Claude Code | Gemini CLI | OpenAI Codex CLI | GitHub Copilot CLI |
-|---------|-------------|------------|------------------|-------------------|
-| **Install** | Native binary / `curl \| bash` | `npm i -g @google/gemini-cli` (Node 20+) | `npm i -g @openai/codex` / Homebrew / binary (Node 18+) | `npm i -g @github/copilot` / Homebrew / WinGet |
-| **Headless prompt** | `claude -p "..."` | `gemini -p "..."` | `codex exec "..."` | `copilot -p "..."` |
-| **Session resume** | `--resume <session_id>` | `-r` / `--resume` (loads most recent) | `codex exec resume` (positional) | `--continue` / `--resume` |
-| **JSON output** | `--output-format json` | `--output-format json` (also `stream-json`) | `--json` (NDJSON -- one event per state change) | `--format json` |
-| **Model selection** | `--model opus/sonnet/haiku` | `--model <name>` or `GEMINI_MODEL` env var | `--model` / `-m` | `--model <name>` or `/model` interactive |
-| **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) |
-| **Skip permissions** | `--dangerously-skip-permissions` | `--yolo` / `-y` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` |
-| **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
-| **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Google OAuth (browser-based, not copyable) | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) |
-| **Version check** | `claude --version` | `gemini --version` | `codex --version` | `copilot --version` |
-| **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` |
-| **Install cmd (macOS)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `brew install --cask codex` | `brew install --cask copilot` |
-| **Install cmd (Windows)** | `irm https://claude.ai/install.ps1 \| iex` | `npm i -g @google/gemini-cli` | Binary from GitHub releases (experimental) | `winget install GitHub.CopilotCLI` |
-| **Update command** | `claude update` | `npm update -g @google/gemini-cli` | `npm update -g @openai/codex` | `copilot update` |
-| **Process name** | `claude` | `gemini` | `codex` | `copilot` |
-| **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` |
-| **Session storage** | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) |
-| **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, web search, MCP tools | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents |
-| **Context window** | 200K (Sonnet) / 1M (Opus 4.7) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
-
----
-
-## Model Tier Equivalents
-
-Used by the PM for model escalation (`cheap -> mid -> premium`).
-
-| Tier | Purpose | Claude | Gemini | OpenAI Codex | Copilot |
-|------|---------|--------|--------|--------------|---------|
-| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-3.1-flash-lite-preview` | `gpt-5.4-mini` | `claude-haiku-4-5` |
-| **mid** | Construction, code, config | `sonnet` | `gemini-3-flash-preview` | `gpt-5.4` | `claude-sonnet-4-5` |
-| **premium** | Planning, review, architecture | `opus` | `gemini-3.1-pro-preview` | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
-
-**Note:** Codex currently lacks a distinct premium tier beyond its best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
-
----
-
-## Unique Capabilities
-
-Features available in non-Claude providers that Claude lacks natively.
-
-| Feature | Available In | Not In Claude | Impact on Fleet |
-|---------|-------------|--------------|-----------------|
-| **1M token native context** | Gemini | Claude caps at 200K (Sonnet), 1M only on Opus 4.7 | Gemini members can ingest larger codebases in single pass |
-| **Built-in Google Search** | Gemini | Claude needs external MCP tool | Gemini agents can web-search natively -- useful for researching APIs, docs |
-| **Output schema enforcement** | Codex (`--output-schema <file>`) | Claude | Codex can guarantee response conforms to a JSON Schema -- enables structured extraction |
-| **Multi-model marketplace** | Copilot (Claude + GPT models) | Claude | Copilot users choose between Claude and GPT families without switching CLI |
-| **Auto-compaction** | Copilot, Codex | Claude (context just fills up) | Infinite-length sessions via automatic context summarization at 95% capacity |
-| **Native subagent parallelism** | Codex | Claude (requires external orchestration like fleet) | Codex can fork subtasks internally -- less need for fleet orchestration on simple parallel work |
-| **Custom agent profiles** | Copilot (Markdown agent definitions) | Claude (CLAUDE.md is similar but informal) | Copilot has a formalized `agents/` directory with typed profiles |
-| **Session browser** | Gemini (`/resume` interactive picker) | Claude (only has `--resume <id>`) | Gemini users can browse and search past sessions interactively |
-
----
-
-## Critical Gaps & Mitigations
-
-Known limitations when using non-Claude providers in a fleet.
-
-| Gap | Provider(s) | Impact on Fleet | Mitigation |
-|-----|------------|----------------|------------|
-| **No `--max-turns`** | Gemini, Codex, Copilot | Can't bound execution by turn count | Use `timeout_s` as the primary execution guard. `max_turns` is Claude-only and ignored for other providers. |
-| **No caller-minted session ID** | Codex, Copilot | Fleet cannot pass a specific session ID for targeted resume | Fleet mints a UUID and passes `--session-id <id>` (new session) or `--resume <id>` (resumed session) for Claude and Gemini. Codex and Copilot resume the most-recent local session via a generic flag (`codex exec resume`, `--continue`). |
-| **NDJSON vs single JSON** | Codex | Response format differs from other providers | CodexProvider parser collects NDJSON events and extracts the final result + metadata from the last event. Transparent to tool code via `provider.parseResponse()`. |
-| **OAuth credential copy doesn't work** | Gemini, Codex, Copilot | `provision_llm_auth` Flow A (copy `~/.claude/.credentials.json`) is Claude-only | For non-Claude providers: use the `api_key` parameter with the provider's env var (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `COPILOT_GITHUB_TOKEN`). OAuth/login must be done interactively on the member. |
-| **Different credential file locations** | All | Credential paths differ per provider | `provider.credentialPath` supplies the correct path per provider. `credentialFileCheck` is Claude-specific (OAuth credentials); non-Claude providers rely on API key env var detection. |
-| **Gemini output truncation** | Gemini | Responses silently truncate at ~8K tokens (known bug) | Document limitation. For large outputs, consider splitting tasks into smaller units. |
-| **Copilot 64K context limit** | Copilot | Smallest context window -- may struggle with large PLAN.md + codebase | Recommend Copilot for smaller, focused tasks. Auto-compaction helps but summarization loses detail. |
-| **Copilot requires paid subscription** | Copilot | Not free-tier friendly | Copilot requires GitHub Copilot Pro/Business/Enterprise. No free API key path. |
-| **Codex message quotas** | Codex | Rolling 5-hour message windows instead of token budgets | Long sprints may hit quota limits. Spread work across time or use API key tier. |
-| **Permission model differences** | All | Claude uses `settings.local.json`. Others use CLI flags only. | For Claude members: continue using `compose_permissions` + `settings.local.json`. For others: `dangerously_skip_permissions=true` in `execute_prompt` (maps to provider's skip-permissions flag). No fine-grained per-tool permissions outside Claude. |
-
----
-
-## Auth Env Var Reference
-
-| Provider | Env Var | Source |
-|----------|---------|--------|
-| Claude | `ANTHROPIC_API_KEY` | console.anthropic.com |
-| Gemini | `GEMINI_API_KEY` | aistudio.google.com |
-| Codex | `OPENAI_API_KEY` | platform.openai.com |
-| Copilot | `COPILOT_GITHUB_TOKEN` | github.com/settings/tokens (fine-grained PAT with "Copilot Requests" permission) |
-
----
-
-## Instruction File Names
-
-Each provider auto-loads a provider-specific instruction file from the working directory.
-
-| Provider | Auto-loaded file |
-|----------|-----------------|
-| Claude | `CLAUDE.md` |
-| Gemini | `GEMINI.md` |
-| Codex | `AGENTS.md` |
-| Copilot | `COPILOT.md` |
-
-When the PM sends task harness files via `send_files`, it renames `tpl-agent.md` to the correct filename per provider.
-  </doc>
-
-  <doc title="FAQ" desc="Common questions about setup, troubleshooting, and the doer-reviewer loop.">
-# Frequently Asked Questions
-
-<!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge — fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
-<!-- keywords: install, setup, single machine, local, provider, Claude, Gemini, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
-<!-- see-also: ../README.md (getting started), architecture.md (how it works), provider-matrix.md (provider capabilities) -->
-
-> **For AI agents:** The FAQ is maintained as GitHub Discussions — one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file — follow the link.
-
-All questions and answers are maintained at:
-
-**[FAQ Index — GitHub Discussions #127](https://github.com/Apra-Labs/apra-fleet/discussions/127)**
-
-Topics covered:
-
-- **Getting started** — installation, device requirements, provider support
-- **Understanding members and workflows** — icons, status line, doer-reviewer setup, folder separation
-- **Capabilities and use cases** — scope beyond software dev, credential security, custom skills
-- **Ecosystem and protocols** — relationship to Google's A2A protocol
-- **Advanced / operations** — token usage, crash recovery
-
----
-
-**Related docs:** [Readme](../README.md) | [Architecture](architecture.md) | [Cloud Compute](cloud-compute.md) | [Provider Matrix](provider-matrix.md)
   </doc>
 
   <doc title="Architecture" desc="How the fleet hub, MCP server, and members interact at a system level.">
@@ -673,6 +556,1704 @@ Two-layer monitoring. `fleet_status` gives a quick summary table across all memb
 ## Cross-Platform Support
 
 Members can run Windows, macOS, or Linux. The `platform.ts` utility generates the right shell commands for each OS — different commands for checking processes, reading memory, setting environment variables. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
+  </doc>
+
+  <doc title="Install" desc="Installation, uninstallation, and the --llm/--skill flags.">
+# Install, uninstall, and update
+
+This page covers installing Apra Fleet, what the installer writes, controlling
+which skills are installed, uninstalling, and self-updating.
+
+## Requirements
+
+- An AI coding agent CLI on the machine where you run Fleet -- Claude Code,
+  Gemini, Codex, or Copilot.
+- SSH access to any remote machines you want to register as members. The local
+  machine needs nothing extra; remote members need only an SSH server.
+
+## Quick install
+
+Copy-paste the one-liner for your platform.
+
+**macOS (Apple Silicon)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+```
+
+**Linux (x64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+```
+
+**Windows (x64)** -- run in PowerShell:
+```powershell
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
+```
+
+Intel Macs: there is no prebuilt `darwin-x64` binary -- build from source (see
+the Development section of the [README](../README.md)).
+
+## Manual install
+
+Download the installer for your platform from
+[GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases):
+
+- `apra-fleet-installer-linux-x64` -- Linux (x86_64)
+- `apra-fleet-installer-darwin-arm64` -- macOS (Apple Silicon)
+- `apra-fleet-installer-win-x64.exe` -- Windows
+
+Then run it:
+
+```bash
+# macOS (Apple Silicon)
+chmod +x apra-fleet-installer-darwin-arm64 && ./apra-fleet-installer-darwin-arm64 install
+
+# Linux (x64)
+chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 install
+```
+
+```powershell
+# Windows
+.\apra-fleet-installer-win-x64.exe install
+```
+
+## What `install` writes
+
+| Path | What it is |
+|------|-----------|
+| `~/.apra-fleet/bin/apra-fleet[.exe]` | The fleet binary |
+| `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
+| `~/.apra-fleet/scripts/` | Helper scripts |
+| `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
+| `~/.claude/skills/pm/` | PM orchestration skill |
+
+The install also registers the MCP server (`claude mcp add apra-fleet`) and
+configures a status bar icon showing fleet member activity.
+
+**What `install` does NOT do:**
+
+- No system-level changes -- no `/usr/local`, no PATH modification, no
+  admin/sudo required.
+- No network calls beyond `claude mcp add` -- the binary stays local.
+- No background services or daemons -- the fleet server starts on demand when
+  your AI coding agent connects.
+
+## The `--skill` flag
+
+By default, `install` writes both the fleet and PM skills. Use `--skill` to
+control exactly which skills are installed:
+
+| Flag | Skills installed |
+|------|------------------|
+| `install` (no flag) | fleet + pm (default) |
+| `install --skill all` | fleet + pm |
+| `install --skill fleet` | fleet only |
+| `install --skill pm` | fleet + pm (pm depends on fleet) |
+| `install --skill none` | neither |
+| `install --no-skill` | neither (same as `--skill none`) |
+
+## Install for Gemini and other providers
+
+By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
+flag to install for a different provider instead:
+
+```bash
+apra-fleet install --llm gemini      # Gemini CLI
+apra-fleet install --llm codex       # OpenAI Codex CLI
+apra-fleet install --llm copilot     # GitHub Copilot CLI
+apra-fleet install --llm claude      # Claude Code (the default)
+```
+
+`--llm` decides which provider's configuration the installer writes to. The MCP
+server registration, hooks, statusline, permissions, and skills all go into that
+provider's config directory -- for example `~/.gemini/` for Gemini -- instead of
+`~/.claude/`. To support more than one provider on the same machine, run
+`install` once per provider.
+
+`--llm` combines with `--skill`, e.g. `apra-fleet install --llm gemini --skill
+pm`. Supported values: `claude` (default), `gemini`, `codex`, `copilot`.
+
+After a non-Claude install, load the server by restarting that provider's CLI --
+only Claude Code uses `/mcp`.
+
+### Gemini note
+
+`apra-fleet install --llm gemini` prints a one-time warning: the Gemini CLI does
+not support background agents, so when Gemini runs as the PM/orchestrator, fleet
+operations run **sequentially** -- one dispatch at a time, with no parallel
+fan-out. Gemini works well as a doer or reviewer, and as an orchestrator for
+serial workflows; for heavily parallel orchestration, Claude dispatches in
+parallel. This is a property of the Gemini CLI, not a Fleet limitation.
+
+## Uninstall
+
+The built-in uninstall command surgically removes MCP registration,
+permissions, hooks, status line, and skill directories without touching your
+other settings:
+
+```bash
+apra-fleet uninstall
+```
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Preview what would be removed, without modifying anything |
+| `--force` | Automatically stop the running fleet server before uninstalling |
+| `--yes` | Skip the confirmation prompt |
+| `--llm <provider>` | Remove only a specific provider (`claude`, `gemini`, `codex`, `copilot`) |
+| `--skill fleet\|pm\|all` | Remove only the specified skill directories (default: `all`) |
+
+Examples:
+
+```bash
+# Preview the full uninstall
+apra-fleet uninstall --dry-run
+
+# Full uninstall, stop server automatically
+apra-fleet uninstall --force --yes
+
+# Remove only PM skills across all providers
+apra-fleet uninstall --skill pm
+
+# Remove only Claude's fleet skills
+apra-fleet uninstall --llm claude --skill fleet
+```
+
+If the fleet server is running, uninstall aborts and tells you to re-run with
+`--force`. Full detail: [docs/features/uninstall.md](features/uninstall.md).
+
+## Self-update
+
+Update the fleet binary to the latest release:
+
+```bash
+apra-fleet update
+```
+
+This checks the latest GitHub release, downloads the installer for your
+platform, and re-runs it automatically. The server restarts with the new
+binary. If you are already on the latest version it reports so and exits. Full
+detail: [docs/features/update.md](features/update.md).
+  </doc>
+
+  <doc title="Update" desc="Keeping Fleet and its members updated.">
+# Self-Update Command
+
+## What it does
+
+`apra-fleet update` checks GitHub for the latest stable release and, if a newer
+version exists, downloads its installer and runs it -- no manual download step
+needed.
+
+## Flags
+
+| Command | Effect |
+|---------|--------|
+| `apra-fleet update` | Check for and install the latest stable release. |
+| `apra-fleet update --check` | Report whether a newer release exists, without installing. |
+| `apra-fleet update --help` | Show usage. |
+
+## Behaviour
+
+`apra-fleet update` with no flags:
+
+1. Prints `Checking for updates...`.
+2. Fetches release metadata from
+   `https://api.github.com/repos/Apra-Labs/apra-fleet/releases/latest` with a
+   5-second timeout. On a non-OK response it prints
+   `Error: Could not check for updates (Status: <code>)` and stops.
+3. Compares the release tag against the installed version (the `_<hash>` build
+   suffix is stripped first). If the tag is a pre-release (`-alpha`, `-beta`,
+   `-rc`) or is not newer than the installed version, it prints an
+   "up to date" message and stops.
+4. Selects the installer asset for the current platform:
+
+   | Platform | Asset |
+   |----------|-------|
+   | Windows x64 | `apra-fleet-installer-win-x64.exe` |
+   | macOS ARM | `apra-fleet-installer-darwin-arm64` |
+   | Linux x64 | `apra-fleet-installer-linux-x64` |
+
+   If no matching asset is found it prints
+   `Error: Could not find installer for platform <platform>` and stops.
+5. Prints `Updating to <tag> -- restarting...`, downloads the installer into the
+   system temp directory, and (on macOS/Linux) marks it executable.
+6. Spawns the installer detached, then exits with status 0:
+
+   ```
+   <installer> install --force --llm <provider> --skill <skill>
+   ```
+
+   `--force` makes the installer stop the running apra-fleet server before
+   replacing the binary. The `--llm` and `--skill` values come from
+   `install-config.json` (see below).
+
+Any unexpected error is caught and printed as `Error: Update failed -- <message>`.
+
+## install-config.json
+
+`update` reads `~/.apra-fleet/data/install-config.json` and uses the first
+provider entry to recover the `--llm` provider and its `--skill` set, so the
+update preserves the original install configuration. If the file is missing or
+cannot be parsed, `update` prints a warning and falls back to
+`--llm claude --skill all`.
+
+## Stopping and restarting the server
+
+The installer is run with `--force`, so it stops the running apra-fleet server
+(and its workers) before overwriting the binary. The server is not a daemon --
+it starts again on demand the next time an LLM CLI connects to it (run `/mcp` in
+Claude Code, or restart the CLI).
+
+`update` spawns the installer detached and exits 0 immediately, so it prints
+`Updating to <tag> -- restarting...` before the installer has actually finished.
+To confirm the new version is in place, check afterwards:
+
+```
+apra-fleet --version
+```
+
+## Notes
+
+- `apra-fleet update` always installs when a newer stable release exists. Use
+  `apra-fleet update --check` first if you only want to see whether one is
+  available.
+- The 5-second timeout covers the release-metadata check only; the installer
+  download itself is not time-bounded.
+- The installer overwrites the binary in place with no `.bak`. To roll back,
+  download the previous release's installer and run it with `--force`.
+  </doc>
+
+  <doc title="SSH Setup" desc="Enabling SSH access on a remote machine.">
+<!-- llm-context: Step-by-step guide for enabling SSH on remote machines so they can be registered as fleet members. Covers Linux (OpenSSH), macOS, and Windows (OpenSSH Server). Consult when a user can't connect to a remote member or needs to set up SSH for the first time. -->
+<!-- keywords: SSH, setup, OpenSSH, Linux, macOS, Windows, sshd, firewall, key auth, remote member, connectivity -->
+<!-- see-also: ../README.md (member registration after SSH is ready), adr-oob-password.md (password handling) -->
+
+# SSH Server Setup for Fleet Members
+
+Enable SSH on remote machines so they can be registered with `register_member`.
+
+---
+
+## Windows
+
+Windows is the most involved. Run all commands in **PowerShell as Administrator**.
+
+### 1. Install OpenSSH Server
+
+```powershell
+# Check if already installed
+Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Server*'
+
+# Install it
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+```
+
+Or: **Settings > Apps > Optional Features > Add a feature > OpenSSH Server**.
+
+### 2. Start sshd and enable on boot
+
+```powershell
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+```
+
+### 3. Firewall rule
+
+The installer usually creates this, but verify:
+
+```powershell
+# Check
+Get-NetFirewallRule -Name *ssh*
+
+# Create if missing
+New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+```
+
+### 4. Admin user gotcha
+
+If your user is in the **Administrators** group, SSH ignores `~/.ssh/authorized_keys`. Keys must go in:
+
+```
+C:\ProgramData\ssh\administrators_authorized_keys
+```
+
+And the file needs restricted permissions:
+
+```powershell
+# Add your public key
+Add-Content C:\ProgramData\ssh\administrators_authorized_keys "ssh-ed25519 AAAA... you@host"
+
+# Fix permissions (must be owned by SYSTEM/Administrators only)
+icacls C:\ProgramData\ssh\administrators_authorized_keys /inheritance:r /grant "SYSTEM:(F)" /grant "Administrators:(F)"
+```
+
+### 5. Verify
+
+From another machine:
+
+```bash
+ssh user@windows-host "echo ok"
+```
+
+---
+
+## macOS
+
+### 1. Enable Remote Login
+
+**System Settings > General > Sharing > Remote Login** (toggle on).
+
+Or via terminal:
+
+```bash
+sudo systemsetup -setremotelogin on
+```
+
+### 2. Verify
+
+```bash
+ssh user@mac-host "echo ok"
+```
+
+---
+
+## Linux (Ubuntu/Debian)
+
+### 1. Install and start
+
+```bash
+sudo apt install openssh-server
+sudo systemctl enable --now ssh
+```
+
+### 2. Verify
+
+```bash
+ssh user@linux-host "echo ok"
+```
+
+---
+
+## Jetson / Embedded Linux
+
+Usually pre-installed. Just confirm it's running:
+
+```bash
+sudo systemctl status sshd
+```
+
+If not running:
+
+```bash
+sudo systemctl enable --now sshd
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| **Connection refused** | sshd not running | Start the service (see above) |
+| **Permission denied** | Wrong password or key not deployed | Check `~/.ssh/authorized_keys` on target; on Windows admin users, check `administrators_authorized_keys` (see above) |
+| **Connection timed out** | Firewall blocking port 22 | Add inbound rule for TCP/22 |
+| **Windows: key auth not working for admin user** | Keys in `~/.ssh/authorized_keys` are ignored for admin accounts | Move keys to `C:\ProgramData\ssh\administrators_authorized_keys` and fix permissions |
+| **Host key verification failed** | Host key changed (reinstall, new machine) | `ssh-keygen -R <host>` to clear old key |
+  </doc>
+
+  <doc title="Out-of-Band Auth" desc="Securely managing credentials and passwords for fleet members.">
+# OOB Auth -- Terminal Mechanism and SSH/Headless Fallback
+
+Covers the design of the out-of-band credential collection system and the SSH/headless fix shipped in Sprint 1 (#106).
+
+---
+
+## Background: Why OOB Auth Exists
+
+Credentials (passwords, API keys, confirmation prompts) must not pass through the LLM -- the model must never see plaintext secrets. The OOB (out-of-band) mechanism collects credentials in a separate UI context, passes them over a local socket, and delivers them to the fleet server without them appearing in the prompt stream.
+
+---
+
+## Unix Domain Socket (UDS) Architecture
+
+The fleet server creates a socket at `~/.apra-fleet/data/auth.sock` (Linux/macOS) or a Windows named pipe equivalent. This is a filesystem object -- any process running as the same user on the same machine can reach it.
+
+**Flow:**
+
+1. A tool requiring a credential calls `collectOobInput()` (in `src/services/auth-socket.ts`).
+2. `collectOobInput` registers a pending auth request with a 10-minute TTL via `createPendingAuth()`.
+3. It calls `launchAuthTerminal()` to open a terminal window running `apra-fleet secret --set <memberName>`.
+4. The launched process prompts the user, reads input with masked display (LLM cannot see it), and sends the value over the UDS as a JSON message.
+5. `collectOobInput` **blocks** -- `waitForPassword()` awaits a Promise that resolves only when the credential arrives over the socket (or a cancellation/timeout fires). The call does not return early with a "Waiting..." status.
+6. On receipt, the credential is consumed from the pending store and returned to the caller. The tool call then completes with a success message of the form `[OK] NAME stored [session/persistent]. Use {{secure.NAME}} in commands.`
+
+**Key property:** The UDS socket is a filesystem object -- no GUI or display server is required to write to it. Any process on the machine, including one launched in a second SSH terminal, can deliver credentials.
+
+---
+
+## Display Detection -- The #106 Fix
+
+### Problem
+
+`launchAuthTerminal` attempted GUI terminal emulators in order (`gnome-terminal -> xterm -> x-terminal-emulator`) on Linux. On SSH sessions:
+
+- `which gnome-terminal` succeeds even when `$DISPLAY` is unset (the binary exists but can't connect).
+- Spawn succeeds -> process exits immediately -> **"[FAIL] Password entry cancelled"** error fires.
+- The error implies the user cancelled, not that the environment is headless.
+
+The same issue on Windows: `start /wait cmd.exe` opens a window on the physical console, invisible to the SSH user.
+
+### Solution
+
+Two environment-variable checks added to `auth-socket.ts`:
+
+```typescript
+// Returns true when X11 or Wayland display is available
+export function hasGraphicalDisplay(): boolean {
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
+// Returns true when running on an interactive Windows desktop session
+// SSH sessions and service contexts have SESSIONNAME !== 'Console'
+export function hasInteractiveDesktop(): boolean {
+  return process.env.SESSIONNAME === 'Console';
+}
+```
+
+`launchAuthTerminal` checks these **before** attempting any terminal emulator:
+
+- **Linux, `$DISPLAY` and `$WAYLAND_DISPLAY` both unset:** Skip all GUI terminal emulators. Return actionable fallback message.
+- **Windows, `SESSIONNAME !== 'Console'`:** Skip `cmd.exe start /wait`. Return actionable fallback message.
+- **GUI desktop (display available):** Unchanged -- auto-launches terminal as before.
+
+### Why check env vars rather than probing the socket
+
+Probing (attempting a spawn and checking exit code) is what caused the misleading error in the first place. Env var checks are fast, zero-side-effect, and accurate for the cases that matter: X11/Wayland forwarding sets `$DISPLAY`, and Windows service contexts have a distinct `SESSIONNAME`.
+
+Edge case accepted: X11 forwarding where `$DISPLAY` is set but the forwarded display is unreachable. This is acceptable -- if the terminal fails to launch, existing fallback logic catches it, and a user with X11 forwarding active almost certainly has a working display.
+
+**Windows OOB window close:** Closing the OOB terminal window on Windows now returns immediately with a cancellation message. Previously, closing the window caused the tool call to hang for up to 5 minutes waiting for a password that would never arrive. The fix attaches a close-signal handler so that window dismissal resolves the pending Promise with a cancellation error immediately.
+
+---
+
+## The `! apra-fleet secret --set <name>` Pattern
+
+On headless environments, the fallback message instructs the user to run:
+
+```
+! apra-fleet secret --set <actual-member-name>
+```
+
+The `!` prefix is the Claude Code "run in shell" operator -- it executes the command in the user's terminal without passing it to the LLM. This is the **single-terminal approach**: the user does not need to open a second window; they run the secret collection command inline in the same Claude Code session.
+
+The message includes the **actual member name** (not a placeholder). The member name is available at the point `launchAuthTerminal` is called -- it is passed as the `memberName` parameter.
+
+**Full fallback message text (Linux headless, credential-collection mode):**
+```
+fallback:No graphical display detected (SSH or headless session).
+
+Run this in a separate terminal to provide the credential:
+  ! apra-fleet secret --set <memberName>
+
+Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+```
+
+**Full fallback message text (Linux headless, egress-confirm mode):**
+```
+fallback:No graphical display detected (SSH or headless session).
+
+Run this in a separate terminal to confirm:
+  ! apra-fleet secret --confirm <memberName>
+
+Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
+```
+
+The `fallback:` prefix is a protocol marker consumed by `collectOobInput` to distinguish the fallback path from a successful terminal launch. It is stripped before the message reaches the user.
+
+---
+
+## Fallback: Second Terminal
+
+When the `!` operator isn't available or the user is in a non-Claude Code context, the fallback instruction is to open a second terminal and run `apra-fleet secret --set <memberName>` there. Because the UDS socket is a filesystem object, the second terminal's `apra-fleet secret --set` process connects to the same socket and delivers the credential to the waiting fleet server -- no GUI required.
+
+---
+
+## Re-entrancy and Stale State
+
+If a terminal launch fails (fallback path), `collectOobInput` cleans up the pending auth state:
+- Clears the `passwordWaiters` entry for the member
+- Without this, `hasPendingAuth()` returns `true` on the next call, the re-entrant path skips `launchAuthTerminal`, and the call hangs waiting for a credential that will never arrive.
+
+This cleanup ensures retries always start fresh.
+  </doc>
+
+  <doc title="Git Authentication" desc="How git authentication works across fleet members.">
+<!-- llm-context: Design doc for fleet's git authentication system — scoped token provisioning via GitHub Apps, PATs, Bitbucket, and Azure DevOps. Read when a user asks how to give members git access, how tokens are scoped, or how credentials are managed. -->
+<!-- keywords: git auth, GitHub App, PAT, Bitbucket, Azure DevOps, token, scope, provision, revoke, credential, push, pull, clone -->
+<!-- see-also: ../README.md (step-by-step git auth setup), design-vcs-auth-onboarding.md (onboarding flow) -->
+
+# Design: Git Authentication for Fleet Members
+
+## Problem
+
+Fleet members need git access (clone, push, force-push, issue management) across multiple git hosts (GitHub, Azure DevOps, Bitbucket, GitLab). Today there's no standardized way to provision git credentials to members, and no way to scope permissions per member role.
+
+Key requirements:
+- **Multi-host**: Same abstraction across GitHub, Azure DevOps, Bitbucket, GitLab, self-hosted
+- **Scoped permissions**: Read-only members shouldn't be able to push; dev members shouldn't force-push to main
+- **Short-lived tokens**: Compromised member = limited blast radius
+- **Zero user plumbing**: Users declare intent ("this member needs read access"), fleet handles the rest
+- **Audit trail**: Every token mint logged with member name, scope, timestamp
+
+## Design
+
+### User-Facing Config
+
+Members declare git access in their registration or member config:
+
+```yaml
+members:
+  code-analyst:
+    host: 192.168.1.13
+    work_folder: /Users/akhil/git/ApraPipes
+    git_access: read
+    git_repos: [Apra-Labs/ApraPipes]
+
+  feature-dev:
+    host: 192.168.1.13
+    work_folder: /Users/akhil/git/ApraPipes
+    git_access: push
+    git_repos: [Apra-Labs/ApraPipes]
+
+  release-bot:
+    host: 192.168.1.14
+    work_folder: /home/deploy/releases
+    git_access: admin
+    git_repos: ["*"]
+
+  project-mgr:
+    host: local
+    work_folder: C:\akhil\project-tracking
+    git_access: issues
+    git_repos: [Apra-Labs/ApraPipes, Apra-Labs/apra-lic-mgr]
+```
+
+### Access Levels
+
+| Level | Git operations | Non-git |
+|---|---|---|
+| `read` | clone, pull, fetch, blame, log | - |
+| `push` | read + push to branches (branch protection blocks main/force-push) | - |
+| `admin` | read + push + force-push + tags + releases | CI/CD triggers |
+| `issues` | - (no code access) | issues, PRs, projects, comments |
+| `full` | admin + issues | Everything |
+
+### Backend: GitHub App Token Minting
+
+For GitHub-hosted repos, use a **GitHub App** installed on the org.
+
+```
+┌─────────────────────────────────────────────┐
+│  apra-fleet-app (GitHub App)                │
+│  Installed on: Apra-Labs org                │
+│  App private key stored on PM/master         │
+│                                             │
+│  Max permissions (app-level):               │
+│  - contents: write                          │
+│  - issues: write                            │
+│  - pull_requests: write                     │
+│  - actions: write                           │
+│  - administration: write                    │
+└──────────────┬──────────────────────────────┘
+               │
+  PM mints scoped tokens per member at runtime:
+               │
+               ├──→ code-analyst:  { contents: read,  repos: [ApraPipes] }
+               ├──→ feature-dev:   { contents: write, repos: [ApraPipes] }
+               ├──→ release-bot:   { contents: write, admin: write, repos: [*] }
+               └──→ project-mgr:   { issues: write, pull_requests: write }
+```
+
+**Token minting flow:**
+
+```typescript
+// Using @octokit/app
+import { App } from "@octokit/app";
+
+const app = new App({
+  appId: FLEET_GITHUB_APP_ID,
+  privateKey: FLEET_GITHUB_APP_KEY,
+});
+
+async function mintGitToken(agent: Agent): Promise<string> {
+  const octokit = await app.getInstallationOctokit(installationId);
+
+  const { token } = await octokit.request(
+    "POST /app/installations/{installation_id}/access_tokens",
+    {
+      installation_id: installationId,
+      repositories: agent.git_repos,          // scoped to specific repos
+      permissions: mapAccessLevel(agent.git_access),  // scoped permissions
+    }
+  );
+
+  return token;  // valid for 1 hour
+}
+
+function mapAccessLevel(level: string): Record<string, string> {
+  switch (level) {
+    case "read":   return { contents: "read" };
+    case "push":   return { contents: "write" };
+    case "admin":  return { contents: "write", administration: "write", actions: "write" };
+    case "issues": return { issues: "write", pull_requests: "write" };
+    case "full":   return { contents: "write", administration: "write", issues: "write", pull_requests: "write", actions: "write" };
+  }
+}
+```
+
+**Credential deployment to member:**
+
+```typescript
+async function provisionGitAuth(agent: Agent): Promise<void> {
+  const token = await mintGitToken(agent);
+
+  // Configure git credential helper on the member
+  await agent.executeCommand(
+    `git config --global credential.helper '!f() { echo "password=${token}"; }; f'`
+  );
+
+  // Or more robustly, write a credential helper script
+  await agent.executeCommand(`cat > ~/.fleet-git-credential << 'EOF'
+#!/bin/sh
+echo "protocol=https"
+echo "host=github.com"
+echo "username=x-access-token"
+echo "password=${token}"
+EOF
+chmod +x ~/.fleet-git-credential
+git config --global credential.helper ~/.fleet-git-credential`);
+}
+```
+
+### Backend: Azure DevOps
+
+Use an **Azure AD App Registration** (Service Principal):
+
+```typescript
+// Using @azure/identity + azure-devops-node-api
+const credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+const token = await credential.getToken("499b84ac-1321-427f-aa17-267ca6975798/.default");
+
+// Deploy to member as PAT-style credential
+await agent.executeCommand(
+  `git config --global credential.helper '!f() { echo "password=${token.token}"; }; f'`
+);
+```
+
+### Backend: Bitbucket
+
+Use a **Bitbucket OAuth Consumer** or **Repository Access Token**:
+- OAuth Consumer: org-level, token minting via client_credentials grant
+- Repository Access Token: per-repo, created via Bitbucket API, scoped permissions
+
+### Backend: Self-hosted / GitLab
+
+- GitLab: **Project Access Tokens** or **Group Access Tokens** via API
+- Self-hosted: SSH keys (fallback — no token API available)
+
+### Token Lifecycle
+
+```
+Member startup / first git operation
+        │
+        ▼
+  PM mints scoped token (1hr TTL)
+        │
+        ▼
+  Deploy credential to member via execute_command
+        │
+        ▼
+  Member uses git normally (clone/push/etc)
+        │
+        ▼
+  Token nearing expiry? Auto-refresh before next git operation
+        │
+        ▼
+  Member deregistered? Token expires naturally (1hr max)
+```
+
+### MCP Tool Interface
+
+New tool: `provision_git_auth`
+
+```typescript
+// Input
+{
+  agent_name: "feature-dev",
+  // Optional overrides (defaults come from member config):
+  git_host?: "github" | "azure" | "bitbucket" | "gitlab",
+  access_level?: "read" | "push" | "admin" | "issues" | "full",
+  repos?: string[],
+}
+
+// Output
+{
+  status: "ok",
+  host: "github.com",
+  access_level: "push",
+  repos: ["Apra-Labs/ApraPipes"],
+  expires_at: "2026-03-03T16:00:00Z",
+  token_prefix: "ghs_****"  // masked for audit
+}
+```
+
+### Security Properties
+
+| Property | How it's achieved |
+|---|---|
+| **Least privilege** | Token scoped to declared repos + access level |
+| **Short-lived** | 1hr tokens, auto-refreshed |
+| **Auditable** | Token minting logged with member, scope, timestamp |
+| **Revocable** | Remove member = token expires naturally; revoke app installation for emergency |
+| **No secrets on members** | Members never see the app private key, only short-lived tokens |
+| **Compromised member** | Max 1hr window, scoped to declared repos only |
+
+### Comparison with Alternatives
+
+| | SSH Keys | PATs | GitHub App (this design) |
+|---|---|---|---|
+| Per-member scoping | No | Manual | Automatic |
+| Token lifetime | Forever | Days-years | 1 hour |
+| Multi-host | Same key everywhere | Different per host | Abstracted |
+| User effort | Generate + register keys | Generate + distribute tokens | Declare `git_access: push` |
+| Revocation | Manual key removal | Manual token revocation | Auto-expires |
+| Audit | SSH logs | None built-in | Full mint log |
+
+## Implementation Plan
+
+1. **GitHub App setup** — create app, install on org, store private key in fleet config
+2. **`provision_git_auth` tool** — mints scoped token, deploys credential to member
+3. **Auto-provisioning** — mint token on member startup or first git operation
+4. **Auto-refresh** — check token expiry before git operations, refresh if needed
+5. **Multi-host backends** — Azure DevOps, Bitbucket, GitLab adapters (same `provision_git_auth` interface)
+6. **Member config** — add `git_access` and `git_repos` fields to member registration
+  </doc>
+
+  <doc title="Provider Guide" desc="Choosing an LLM provider -- strengths, role recommendations, and gotchas.">
+<!-- llm-context: User-facing guide for choosing an LLM provider in apra-fleet. Consult when a user asks which provider to use for a role (PM, doer, reviewer), what each provider is good at, or what limitations to expect. For CLI flags, credential paths, and integration internals, see provider-matrix.md. -->
+<!-- keywords: provider, Claude, Gemini, Codex, Copilot, choose, role, PM, doer, reviewer, gotchas, limitations, context window, max_turns, OAuth -->
+<!-- see-also: ../README.md (provider setup instructions), provider-matrix.md (full CLI and integration reference) -->
+
+# Choosing an LLM Provider
+
+Fleet supports Claude, Gemini, Codex, and Copilot. Members can run different providers and mix them freely within a single fleet.
+
+## Provider strengths
+
+- **Claude** -- Balanced coding and reasoning; fine-grained per-tool permissions via `settings.local.json`.
+- **Gemini** -- 1M-token native context window; built-in Google Search for researching APIs and docs without an external tool.
+- **Codex** -- Structured-output enforcement via `--output-schema`; native subagent parallelism for concurrent subtasks with less orchestration overhead.
+- **Copilot** -- Multi-model marketplace (Claude + GPT families in one CLI); auto-compaction keeps sessions running indefinitely.
+
+## Recommended provider by role
+
+| Role | Recommended | Why |
+|------|-------------|-----|
+| PM (orchestrator) | Claude Opus/Sonnet, or Gemini `gemini-3.1-pro-preview` | Both plan and orchestrate well -- Gemini's orchestration support improved substantially in recent releases. |
+| Doer | Any provider | Sonnet, Gemini, Codex, Copilot -- mix freely. |
+| Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
+
+## Gotchas worth knowing
+
+- **`max_turns` is Claude-only.** On Gemini, Codex, and Copilot, use `timeout_s` instead to bound execution time.
+- **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
+
+---
+
+Extending Fleet's provider support, or need the full CLI / integration detail? See [docs/provider-matrix.md](provider-matrix.md).
+  </doc>
+
+  <doc title="Cloud Compute" desc="AWS and cloud compute integration for fleet members.">
+<!-- llm-context: This guide covers apra-fleet's AWS EC2 integration — auto start/stop, GPU-aware idle detection, long-running tasks, cost tracking, and custom workload detection. Consult when a user asks about cloud instances, GPU workloads, cost management, or task monitoring. -->
+<!-- keywords: AWS, EC2, cloud, GPU, nvidia-smi, idle detection, auto stop, cost tracking, long-running task, monitor_task, cloud_control -->
+<!-- see-also: ../README.md (general setup), architecture.md (how fleet manages members) -->
+
+# Cloud Compute Guide
+
+## 1. Overview
+
+Cloud compute extends apra-fleet with full EC2 lifecycle management:
+
+- **Auto-start**: stopped EC2 instances start automatically when a tool is called
+- **Idle auto-stop**: instances stop themselves after a configurable period of inactivity
+- **Long-running tasks**: background task wrapper survives SSH disconnects, auto-retries on crash, keeps idle manager from stopping the instance while work is running
+- **GPU monitoring**: `fleet_status`, `member_detail`, and `monitor_task` report live GPU utilization via `nvidia-smi`
+- **Cost visibility**: uptime and estimated on-demand cost shown in status output
+
+---
+
+## 2. Architecture
+
+```
+PM (Claude)
+    |
+    | MCP calls
+    v
+apra-fleet MCP server (this machine)
+    |                    |
+    | SSH (execCommand)  | AWS CLI
+    v                    v
+EC2 instance         AWS EC2 API
+(cloud member)       (start/stop/describe)
+```
+
+The MCP server runs on your local machine. It talks to EC2 via the AWS CLI and to the instance via SSH. The idle manager runs inside the server process, polling every 60 seconds.
+
+---
+
+## 3. AWS Setup
+
+### IAM permissions required
+
+The AWS identity (user or role) running the server needs:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "ec2:StartInstances",
+    "ec2:StopInstances",
+    "ec2:DescribeInstances"
+  ],
+  "Resource": "*"
+}
+```
+
+### AWS CLI configuration
+
+Install the AWS CLI and configure credentials:
+
+```bash
+aws configure                      # default profile
+aws configure --profile apra       # named profile (use cloud_profile param)
+```
+
+Verify access:
+
+```bash
+aws ec2 describe-instances --instance-ids i-0abc123def456789a --region us-east-1
+```
+
+---
+
+## 4. Registering a Cloud Member
+
+```
+register_member(
+  friendly_name      = "gpu-trainer",
+  work_folder        = "/home/ubuntu/training",
+  member_type        = "remote",
+  username           = "ubuntu",
+  cloud_provider     = "aws",
+  cloud_instance_id  = "i-0abc123def456789a",
+  cloud_region       = "us-east-1",
+  cloud_profile      = "apra",               # optional AWS CLI profile
+  key_path = "/home/you/.ssh/gpu-trainer.pem",
+  cloud_idle_timeout_min = 30,               # auto-stop after 30min idle
+)
+```
+
+**Parameter notes:**
+
+| Parameter | Required | Notes |
+|---|---|---|
+| `cloud_provider` | yes | Only `"aws"` supported |
+| `cloud_instance_id` | yes | EC2 instance ID, e.g. `i-0abc…` |
+| `cloud_region` | no | Default: `us-east-1` |
+| `cloud_profile` | no | AWS CLI named profile |
+| `key_path` | yes | Path to SSH private key on this machine; also sets the SSH `key_path` for the member |
+| `cloud_idle_timeout_min` | no | Default: 30. Per-agent idle timeout in minutes. |
+
+The instance does **not** need to be running at registration time. The server will start it on first use.
+
+---
+
+## 5. Auto-Start
+
+When `execute_command`, `execute_prompt`, or `send_files` is called on a cloud member, `ensureCloudReady()` runs first:
+
+1. Calls `aws ec2 describe-instances` to get current state
+2. **stopped** → calls `aws ec2 start-instances`, waits for `running` state
+3. **stopping** → waits for `stopped`, then starts
+4. **pending** → waits for `running`
+5. **running** → verifies public IP is current, updates registry if changed
+6. **terminated / shutting-down** → throws error (cannot be used)
+
+After the instance is running:
+- Polls SSH port (TCP connect) every 2 seconds, up to 60 seconds
+- Re-provisions Claude OAuth credentials (`provision_llm_auth`) — F5
+- Re-mints GitHub App tokens if the member has git repos configured — F5
+
+The returned agent object has the fresh public IP. All subsequent SSH calls use it.
+
+---
+
+## 6. Idle Auto-Stop
+
+The idle manager runs in the background and checks all cloud members every 60 seconds.
+
+**Stop conditions (all must be true):**
+1. Member has been idle longer than `cloud_idle_timeout_min` (per-agent) or the global fallback
+2. Instance is currently `running`
+3. No GPU compute processes detected (`nvidia-smi` shows no active jobs)
+4. No fleet or other Claude processes running in the work folder
+
+**Timer reset:** Every successful tool call (`execute_command`, etc.) calls `touchAgent()`, which resets the idle timer for that member.
+
+**Server restart persistence (R-9):** On startup, the idle manager pre-loads `lastActivity` from each member's `lastUsed` timestamp in the registry. A member that was active 5 minutes before a server restart will not be stopped until the full timeout expires from that last-used time.
+
+**Safe default:** If activity cannot be determined (SSH unreachable, nvidia-smi error), the stop is deferred. Unknown = don't stop.
+
+---
+
+## 7. Long-Running Tasks
+
+For GPU training jobs or other tasks that outlast an SSH session, use `long_running=true`:
+
+```
+execute_command(
+  member_id      = "<gpu-trainer-id>",
+  command        = "python train.py --epochs 100 --data /data/train",
+  long_running   = true,
+  max_retries    = 3,
+  restart_command = "python train.py --resume checkpoint.pt",  # F1
+)
+```
+
+**What happens:**
+
+1. A bash wrapper script is generated and base64-encoded
+2. The wrapper is decoded and written to `~/.fleet-tasks/<task_id>/run.sh` on the member
+3. Launched with `nohup bash run.sh &` — survives SSH disconnect
+4. Returns immediately: `Task launched: task_id=task-<id>`
+
+**Wrapper behavior:**
+
+- Writes PID to `task.pid`, JSON status to `status.json`
+- Background loop touches `~/.fleet-tasks/<task_id>/activity` every 5 minutes while running — this prevents the idle manager from stopping the instance during active work (F3)
+- On non-zero exit: retries up to `max_retries` times using `restart_command` (F1)
+  - `restart_command` is designed for checkpoint resume (different flags on retry)
+  - Falls back to `command` if `restart_command` not provided
+- On completion or max retries: updates `status.json`, removes `task.pid`
+
+**Checking progress:**
+
+```
+monitor_task(
+  member_id = "<gpu-trainer-id>",
+  task_id   = "task-lx4k2z",
+  auto_stop = true,   # stop instance automatically when task completes
+)
+```
+
+Returns JSON:
+
+```json
+{
+  "taskId": "task-lx4k2z",
+  "status": "running",          // running | completed | failed | retrying | unknown
+  "exitCode": null,
+  "retries": 0,
+  "started": "2026-03-18T10:00:00Z",
+  "updated": "2026-03-18T10:45:00Z",
+  "pidAlive": true,
+  "gpuUtilization": 87,
+  "logTail": "Epoch 45/100, loss=0.234..."
+}
+```
+
+---
+
+## 8. cloud_control Reference
+
+Manual control over a cloud member's instance:
+
+```
+cloud_control(member_id="<id>", action="start")   # start + wait for SSH ready
+cloud_control(member_id="<id>", action="stop")    # stop immediately (bypasses idle timer)
+cloud_control(member_id="<id>", action="status")  # show current state + cost
+```
+
+**Actions:**
+
+| Action | Behaviour |
+|---|---|
+| `start` | Calls `ensureCloudReady` — starts the instance, waits for SSH, re-provisions auth |
+| `stop` | Calls `aws ec2 stop-instances` directly — immediate, no idle check |
+| `status` | Calls `getInstanceDetails` — returns state, IP, instance type, uptime, estimated cost |
+
+**`stop` vs idle auto-stop:** `cloud_control stop` bypasses all activity checks. Use it to forcefully stop an instance regardless of what's running. The idle manager's stop goes through GPU + process checks first.
+
+---
+
+## 9. Cost Estimation
+
+`fleet_status` and `member_detail` show an estimated running cost based on:
+
+- Instance type (from `aws ec2 describe-instances`)
+- Uptime = `now - LaunchTime` (from the same API call)
+- Hourly rate from a built-in lookup table (`src/services/cloud/cost.ts`)
+
+**Supported families:** g4dn, g5, p3, p4d, t3, m5, c5 (us-east-1 on-demand pricing)
+
+**Limitations:**
+- Rates are hard-coded approximations. Actual AWS charges may differ due to spot pricing, savings plans, data transfer, EBS, etc.
+- Instance types not in the table show `?` for cost.
+- The lookup table is in `src/services/cloud/cost.ts` — edit `HOURLY_RATES` to add custom types or update prices.
+
+---
+
+## 10. Supported Platforms
+
+Cloud compute features are designed and tested for **Linux** EC2 instances (Ubuntu, Amazon Linux 2, Debian).
+
+| Feature | Linux | macOS | Windows |
+|---|---|---|---|
+| GPU detection (`nvidia-smi`) | ✅ Full | ❌ Not supported | ❌ Not supported |
+| Long-running task wrapper | ✅ Full | ⚠ Untested | ❌ Not supported |
+| Idle activity monitoring | ✅ Full | ⚠ Partial | ❌ Not supported |
+| Auto-start / auto-stop | ✅ Full | ✅ Full | ✅ Full |
+| SSH connectivity | ✅ Full | ✅ Full | ⚠ Requires OpenSSH |
+
+**Notes:**
+- Registering a cloud member with a non-Linux OS will succeed but show a warning about unsupported features.
+- The task wrapper script (`long_running=true`) uses `bash`, `nohup`, and POSIX shell utilities. It is not compatible with Windows Command Prompt or PowerShell.
+- macOS GPU detection is not supported (`nvidia-smi` is not available on Apple Silicon or macOS in general).
+- Only `aws` is supported as a `cloud_provider`. GCP and Azure support is planned.
+  </doc>
+
+  <doc title="Writing Skills" desc="How to write your own skill for use in the fleet.">
+# Writing a skill
+
+Fleet ships two skills -- `fleet` (the MCP tool reference) and `pm` (the Project
+Manager workflow). A skill is how you package a *workflow* on top of Fleet so it
+can be invoked by name and reused. This page explains what a skill is and how to
+build your own.
+
+## What a skill is
+
+A skill is a directory of Markdown that your AI coding agent loads as
+instructions. It is not compiled code and there is no plugin API to implement --
+a skill *describes* a workflow, and the agent carries it out using Fleet's MCP
+tools.
+
+The PM skill, for example, is Markdown that tells the agent how to plan a
+sprint, dispatch a doer, run a reviewer, and raise a PR. Everything it does, it
+does by calling Fleet tools like `register_member` and `execute_prompt`.
+
+## Where skills live
+
+Skills are installed into your provider's skills directory:
+
+| Provider | Directory |
+|----------|-----------|
+| Claude | `~/.claude/skills/<name>/` |
+| Gemini | `~/.gemini/skills/<name>/` |
+
+Fleet's installer writes `fleet/` and `pm/` there. Your own skill is just
+another directory alongside them.
+
+## Anatomy
+
+A skill directory contains one required file and any number of supporting ones:
+
+```
+my-skill/
+  SKILL.md            <- required: the entry point
+  helper-notes.md     <- optional: sub-documents the agent reads on demand
+  templates/          <- optional: files the skill sends to members
+  scripts/            <- optional: helper scripts
+```
+
+### SKILL.md
+
+`SKILL.md` opens with YAML frontmatter, then the workflow body:
+
+```markdown
+---
+name: my-skill
+description: One sentence on what this skill does and when to use it.
+note: This skill requires the 'fleet' skill to function.
+---
+
+# My Skill
+
+You are a ... that ...
+
+## Step 1
+...
+```
+
+- `name` -- the skill's identifier; matches the directory name.
+- `description` -- used to decide when the skill is relevant. Be specific.
+- `note` -- optional; declare a dependency on the `fleet` skill if you call
+  Fleet MCP tools.
+
+Keep `SKILL.md` focused. Push detail into sub-documents and reference them by
+filename so the agent loads them only when needed -- this is how the `pm` skill
+keeps `SKILL.md` short while `single-pair-sprint.md`, `doer-reviewer.md`, and
+the `tpl-*.md` templates carry the depth.
+
+## The tools a skill can use
+
+A skill coordinates agents through Fleet's MCP tools. The most common:
+
+| Tool | Use |
+|------|-----|
+| `register_member` | Add a machine or local workspace as a member. |
+| `execute_prompt` | Run an AI prompt on a member. |
+| `execute_command` | Run a shell command on a member (no tokens). |
+| `send_files` / `receive_files` | Move files to and from a member. |
+| `compose_permissions` | Generate provider-native permission config. |
+| `fleet_status` / `member_detail` | Inspect member state. |
+
+The `fleet` skill documents the full tool set. Your skill should activate the
+`fleet` skill (via the `note` field) rather than re-documenting tools.
+
+## Build your own
+
+1. Create `~/.claude/skills/my-skill/SKILL.md` with the frontmatter above.
+2. Write the workflow as numbered steps, in plain imperative prose. Reference
+   Fleet tools by name where the agent should call them.
+3. Move long reference material into sibling `.md` files; link them by filename.
+4. Test by invoking the skill in your AI coding agent and watching it run.
+
+## Worked examples
+
+The two skills in this repository are the best reference:
+
+- [`skills/fleet/SKILL.md`](../skills/fleet/SKILL.md) -- the MCP tool reference
+  and member-management mechanics.
+- [`skills/pm/SKILL.md`](../skills/pm/SKILL.md) -- a full multi-step workflow:
+  sprint variants, doer-reviewer pairing, templates, and lifecycle commands.
+
+Read those alongside this page when designing your own.
+  </doc>
+
+  <doc title="PM Skill" desc="The Project Manager skill reference -- commands, usage, and patterns.">
+---
+name: pm
+description: Project Manager — plans, executes, monitors, and resumes multi-step work across fleet members. Delegates to members, tracks progress, drives reviews and deploys. Never writes code directly.
+note: This skill requires the 'fleet' skill to function.
+---
+
+# PM — Project Manager Skill
+
+You are a Project Manager (PM) that orchestrates work across fleet members.
+
+## Dependency Bootstrap
+
+**IMPORTANT — Before proceeding with any PM task:**
+
+This skill depends on the `fleet` skill. If it is not already active, activate it now using your provider's skill activation mechanism before continuing.
+
+---
+
+
+## Sprint Selection
+
+Before starting any sprint, choose the appropriate variant:
+
+| Condition | Sprint type |
+|-----------|-------------|
+| 1–3 tasks, completable in one session | `simple-sprint.md` |
+| Work splits into parallel tracks (e.g. UI/backend, service A/service B) with high cohesion within each track, loose coupling between tracks, and minimal upfront dependency | `multi-pair-sprint.md` |
+| Default | `single-pair-sprint.md` |
+
+If tracks are tightly coupled or share significant upfront dependencies, use single-pair — splitting tightly coupled work across pairs creates more coordination overhead than it saves.
+
+---
+
+## Available Commands
+
+- `/pm init <project>` — Initialize project folder and templates. See init.md.
+- `/pm pair <member> <member>` — Pair doer↔reviewer. Update icons (doer=circle, reviewer=square, same color) via `update_member`. See doer-reviewer.md.
+- `/pm plan <requirement>` — Triggers Phase 2 (Plan Generation). See single-pair-sprint.md. User provides requirements.md.
+- `/pm start <member>` — Begin Phase 3 execution. Before dispatch: complete doer-reviewer.md setup checklist and pre-flight checks. Plan must be APPROVED (planned.json exists in `<project>/`). Sends task harness (agent context file, PLAN.md, progress.json) to doer and kicks off execution.
+- `/pm status <member>` — Check in-flight tasks (via Beads), progress.json, and git log.
+- `/pm resume <member>` — Resume after a verification checkpoint
+- `/pm deploy <member>` — Execute the project's deployment runbook. First, `receive_files` to pull `deploy.md` from the repo root or `docs/` folder via any available member. If it doesn't exist in the repo, create a copy locally from `tpl-deploy.md`, fill in the project's deploy and verify steps, then `send_files` to the doer's repo root and have them commit it before proceeding. Once deploy.md is in place, execute each step via `execute_command` on the target member, then run the Verify section to confirm the deploy succeeded.
+- `/pm recover <project>` — After PM restart: check in-flight tasks via Beads for instant orientation, then inspect member state. See single-pair-sprint.md, simple-sprint.md, or multi-pair-sprint.md.
+- `/pm cleanup <project>` — At sprint completion: run cleanup on doer and reviewer, close Beads epic, then raise the PR. See cleanup.md.
+- `/pm backlog` — Query and manage deferred items via Beads. See beads.md.
+- `/pm tasks` — Show current sprint's Beads task tree (`bd show <epic-id> --tree`). See beads.md.
+
+## Beads — Persistent Task DB
+
+PM uses Beads (`bd` CLI, installed by `apra-fleet install`) as the persistent task database across all sprints. See `beads.md` for the full reference.
+
+**Session start rule:** Always run `bd ready` (from PM's own directory — the central Beads DB) before opening any `status.md`. This gives an instant cross-sprint view of what's in-flight across all projects and members — no file reading required for orientation.
+
+**Central DB rule:** PM runs `bd init` once in PM's own working directory — NOT inside each project repo. One Beads DB tracks all projects, all members, all sprints. `bd list --all --pretty` gives a global view without switching directories.
+
+**Lifecycle hooks (enforced — not optional):**
+- `/pm init` → `bd init` (PM root, idempotent) + `bd create` sprint epic + record epic-id in `status.md`
+- `/pm plan` (after approval) → `bd create` one task per PLAN.md item + `bd dep add` for dependencies
+- `/pm start` / task dispatch → `bd update <id> --assignee <member> --status in_progress`
+- VERIFY checkpoint done → `bd close <id>`
+- Reviewer CHANGES NEEDED → `bd create` a task per HIGH finding
+- `/pm cleanup` → `bd close <epic-id>` before raising PR
+
+## Core Rules
+
+1. NEVER read code, diagnose bugs, or suggest fixes — assign a member.
+2. **Project sandboxing** — The PM root contains one subfolder per project. Every artifact (`status.md`, `requirements.md`, `design.md`, `deploy.md`, `planned.json`, `permissions.json`, PLAN.md, progress.json, feedback.md) lives inside `<project>/` and nowhere else. Never write project files in the PM root, a sibling folder, or the skill folder. If you're about to write outside `<project>/`, stop and relocate first.
+3. On session start: Read each active project's `status.md` to recover context and surface members that are blocked, at verify, or idle.
+   - Update `status.md` whenever a dispatch completes or a member reports back — not just at phase boundaries
+   - Local files are the source of truth — never rely on memory across sessions
+4. Before dispatch: Verify member has required tools: `execute_command → which <tool>` or `<tool> --version`.
+5. If a member can finish in one session (1-3 steps), use ad-hoc `execute_prompt`. Otherwise use the task harness.
+6. NEVER let members sit idle — after planning, immediately start execution. At verify checkpoints, immediately dispatch reviews.
+7. During execution: keep going until stuck or done — don't wait for the user. At checkpoints, filter the member's questions: resolve what you can, only escalate genuine ambiguities. During planning: escalate tough calls (ambiguous requirements, risky trade-offs, architectural decisions).
+8. When executing a sequence of fleet calls — any combination of `send_files`, `execute_command`, `execute_prompt`, `receive_files` — club them into a single background Agent rather than issuing individual calls or multiple background agents.
+9. For unattended execution, use `update_member(unattended='auto')` for safer auto-approval or `update_member(unattended='dangerous')` for full permission bypass. Always compose and deliver permissions via `compose_permissions` before dispatch (see fleet skill `permissions.md`). Do NOT pass `dangerously_skip_permissions` to `execute_prompt` — it is deprecated and ignored.
+10. During a sprint, PLAN.md, progress.json, and feedback.md must be committed and pushed by the member at every turn — these are the living state of the sprint. Only the agent context file stays uncommitted. See context-file.md and doer-reviewer.md for details.
+11. Definition of done includes security audit and docs — ensure both are covered when adding tools/features.
+12. At sprint completion: raise a PR, verify CI is green — do NOT merge. Merge is the user's decision.
+13. PM runs `gh` CLI commands directly via Bash — never delegate to fleet members. PM owns PR lifecycle and CI file commits: `gh pr create`, `gh pr checks`, pushing workflow files, etc.
+14. Always read referenced sub-documents (doer-reviewer.md, fleet skill sub-docs, etc.) before executing PM commands.
+
+## Secrets & Credentials
+
+See fleet skill `Secure Credentials` section for the full reference.
+
+PM-specific rule: never pass raw secrets in `execute_prompt` prompts — reference the credential by name only (e.g. `"authenticate using credential github_pat"`). The member then uses `{{secure.github_pat}}` in its own `execute_command` calls.
+
+## Sub-documents
+
+- `single-pair-sprint.md` — full sprint lifecycle: requirements, planning, execution loop, monitoring, completion, recovery
+- `simple-sprint.md` — lightweight flow for small, single-session tasks
+- `multi-pair-sprint.md` — running parallel pairs on separate git branches
+- `doer-reviewer.md` — doer/reviewer pairing, flow, pre-flight checks, safeguards
+- `context-file.md` — agent context file: provider filename lookup, role templates, delivery rules
+- `cleanup.md` — sprint cleanup command and PR raise procedure
+- `init.md` — project folder initialization
+- `beads.md` — Beads persistent task DB: commands, lifecycle hooks, backlog ops, cross-sprint patterns
+- `tpl-*.md` — various templates sent to members via `send_files`, never loaded into PM context — PM substitutes `{{token}}` placeholders before sending
+
+## Model Selection
+
+See fleet skill `Model Tiers` section.
+
+
+## Provider Awareness
+
+See fleet skill `Provider Awareness` section for general provider differences.
+
+PM-specific: agent context file filename is provider-dependent — see `context-file.md`.
+  </doc>
+
+  <doc title="Beads" desc="How Fleet uses Beads -- the bundled open-source issue tracker and the PM skill's persistent task database.">
+<!-- llm-context: Reference for how Apra Fleet uses Beads, the bundled open-source issue tracker. Consult when a user asks about bd commands, task tracking, sprint epics, backlog management, or the PM skill's persistent task state. -->
+<!-- keywords: Beads, bd, task, epic, sprint, backlog, pm, lifecycle, dependency, issue tracker, bd ready, bd create, bd close -->
+<!-- see-also: ../README.md (PM skill overview), ../skills/pm/SKILL.md (PM skill reference), ../skills/pm/beads.md (internal PM Beads rules) -->
+
+# Beads -- Fleet's Persistent Task Tracker
+
+Beads is a bundled open-source local issue tracker installed alongside Fleet by
+`apra-fleet install`. It provides the `bd` CLI and serves as the PM skill's
+persistent task database across all sprints and sessions.
+
+## What Beads Does
+
+- **One central DB** -- the PM agent runs `bd init` once in its own working
+  directory. A single Beads database tracks all projects, all members, and all
+  sprints. Run `bd list --all --pretty` for a global view without reading files.
+- **Epics and tasks** -- each sprint gets an epic; each PLAN.md task gets a child
+  task with priority, assignee, and dependency links (`bd dep add`).
+- **Cross-session persistence** -- task state survives PM restarts. On session
+  start, run `bd ready` for an instant cross-sprint view of what is in flight.
+- **Lifecycle hooks** -- the PM skill calls `bd` at every phase boundary: init,
+  plan approval, task dispatch, verify checkpoint, reviewer findings, and cleanup.
+
+## Common Commands
+
+| Command | What it does |
+|---------|-------------|
+| `bd ready` | Show all unblocked, open tasks across all sprints |
+| `bd list --all --pretty` | Full tree: all projects, members, tasks, status |
+| `bd create "<title>" -p <pri> --parent <epic-id> --assignee <member>` | Create a task |
+| `bd show <id> --json` | Full detail for one task |
+| `bd update <id> --status in_progress --assignee <member>` | Mark a task in progress |
+| `bd close <id>` | Mark a task complete (idempotent) |
+| `bd reopen <id>` | Reopen a prematurely closed task |
+| `bd dep add <task-id> <blocks-id>` | Declare a dependency |
+| `bd search "<term>" --status all --json` | Search tasks; check before creating to avoid duplicates |
+| `bd note <id> "<text>"` | Attach a note (e.g. PR URL at sprint close) |
+
+Priority values: `0` = highest, `3` = lowest (backlog).
+
+## PM Lifecycle Hooks
+
+The PM skill integrates Beads at these points in every sprint:
+
+| PM command | Beads action |
+|-----------|-------------|
+| `/pm init` | `bd init` (idempotent); create sprint epic; record epic ID in status.md |
+| `/pm plan` (after approval) | `bd create` one task per PLAN.md item; `bd dep add` for dependencies |
+| `/pm start` / task dispatch | `bd update <id> --status in_progress --assignee <member>` |
+| VERIFY checkpoint done | `bd close <id>` |
+| Reviewer CHANGES NEEDED | `bd create` a task per HIGH finding |
+| `/pm cleanup` | `bd close <epic-id>`; `bd note <epic-id> "PR: <url>"` |
+
+## Backlog and Deferred Items
+
+```bash
+# Defer an item at low priority
+bd create "<description>" -p 3 --parent <epic-id>
+
+# Show full tree including deferred items
+bd list --all --pretty
+```
+
+## Cross-Sprint Dependencies
+
+Block sprint B on sprint A:
+
+```bash
+bd dep add <sprint-B-epic-id> <sprint-A-epic-id>
+```
+
+`bd ready` will not surface sprint B tasks until sprint A closes.
+
+## Recovery After a PM Restart
+
+Session crash? Run `bd list --all --pretty`. The PM sees every member's state
+across every active project without reading a single file. Then `bd show <id>`
+for full context on any item.
+
+---
+
+See [skills/pm/SKILL.md](../skills/pm/SKILL.md) for the full PM skill reference.
+  </doc>
+
+  <doc title="FAQ" desc="Frequently asked questions about setup, troubleshooting, and the doer-reviewer loop.">
+# Frequently Asked Questions
+
+<!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge -- fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
+<!-- keywords: install, setup, single machine, local, provider, Claude, Gemini, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
+<!-- see-also: ../README.md (getting started), architecture.md (how it works), provider-guide.md (choosing a provider) -->
+
+> **For AI agents:** The FAQ is maintained as GitHub Discussions -- one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file -- follow the link.
+
+All questions and answers are maintained at:
+
+**[FAQ Index -- GitHub Discussions #127](https://github.com/Apra-Labs/apra-fleet/discussions/127)**
+
+Topics covered:
+
+- **Getting started** -- installation, device requirements, provider support
+- **Understanding members and workflows** -- icons, status line, doer-reviewer setup, folder separation
+- **Capabilities and use cases** -- scope beyond software dev, credential security, custom skills
+- **Ecosystem and protocols** -- relationship to Google's A2A protocol
+- **Advanced / operations** -- token usage, crash recovery
+
+---
+
+**Related docs:** [Readme](../README.md) | [Architecture](architecture.md) | [Cloud Compute](cloud-compute.md) | [Provider Guide](provider-guide.md)
+  </doc>
+
+  <doc title="Troubleshooting" desc="Common symptoms and fixes.">
+# Troubleshooting
+
+Common symptoms and how to resolve them. If something here does not match what
+you see, search [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues)
+or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
+
+## Members
+
+**Member shows as offline**
+
+- Check the machine is reachable: `ping <ip>`.
+- For remote members, verify SSH directly: `ssh user@host "echo ok"`.
+- If SSH works but the member is still offline, re-provision auth: ask Fleet to
+  "Provision auth for `<member>`".
+
+**Empty response from a member**
+
+Usually an expired auth token. Ask Fleet to "Provision auth for `<member>`".
+For VCS tokens specifically, re-run `provision_vcs_auth`.
+
+**Auth error (401 / 403)**
+
+- GitHub App tokens: re-mint with `provision_vcs_auth`.
+- Bitbucket / Azure DevOps: the token likely expired -- get a fresh one, then
+  re-provision and retry. See the `auth-*.md` references in the fleet skill.
+
+**Member blew past a checkpoint**
+
+Check what actually happened on the member:
+ask Fleet to run `cat progress.json` on it.
+
+## Permissions
+
+**Permission denied on a member**
+
+Fleet can configure member permissions. Ask it to, for example, "Grant
+`build-server` permission to run `npm install`". Under the hood this runs
+`compose_permissions`, which writes provider-native config:
+
+| Provider | Config location |
+|----------|-----------------|
+| Claude | `.claude/settings.local.json` |
+| Gemini | `.gemini/policies/` |
+| Codex | `.codex/config.toml` (approval mode) |
+| Copilot | `.github/copilot/settings.local.json` |
+
+## Timeouts
+
+A dispatch can end in two distinct ways:
+
+- **Inactivity timeout (`timeout_s`)** -- fires when no stdout/stderr output
+  arrives for N seconds (default 300s / 5 min). It is transport-level, so it
+  applies to every member and provider. The usual cause is a build or test
+  runner that buffers output (`npm test`, `vitest`, `cargo build`) and stays
+  silent for long stretches even while working. Fix: raise `timeout_s` to
+  600-1200 for build/test dispatches.
+- **Total timeout (`max_total_s`)** -- fires after N seconds of wall-clock time
+  regardless of output. Use it as a hard ceiling on long jobs, alongside
+  `timeout_s` when you want both a silence guard and a wall-clock cap.
+
+## Credentials
+
+**A token or password appeared in command output**
+
+Store the secret with `credential_store_set`, then reference it as
+`{{secure.NAME}}` in `execute_command`. Fleet redacts it to `[REDACTED:NAME]`
+before the LLM ever sees the output. See
+[docs/features/oob-auth.md](features/oob-auth.md).
+
+**Rotate a credential without re-provisioning**
+
+Run `credential_store_delete name=<NAME>` then `credential_store_set
+name=<NAME>`. The new value is picked up immediately on the next
+`execute_command` that references `{{secure.NAME}}`.
+
+## Git
+
+**Cannot push workflow files or merge PRs from a member**
+
+Minted VCS tokens may lack CI/CD permissions. Run those operations from your
+main AI coding session instead -- it has your full git credentials. See
+[docs/design-git-auth.md](design-git-auth.md).
+
+## Stuck agents
+
+**A member is stuck after a session reset**
+
+Escalate the model tier (cheap -> standard -> premium) and retry. If it is still
+stuck, the task likely needs a human decision -- inspect `progress.json` and
+intervene directly.
+
+## Logs
+
+For unexplained behavior -- missing output, silent failure, unexpected results
+-- check the server logs:
+
+```
+$APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log
+```
+
+These are JSON lines. Filter by member or by tool with `jq`:
+
+```bash
+jq 'select(.member_id == "<uuid>")' fleet-<pid>.log
+jq 'select(.tag == "<tool>")'       fleet-<pid>.log
+```
+
+The **Fleet Logs** section of the fleet skill's `SKILL.md` has the full field
+reference and more `jq` examples.
+  </doc>
+
+  <doc title="Roadmap" desc="What is planned next for Apra Fleet.">
+# Roadmap
+
+This roadmap reflects current plans. Priorities shift based on community feedback.
+Have an idea? [Open a feature request](https://github.com/Apra-Labs/apra-fleet/issues/new/choose).
+
+Items marked 🌱 are good first issues for new contributors.
+
+---
+
+## Near-term (next 1-2 sprints)
+
+- [ ] **npm publish** — Publish to npm so users can `npx apra-fleet install` 🌱
+- [ ] **Cursor / Windsurf integration guide** — Step-by-step docs for non-Claude-Code AI assistants 🌱
+- [ ] **Codex CLI & GitHub Copilot support** — First-class support as member agent providers — coming soon 🚀
+- [ ] **Member groups / tags** — Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups
+- [ ] **Session log export** — Export prompt execution history as markdown 🌱
+
+## Medium-term (3-6 months)
+
+- [ ] **Expanded member targets** — Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
+- [ ] **Web dashboard** — Browser UI for fleet status and member management (foundation in `dashboard/`) 🌱
+- [ ] **Plugin system** — Community-built plugins for custom tools and providers
+- [ ] **Result aggregation** — Merge outputs from parallel member executions into a unified report
+- [ ] **Cost dashboard** — Visualize token and cloud spend across members
+
+## Long-term (6+ months)
+
+- [ ] **Agent-to-agent communication** — Members communicate directly, not only through coordinator
+- [ ] **Distributed task queue** — Priority-based job scheduling with retry and dead-letter handling
+- [ ] **Fleet-as-a-Service** — Hosted version for teams that don't want to self-host
+- [ ] **Terraform / Pulumi provider** — Infrastructure-as-code for fleet topology
+- [ ] **Audit log** — Immutable log of all fleet operations for enterprise governance 🌱
+- [ ] **Multi-fleet federation** — Connect multiple fleet servers for cross-team orchestration
+
+---
+
+## Contributing
+
+Pick any item above (especially 🌱 ones), open an issue to discuss your approach, then submit a PR.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+  </doc>
+
+  <doc title="Contributing" desc="How to contribute code, docs, and skills.">
+# Contributing to apra-fleet
+
+Thank you for your interest in contributing! This document explains how to get involved.
+
+## Reporting Bugs
+
+Use the [Bug Report](https://github.com/Apra-Labs/apra-fleet/issues/new/choose) issue template on GitHub. Include as much detail as possible -- reproduction steps, environment info, and error output are especially helpful.
+
+## Requesting Features
+
+Use the [Feature Request](https://github.com/Apra-Labs/apra-fleet/issues/new/choose) issue template. Describe the problem you're trying to solve, your proposed solution, and any alternatives you've considered.
+
+## Development Setup
+
+**Prerequisites:** Node.js 20+, npm
+
+```bash
+git clone https://github.com/Apra-Labs/apra-fleet.git
+cd apra-fleet
+npm install
+npm run build
+```
+
+`npm install` auto-installs the git pre-commit hook via the `prepare` script. To install manually, run `node scripts/install-hooks.mjs`. The hook lives at `.github/hooks/pre-commit`.
+
+## Running Tests
+
+```bash
+npm test
+```
+
+For watch mode during development:
+
+```bash
+npm run test:watch
+```
+
+## Branch Naming
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Feature | `feature/<short-description>` | `feature/ec2-support` |
+| Bug fix | `fix/<short-description>` | `fix/ssh-timeout` |
+| Docs | `docs/<short-description>` | `docs/contributing-guide` |
+
+Always branch from `main`.
+
+## Commit Message Convention
+
+Use the [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>(<scope>): <short summary>
+```
+
+Common types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`
+
+Examples:
+- `feat(members): add EC2 instance support`
+- `fix(ssh): handle connection timeout gracefully`
+- `docs: update contributing guide`
+
+## Pull Request Process
+
+1. Fork the repo and create your branch from `main`.
+2. Make your changes, following the code style notes below.
+3. Run `npm run build` and `npm test` -- both must pass.
+4. Open a PR against `main` using the PR template.
+5. A maintainer will review your PR. Address any feedback.
+6. Once approved, a maintainer will merge it.
+
+## Code Style
+
+- **Language:** TypeScript. Match the style of surrounding code.
+- **Formatting:** No enforced formatter currently -- keep indentation and style consistent with existing files.
+- **No unnecessary abstractions:** Prefer simple, direct code over premature generalization.
+- **Error handling:** Only handle errors at real system boundaries (user input, SSH, external APIs). Don't add fallbacks for scenarios that can't happen.
+- **ASCII only:** No non-ASCII characters in committed files. Use `--` for em-dashes, `->` for arrows, `[OK]` for checkmarks.
+
+## For AI Agents
+
+If you are an AI agent (or a human using an AI agent) contributing to this project, this section covers the patterns and conventions that matter most.
+
+### Dev-mode install
+
+Build and install from source without touching the packaged binary:
+
+```bash
+npm run build && node dist/index.js install
+```
+
+This registers the MCP server from your local `dist/` build. Skill files are read from `skills/` on disk -- no rebuild needed to iterate on them.
+
+### File map
+
+| Path | What it contains |
+|------|-----------------|
+| `src/` | TypeScript source for the MCP server, CLI commands, and providers |
+| `skills/fleet/` | Fleet skill -- tools for managing members, tasks, and files |
+| `skills/pm/` | PM skill -- orchestration patterns, doer-reviewer loop, deploy flows |
+| `hooks/` | Shell hooks that run on Claude Code events (statusline, pre-push, etc.) |
+| `CLAUDE.md` | Role-specific instructions (not committed -- each agent has its own) |
+| `AGENTS.md` | Shared project context for all agents |
+
+### Testing skill changes
+
+Skills are Markdown files -- edits take effect immediately without a rebuild. After editing `skills/fleet/` or `skills/pm/`:
+
+1. Save the file.
+2. In Claude Code, run `/mcp` to reload the MCP server.
+3. The updated skill content is live.
+
+Run `npm test` before committing to catch any regressions in the TypeScript layer.
+
+### Doer-reviewer loop
+
+The PM agent delegates tasks to doer members and assigns a separate reviewer. Code is never self-reviewed. When implementing multi-step work:
+
+- The PM reads the plan (typically `PLAN.md`) and delegates one task at a time.
+- Each doer commits and marks the task done in `progress.json`.
+- A reviewer member inspects the diff before the PM proceeds.
+
+### Sprint branch naming
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Feature sprint | `feat/<desc>` | `feat/install-ux-and-docs` |
+| Sprint (generic) | `sprint/<desc>` | `sprint/q2-hardening` |
+
+Agent-driven work always happens on a sprint branch -- never directly on `main`.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE) that covers this project.
   </doc>
   </docs>
 </project>

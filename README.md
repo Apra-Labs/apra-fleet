@@ -5,15 +5,15 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 
-### One conversation. A team of AI agents that plan, build, review each other's work, and run across every machine you own.
+### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
 
-Apra Fleet is an open-source **MCP server** that turns AI coding agents
-(Claude Code, Gemini, Codex, Copilot) into a coordinated team instead of a lone
-assistant. Describe a goal -- a Project Manager agent breaks it down, dispatches
-the work, pairs a reviewer against every change, and hands you code that has
-already passed a second set of eyes. Need more horsepower? Fleet reaches across
-every machine on your network over SSH -- no dashboards, no orchestration YAML,
-just conversation.
+Apra Fleet is an open-source **MCP server** that turns AI agents (Claude
+Code, Gemini, Codex, Copilot) into a coordinated team instead of a lone
+assistant. Any job that needs more than one agent -- software sprints,
+customer-support triage, cost and operations-efficiency analysis,
+infrastructure surveys -- becomes a fleet you direct in plain conversation.
+Need more horsepower? Fleet reaches across every machine on your network
+over SSH -- no dashboards, no orchestration YAML.
 
 **The agents need not share a vendor.** A Claude agent and a Gemini agent can
 work the same sprint -- one writes, the other reviews -- so a different model,
@@ -28,7 +28,7 @@ a built-in quality mechanism, not an afterthought.
 [![Apra Fleet -- a doer-reviewer sprint, start to finish](https://img.youtube.com/vi/SGdHvIkSbY8/hqdefault.jpg)](https://youtu.be/SGdHvIkSbY8)
 
 Two agents ship a feature end to end: one plans and writes, the other reviews,
-fixes loop back, and a clean diff lands -- driven by the **PM skill**. That is
+findings loop back, and a clean diff lands -- driven by the **PM skill**. That is
 *one* of the workflows Fleet makes possible; the rest are below.
 
 ---
@@ -36,18 +36,14 @@ fixes loop back, and a clean diff lands -- driven by the **PM skill**. That is
 ## See it in one example
 
 ```
-You:    Add a note sharing system to workshop-dev.
-        Have workshop-rev review it.
-
-Fleet:  workshop-dev   plans the feature, writes the code, commits, hits checkpoint
-        workshop-rev   reviews the diff -> findings go back
-        workshop-dev   applies the fixes, re-commits
-        PM             review clean -> opens a PR, handed back to you
+/pm add 2 local members at c:\projects cloned from <git-url> -- a developer and a reviewer -- and pair them
+/pm init project_icarus
+/pm plan ./feature.md
+/pm start the implementation sprint
+/pm status
 ```
 
-That is the run in the video above. Every change gets a second pair of eyes
-before it reaches yours -- and it works on a **single machine** (two local
-members) just as well as across a network.
+You describe the goal, approve the plan once, and Fleet runs the doer-reviewer loop to a reviewed PR.
 
 ## Quick start
 
@@ -79,6 +75,12 @@ Now register your first members:
 > "Register a local member called `doer`. Register another called `reviewer`.
 > Pair them."
 
+Verify it worked:
+
+> "Show me fleet status."
+
+You should see both members listed with status online or idle.
+
 Add remote machines whenever you are ready:
 
 > "Register 192.168.1.10 as `build-server`. Username akhil, work folder
@@ -105,7 +107,7 @@ sequenceDiagram
     participant Doer
     participant Reviewer
     You->>PM: "Add a note sharing system, have it reviewed"
-    loop Plan -- revise until the reviewer signs off
+    loop Plan: revise until the reviewer signs off
         PM->>Doer: draft / revise the plan
         Doer-->>PM: plan
         PM->>Reviewer: review the plan
@@ -113,7 +115,7 @@ sequenceDiagram
     end
     PM-->>You: plan for approval
     You-->>PM: approved
-    loop Build -- revise until the review is clean
+    loop Build: revise until the review is clean
         PM->>Doer: execute / fix the task
         Doer->>Doer: write code, commit, reach checkpoint
         PM->>Reviewer: review the changes
@@ -153,7 +155,12 @@ To write your own skill, see [docs/writing-skills.md](docs/writing-skills.md).
   -- all in parallel.
 - Use a beefy cloud VM for compilation while coding from your laptop.
 - Spin up isolated workspaces on one machine without them stepping on each other.
-- Non-coding ops: log triage, patch fan-out, infrastructure surveys.
+- Customer-support triage: agents classify, draft replies, and escalate
+  tickets in parallel.
+- Cost and operations-efficiency analysis: fan out data gathering across
+  sources, consolidate findings.
+- Infrastructure surveys, log triage, and patch fan-out across many
+  machines.
 
 ## Cost
 
@@ -176,6 +183,16 @@ runs on a lighter, cheaper tier. Two more mechanisms compound the savings:
   shell commands, which cost zero LLM tokens.
 - **Smart sessions** -- Fleet decides whether to resume an existing session
   (reusing cached context) or start fresh, rather than re-sending history.
+
+**Token spend is measured, not estimated.** Fleet records token usage per
+member and per role -- PM, doer, reviewer -- so a team can see and analyze
+where their spend actually goes. Fleet's end-to-end CI suite exercises this
+in full: a complete reviewed sprint -- discover issues, plan, doer-reviewer
+loop, PR raised with green CI -- emits a per-role token breakdown (in one
+such run: PM ~6K, doer ~191K, reviewer ~19K, ~215K total). Those toy-repo
+figures are not a benchmark -- they show the measurement method works end
+to end. The point is the instrument: Fleet makes token cost something you
+can attribute and reason about, not guess at.
 
 Setup is a one-time cost; the recurring cost is the work itself. See the
 [FAQ](docs/FAQ.md) for the full breakdown.
@@ -209,53 +226,59 @@ A fleet that has run in production:
 ```
 pm-1      Opus 4.7     orchestrator
 doer-1    Sonnet 4.6   feature work
-doer-2    Gemini       large-context tasks
+doer-2    Gemini 3 Pro large-context tasks
 reviewer  Opus 4.7     final review
 ```
 
-Full capability comparison and provider gotchas:
-[docs/provider-matrix.md](docs/provider-matrix.md).
+Provider strengths, role recommendations, and gotchas:
+[docs/provider-guide.md](docs/provider-guide.md).
 
 ## The PM skill
+
+The **PM skill** is Fleet's reference workflow for **software development**
+-- it ships today, fully built out. It is one skill on a general
+substrate: the same primitives -- members, tasks, git/SSH transport,
+doer-reviewer pairing -- coordinate agents for support triage, cost
+analysis, ops surveys, or any multi-agent job. PM is the worked example;
+the platform is the point.
 
 The Project Manager skill is installed by default and drives structured,
 multi-step work: planning with your approval, doer-reviewer loops, verification
 checkpoints, and git-synced progress. Task state persists across sessions via
-**Beads** (`bd` CLI, installed alongside Fleet) -- run `bd ready` any time to see
+[**Beads**](docs/beads.md), the bundled open-source issue tracker (`bd` CLI, installed alongside Fleet) -- run `bd ready` any time to see
 what is in flight.
 
 | Command | Does |
 |---------|------|
-| `/pm init <project>` | Initialize a project. |
+| `/pm init <project>` | Initialize a project folder and templates. |
 | `/pm pair <member> <member>` | Pair a doer with a reviewer. |
 | `/pm plan <requirement>` | Draft a plan for your approval. |
-| `/pm start <member>` | Begin execution. |
-| `/pm status <member>` | Check in-flight work. |
-| `/pm cleanup <project>` | Finish up and raise a PR. |
+| `/pm start <member>` | Begin execution; dispatches doer with plan and task harness. |
+| `/pm status <member>` | Check in-flight tasks, progress, and git log. |
+| `/pm resume <member>` | Resume after a verification checkpoint. |
+| `/pm deploy <member>` | Execute the project deployment runbook. |
+| `/pm recover <project>` | Re-orient after a PM restart; reads in-flight tasks and member state. |
+| `/pm cleanup <project>` | Finish the sprint, close tasks, and raise a PR. |
+| `/pm backlog` | Query and manage deferred items via Beads. |
+| `/pm tasks` | Show the current sprint task tree. |
 
 See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
 
-## Anatomy of a skill
-
-A skill is a markdown file plus optional helper scripts in your provider's skills
-directory (for Claude, `~/.claude/skills/`). It uses Fleet's MCP tools
-(`register_member`, `execute_prompt`, `send_files`, ...) to coordinate agents. PM
-is one such skill. To build your own, start with
-[docs/writing-skills.md](docs/writing-skills.md).
+Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/writing-skills.md).
 
 ## Documentation
 
 | Topic | Link |
 |-------|------|
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
-| Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
-| Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
-| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
-| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
-| Provider matrix | [docs/provider-matrix.md](docs/provider-matrix.md) |
-| Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
-| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Choosing a provider | [docs/provider-guide.md](docs/provider-guide.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
+| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
+| Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
+| Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
+| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
+| Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 
 ## Community
