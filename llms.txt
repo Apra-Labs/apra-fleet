@@ -20,7 +20,7 @@ Apra Fleet is a multi-agent orchestration layer that lets a PM agent delegate wo
 
 ## Features
 
-- [Provider Matrix](docs/provider-matrix.md): Supported LLM providers, their capabilities, and configuration.
+- [Provider Guide](docs/provider-guide.md): Choosing an LLM provider -- strengths, role recommendations, and gotchas.
 - [Cloud Compute](docs/cloud-compute.md): AWS and cloud compute integration for fleet members.
 - [Writing Skills](docs/writing-skills.md): How to write your own skill for use in the fleet.
 - [PM Skill](skills/pm/SKILL.md): The Project Manager skill reference -- commands, usage, and patterns.

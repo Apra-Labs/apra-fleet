@@ -64,7 +64,7 @@ describe('gen-llms-full: link parser', () => {
       'docs/ssh-setup.md',
       'docs/features/oob-auth.md',
       'docs/design-git-auth.md',
-      'docs/provider-matrix.md',
+      'docs/provider-guide.md',
       'docs/cloud-compute.md',
       'docs/writing-skills.md',
       'skills/pm/SKILL.md',
