@@ -3,10 +3,20 @@
 ## What it does
 
 `apra-fleet update` checks GitHub for the latest stable release and, if a newer
-version exists, downloads its installer and launches it -- no manual download
-step needed.
+version exists, downloads its installer and runs it -- no manual download step
+needed.
+
+## Flags
+
+| Command | Effect |
+|---------|--------|
+| `apra-fleet update` | Check for and install the latest stable release. |
+| `apra-fleet update --check` | Report whether a newer release exists, without installing. |
+| `apra-fleet update --help` | Show usage. |
 
 ## Behaviour
+
+`apra-fleet update` with no flags:
 
 1. Prints `Checking for updates...`.
 2. Fetches release metadata from
@@ -29,13 +39,15 @@ step needed.
    `Error: Could not find installer for platform <platform>` and stops.
 5. Prints `Updating to <tag> -- restarting...`, downloads the installer into the
    system temp directory, and (on macOS/Linux) marks it executable.
-6. Spawns the installer detached, then exits immediately with status 0:
+6. Spawns the installer detached, then exits with status 0:
 
    ```
-   <installer> install --llm <provider> --skill <skill>
+   <installer> install --force --llm <provider> --skill <skill>
    ```
 
-   The `--llm` and `--skill` values come from `install-config.json` (see below).
+   `--force` makes the installer stop the running apra-fleet server before
+   replacing the binary. The `--llm` and `--skill` values come from
+   `install-config.json` (see below).
 
 Any unexpected error is caught and printed as `Error: Update failed -- <message>`.
 
@@ -47,34 +59,26 @@ update preserves the original install configuration. If the file is missing or
 cannot be parsed, `update` prints a warning and falls back to
 `--llm claude --skill all`.
 
-## Important: a running server blocks the update
+## Stopping and restarting the server
 
-`apra-fleet update` launches the installer **without `--force`**. The installer
-has a running-process guard: if an apra-fleet server is still running, the
-installer aborts instead of replacing the binary. On Windows the running
-executable is file-locked and cannot be overwritten in any case.
+The installer is run with `--force`, so it stops the running apra-fleet server
+(and its workers) before overwriting the binary. The server is not a daemon --
+it starts again on demand the next time an LLM CLI connects to it (run `/mcp` in
+Claude Code, or restart the CLI).
 
-Because `update` spawns the installer detached (with its output discarded) and
-exits 0 immediately, it prints `Updating to <tag> -- restarting...` even when the
-installer later aborts. **The "restarting" message is not proof the update
-completed** -- always verify afterwards:
+`update` spawns the installer detached and exits 0 immediately, so it prints
+`Updating to <tag> -- restarting...` before the installer has actually finished.
+To confirm the new version is in place, check afterwards:
 
 ```
 apra-fleet --version
 ```
 
-To update reliably while a server is running, stop the server first, or run the
-installer manually with `--force` -- which stops the running server before
-replacing the binary:
-
-```
-apra-fleet-installer-<platform> install --force
-```
-
 ## Notes
 
-- There is no `--check` flag -- `apra-fleet update` always proceeds to install
-  when a newer stable release exists.
+- `apra-fleet update` always installs when a newer stable release exists. Use
+  `apra-fleet update --check` first if you only want to see whether one is
+  available.
 - The 5-second timeout covers the release-metadata check only; the installer
   download itself is not time-bounded.
 - The installer overwrites the binary in place with no `.bak`. To roll back,

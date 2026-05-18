@@ -110,7 +110,7 @@ describe('runUpdate (T6)', () => {
     // Check installer spawn
     expect(spawn).toHaveBeenCalledWith(
       expect.stringContaining('apra-fleet-installer-linux-x64'),
-      ['install', '--llm', 'gemini', '--skill', 'pm'],
+      ['install', '--force', '--llm', 'gemini', '--skill', 'pm'],
       expect.objectContaining({ detached: true })
     );
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -142,7 +142,7 @@ describe('runUpdate (T6)', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('install-config.json missing'));
     expect(spawn).toHaveBeenCalledWith(
       expect.anything(),
-      ['install', '--llm', 'claude', '--skill', 'all'],
+      ['install', '--force', '--llm', 'claude', '--skill', 'all'],
       expect.anything()
     );
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -175,7 +175,7 @@ describe('runUpdate (T6)', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Could not parse install-config.json'));
     expect(spawn).toHaveBeenCalledWith(
       expect.anything(),
-      ['install', '--llm', 'claude', '--skill', 'all'],
+      ['install', '--force', '--llm', 'claude', '--skill', 'all'],
       expect.anything()
     );
     expect(process.exit).toHaveBeenCalledWith(0);

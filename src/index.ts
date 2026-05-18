@@ -60,10 +60,14 @@ if (arg === 'install') {
   if (rest.includes('--help') || rest.includes('-h')) {
     console.log(`apra-fleet update
 
+Checks GitHub for the latest stable release and installs it.
+
 Usage:
-  apra-fleet update           Check for and install latest update
-  apra-fleet update --check   Check for update without installing
-  apra-fleet update --help    Show this help`);
+  apra-fleet update           Check for and install the latest release.
+                              Stops and restarts the running server
+                              (the installer is run with --force).
+  apra-fleet update --check   Check for an update without installing.
+  apra-fleet update --help    Show this help.`);
     process.exit(0);
   }
   if (rest.includes('--check')) {
