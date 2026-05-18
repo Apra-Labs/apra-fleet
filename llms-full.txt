@@ -242,13 +242,7 @@ what is in flight.
 
 See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
 
-## Anatomy of a skill
-
-A skill is a markdown file plus optional helper scripts in your provider's skills
-directory (for Claude, `~/.claude/skills/`). It uses Fleet's MCP tools
-(`register_member`, `execute_prompt`, `send_files`, ...) to coordinate agents. PM
-is one such skill. To build your own, start with
-[docs/writing-skills.md](docs/writing-skills.md).
+Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/writing-skills.md).
 
 ## Documentation
 
