@@ -97,21 +97,20 @@ sequenceDiagram
     participant Doer
     participant Reviewer
     You->>PM: "Add a note sharing system, have it reviewed"
-    Note over PM,Reviewer: Plan
-    PM->>Doer: draft a plan
-    Doer-->>PM: plan
-    PM->>Reviewer: review the plan
-    Reviewer-->>PM: plan feedback
+    loop Plan -- revise until the reviewer signs off
+        PM->>Doer: draft / revise the plan
+        Doer-->>PM: plan
+        PM->>Reviewer: review the plan
+        Reviewer-->>PM: rejected with fixes, or signed off
+    end
     PM-->>You: plan for approval
     You-->>PM: approved
-    Note over PM,Reviewer: Build
-    PM->>Doer: execute the plan
-    Doer->>Doer: write code, commit, reach checkpoint
-    Doer-->>PM: checkpoint
-    PM->>Reviewer: review the diff
-    Reviewer-->>PM: findings
-    PM->>Doer: apply fixes
-    Doer-->>PM: done
+    loop Build -- revise until the review is clean
+        PM->>Doer: execute / fix the task
+        Doer->>Doer: write code, commit, reach checkpoint
+        PM->>Reviewer: review the changes
+        Reviewer-->>PM: findings, or signed off
+    end
     PM-->>You: reviewed code + PR
 ```
 
@@ -151,10 +150,20 @@ To write your own skill, see [docs/writing-skills.md](docs/writing-skills.md).
 ## Cost
 
 Multi-agent tooling raises one question first: does coordinating several agents
-burn more tokens? In practice Fleet works to keep usage down, three ways:
+burn more tokens? In practice Fleet works to keep usage down -- and the core
+idea is the one Fleet was built on: **match the model to the task.**
 
-- **Right-sized models** -- simple tasks route to lighter, cheaper model tiers;
-  only hard work reaches premium models.
+A plan is a list of tasks of widely varying difficulty. Running every one of
+them on a single premium model is the waste. Instead, Fleet assigns each task a
+model tier commensurate with its complexity:
+
+- **cheap** -- boilerplate, status checks, running tests, deploys
+- **standard** -- routine feature work, code, configuration
+- **premium** -- planning, review, hard architectural reasoning
+
+Only the work that genuinely needs a frontier model gets one; everything else
+runs on a lighter, cheaper tier. Two more mechanisms compound the savings:
+
 - **Shell over prompts** -- routine steps run through `execute_command` as plain
   shell commands, which cost zero LLM tokens.
 - **Smart sessions** -- Fleet decides whether to resume an existing session
@@ -183,7 +192,7 @@ review would wave through. Mix by role:
 
 | Role | Recommended | Why |
 |------|-------------|-----|
-| PM (orchestrator) | Claude Opus/Sonnet, or Gemini `gemini-3.1-pro-preview` / `gemini-3-flash-preview` | Both plan and orchestrate well -- Gemini's orchestration support improved substantially in recent releases. |
+| PM (orchestrator) | Claude Opus/Sonnet, or Gemini `gemini-3.1-pro-preview` | Both plan and orchestrate well -- Gemini's orchestration support improved substantially in recent releases. |
 | Doer | Any provider | Sonnet, Gemini, Codex, Copilot -- mix freely. |
 | Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
 
