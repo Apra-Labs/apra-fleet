@@ -20,7 +20,7 @@ just conversation.
 
 ### Watch a real run (3 min)
 
-[![Apra Fleet -- a doer-reviewer sprint, start to finish](https://img.youtube.com/vi/SGdHvIkSbY8/maxresdefault.jpg)](https://youtu.be/SGdHvIkSbY8)
+[![Apra Fleet -- a doer-reviewer sprint, start to finish](https://img.youtube.com/vi/SGdHvIkSbY8/hqdefault.jpg)](https://youtu.be/SGdHvIkSbY8)
 
 Two agents ship a feature end to end: one plans and writes, the other reviews,
 fixes loop back, and a clean diff lands -- driven by the **PM skill**. That is
