@@ -16,8 +16,12 @@ function getClaudeConfigPath(): string {
   return path.join(os.homedir(), '.config', 'claude', 'claude_desktop_config.json');
 }
 
-function getClaudeCodeSettingsPath(): string {
-  return path.join(os.homedir(), '.claude', 'settings.json');
+/**
+ * Claude Code reads MCP servers from ~/.claude.json (global user-scope config),
+ * NOT from ~/.claude/settings.json which only holds hooks/permissions/model settings.
+ */
+function getClaudeCodeConfigPath(): string {
+  return path.join(os.homedir(), '.claude.json');
 }
 
 function registerMcpServer(configPath: string, label: string): boolean {
@@ -40,6 +44,7 @@ function registerMcpServer(configPath: string, label: string): boolean {
   config.mcpServers.blindfold = {
     command: 'blindfold',
     args: ['serve'],
+    type: 'stdio',
   };
 
   const dir = path.dirname(configPath);
@@ -59,7 +64,7 @@ export async function runInstall(args: string[]): Promise<void> {
 
   if (target === 'claude' || target === 'all') {
     registerMcpServer(getClaudeConfigPath(), 'Claude Desktop');
-    registerMcpServer(getClaudeCodeSettingsPath(), 'Claude Code');
+    registerMcpServer(getClaudeCodeConfigPath(), 'Claude Code');
   }
 
   console.error('\nDone. Restart your AI client to load blindfold.');
