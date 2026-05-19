@@ -194,6 +194,7 @@ async function startHttpServer() {
   loadOnboardingState(getAgentsForStartup().length);
   resetSessionFlags();
 
+  const { checkRunningInstance, claimStartupLock } = await import('./services/singleton.js');
   const { createHttpTransport } = await import('./services/http-transport.js');
   const { registerAllTools } = await import('./services/tool-registry.js');
   const { FLEET_DIR, SERVER_INFO_PATH } = await import('./paths.js');
@@ -205,6 +206,20 @@ async function startHttpServer() {
   const { getStallDetector } = await import('./services/stall/index.js');
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
   const { setHttpHandle } = await import('./tools/shutdown-server.js');
+
+  // Detect already-running instance before starting
+  const instance = await checkRunningInstance();
+  if (instance.running) {
+    logLine('startup', `apra-fleet already running at ${instance.url} pid=${instance.pid} -- exiting`);
+    process.exit(0);
+  }
+
+  // Atomic startup lock to prevent concurrent double-start race
+  const lock = claimStartupLock();
+  if (!lock.acquired) {
+    logLine('startup', 'Another fleet instance is starting up -- exiting');
+    process.exit(0);
+  }
 
   const handle = await createHttpTransport({ registerTools: registerAllTools });
 
@@ -221,6 +236,9 @@ async function startHttpServer() {
     }),
   );
 
+  // Release startup lock now that server.json is written (server.json is the long-lived detection mechanism)
+  lock.release();
+
   // Make HTTP handle available to shutdown_server tool
   setHttpHandle(handle);
 
@@ -235,6 +253,7 @@ async function startHttpServer() {
   void checkForUpdate();
 
   async function shutdown() {
+    lock.release(); // safety net in case of early shutdown before release above
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
     await handle.close();
     await cleanupAuthSocket();
