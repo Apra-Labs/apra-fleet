@@ -1,0 +1,30 @@
+{
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | completed | blocked"
+  },
+  "project": "apra-fleet-svc",
+  "plan_file": "PLAN.md",
+  "created": "2026-05-19",
+  "tasks": [
+    { "id": 1,  "step": "T1: Shutdown endpoint + service constants", "type": "work", "status": "completed", "tier": "cheap", "commit": "TBD", "notes": "POST /shutdown endpoint added to http-transport.ts; LOG_FILE_PATH constant added to paths.ts; service name constants created in service-manager/types.ts" },
+    { "id": 2,  "step": "T2: ServiceManager interface + factory", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 3,  "step": "T3: Windows Scheduled Task adapter", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 4,  "step": "T4: Linux systemd user unit adapter", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 5,  "step": "T5: macOS launchd LaunchAgent adapter", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 6,  "step": "T6: Service manager unit tests", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 7,  "step": "VERIFY: Platform Service Foundation", "type": "verify", "status": "pending", "commit": "", "notes": "" },
+    { "id": 8,  "step": "T7: start and stop commands", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 9,  "step": "T8: restart command", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 10, "step": "T9: status command", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 11, "step": "T10: CLI verb tests + --help update", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 12, "step": "VERIFY: CLI Verbs", "type": "verify", "status": "pending", "commit": "", "notes": "" },
+    { "id": 13, "step": "T11: Extend install to register + start service", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 14, "step": "T12: Extend uninstall to stop + remove service", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 15, "step": "T13: Install/uninstall service integration tests", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 16, "step": "VERIFY: Install/Uninstall Integration", "type": "verify", "status": "pending", "commit": "", "notes": "" },
+    { "id": 17, "step": "T14: Update README with service model + verbs", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 18, "step": "T15: Update architecture docs with service manager", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 19, "step": "VERIFY: Documentation", "type": "verify", "status": "pending", "commit": "", "notes": "" }
+  ]
+}
