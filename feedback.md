@@ -1,10 +1,11 @@
-# Phase 2 Cumulative Review -- Server Refactor + Dual Transport Startup (#258)
+# Phase 3 Cumulative Review -- Event Wiring + Client Configuration (#258)
 
 **Reviewer:** w34k7
 **Date:** 2026-05-19
 **Branch:** feat/mcp-sse-transport
-**Phase 2 commits reviewed:** 4064eba (T4), d918615 (T5), 6b13e82 (T6), f18253d (VERIFY)
+**Phase 3 commits reviewed:** 96d586b (T7), 57b482d (T8), b96e8b2 (T9), bc60d04 (VERIFY)
 **Phase 1 commits (regression check):** 4ed4786 (T1), 8109cf1 (T2), 538d9f0 (T3)
+**Phase 2 commits (regression check):** 4064eba (T4), d918615 (T5), 6b13e82 (T6), f18253d (VERIFY)
 **Verdict:** APPROVED
 
 ---
@@ -12,147 +13,195 @@
 ## 1. Build + Test
 
 - `npm run build`: PASS (tsc, no errors)
-- `npm test`: PASS (82 test files, 1313 passed, 6 skipped, 0 failures)
-- New tests added in Phase 2: singleton.test.ts (10 tests) -- all pass
-- Phase 1 tests (event-bus.test.ts, http-transport.test.ts, sea-http-verify.test.ts) -- still pass, no regression
+- `npm test`: PASS (84 test files, 1332 passed, 6 skipped, 0 failures)
+- New tests added in Phase 3:
+  - credential-event.test.ts (3 tests) -- all pass
+  - install-multi-provider.test.ts -- 8 new transport-specific tests added (lines 772-868)
+  - transport-integration.test.ts (7 tests across 6 describe blocks) -- all pass
+- Phase 1 tests (event-bus, http-transport, sea-http-verify) -- still pass, no regression
+- Phase 2 tests (singleton) -- still pass, no regression
 
 ---
 
-## 2. Phase 1 Regression Check
+## 2. Phase 1 + Phase 2 Regression Check
 
-Phase 1 was previously APPROVED. Confirming no regression:
+Both phases were previously APPROVED. Confirming no regression:
 
 - `src/services/event-bus.ts`: Unchanged since Phase 1 commit 4ed4786.
-- `src/services/http-transport.ts`: Modified in Phase 2 to address Phase 1 LOW findings (see section 7 below). The changes are additive -- LOW-1 listener cleanup, LOW-2 McpServer close, LOW-3 DRY handler extraction. No behavioral regression; the original Phase 1 risk-validation tests still pass.
-- `tests/event-bus.test.ts`, `tests/http-transport.test.ts`, `tests/sea-http-verify.test.ts`: Unchanged, all pass.
-- `src/paths.ts`: DEFAULT_PORT and SERVER_INFO_PATH added (additive, no change to existing FLEET_DIR export).
+- `src/services/http-transport.ts`: Unchanged since Phase 2 LOW fixes.
+- `src/services/singleton.ts`: Unchanged since Phase 2 commit 6b13e82.
+- `src/services/tool-registry.ts`: Unchanged since Phase 2 commit 4064eba.
+- `src/index.ts`: Unchanged since Phase 2 commit d918615.
+- `src/paths.ts`: Unchanged since Phase 2.
+- `src/tools/shutdown-server.ts`: Unchanged since Phase 2 commit d918615.
+- All Phase 1 and Phase 2 tests still pass. No behavioral regression.
 
-Phase 1 is intact.
+Phases 1 and 2 are intact.
 
 ---
 
-## 3. Phase 2 Task Completion vs Done Criteria
+## 3. Phase 3 Task Completion vs Done Criteria
 
-### T4: Extract Tool Registration into Shared Module (4064eba) -- PASS
-
-Done criteria from PLAN.md:
-- [x] `npm run build` succeeds
-- [x] `npm test` passes
-- [x] Existing stdio server starts and responds to tool calls exactly as before
-- [x] No functional change (pure refactor)
-
-Verification: Diffed tool-registry.ts against the extracted block from main's index.ts. Every tool registration, helper function (wrapTool, sendOnboardingNotification, sanitizeToolResult, getOnboardingPreamble), and import is an exact move. The tool descriptions carry over the pre-existing em-dashes from main (not newly introduced). Comments were updated to ASCII dashes where they lived in index.ts (e.g., "skip banner" arrow). startStdioServer() now calls `registerAllTools(server)` -- a thin shell as specified. No behavior change.
-
-### T5: --transport Flag + Dual Startup Paths (d918615) -- PASS
+### T7: Wire credential_store_set Completion Event (96d586b) -- PASS
 
 Done criteria from PLAN.md:
-- [x] `apra-fleet` (no args) starts the HTTP server and writes server.json
-- [x] `apra-fleet --transport stdio` starts the stdio server (no server.json)
-- [x] Both paths register all tools and start subsidiary services
-- [x] server.json is deleted on SIGINT/SIGTERM or shutdown_server tool call
-- [x] `npm test` passes
+- [x] When auth-socket delivers a password, the event bus emits `credential:stored` with the credential name
+- [x] Test passes
+- [x] Existing auth-socket tests still pass (no regression)
 
 Verification:
-- `resolveTransport()` correctly maps: no args -> 'http', `--stdio` -> 'stdio', `--transport http` -> 'http', `--transport stdio` -> 'stdio', invalid -> 'invalid' (with error exit).
-- `startStdioServer()` is the pre-existing startServer() body minus tool registration (which moved to tool-registry.ts). Subsidiary services (idleManager, cleanupStaleTasks, purgeExpiredCredentials, checkForUpdate, stallDetector, SIGINT/SIGTERM handlers) are all present and match main's behavior.
-- `startHttpServer()` writes server.json with `{ pid, port, url, version, startedAt }`. The shutdown() handler deletes server.json, closes HTTP server, cleans up auth socket, closes SSH connections, and stops stall detector. Both SIGINT and SIGTERM are wired to shutdown().
-- `setHttpHandle(handle)` makes the HTTP server available to the shutdown_server tool, which now deletes server.json and calls handle.close() before exiting.
-- Help text updated to show `--transport http|stdio` and `--stdio` alias.
+- The emit is at `src/services/auth-socket.ts:124`, inside the `if (waiter)` block, immediately after `waiter.resolve(pending.encryptedPassword)`. This is the exact correct location -- it fires ONLY after:
+  1. The message is valid (type=auth, member_name, password present)
+  2. A pending auth request exists for this member
+  3. The password has been encrypted and the ack sent to the socket client
+  4. A waiter (tool handler) exists and is resolved
+- It does NOT fire when: no pending auth exists (line 104 early return), invalid message (line 127), invalid JSON (line 130), or no waiter exists (if block skipped).
+- The emit payload `{ name: msg.member_name }` matches the FleetEventMap type definition.
+- credential-event.test.ts has 3 tests: (1) emits on successful OOB delivery, (2) emits with correct member name, (3) does NOT emit on failed delivery. All three are real end-to-end tests using the actual auth socket (net.connect), not mocks.
 
-### T6: Singleton Lifecycle Detection with Atomic Claim (6b13e82) -- PASS
+### T8: Update Install Command with Provider-Specific Configs (57b482d) -- PASS
 
 Done criteria from PLAN.md:
-- [x] Starting a second fleet HTTP instance detects running instance and exits cleanly
-- [x] Two simultaneous startups serialized by lock file -- exactly one wins
-- [x] Stale server.json and stale lock files are cleaned up
-- [x] /health endpoint responds with status JSON
-- [x] Tests pass
+- [x] `apra-fleet install` registers MCP server with HTTP transport config (URL-based)
+- [x] `apra-fleet install --transport stdio` registers with stdio config as before
+- [x] Unit tests verify correct config shape for each provider x transport combination
 
-Verification: 10 singleton tests cover all four done criteria categories (see section 5 below for deep analysis).
+Verification of each provider's HTTP config against PLAN.md spec:
+
+**Claude HTTP:**
+```
+claude mcp add --scope user --transport http apra-fleet http://localhost:7523/mcp
+```
+Matches PLAN.md exactly. The `claude mcp remove` best-effort call precedes it.
+
+**Gemini HTTP:** `mergeGeminiConfig(paths, { httpUrl: fleetUrl })` -> via spread `{ ...mcpConfig, trust: true }` produces:
+```json
+{ "httpUrl": "http://localhost:7523/mcp", "trust": true }
+```
+Matches PLAN.md exactly.
+
+**Copilot HTTP:** `mergeCopilotConfig(paths, { url: fleetUrl, type: 'http' })` -> direct assignment produces:
+```json
+{ "url": "http://localhost:7523/mcp", "type": "http" }
+```
+Matches PLAN.md exactly.
+
+**Codex HTTP:** `mergeCodexConfig(paths, { url: fleetUrl })` -> `if (mcpConfig.url)` branch produces:
+```toml
+[mcp_servers.apra-fleet]
+url = "http://localhost:7523/mcp"
+```
+Matches PLAN.md exactly.
+
+**stdio mode:** All four providers fall into the `else` branch and use the existing command+args pattern. No regression.
+
+**Default port:** 7523 from `DEFAULT_PORT` in paths.ts. Correct.
+
+**--transport flag parsing:** Supports both `--transport http` and `--transport=http` forms. Invalid values produce an error and exit(1). Default is `http`. Added to known flags for unknown-flag rejection.
+
+Test coverage: 8 new transport-specific tests (lines 772-868) plus 1 regression test for TOML validity with stdio transport (line 401). The new tests verify: Claude http default, Claude stdio, Gemini http, Gemini stdio, Copilot http, Copilot stdio, Codex http, and invalid transport error.
+
+### T9: Integration Tests + Gemini Client Verification (b96e8b2) -- PASS
+
+Done criteria from PLAN.md:
+- [x] All integration tests pass
+- [x] Both transports verified end-to-end
+- [x] Notification broadcast to multiple clients confirmed
+- [x] Gemini-compatible client test passes
+
+Verification of each integration test:
+
+**(a) HTTP server tool call end-to-end:** Creates a real HTTP transport server (port 0), connects a real StreamableHTTPClientTransport, calls the `version` tool, and verifies the response contains 'apra-fleet'. This is a genuine end-to-end test exercising the full POST /mcp -> McpServer -> tool handler -> response path. Not hollow.
+
+**(b) Event bus -> notification/message broadcast:** Starts server, connects client, sets a notification handler for LoggingMessageNotificationSchema, emits `credential:stored` on the event bus, and verifies the client receives the notification with correct payload (event name + credential name). This validates the sprint's motivating use case: auth-socket -> event bus -> HTTP transport -> notifications/message. Not hollow.
+
+**(c) Broadcast to multiple concurrent clients:** Starts one server, connects two clients, tracks SSE GET requests to confirm both streams are open, emits one event, verifies BOTH clients receive the notification. Includes a deadline loop to wait for both SSE streams to open (up to 3s). This is the most complex and important test -- genuine concurrent multi-session verification. Not hollow.
+
+**(d) stdio regression via InMemoryTransport:** Creates a McpServer + InMemoryTransport pair (the same pattern as stdio), registers tools, calls the version tool. Validates that tool registration and response work over the stdio-equivalent path. Adequate regression coverage.
+
+**(e) Localhost-only binding (2 sub-tests):** Checks `httpServer.address().address === '127.0.0.1'` and URL pattern. Correct.
+
+**(f) Gemini client compatibility:** Uses `StreamableHTTPClientTransport` (the same transport class Gemini CLI uses). Connects to the fleet server, calls the `version` tool, AND calls `listTools()` to verify the initialization handshake. References `google-gemini/gemini-cli#5268` in a code comment (lines 242-248). The comment correctly frames the diagnostic: if this test passes but Gemini CLI fails, the issue is Gemini-side. Not hollow -- this is a real client connecting, initializing, and making tool calls against our server.
 
 ---
 
-## 4. Security: Localhost-Only Binding
+## 4. Acceptance Criteria Check (requirements.md)
 
-PASS. No changes to the binding behavior from Phase 1. Both `listenOnPort` calls in http-transport.ts still pass `'127.0.0.1'` as the host. No `0.0.0.0` anywhere.
+Checking each acceptance criterion against Phases 1-3 delivery:
+
+| # | Criterion | Status | Delivered By |
+|---|-----------|--------|-------------|
+| 1 | Fleet runs as singleton HTTP+SSE by default; second launch reuses | DONE | T5+T6 (Phase 2) |
+| 2 | Multiple MCP clients connect concurrently with own SSE stream | DONE | T2 (Phase 1), T9c (Phase 3) |
+| 3 | --transport stdio still selects legacy path, no regression | DONE | T5 (Phase 2), T9d (Phase 3) |
+| 4 | GET /events SSE stream; POST endpoint handles JSON-RPC | DONE | T2 (Phase 1): POST /mcp + GET /mcp for SSE |
+| 5 | Generated mcp.json is "type: sse" by default; "type: stdio" when --transport stdio | DONE | T8 (Phase 3): all 4 providers x 2 modes |
+| 6 | Internal event bus exists; subsystems can publish events to SSE | DONE | T1 (Phase 1) |
+| 7 | credential_store_set pushes completion notification, no polling | DONE | T7 (Phase 3) |
+| 8 | Both transports pass test suite; new tests cover SSE + event bus | DONE | T9 (Phase 3) |
+| 9 | Docs updated for --transport flag, default, event bus | PENDING | Phase 4 (T10) |
+| 10 | Full existing test suite green; pre-commit ASCII hook passes | DONE | 1332 pass, 6 skip, 0 fail |
+
+All acceptance criteria are substantially met by Phases 1-3. Only documentation (criterion 9) remains, which is Phase 4 scope.
 
 ---
 
 ## 5. Hard Part Scrutiny
 
-### HIGH-2 (from plan review): Singleton startup race -- claimStartupLock()
+### T7: credential:stored event placement in auth-socket.ts
 
-**PASS.** The implementation correctly serializes concurrent startups:
+**PASS.** The event genuinely flows through the complete chain:
 
-1. `fs.openSync(lockPath, 'wx')` -- uses O_CREAT | O_EXCL flags. This is atomic at the filesystem level; exactly one process wins when two call it simultaneously. Correct.
+1. **auth-socket.ts:124** -- `fleetEvents.emit('credential:stored', { name: msg.member_name })` fires after `waiter.resolve()` on successful OOB password delivery.
+2. **event-bus.ts** -- The typed EventEmitter singleton delivers to all subscribers.
+3. **http-transport.ts** -- The `fleetEvents.on('credential:stored', ...)` listener calls `session.server.server.sendLoggingMessage(...)` for each active session.
+4. **MCP client** -- Receives a `notifications/message` notification via SSE stream.
 
-2. Lock file contains PID for debugging -- good.
+Integration test (b) verifies step 1->2->3->4 end-to-end. Integration test (c) verifies the broadcast to multiple clients.
 
-3. Stale-lock cleanup: If the lock file exists and `allowRetry=true`, it checks `statSync(lockPath).mtimeMs`. If older than 60 seconds, it deletes the lock and retries once with `allowRetry=false`.
+Critical: the emit is NOT called when delivery fails. The code structure ensures this:
+- Line 103: `if (!pending)` returns early with error ack -- no emit.
+- Line 119: `if (waiter)` guards the emit -- if no waiter exists, no emit.
+- Test 3 in credential-event.test.ts explicitly verifies: sending a password for an unknown member does NOT trigger the event.
 
-4. **Stale-lock race analysis:** Two processes P1 and P2 both find a stale lock. P1 calls `unlinkSync`, then `tryAcquire(false)` which calls `openSync(lockPath, 'wx')` -- this succeeds. P2 also calls `unlinkSync` -- this either succeeds (deletes P1's new lock) or fails (if P1 hasn't written yet). If P2 deletes P1's new lock and then calls `openSync(lockPath, 'wx')`, it creates a new lock and P1's lock is lost. However: this race requires two processes to both observe a stale lock (>60s old) at nearly the same instant. In practice, fleet startups are human-initiated (not automated at sub-second intervals), so this window is negligible. For a developer-laptop singleton, this is acceptable. The retry is limited to once (allowRetry=false on recursion), so there is no infinite loop.
+### T8: Provider config formats match PLAN.md
 
-5. Test coverage: (c) first claim acquires, second gets acquired=false; release deletes lock; after release, next claim works. (d) stale lock (70s old) is cleaned up and acquired; fresh lock blocks acquisition. Correct.
+**PASS.** Verified each format against PLAN.md Task 8:
 
-### checkRunningInstance(): PID liveness + /health double-check
+- Claude: `claude mcp add --scope user --transport http apra-fleet http://localhost:7523/mcp` -- exact match.
+- Gemini: `{ "httpUrl": "http://localhost:7523/mcp", "trust": true }` -- exact match.
+- Copilot: `{ "url": "http://localhost:7523/mcp", "type": "http" }` -- exact match.
+- Codex: `[mcp_servers.apra-fleet] url = "http://localhost:7523/mcp"` TOML -- exact match.
+- stdio mode: all four providers keep existing command+args format -- no regression.
+- Default port: 7523 -- correct.
 
-**PASS.** The implementation:
+The `mergeGeminiConfig` function uses spread (`{ ...mcpConfig, trust: true }`) which cleanly passes through `httpUrl` for HTTP and `command`+`args` for stdio. The `mergeCodexConfig` function has an explicit `if (mcpConfig.url)` branch for HTTP vs the existing backslash-normalization path for stdio. Both approaches are correct and clean.
 
-1. Reads server.json. If missing or malformed, returns `{ running: false }`. Correct.
-2. `isPidAlive(pid)` -- uses `process.kill(pid, 0)`. This is cross-platform in Node.js (works on Windows, Linux, macOS). On Unix, signal 0 doesn't actually send a signal -- it just checks if the process exists. On Windows, Node.js uses OpenProcess() internally, which has the same effect. Correct.
-3. Health endpoint check: HTTP GET to `${url}/health` with 2-second timeout. If response status is 200, the instance is alive. If not, stale server.json is deleted. Correct.
-4. URL transformation: `url.replace(/\/mcp$/, '/health')` -- correctly derives /health from /mcp URL. Correct.
-5. Both PID and health must pass. If PID is alive but health is down (zombie, different process on same PID), returns false and deletes stale server.json. This is the right double-check. Correct.
+### T9: Integration tests are genuine, not hollow
 
-Test coverage: (a) dead PID -> running=false, server.json deleted; (b) live PID + live health -> running=true; live PID + dead health -> running=false, server.json deleted. Missing test: malformed server.json handled. Present (test for missing pid/url fields, malformed JSON).
+**PASS.** Each test creates real servers, real transports, real clients, and makes real requests:
 
-### T4 refactor -- pure refactor confirmation
+- Tests (a), (b), (c), (f) all use `createHttpTransport()` to start a real HTTP server on port 0 and `StreamableHTTPClientTransport` to make real HTTP connections.
+- Test (b) emits a real event on the event bus and waits for the notification to arrive via the SSE stream.
+- Test (c) connects two real clients and verifies both receive the broadcast.
+- Test (f) explicitly exercises the Gemini-compatible path and includes `listTools()` to verify the full initialization handshake.
+- No mocks on the transport or server layers -- these are true integration tests.
 
-**PASS.** I verified every tool registration line and helper function in tool-registry.ts against the corresponding code in main's index.ts. All 26 tool registrations are byte-for-byte identical. Helper functions (wrapTool, sendOnboardingNotification, sanitizeToolResult, getOnboardingPreamble) are exact copies. The only difference is structural: they now receive `server` as a parameter instead of closing over it. This is the intended refactor. No behavior change.
+### T9f: Gemini bug reference
 
-### --transport flag: default http, stdio fallback unchanged
-
-**PASS.** `resolveTransport()` returns 'http' for empty args (the default). `startStdioServer()` is the original `startServer()` body with tool registration delegated to `registerAllTools()`. The stdio path logs `transport=stdio` in the startup message (previously it logged no transport, which is the only visible difference -- a logging improvement, not a behavior change). Subsidiary services (idleManager, cleanupStaleTasks, stallDetector, etc.) are identical between the two paths.
-
-### server.json lifecycle
-
-**PASS.**
-- Written in startHttpServer() after createHttpTransport() returns (server is listening and tools are registered).
-- Deleted in three places: (1) SIGINT handler in startHttpServer(), (2) SIGTERM handler in startHttpServer(), (3) shutdownServer() tool when httpHandle is set.
-- Contains `{ pid, port, url, version, startedAt }` -- sufficient for checkRunningInstance() to verify.
-- The startup lock is released AFTER server.json is written, ensuring there is no gap where no detection mechanism is active.
-
-### Phase 1 LOW observations: resolution check
-
-**LOW-1 (event bus listener cleanup):** RESOLVED. http-transport.ts now maintains an `eventCleanups` array. Each `fleetEvents.on()` call stores a corresponding `() => fleetEvents.off()` cleanup. The `close()` method iterates all cleanups. Correct.
-
-**LOW-2 (McpServer close on shutdown):** RESOLVED. Two places: (1) `onsessionclosed` callback now calls `(s.server as any).server?.close().catch(() => {})` when a session disconnects. (2) `close()` method iterates all remaining sessions and closes each McpServer before clearing the map and closing the HTTP server. Correct.
-
-**LOW-3 (DRY GET/DELETE handler):** RESOLVED. A shared `handleSessionRequest()` function handles session lookup and delegation for both GET and DELETE. The previous ~30 lines of duplicated code is now a single function called from both branches. Correct.
+**PASS.** The comment block at lines 237-249 of transport-integration.test.ts explicitly references `google-gemini/gemini-cli#5268` and correctly frames the diagnostic: if this test passes but Gemini CLI still fails in production, the failure is Gemini-side.
 
 ---
 
-## 6. Test Coverage and Sandbox Limitation
+## 6. Security: Localhost-Only Binding
 
-The task notes that live background-process spawning could not be exercised on the doer (sandbox). The singleton test suite compensates well:
-
-- Dead-PID detection is tested with PID 2147483647 (max int32, guaranteed non-existent).
-- Live-PID detection is tested by using `process.pid` (the test process itself) with a mock HTTP server.
-- Health endpoint verification is tested end-to-end (real HTTP server, real HTTP GET).
-- Lock file atomicity is tested by sequential claim/claim/release patterns.
-- Stale lock detection is tested by backdating file mtime.
-
-What is NOT tested (acknowledged sandbox limitation):
-- Two actual fleet processes starting simultaneously (true concurrent race). The atomic `wx` flag makes this safe by construction, and the sequential test (claim, claim, release) demonstrates the serialization logic works. This is adequate.
-- True SIGINT/SIGTERM signal handling during HTTP server operation. The shutdown() function is straightforward (delete file, close server, exit), and the individual operations are each tested elsewhere. Acceptable.
-
-**Assessment:** The test suite adequately compensates for the sandbox limitation. The critical race-prevention mechanism (O_CREAT|O_EXCL) is an OS kernel guarantee, not application logic, so it does not need a concurrent test to prove correctness.
+PASS. No changes to binding behavior. Integration test (e) explicitly verifies `address === '127.0.0.1'`. No `0.0.0.0` anywhere in the codebase's transport code.
 
 ---
 
 ## 7. File Hygiene
 
-Changed files (15 total):
+Changed files (20 total):
 
 | File | Justification |
 |------|--------------|
@@ -160,38 +209,43 @@ Changed files (15 total):
 | feedback.md | Review artifact (this file) |
 | progress.json | Task progress tracking |
 | requirements.md | Requirements document |
-| src/index.ts | T5: --transport flag, resolveTransport(), startStdioServer(), startHttpServer() |
-| src/paths.ts | T5: DEFAULT_PORT constant + SERVER_INFO_PATH |
-| src/services/event-bus.ts | T1 (Phase 1, unchanged in Phase 2) |
-| src/services/http-transport.ts | T2 (Phase 1) + Phase 2 LOW-1/2/3 fixes |
-| src/services/singleton.ts | T6: checkRunningInstance() + claimStartupLock() |
-| src/services/tool-registry.ts | T4: extracted tool registration module |
-| src/tools/shutdown-server.ts | T5: setHttpHandle() + server.json cleanup |
+| src/cli/install.ts | T8: --transport flag, provider-specific HTTP configs |
+| src/index.ts | T5 (Phase 2, unchanged in Phase 3) |
+| src/paths.ts | T5 (Phase 2, unchanged in Phase 3) |
+| src/services/auth-socket.ts | T7: import fleetEvents + emit credential:stored |
+| src/services/event-bus.ts | T1 (Phase 1, unchanged) |
+| src/services/http-transport.ts | T2 (Phase 1) + Phase 2 fixes, unchanged in Phase 3 |
+| src/services/singleton.ts | T6 (Phase 2, unchanged) |
+| src/services/tool-registry.ts | T4 (Phase 2, unchanged) |
+| src/tools/shutdown-server.ts | T5 (Phase 2, unchanged) |
+| tests/credential-event.test.ts | T7: 3 tests for credential:stored event emission |
 | tests/event-bus.test.ts | T1 tests (Phase 1, unchanged) |
 | tests/http-transport.test.ts | T2 tests (Phase 1, unchanged) |
+| tests/install-multi-provider.test.ts | T8: 8 new transport tests + 1 TOML regression test |
 | tests/sea-http-verify.test.ts | T3 tests (Phase 1, unchanged) |
-| tests/singleton.test.ts | T6: singleton lifecycle tests |
+| tests/singleton.test.ts | T6 tests (Phase 2, unchanged) |
+| tests/transport-integration.test.ts | T9: 7 integration tests (a-f) |
 
-- CLAUDE.md: NOT committed (verified)
+- CLAUDE.md: NOT committed (verified via `git diff --name-only`)
 - No stray files, no unrelated changes
-- All files are justified by their respective tasks
+- All files justified by their respective tasks
 
 ---
 
 ## 8. Observations (non-blocking)
 
-### LOW-1: Stale-lock cleanup has a narrow TOCTOU window
+### LOW-1: Pre-existing test nesting issue in install-multi-provider.test.ts
 
-The stale-lock cleanup sequence (statSync -> unlinkSync -> openSync) is not fully atomic. Two processes observing the same stale lock can both unlink it, and the second one's unlink may delete the first one's newly-created lock. In practice, this requires two fleet startups within microseconds of each other against a >60-second-old lock file. For a developer-laptop singleton started by human action, this is not a realistic scenario. No action needed.
+The test "Codex MCP registration writes [mcp_servers.apra-fleet] TOML section" (line 253) appears to be nested inside the callback of the Gemini trust test (line 238) due to inconsistent indentation. This is a pre-existing structure issue (the test existed before Phase 3). The new Phase 3 transport-specific tests (lines 772-868) properly cover all provider x transport combinations at the correct nesting level, so test coverage is not impacted. If addressed in a future cleanup, the nested test should be un-indented to the describe level and its assertion updated from `command =` to `url =` to reflect the new HTTP default.
 
 ### LOW-2: Em-dashes in tool-registry.ts tool descriptions
 
-Three tool descriptions in tool-registry.ts contain em-dashes (lines 92, 93, 127). These are pre-existing from main's index.ts and were correctly preserved as part of the pure refactor (changing them would violate the "no behavior change" constraint). These are in user-facing MCP tool description strings, so changing them would alter the API surface. If the project enforces ASCII-only in a future sprint, these should be updated in a separate commit that touches main directly. Not a Phase 2 issue.
+Pre-existing from Phase 2 review (LOW-2 in that review). Three tool descriptions contain em-dashes. Not a Phase 3 issue.
 
 ---
 
 ## 9. Verdict
 
-All three Phase 2 tasks (T4, T5, T6) meet their done criteria. Phase 1 (T1, T2, T3) has not regressed. Build and tests pass (82 files, 1313 tests). The singleton startup race is correctly handled by atomic file creation. The dual transport paths are clean, with stdio unchanged and HTTP properly lifecycle-managed. The three Phase 1 LOW observations have all been addressed. File hygiene is clean. No HIGH or MEDIUM findings.
+All three Phase 3 tasks (T7, T8, T9) meet their done criteria. Phase 1 (T1, T2, T3) and Phase 2 (T4, T5, T6) have not regressed. Build and tests pass (84 files, 1332 tests, 0 failures). The credential:stored event fires at the correct point in auth-socket.ts after OOB delivery and does not fire on failure. All four provider configs match the exact PLAN.md formats for both HTTP and stdio modes. The 7 integration tests are genuine end-to-end tests, not hollow assertions. The Gemini client compatibility test passes and references the known bug. All acceptance criteria except documentation (Phase 4) are met. File hygiene is clean. No HIGH or MEDIUM findings.
 
 **VERDICT: APPROVED**
