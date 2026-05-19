@@ -59,16 +59,18 @@ jobs:
 
       - run: npm run build:binary
 
-      - name: Smoke test
+      - name: Normalize binary name
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            ./blindfold-win-x64.exe --version
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            ./blindfold-darwin-x64 --version
-          else
-            ./blindfold-linux-x64 --version
+          actual=$(ls blindfold-* 2>/dev/null | head -1)
+          expected="${{ matrix.binary }}"
+          if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
+            mv "$actual" "$expected"
           fi
+
+      - name: Smoke test
+        shell: bash
+        run: ./${{ matrix.binary }} --version
 
       - uses: actions/upload-artifact@v4
         with:
