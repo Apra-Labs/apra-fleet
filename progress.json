@@ -7,7 +7,7 @@
   "plan_file": "PLAN.md",
   "created": "2026-05-19",
   "tasks": [
-    { "id": 1,  "step": "T1: Shutdown endpoint + service constants", "type": "work", "status": "completed", "tier": "cheap", "commit": "TBD", "notes": "POST /shutdown endpoint added to http-transport.ts; LOG_FILE_PATH constant added to paths.ts; service name constants created in service-manager/types.ts" },
+    { "id": 1,  "step": "T1: Shutdown endpoint + service constants", "type": "work", "status": "completed", "tier": "cheap", "commit": "ef84f92", "notes": "POST /shutdown endpoint added to http-transport.ts; LOG_FILE_PATH constant added to paths.ts; service name constants created in service-manager/types.ts" },
     { "id": 2,  "step": "T2: ServiceManager interface + factory", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
     { "id": 3,  "step": "T3: Windows Scheduled Task adapter", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
     { "id": 4,  "step": "T4: Linux systemd user unit adapter", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
