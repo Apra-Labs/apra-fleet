@@ -1,0 +1,132 @@
+{
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | in_progress | completed | blocked"
+  },
+  "project": "blindfold-migration",
+  "plan_file": "blindfold-migration/PLAN.md",
+  "branch": "md/project-vault",
+  "base": "main",
+  "created": "2026-05-19",
+  "tasks": [
+    {
+      "id": "0.1",
+      "step": "Phase 0 — submodule + file: dep + npm install",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "0.V",
+      "step": "VERIFY Phase 0: build green, submodule pinned to v0.0.1",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "1.1",
+      "step": "Phase 1 — initFleetBlindfold helper + entrypoint calls",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "1.V",
+      "step": "VERIFY Phase 1: init called everywhere, --version/--help still fast",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "2.1",
+      "step": "Phase 2 — mechanical import rewrite (~27 files) + OOB_TIMEOUT_MS",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "2.V",
+      "step": "VERIFY Phase 2: zero fleet-local security imports remain, build green",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "3.1",
+      "step": "Phase 3 — drop fleet's local resolveSecureTokens/redactOutput/resolveSecureField/SECURE_TOKEN_RE",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "3.V",
+      "step": "VERIFY Phase 3: no local duplicates, build + tests green",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "4.1",
+      "step": "Phase 4 — delete 9 src + 7 test files",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "4.V",
+      "step": "VERIFY Phase 4: build + tests fully green, only intended deletions",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "5.1",
+      "step": "Phase 5 — move confirm to auth, delete alias, update docs",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "5.V",
+      "step": "VERIFY Phase 5: zero 'secret --confirm' refs anywhere, tests pass",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "6.1",
+      "step": "Phase 6 — automated + manual smoke + binary build",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": "6.V",
+      "step": "VERIFY Phase 6: all green, manual log committed",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    }
+  ]
+}
