@@ -99,6 +99,16 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
 
+    if (url === '/shutdown' && req.method === 'POST') {
+      const body = JSON.stringify({ status: 'shutting-down' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(body);
+      setTimeout(() => {
+        process.emit('SIGINT');
+      }, 100);
+      return;
+    }
+
     if (url !== '/mcp') {
       res.writeHead(404);
       res.end();
