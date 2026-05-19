@@ -316,3 +316,124 @@ stop problem. All acceptance criteria map to tasks.
 - No log rotation strategy (track as follow-up).
 - Version-skew scenario for /shutdown endpoint not explicitly addressed (fallback kill
   covers it, but should be noted).
+
+---
+---
+
+# OS Service Lifecycle -- Plan Re-Review
+
+**Reviewer:** rbnvk
+**Date:** 2026-05-19 12:50:00-0400
+**Verdict:** APPROVED
+
+> See the recent git history of this file to understand the context of this review.
+> Prior review: 2026-05-19 12:38:29-0400 -- CHANGES NEEDED with 4 HIGH findings.
+> Doer revised PLAN.md in commit 7f712fb to address all findings.
+
+---
+
+## Prior HIGH Findings -- Resolution Verification
+
+### HIGH-2: Task 7 dev-mode binary path resolution
+
+**RESOLVED.** T7 now explicitly specifies: "In dev mode (non-SEA), the command is
+`process.execPath` (the Node.js binary) with args
+`[path.join(findProjectRoot(), 'dist', 'index.js'), '--transport', 'http']` -- using the
+same `findProjectRoot()` function from src/cli/install.ts that walks up from __dirname
+looking for version.json. Import `findProjectRoot` from install.ts (it is already exported)
+or extract it to a shared util."
+
+This is unambiguous -- two developers would make the same choice. The version-skew concern
+from the NOTE is also now addressed: T7 explicitly documents the fallback: "if an older
+binary without the /shutdown endpoint is running, the POST will fail (404 or connection
+error). The fallback force-kill path handles this correctly."
+
+### HIGH-3: Base branch contradiction
+
+**RESOLVED.** Notes section now reads: "Base branch: feat/mcp-sse-transport (extends
+PR #273 -- no new branch)" and "Implementation branch: feat/mcp-sse-transport (commit
+directly onto this branch)." This matches requirements.md exactly. No remaining references
+to "main" as base branch anywhere in PLAN.md.
+
+### HIGH-4: macOS install idempotency gap
+
+**RESOLVED.** T5 register() now includes: "Before loading, call `launchctl bootout
+gui/<uid>/com.apra-fleet.server` and tolerate 'not loaded' / 'no such process' errors --
+this makes register() idempotent." The Verb x OS Matrix install row for macOS also
+reflects this: "launchctl bootout ... (tolerate 'not loaded' error). Then launchctl
+bootstrap ..." Both the adapter task and the matrix are consistent.
+
+### HIGH-5: Contradictory stop() semantics
+
+**RESOLVED.** The Design Summary now includes a dedicated "Stop call path (unified)"
+paragraph that clarifies the architecture:
+
+1. The CLI `stop` verb bypasses the adapter entirely and calls POST /shutdown directly
+   (since stopping the process is service-agnostic).
+2. All three adapters' stop() methods use the same POST /shutdown mechanism (not
+   systemctl stop or OS-specific commands) for cross-platform consistency.
+3. serviceManager.stop() exists for use within unregister() and for interface
+   completeness, but the CLI never routes through it.
+
+T4 (Linux adapter) stop() now reads: "Read server.json for URL. POST /shutdown. Wait up
+to 5s for process exit (poll pid). Fallback: kill -TERM <pid>. This matches the Windows
+and macOS adapters." The prior contradiction with `systemctl --user stop` is fully
+eliminated. All three adapters share the same contract.
+
+---
+
+## Structural Re-Verification
+
+### Task slicing / ordering / dependencies
+
+**PASS.** No changes to task boundaries or ordering. The revisions were surgical --
+clarifications within T4, T5, and T7 without altering the phase structure.
+
+### Tier assignments and monotonicity
+
+**PASS.** No tier changes. Phase 1: cheap -> standard (5x). Phase 2: cheap (2x) ->
+standard (2x). Phase 3: standard (3x). Phase 4: cheap (2x). All monotonically
+non-decreasing within each phase.
+
+### VERIFY checkpoint placement
+
+**PASS.** All four VERIFY blocks remain at phase boundaries. No changes.
+
+### Acceptance criteria mapping
+
+**PASS.** All 8 acceptance criteria from requirements.md still map to tasks. The
+revisions did not remove or alter any task's scope. Verified:
+
+1. install -> service running immediately: T11. Covered.
+2. Reboot/re-login persistence: T3 (at-logon), T4 (linger), T5 (RunAtLoad). Covered.
+3. Verb idempotency on all OSes: T7, T8, T9. Covered.
+4. status richness: T9. Covered.
+5. uninstall cleanup: T12. Covered.
+6. No elevation: T3--T5 per-user commands. Covered.
+7. Test coverage: T6, T10, T13. Covered.
+8. Docs: T14, T15. Covered.
+
+### Deferred Items section
+
+**PASS.** New "Deferred Items" section exists and tracks: (1) log rotation -- noted as
+append-only with no rotation for this sprint, with follow-up approaches listed
+(size-based rotation, OS-native logrotate/newsyslog); (2) TLS/auth on HTTP endpoint.
+Both are correctly scoped out.
+
+### New problems introduced by revision
+
+**NONE FOUND.** The revisions are clean clarifications that do not introduce new
+ambiguity, contradictions, or gaps. The Verb x OS Matrix, risk register, and task
+descriptions remain internally consistent after the changes.
+
+---
+
+## Summary
+
+All four HIGH findings from the initial review are fully resolved. The plan is
+well-structured with clear task boundaries, proper dependency ordering, front-loaded risk
+validation, a complete Verb x OS Matrix, and a unified stop call path. The Deferred Items
+section tracks log rotation and TLS/auth as follow-ups. All acceptance criteria map to
+tasks. No new issues introduced by the revision.
+
+**Verdict: APPROVED.** The plan is ready for implementation.
