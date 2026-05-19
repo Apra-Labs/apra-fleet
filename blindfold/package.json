@@ -1,6 +1,6 @@
 {
   "name": "blindfold",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Secure credential vault for AI agents — OOB collection, encryption, and token resolution that keeps secrets out of LLM context windows",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/blindfold",
