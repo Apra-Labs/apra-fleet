@@ -13,18 +13,18 @@
       "id": "0.1",
       "step": "Phase 0 — submodule + file: dep + npm install",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "061bc164889b0cd49bd5d1fcfbc00d7d7a0d9cac",
+      "notes": "submodule pinned to v0.0.1; npm install + build + tests pass on Node 20.20.1"
     },
     {
       "id": "0.V",
       "step": "VERIFY Phase 0: build green, submodule pinned to v0.0.1",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "061bc164889b0cd49bd5d1fcfbc00d7d7a0d9cac",
+      "notes": "build PASS; npm test PASS; submodule HEAD matches v0.0.1 (a35e266); 1280 passing (3 pre-existing time-utils failures on main unrelated to migration)"
     },
     {
       "id": "1.1",
