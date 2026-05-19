@@ -169,3 +169,222 @@ The plan is well-structured with clean task ordering, proper abstraction layerin
 
 - **MED-1:** Event bus broadcasts to all sessions. Add sessionId to event payloads for future per-session routing.
 - **MED-2:** No idle-shutdown policy for singleton with zero clients. Make an explicit decision.
+
+---
+---
+
+# HTTP+SSE Transport (#258) -- Plan Re-Review
+
+**Reviewer:** lx635
+**Date:** 2026-05-19 03:15:00-04:00
+**Verdict:** APPROVED
+
+> Re-review of PLAN.md after doer revision in commit 96bab55. Prior review
+> raised 3 HIGH findings and 2 MED findings. See git history of this file
+> for the original review.
+
+---
+
+## Prior HIGH Findings -- Resolution Verification
+
+### HIGH-1: Provider config formats underspecified
+
+RESOLVED. Task 8 now includes concrete, copy-pasteable config examples for
+all four providers in HTTP transport mode:
+
+- **Claude:** `claude mcp add --scope user --transport http apra-fleet
+  http://localhost:7523/mcp` producing
+  `"type": "streamable-http", "url": "http://localhost:7523/mcp"`. Verified
+  against Claude Code's `--transport http` flag (confirmed in
+  requirements.md Transport Decision section).
+- **Gemini:** `"httpUrl": "http://localhost:7523/mcp", "trust": true` in
+  `~/.gemini/settings.json`. Matches Gemini's `httpUrl` config key
+  (confirmed in Transport Decision).
+- **Copilot:** `"url": "http://localhost:7523/mcp", "type": "http"`.
+  Concrete format specified.
+- **Codex:** TOML table with `url = "http://localhost:7523/mcp"`. Concrete
+  format specified.
+
+Default port committed to 7523 (not "e.g."). `DEFAULT_PORT` constant
+defined in Task 2's paths.ts changes, with `APRA_FLEET_PORT` env var
+override. No ambiguity remains -- two developers would produce identical
+configs.
+
+### HIGH-2: Startup race condition unaddressed
+
+RESOLVED. Task 6 now includes `claimStartupLock()` with atomic file
+creation via `fs.openSync(lockPath, 'wx')` (O_CREAT | O_EXCL). This is
+a genuinely atomic operation on POSIX and NTFS -- exactly one of two
+concurrent processes will succeed; the other gets EEXIST and exits cleanly.
+
+The flow is sound:
+1. `checkRunningInstance()` -- fast path if already running.
+2. `claimStartupLock()` -- atomic claim; fails fast if another process
+   is starting.
+3. Start HTTP server, write `server.json`.
+4. `lock.release()` -- lock only held during the startup window.
+5. SIGINT/SIGTERM handlers also release as a safety net.
+
+Stale lock handling is correct: if lock file mtime > 60 seconds (crashed
+process), delete and retry once. The 60-second threshold is generous
+enough to avoid false positives on slow machines, short enough that a
+crash doesn't permanently block restarts.
+
+Risk R3 in the risk register now explicitly covers this scenario.
+
+### HIGH-3: SEA compatibility unaddressed
+
+RESOLVED. New Task 3 "SEA Binary Compatibility Verification" added to
+Phase 1 (after Task 2, before any downstream work depends on HTTP
+transport). The task:
+
+1. Builds the SEA bundle via `npm run build:sea`.
+2. Greps the bundle for `StreamableHTTPServerTransport` and `@hono`
+   references to confirm they are included.
+3. Tests that the HTTP transport can be instantiated and bind a port from
+   the bundled code.
+4. If it fails: fix (e.g., esbuild externals adjustment) or escalate as
+   a blocker.
+
+This is correctly positioned in Phase 1 so a failure is caught before
+Tasks 4-10 build on the assumption that HTTP transport works in SEA.
+Risk R1 now explicitly covers `@hono/node-server` bundling in SEA.
+
+Verified: `@hono/node-server` is already a transitive dependency of
+`@modelcontextprotocol/sdk` (listed in its package.json dependencies)
+and is already installed in node_modules. esbuild's current config does
+not list it in externals, so it should be bundled. Task 3 confirms this
+empirically.
+
+---
+
+## Prior MED Findings -- Deferral Verification
+
+### MED-1: Broadcast vs per-session event routing
+
+Explicitly deferred in the "Deferred Items" section at the top of
+PLAN.md. Rationale is sound: for `credential:stored`, broadcast is
+correct (any session benefits from knowing a credential was stored).
+Per-session targeting is a YAGNI concern for this sprint. The deferral
+notes that future producers can add an optional `sessionId` field to
+event payloads.
+
+### MED-2: Singleton idle-shutdown policy
+
+Explicitly deferred in "Deferred Items" with a clear decision: the
+singleton is intentionally long-lived, running until explicitly stopped.
+Rationale: restart cost (tool re-registration, stall detector, SSH
+reconnections). Idle shutdown is a follow-up optimization if memory
+pressure proves real. This is the right default for a developer-laptop
+service.
+
+---
+
+## Transport Decision Compliance
+
+The plan fully applies the transport decision from requirements.md:
+
+- **StreamableHTTPServerTransport only.** The deprecated
+  `SSEServerTransport` fallback that was in the original plan (Task 2's
+  "Decision point" and SSE routing code) is completely removed. No
+  mention of SSEServerTransport remains in any task description.
+- **CLI flag is `--transport http`** (not `--transport sse`), consistent
+  throughout Tasks 5, 8, 10, and the plan summary.
+- **Risk register updated.** Old R1 (SSE client compat fallback) and R2
+  (SSE deprecation) are gone. New R1 is SEA compatibility; new R2 is
+  Gemini client compatibility with the google-gemini/gemini-cli#5268
+  reference.
+- **Gemini client test exists.** Task 9f explicitly tests a
+  StreamableHTTPClientTransport connection against the fleet server,
+  with the Gemini bug reference in a code comment. The test's done
+  criteria correctly allow for documenting a Gemini-side failure rather
+  than treating it as a fleet blocker.
+
+---
+
+## Structural Re-Verification
+
+### Task slicing and ordering
+
+Task count increased from 9 to 10 (new Task 3: SEA verification). The
+insertion does not disrupt dependency order:
+
+- Task 3 (SEA verify) depends on Task 2 (HTTP transport must exist).
+  Correct.
+- Task 4 (tool registry) has no deps. Unchanged.
+- Tasks 5-10 renumbered from old 4-9. All blocker references updated
+  correctly.
+- No circular dependencies. No hidden dependencies introduced.
+
+### Tier monotonicity
+
+Phase 1: cheap, standard, standard -- OK (Task 3 is standard, matching
+its verification + potential fix scope).
+Phase 2: cheap, standard, standard -- OK.
+Phase 3: cheap, standard, standard -- OK.
+Phase 4: cheap -- OK.
+
+### VERIFY checkpoints
+
+Four VERIFY checkpoints, one per phase. Phase 1 VERIFY now includes
+"Confirm SEA bundle includes HTTP transport and starts correctly." All
+other VERIFYs unchanged and still appropriate.
+
+### Cross-phase coupling
+
+The original review noted Task 7 (old) touching http-transport.ts to add
+preferred port support. The revision moved `DEFAULT_PORT` and preferred
+port handling into Task 2 itself, eliminating the cross-phase coupling.
+Clean.
+
+### Acceptance criteria mapping
+
+All ACs from requirements.md still map to tasks. Two ACs use terminology
+from the pre-transport-decision era ("GET /events", "type: sse") but the
+intent is satisfied by the StreamableHTTP equivalents (GET /mcp, type:
+streamable-http). The Transport Decision section in requirements.md
+supersedes the older wording.
+
+| Acceptance Criterion | Task(s) |
+|---|---|
+| Singleton HTTP service by default; second launch reuses | Tasks 5, 6 |
+| Multiple concurrent clients, own SSE stream | Task 2 |
+| --transport stdio, no regression | Tasks 5, 9d |
+| SSE/HTTP endpoint serves notifications; POST handles JSON-RPC | Task 2 |
+| Generated config is HTTP-based by default, stdio when --transport stdio | Task 8 |
+| Internal event bus; subsystems publish events | Task 1 |
+| credential_store_set pushes completion notification | Task 7 |
+| Both transports pass tests; new tests for HTTP + event bus | Tasks 2, 9 |
+| Docs updated | Task 10 |
+| Full test suite green; ASCII hook passes | VERIFY checkpoints |
+
+---
+
+## New Issues Check
+
+No new blocking issues introduced by the revision. The plan is tighter
+than the original: fewer decision points deferred to implementation,
+clearer task boundaries, and the SEA verification task catches a
+potential showstopper before downstream work depends on it.
+
+One minor note (not blocking): Task 9f's Gemini client test uses
+`StreamableHTTPClientTransport` from the MCP SDK, which is the same
+transport Gemini CLI uses internally. This is a good proxy test but is
+not identical to running actual `gemini` CLI against fleet. The task's
+done criteria correctly acknowledge this by saying "or failure is
+documented as a known Gemini-side issue" -- adequate for this sprint.
+
+---
+
+## Summary
+
+All three blocking findings from the initial review are fully resolved:
+provider configs are concrete and verified, the startup race is handled
+by atomic file lock, and SEA compatibility has a dedicated Phase 1
+verification task. Both non-blocking items are explicitly deferred with
+sound rationale. The transport decision (StreamableHTTP only, no SSE
+fallback) is cleanly applied throughout. Task slicing, ordering, tiers,
+and VERIFY checkpoints remain sound. Every acceptance criterion maps to
+a task.
+
+The plan is ready for implementation.
