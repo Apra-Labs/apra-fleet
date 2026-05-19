@@ -28,20 +28,20 @@
     },
     {
       "id": "1.1",
-      "step": "Phase 1 — initFleetBlindfold helper + entrypoint calls",
+      "step": "Phase 1 - initFleetBlindfold helper + entrypoint calls",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "a33f592fe3155946cc0a2c356edc0b398765f97b",
+      "notes": "initFleetBlindfold helper added; wired into index.ts (post --version/--help short-circuits), smoke-test.ts (top of file), tests/setup.ts (static import; initFleetBlindfold() called after APRA_FLEET_DATA_DIR is set). Logger writes directly to stderr - avoids pulling log-helpers -> paths.ts at module load time, which would pre-cache FLEET_DIR and break statusline test isolation."
     },
     {
       "id": "1.V",
       "step": "VERIFY Phase 1: init called everywhere, --version/--help still fast",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "a33f592fe3155946cc0a2c356edc0b398765f97b",
+      "notes": "build PASS; npm test PASS - 1280 passing, 3 failing (all pre-existing: 1 platform login-shell + 2 time-utils IST timezone, same as Phase 0 baseline counted differently). No new regressions."
     },
     {
       "id": "2.1",

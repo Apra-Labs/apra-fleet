@@ -2,6 +2,7 @@
 
 import { serverVersion } from './version.js';
 import { logLine, logError } from './utils/log-helpers.js';
+import { initFleetBlindfold } from './services/blindfold-init.js';
 
 // --- CLI dispatch (before MCP server imports to keep --version fast) ---
 const arg = process.argv[2];
@@ -37,6 +38,8 @@ Usage:
   apra-fleet --help           Show this help`);
   process.exit(0);
 }
+
+initFleetBlindfold();
 
 if (arg === 'install') {
   // Dynamic import so MCP deps aren't loaded for install
