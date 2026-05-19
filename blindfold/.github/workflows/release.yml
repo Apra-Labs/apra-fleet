@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm pack --dry-run
+
+  build-binaries:
+    name: Build Binary (${{ matrix.os }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: blindfold-linux-x64
+          - os: macos-latest
+            binary: blindfold-darwin-x64
+          - os: windows-latest
+            binary: blindfold-win-x64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build:binary
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./blindfold-win-x64.exe --version
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            ./blindfold-darwin-x64 --version
+          else
+            ./blindfold-linux-x64 --version
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: ${{ matrix.binary }}
+          retention-days: 1
+
+  github-release:
+    name: GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: blindfold-linux-x64
+          path: release-assets
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: blindfold-darwin-x64
+          path: release-assets
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: blindfold-win-x64.exe
+          path: release-assets
+
+      - run: chmod +x release-assets/blindfold-linux-x64 release-assets/blindfold-darwin-x64
+
+      - name: Extract tag notes
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          BODY=$(git tag -l --format='%(contents)' "$TAG" | head -40 || true)
+          [ -z "$BODY" ] && BODY="Release $TAG"
+          printf '%s\n' "$BODY" > /tmp/release-body.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file /tmp/release-body.txt \
+            release-assets/blindfold-linux-x64 \
+            release-assets/blindfold-darwin-x64 \
+            release-assets/blindfold-win-x64.exe
