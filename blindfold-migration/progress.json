@@ -32,7 +32,7 @@
       "type": "work",
       "status": "completed",
       "tier": "standard",
-      "commit": "a33f592fe3155946cc0a2c356edc0b398765f97b",
+      "commit": "6dbe017bcb9f37c730d9f81d87fbcb03b3ae1a53",
       "notes": "initFleetBlindfold helper added; wired into index.ts (post --version/--help short-circuits), smoke-test.ts (top of file), tests/setup.ts (static import; initFleetBlindfold() called after APRA_FLEET_DATA_DIR is set). Logger writes directly to stderr - avoids pulling log-helpers -> paths.ts at module load time, which would pre-cache FLEET_DIR and break statusline test isolation."
     },
     {
@@ -40,8 +40,8 @@
       "step": "VERIFY Phase 1: init called everywhere, --version/--help still fast",
       "type": "verify",
       "status": "completed",
-      "commit": "a33f592fe3155946cc0a2c356edc0b398765f97b",
-      "notes": "build PASS; npm test PASS - 1280 passing, 3 failing (all pre-existing: 1 platform login-shell + 2 time-utils IST timezone, same as Phase 0 baseline counted differently). No new regressions."
+      "commit": "6dbe017bcb9f37c730d9f81d87fbcb03b3ae1a53",
+      "notes": "build PASS; npm test PASS - 1280 passing, 3 failing (all pre-existing: 1 platform login-shell + 2 time-utils IST timezone, same as Phase 0 baseline counted differently). No new regressions. Hardening fix eb65946 added to vitest.config.ts + tests/setup.ts to prevent npm test from leaking writes into ~/.apra-fleet/data (see backlog INC-1)."
     },
     {
       "id": "2.1",
