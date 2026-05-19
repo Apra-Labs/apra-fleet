@@ -1,12 +1,40 @@
 # apra-fleet -- Implementation Plan: MCP Transport stdio -> HTTP+SSE
 
-> Replace fleet's stdio MCP transport with an HTTP+SSE singleton server that
-> multiple LLM clients share. The server uses the MCP SDK's HTTP transport
-> (StreamableHTTPServerTransport preferred, SSEServerTransport as fallback)
-> with a per-session McpServer model for multi-client concurrency. An internal
-> typed event bus lets subsystems push notifications to all connected clients
-> over SSE. The first event producer is credential_store_set completion. stdio
-> remains as a backward-compatible fallback via --transport stdio.
+> Replace fleet's stdio MCP transport with a StreamableHTTP singleton
+> server that multiple LLM clients share. The server uses the MCP SDK's
+> `StreamableHTTPServerTransport` with a per-session McpServer model for
+> multi-client concurrency. An internal typed event bus lets subsystems
+> push notifications to all connected clients over SSE. The first event
+> producer is credential_store_set completion. stdio remains as a
+> backward-compatible fallback via --transport stdio.
+>
+> Transport decision (firm): StreamableHTTPServerTransport only. The
+> deprecated SSEServerTransport is NOT carried as a fallback -- the
+> transport set is StreamableHTTP (default singleton) + stdio (fallback).
+> Both Claude Code (`claude mcp add --transport http`) and Gemini CLI
+> (`httpUrl` config / `gemini mcp add --transport http`) support
+> Streamable HTTP as of 2026-05.
+
+---
+
+## Deferred Items
+
+- **Per-session event targeting.** The event bus broadcasts all events
+  to all connected sessions. For the single producer in this sprint
+  (`credential:stored`), broadcast is correct -- any session benefits
+  from knowing a credential was stored. Future producers that need
+  per-session targeting (e.g., a response to one user's action) can add
+  an optional `sessionId` field to event payloads and filter in the
+  broadcast loop. Deferred because no current use case requires it and
+  adding unused routing code violates YAGNI.
+
+- **Singleton idle-shutdown policy.** When all MCP clients disconnect,
+  the singleton HTTP server keeps running until explicitly stopped
+  (shutdown_server tool, SIGINT/SIGTERM, or system reboot). This is
+  intentional: the singleton is a long-lived service, not a per-request
+  process. Restarting it has a cost (tool re-registration, stall detector
+  restart, SSH reconnections). Idle shutdown is a follow-up optimization
+  if memory pressure on developer laptops proves to be an issue.
 
 ---
 
@@ -16,7 +44,8 @@
 
 Goal: Build the event bus and HTTP transport layer. Validate that
 multiple concurrent MCP client sessions can each receive server-push
-notifications -- the riskiest assumption in this sprint.
+notifications -- the riskiest assumption in this sprint. Also validate
+SEA binary compatibility with the HTTP transport.
 
 #### Task 1: Typed Event Bus
 
@@ -39,26 +68,32 @@ notifications -- the riskiest assumption in this sprint.
   all subscribers; `fleetEvents.off(...)` prevents delivery.
 - **Blockers:** None.
 
-#### Task 2: HTTP+SSE Server with Multi-Session Support
+#### Task 2: HTTP Transport with Multi-Session Support
 
 - **Change:** Create `src/services/http-transport.ts`. Architecture:
   one `McpServer` instance per client session, each connected to its own
-  SDK transport instance. A session manager tracks active
-  `{ server, transport }` pairs keyed by session ID and handles cleanup
-  on disconnect.
+  `StreamableHTTPServerTransport` instance. A session manager tracks
+  active `{ server, transport }` pairs keyed by session ID and handles
+  cleanup on disconnect.
 
   Implementation details:
-  - Use `node:http` to create an HTTP server bound to `127.0.0.1` on
-    port 0 (OS-assigned random available port).
-  - Route incoming requests to the correct session's transport. For
-    `StreamableHTTPServerTransport`: POST /mcp with `initialize` creates
-    a new session (new McpServer + transport, tools registered via a
-    `registerTools` callback); subsequent POST/GET /mcp with
-    `mcp-session-id` header routes to the existing session's
-    `transport.handleRequest()`. For `SSEServerTransport` (fallback if
-    clients require `"type": "sse"`): GET /sse creates a new session;
-    POST /messages?sessionId=X routes to the session's
-    `transport.handlePostMessage()`.
+  - Use `node:http` to create an HTTP server bound to `127.0.0.1`.
+    Accept a `preferredPort` option (default: `DEFAULT_PORT` constant,
+    value 7523 -- see paths.ts); if that port is busy (EADDRINUSE), fall
+    back to port 0 (OS-assigned random). Add `DEFAULT_PORT = 7523` to
+    `src/paths.ts` and `APRA_FLEET_PORT` env var override.
+  - Route incoming requests to the correct session's transport:
+    - POST /mcp: if body contains an `initialize` JSON-RPC request,
+      create a new session (new McpServer + new
+      StreamableHTTPServerTransport with
+      `sessionIdGenerator: () => randomUUID()`, tools registered via a
+      `registerTools` callback). Then delegate to
+      `transport.handleRequest(req, res)`.
+    - POST /mcp (non-initialize) and GET /mcp: read
+      `mcp-session-id` header, look up session, delegate to
+      `transport.handleRequest(req, res)`.
+    - GET /health: return JSON (see Task 5).
+    - All other paths: 404.
   - Subscribe to the event bus (`fleetEvents`). On any event, iterate
     all active sessions and call
     `session.server.server.sendLoggingMessage({ level: 'info',
@@ -66,48 +101,79 @@ notifications -- the riskiest assumption in this sprint.
     a `notifications/message` to each connected client.
   - Handle session cleanup: when a transport's `onclose` fires, remove
     it from the session map.
-  - Export: `createHttpTransport(options: { registerTools: (server) => void })` 
+  - Export: `createHttpTransport(options: { registerTools, preferredPort? })`
     returning `{ httpServer, port, url, sessions, close() }`.
 
   Risk validation tests (the riskiest assumption):
-  (a) Server starts on a random port, health endpoint responds.
-  (b) Two MCP clients connect concurrently with separate sessions.
-  (c) Event bus emit reaches BOTH clients as SSE/logging notifications.
+  (a) Server starts and binds to 127.0.0.1 only.
+  (b) Two MCP clients connect concurrently with separate sessions via
+      StreamableHTTPServerTransport.
+  (c) Event bus emit reaches BOTH clients as logging notifications.
   (d) Client disconnect removes the session from the map.
-
-  Decision point: prefer `StreamableHTTPServerTransport` (current MCP
-  spec, not deprecated). If during implementation Claude Code or Gemini
-  clients do not support `"type": "streamableHttp"` / `"type": "http"`
-  in their MCP config, fall back to `SSEServerTransport` with the
-  GET /sse + POST /messages pattern. Document the decision in the commit
-  message.
+  (e) Port fallback: when preferred port is busy, server starts on a
+      random port instead.
 
 - **Files:** `src/services/http-transport.ts` (new),
+  `src/paths.ts` (add DEFAULT_PORT constant + env var override),
   `tests/http-transport.test.ts` (new)
 - **Tier:** standard
 - **Done when:** Tests pass: two concurrent MCP clients on the same HTTP
   server each receive a `notifications/message` when the event bus emits.
-  Server binds to 127.0.0.1 only. Port is dynamically assigned. Session
-  cleanup works on disconnect.
-- **Blockers:** Task 1 (event bus). Risk R1 (SDK transport compatibility
-  with target clients -- validated by this task's tests and manual check
-  of Claude Code / Gemini MCP client config formats).
+  Server binds to 127.0.0.1 only. Port fallback works. Session cleanup
+  works on disconnect.
+- **Blockers:** Task 1 (event bus).
+
+#### Task 3: SEA Binary Compatibility Verification
+
+- **Change:** Verify that the HTTP transport works when fleet runs as a
+  Node.js Single Executable Application (SEA). The `StreamableHTTPServerTransport`
+  depends on `@hono/node-server` transitively via the MCP SDK. While
+  esbuild bundles this into `dist/sea-bundle.cjs` (it is not in the
+  `external` list in `scripts/build-sea.mjs`), the HTTP code paths have
+  never been exercised from within a SEA binary.
+
+  Steps:
+  1. Run `npm run build:sea` to produce `dist/sea-bundle.cjs`.
+  2. Verify the bundle includes the HTTP transport code: grep the bundle
+     for `StreamableHTTPServerTransport` and `@hono` references.
+  3. Run the bundle with `node dist/sea-bundle.cjs --transport sse` (or
+     the equivalent flag once Task 4 is done -- for Phase 1, test by
+     importing and calling `createHttpTransport()` from the bundle
+     directly in a test script).
+  4. If the bundle fails: add `@hono/node-server` to the esbuild
+     externals and ship it as a side file, or find an alternative
+     approach.
+
+  This is a verification task, not a feature task. The expected outcome
+  is "it works" (esbuild already bundles the dep). If it does not work,
+  this task produces a fix or a blocking escalation before downstream
+  tasks build on the HTTP transport.
+
+- **Files:** `tests/sea-http-verify.test.ts` (new -- build + import test),
+  `scripts/build-sea.mjs` (modify only if fix needed)
+- **Tier:** standard
+- **Done when:** SEA bundle builds successfully; HTTP transport code is
+  present in the bundle; a test confirms the transport can be
+  instantiated and bind a port from the bundled code. If a fix is needed,
+  it is committed and the bundle re-verified.
+- **Blockers:** Task 2 (HTTP transport module must exist to test).
 
 #### VERIFY: Core Abstractions + Risk Validation
 - Run full test suite (`npm test`)
 - Confirm event bus + HTTP transport tests pass
 - Confirm multi-session notification broadcast works
-- Report: which SDK transport was chosen (StreamableHTTP vs SSE) and why;
-  any SDK issues found; test results
+- Confirm SEA bundle includes HTTP transport and starts correctly
+- Report: test results, any SDK issues found, SEA verification status
 
 ---
 
 ### Phase 2: Server Refactor + Dual Transport Startup
 
 Goal: Refactor startServer() so both transports share tool registration,
-add the --transport flag, implement singleton lifecycle detection.
+add the --transport flag, implement singleton lifecycle detection with
+atomic startup claim.
 
-#### Task 3: Extract Tool Registration into Shared Module
+#### Task 4: Extract Tool Registration into Shared Module
 
 - **Change:** Extract the tool registration block from `startServer()` in
   `src/index.ts` (lines 109-265) into a new function
@@ -126,23 +192,22 @@ add the --transport flag, implement singleton lifecycle detection.
   refactor. No functional change.
 - **Blockers:** None. Pure refactor, no dependency on Phase 1.
 
-#### Task 4: --transport Flag + Dual Startup Paths
+#### Task 5: --transport Flag + Dual Startup Paths
 
-- **Change:** Add `--transport <sse|stdio>` CLI flag to `src/index.ts`.
-  Default: `sse`. Alias: `--stdio` maps to `--transport stdio` (existing
+- **Change:** Add `--transport <http|stdio>` CLI flag to `src/index.ts`.
+  Default: `http`. Alias: `--stdio` maps to `--transport stdio` (existing
   `--stdio` flag already in the codebase).
 
   Refactor `startServer()` into two functions:
   - `startStdioServer()`: existing behavior (McpServer +
     StdioServerTransport). Called when `--transport stdio`.
-  - `startHttpServer()`: creates McpServer, calls `registerAllTools()`,
-    calls `createHttpTransport()` from Phase 1 Task 2 passing
-    `registerAllTools` as the `registerTools` callback, writes
-    `server.json` to FLEET_DIR with
+  - `startHttpServer()`: calls `createHttpTransport()` from Phase 1
+    Task 2 passing `registerAllTools` as the `registerTools` callback,
+    writes `server.json` to FLEET_DIR with
     `{ pid, port, url, version, startedAt }`, starts stall detector +
     idle manager + cleanup tasks, registers SIGINT/SIGTERM handlers that
     delete `server.json` and close the HTTP server. Called when
-    `--transport sse` (default).
+    `--transport http` (default).
 
   Add `SERVER_INFO_PATH` constant to `src/paths.ts`:
   `path.join(FLEET_DIR, 'server.json')`.
@@ -158,42 +223,62 @@ add the --transport flag, implement singleton lifecycle detection.
   (no `server.json`); both paths register all tools and start subsidiary
   services; `server.json` is deleted on SIGINT/SIGTERM or shutdown_server
   tool call; `npm test` passes.
-- **Blockers:** Task 2 (HTTP transport module), Task 3 (tool registry).
+- **Blockers:** Task 2 (HTTP transport module), Task 4 (tool registry).
 
-#### Task 5: Singleton Lifecycle Detection
+#### Task 6: Singleton Lifecycle Detection with Atomic Claim
 
-- **Change:** Create `src/services/singleton.ts`. Export
-  `checkRunningInstance(): { running: boolean, url?: string, pid?: number }`.
-  Logic: read `server.json` from `SERVER_INFO_PATH`. If file exists:
-  verify PID is alive via `process.kill(pid, 0)` (cross-platform), then
-  verify port responds by sending an HTTP GET to `${url}/health` with a
-  2-second timeout. If BOTH checks pass: return `{ running: true, url }`.
-  If either fails: delete stale `server.json`, return
-  `{ running: false }`.
+- **Change:** Create `src/services/singleton.ts` with two exports:
+
+  1. `checkRunningInstance(): { running: boolean, url?: string, pid?: number }`
+     Read `server.json` from `SERVER_INFO_PATH`. If file exists: verify
+     PID is alive via `process.kill(pid, 0)` (cross-platform), then
+     verify port responds by sending an HTTP GET to `${url}/health`
+     with a 2-second timeout. If BOTH checks pass: return
+     `{ running: true, url, pid }`. If either fails: delete stale
+     `server.json`, return `{ running: false }`.
+
+  2. `claimStartupLock(): { acquired: boolean, release: () => void }`
+     Atomic startup claim to prevent the race condition where two
+     processes simultaneously detect "no running instance" and both
+     start. Implementation: create a lock file at
+     `path.join(FLEET_DIR, 'server.lock')` using
+     `fs.openSync(lockPath, 'wx')` (O_CREAT | O_EXCL -- atomic create,
+     fails if file already exists). If the open succeeds, the lock is
+     acquired; `release()` deletes the lock file. If the open fails
+     with EEXIST: read the lock file's mtime; if older than 60 seconds
+     (stale lock from a crashed process), delete and retry once; if
+     fresh, return `{ acquired: false }`. The lock file contains the
+     PID of the claiming process for debugging.
+
+  Wire into `startHttpServer()` in `src/index.ts`:
+  1. Call `checkRunningInstance()`. If running: log URL and exit 0.
+  2. Call `claimStartupLock()`. If not acquired: log "Another fleet
+     instance is starting" and exit 0.
+  3. Start HTTP server, write `server.json`.
+  4. Call `lock.release()` (lock only needed during the startup window;
+     server.json + /health is the long-lived detection mechanism).
+  5. SIGINT/SIGTERM handlers also call `lock.release()` as a safety net.
 
   Add `GET /health` endpoint to the HTTP server in
   `src/services/http-transport.ts`: returns JSON
   `{ status: "ok", version, pid, uptime, sessions: <count> }`.
 
-  Wire into `startHttpServer()` in `src/index.ts`: before starting the
-  HTTP server, call `checkRunningInstance()`. If running: log the URL
-  and exit with code 0 ("Fleet already running at <url>"). If not
-  running: proceed with startup.
-
   Tests: (a) stale server.json (dead PID) is cleaned up and startup
-  proceeds; (b) health endpoint returns correct JSON; (c) second startup
-  detects running instance via health check.
+  proceeds; (b) health endpoint returns correct JSON; (c) lock file
+  prevents concurrent startup -- second process gets
+  `{ acquired: false }`; (d) stale lock file (>60s old) is cleaned up.
 
 - **Files:** `src/services/singleton.ts` (new),
   `src/services/http-transport.ts` (modify -- add /health route),
-  `src/index.ts` (modify -- call singleton check),
+  `src/index.ts` (modify -- call singleton check + lock),
   `tests/singleton.test.ts` (new)
 - **Tier:** standard
 - **Done when:** Starting a second fleet HTTP instance prints the URL of
-  the running instance and exits cleanly (exit 0). Stale server.json
-  files (dead PID or unresponsive port) are cleaned up. /health endpoint
+  the running instance and exits cleanly (exit 0). Two simultaneous
+  startups are serialized by the lock file -- exactly one wins. Stale
+  server.json and stale lock files are cleaned up. /health endpoint
   responds with status JSON. Tests pass.
-- **Blockers:** Task 4 (server.json write/read).
+- **Blockers:** Task 5 (server.json write/read, SIGINT handlers).
 
 #### VERIFY: Server Refactor + Dual Transport Startup
 - Run full test suite
@@ -201,18 +286,18 @@ add the --transport flag, implement singleton lifecycle detection.
   written; start second instance, confirm it detects and exits; kill
   fleet, confirm server.json cleaned up; start fleet --transport stdio,
   confirm it works as before
-- Report: both startup paths work, singleton detection works, no
-  regressions
+- Report: both startup paths work, singleton detection works, lock
+  prevents races, no regressions
 
 ---
 
 ### Phase 3: Event Wiring + Client Configuration
 
 Goal: Wire the motivating use case (credential_store_set completion
-event) and update the install command to register SSE/HTTP transport
-config for all providers.
+event), update the install command with concrete provider configs, and
+validate Gemini client compatibility.
 
-#### Task 6: Wire credential_store_set Completion Event
+#### Task 7: Wire credential_store_set Completion Event
 
 - **Change:** In `src/services/auth-socket.ts`, import `fleetEvents` from
   `./event-bus.js`. After `waiter.resolve(pending.encryptedPassword)` on
@@ -235,74 +320,122 @@ config for all providers.
   Existing auth-socket tests still pass (no regression).
 - **Blockers:** Task 1 (event bus).
 
-#### Task 7: Update Install Command for SSE/HTTP Config
+#### Task 8: Update Install Command with Provider-Specific Configs
 
-- **Change:** Modify `src/cli/install.ts` to support SSE/HTTP transport
-  registration. Add `--transport <sse|stdio>` flag to the install
-  command (default: `sse`).
+- **Change:** Modify `src/cli/install.ts` to support HTTP transport
+  registration. Add `--transport <http|stdio>` flag to the install
+  command (default: `http`).
 
-  When transport is `sse`:
-  - Claude: determine URL by reading `server.json` if fleet is running,
-    else use a well-known default like `http://localhost:0/mcp` (fleet
-    will write actual URL on first start). Use `claude mcp add` with
-    the appropriate transport flag (`--transport sse` or
-    `--transport http` depending on Task 2's SDK transport decision).
-    Remove the old stdio registration first.
-  - Gemini: update `mergeGeminiConfig()` to write URL-based config:
-    `{ url: "<fleet-url>", transportType: "sse" }` instead of
-    `{ command, args }`. Keep old function signature for stdio fallback.
-  - Codex: update `mergeCodexConfig()` similarly.
-  - Copilot: update `mergeCopilotConfig()` similarly.
+  Default port: 7523 (from `DEFAULT_PORT` in paths.ts, overridable via
+  `APRA_FLEET_PORT` env var). The fleet URL used in configs:
+  `http://localhost:${port}/mcp` where `port` is read from `server.json`
+  if fleet is running, else `DEFAULT_PORT`.
 
-  When transport is `stdio`: existing behavior unchanged.
+  Concrete provider config changes when `--transport http`:
 
-  Handle the chicken-and-egg problem: if fleet is not yet running when
-  install runs (first install), the URL is unknown. Options:
-  (a) start fleet in the background during install, read server.json;
-  (b) use a fixed well-known port (e.g., 17239) with fallback to random;
-  (c) write a placeholder and have fleet update the config on first HTTP
-  start. Decision: option (b) -- use a default port (configurable via
-  APRA_FLEET_PORT env var) so the URL is predictable at install time.
-  The HTTP server tries this port first, falls back to random if busy.
+  **Claude** -- use `claude mcp add` with `--transport http`:
+  ```
+  claude mcp remove apra-fleet --scope user   (best-effort, ignore error)
+  claude mcp add --scope user --transport http apra-fleet http://localhost:7523/mcp
+  ```
+  This writes to `~/.claude.json` under `mcpServers`:
+  ```
+  "apra-fleet": {
+    "type": "streamable-http",
+    "url": "http://localhost:7523/mcp"
+  }
+  ```
 
-- **Files:** `src/cli/install.ts` (modify),
-  `src/services/http-transport.ts` (modify -- accept preferred port),
-  `src/paths.ts` (add DEFAULT_PORT constant)
+  **Gemini** -- update `mergeGeminiConfig()` to write `httpUrl` format
+  to `~/.gemini/settings.json`:
+  ```
+  "mcpServers": {
+    "apra-fleet": {
+      "httpUrl": "http://localhost:7523/mcp",
+      "trust": true
+    }
+  }
+  ```
+  When `--transport stdio`, keep existing format:
+  `{ "command": "...", "args": [...], "trust": true }`.
+
+  **Copilot** -- update `mergeCopilotConfig()` to write URL-based format
+  to the Copilot settings.json:
+  ```
+  "mcpServers": {
+    "apra-fleet": {
+      "url": "http://localhost:7523/mcp",
+      "type": "http"
+    }
+  }
+  ```
+  When `--transport stdio`, keep existing format:
+  `{ "command": "...", "args": [...] }`.
+
+  **Codex** -- update `mergeCodexConfig()` to write URL-based format
+  to Codex settings.toml. Codex MCP config uses `url` key in the
+  `[mcp_servers.apra-fleet]` TOML table:
+  ```
+  [mcp_servers.apra-fleet]
+  url = "http://localhost:7523/mcp"
+  ```
+  When `--transport stdio`, keep existing format:
+  `{ "command": "...", "args": [...] }`.
+
+  When transport is `stdio`: ALL providers keep existing behavior --
+  command+args config format, `claude mcp add` without `--transport`.
+
+- **Files:** `src/cli/install.ts` (modify)
 - **Tier:** standard
 - **Done when:** `apra-fleet install` registers the MCP server with
-  SSE/HTTP transport config for the chosen provider (URL-based, not
-  command-based). `apra-fleet install --transport stdio` registers with
-  stdio config as before. Tests pass.
-- **Blockers:** Task 2 (transport type decision), Task 4 (server.json).
+  HTTP transport config for the chosen provider (URL-based config
+  matching the exact formats above). `apra-fleet install --transport
+  stdio` registers with stdio config as before. Unit tests verify the
+  correct config shape is written for each provider x transport
+  combination.
+- **Blockers:** Task 2 (HTTP transport), Task 5 (server.json / port).
 
-#### Task 8: Integration Tests for SSE Transport Path
+#### Task 9: Integration Tests + Gemini Client Verification
 
 - **Change:** Write integration tests in `tests/transport-integration.test.ts`
-  that exercise the full SSE/HTTP path end-to-end:
+  that exercise the full HTTP transport path end-to-end:
   (a) Start HTTP server with tools registered, connect an MCP client
-  (using the SDK's client-side transport), call the `version` tool,
-  verify correct response.
+  using the SDK's `StreamableHTTPClientTransport`, call the `version`
+  tool, verify correct response.
   (b) Connect a client, trigger a `credential:stored` event on the
   event bus, verify the client receives a `notifications/message`
-  notification via the SSE stream.
+  notification.
   (c) Connect two clients concurrently, emit an event, verify BOTH
   receive the notification.
   (d) Start with `--transport stdio` (or simulate), verify tool calls
   work via stdio (regression test).
   (e) Verify server binds to 127.0.0.1 only (not 0.0.0.0).
+  (f) **Gemini client compatibility test:** Connect to the fleet
+  StreamableHTTP endpoint using the same client transport that Gemini
+  CLI uses (`StreamableHTTPClientTransport` from the MCP SDK). Perform
+  an initialize handshake and a tool call. This validates that Gemini's
+  client path works against our server, independent of the open Gemini
+  bug (google-gemini/gemini-cli#5268). If this test fails, document the
+  failure mode and whether it is a fleet-side or Gemini-side issue.
+  Log the Gemini bug reference in a code comment on the test.
+
 - **Files:** `tests/transport-integration.test.ts` (new)
 - **Tier:** standard
 - **Done when:** All integration tests pass. Both transports verified
   end-to-end. Notification broadcast to multiple clients confirmed.
+  Gemini-compatible client test passes (or failure is documented as a
+  known Gemini-side issue with the bug reference).
 - **Blockers:** All previous tasks.
 
 #### VERIFY: Event Wiring + Client Configuration
 - Run full test suite
 - Confirm credential_store_set event flows from auth-socket through
   event bus to SSE stream notification
-- Confirm install command generates correct config for all providers
-  in both transport modes
-- Report: integration test results, any provider-specific config issues
+- Confirm install command generates correct config for all four
+  providers in both transport modes
+- Confirm Gemini client compatibility test result
+- Report: integration test results, Gemini bug status, any
+  provider-specific config issues
 
 ---
 
@@ -311,16 +444,17 @@ config for all providers.
 Goal: Update docs and help text for the new transport, event bus, and
 migration path.
 
-#### Task 9: Documentation Updates
+#### Task 10: Documentation Updates
 
 - **Change:**
   - Update `README.md`: add a "Transport" section documenting the
-    `--transport` flag (`sse` default, `stdio` fallback), the singleton
+    `--transport` flag (`http` default, `stdio` fallback), the singleton
     model (one fleet service per machine, multiple clients connect),
-    the `server.json` file, and the event bus concept.
+    the `server.json` file, the default port (7523), and the event bus
+    concept.
   - Update `docs/architecture.md`: add a "Transport Layer" section
-    describing the HTTP+SSE architecture, session management, event bus
-    flow from subsystem -> event bus -> SSE notification.
+    describing the HTTP+SSE architecture, per-session McpServer model,
+    event bus flow from subsystem -> event bus -> notification.
   - Update `--help` text in `src/index.ts` to show the `--transport`
     flag and its values.
   - Add a migration note: existing stdio users need to re-run
@@ -349,16 +483,16 @@ migration path.
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| R1: Claude Code / Gemini MCP clients may not support StreamableHTTP transport type (`"type": "streamableHttp"`), only legacy SSE (`"type": "sse"`) | High | Task 2 validates client compatibility first. If StreamableHTTP is unsupported, fall back to SSEServerTransport with manual per-session routing (GET /sse + POST /messages). The MCP SDK includes an sseAndStreamableHttpCompatibleServer example for dual-protocol support. |
-| R2: SSEServerTransport is deprecated in the MCP SDK; future SDK versions may remove it | Med | StreamableHTTPServerTransport is the primary target. SSE is fallback only if R1 forces it. Pin SDK version in package.json if needed; track deprecation timeline. |
-| R3: Singleton PID detection unreliable (zombie processes, PID reuse, Windows edge cases) | Med | Double-check: verify PID alive via process.kill(pid, 0) AND verify port responds to /health HTTP endpoint. Both must pass to consider the instance alive. Stale server.json is deleted and a fresh instance started. |
-| R4: Port conflict on the default port | Low | Try default port first, fall back to port 0 (OS-assigned random available). APRA_FLEET_PORT env var lets users override. Retry once on EADDRINUSE before falling back. |
-| R5: Backward compatibility -- existing stdio users must not be broken | High | stdio code paths are never modified or removed. --transport stdio selects the legacy path. Install --transport stdio preserves current registration behavior. Full regression tests on the stdio path (Task 8d). |
-| R6: Notification format may not match MCP spec for notifications/message | Med | Use the McpServer's built-in `server.server.sendLoggingMessage()` which constructs spec-compliant notification messages. Do not hand-roll JSON-RPC notification payloads. Validate format in integration tests. |
-| R7: Cross-platform server.json path and PID handling | Med | Use FLEET_DIR (already cross-platform via paths.ts). Use path.join for all paths. process.kill(pid, 0) works cross-platform in Node.js. Auth socket already handles Windows named pipes vs Unix sockets -- same approach for singleton detection. |
-| R8: HTTP server security -- localhost-only binding required | High | Bind to 127.0.0.1 explicitly, never 0.0.0.0. Verify in integration tests (Task 8e). No TLS or HTTP auth in this sprint (out of scope per requirements; localhost-only binding is the security boundary). |
-| R9: Per-session McpServer model -- memory and CPU overhead of many server instances | Low | McpServer is lightweight (protocol handler + tool map). Tool handlers are stateless functions shared across sessions. Expected concurrency is low (2-5 local LLM clients). No concern at this scale. |
-| R10: Chicken-and-egg: install needs fleet URL but fleet may not be running yet | Med | Use a default well-known port (configurable via APRA_FLEET_PORT env var) so the URL is predictable at install time. HTTP server tries this port first, falls back to random if busy. If fallback port is used, server.json records the actual port for clients to discover. |
+| R1: StreamableHTTPServerTransport transitive dep on @hono/node-server fails in SEA binary | High | Task 3 validates SEA compatibility in Phase 1. esbuild already bundles the dep (not in external list). If it fails, add to externals and ship as side file, or patch the import. Caught before any downstream work depends on it. |
+| R2: Gemini CLI StreamableHTTP client does not work against our server (open bug google-gemini/gemini-cli#5268) | High | Task 9f runs a Gemini-compatible client test. If it fails, document whether the issue is fleet-side (fixable) or Gemini-side (external blocker). Fleet server remains spec-compliant regardless. |
+| R3: Singleton startup race -- two processes both detect "no instance" and both start | High | Task 6 uses atomic file creation (`fs.openSync(path, 'wx')` / O_CREAT+O_EXCL) as a startup lock. Exactly one process wins. Stale locks (>60s, crashed process) are cleaned up and retried. |
+| R4: Singleton PID detection unreliable (zombie processes, PID reuse, Windows edge cases) | Med | Double-check: verify PID alive via process.kill(pid, 0) AND verify port responds to /health HTTP endpoint. Both must pass. Stale server.json is deleted and fresh instance started. |
+| R5: Port conflict on the default port (7523) | Low | Try default port first, fall back to port 0 (OS-assigned random). APRA_FLEET_PORT env var lets users override. server.json records the actual port for discovery. |
+| R6: Backward compatibility -- existing stdio users must not be broken | High | stdio code paths are never modified or removed. --transport stdio selects the legacy path. Install --transport stdio preserves current registration. Full regression tests (Task 9d). |
+| R7: Notification format may not match MCP spec for notifications/message | Med | Use McpServer's built-in `server.server.sendLoggingMessage()` which constructs spec-compliant notifications. Do not hand-roll JSON-RPC payloads. Validate in integration tests. |
+| R8: Cross-platform server.json path and PID handling | Med | Use FLEET_DIR (already cross-platform via paths.ts). process.kill(pid, 0) works cross-platform in Node.js. fs.openSync with 'wx' flag works cross-platform. Auth socket already handles Windows named pipes vs Unix sockets. |
+| R9: HTTP server security -- localhost-only binding required | High | Bind to 127.0.0.1 explicitly, never 0.0.0.0. Verify in integration tests (Task 9e). No TLS or HTTP auth in this sprint (out of scope; localhost-only is the security boundary). |
+| R10: Per-session McpServer model -- memory overhead of many server instances | Low | McpServer is lightweight (protocol handler + tool map). Tool handlers are stateless shared functions. Expected concurrency: 2-5 local LLM clients. No concern at this scale. |
 
 ---
 
@@ -367,7 +501,7 @@ migration path.
 Phase boundaries are by cohesion, not count. Tiers are monotonically
 non-decreasing within each phase:
 
-- Phase 1: cheap, standard -- OK
+- Phase 1: cheap, standard, standard -- OK
 - Phase 2: cheap, standard, standard -- OK
 - Phase 3: cheap, standard, standard -- OK
 - Phase 4: cheap -- OK

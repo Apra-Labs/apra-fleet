@@ -96,6 +96,18 @@ Implications the plan must address:
 - Remote/non-localhost server hardening (TLS, auth tokens on the HTTP endpoint) beyond
   what localhost binding provides -- follow-up.
 
+## Transport Decision (user decision 2026-05-19)
+Use the MCP SDK's `StreamableHTTPServerTransport`. Verified that BOTH clients support
+Streamable HTTP as of 2026-05: Claude Code (`claude mcp add --transport http`, accepts
+`streamable-http` alias; Anthropic's recommended transport since Apr 2026, SSE deprecated)
+and Gemini CLI (`httpUrl` config -> `StreamableHTTPClientTransport`; `gemini mcp add
+--transport http`). The condition "use StreamableHTTPServerTransport only if both Claude
+and Gemini support it today" is satisfied.
+- Do NOT carry the deprecated `SSEServerTransport` as a compat fallback -- unnecessary
+  surface. The transport set is: StreamableHTTP (default singleton) + stdio (backward-compat).
+- A task must include a real Gemini-client connection test against the StreamableHTTP
+  endpoint -- see open Gemini bug google-gemini/gemini-cli#5268; do not assume it works.
+
 ## Constraints
 - Cross-platform: Windows / Linux / macOS, Claude + Gemini providers -- no platform or
   provider assumptions. Random-port + well-known-file approach must work on all three OSes.
