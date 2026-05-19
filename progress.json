@@ -1,0 +1,25 @@
+{
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | completed | blocked"
+  },
+  "project": "apra-fleet-sse",
+  "plan_file": "PLAN.md",
+  "created": "2026-05-19",
+  "tasks": [
+    { "id": 1,  "step": "T1: Typed Event Bus", "type": "work", "status": "completed", "tier": "cheap", "commit": "4ed4786", "notes": "TypedEventBus singleton with FleetEventMap interface; 11 tests pass; all 1286 tests pass" },
+    { "id": 2,  "step": "T2: HTTP Transport with Multi-Session Support", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 3,  "step": "T3: SEA Binary Compatibility Verification", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 4,  "step": "VERIFY: Core Abstractions + Risk Validation", "type": "verify", "status": "pending", "commit": "", "notes": "" },
+    { "id": 5,  "step": "T4: Extract Tool Registration into Shared Module", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 6,  "step": "T5: --transport Flag + Dual Startup Paths", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 7,  "step": "T6: Singleton Lifecycle Detection with Atomic Claim", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 8,  "step": "VERIFY: Server Refactor + Dual Transport Startup", "type": "verify", "status": "pending", "commit": "", "notes": "" },
+    { "id": 9,  "step": "T7: Wire credential_store_set Completion Event", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 10, "step": "T8: Update Install Command with Provider-Specific Configs", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 11, "step": "T9: Integration Tests + Gemini Client Verification", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 12, "step": "VERIFY: Event Wiring + Client Configuration", "type": "verify", "status": "pending", "commit": "", "notes": "" },
+    { "id": 13, "step": "T10: Documentation Updates", "type": "work", "status": "pending", "tier": "cheap", "commit": "", "notes": "" },
+    { "id": 14, "step": "VERIFY: Documentation", "type": "verify", "status": "pending", "commit": "", "notes": "" }
+  ]
+}
