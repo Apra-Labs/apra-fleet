@@ -379,9 +379,15 @@ export async function collectOobApiKey(
 
 export async function collectOobConfirm(
   credentialName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn },
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; command?: string; memberName?: string },
 ): Promise<{ confirmed: boolean; terminalUnavailable: boolean }> {
-  const result = await collectOobInput('confirm', credentialName, 'execute_command', _opts);
+  const additionalArgs: string[] = [];
+  if (_opts?.command) additionalArgs.push('--context', _opts.command.slice(0, 200));
+  if (_opts?.memberName) additionalArgs.push('--on', _opts.memberName);
+  const result = await collectOobInput('confirm', credentialName, 'execute_command', {
+    ...(_opts ?? {}),
+    additionalArgs: additionalArgs.length > 0 ? additionalArgs : undefined,
+  });
   if (result.fallback) return { confirmed: false, terminalUnavailable: true };
   return { confirmed: Boolean(result.password), terminalUnavailable: false };
 }
@@ -393,6 +399,14 @@ async function getAuthCommand(memberName: string, extraArgs?: string[]): Promise
   let cmdArgs: string[];
   if (isConfirm) {
     cmdArgs = ['auth', '--confirm', memberName];
+    const ctxIdx = extra.indexOf('--context');
+    if (ctxIdx !== -1 && ctxIdx + 1 < extra.length) {
+      cmdArgs.push('--context', extra[ctxIdx + 1]);
+    }
+    const onIdx = extra.indexOf('--on');
+    if (onIdx !== -1 && onIdx + 1 < extra.length) {
+      cmdArgs.push('--on', extra[onIdx + 1]);
+    }
   } else {
     cmdArgs = ['secret', '--set', memberName];
     const promptIdx = extra.indexOf('--prompt');
@@ -416,9 +430,19 @@ async function getAuthCommand(memberName: string, extraArgs?: string[]): Promise
   return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
-function buildHeadlessFallback(memberName: string, reason: string): string {
+function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }, extraArgs?: string[]): string {
   const productName = getConfig().productName;
-  return `fallback:${reason}\n\nRun this in a separate terminal:\n  ! ${productName} auth ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+  const isConfirm = extraArgs?.includes('--confirm') ?? false;
+  let contextLines = '';
+  if (context?.onMember && context?.command) {
+    contextLines = `\n\n  This command on ${context.onMember} will send credential "${memberName}" over the network:\n  ${context.command}`;
+  } else if (context?.command) {
+    contextLines = `\n\n  Command: ${context.command}`;
+  }
+  if (isConfirm) {
+    return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! ${productName} auth --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+  }
+  return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to provide the credential:\n  ! ${productName} secret --set ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
 }
 
 export function hasGraphicalDisplay(): boolean {
@@ -451,27 +475,35 @@ export function launchAuthTerminal(
   const platform = process.platform;
   const productName = getConfig().productName;
 
+  // Extract context args for headless fallback messages
+  const ctxIdx = extraArgs?.indexOf('--context') ?? -1;
+  const onIdx = extraArgs?.indexOf('--on') ?? -1;
+  const fallbackContext = {
+    command: ctxIdx !== -1 && extraArgs && ctxIdx + 1 < extraArgs.length ? extraArgs[ctxIdx + 1] : undefined,
+    onMember: onIdx !== -1 && extraArgs && onIdx + 1 < extraArgs.length ? extraArgs[onIdx + 1] : undefined,
+  };
+
   // Validate memberName to prevent command injection (AppleScript / shell)
   if (!/^[a-zA-Z0-9_-]+$/.test(memberName)) {
-    return buildHeadlessFallback(memberName, 'Invalid member name — only alphanumeric, underscore, and hyphen characters are allowed.');
+    return buildHeadlessFallback(memberName, 'Invalid member name — only alphanumeric, underscore, and hyphen characters are allowed.', fallbackContext, extraArgs);
   }
 
   // Perform synchronous headless checks before kicking off the async launch
   if (platform === 'win32' && !hasInteractiveDesktop()) {
-    return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).');
+    return buildHeadlessFallback(memberName, 'No interactive desktop session detected (SSH or service context).', fallbackContext, extraArgs);
   }
   if (platform === 'linux' && !hasGraphicalDisplay()) {
-    return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).');
+    return buildHeadlessFallback(memberName, 'No graphical display detected (SSH or headless session).', fallbackContext, extraArgs);
   }
   if (platform === 'darwin' && isSSHSession()) {
-    return buildHeadlessFallback(memberName, 'SSH session detected — no terminal emulator available (SSH_TTY is set).');
+    return buildHeadlessFallback(memberName, 'SSH session detected — no terminal emulator available (SSH_TTY is set).', fallbackContext, extraArgs);
   }
 
   // For Linux with a display, check for a terminal emulator synchronously so we can return a meaningful fallback
   if (platform === 'linux') {
     const terminal = findLinuxTerminal();
     if (!terminal) {
-      return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${productName} auth ${memberName}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+      return buildHeadlessFallback(memberName, 'Could not find a terminal emulator.', fallbackContext, extraArgs);
     }
   }
 

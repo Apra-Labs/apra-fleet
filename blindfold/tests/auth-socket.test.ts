@@ -11,6 +11,7 @@ import {
   cleanupAuthSocket,
   collectOobPassword,
   collectOobApiKey,
+  collectOobConfirm,
   cancelPendingAuth,
   hasGraphicalDisplay,
   hasInteractiveDesktop,
@@ -495,6 +496,54 @@ describe('auth-socket', () => {
     });
   });
 
+  describe('collectOobConfirm', () => {
+    afterEach(async () => {
+      await cleanupAuthSocket();
+    });
+
+    it('passes --context and --on in extraArgs to launchFn', async () => {
+      let capturedExtraArgs: string[] | undefined;
+      const launchFn = vi.fn().mockImplementation((_name: string, extraArgs: string[], _onExit: (code: number | null) => void) => {
+        capturedExtraArgs = extraArgs;
+        return 'fallback:No terminal';
+      });
+
+      await collectOobConfirm('my-cred', {
+        command: 'git push origin main',
+        memberName: 'alice',
+        launchFn,
+      });
+
+      expect(capturedExtraArgs).toBeDefined();
+      const ctxIdx = capturedExtraArgs!.indexOf('--context');
+      expect(ctxIdx).toBeGreaterThanOrEqual(0);
+      expect(capturedExtraArgs![ctxIdx + 1]).toBe('git push origin main');
+      const onIdx = capturedExtraArgs!.indexOf('--on');
+      expect(onIdx).toBeGreaterThanOrEqual(0);
+      expect(capturedExtraArgs![onIdx + 1]).toBe('alice');
+    });
+
+    it('slices --context to 200 chars for a long command', async () => {
+      let capturedExtraArgs: string[] | undefined;
+      const launchFn = vi.fn().mockImplementation((_name: string, extraArgs: string[], _onExit: (code: number | null) => void) => {
+        capturedExtraArgs = extraArgs;
+        return 'fallback:No terminal';
+      });
+
+      const longCommand = 'x'.repeat(300);
+      await collectOobConfirm('my-cred', {
+        command: longCommand,
+        memberName: 'alice',
+        launchFn,
+      });
+
+      const ctxIdx = capturedExtraArgs!.indexOf('--context');
+      expect(ctxIdx).toBeGreaterThanOrEqual(0);
+      expect(capturedExtraArgs![ctxIdx + 1]).toHaveLength(200);
+      expect(capturedExtraArgs![ctxIdx + 1]).toBe('x'.repeat(200));
+    });
+  });
+
   describe('hasGraphicalDisplay', () => {
     afterEach(() => {
       vi.unstubAllEnvs();
@@ -606,6 +655,48 @@ describe('auth-socket', () => {
 
       await expect(waitForPassword('pid-clear-timeout', 100)).rejects.toThrow();
       expect(hasPendingAuth('pid-clear-timeout')).toBe(false);
+    });
+  });
+
+  describe('buildHeadlessFallback -- mode-aware (via launchAuthTerminal)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    });
+
+    function stubHeadless() {
+      if (process.platform === 'win32') {
+        vi.stubEnv('SESSIONNAME', '');
+      } else if (process.platform === 'darwin') {
+        vi.stubEnv('SSH_TTY', '/dev/ttys000');
+      } else {
+        vi.stubEnv('DISPLAY', '');
+        vi.stubEnv('WAYLAND_DISPLAY', '');
+      }
+    }
+
+    it('emits --set and "provide the credential" wording for credential-collection mode (no extraArgs)', () => {
+      stubHeadless();
+      const msg = launchAuthTerminal('my-member', [], () => {});
+      expect(msg).toContain('! blindfold secret --set my-member');
+      expect(msg).toContain('to provide the credential:');
+      expect(msg).not.toContain('--confirm');
+    });
+
+    it('emits --set and "provide the credential" wording for API-key mode (--api-key flag)', () => {
+      stubHeadless();
+      const msg = launchAuthTerminal('my-member', ['--api-key'], () => {});
+      expect(msg).toContain('! blindfold secret --set my-member');
+      expect(msg).toContain('to provide the credential:');
+      expect(msg).not.toContain('--confirm');
+    });
+
+    it('emits --confirm and "to confirm" wording for egress-confirm mode', () => {
+      stubHeadless();
+      const msg = launchAuthTerminal('my-member', ['--confirm'], () => {});
+      expect(msg).toContain('! blindfold auth --confirm my-member');
+      expect(msg).toContain('to confirm:');
+      expect(msg).not.toContain('--set');
     });
   });
 

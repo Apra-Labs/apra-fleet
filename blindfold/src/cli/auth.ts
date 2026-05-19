@@ -1,4 +1,5 @@
 import net from 'node:net';
+import readline from 'node:readline';
 import { getSocketPath } from '../auth-socket.js';
 
 function readPassword(prompt: string): Promise<string> {
@@ -65,9 +66,30 @@ export async function runAuth(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(memberName)) {
+    console.error('Error: member name must contain only alphanumeric, underscore, or hyphen characters (max 64).');
+    process.exit(1);
+  }
+
   if (isConfirm) {
-    console.error(`\nblindfold — Confirm operation\n`);
-    console.error(`  Credential: ${memberName}\n`);
+    const contextIdx = args.indexOf('--context');
+    const rawCommandContext = contextIdx !== -1 && contextIdx + 1 < args.length ? args[contextIdx + 1] : undefined;
+    const onIdx = args.indexOf('--on');
+    const rawMemberContext = onIdx !== -1 && onIdx + 1 < args.length ? args[onIdx + 1] : undefined;
+    const sanitize = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, ' ');
+    const commandContext = rawCommandContext !== undefined ? sanitize(rawCommandContext) : undefined;
+    const memberContext = rawMemberContext !== undefined ? sanitize(rawMemberContext) : undefined;
+
+    console.error(`\nblindfold — Network Egress Confirmation\n`);
+    if (commandContext && memberContext) {
+      console.error(`  This command on ${memberContext} will send credential "${memberName}" over the network:`);
+      console.error(`  ${commandContext}`);
+    } else {
+      console.error(`  Credential "${memberName}" will be sent over the network.`);
+      if (memberContext) console.error(`  Member:  ${memberContext}`);
+      if (commandContext) console.error(`  Command: ${commandContext}`);
+    }
+    console.error('');
   } else {
     console.error(`\nblindfold — Enter password\n`);
     console.error(`  Name: ${memberName}\n`);
@@ -75,7 +97,19 @@ export async function runAuth(args: string[]): Promise<void> {
 
   let password: string;
   try {
-    password = await readPassword(isConfirm ? '  Confirm (y/n): ' : '  Password: ');
+    if (isConfirm) {
+      password = await new Promise<string>((resolve, reject) => {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        rl.question('  Type "yes" to allow network access: ', (answer) => {
+          rl.close();
+          resolve(answer);
+        });
+        rl.on('close', () => resolve(''));
+        rl.on('error', reject);
+      });
+    } else {
+      password = await readPassword('  Password: ');
+    }
   } catch {
     console.error('Cancelled.');
     process.exit(1);
@@ -88,11 +122,11 @@ export async function runAuth(args: string[]): Promise<void> {
   }
 
   if (isConfirm) {
-    password = password.toLowerCase() === 'y' ? 'confirmed' : '';
-    if (!password) {
+    if (password.toLowerCase() !== 'yes') {
       console.error('  ✗ Denied.');
       process.exit(1);
     }
+    password = 'yes';
   }
 
   const sockPath = getSocketPath();
