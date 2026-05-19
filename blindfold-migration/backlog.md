@@ -2,6 +2,23 @@
 
 _(MEDIUM/LOW findings and deferred items land here as the sprint progresses.)_
 
+## Phase 1 in-flight incidents
+
+- **INC-1 (HIGH, resolved):** During Phase 1 verification, `npm test`
+  wiped `~/.apra-fleet/data/registry.json` (all 6 live members) and
+  replaced it with 86 fake test agents. Root cause: paths.ts captures
+  FLEET_DIR at module-load time, but `tests/setup.ts` set
+  APRA_FLEET_DATA_DIR via top-level code that ran AFTER its hoisted
+  imports (and therefore after some test files' transitive
+  paths.ts load). Recovered the 6 members from PM-captured data and
+  hardened test isolation in commit `eb65946`: vitest.config.ts now
+  sets the env var at config load time AND tests/setup.ts fails fast
+  with exit 2 if the env var is not pointing at /tmp.
+- **INC-2 (MEDIUM, deferred):** The polluted registry backup is at
+  `~/.apra-fleet/data/registry.json.polluted-2026-05-19`. Keep until
+  Phase 5 verification; delete during sprint cleanup if not useful
+  for forensics.
+
 ## Phase 0 review (commit 3918add)
 
 - **BL-1 (MEDIUM):** `npm install` symlinks `node_modules/blindfold -> ../blindfold`
