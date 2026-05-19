@@ -1,11 +1,15 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { initBlindfold } from '../config.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
 
 if (command === '--version' || command === '-v') {
-  console.log('blindfold 0.1.0');
+  const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../package.json'), 'utf-8'));
+  console.log(`blindfold ${pkg.version}`);
   process.exit(0);
 }
 
