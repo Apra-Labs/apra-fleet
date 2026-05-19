@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
 import { serverVersion } from './version.js';
 import { logLine, logError } from './utils/log-helpers.js';
 
@@ -15,13 +16,16 @@ if (arg === '--help' || arg === '-h') {
   console.log(`apra-fleet ${serverVersion}
 
 Usage:
-  apra-fleet                  Start MCP server (stdio)
+  apra-fleet                         Start MCP server (HTTP, default)
+  apra-fleet --transport http        Start MCP server (HTTP)
+  apra-fleet --transport stdio       Start MCP server (stdio)
+  apra-fleet --stdio                 Start MCP server (stdio, alias for --transport stdio)
   apra-fleet update           Check for and install latest update
   apra-fleet update --check   Check for update
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill pm        Install PM skill (also installs fleet -- PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
@@ -84,16 +88,38 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
-} else if (arg === undefined || arg === '--stdio') {
-  // Default: start MCP server
-  startServer();
+} else if (arg === undefined || arg === '--stdio' || arg === '--transport') {
+  // Server startup: parse transport flag
+  const transport = resolveTransport(process.argv.slice(2));
+  if (transport === 'invalid') {
+    const val = process.argv[3];
+    console.error(`Error: invalid --transport value '${val}'. Use 'http' or 'stdio'.`);
+    process.exit(1);
+  }
+  if (transport === 'stdio') {
+    startStdioServer();
+  } else {
+    startHttpServer();
+  }
 } else {
   console.error(`Error: unknown option '${arg}'`);
   console.error(`\nRun 'apra-fleet --help' for usage.`);
   process.exit(1);
 }
 
-async function startServer() {
+function resolveTransport(args: string[]): 'http' | 'stdio' | 'invalid' {
+  if (args.length === 0) return 'http';
+  if (args[0] === '--stdio') return 'stdio';
+  if (args[0] === '--transport') {
+    const val = args[1];
+    if (val === 'http') return 'http';
+    if (val === 'stdio') return 'stdio';
+    return 'invalid';
+  }
+  return 'invalid';
+}
+
+async function startStdioServer() {
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
 
@@ -101,7 +127,7 @@ async function startServer() {
   const { loadOnboardingState, resetSessionFlags } = await import('./services/onboarding.js');
   const { VERBATIM_INSTRUCTIONS } = await import('./onboarding/text.js');
   const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
-  // Pass current member count so upgrade detection works: existing registry + no onboarding.json → skip banner
+  // Pass current member count so upgrade detection works: existing registry + no onboarding.json -> skip banner
   loadOnboardingState(getAgentsForStartup().length);
   resetSessionFlags();
 
@@ -112,7 +138,7 @@ async function startServer() {
   const { purgeExpiredCredentials } = await import('./services/credential-store.js');
   const { getStallDetector } = await import('./services/stall/index.js');
 
-  // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
+  // serverVersion is "v0.0.1_abc123" -- strip 'v' prefix for semver-like version field
   const versionNum = serverVersion.startsWith('v') ? serverVersion.slice(1) : serverVersion;
 
   let capturedClientInfo: any = null;
@@ -149,7 +175,7 @@ async function startServer() {
   const clientStr = capturedClientInfo?.name ? ` client=${capturedClientInfo.name}` : '';
   const versionStr = capturedClientInfo?.version ? ` version=${capturedClientInfo.version}` : '';
   const pidStr = ` pid=${process.pid} ppid=${process.ppid}`;
-  logLine('startup', `apra-fleet ${serverVersion} started${clientStr}${versionStr}${pidStr} FLEET_DIR=${FLEET_DIR}`);
+  logLine('startup', `apra-fleet ${serverVersion} started transport=stdio${clientStr}${versionStr}${pidStr} FLEET_DIR=${FLEET_DIR}`);
 
   idleManager.start();
   void cleanupStaleTasks();
@@ -159,4 +185,64 @@ async function startServer() {
   const { cleanupAuthSocket } = await import('./services/auth-socket.js');
   process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
   process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
+}
+
+async function startHttpServer() {
+  const { loadOnboardingState, resetSessionFlags } = await import('./services/onboarding.js');
+  const { getAllAgents: getAgentsForStartup } = await import('./services/registry.js');
+  // Pass current member count so upgrade detection works: existing registry + no onboarding.json -> skip banner
+  loadOnboardingState(getAgentsForStartup().length);
+  resetSessionFlags();
+
+  const { createHttpTransport } = await import('./services/http-transport.js');
+  const { registerAllTools } = await import('./services/tool-registry.js');
+  const { FLEET_DIR, SERVER_INFO_PATH } = await import('./paths.js');
+  const { closeAllConnections } = await import('./services/ssh.js');
+  const { idleManager } = await import('./services/cloud/idle-manager.js');
+  const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
+  const { checkForUpdate } = await import('./services/update-check.js');
+  const { purgeExpiredCredentials } = await import('./services/credential-store.js');
+  const { getStallDetector } = await import('./services/stall/index.js');
+  const { cleanupAuthSocket } = await import('./services/auth-socket.js');
+  const { setHttpHandle } = await import('./tools/shutdown-server.js');
+
+  const handle = await createHttpTransport({ registerTools: registerAllTools });
+
+  // Write server.json so other processes can detect this instance
+  fs.mkdirSync(FLEET_DIR, { recursive: true });
+  fs.writeFileSync(
+    SERVER_INFO_PATH,
+    JSON.stringify({
+      pid: process.pid,
+      port: handle.port,
+      url: handle.url,
+      version: serverVersion,
+      startedAt: new Date().toISOString(),
+    }),
+  );
+
+  // Make HTTP handle available to shutdown_server tool
+  setHttpHandle(handle);
+
+  const stallDetector = getStallDetector();
+  stallDetector.start();
+
+  logLine('startup', `apra-fleet ${serverVersion} started transport=http port=${handle.port} pid=${process.pid} FLEET_DIR=${FLEET_DIR}`);
+
+  idleManager.start();
+  void cleanupStaleTasks();
+  purgeExpiredCredentials();
+  void checkForUpdate();
+
+  async function shutdown() {
+    try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
+    await handle.close();
+    await cleanupAuthSocket();
+    closeAllConnections();
+    stallDetector.stop();
+    process.exit(0);
+  }
+
+  process.on('SIGINT', () => { shutdown().catch(() => process.exit(1)); });
+  process.on('SIGTERM', () => { shutdown().catch(() => process.exit(1)); });
 }

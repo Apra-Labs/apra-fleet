@@ -63,6 +63,26 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   const sessions = new Map<string, Session>();
   const startedAt = Date.now();
 
+  // LOW-1: Track event listener references for cleanup in close()
+  const eventCleanups: Array<() => void> = [];
+
+  // LOW-3: Shared handler for GET and DELETE -- both just look up session and delegate
+  async function handleSessionRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (!sessionId) {
+      res.writeHead(400);
+      res.end('Missing mcp-session-id header');
+      return;
+    }
+    const session = sessions.get(sessionId);
+    if (!session) {
+      res.writeHead(404);
+      res.end('Session not found');
+      return;
+    }
+    await session.transport.handleRequest(req, res);
+  }
+
   const httpServer = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
 
@@ -106,6 +126,11 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             sessions.set(sid, { server: sessionServer, transport: sessionTransport });
           },
           onsessionclosed: (sid) => {
+            // LOW-2: Close the McpServer when its session closes
+            const s = sessions.get(sid);
+            if (s) {
+              (s.server as any).server?.close().catch(() => {});
+            }
             sessions.delete(sid);
           },
         });
@@ -131,37 +156,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
 
-    if (req.method === 'GET') {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      if (!sessionId) {
-        res.writeHead(400);
-        res.end('Missing mcp-session-id header');
-        return;
-      }
-      const session = sessions.get(sessionId);
-      if (!session) {
-        res.writeHead(404);
-        res.end('Session not found');
-        return;
-      }
-      await session.transport.handleRequest(req, res);
-      return;
-    }
-
-    if (req.method === 'DELETE') {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      if (!sessionId) {
-        res.writeHead(400);
-        res.end('Missing mcp-session-id header');
-        return;
-      }
-      const session = sessions.get(sessionId);
-      if (!session) {
-        res.writeHead(404);
-        res.end('Session not found');
-        return;
-      }
-      await session.transport.handleRequest(req, res);
+    // LOW-3: GET and DELETE share the same session-lookup-and-delegate logic
+    if (req.method === 'GET' || req.method === 'DELETE') {
+      await handleSessionRequest(req, res);
       return;
     }
 
@@ -178,7 +175,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   ];
 
   for (const eventType of fleetEventTypes) {
-    fleetEvents.on(eventType, (payload: FleetEventMap[typeof eventType]) => {
+    const handler = (payload: FleetEventMap[typeof eventType]) => {
       const data = { event: eventType, ...(payload as object) };
       for (const [, session] of sessions) {
         session.server.sendLoggingMessage({
@@ -187,7 +184,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           data,
         }).catch(() => {});
       }
-    });
+    };
+    fleetEvents.on(eventType, handler);
+    // LOW-1: Store cleanup so close() can unsubscribe
+    eventCleanups.push(() => fleetEvents.off(eventType, handler));
   }
 
   // Start listening: try preferred port, fall back to OS-assigned port
@@ -211,6 +211,13 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     url,
     sessions,
     close(): Promise<void> {
+      // LOW-1: Unsubscribe all fleet event listeners
+      for (const cleanup of eventCleanups) cleanup();
+      // LOW-2: Close all active session McpServers before shutting down
+      for (const [, session] of sessions) {
+        (session.server as any).server?.close().catch(() => {});
+      }
+      sessions.clear();
       return new Promise((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });
