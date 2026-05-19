@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm after build & test'
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -40,3 +46,24 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: npm run build:binary
         continue-on-error: true
+
+  npm-publish:
+    name: Publish to npm
+    needs: build-and-test
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
