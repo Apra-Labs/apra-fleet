@@ -258,7 +258,7 @@ export function cleanupAuthSocket(): Promise<void> {
   return closingPromise;
 }
 
-type OobLaunchFn = (
+export type OobLaunchFn = (
   name: string,
   extraArgs: string[] | undefined,
   onExit: (code: number | null) => void,

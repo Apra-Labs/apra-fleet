@@ -132,7 +132,7 @@ describe('MCP tool handlers', () => {
         persist: false,
         network_policy: 'confirm',
         members: '*',
-      });
+      }, launchFn);
 
       await new Promise(r => setTimeout(r, 100));
       await sendPassword(getSocketPath(), 'OOB_CRED', 'my-secret-value');
@@ -143,15 +143,18 @@ describe('MCP tool handlers', () => {
     });
 
     it('returns fallback when no terminal is available', async () => {
+      const launchFn = vi.fn().mockReturnValue('fallback:no terminal available');
+
       const result = await credentialSetHandler({
         name: 'NO_TERM',
         prompt: 'Enter secret',
         persist: false,
         network_policy: 'confirm',
         members: '*',
-      });
-      // On headless CI, this will either succeed if DISPLAY is set or return a fallback
+      }, launchFn);
+
       expect(typeof result).toBe('string');
+      expect(result).not.toContain('Stored');
     });
   });
 
