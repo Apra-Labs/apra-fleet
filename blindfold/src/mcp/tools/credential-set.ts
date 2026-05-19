@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { collectOobApiKey } from '../../auth-socket.js';
+import { collectOobApiKey, type OobLaunchFn } from '../../auth-socket.js';
 import { decryptPassword } from '../../crypto.js';
 import { credentialSet } from '../../credential-store.js';
 import { getLogger } from '../../config.js';
@@ -21,8 +21,8 @@ export const credentialSetSchema = z.object({
 
 export type CredentialSetInput = z.infer<typeof credentialSetSchema>;
 
-export async function credentialSetHandler(input: CredentialSetInput): Promise<string> {
-  const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
+export async function credentialSetHandler(input: CredentialSetInput, _launchFn?: OobLaunchFn): Promise<string> {
+  const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt, launchFn: _launchFn });
 
   if (result.fallback) return result.fallback;
   if (!result.password) return `Failed: no secret received for ${input.name}. Please try again.`;
