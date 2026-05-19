@@ -24,9 +24,20 @@ The implementation adds three new layers to the existing codebase:
 3. **CLI Verbs** (`src/cli/start.ts`, `stop.ts`, `restart.ts`, `status.ts`) -- thin
    command modules wired into the existing dispatch table in `src/index.ts`. Each verb
    is idempotent. `start` goes through the service manager when a unit is installed,
-   otherwise spawns the process directly. `stop` always uses the HTTP /shutdown endpoint
-   for cross-platform graceful shutdown. `status` queries both server.json/health and the
-   service manager.
+   otherwise spawns the process directly. `stop` always uses HTTP POST /shutdown directly
+   -- it is service-agnostic (stopping the process is the same whether a service unit
+   exists or not) and never routes through the adapter. `status` queries both
+   server.json/health and the service manager.
+
+**Stop call path (unified):** The CLI `stop` verb, and all internal stop flows
+(adapter unregister, uninstall cleanup), use the same mechanism: read server.json for
+the server URL, POST /shutdown to trigger graceful exit (code 0), poll pid for up to 5s,
+fallback force-kill. Because the process exits cleanly (code 0), service managers
+configured with Restart=on-failure (systemd) and KeepAlive.SuccessfulExit=false (launchd)
+will NOT auto-restart. The adapter interface includes a `stop()` method for use within
+`unregister()` and for completeness, but the CLI stop verb bypasses the adapter -- it
+calls the POST /shutdown flow directly since the mechanism is identical regardless of
+whether a service unit is installed.
 
 **Service unit configuration by OS:**
 - **Windows:** Per-user Scheduled Task "ApraFleet" with at-logon trigger, /rl limited
@@ -101,7 +112,7 @@ url, version, uptime, active sessions, service unit state (installed/not, enable
 |---------|---------------------------------------------------------------------------------------|
 | Windows | Write wrapper.bat to BIN_DIR. `schtasks /create /tn "ApraFleet" /tr "<wrapper>" /sc onlogon /rl limited /f`. `schtasks /run /tn "ApraFleet"`. |
 | Linux   | Write unit file to ~/.config/systemd/user/apra-fleet.service. `systemctl --user daemon-reload`. `systemctl --user enable apra-fleet`. `systemctl --user start apra-fleet`. Attempt `loginctl enable-linger $USER` (warn on failure). |
-| macOS   | Write plist to ~/Library/LaunchAgents/com.apra-fleet.server.plist. `launchctl bootstrap gui/<uid> <plist>`. |
+| macOS   | Write plist to ~/Library/LaunchAgents/com.apra-fleet.server.plist. `launchctl bootout gui/<uid>/com.apra-fleet.server` (tolerate "not loaded" error). Then `launchctl bootstrap gui/<uid> <plist>`. |
 
 All: Only when --transport http (default). Skipped for --transport stdio. Skipped in
 dev mode (non-SEA). Server is running immediately after install.
@@ -194,12 +205,16 @@ any CLI verb or install integration work is done.
     WantedBy=default.target. Run `systemctl --user daemon-reload` then
     `systemctl --user enable apra-fleet`. Attempt `loginctl enable-linger $USER` and
     warn (not error) if it fails.
-  - unregister(): `systemctl --user disable apra-fleet`,
-    `systemctl --user stop apra-fleet` (tolerate not-running),
-    remove unit file, `systemctl --user daemon-reload`.
+  - unregister(): First stop the server via POST /shutdown (same as stop() above).
+    Then `systemctl --user disable apra-fleet`,
+    `systemctl --user stop apra-fleet` (tolerate not-running -- informs systemd the
+    unit is being removed), remove unit file, `systemctl --user daemon-reload`.
   - start(): `systemctl --user start apra-fleet`.
-  - stop(): `systemctl --user stop apra-fleet` (sends SIGTERM, handled gracefully by
-    existing handler). Tolerate not-running.
+  - stop(): Read server.json for URL. POST /shutdown. Wait up to 5s for process exit
+    (poll pid). Fallback: kill -TERM <pid>. This matches the Windows and macOS adapters
+    and the CLI stop verb for cross-platform consistency. (systemctl --user stop would
+    also work since it sends SIGTERM, but POST /shutdown is preferred so all three
+    adapters share the same contract.) Tolerate not-running.
   - query(): `systemctl --user is-active apra-fleet` (active/inactive/failed),
     `systemctl --user is-enabled apra-fleet` (enabled/disabled).
   - isInstalled(): Check if unit file exists at the expected path.
@@ -218,8 +233,11 @@ any CLI verb or install integration work is done.
   - register(binaryPath, args, logPath): Write a plist to
     `~/Library/LaunchAgents/com.apra-fleet.server.plist` with Label, ProgramArguments
     (array: [binaryPath, ...args]), RunAtLoad=true, KeepAlive with
-    SuccessfulExit=false, StandardOutPath=logPath, StandardErrorPath=logPath. Load via
-    `launchctl bootstrap gui/<uid> <plist-path>`.
+    SuccessfulExit=false, StandardOutPath=logPath, StandardErrorPath=logPath. Before
+    loading, call `launchctl bootout gui/<uid>/com.apra-fleet.server` and tolerate
+    "not loaded" / "no such process" errors -- this makes register() idempotent
+    (launchctl bootstrap fails with "service already loaded" if called twice without
+    bootout). Then load via `launchctl bootstrap gui/<uid> <plist-path>`.
   - unregister(): `launchctl bootout gui/<uid>/com.apra-fleet.server`. Remove plist.
     Tolerate "not loaded" error.
   - start(): `launchctl kickstart gui/<uid>/com.apra-fleet.server`.
@@ -272,15 +290,26 @@ the dispatch table in src/index.ts.
   pid=<pid>" and exit 0 (idempotent). (2) Get service manager via getServiceManager().
   If service is installed, call serviceManager.start(). (3) If no service installed,
   spawn the binary in detached mode with stdout/stderr redirected to LOG_FILE_PATH.
-  Binary path: process.execPath for SEA mode; for dev mode, use process.execPath (node)
-  with args [dist/index.js, --transport, http]. Wait 2s then verify server started via
+  **Binary path resolution:** In SEA mode, the binary is at the stable installed path
+  (`BIN_DIR + 'apra-fleet'` or `'apra-fleet.exe'` from src/cli/config.ts). In dev mode
+  (non-SEA), the command is `process.execPath` (the Node.js binary) with args
+  `[path.join(findProjectRoot(), 'dist', 'index.js'), '--transport', 'http']` -- using
+  the same `findProjectRoot()` function from src/cli/install.ts that walks up from
+  __dirname looking for version.json. Import `findProjectRoot` from install.ts (it is
+  already exported) or extract it to a shared util. Both modes append
+  `['--transport', 'http']` to the args. Wait 2s then verify server started via
   checkRunningInstance. Report success or failure.
   Create src/cli/stop.ts with exported runStop(args). Logic: (1) checkRunningInstance()
   -- if not running, log "Server is not running." and exit 0 (idempotent). (2) Read URL
-  from server.json. POST /shutdown to the URL. (3) Poll pid alive every 500ms for up to
-  5s. (4) If process still alive after timeout, force kill: process.kill(pid, 'SIGTERM')
-  on Unix, taskkill /F /PID on Windows. (5) Clean up stale server.json and lock file.
-  Report "Server stopped."
+  from server.json. POST /shutdown to the URL. The stop verb does NOT go through the
+  service manager adapter -- stopping the running process is service-agnostic. (3) Poll
+  pid alive every 500ms for up to 5s. (4) If process still alive after timeout (or if
+  /shutdown returned an error -- e.g. the running binary predates the /shutdown endpoint),
+  force kill: process.kill(pid, 'SIGTERM') on Unix, taskkill /F /PID on Windows.
+  (5) Clean up stale server.json and lock file. Report "Server stopped."
+  Note on version skew: if an older binary without the /shutdown endpoint is running, the
+  POST will fail (404 or connection error). The fallback force-kill path handles this
+  correctly -- the 5s poll detects the process is still alive and proceeds to kill it.
   Wire both commands into src/index.ts dispatch: `arg === 'start'` and `arg === 'stop'`
   with dynamic imports, same pattern as existing install/uninstall/secret/auth dispatch.
 - **Files:** src/cli/start.ts (new), src/cli/stop.ts (new), src/index.ts
@@ -476,12 +505,27 @@ service registration is additive. For uninstall, service removal is prepended.
 
 ---
 
+## Deferred Items
+
+Items explicitly out of scope for this sprint but tracked for follow-up:
+
+- **Log rotation:** The fleet service log (~/.apra-fleet/data/fleet.log) will grow
+  unboundedly. A future task should add log rotation -- either a size-based rotation at
+  server startup (rename fleet.log to fleet.log.1, cap at N files) or integration with
+  OS-native log rotation (logrotate on Linux, newsyslog on macOS). For this sprint, the
+  log file is append-only with no rotation.
+- **TLS / auth on HTTP endpoint:** The /shutdown and /mcp endpoints are localhost-only
+  (127.0.0.1) and share the same trust boundary. No authentication is added in this
+  sprint. A follow-up could add a bearer token if the threat model changes.
+
+---
+
 ## Notes
 
 - Each task should result in a git commit
 - Verify tasks are checkpoints -- stop and report after each one
-- Base branch: main
-- Implementation branch: feat/mcp-sse-transport (extends PR #273)
+- Base branch: feat/mcp-sse-transport (extends PR #273 -- no new branch)
+- Implementation branch: feat/mcp-sse-transport (commit directly onto this branch)
 - Service name constants:
   - Windows task: "ApraFleet"
   - Linux unit: "apra-fleet.service"
