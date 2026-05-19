@@ -1,0 +1,3 @@
+[submodule "blindfold"]
+	path = blindfold
+	url = git@github.com:Apra-Labs/blindfold.git
