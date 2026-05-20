@@ -53,7 +53,7 @@ export async function runStop(_args: string[]): Promise<void> {
     if (process.platform === 'win32') {
       try { execFileSync('taskkill', ['/F', '/PID', String(pid)]); } catch {}
     } else {
-      try { process.kill(pid, 'SIGTERM'); } catch {}
+      try { process.kill(pid, 'SIGKILL'); } catch {}
     }
   }
 
