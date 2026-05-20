@@ -270,6 +270,24 @@ any CLI verb or install integration work is done.
   Existing test suite (npm test) stays fully green.
 - **Blockers:** None -- tests mock OS commands, no real services created.
 
+#### Task 6.5: MCP session capability logging (apra-fleet-projects-78g)
+
+- **Change:** In http-transport.ts, extract clientInfo and capabilities from the
+  initialize request body (parsedBody is already in scope in the isInitializeRequest
+  block). After sessions.set() in onsessioninitialized, call logLine to record:
+  session ID, client name, client version, client capability keys, and whether
+  experimental['claude/channel'] was declared. Import logLine from
+  utils/log-helpers.js (already used in the file). Example format:
+  `logLine('session', 'new sid=<sid> client=<name>/<version> caps=<list> channel=true')`.
+  Store clientInfo on a local variable captured in the initialize block closure so it
+  is available in onsessioninitialized. Also log session close with the same sid so
+  sessions can be correlated in logs.
+- **Files:** src/services/http-transport.ts
+- **Tier:** cheap
+- **Done when:** Each new MCP session logs client name, version, capabilities, and
+  channel flag. Session close is logged. Existing tests pass. ASCII-only.
+- **Blockers:** None.
+
 #### VERIFY: Platform Service Foundation
 - Run full test suite (npm test)
 - Confirm all Phase 1 changes compile cleanly
