@@ -98,18 +98,18 @@
       "id": "5.1",
       "step": "Phase 5 — move confirm to auth, delete alias, update docs",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "0388281",
+      "notes": "moved handleConfirm from src/cli/secret.ts to src/cli/auth.ts; deleted secret --confirm path entirely (no alias); added NAME_REGEX validation + control-char sanitization on --context/--on; updated src/index.ts help; updated docs/features/oob-auth.md + docs/tools-infrastructure.md; added tests/auth-cli.test.ts (2 new passing tests)"
     },
     {
       "id": "5.V",
       "step": "VERIFY Phase 5: zero 'secret --confirm' refs anywhere, tests pass",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "0388281",
+      "notes": "build PASS; tests 1169/3 (baseline); grep secret --confirm returns 0"
     },
     {
       "id": "6.1",
