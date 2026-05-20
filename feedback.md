@@ -437,3 +437,221 @@ section tracks log rotation and TLS/auth as follow-ups. All acceptance criteria 
 tasks. No new issues introduced by the revision.
 
 **Verdict: APPROVED.** The plan is ready for implementation.
+
+---
+---
+
+# Phase 1 (Platform Service Foundation) -- Code Review
+
+**Reviewer:** rbnvk
+**Date:** 2026-05-19 18:15:00-0400
+**Verdict:** APPROVED
+
+> Commits reviewed: 9963198 (T2), 98115b9 (T3), 93da1fa (T4), 1be25ed (T5), 490ead1 (T6), 224cd11 (T6.5)
+> Build: PASS (tsc clean). Tests: 1372 passed, 6 skipped. ASCII: clean (all reviewed files).
+
+---
+
+## 1. Platform Command Correctness
+
+### Windows (src/services/service-manager/windows.ts)
+
+**PASS.** `schtasks /create /tn ApraFleet /tr <wrapper> /sc onlogon /rl limited /f` is
+correct: `/sc onlogon` triggers at user login, `/rl limited` runs without elevation, `/f`
+forces overwrite for idempotency. `/run` starts the task. `/delete /f` removes it without
+confirmation. `/query /fo csv /nh` returns machine-parseable output. All flags verified
+against schtasks documentation.
+
+Stop path correctly uses `gracefulStopByServerJson` with a `taskkill /F /PID` fallback,
+avoiding `schtasks /end` (which does TerminateProcess). Matches the plan's unified stop
+semantics.
+
+### Linux (src/services/service-manager/linux.ts)
+
+**PASS.** All `systemctl` calls use `--user` flag throughout. `daemon-reload` after writing
+the unit file. `enable` to set up WantedBy symlink. `loginctl enable-linger` attempted
+with `console.warn` on failure (non-fatal, as specified in plan). The `checkSystemd()`
+guard validates `/run/user/<uid>/systemd` exists before any systemd operation.
+
+Unit file content is correct: `Type=simple`, `Restart=on-failure` (no restart on clean
+exit), `StandardOutput=append:<path>`, `StandardError=append:<path>`,
+`WantedBy=default.target`.
+
+### macOS (src/services/service-manager/macos.ts)
+
+**PASS.** `launchctl bootstrap gui/<uid> <plist>` for registration, `launchctl bootout
+gui/<uid>/<label>` for removal. Register calls bootout first (tolerate error) then
+bootstrap -- idempotent as required by HIGH-4 resolution. `launchctl kickstart` for
+explicit start. `launchctl print` for status query with pid extraction via
+`/\bpid\s*=\s*(\d+)/` regex.
+
+Plist content: `RunAtLoad=true`, `KeepAlive.SuccessfulExit=false` (no restart on clean
+exit). `StandardOutPath` and `StandardErrorPath` set. Label matches constant.
+
+Domain helper `gui/<uid>` correctly uses `process.getuid()` with fallback to `'501'`
+(default macOS UID).
+
+---
+
+## 2. Error Handling
+
+**PASS.** Each adapter method fails gracefully:
+
+- **Windows:** `unregister()` catches schtasks delete failure (task-not-found). `query()`
+  catches schtasks query failure and returns `{ installed: false, running: false }`.
+  `isInstalled()` catches and returns false. `stop()` fallback taskkill is try/caught.
+- **Linux:** `unregister()` wraps disable, stop, unlink, and daemon-reload each in
+  individual try/catch. `query()` catches is-active and is-enabled failures independently.
+  `loginctl enable-linger` failure is a warning, not an error.
+- **macOS:** `unregister()` catches bootout failure (service not loaded). `register()`
+  catches bootout-before-bootstrap failure. `query()` catches launchctl print failure and
+  returns `{ installed: true, running: false }`.
+
+The `gracefulStopByServerJson()` function in index.ts handles missing/unreadable
+server.json, missing pid/url, dead process, and timeout with fallback kill. Solid.
+
+---
+
+## 3. Security -- Per-User Scope
+
+**PASS.** No `sudo`, `runas`, `admin`, or elevation anywhere in the codebase:
+
+- **Windows:** `/rl limited` -- explicit non-elevated. No `/ru SYSTEM`.
+- **Linux:** `systemctl --user` throughout. Unit file in `~/.config/systemd/user/` (user
+  directory, not `/etc/systemd/system/`). `loginctl enable-linger` targets current
+  username, not root.
+- **macOS:** Plist in `~/Library/LaunchAgents/` (per-user, not `/Library/LaunchDaemons/`).
+  Domain is `gui/<uid>`, not `system/`.
+- **Factory:** `getServiceManager()` returns `NoopServiceManager` on unsupported platforms
+  with a warning -- no attempt to use privileged fallbacks.
+
+---
+
+## 4. Test Coverage
+
+**PASS.** 40 tests across all three adapters covering:
+
+- **Happy paths:** register writes correct content, calls correct commands; start calls
+  correct command; stop invokes gracefulStopByServerJson; query parses output correctly;
+  isInstalled returns true/false.
+- **Error paths:** Windows unregister tolerates task-not-found. Windows query handles
+  task-not-found. Windows isInstalled handles query failure. Linux register warns on
+  loginctl failure. Linux unregister is idempotent when unit not installed. Linux query
+  handles missing unit file. Linux non-systemd detection throws on register, start, stop.
+  macOS register tolerates bootout error on first registration. macOS unregister tolerates
+  bootout error when not loaded. macOS query handles launchctl print failure and no-pid
+  output.
+- **Windows stop fallback:** Test captures the fallback function and verifies it calls
+  taskkill with the correct PID.
+- **Mocking strategy:** `node:child_process`, `node:fs`, `node:os`, and
+  `gracefulStopByServerJson` are all mocked. Tests verify command arguments precisely
+  (e.g., exact schtasks flags, exact systemctl args).
+
+---
+
+## 5. T6.5 Logging -- Malformed Body Safety
+
+**PASS.** (src/services/http-transport.ts:130-139)
+
+The initialize body is cast to a structural type with all-optional fields:
+```
+body?.params?.clientInfo ?? {}
+body?.params?.capabilities ?? {}
+```
+
+If the body is `{ method: "initialize" }` with no `params`, `clientInfo` defaults to `{}`,
+`clientCaps` defaults to `{}`, `capKeys` becomes `''` (falls back to `'none'` in the log
+string), `hasChannel` becomes `false`. No crash path. If `params` exists but `capabilities`
+is a non-object primitive, `Object.keys()` would throw -- but the MCP SDK would reject
+such a body before it reaches this code, and the outer try/catch on `parseBody` handles
+truly malformed JSON.
+
+The `/shutdown` endpoint addition (lines 103-111) uses `setTimeout` + `process.emit('SIGINT')`
+which allows the response to flush before triggering shutdown. Clean.
+
+---
+
+## 6. ASCII-Only Compliance
+
+**PASS.** Grep for non-ASCII bytes across all 7 reviewed files returned zero matches. All
+string literals use ASCII characters only. The plist XML uses standard ASCII entities.
+The systemd unit file uses ASCII. Comments are ASCII.
+
+---
+
+## Findings (non-blocking)
+
+### MEDIUM-1: Windows bat wrapper does not quote individual args
+
+**File:** `src/services/service-manager/windows.ts:14`
+**Rating:** MEDIUM
+
+The bat line is:
+```
+`"${binaryPath}" ${args.join(' ')} >> "${logPath}" 2>&1`
+```
+
+`binaryPath` and `logPath` are quoted, but individual args are not. If any arg contains
+a space (e.g., a path), the bat file breaks. Current callers always pass simple flags
+(`['--transport', 'http']`), so this is not blocking. Suggest quoting each arg:
+```
+const quotedArgs = args.map(a => `"${a}"`).join(' ');
+```
+
+### MEDIUM-2: Linux unregister() gates on checkSystemd() before gracefulStopByServerJson()
+
+**File:** `src/services/service-manager/linux.ts:51`
+**Rating:** MEDIUM
+
+`unregister()` calls `checkSystemd()` first (line 51). If systemd was somehow removed but
+the process is still running, the graceful stop at line 52 never executes. The graceful
+stop is systemd-independent (reads server.json, POSTs /shutdown). Consider reordering:
+call `gracefulStopByServerJson()` first, then `checkSystemd()` before the systemctl
+commands that actually need it. The individual systemctl calls are already try/caught.
+
+### MEDIUM-3: macOS plist XML does not escape special characters
+
+**File:** `src/services/service-manager/macos.ts:22`
+**Rating:** MEDIUM
+
+`buildPlist()` interpolates `binaryPath`, `args`, and `logPath` directly into XML `<string>`
+elements without escaping `&`, `<`, `>`. If any path contains these characters, the plist
+will be malformed XML. Unlikely for real paths but a correctness gap. Consider adding:
+```
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+```
+
+### LOW-1: Windows query CSV parsing
+
+**File:** `src/services/service-manager/windows.ts:50-51`
+**Rating:** LOW
+
+Splitting on `","` and indexing `cols[2]` works for standard schtasks CSV output but could
+be fragile across Windows versions/locales that add extra columns. The fallback to empty
+string and the catch-all try/catch make this safe in practice. Just noting it.
+
+### LOW-2: NoopServiceManager silently swallows operations
+
+**File:** `src/services/service-manager/index.ts:58-65`
+**Rating:** LOW
+
+The `NoopServiceManager` for unsupported platforms resolves all methods silently. The
+factory already emits a `console.warn`, so callers know the platform is unsupported. This
+is the correct behavior -- just noting it for completeness.
+
+---
+
+## Summary
+
+Phase 1 is well-implemented. Platform commands are correct across all three OSes. Error
+handling is thorough with graceful degradation. Security posture is clean -- no elevation
+anywhere. Test coverage is strong at 40 tests including error paths. T6.5 logging is safe
+against malformed bodies. All files are ASCII-only.
+
+Three MEDIUM findings noted for hardening (Windows arg quoting, Linux unregister ordering,
+macOS XML escaping) -- none are blocking. These can be addressed in a follow-up or during
+Phase 2 implementation.
+
+**Verdict: APPROVED.** Phase 1 is ready. Proceed to Phase 2.
