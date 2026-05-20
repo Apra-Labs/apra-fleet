@@ -3,7 +3,8 @@ import path from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { DEFAULT_PORT } from '../paths.js';
+import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
+import { getServiceManager } from '../services/service-manager/index.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -434,7 +435,9 @@ Options:
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
-  const totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const serviceStep = isSea() && transport === 'http';
+  const baseSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const totalSteps = baseSteps + (serviceStep ? 1 : 0);
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -603,7 +606,7 @@ ${killHint}
   // --- Step 8: Install Beads task tracker ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
-  console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
+  console.log(`  [${baseSteps}/${totalSteps}] Installing Beads task tracker...`);
   try {
     // Check if already installed
     try {
@@ -624,6 +627,20 @@ ${killHint}
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode);
 
+  // --- Step N: Register and start service (SEA + HTTP mode only) ---
+  let serviceRegistered = false;
+  if (serviceStep) {
+    console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
+    const svcMgr = await getServiceManager();
+    try {
+      await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      await svcMgr.start();
+      serviceRegistered = true;
+    } catch (err) {
+      console.warn(`    Service registration skipped: ${(err as Error).message}`);
+    }
+  }
+
   // --- Done ---
   let beadsVersion = 'installed';
   try {
@@ -635,13 +652,14 @@ ${killHint}
 
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? 'registered and running' : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
-  Beads:       ${beadsVersion}
+  Beads:       ${beadsVersion}${serviceLine}
 
 ${instructions}${forceNote}
 `);
