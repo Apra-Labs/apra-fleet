@@ -78,7 +78,7 @@ async function parseTokenArgs(
 
   let token: string;
   if (storeRef) {
-    const { credentialResolve } = await import('../services/credential-store.js');
+    const { credentialResolve } = await import('blindfold');
     const entry = credentialResolve(storeRef, '*');
     if (!entry) {
       console.error(`✗ Credential "${storeRef}" not found in persistent store.`);
