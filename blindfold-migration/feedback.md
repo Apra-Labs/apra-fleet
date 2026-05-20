@@ -1,103 +1,50 @@
-# blindfold-migration - Phase 5 Code Review
+# blindfold-migration - Final Review (Phase 6 + Sprint Sign-off)
 
 **Reviewer:** reviewerAF
-**Date:** 2026-05-20 14:50:00+05:30
+**Date:** 2026-05-20 15:25:00+05:30
 **Verdict:** APPROVED
 
 > See `git log -- blindfold-migration/feedback.md` for prior reviews.
 
 ---
 
-## Phase 5 - move egress-confirm from `secret --confirm` to `auth --confirm` (commit 8b1bdd6)
+## Sprint summary
 
-### Diff scope
+Across 7 work commits (Phases 0-6) on branch md/project-vault, the
+blindfold-migration sprint replaced apra-fleet's in-tree credential-security
+layer with the standalone blindfold package (git submodule pinned at v0.0.1).
+69 files changed: 1231 insertions, 3466 deletions (net -2235 lines). 9 source
+files and 7 test files were deleted. ~30 source and test files had imports
+retargeted from fleet-local paths to `from 'blindfold'`. Local re-implementations
+of resolveSecureTokens, redactOutput, resolveSecureField, and SECURE_TOKEN_RE
+were dropped in favor of blindfold exports. The `secret --confirm` CLI path was
+moved to `auth --confirm` with no deprecation alias. A postinstall hook was added
+to auto-build the submodule on fresh clones. Test baseline: 1169 passing, 3
+failing (all pre-existing: 1 platform login-shell, 2 time-utils IST timezone).
+All hard guarantees from PLAN.md hold.
 
-Commit 8b1bdd6 touches 7 files: 233 insertions, 103 deletions.
-`git log --oneline ed9dbe1..HEAD` shows 2 commits since Phase 4: the Phase 4
-review commit (f2765da) and the Phase 5 work commit (8b1bdd6). Scope matches
-expectations.
+## Phase 6 - automated + manual verification (commit a1e3e37)
 
-Files changed:
+### postinstall hook (BL-1 fix)
 
-- `blindfold-migration/progress.json` (M) - expected
-- `docs/features/oob-auth.md` (M) - `secret --confirm` -> `auth --confirm`
-- `docs/tools-infrastructure.md` (M) - `secret --confirm` -> `auth --confirm` (heading + 3 references)
-- `src/cli/auth.ts` (M) - added `handleConfirm`, updated dispatch and help text
-- `src/cli/secret.ts` (M) - removed `handleConfirm`, `--confirm` dispatch, and `--confirm` help text
-- `src/index.ts` (M) - help text: removed `secret --confirm`, added `auth --confirm`
-- `tests/auth-cli.test.ts` (A) - 2 new tests for auth --confirm
+**PASS.** Verified fresh-install scenario: removed `node_modules/blindfold`,
+`blindfold/dist`, and `blindfold/node_modules`, then ran `npm install`.
+The postinstall script (`test -d blindfold/dist || (cd blindfold && npm install
+--silent && npm run build)`) correctly detected the missing dist and rebuilt.
+Result: `BLINDFOLD-DIST: OK`, `NODE-MODS: OK`. BL-1 is fully resolved.
 
-### 5a. Deletion of old path (`secret --confirm`)
+### Build + smoke + binary
 
-**PASS.** `grep -rn "secret --confirm\|secret_--confirm" src/ tests/ docs/ README.md`
-returns zero matches. The old code path is fully removed:
+**PASS.** `npm install` + `npm run build` (tsc): exit 0, clean output on
+Node 20.20.1. `npm run smoke`: 13/13 passed, 0 failed.
 
-- `src/cli/secret.ts`: `handleConfirm` function deleted (92 lines), `--confirm`
-  dispatch branch removed, `--confirm` removed from help text.
-- `src/index.ts`: `apra-fleet secret --confirm` help line removed.
-- `docs/`: no references remain.
+SEA binary at `dist/apra-fleet-linux-x64`: 96 MB. `node dist/index.js --version`:
+295ms wall time. Binary `./dist/apra-fleet-linux-x64 --version`: 388ms wall time,
+reports `apra-fleet v0.1.1_85b2f3`. Both well under 1s.
 
-### 5b. Presence of new path (`auth --confirm`)
+### Tests + INC-1 isolation
 
-**PASS.** `auth --confirm` is present in all expected locations:
-
-- `src/cli/auth.ts:21` - dispatch: `args.includes('--confirm')` returns early to `handleConfirm(args)`
-- `src/cli/auth.ts:32` - usage text: `apra-fleet auth --confirm <credential-name>`
-- `src/cli/auth.ts:42-138` - full `handleConfirm` implementation
-- `src/index.ts:32` - help text: `apra-fleet auth --confirm <credential-name>`
-- `docs/features/oob-auth.md:102` - `! apra-fleet auth --confirm <memberName>`
-- `docs/tools-infrastructure.md:68,71,93` - heading, usage, and example updated
-
-### 5c. auth.ts handleConfirm analysis
-
-**PASS.** Verified src/cli/auth.ts:20-138:
-
-- **Dispatch order:** `--confirm` at line 21, before `--oauth` (line 24) and
-  `--api-key` (line 27). Correct - confirm runs first.
-- **Name validation:** line 50: `NAME_REGEX.test(credentialName)` with
-  `NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/` at line 9. Rejects invalid names
-  with usage message and `process.exit(1)`.
-- **Input sanitization:** `--context` (line 56-58) and `--on` (line 60-62)
-  both sanitized via `CONTROL_CHARS = /[\x00-\x1f\x7f]/g` at line 10.
-  Strips all control characters including NUL, TAB, LF, CR, ESC, DEL.
-- **ASCII-only output:** Lines 64-73 print only ASCII text. No em-dashes,
-  smart quotes, or other non-ASCII in the handleConfirm function.
-- **Readline input:** Lines 76-90 use `readline.createInterface` with
-  `process.stdin`/`process.stderr`, prompt `Type "yes" to allow`, resolves
-  on answer. Properly closes rl on completion.
-- **Confirmation check:** Line 92 checks `inputValue.toLowerCase() !== 'yes'`.
-  NOTE: uses case-insensitive match (`toLowerCase()`), accepting "YES", "Yes",
-  etc. This is reasonable UX.
-- **Socket communication:** Line 98: `getSocketPath()` imported from `blindfold`
-  (line 7). Line 101-102: connects via UDS, sends
-  `{type:"auth", member_name:credentialName, password:inputValue}` as JSON + newline.
-- **Response handling:** Lines 107-128: parses JSON response, prints success/error,
-  properly closes client.
-
-### 5d. secret.ts verification
-
-**PASS.** Confirmed:
-
-- No `handleConfirm` function exists in the file.
-- No `--confirm` dispatch branch (the `else if (args[0] === '--confirm')` line is gone).
-- No `apra-fleet secret --confirm` in help text (lines 9-17).
-- Only 4 subcommands remain: `--set`, `--list`, `--update`, `--delete`.
-- Dead imports cleaned up: `net` and `readline` imports are retained but still
-  used by `handleSet` and `handleDelete`.
-
-### 5e. index.ts help text
-
-**PASS.** Line 32: `apra-fleet auth --confirm <credential-name>` present.
-No `apra-fleet secret --confirm` line. The `secret` block (lines 29-31) shows
-only `--set`, `--list`, `--delete`.
-
-### 5f. Build
-
-**PASS.** `npm run build` (tsc) exits 0 with clean output on Node 20.20.1.
-
-### 5g. Tests + INC-1 isolation
-
-**PASS.** 1169 passing, 3 failing, 5 skipped (72 test files).
+**PASS.** 1169 passing, 3 failing, 5 skipped (72 test files, 74.89s).
 
 Failure breakdown (all pre-existing baseline):
 
@@ -107,98 +54,82 @@ Failure breakdown (all pre-existing baseline):
 | tests/time-utils.test.ts:30 | IST timezone offset | Pre-existing (time-utils) |
 | tests/time-utils.test.ts:57 | minute preservation | Pre-existing (time-utils) |
 
-Test count increased from 1167 (Phase 4) to 1169: the 2 new tests in
-`tests/auth-cli.test.ts` account for the difference.
+INC-1 isolation: registry.json snapshotted before and after `npm test`;
+`diff pre post | wc -l` -> 0. No leakage into ~/.apra-fleet/data/.
 
-**INC-1 isolation:** Registry diff = 0 lines. Snapshotted
-`~/.apra-fleet/data/registry.json` before and after `npm test`;
-`diff pre post | wc -l` -> 0. Hardening holds.
+### CLI manual flow
 
-### 5h. Help smoke test
+**PASS.** Using isolated `APRA_FLEET_DATA_DIR=/tmp/reviewer-cli-data`:
 
-**PASS.** `node dist/index.js --help | grep -i confirm` returns exactly one line:
+1. `echo -n "test-val" | node dist/index.js secret --set FOO --persist -y`
+   -> "Secret stored for FOO." + network policy message. Exit 0.
+2. `node dist/index.js secret --list` -> shows FOO as persistent/allow. Exit 0.
+3. `node dist/index.js secret --delete FOO` -> "Credential deleted: FOO". Exit 0.
+4. `node dist/index.js secret --list` -> "No secrets stored." Exit 0.
 
-```
-  apra-fleet auth --confirm <credential-name>                 Confirm network egress for that credential (interactive)
-```
+Full round-trip confirmed.
 
-Zero `secret --confirm` references.
+## Cumulative gates
 
-### 5i. Bad-name rejection
+### Bare import shape ('blindfold' not relative)
 
-**PASS.** `node dist/index.js auth --confirm "bad name with spaces"` prints:
+**PASS.** `grep -rn "from '\.\./.*blindfold/\|from '\./.*blindfold/" src/ tests/`
+returns zero matches. All blindfold imports use the bare `'blindfold'` specifier.
 
-```
-Usage: apra-fleet auth --confirm <credential-name>
-  Name must match [a-zA-Z0-9_-]{1,64}
-```
+### No fleet-local re-implementations
 
-Exit code: 1 (verified directly; the task-prescribed pipe to `head -5` masks
-the exit code because `$?` captures `head`'s exit status, not node's).
+**PASS.** `grep -rn "function resolveSecureTokens\|function redactOutput\|function resolveSecureField\|const SECURE_TOKEN_RE\b" src/`
+returns zero matches. All security primitives are consumed from blindfold.
 
-### 5j. Spurious OOB terminal pops
+### secret --confirm fully removed
 
-**PASS.** No OS-level GUI terminal windows were spawned during the test run.
+**PASS.** `grep -rn "secret --confirm" src/ tests/ docs/ README.md` returns zero
+matches. `auth --confirm` present at src/cli/auth.ts:32, :46, and src/index.ts:32.
 
-### 5k. ASCII + AI attribution
+### ASCII + AI attribution sprint-wide
 
-**PASS.** `git log -1 --pretty=full 8b1bdd6` shows commit message:
-`feat(cli): move egress-confirm from 'secret --confirm' to 'auth --confirm'`.
-ASCII-only. No Claude/Anthropic/AI attribution. Matches PLAN.md Phase 5
-commit message.
+**PASS.** `git log main..HEAD --pretty=full | grep -iE "claude|anthropic|ai-generated|generated by|co-authored-by"` returns zero. All 15 commits authored by
+`mradul <mradul@apra.in>`.
 
-The Phase 5 diff (`git diff ed9dbe1..8b1bdd6`) contains zero non-ASCII
-characters in new code. The only non-ASCII in the diff is the pre-existing
-em-dash pattern in `progress.json` step descriptions (present in all phases
-0-6, not introduced by Phase 5).
+Non-ASCII check: `LC_ALL=C git diff main..HEAD -- src/ tests/ | grep -P '^\+.*[^\x00-\x7F]'` shows one added line with a pre-existing BOM character
+(U+FEFF) in src/os/windows.ts - carried over from the original file when the
+import target was changed from `'../utils/shell-escape.js'` to `'blindfold'`.
+Zero new non-ASCII introduced by this sprint. Em-dashes in progress.json step
+descriptions are within the project metadata folder, not source/test code.
 
-Pre-existing non-ASCII characters in auth.ts (checkmark/cross-mark in
-`handleOAuth`/`handleApiKey`/`parseTokenArgs`) are unchanged by this commit.
+### Existing user compatibility
 
-### 5l. New test coverage (tests/auth-cli.test.ts)
+**PASS.** src/services/blindfold-init.ts:16-18 passes:
+- `dataDir: process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data')` (matches FLEET_DIR in src/paths.ts)
+- `productName: 'apra-fleet'`
+- `pipeName: 'apra-fleet-auth'`
 
-**PASS.** The new test file adds 2 well-structured tests:
+No data migration needed. Existing credentials at ~/.apra-fleet/data/credentials.json,
+sockets at ~/.apra-fleet/data/auth.sock, and Windows pipes at
+\\.\pipe\apra-fleet-auth-<user> are all preserved.
 
-1. Happy path: mocks readline to answer "yes", simulates socket connect/response,
-   verifies JSON payload is `{type:"auth", member_name:"TEST_CRED", password:"yes"}`
-   and socket path is `/tmp/test-fleet.sock`.
-2. Bad name rejection: verifies `runAuth(['--confirm', 'bad name!'])` triggers
-   `process.exit(1)` before any socket connection (socket path remains empty).
+## Remaining items
 
-Tests properly mock `blindfold`, `node:readline`, and `node:net`.
+- **INC-2** (polluted registry backup at ~/.apra-fleet/data/registry.json.polluted-2026-05-19): 37KB file confirmed present. **Recommend DELETE** - it contains 86 fake test agents from the Phase 1 INC-1 incident. The real registry was restored and has been verified stable through all subsequent phases. The polluted file has no forensic value beyond what is documented in backlog.md.
 
-### 5m. Doc changes
+- **BL-1** (postinstall hook): RESOLVED in commit a1e3e37. Fresh-clone install verified.
 
-**PASS.** All 4 doc references updated:
+- **BL-2** (progress.json SHA mismatch for Phase 0): LOW, cosmetic. No action needed - git log is authoritative.
 
-- `docs/features/oob-auth.md:102` - `secret --confirm` -> `auth --confirm`
-- `docs/tools-infrastructure.md:68` - heading updated
-- `docs/tools-infrastructure.md:71` - usage block updated
-- `docs/tools-infrastructure.md:93` - example updated
+- Pre-existing non-ASCII: One BOM (U+FEFF) in src/os/windows.ts and emoji characters (checkmark, cross-mark, lock) in several src/ files predate this sprint. Not in scope for this migration but worth noting for a future cleanup pass.
 
----
+- Pre-existing test failures: 3 tests (1 platform, 2 time-utils) fail on main and throughout this sprint. Not caused by or related to the migration.
 
 ## Summary
 
-**Verdict: APPROVED**
-
-Phase 5 gate results:
-
-- (5a) Zero `secret --confirm` references: **PASS** (count: 0)
-- (5b) `auth --confirm` present (auth.ts, index.ts, docs): **PASS**
-- (5c) handleConfirm correctness (dispatch order, validation, sanitization, socket): **PASS**
-- (5d) secret.ts clean (no handleConfirm, no --confirm dispatch): **PASS**
-- (5e) index.ts help text (no secret --confirm, has auth --confirm): **PASS**
-- (5f) Build green: **PASS**
-- (5g) Tests 1169/3 (all 3 pre-existing baseline): **PASS**
-- (5g) INC-1 registry isolation (diff lines: 0): **PASS**
-- (5h) Help smoke (only auth --confirm): **PASS**
-- (5i) Bad-name rejection (exit code 1): **PASS**
-- (5j) Spurious OOB terminal pops: **PASS** (none)
-- (5k) ASCII + no AI attribution: **PASS**
-- (5l) New test coverage (2 tests): **PASS**
-- (5m) Doc updates (4 references): **PASS**
+**APPROVED**
 
 **HIGH findings:** 0
 **MEDIUM findings:** 0
 **LOW findings:** 0
+
+All 6 phases verified. Every hard guarantee from PLAN.md holds: bare imports
+only, no local re-implementations, secret --confirm fully removed, existing user
+data paths preserved, build/test/smoke/binary all green. The sprint is ready
+for the user's pre-push review. The branch is on origin/md/project-vault with
+no PR opened yet.
