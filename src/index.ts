@@ -20,6 +20,10 @@ Usage:
   apra-fleet --transport http        Start MCP server (HTTP)
   apra-fleet --transport stdio       Start MCP server (stdio)
   apra-fleet --stdio                 Start MCP server (stdio, alias for --transport stdio)
+  apra-fleet start                    Start the fleet server
+  apra-fleet stop                     Stop the fleet server
+  apra-fleet restart                  Restart the fleet server
+  apra-fleet status                   Show server and service status
   apra-fleet update           Check for and install latest update
   apra-fleet update --check   Check for update
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
