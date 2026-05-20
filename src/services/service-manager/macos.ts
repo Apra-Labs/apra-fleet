@@ -17,9 +17,13 @@ function domain(): string {
   return `gui/${getUid()}`;
 }
 
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function buildPlist(binaryPath: string, args: string[], logPath: string): string {
   const argElements = [binaryPath, ...args]
-    .map(a => `        <string>${a}</string>`)
+    .map(a => `        <string>${xmlEscape(a)}</string>`)
     .join('\n');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -40,9 +44,9 @@ function buildPlist(binaryPath: string, args: string[], logPath: string): string
     '        <false/>',
     '    </dict>',
     `    <key>StandardOutPath</key>`,
-    `    <string>${logPath}</string>`,
+    `    <string>${xmlEscape(logPath)}</string>`,
     `    <key>StandardErrorPath</key>`,
-    `    <string>${logPath}</string>`,
+    `    <string>${xmlEscape(logPath)}</string>`,
     '</dict>',
     '</plist>',
     '',
