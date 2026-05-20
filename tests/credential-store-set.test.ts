@@ -3,16 +3,16 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { credentialStoreSet } from '../src/tools/credential-store-set.js';
-import * as authSocket from '../src/services/auth-socket.js';
+import * as authSocket from 'blindfold';
 import * as logHelpers from '../src/utils/log-helpers.js';
-import { credentialResolve, credentialDelete } from '../src/services/credential-store.js';
-import { encryptPassword } from '../src/utils/crypto.js';
+import { credentialResolve, credentialDelete, encryptPassword } from 'blindfold';
 
 const TEST_DATA_DIR = path.join(os.tmpdir(), `fleet-test-cred-set-${Date.now()}`);
 
-vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobApiKey: vi.fn(),
-}));
+vi.mock('blindfold', async () => {
+  const actual = await vi.importActual<typeof import('blindfold')>('blindfold');
+  return { ...actual, collectOobApiKey: vi.fn() };
+});
 
 vi.mock('../src/utils/log-helpers.js', () => ({
   logLine: vi.fn(),

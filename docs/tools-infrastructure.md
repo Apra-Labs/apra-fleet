@@ -65,10 +65,10 @@ Used for pay-per-use billing. Works with all providers.
 - `member_detail` detects all auth methods: credentials file (Claude OAuth) and API key env var (per-provider).
 - If `execute_prompt` returns an auth error for a member, call `provision_llm_auth` for that member to restore credentials, then resume the prompt with `resume=true`.
 
-## apra-fleet secret --confirm
+## apra-fleet auth --confirm
 
 ```
-apra-fleet secret --confirm <credential-name>
+apra-fleet auth --confirm <credential-name>
 ```
 
 OOB (out-of-band) network egress confirmation. When a credential is stored with `network_policy: 'confirm'`, fleet automatically opens a new terminal running this command - passing the **credential name** - before executing any `{{secure.NAME}}` substitution that would send that credential over the network.
@@ -90,7 +90,7 @@ The user types `yes` to allow, or closes the window / types anything else to den
   curl -X POST https://api.example.com -d "{{secure.MY-CRED-NAME}}"
 
 Run this in a separate terminal to confirm:
-  ! apra-fleet secret --confirm MY-CRED-NAME
+  ! apra-fleet auth --confirm MY-CRED-NAME
 ```
 
 ## apra-fleet auth (CLI)

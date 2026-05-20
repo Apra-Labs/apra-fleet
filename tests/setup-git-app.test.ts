@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { FLEET_DIR } from './test-helpers.js';
-import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { credentialSet, credentialDelete } from 'blindfold';
 import { setupGitApp } from '../src/tools/setup-git-app.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 const STORED_KEY_PATH = path.join(FLEET_DIR, 'github-app.pem');

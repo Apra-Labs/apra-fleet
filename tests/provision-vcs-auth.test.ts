@@ -4,17 +4,17 @@ import path from 'node:path';
 import os from 'node:os';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, FLEET_DIR } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
-import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
-import { encryptPassword } from '../src/utils/crypto.js';
+import { credentialSet, credentialDelete, encryptPassword } from 'blindfold';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import type { SSHExecResult } from '../src/types.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
 const mockCollectOobApiKey = vi.fn<(memberName: string, toolName: string, opts?: any) => Promise<{ password?: string; fallback?: string }>>();
 
-vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobApiKey: (memberName: string, toolName: string, opts?: any) => mockCollectOobApiKey(memberName, toolName, opts),
-}));
+vi.mock('blindfold', async () => {
+  const actual = await vi.importActual<typeof import('blindfold')>('blindfold');
+  return { ...actual, collectOobApiKey: (memberName: string, toolName: string, opts?: any) => mockCollectOobApiKey(memberName, toolName, opts) };
+});
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn<() => Promise<{ ok: boolean; latencyMs: number; error?: string }>>();

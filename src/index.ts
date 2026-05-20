@@ -2,6 +2,7 @@
 
 import { serverVersion } from './version.js';
 import { logLine, logError } from './utils/log-helpers.js';
+import { initFleetBlindfold } from './services/blindfold-init.js';
 
 // --- CLI dispatch (before MCP server imports to keep --version fast) ---
 const arg = process.argv[2];
@@ -28,7 +29,7 @@ Usage:
   apra-fleet secret --set <name>       Deliver a secret to a waiting request
   apra-fleet secret --list             List secrets
   apra-fleet secret --delete <name>    Delete a secret
-  apra-fleet secret --confirm <credential-name>               Confirm network egress for that credential (interactive)
+  apra-fleet auth --confirm <credential-name>                 Confirm network egress for that credential (interactive)
   apra-fleet auth --oauth [--llm <provider>] <token>          Write OAuth token to provider credential file
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
@@ -37,6 +38,8 @@ Usage:
   apra-fleet --help           Show this help`);
   process.exit(0);
 }
+
+initFleetBlindfold();
 
 if (arg === 'install') {
   // Dynamic import so MCP deps aren't loaded for install
@@ -136,7 +139,7 @@ async function startServer() {
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
   const { checkForUpdate } = await import('./services/update-check.js');
-  const { purgeExpiredCredentials } = await import('./services/credential-store.js');
+  const { purgeExpiredCredentials } = await import('blindfold');
   const { getStallDetector } = await import('./services/stall/index.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
@@ -282,7 +285,7 @@ async function startServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
-  const { cleanupAuthSocket } = await import('./services/auth-socket.js');
+  const { cleanupAuthSocket } = await import('blindfold');
   process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
   process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
 }

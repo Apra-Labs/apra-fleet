@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialResolve, credentialUpdate } from '../services/credential-store.js';
+import { credentialResolve, credentialUpdate } from 'blindfold';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreUpdateSchema = z.object({

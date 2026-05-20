@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialList } from '../services/credential-store.js';
+import { credentialList } from 'blindfold';
 
 export const credentialStoreListSchema = z.object({});
 

@@ -10,10 +10,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { encryptPassword, decryptPassword } from './utils/crypto.js';
+import { encryptPassword, decryptPassword } from 'blindfold';
 import { addAgent, getAgent, getAllAgents, removeAgent } from './services/registry.js';
 import type { Agent } from './types.js';
 import { FLEET_DIR } from './paths.js';
+import { initFleetBlindfold } from './services/blindfold-init.js';
+
+initFleetBlindfold();
 
 const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
 

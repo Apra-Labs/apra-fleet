@@ -1,0 +1,132 @@
+{
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | in_progress | completed | blocked"
+  },
+  "project": "blindfold-migration",
+  "plan_file": "blindfold-migration/PLAN.md",
+  "branch": "md/project-vault",
+  "base": "main",
+  "created": "2026-05-19",
+  "tasks": [
+    {
+      "id": "0.1",
+      "step": "Phase 0 — submodule + file: dep + npm install",
+      "type": "work",
+      "status": "completed",
+      "tier": "standard",
+      "commit": "061bc164889b0cd49bd5d1fcfbc00d7d7a0d9cac",
+      "notes": "submodule pinned to v0.0.1; npm install + build + tests pass on Node 20.20.1"
+    },
+    {
+      "id": "0.V",
+      "step": "VERIFY Phase 0: build green, submodule pinned to v0.0.1",
+      "type": "verify",
+      "status": "completed",
+      "commit": "061bc164889b0cd49bd5d1fcfbc00d7d7a0d9cac",
+      "notes": "build PASS; npm test PASS; submodule HEAD matches v0.0.1 (a35e266); 1280 passing (3 pre-existing time-utils failures on main unrelated to migration)"
+    },
+    {
+      "id": "1.1",
+      "step": "Phase 1 - initFleetBlindfold helper + entrypoint calls",
+      "type": "work",
+      "status": "completed",
+      "tier": "standard",
+      "commit": "6dbe017bcb9f37c730d9f81d87fbcb03b3ae1a53",
+      "notes": "initFleetBlindfold helper added; wired into index.ts (post --version/--help short-circuits), smoke-test.ts (top of file), tests/setup.ts (static import; initFleetBlindfold() called after APRA_FLEET_DATA_DIR is set). Logger writes directly to stderr - avoids pulling log-helpers -> paths.ts at module load time, which would pre-cache FLEET_DIR and break statusline test isolation."
+    },
+    {
+      "id": "1.V",
+      "step": "VERIFY Phase 1: init called everywhere, --version/--help still fast",
+      "type": "verify",
+      "status": "completed",
+      "commit": "6dbe017bcb9f37c730d9f81d87fbcb03b3ae1a53",
+      "notes": "build PASS; npm test PASS - 1280 passing, 3 failing (all pre-existing: 1 platform login-shell + 2 time-utils IST timezone, same as Phase 0 baseline counted differently). No new regressions. Hardening fix eb65946 added to vitest.config.ts + tests/setup.ts to prevent npm test from leaking writes into ~/.apra-fleet/data (see backlog INC-1)."
+    },
+    {
+      "id": "2.1",
+      "step": "Phase 2 — mechanical import rewrite (~27 files) + OOB_TIMEOUT_MS",
+      "type": "work",
+      "status": "completed",
+      "tier": "standard",
+      "commit": "1a409e0",
+      "notes": "36 files: imports rewritten to from 'blindfold' (26 src + 11 tests). 3 test files had vi.mock targets updated to 'blindfold' with importActual pattern. provision-auth.test.ts mock extended with claudeAiOauth-aware validateCredentials (blindfold generic version looks at top-level expiresAt; Claude creds file nests inside claudeAiOauth). OOB_TIMEOUT_MS not replaced in callers: only used inside files scheduled for Phase 4 deletion."
+    },
+    {
+      "id": "2.V",
+      "step": "VERIFY Phase 2: zero fleet-local security imports remain, build green",
+      "type": "verify",
+      "status": "completed",
+      "commit": "1a409e0",
+      "notes": "build PASS; tests 1279 passing, 4 failing (3 pre-existing + 1 expected-deleted-Phase-4)"
+    },
+    {
+      "id": "3.1",
+      "step": "Phase 3 — drop fleet's local resolveSecureTokens/redactOutput/resolveSecureField/SECURE_TOKEN_RE",
+      "type": "work",
+      "status": "completed",
+      "tier": "standard",
+      "commit": "88c4dec",
+      "notes": "local resolveSecureTokens/redactOutput dropped from execute-command.ts; local resolveSecureField dropped from provision-vcs-auth.ts; local SECURE_TOKEN_RE dropped from execute-prompt.ts; all use blindfold exports. resolveSecureTokens signature changed to options-object (no await)."
+    },
+    {
+      "id": "3.V",
+      "step": "VERIFY Phase 3: no local duplicates, build + tests green",
+      "type": "verify",
+      "status": "completed",
+      "commit": "88c4dec",
+      "notes": "build PASS; tests 1279/4 (same baseline)"
+    },
+    {
+      "id": "4.1",
+      "step": "Phase 4 — delete 9 src + 7 test files",
+      "type": "work",
+      "status": "completed",
+      "tier": "standard",
+      "commit": "05d94d3779fa4e20284bb32c5ee4d4eb60a67cb8",
+      "notes": "deleted 9 src + 7 test files. auth.ts/index.ts had 3 stale dynamic imports (credentialResolve, purgeExpiredCredentials, cleanupAuthSocket) missed in Phase 2 - retargeted to 'blindfold'."
+    },
+    {
+      "id": "4.V",
+      "step": "VERIFY Phase 4: build + tests fully green, only intended deletions",
+      "type": "verify",
+      "status": "completed",
+      "commit": "05d94d3779fa4e20284bb32c5ee4d4eb60a67cb8",
+      "notes": "build PASS; tests 1167/3 (only pre-existing baseline remains: 1 platform + 2 time-utils)"
+    },
+    {
+      "id": "5.1",
+      "step": "Phase 5 — move confirm to auth, delete alias, update docs",
+      "type": "work",
+      "status": "completed",
+      "tier": "standard",
+      "commit": "0388281",
+      "notes": "moved handleConfirm from src/cli/secret.ts to src/cli/auth.ts; deleted secret --confirm path entirely (no alias); added NAME_REGEX validation + control-char sanitization on --context/--on; updated src/index.ts help; updated docs/features/oob-auth.md + docs/tools-infrastructure.md; added tests/auth-cli.test.ts (2 new passing tests)"
+    },
+    {
+      "id": "5.V",
+      "step": "VERIFY Phase 5: zero 'secret --confirm' refs anywhere, tests pass",
+      "type": "verify",
+      "status": "completed",
+      "commit": "0388281",
+      "notes": "build PASS; tests 1169/3 (baseline); grep secret --confirm returns 0"
+    },
+    {
+      "id": "6.1",
+      "step": "Phase 6 — automated + manual smoke + binary build",
+      "type": "work",
+      "status": "completed",
+      "tier": "standard",
+      "commit": "ac5181c",
+      "notes": "postinstall hook added (BL-1 resolved); blindfold/dist auto-builds on fresh npm install; smoke + binary + manual CLI flow pass"
+    },
+    {
+      "id": "6.V",
+      "step": "VERIFY Phase 6: all green, manual log committed",
+      "type": "verify",
+      "status": "completed",
+      "commit": "ac5181c",
+      "notes": "build PASS; tests 1169/3; smoke PASS; binary boots 154ms; CLI set/list/update/delete all green"
+    }
+  ]
+}
