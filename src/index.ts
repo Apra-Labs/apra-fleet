@@ -139,7 +139,7 @@ async function startServer() {
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
   const { checkForUpdate } = await import('./services/update-check.js');
-  const { purgeExpiredCredentials } = await import('./services/credential-store.js');
+  const { purgeExpiredCredentials } = await import('blindfold');
   const { getStallDetector } = await import('./services/stall/index.js');
 
   // serverVersion is "v0.0.1_abc123" — strip 'v' prefix for semver-like version field
@@ -285,7 +285,7 @@ async function startServer() {
   purgeExpiredCredentials();
   void checkForUpdate();
 
-  const { cleanupAuthSocket } = await import('./services/auth-socket.js');
+  const { cleanupAuthSocket } = await import('blindfold');
   process.on('SIGINT', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
   process.on('SIGTERM', () => { cleanupAuthSocket().then(() => { closeAllConnections(); stallDetector.stop(); process.exit(0); }); });
 }

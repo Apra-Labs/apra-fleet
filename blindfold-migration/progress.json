@@ -81,18 +81,18 @@
       "id": "4.1",
       "step": "Phase 4 — delete 9 src + 7 test files",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "05d94d3779fa4e20284bb32c5ee4d4eb60a67cb8",
+      "notes": "deleted 9 src + 7 test files. auth.ts/index.ts had 3 stale dynamic imports (credentialResolve, purgeExpiredCredentials, cleanupAuthSocket) missed in Phase 2 - retargeted to 'blindfold'."
     },
     {
       "id": "4.V",
       "step": "VERIFY Phase 4: build + tests fully green, only intended deletions",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "05d94d3779fa4e20284bb32c5ee4d4eb60a67cb8",
+      "notes": "build PASS; tests 1167/3 (only pre-existing baseline remains: 1 platform + 2 time-utils)"
     },
     {
       "id": "5.1",
