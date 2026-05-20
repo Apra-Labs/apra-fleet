@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { FleetGitConfig, GitHubAppConfig } from '../types.js';
-import { enforceOwnerOnly } from '../utils/file-permissions.js';
+import { enforceOwnerOnly } from 'blindfold';
 import { FLEET_DIR } from '../paths.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 

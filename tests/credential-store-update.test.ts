@@ -4,7 +4,7 @@ import {
   credentialDelete,
   credentialResolve,
   credentialUpdate,
-} from '../src/services/credential-store.js';
+} from 'blindfold';
 import { credentialStoreUpdate } from '../src/tools/credential-store-update.js';
 
 // Clean up test credentials after each test

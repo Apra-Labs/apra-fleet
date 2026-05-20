@@ -1,7 +1,7 @@
 ﻿import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
-import { escapeShellArg } from '../utils/shell-escape.js';
+import { escapeShellArg } from 'blindfold';
 
 const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
 

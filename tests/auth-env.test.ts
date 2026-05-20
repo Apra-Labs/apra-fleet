@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildAuthEnvPrefix } from '../src/utils/auth-env.js';
-import { encryptPassword } from '../src/utils/crypto.js';
+import { encryptPassword } from 'blindfold';
 import type { Agent } from '../src/types.js';
 
 // Helper: build a minimal Agent with encryptedEnvVars

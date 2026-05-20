@@ -2,17 +2,15 @@ import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
 import type { CloudConfig } from '../services/cloud/types.js';
-import { encryptPassword, decryptPassword } from '../utils/crypto.js';
+import { encryptPassword, decryptPassword, credentialResolve, credentialSet, collectOobPassword, collectOobApiKey } from 'blindfold';
 import { detectOS } from '../utils/platform.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { addAgent, getAllAgents, hasDuplicateFolder } from '../services/registry.js';
-import { credentialResolve, credentialSet } from '../services/credential-store.js';
 import { getStrategy } from '../services/strategy.js';
 import { assignIcon } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { awsProvider } from '../services/cloud/aws.js';
-import { collectOobPassword, collectOobApiKey } from '../services/auth-socket.js';
 import { classifySshError } from '../utils/ssh-error-messages.js';
 import { logLine } from '../utils/log-helpers.js';
 

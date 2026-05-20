@@ -1,9 +1,7 @@
 import { z } from 'zod';
 import { updateAgent as updateInRegistry, hasDuplicateFolder } from '../services/registry.js';
-import { encryptPassword } from '../utils/crypto.js';
+import { encryptPassword, collectOobPassword, credentialResolve } from 'blindfold';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { collectOobPassword } from '../services/auth-socket.js';
-import { credentialResolve } from '../services/credential-store.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { logLine } from '../utils/log-helpers.js';

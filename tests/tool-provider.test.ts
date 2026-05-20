@@ -32,9 +32,13 @@ vi.mock('../src/services/strategy.js', () => ({
 }));
 
 const mockCollectOobApiKey = vi.fn<() => Promise<{ password: string } | { fallback: string }>>();
-vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobApiKey: (...args: unknown[]) => mockCollectOobApiKey(...(args as [])),
-}));
+vi.mock('blindfold', async () => {
+  const actual = await vi.importActual<typeof import('blindfold')>('blindfold');
+  return {
+    ...actual,
+    collectOobApiKey: (...args: unknown[]) => mockCollectOobApiKey(...(args as [])),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // execute-prompt: each provider parses its own response format
