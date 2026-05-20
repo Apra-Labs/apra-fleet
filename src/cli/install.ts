@@ -634,8 +634,13 @@ ${killHint}
     const svcMgr = await getServiceManager();
     try {
       await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
-      await svcMgr.start();
-      serviceRegistered = true;
+      try {
+        await svcMgr.start();
+        serviceRegistered = true;
+      } catch (startErr) {
+        try { await svcMgr.unregister(); } catch {}
+        throw startErr;
+      }
     } catch (err) {
       console.warn(`    Service registration skipped: ${(err as Error).message}`);
     }
