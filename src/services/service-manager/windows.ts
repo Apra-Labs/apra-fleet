@@ -11,7 +11,8 @@ const WRAPPER_PATH = path.join(BIN_DIR, 'apra-fleet-service.bat');
 export class WindowsServiceManager implements ServiceManager {
   async register(binaryPath: string, args: string[], logPath: string): Promise<void> {
     fs.mkdirSync(path.dirname(WRAPPER_PATH), { recursive: true });
-    const lines = ['@echo off', `"${binaryPath}" ${args.join(' ')} >> "${logPath}" 2>&1`];
+    const quotedArgs = args.map(a => `"${a}"`).join(' ');
+    const lines = ['@echo off', `"${binaryPath}" ${quotedArgs} >> "${logPath}" 2>&1`];
     fs.writeFileSync(WRAPPER_PATH, lines.join('\r\n'), 'utf8');
     execFileSync('schtasks', [
       '/create', '/tn', WINDOWS_TASK_NAME,
