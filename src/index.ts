@@ -29,7 +29,7 @@ Usage:
   apra-fleet secret --set <name>       Deliver a secret to a waiting request
   apra-fleet secret --list             List secrets
   apra-fleet secret --delete <name>    Delete a secret
-  apra-fleet secret --confirm <credential-name>               Confirm network egress for that credential (interactive)
+  apra-fleet auth --confirm <credential-name>                 Confirm network egress for that credential (interactive)
   apra-fleet auth --oauth [--llm <provider>] <token>          Write OAuth token to provider credential file
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env

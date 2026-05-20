@@ -13,7 +13,6 @@ export async function runSecret(args: string[]): Promise<void> {
     console.error('  apra-fleet secret --update <name> [--members <list>] [--ttl <seconds>] [--allow|--deny]');
     console.error('  apra-fleet secret --delete <name>');
     console.error('  apra-fleet secret --delete --all');
-    console.error('  apra-fleet secret --confirm <credential-name>');
     process.exit(args.length === 0 ? 1 : 0);
   }
 
@@ -25,101 +24,10 @@ export async function runSecret(args: string[]): Promise<void> {
     await handleUpdate(args.slice(1));
   } else if (args[0] === '--delete') {
     await handleDelete(args.slice(1));
-  } else if (args[0] === '--confirm') {
-    await handleConfirm(args.slice(1));
   } else {
     console.error('Usage: apra-fleet secret --set <name> [--persist]');
     process.exit(1);
   }
-}
-
-async function handleConfirm(args: string[]): Promise<void> {
-  const credentialName = args.find((a) => !a.startsWith('-'));
-
-  if (!credentialName) {
-    console.error('Usage: apra-fleet secret --confirm <credential-name>');
-    process.exit(1);
-  }
-
-  const contextIdx = args.indexOf('--context');
-  const commandContext = contextIdx !== -1 && contextIdx + 1 < args.length ? args[contextIdx + 1] : undefined;
-  const onIdx = args.indexOf('--on');
-  const memberContext = onIdx !== -1 && onIdx + 1 < args.length ? args[onIdx + 1] : undefined;
-
-  console.error(`\napra-fleet - Network Egress Confirmation\n`);
-  if (commandContext && memberContext) {
-    console.error(`  This command on ${memberContext} will send credential "${credentialName}" over the network:`);
-    console.error(`  ${commandContext}`);
-  } else {
-    console.error(`  Credential "${credentialName}" will be sent over the network.`);
-    if (memberContext) console.error(`  Member:  ${memberContext}`);
-    if (commandContext) console.error(`  Command: ${commandContext}`);
-  }
-  console.error('');
-
-  let inputValue: string;
-  try {
-    inputValue = await new Promise<string>((resolve, reject) => {
-      const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-      rl.question('  Type "yes" to allow network access: ', (answer) => {
-        rl.close();
-        resolve(answer);
-      });
-      rl.on('close', () => resolve(''));
-      rl.on('error', reject);
-    });
-  } catch {
-    console.error('Cancelled.');
-    process.exit(1);
-    return;
-  }
-
-  if (inputValue.toLowerCase() !== 'yes') {
-    console.error('  x Confirmation not received. Aborting.');
-    process.exit(1);
-    return;
-  }
-
-  const sockPath = getSocketPath();
-
-  await new Promise<void>((resolve, reject) => {
-    const client = net.connect(sockPath, () => {
-      const msg = JSON.stringify({ type: 'auth', member_name: credentialName, password: inputValue }) + '\n';
-      inputValue = '';
-      client.write(msg);
-    });
-
-    let buffer = '';
-    client.on('data', (chunk) => {
-      buffer += chunk.toString();
-      const nl = buffer.indexOf('\n');
-      if (nl === -1) return;
-
-      const line = buffer.slice(0, nl);
-      try {
-        const resp = JSON.parse(line);
-        if (resp.ok) {
-          console.error('\n  + Confirmed. You can close this window.\n');
-          resolve();
-        } else {
-          console.error(`\n  x Error: ${resp.error}\n`);
-          reject(new Error(resp.error));
-        }
-      } catch {
-        console.error('\n  x Invalid response from server.\n');
-        reject(new Error('Invalid server response'));
-      }
-      client.end();
-    });
-
-    client.on('error', (err) => {
-      console.error(`\n  x Could not connect to apra-fleet server.`);
-      console.error(`    Is the MCP server running?\n`);
-      reject(err);
-    });
-  }).catch(() => {
-    process.exit(1);
-  });
 }
 
 async function handleList(): Promise<void> {
