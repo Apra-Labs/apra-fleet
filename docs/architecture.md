@@ -150,6 +150,81 @@ When an event is emitted on the event bus:
 This is the publish-subscribe pattern: producers emit to the bus, subscribers (the
 HTTP transport) are notified, and the transport broadcasts to all session clients.
 
+## Service Manager
+
+The `ServiceManager` component registers and controls the fleet server as an OS
+background service. It uses an adapter pattern so the CLI verbs (`start`, `stop`,
+`restart`, `status`) and the `install`/`uninstall` commands work identically on every
+platform.
+
+### Interface
+
+`src/services/service-manager/types.ts` defines the contract:
+
+```
+interface ServiceManager {
+  register(binaryPath, args, logPath): Promise<void>
+  unregister(): Promise<void>
+  start(): Promise<void>
+  stop(): Promise<void>
+  query(): Promise<ServiceStatus>
+  isInstalled(): Promise<boolean>
+}
+
+interface ServiceStatus {
+  installed: boolean
+  running: boolean
+  pid?: number
+  enabled?: boolean
+}
+```
+
+Service name constants are also in `types.ts`: `WINDOWS_TASK_NAME`,
+`LINUX_UNIT_NAME`, `MACOS_PLIST_LABEL`.
+
+### Platform Adapters
+
+```
+src/services/service-manager/
+  types.ts    - ServiceManager interface, ServiceStatus, service name constants
+  index.ts    - getServiceManager() factory, gracefulStopByServerJson(), NoopServiceManager
+  windows.ts  - WindowsServiceManager  (schtasks per-user Scheduled Task)
+  linux.ts    - LinuxServiceManager    (systemd --user unit)
+  macos.ts    - MacOSServiceManager    (launchd LaunchAgent plist)
+```
+
+- **WindowsServiceManager**: writes a wrapper `.bat` file and creates a per-user
+  Scheduled Task with an `OnLogon` trigger via `schtasks /create`. `start`, `stop`,
+  and `query` use `schtasks /run`, `/end`, and `/query`.
+- **LinuxServiceManager**: writes a systemd user unit file, then runs `daemon-reload`,
+  `enable`, and `loginctl enable-linger`. `start`, `stop`, and `query` use
+  `systemctl --user`.
+- **MacOSServiceManager**: writes a plist to `~/Library/LaunchAgents/` and bootstraps
+  it with `launchctl bootstrap`. `KeepAlive.SuccessfulExit=false` prevents launchd
+  from restarting on a clean exit. `start`, `stop`, and `query` use `launchctl`.
+
+### Factory
+
+`getServiceManager()` in `index.ts` selects the right adapter at runtime via a
+dynamic `import()` keyed on `process.platform`:
+
+```
+win32   -> WindowsServiceManager
+linux   -> LinuxServiceManager
+darwin  -> MacOSServiceManager
+other   -> NoopServiceManager  (warns once; all methods are safe no-ops)
+```
+
+`NoopServiceManager` ensures the CLI verbs work on unsupported platforms without
+crashing -- they simply have no effect.
+
+### Graceful Stop
+
+`gracefulStopByServerJson()` (exported from `index.ts`) reads
+`~/.apra-fleet/server.json`, POSTs to the `/shutdown` endpoint, then polls the
+process at 500 ms intervals for up to 5 s. If the process does not exit in time,
+it falls back to `taskkill /F` on Windows or `SIGTERM` on Unix.
+
 ## Provider Abstraction
 
 Fleet supports four LLM providers: Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot CLI. Members can mix providers within a single fleet.
