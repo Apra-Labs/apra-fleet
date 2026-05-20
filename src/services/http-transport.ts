@@ -128,7 +128,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       if (isInitializeRequest(parsedBody)) {
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
-          { capabilities: { logging: {} } }
+          { capabilities: { logging: {}, experimental: { 'claude/channel': {} } } }
         );
         const sessionTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
