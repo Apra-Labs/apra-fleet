@@ -1064,7 +1064,7 @@ Alternatively, pre-store the value with credential_store_set and reference it as
 fallback:No graphical display detected (SSH or headless session).
 
 Run this in a separate terminal to confirm:
-  ! apra-fleet secret --confirm <memberName>
+  ! apra-fleet auth --confirm <memberName>
 
 Alternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.
 ```
