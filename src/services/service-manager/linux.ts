@@ -48,8 +48,8 @@ export class LinuxServiceManager implements ServiceManager {
   }
 
   async unregister(): Promise<void> {
-    checkSystemd();
     await gracefulStopByServerJson();
+    checkSystemd();
     try { execFileSync('systemctl', ['--user', 'disable', SERVICE_NAME]); } catch {}
     try { execFileSync('systemctl', ['--user', 'stop', SERVICE_NAME]); } catch {}
     try { fs.unlinkSync(UNIT_PATH); } catch {}
