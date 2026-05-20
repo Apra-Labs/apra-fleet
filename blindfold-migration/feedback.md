@@ -1,97 +1,129 @@
-# blindfold-migration - Phase 3 Code Review
+# blindfold-migration - Phase 4 Code Review
 
 **Reviewer:** reviewerAF
-**Date:** 2026-05-20 14:25:00+05:30
+**Date:** 2026-05-20 14:35:00+05:30
 **Verdict:** APPROVED
 
 > See `git log -- blindfold-migration/feedback.md` for prior reviews.
 
 ---
 
-## Phase 3 - drop fleet's local token-resolver duplicates (commit 0133e0a)
+## Phase 4 - delete fleet's stale security modules and unit tests (commit ed9dbe1)
 
 ### Diff scope
 
-Commit 0133e0a touches exactly 4 files: 3 source files + progress.json.
-`git log --oneline a60be8b..HEAD` shows only 2 commits since Phase 2:
-the Phase 2 review commit (8673b4f) and the Phase 3 work commit (0133e0a).
+Commit ed9dbe1 touches 19 entries: 16 deletions (D) + 3 modifications (M).
+`git log --oneline 0133e0a..HEAD` shows 2 commits since Phase 3:
+the Phase 3 review commit (f3c1266) and the Phase 4 work commit (ed9dbe1).
 Scope matches expectations.
 
-### 3a. Grep - zero local re-implementations
+Modified files beyond deletions:
+
+- `blindfold-migration/progress.json` (M) - expected
+- `src/cli/auth.ts` (M) - retargeted 1 stale dynamic import
+  (`credentialResolve` from `../services/credential-store.js` -> `blindfold`)
+- `src/index.ts` (M) - retargeted 2 stale dynamic imports
+  (`purgeExpiredCredentials` from `./services/credential-store.js` -> `blindfold`,
+  `cleanupAuthSocket` from `./services/auth-socket.js` -> `blindfold`)
+
+These 3 dynamic imports were missed in Phase 2's mechanical rewrite. Fixing
+them here is correct -- without it, the build would fail on the deleted files.
+
+### 4a. Deletion set verification
+
+**PASS.** Exactly 16 files deleted, matching PLAN.md Phase 4 specification:
+
+Source (9):
+
+- `src/services/auth-socket.ts` (D)
+- `src/services/credential-store.ts` (D)
+- `src/utils/crypto.ts` (D)
+- `src/utils/secure-input.ts` (D)
+- `src/utils/file-permissions.ts` (D)
+- `src/utils/shell-escape.ts` (D)
+- `src/utils/oob-timeout.ts` (D)
+- `src/utils/credential-validation.ts` (D)
+- `src/utils/collect-secret.ts` (D)
+
+Tests (7):
+
+- `tests/auth-socket.test.ts` (D)
+- `tests/crypto.test.ts` (D)
+- `tests/shell-escape.test.ts` (D)
+- `tests/credential-validation.test.ts` (D)
+- `tests/credential-cleanup.test.ts` (D)
+- `tests/credential-scoping-ttl.test.ts` (D)
+- `tests/credential-store-path.test.ts` (D)
+
+No extra deletions. No expected files missing. Verified none of the 16 files
+exist on disk after checkout.
+
+### 4b. Leftover imports
 
 **PASS.** Ran:
 
 ```
-grep -rn "function resolveSecureTokens|function redactOutput|function resolveSecureField|const SECURE_TOKEN_RE\b" src/
+grep -rn "from '../(services/(auth-socket|credential-store)|utils/(crypto|secure-input|file-permissions|shell-escape|oob-timeout|credential-validation|collect-secret))'" src/ tests/
 ```
 
-Zero matches. All four local definitions have been removed.
+Zero matches. All import paths to deleted modules have been cleaned up,
+including the 3 stale dynamic imports fixed in this commit.
 
-### 3b. Build
+### 4c. Build
 
 **PASS.** `npm run build` (tsc) exits 0 with clean output on Node 20.20.1.
 
-### 3c. Tests + INC-1 isolation
+### 4d. Tests + INC-1 isolation
 
-**PASS.** 1279 passing, 4 failing, 5 skipped (78 test files).
+**PASS.** 1167 passing, 3 failing, 5 skipped (71 test files).
 
-Failure breakdown (identical to Phase 2 baseline):
+Failure breakdown (all pre-existing baseline):
 
 | Test file | Failure | Classification |
 |---|---|---|
-| tests/platform.test.ts:359 | linux: returns pristine env from login shell | Pre-existing baseline |
-| tests/time-utils.test.ts:30 | IST timezone offset | Pre-existing baseline |
-| tests/time-utils.test.ts:57 | minute preservation | Pre-existing baseline |
-| tests/credential-scoping-ttl.test.ts:297 | execute_command credential scoping rejection | Phase-4-deletable |
+| tests/platform.test.ts | linux: returns pristine env from login shell | Pre-existing (platform) |
+| tests/time-utils.test.ts:30 | IST timezone offset | Pre-existing (time-utils) |
+| tests/time-utils.test.ts:57 | minute preservation | Pre-existing (time-utils) |
 
-No new regressions introduced by Phase 3.
+No new regressions. The Phase-4-deletable test
+(credential-scoping-ttl.test.ts:297) that appeared in Phase 3 results is
+now correctly gone with the file deletion.
 
 **INC-1 isolation:** Registry diff = 0 lines. Snapshotted
-~/.apra-fleet/data/registry.json before and after `npm test`;
+`~/.apra-fleet/data/registry.json` before and after `npm test`;
 `diff pre post | wc -l` -> 0. Hardening holds.
 
-### 3d. Spurious OOB terminal pops
+### 4e. Coverage delegation spot-check
 
-**PASS.** No OS-level GUI terminal windows were spawned during the
-test run.
+**PASS.** Blindfold's `tests/` directory contains matching test files that
+cover the same behaviors as the deleted fleet tests:
 
-### 3e. execute-command.ts
+| Deleted fleet test | Blindfold test | Coverage confirmed |
+|---|---|---|
+| tests/auth-socket.test.ts | blindfold/tests/auth-socket.test.ts | Socket path, pending auth, OOB password/API-key/confirm flows, cleanup, graphical display detection |
+| tests/crypto.test.ts | blindfold/tests/crypto.test.ts | Encrypt/decrypt roundtrip, ciphertext uniqueness, tamper detection |
+| tests/shell-escape.test.ts | blindfold/tests/shell-escape.test.ts | Single-quote wrapping, double-quote escaping, Windows/PowerShell/batch escaping, grep pattern escaping |
 
-**PASS.** Verified:
+Additional blindfold tests also cover deleted fleet tests not spot-checked:
 
-- No local SEC_RE, ResolvedCredential interface, resolveSecureTokens,
-  or redactOutput definitions remain.
-- Line 11: `import { resolveSecureTokens, redactOutput, SEC_HANDLE_RE, registerTaskCredentials, collectOobConfirm } from 'blindfold';`
-- Line 12: `import type { ResolvedCredential } from 'blindfold';`
-- Line 73: `resolveSecureTokens(input.command, { caller: agent.friendlyName, os: agentOs })` --
-  uses the options-object signature, no `await`. Correct.
-- Line 81: same pattern for restart_command resolution. Correct.
-- Lines 65, 68: `SEC_HANDLE_RE.test(...)` replaces old local SEC_RE. Correct.
+- `blindfold/tests/credential-store.test.ts` covers credential-cleanup,
+  credential-scoping-ttl, and credential-store-path behaviors
+- `blindfold/tests/credential-validation.test.ts` covers credential-validation
 
-### 3f. provision-vcs-auth.ts
+### 4f. Spurious OOB terminal pops
 
-**PASS.** Verified:
+**PASS.** No OS-level GUI terminal windows were spawned during the test run.
 
-- No local resolveSecureField function definition.
-- Line 7: `import { resolveSecureField, collectOobApiKey, decryptPassword } from 'blindfold';`
-- Line 83: `resolveSecureField(resolvedInput[field]!, agent.friendlyName)` --
-  matches blindfold's `(value: string, caller?: string)` signature. Correct.
+### 4g. ASCII + AI attribution
 
-### 3g. execute-prompt.ts
-
-**PASS.** Verified:
-
-- No local SECURE_TOKEN_RE constant.
-- Line 22: `import { containsSecureTokens } from 'blindfold';`
-- Line 104: `containsSecureTokens(input.prompt)` -- correct usage as a
-  boolean presence check replacing the old `SECURE_TOKEN_RE.test(...)`.
-
-### 3h. ASCII + AI attribution
-
-**PASS.** `git log -1 --pretty=full 0133e0a` shows commit message:
-`refactor(blindfold): use blindfold's token-resolver instead of local copies`.
-ASCII-only. No Claude/Anthropic/AI attribution. Matches PLAN.md Phase 3
+**PASS.** `git log -1 --pretty=full ed9dbe1` shows commit message:
+`chore(blindfold): delete fleet's stale security modules and unit tests`.
+ASCII-only. No Claude/Anthropic/AI attribution. Matches PLAN.md Phase 4
 commit message.
+
+The 3 modified lines (import path changes) are ASCII-only. Pre-existing
+non-ASCII characters in surrounding context lines (e.g. a checkmark in
+auth.ts, an em-dash in index.ts) are unchanged by this commit.
 
 ---
 
@@ -99,17 +131,16 @@ commit message.
 
 **Verdict: APPROVED**
 
-Phase 3 gate results:
+Phase 4 gate results:
 
-- (3a) Zero local re-implementations: **PASS**
-- (3b) Build green: **PASS**
-- (3c) Tests 1279/4 (3 pre-existing + 1 Phase-4-deletable): **PASS**
-- (3c) INC-1 registry isolation (diff lines: 0): **PASS**
-- (3d) Spurious OOB terminal pops: **PASS** (none)
-- (3e) execute-command.ts sampled: **PASS**
-- (3f) provision-vcs-auth.ts sampled: **PASS**
-- (3g) execute-prompt.ts sampled: **PASS**
-- (3h) ASCII + no AI attribution: **PASS**
+- (4a) Deletion set (exactly 16 files): **PASS**
+- (4b) Leftover imports (count: 0): **PASS**
+- (4c) Build green: **PASS**
+- (4d) Tests 1167/3 (all 3 pre-existing baseline): **PASS**
+- (4d) INC-1 registry isolation (diff lines: 0): **PASS**
+- (4e) Coverage delegation spot-check (3/3 confirmed): **PASS**
+- (4f) Spurious OOB terminal pops: **PASS** (none)
+- (4g) ASCII + no AI attribution: **PASS**
 
 **HIGH findings:** 0
 **MEDIUM findings:** 0
