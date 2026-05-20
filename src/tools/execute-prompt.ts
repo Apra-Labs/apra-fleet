@@ -19,6 +19,7 @@ import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { containsSecureTokens } from 'blindfold';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -88,8 +89,6 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   }
 }
 
-const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
-
 export const inFlightAgents = new Set<string>();
 
 // All exit paths from executePrompt clear busy state via the finally block (inFlightAgents.delete + writeStatusline):
@@ -102,7 +101,7 @@ export const inFlightAgents = new Set<string>();
 // (g) early returns before inFlightAgents.add: busy state never entered
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
-  if (SECURE_TOKEN_RE.test(input.prompt)) {
+  if (containsSecureTokens(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
   }
 
