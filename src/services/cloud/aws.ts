@@ -1,7 +1,7 @@
 import { exec, type ExecOptions } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { CloudConfig, CloudProvider, CloudInstanceDetails, InstanceState } from './types.js';
-import { escapeShellArg } from '../../utils/shell-escape.js';
+import { escapeShellArg } from 'blindfold';
 
 type ExecResult = { stdout: string; stderr: string };
 type ExecFn = (cmd: string, opts?: ExecOptions) => Promise<ExecResult>;

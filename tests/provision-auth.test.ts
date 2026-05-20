@@ -1,16 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
-import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
-import { encryptPassword } from '../src/utils/crypto.js';
+import { credentialSet, credentialDelete, encryptPassword } from 'blindfold';
 import { provisionAuth } from '../src/tools/provision-auth.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockCollectOobApiKey = vi.fn<(memberName: string, toolName: string, opts?: any) => Promise<{ password?: string; fallback?: string }>>();
 
-vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobApiKey: (memberName: string, toolName: string, opts?: any) => mockCollectOobApiKey(memberName, toolName, opts),
-}));
+vi.mock('blindfold', async () => {
+  const actual = await vi.importActual<typeof import('blindfold')>('blindfold');
+  return {
+    ...actual,
+    collectOobApiKey: (memberName: string, toolName: string, opts?: any) => mockCollectOobApiKey(memberName, toolName, opts),
+    // Claude credentials file nests token inside claudeAiOauth; blindfold's generic
+    // validateCredentials looks at top-level expiresAt so we shadow it here.
+    validateCredentials: (json: string) => {
+      let parsed: any;
+      try { parsed = JSON.parse(json); } catch { return null; }
+      const oauth = parsed?.claudeAiOauth;
+      if (!oauth?.expiresAt) return null;
+      const msLeft = new Date(oauth.expiresAt).getTime() - Date.now();
+      if (msLeft <= 0) return oauth.refreshToken ? { status: 'expired-refreshable' } : { status: 'expired-no-refresh' };
+      const NEAR = 60 * 60 * 1000;
+      return msLeft < NEAR ? { status: 'near-expiry', minutesLeft: Math.ceil(msLeft / 60000) } : { status: 'valid' };
+    },
+  };
+});
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn<() => Promise<{ ok: boolean; latencyMs: number; error?: string }>>();

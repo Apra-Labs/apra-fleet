@@ -1,7 +1,6 @@
 import type { Agent } from '../types.js';
 import type { RemoteOS } from './platform.js';
-import { decryptPassword } from './crypto.js';
-import { escapeDoubleQuoted } from './shell-escape.js';
+import { decryptPassword, escapeDoubleQuoted } from 'blindfold';
 
 /**
  * Build a platform-correct inline export prefix for all stored auth env vars.

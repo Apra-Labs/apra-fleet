@@ -1,7 +1,5 @@
 import { z } from 'zod';
-import { collectOobApiKey } from '../services/auth-socket.js';
-import { decryptPassword } from '../utils/crypto.js';
-import { credentialSet } from '../services/credential-store.js';
+import { collectOobApiKey, decryptPassword, credentialSet } from 'blindfold';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreSetSchema = z.object({

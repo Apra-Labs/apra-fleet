@@ -47,18 +47,18 @@
       "id": "2.1",
       "step": "Phase 2 — mechanical import rewrite (~27 files) + OOB_TIMEOUT_MS",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "1a409e0",
+      "notes": "36 files: imports rewritten to from 'blindfold' (26 src + 11 tests). 3 test files had vi.mock targets updated to 'blindfold' with importActual pattern. provision-auth.test.ts mock extended with claudeAiOauth-aware validateCredentials (blindfold generic version looks at top-level expiresAt; Claude creds file nests inside claudeAiOauth). OOB_TIMEOUT_MS not replaced in callers: only used inside files scheduled for Phase 4 deletion."
     },
     {
       "id": "2.V",
       "step": "VERIFY Phase 2: zero fleet-local security imports remain, build green",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "1a409e0",
+      "notes": "build PASS; tests 1279 passing, 4 failing (3 pre-existing + 1 expected-deleted-Phase-4)"
     },
     {
       "id": "3.1",

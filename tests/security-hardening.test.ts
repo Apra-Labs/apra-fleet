@@ -6,7 +6,7 @@ import { monitorTaskSchema } from '../src/tools/monitor-task.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { LinuxCommands } from '../src/os/linux.js';
 import { WindowsCommands } from '../src/os/windows.js';
-import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
+import { encryptPassword, decryptPassword } from 'blindfold';
 import { makeTestAgent, REGISTRY_PATH, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
 // --- Item 1: Registry file permissions ---
