@@ -306,6 +306,32 @@ If you later switch back to HTTP, re-run the default install:
 apra-fleet install  # Switches to HTTP transport
 ```
 
+## Service Mode
+
+Fleet keeps a singleton server running so all your LLM clients share one instance.
+Registering it as an OS service keeps it alive across terminal sessions -- the server
+survives terminal close and restarts automatically on login:
+
+- Windows: a per-user Scheduled Task (Task Scheduler, OnLogon trigger)
+- Linux: a systemd user unit (`systemctl --user`)
+- macOS: a LaunchAgent in `~/Library/LaunchAgents/`
+
+Four verbs manage the lifecycle directly:
+
+```
+apra-fleet start    # start the server (idempotent -- exits cleanly if already running)
+apra-fleet stop     # graceful shutdown: POST /shutdown, poll, force-kill fallback
+apra-fleet restart  # stop then start
+apra-fleet status   # state, PID, port, uptime, version, and OS service status
+```
+
+`install` and `uninstall` include service registration. Running
+`apra-fleet install` on a packaged binary with the HTTP transport (the default)
+registers and starts the OS service automatically -- no extra step.
+`apra-fleet uninstall` stops and deregisters the service before removing files.
+Service registration failures are non-fatal: a warning is printed and the install
+continues.
+
 ## The PM skill
 
 The **PM skill** is Fleet's reference workflow for **software development**
