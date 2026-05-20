@@ -17,7 +17,7 @@
     { "id": 8,  "step": "VERIFY: Platform Service Foundation", "type": "verify", "status": "completed", "commit": "a5fd844", "notes": "npm run build: clean. npm test: 85 files, 1365 passed, 13 skipped, 0 failed." },
     { "id": 9,  "step": "T7: start and stop commands", "type": "work", "status": "completed", "tier": "cheap", "commit": "28d2732", "notes": "runStart: checkRunningInstance (idempotent), service manager if installed, else spawn detached to LOG_FILE_PATH; runStop: postShutdown, poll 5s, taskkill/SIGTERM fallback, cleanup server.json+lock. Both wired into index.ts dispatch." },
     { "id": 10, "step": "T8: restart command", "type": "work", "status": "completed", "tier": "cheap", "commit": "f9dc2a0", "notes": "runRestart: calls runStop then runStart. Wired into index.ts dispatch." },
-    { "id": 11, "step": "T9: status command", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
+    { "id": 11, "step": "T9: status command", "type": "work", "status": "completed", "tier": "standard", "commit": "653f265", "notes": "runStatus: checkRunningInstance + GET /health + getServiceManager().query(); formats State/PID/Port/URL/Version/Uptime/Sessions/Service; stopped state omits live fields. Wired into index.ts dispatch." },
     { "id": 12, "step": "T10: CLI verb tests + --help update", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
     { "id": 13, "step": "VERIFY: CLI Verbs", "type": "verify", "status": "pending", "commit": "", "notes": "" },
     { "id": 14, "step": "T11: Extend install to register + start service", "type": "work", "status": "pending", "tier": "standard", "commit": "", "notes": "" },
