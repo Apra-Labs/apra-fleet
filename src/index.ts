@@ -96,6 +96,10 @@ Usage:
   import('./cli/stop.js')
     .then(m => m.runStop(process.argv.slice(3)))
     .catch(err => { logError('cli', `Stop failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'restart') {
+  import('./cli/restart.js')
+    .then(m => m.runRestart(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Restart failed: ${err.message}`); process.exit(1); });
 } else if (arg === undefined || arg === '--stdio' || arg === '--transport') {
   // Server startup: parse transport flag
   const transport = resolveTransport(process.argv.slice(2));
