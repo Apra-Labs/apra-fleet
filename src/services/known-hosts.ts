@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { enforceOwnerOnly } from '../utils/file-permissions.js';
+import { enforceOwnerOnly } from 'blindfold';
 import { FLEET_DIR } from '../paths.js';
 const KNOWN_HOSTS_PATH = path.join(FLEET_DIR, 'known_hosts');
 

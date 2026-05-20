@@ -5,7 +5,7 @@ import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { stopPrompt } from '../../src/tools/stop-prompt.js';
 import { getStoredPid, clearStoredPid, setStoredPid } from '../../src/utils/agent-helpers.js';
-import { launchAuthTerminal, isSSHSession } from '../../src/services/auth-socket.js';
+import { launchAuthTerminal, isSSHSession } from 'blindfold';
 import { getStrategy } from '../../src/services/strategy.js';
 import type { Agent, SSHExecResult } from '../../src/types.js';
 

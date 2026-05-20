@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
-import { encryptPassword } from '../src/utils/crypto.js';
-import { credentialResolve, credentialDelete } from '../src/services/credential-store.js';
+import { encryptPassword, credentialResolve, credentialDelete } from 'blindfold';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -24,10 +23,14 @@ vi.mock('../src/services/statusline.js', () => ({
 const mockCollectOobPassword = vi.fn<(name: string, tool: string, opts?: any) => Promise<{ password?: string; fallback?: string; persist?: boolean }>>();
 const mockCollectOobApiKey = vi.fn<(name: string, tool: string, opts?: any) => Promise<{ password?: string; fallback?: string; persist?: boolean }>>();
 
-vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobPassword: (name: string, tool: string, opts?: any) => mockCollectOobPassword(name, tool, opts),
-  collectOobApiKey: (name: string, tool: string, opts?: any) => mockCollectOobApiKey(name, tool, opts),
-}));
+vi.mock('blindfold', async () => {
+  const actual = await vi.importActual<typeof import('blindfold')>('blindfold');
+  return {
+    ...actual,
+    collectOobPassword: (name: string, tool: string, opts?: any) => mockCollectOobPassword(name, tool, opts),
+    collectOobApiKey: (name: string, tool: string, opts?: any) => mockCollectOobApiKey(name, tool, opts),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Test 3: Anonymous OOB use-and-throw

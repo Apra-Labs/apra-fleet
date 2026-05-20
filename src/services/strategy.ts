@@ -6,7 +6,7 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
-import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
+import { escapeDoubleQuoted, escapeWindowsArg } from 'blindfold';
 
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB

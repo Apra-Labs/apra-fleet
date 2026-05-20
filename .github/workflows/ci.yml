@@ -34,6 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -61,6 +62,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -127,6 +129,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -240,6 +243,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -264,7 +268,7 @@ jobs:
           fi
           git diff --cached --quiet || (
             git commit -m "chore: regenerate llms-full.txt" &&
-            git push origin HEAD:${{ github.head_ref }} || echo "Branch no longer exists — skipping push."
+            git push origin HEAD:${{ github.head_ref }} || echo "Branch no longer exists - skipping push."
           )
 
   release:
@@ -278,6 +282,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4

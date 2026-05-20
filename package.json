@@ -25,7 +25,8 @@
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
-    "prepare": "node scripts/install-hooks.mjs"
+    "prepare": "node scripts/install-hooks.mjs",
+    "postinstall": "test -d blindfold/dist || (cd blindfold && npm install --silent && npm run build)"
   },
   "keywords": [
     "ai-agent",
@@ -45,6 +46,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@inquirer/password": "^5.0.11",
+    "blindfold": "file:./blindfold",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "smol-toml": "^1.6.1",
     "ssh2": "^1.17.0",

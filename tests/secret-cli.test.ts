@@ -34,20 +34,18 @@ vi.mock('node:readline', () => ({
   default: { createInterface: mockReadlineCreateInterface },
 }));
 
-vi.mock('../src/utils/collect-secret.js', () => ({
-  collectSecret: mockCollectSecret,
-}));
-
-vi.mock('../src/services/auth-socket.js', () => ({
-  getSocketPath: vi.fn().mockReturnValue('/tmp/apra-fleet-test.sock'),
-}));
-
-vi.mock('../src/services/credential-store.js', () => ({
-  credentialList: mockCredentialList,
-  credentialDelete: mockCredentialDelete,
-  credentialSet: mockCredentialSet,
-  credentialUpdate: mockCredentialUpdate,
-}));
+vi.mock('blindfold', async () => {
+  const actual = await vi.importActual<typeof import('blindfold')>('blindfold');
+  return {
+    ...actual,
+    collectSecret: mockCollectSecret,
+    getSocketPath: vi.fn().mockReturnValue('/tmp/apra-fleet-test.sock'),
+    credentialList: mockCredentialList,
+    credentialDelete: mockCredentialDelete,
+    credentialSet: mockCredentialSet,
+    credentialUpdate: mockCredentialUpdate,
+  };
+});
 
 import { runSecret } from '../src/cli/secret.js';
 

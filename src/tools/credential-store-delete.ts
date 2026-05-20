@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialDelete } from '../services/credential-store.js';
+import { credentialDelete } from 'blindfold';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreDeleteSchema = z.object({
