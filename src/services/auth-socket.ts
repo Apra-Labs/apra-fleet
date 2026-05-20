@@ -8,6 +8,7 @@ import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
+import { fleetEvents } from './event-bus.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -120,6 +121,7 @@ export async function ensureAuthSocket(): Promise<void> {
               clearTimeout(waiter.timer);
               passwordWaiters.delete(msg.member_name);
               waiter.resolve(pending.encryptedPassword);
+              fleetEvents.emit('credential:stored', { name: msg.member_name });
             }
           } else {
             conn.write(JSON.stringify({ type: 'ack', ok: false, error: 'Invalid message' }) + '\n');

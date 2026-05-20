@@ -4,7 +4,8 @@ import { execSync } from 'node:child_process';
 import * as readlinePromises from 'node:readline/promises';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { isApraFleetRunning, killApraFleet } from './install.js';
+import { isApraFleetRunning } from './install.js';
+import { getServiceManager } from '../services/service-manager/index.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -171,18 +172,26 @@ Options:
 
   console.log(`\nUninstalling Apra Fleet ${serverVersion}...${dryRun ? ' (DRY RUN)' : ''}\n`);
 
+  const svcMgr = await getServiceManager();
+
   if (isApraFleetRunning()) {
     if (dryRun && force) {
       console.log('  Note: apra-fleet server is currently running (would be stopped by --force).');
     } else if (force) {
-      killApraFleet();
-      await new Promise(resolve => setTimeout(resolve, 500));
-      console.log('  Stopped running server.');
+      if (!dryRun) {
+        try { await svcMgr.stop(); } catch {}
+        console.log('  Stopped running server.');
+      }
     } else {
       console.error('Error: apra-fleet server is currently running.\n\n  Run with --force to stop it automatically:\n    apra-fleet uninstall --force\n');
       process.exit(1);
       return;
     }
+  }
+
+  // Remove service unit (idempotent -- tolerates "not installed")
+  if (!dryRun) {
+    try { await svcMgr.unregister(); } catch {}
   }
 
   const installConfig = readInstallConfig();
