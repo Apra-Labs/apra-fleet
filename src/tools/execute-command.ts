@@ -8,7 +8,8 @@ import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
-import { escapeShellArg, escapePowerShellArg, credentialResolve, registerTaskCredentials, collectOobConfirm } from 'blindfold';
+import { resolveSecureTokens, redactOutput, SEC_HANDLE_RE, registerTaskCredentials, collectOobConfirm } from 'blindfold';
+import type { ResolvedCredential } from 'blindfold';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import type { Agent } from '../types.js';
@@ -35,79 +36,6 @@ export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 // Best-effort heuristic — not a security boundary
 const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|Invoke-WebRequest|Invoke-RestMethod)\b/i;
 
-// Matches raw sec:// credential handles that must never reach shell or LLM
-const SEC_RE = /sec:\/\/[a-zA-Z0-9_]+/;
-
-interface ResolvedCredential {
-  name: string;
-  plaintext: string;
-  network_policy: 'allow' | 'confirm' | 'deny';
-}
-
-/**
- * Scan a command string for {{secure.NAME}} tokens, resolve each from the
- * credential store, and return the substituted command plus metadata for
- * output redaction and egress checks.
- *
- * Returns an error string if any token cannot be resolved or is blocked.
- */
-async function resolveSecureTokens(
-  command: string,
-  agentOs: 'windows' | 'macos' | 'linux',
-  callingMember: string,
-): Promise<{ resolved: string; credentials: ResolvedCredential[] } | { error: string }> {
-  // Refuse if raw sec:// handles appear (these should not be passed to commands)
-  if (/sec:\/\/[a-zA-Z0-9_]+/.test(command)) {
-    return { error: 'Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.' };
-  }
-
-  const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-  const credentials: ResolvedCredential[] = [];
-  let resolved = command;
-  let match: RegExpExecArray | null;
-
-  // Collect all unique token names first
-  const tokenNames = new Set<string>();
-  while ((match = TOKEN_RE.exec(command)) !== null) {
-    tokenNames.add(match[1]);
-  }
-
-  for (const name of tokenNames) {
-    const entry = credentialResolve(name, callingMember);
-    if (!entry) {
-      return { error: `Credential "${name}" not found. Run credential_store_set first.` };
-    }
-    if ('denied' in entry) return { error: entry.denied };
-    if ('expired' in entry) return { error: entry.expired };
-    credentials.push({ name, plaintext: entry.plaintext, network_policy: entry.meta.network_policy });
-  }
-
-  // Substitute tokens with shell-escaped values.
-  // Windows members run under PowerShell (confirmed by WindowsCommands.cleanExec),
-  // so use single-quote escaping — internal single quotes are doubled ('').
-  // This is safer than cmd.exe double-quote + ^ escaping which is unreliable in PS.
-  for (const cred of credentials) {
-    const escaped = agentOs === 'windows'
-      ? escapePowerShellArg(cred.plaintext)
-      : escapeShellArg(cred.plaintext);
-    resolved = resolved.replaceAll(`{{secure.${cred.name}}}`, escaped);
-  }
-
-  return { resolved, credentials };
-}
-
-/**
- * Replace occurrences of credential plaintext values in output with [REDACTED:NAME].
- */
-function redactOutput(output: string, credentials: ResolvedCredential[]): string {
-  let redacted = output;
-  for (const cred of credentials) {
-    if (cred.plaintext.length > 0) {
-      redacted = redacted.replaceAll(cred.plaintext, `[REDACTED:${cred.name}]`);
-    }
-  }
-  return redacted;
-}
 
 export async function executeCommand(input: ExecuteCommandInput, extra?: any): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
@@ -134,15 +62,15 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
 
   // -- Block sec:// handles in run_from and restart_command --
-  if (input.run_from && SEC_RE.test(input.run_from)) {
+  if (input.run_from && SEC_HANDLE_RE.test(input.run_from)) {
     return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
   }
-  if (input.restart_command && SEC_RE.test(input.restart_command)) {
+  if (input.restart_command && SEC_HANDLE_RE.test(input.restart_command)) {
     return '❌ Credentials cannot be passed to LLM sessions — use {{secure.NAME}} tokens instead of sec:// handles.';
   }
 
   // -- Resolve {{secure.NAME}} tokens --
-  const tokenResult = await resolveSecureTokens(input.command, agentOs, agent.friendlyName);
+  const tokenResult = resolveSecureTokens(input.command, { caller: agent.friendlyName, os: agentOs });
   if ('error' in tokenResult) return `❌ ${tokenResult.error}`;
 
   const { resolved: resolvedCommand, credentials } = tokenResult;
@@ -150,7 +78,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // Also resolve tokens in restart_command (H1)
   let resolvedRestartCommand: string | undefined;
   if (input.restart_command) {
-    const restartTokenResult = await resolveSecureTokens(input.restart_command, agentOs, agent.friendlyName);
+    const restartTokenResult = resolveSecureTokens(input.restart_command, { caller: agent.friendlyName, os: agentOs });
     if ('error' in restartTokenResult) return `❌ ${restartTokenResult.error}`;
     resolvedRestartCommand = restartTokenResult.resolved;
     // Merge any additional credentials from restart_command (de-dup by name)

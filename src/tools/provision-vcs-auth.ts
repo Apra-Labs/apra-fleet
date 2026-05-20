@@ -4,7 +4,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOS, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
-import { credentialResolve, collectOobApiKey, decryptPassword } from 'blindfold';
+import { resolveSecureField, collectOobApiKey, decryptPassword } from 'blindfold';
 import { githubProvider } from '../services/vcs/github.js';
 import { bitbucketProvider } from '../services/vcs/bitbucket.js';
 import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
@@ -14,23 +14,6 @@ import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 
-const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-
-function resolveSecureField(value: string, callingMember: string): { resolved: string } | { error: string } {
-  const tokenNames = new Set<string>();
-  let match: RegExpExecArray | null;
-  TOKEN_RE.lastIndex = 0;
-  while ((match = TOKEN_RE.exec(value)) !== null) tokenNames.add(match[1]);
-  let resolved = value;
-  for (const name of tokenNames) {
-    const entry = credentialResolve(name, callingMember);
-    if (!entry) return { error: `Credential "${name}" not found. Run credential_store_set first.` };
-    if ('denied' in entry) return { error: entry.denied };
-    if ('expired' in entry) return { error: entry.expired };
-    resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
-  }
-  return { resolved };
-}
 
 const providers: Record<string, VcsProviderService> = {
   'github': githubProvider,

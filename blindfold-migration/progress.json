@@ -64,18 +64,18 @@
       "id": "3.1",
       "step": "Phase 3 — drop fleet's local resolveSecureTokens/redactOutput/resolveSecureField/SECURE_TOKEN_RE",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "88c4dec",
+      "notes": "local resolveSecureTokens/redactOutput dropped from execute-command.ts; local resolveSecureField dropped from provision-vcs-auth.ts; local SECURE_TOKEN_RE dropped from execute-prompt.ts; all use blindfold exports. resolveSecureTokens signature changed to options-object (no await)."
     },
     {
       "id": "3.V",
       "step": "VERIFY Phase 3: no local duplicates, build + tests green",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "88c4dec",
+      "notes": "build PASS; tests 1279/4 (same baseline)"
     },
     {
       "id": "4.1",
