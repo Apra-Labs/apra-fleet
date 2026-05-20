@@ -1,16 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import http from 'node:http';
+import { spawn } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
-// Hoisted mock refs
+// Hoisted mock refs — local modules only (these are safe; factory mocks for
+// built-in node modules leak in fileParallelism:false mode, so we use spies)
 // ---------------------------------------------------------------------------
-const {
-  mockCheckRunning,
-  mockGetSvcMgr,
-  mockSvcMgr,
-  mockSpawn,
-  mockHttpRequest,
-  mockHttpGet,
-} = vi.hoisted(() => {
+const { mockCheckRunning, mockGetSvcMgr, mockSvcMgr } = vi.hoisted(() => {
   const mockSvcMgr = {
     isInstalled: vi.fn<() => Promise<boolean>>().mockResolvedValue(false),
     start: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
@@ -20,46 +17,14 @@ const {
     register: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
     unregister: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   };
-
-  const mockReq = { on: vi.fn().mockReturnThis(), end: vi.fn(), destroy: vi.fn() };
-
-  const healthBody = JSON.stringify({ version: 'v0.1', uptime: 30, sessions: 1 });
-
-  const mockHttpRequest = vi.fn().mockImplementation(
-    (_opts: unknown, cb?: (res: { resume: () => void }) => void) => {
-      cb?.({ resume: vi.fn() });
-      return mockReq;
-    },
-  );
-
-  const mockHttpGet = vi.fn().mockImplementation(
-    (_opts: unknown, cb?: (res: { on: (ev: string, handler: (...a: unknown[]) => void) => void }) => void) => {
-      cb?.({
-        on(ev: string, handler: (...a: unknown[]) => void) {
-          if (ev === 'data') handler(Buffer.from(healthBody));
-          if (ev === 'end') handler();
-        },
-      });
-      return mockReq;
-    },
-  );
-
-  const mockSpawn = vi.fn().mockReturnValue({ unref: vi.fn() });
-
   return {
     mockCheckRunning: vi.fn<() => Promise<{ running: boolean; url?: string; pid?: number }>>()
       .mockResolvedValue({ running: false }),
     mockGetSvcMgr: vi.fn<() => Promise<typeof mockSvcMgr>>().mockResolvedValue(mockSvcMgr),
     mockSvcMgr,
-    mockSpawn,
-    mockHttpRequest,
-    mockHttpGet,
   };
 });
 
-// ---------------------------------------------------------------------------
-// Module mocks (must precede imports of the tested modules)
-// ---------------------------------------------------------------------------
 vi.mock('../src/services/singleton.js', () => ({
   checkRunningInstance: mockCheckRunning,
 }));
@@ -68,35 +33,12 @@ vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: mockGetSvcMgr,
 }));
 
-vi.mock('node:child_process', () => ({
-  default: { spawn: mockSpawn, execFileSync: vi.fn() },
-  spawn: mockSpawn,
-  execFileSync: vi.fn(),
-}));
-
-vi.mock('node:fs', () => {
-  const serverInfoJson = JSON.stringify({ pid: 1234, port: 7523, url: 'http://127.0.0.1:7523/mcp' });
-  const m = {
-    mkdirSync: vi.fn(),
-    openSync: vi.fn().mockReturnValue(3),
-    closeSync: vi.fn(),
-    unlinkSync: vi.fn(),
-    // existsSync returns true so findProjectRoot() does not throw
-    existsSync: vi.fn().mockReturnValue(true),
-    readFileSync: vi.fn().mockReturnValue(serverInfoJson),
-    writeFileSync: vi.fn(),
-  };
-  return { default: m, ...m };
-});
-
-vi.mock('node:http', () => ({
-  default: { request: mockHttpRequest, get: mockHttpGet },
-  request: mockHttpRequest,
-  get: mockHttpGet,
-}));
+// Auto-mock (no factory) so named imports get stubs — auto-mocks clean up
+// between files in sequential mode; factory mocks do not.
+vi.mock('node:child_process');
 
 // ---------------------------------------------------------------------------
-// Subject imports (after mocks)
+// Imports of subjects under test (after mocks so mocks apply)
 // ---------------------------------------------------------------------------
 import { runStart } from '../src/cli/start.js';
 import { runStop } from '../src/cli/stop.js';
@@ -108,6 +50,41 @@ import { runStatus } from '../src/cli/status.js';
 // ---------------------------------------------------------------------------
 const RUNNING = { running: true as const, url: 'http://127.0.0.1:7523/mcp', pid: 1234 };
 const STOPPED = { running: false as const };
+const SERVER_INFO = JSON.stringify({ pid: 1234, port: 7523, url: 'http://127.0.0.1:7523/mcp' });
+const HEALTH_BODY = JSON.stringify({ version: 'v0.1', uptime: 30, sessions: 1 });
+
+// ---------------------------------------------------------------------------
+// Per-test spy helpers (vi.spyOn restores cleanly in afterEach — no leakage)
+// ---------------------------------------------------------------------------
+function setupFsSpies() {
+  vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined as any);
+  vi.spyOn(fs, 'openSync').mockReturnValue(3 as any);
+  vi.spyOn(fs, 'closeSync').mockReturnValue(undefined);
+  vi.spyOn(fs, 'unlinkSync').mockReturnValue(undefined);
+  vi.spyOn(fs, 'existsSync').mockReturnValue(true); // lets findProjectRoot() succeed
+  vi.spyOn(fs, 'readFileSync').mockReturnValue(SERVER_INFO as any);
+}
+
+function setupHttpSpies() {
+  const mockReq = { on: vi.fn().mockReturnThis(), end: vi.fn(), destroy: vi.fn() };
+  vi.spyOn(http, 'request').mockImplementation(
+    (_opts: any, cb?: (res: any) => void) => {
+      cb?.({ resume: vi.fn() });
+      return mockReq as any;
+    },
+  );
+  vi.spyOn(http, 'get').mockImplementation(
+    (_opts: any, cb?: (res: any) => void) => {
+      cb?.({
+        on(ev: string, handler: (...a: any[]) => void) {
+          if (ev === 'data') handler(Buffer.from(HEALTH_BODY));
+          if (ev === 'end') handler();
+        },
+      });
+      return mockReq as any;
+    },
+  );
+}
 
 // ---------------------------------------------------------------------------
 // runStart
@@ -119,17 +96,17 @@ describe('runStart', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    setupFsSpies();
     mockCheckRunning.mockResolvedValue(STOPPED);
     mockSvcMgr.isInstalled.mockResolvedValue(false);
+    vi.mocked(spawn).mockReturnValue({ unref: vi.fn() } as any);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as () => never);
   });
 
   afterEach(() => {
-    logSpy.mockRestore();
-    errSpy.mockRestore();
-    exitSpy.mockRestore();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -142,9 +119,7 @@ describe('runStart', () => {
 
   it('calls service manager start when unit is installed', async () => {
     mockSvcMgr.isInstalled.mockResolvedValue(true);
-    mockCheckRunning
-      .mockResolvedValueOnce(STOPPED)
-      .mockResolvedValueOnce(RUNNING);
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
     vi.useFakeTimers();
     const p = runStart([]);
     await vi.advanceTimersByTimeAsync(2001);
@@ -153,24 +128,20 @@ describe('runStart', () => {
   });
 
   it('spawns a detached process when no service unit is installed', async () => {
-    mockCheckRunning
-      .mockResolvedValueOnce(STOPPED)
-      .mockResolvedValueOnce(RUNNING);
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
     vi.useFakeTimers();
     const p = runStart([]);
     await vi.advanceTimersByTimeAsync(2001);
     await p;
-    expect(mockSpawn).toHaveBeenCalledWith(
+    expect(vi.mocked(spawn)).toHaveBeenCalledWith(
       expect.any(String),
       expect.arrayContaining(['--transport', 'http']),
       expect.objectContaining({ detached: true }),
     );
   });
 
-  it('logs success URL after spawn when server comes up', async () => {
-    mockCheckRunning
-      .mockResolvedValueOnce(STOPPED)
-      .mockResolvedValueOnce(RUNNING);
+  it('logs success URL after server comes up', async () => {
+    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
     vi.useFakeTimers();
     const p = runStart([]);
     await vi.advanceTimersByTimeAsync(2001);
@@ -197,9 +168,11 @@ describe('runStop', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    setupFsSpies();
+    setupHttpSpies();
     mockCheckRunning.mockResolvedValue(STOPPED);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    // Make isPidAlive return false immediately so polling loop exits
+    // Make isPidAlive return false immediately so the polling loop exits
     killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, sig) => {
       if (sig === 0) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
       return true;
@@ -207,20 +180,19 @@ describe('runStop', () => {
   });
 
   afterEach(() => {
-    logSpy.mockRestore();
-    killSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
-  it('logs "not running" and returns without HTTP call when server is stopped', async () => {
+  it('logs "not running" and skips /shutdown when server is stopped', async () => {
     await runStop([]);
     expect(logSpy).toHaveBeenCalledWith('Server is not running.');
-    expect(mockHttpRequest).not.toHaveBeenCalled();
+    expect(http.request).not.toHaveBeenCalled();
   });
 
   it('posts /shutdown when server is running', async () => {
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStop([]);
-    expect(mockHttpRequest).toHaveBeenCalled();
+    expect(http.request).toHaveBeenCalled();
   });
 
   it('reports "Server stopped." after shutdown', async () => {
@@ -230,10 +202,9 @@ describe('runStop', () => {
   });
 
   it('cleans up server.json and lock file after stop', async () => {
-    const { unlinkSync } = await import('node:fs');
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStop([]);
-    expect(unlinkSync).toHaveBeenCalledTimes(2);
+    expect(fs.unlinkSync).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -241,13 +212,14 @@ describe('runStop', () => {
 // runRestart
 // ---------------------------------------------------------------------------
 describe('runRestart', () => {
-  let logSpy: ReturnType<typeof vi.spyOn>;
-  let killSpy: ReturnType<typeof vi.spyOn>;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, sig) => {
+    setupFsSpies();
+    setupHttpSpies();
+    vi.mocked(spawn).mockReturnValue({ unref: vi.fn() } as any);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(process, 'exit').mockImplementation((() => {}) as () => never);
+    vi.spyOn(process, 'kill').mockImplementation((_pid, sig) => {
       if (sig === 0) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
       return true;
     });
@@ -255,8 +227,7 @@ describe('runRestart', () => {
   });
 
   afterEach(() => {
-    logSpy.mockRestore();
-    killSpy.mockRestore();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -264,26 +235,25 @@ describe('runRestart', () => {
     mockCheckRunning
       .mockResolvedValueOnce(RUNNING)   // stop: running
       .mockResolvedValueOnce(STOPPED)   // start: not running
-      .mockResolvedValueOnce(RUNNING);  // start: verify after 2s wait
+      .mockResolvedValueOnce(RUNNING);  // start: verify after 2s
     vi.useFakeTimers();
     const p = runRestart([]);
     await vi.advanceTimersByTimeAsync(2001);
     await p;
-    expect(mockHttpRequest).toHaveBeenCalled(); // /shutdown was posted
-    expect(mockSpawn).toHaveBeenCalled();        // process was spawned
+    expect(http.request).toHaveBeenCalled();   // /shutdown was posted
+    expect(vi.mocked(spawn)).toHaveBeenCalled(); // process was spawned
   });
 
   it('is idempotent when server is already stopped before restart', async () => {
     mockCheckRunning
-      .mockResolvedValueOnce(STOPPED)   // stop: not running
+      .mockResolvedValueOnce(STOPPED)   // stop: not running (no-op)
       .mockResolvedValueOnce(STOPPED)   // start: not running
-      .mockResolvedValueOnce(RUNNING);  // start: verify after 2s wait
+      .mockResolvedValueOnce(RUNNING);  // start: verify after 2s
     vi.useFakeTimers();
     const p = runRestart([]);
     await vi.advanceTimersByTimeAsync(2001);
     await p;
-    // stop is a no-op, start spawns
-    expect(mockSpawn).toHaveBeenCalled();
+    expect(vi.mocked(spawn)).toHaveBeenCalled();
   });
 });
 
@@ -295,13 +265,15 @@ describe('runStatus', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    setupFsSpies();
+    setupHttpSpies();
     mockCheckRunning.mockResolvedValue(STOPPED);
     mockSvcMgr.query.mockResolvedValue({ installed: false, running: false });
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    logSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
   function output(): string {
@@ -340,9 +312,9 @@ describe('runStatus', () => {
   it('shows health info (version, uptime, sessions) from /health endpoint', async () => {
     mockCheckRunning.mockResolvedValue(RUNNING);
     await runStatus([]);
-    expect(output()).toContain('v0.1');  // version from health mock
-    expect(output()).toContain('30s');   // uptime: 30 seconds
-    expect(output()).toContain('1');     // sessions: 1
+    expect(output()).toContain('v0.1');
+    expect(output()).toContain('30s');
+    expect(output()).toContain('1');
   });
 
   it('omits live fields when server is stopped', async () => {
