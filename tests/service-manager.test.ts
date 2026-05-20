@@ -145,8 +145,9 @@ describe('LinuxServiceManager', () => {
     vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
     vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
     // Default: systemd available, unit file not installed
+    // Normalize separators for cross-platform compatibility (Windows uses backslash)
     vi.mocked(fs.existsSync).mockImplementation((p) =>
-      String(p).endsWith('/systemd'),
+      String(p).replace(/\\/g, '/').endsWith('/systemd'),
     );
   });
 
@@ -234,7 +235,7 @@ describe('LinuxServiceManager', () => {
   describe('query', () => {
     it('returns installed=false when unit file does not exist', async () => {
       vi.mocked(fs.existsSync).mockImplementation((p) =>
-        String(p).endsWith('/systemd'), // only systemd dir
+        String(p).replace(/\\/g, '/').endsWith('/systemd'), // only systemd dir
       );
       expect(await new LinuxServiceManager().query()).toEqual({ installed: false, running: false });
     });
@@ -315,7 +316,7 @@ describe('MacOSServiceManager', () => {
     });
 
     it('tolerates bootout error on first registration', async () => {
-      vi.mocked(execFileSync).mockImplementationOnce(() => {});
+      // bootout throws "not loaded" (first exec call), bootstrap succeeds (second exec call)
       vi.mocked(execFileSync).mockImplementationOnce(() => { throw new Error('not loaded'); });
       vi.mocked(execFileSync).mockImplementationOnce(() => {});
       const mgr = new MacOSServiceManager();
