@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { fleetEvents, FleetEventMap } from './event-bus.js';
 import { DEFAULT_PORT } from '../paths.js';
 import { serverVersion } from '../version.js';
+import { logLine } from '../utils/log-helpers.js';
 
 interface Session {
   server: McpServer;
@@ -126,6 +127,17 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       }
 
       if (isInitializeRequest(parsedBody)) {
+        const body = parsedBody as {
+          params?: {
+            clientInfo?: { name?: string; version?: string };
+            capabilities?: Record<string, unknown>;
+          };
+        };
+        const clientInfo = body?.params?.clientInfo ?? {};
+        const clientCaps = body?.params?.capabilities ?? {};
+        const capKeys = Object.keys(clientCaps).join(',');
+        const hasChannel = !!(clientCaps.experimental as any)?.['claude/channel'];
+
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
           { capabilities: { logging: {}, experimental: { 'claude/channel': {} } } }
@@ -134,8 +146,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid) => {
             sessions.set(sid, { server: sessionServer, transport: sessionTransport });
+            logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} channel=${hasChannel}`);
           },
           onsessionclosed: (sid) => {
+            logLine('session', `closed sid=${sid}`);
             // LOW-2: Close the McpServer when its session closes
             const s = sessions.get(sid);
             if (s) {
