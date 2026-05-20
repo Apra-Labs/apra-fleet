@@ -25,7 +25,8 @@
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
-    "prepare": "node scripts/install-hooks.mjs"
+    "prepare": "node scripts/install-hooks.mjs",
+    "postinstall": "test -d blindfold/dist || (cd blindfold && npm install --silent && npm run build)"
   },
   "keywords": [
     "ai-agent",

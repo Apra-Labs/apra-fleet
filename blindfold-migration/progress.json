@@ -115,18 +115,18 @@
       "id": "6.1",
       "step": "Phase 6 — automated + manual smoke + binary build",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
-      "commit": "",
-      "notes": ""
+      "commit": "ac5181c",
+      "notes": "postinstall hook added (BL-1 resolved); blindfold/dist auto-builds on fresh npm install; smoke + binary + manual CLI flow pass"
     },
     {
       "id": "6.V",
       "step": "VERIFY Phase 6: all green, manual log committed",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "ac5181c",
+      "notes": "build PASS; tests 1169/3; smoke PASS; binary boots 154ms; CLI set/list/update/delete all green"
     }
   ]
 }
