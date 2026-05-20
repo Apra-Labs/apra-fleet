@@ -4,6 +4,7 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { checkRunningInstance } from '../services/singleton.js';
 import { SERVER_INFO_PATH, FLEET_DIR } from '../paths.js';
+import { getServiceManager } from '../services/service-manager/index.js';
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -35,6 +36,13 @@ function postShutdown(url: string): Promise<void> {
 }
 
 export async function runStop(_args: string[]): Promise<void> {
+  const svcMgr = await getServiceManager();
+  if (await svcMgr.isInstalled()) {
+    await svcMgr.stop();
+    console.log('Server stopped.');
+    return;
+  }
+
   const instance = await checkRunningInstance();
   if (!instance.running) {
     console.log('Server is not running.');
