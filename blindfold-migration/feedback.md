@@ -1,121 +1,97 @@
-# blindfold-migration - Phase 2 Code Review
+# blindfold-migration - Phase 3 Code Review
 
 **Reviewer:** reviewerAF
-**Date:** 2026-05-20 14:15:00+05:30
+**Date:** 2026-05-20 14:25:00+05:30
 **Verdict:** APPROVED
 
 > See `git log -- blindfold-migration/feedback.md` for prior reviews.
 
 ---
 
-## Phase 2 - mechanical import rewrite (commit a60be8b)
+## Phase 3 - drop fleet's local token-resolver duplicates (commit 0133e0a)
 
-### Grep: zero stale fleet-local security imports
+### Diff scope
 
-**PASS.** Ran the grep from the task spec against src/ and tests/,
-excluding the source definition files themselves:
+Commit 0133e0a touches exactly 4 files: 3 source files + progress.json.
+`git log --oneline a60be8b..HEAD` shows only 2 commits since Phase 2:
+the Phase 2 review commit (8673b4f) and the Phase 3 work commit (0133e0a).
+Scope matches expectations.
 
-```
-grep -rn "from '\.\.[/.]*\(services/auth-socket\|..." src/ tests/ \
-  | grep -vE "src/services/auth-socket\.ts|..."
-```
+### 3a. Grep - zero local re-implementations
 
-Zero matches. All consumer files now import from `'blindfold'`.
-
-### Test mock targets retargeted to 'blindfold'
-
-**PASS (with expected exception).** Ran:
+**PASS.** Ran:
 
 ```
-grep -rn "vi.mock(...../src/services/...|.../src/utils/...)" tests/
+grep -rn "function resolveSecureTokens|function redactOutput|function resolveSecureField|const SECURE_TOKEN_RE\b" src/
 ```
 
-One match: `tests/credential-scoping-ttl.test.ts:39` still mocks
-`'../src/services/auth-socket.js'`. This file is in the Phase 4
-deletion list (PLAN.md Phase 4 "Delete tests" section). Acceptable --
-no live test files have stale mock targets.
+Zero matches. All four local definitions have been removed.
 
-### Build
+### 3b. Build
 
-**PASS.** `npm run build` (tsc) exits 0 with clean output on
-Node 20.20.1.
+**PASS.** `npm run build` (tsc) exits 0 with clean output on Node 20.20.1.
 
-### Tests + failure categorization
+### 3c. Tests + INC-1 isolation
 
 **PASS.** 1279 passing, 4 failing, 5 skipped (78 test files).
 
-Failure breakdown:
+Failure breakdown (identical to Phase 2 baseline):
 
 | Test file | Failure | Classification |
 |---|---|---|
-| tests/platform.test.ts | linux: returns pristine env from login shell | Pre-existing baseline (same as Phase 0/1) |
-| tests/time-utils.test.ts (x2) | IST timezone offset + minute preservation | Pre-existing baseline (same as Phase 0/1) |
-| tests/credential-scoping-ttl.test.ts | execute_command credential scoping rejection | Phase-4-deletable (file listed for deletion in PLAN.md Phase 4) |
+| tests/platform.test.ts:359 | linux: returns pristine env from login shell | Pre-existing baseline |
+| tests/time-utils.test.ts:30 | IST timezone offset | Pre-existing baseline |
+| tests/time-utils.test.ts:57 | minute preservation | Pre-existing baseline |
+| tests/credential-scoping-ttl.test.ts:297 | execute_command credential scoping rejection | Phase-4-deletable |
 
-No new regressions introduced by Phase 2.
+No new regressions introduced by Phase 3.
 
-### INC-1 isolation held (registry diff)
+**INC-1 isolation:** Registry diff = 0 lines. Snapshotted
+~/.apra-fleet/data/registry.json before and after `npm test`;
+`diff pre post | wc -l` -> 0. Hardening holds.
 
-**PASS.** Registry isolation verified empirically:
-
-1. Snapshotted ~/.apra-fleet/data/registry.json before tests
-2. Ran `rm -rf /tmp/apra-fleet-test-data && npm test`
-3. Snapshotted registry after tests
-4. `diff pre post | wc -l` -> **0**
-
-Zero diff lines. INC-1 hardening (vitest.config.ts top-level env +
-tests/setup.ts fail-fast guard) continues to hold.
-
-### Spurious OOB terminal pops during test run
+### 3d. Spurious OOB terminal pops
 
 **PASS.** No OS-level GUI terminal windows were spawned during the
-test run. All OOB code paths are properly mocked in test files.
+test run.
 
-### Import block hygiene (sampled files)
+### 3e. execute-command.ts
 
-**PASS.** Sampled three files per the task spec:
+**PASS.** Verified:
 
-- `src/tools/execute-command.ts:11` -- imports `escapeShellArg`,
-  `escapePowerShellArg`, `credentialResolve`, `registerTaskCredentials`,
-  `collectOobConfirm` from `'blindfold'`. No `.js` extension. No
-  relative path. Correct.
-- `src/services/ssh.ts:7` -- imports `decryptPassword` from
-  `'blindfold'`. No `.js` extension. No relative path. Correct.
-- `src/utils/auth-env.ts:3` -- imports `decryptPassword`,
-  `escapeDoubleQuoted` from `'blindfold'`. Type import on line 1 from
-  `'../types.js'` (non-security, correct). No relative security paths.
+- No local SEC_RE, ResolvedCredential interface, resolveSecureTokens,
+  or redactOutput definitions remain.
+- Line 11: `import { resolveSecureTokens, redactOutput, SEC_HANDLE_RE, registerTaskCredentials, collectOobConfirm } from 'blindfold';`
+- Line 12: `import type { ResolvedCredential } from 'blindfold';`
+- Line 73: `resolveSecureTokens(input.command, { caller: agent.friendlyName, os: agentOs })` --
+  uses the options-object signature, no `await`. Correct.
+- Line 81: same pattern for restart_command resolution. Correct.
+- Lines 65, 68: `SEC_HANDLE_RE.test(...)` replaces old local SEC_RE. Correct.
 
-All three conform to the Phase 2 convention.
+### 3f. provision-vcs-auth.ts
 
-### ASCII + AI attribution
+**PASS.** Verified:
 
-**PASS.** Scanned the cumulative diff (excluding blindfold submodule)
-for non-ASCII characters. Found only pre-existing content:
+- No local resolveSecureField function definition.
+- Line 7: `import { resolveSecureField, collectOobApiKey, decryptPassword } from 'blindfold';`
+- Line 83: `resolveSecureField(resolvedInput[field]!, agent.friendlyName)` --
+  matches blindfold's `(value: string, caller?: string)` signature. Correct.
 
-- Em-dash in progress.json step description ("Phase 2 --" was already
-  present before Phase 2 commit)
-- UTF-8 BOM in `src/os/linux.ts` and `src/os/windows.ts` (pre-existing,
-  visible in diff context lines only, not in Phase 2 additions)
+### 3g. execute-prompt.ts
 
-Phase 2 itself introduced zero new non-ASCII characters.
+**PASS.** Verified:
 
-No Claude/Anthropic/AI attribution in the commit message or new code.
-The word "claude" appears in `tests/provision-auth.test.ts` comment and
-progress.json notes referring to `claudeAiOauth` -- this is a legitimate
-credential-type field name in the product, not AI attribution.
+- No local SECURE_TOKEN_RE constant.
+- Line 22: `import { containsSecureTokens } from 'blindfold';`
+- Line 104: `containsSecureTokens(input.prompt)` -- correct usage as a
+  boolean presence check replacing the old `SECURE_TOKEN_RE.test(...)`.
 
-### OOB_TIMEOUT_MS status
+### 3h. ASCII + AI attribution
 
-**NOTE (LOW).** PLAN.md Phase 2 "Done when" states `grep -rn
-"OOB_TIMEOUT_MS" src/ tests/` should return zero. The constant still
-appears in 4 files: `src/services/auth-socket.ts`,
-`src/utils/collect-secret.ts`, `src/utils/oob-timeout.ts`, and
-`tests/auth-socket.test.ts`. All four are scheduled for deletion in
-Phase 4. The doer's note in progress.json explains: "OOB_TIMEOUT_MS not
-replaced in callers: only used inside files scheduled for Phase 4
-deletion." This is a pragmatic deviation -- replacing the constant in
-files that will be deleted next phase would be wasted churn. Verified
-that zero non-deletion files reference OOB_TIMEOUT_MS. Acceptable.
+**PASS.** `git log -1 --pretty=full 0133e0a` shows commit message:
+`refactor(blindfold): use blindfold's token-resolver instead of local copies`.
+ASCII-only. No Claude/Anthropic/AI attribution. Matches PLAN.md Phase 3
+commit message.
 
 ---
 
@@ -123,18 +99,18 @@ that zero non-deletion files reference OOB_TIMEOUT_MS. Acceptable.
 
 **Verdict: APPROVED**
 
-Phase 2 gate results:
+Phase 3 gate results:
 
-- Zero stale relative-path security imports (3b): **PASS**
-- All vi.mock targets retargeted to 'blindfold' (3c): **PASS** (1 exception in Phase-4-deletable file)
-- Build green (3a): **PASS**
-- Tests: only pre-existing + Phase-4-deletable failures (3e): **PASS** (1279/1283, 4 failing -- 3 pre-existing + 1 Phase-4-deletable)
-- INC-1 isolation held (3d): **PASS** (diff lines: 0)
-- No spurious terminal pops (3f): **PASS**
-- Import-block hygiene on sampled files (3g): **PASS**
-- ASCII + no AI attribution (3h): **PASS**
+- (3a) Zero local re-implementations: **PASS**
+- (3b) Build green: **PASS**
+- (3c) Tests 1279/4 (3 pre-existing + 1 Phase-4-deletable): **PASS**
+- (3c) INC-1 registry isolation (diff lines: 0): **PASS**
+- (3d) Spurious OOB terminal pops: **PASS** (none)
+- (3e) execute-command.ts sampled: **PASS**
+- (3f) provision-vcs-auth.ts sampled: **PASS**
+- (3g) execute-prompt.ts sampled: **PASS**
+- (3h) ASCII + no AI attribution: **PASS**
 
 **HIGH findings:** 0
 **MEDIUM findings:** 0
-**LOW findings:** 1 -- OOB_TIMEOUT_MS not replaced in Phase-4-deletable
-files (pragmatic, no action needed)
+**LOW findings:** 0
