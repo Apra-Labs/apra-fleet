@@ -46,7 +46,7 @@ describe('WindowsServiceManager', () => {
       );
       const call = vi.mocked(fs.writeFileSync).mock.calls[0];
       expect(call[1]).toContain('/bin/apra-fleet.exe');
-      expect(call[1]).toContain('--transport http');
+      expect(call[1]).toContain('"--transport" "http"');
     });
 
     it('calls schtasks /create with onlogon trigger and limited run-level', async () => {
