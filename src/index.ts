@@ -88,6 +88,14 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
+} else if (arg === 'start') {
+  import('./cli/start.js')
+    .then(m => m.runStart(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Start failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'stop') {
+  import('./cli/stop.js')
+    .then(m => m.runStop(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Stop failed: ${err.message}`); process.exit(1); });
 } else if (arg === undefined || arg === '--stdio' || arg === '--transport') {
   // Server startup: parse transport flag
   const transport = resolveTransport(process.argv.slice(2));
