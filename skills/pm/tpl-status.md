@@ -3,6 +3,7 @@
 ## Project
 - **Base branch:** {{main | v020_dev | etc}}
 - **Repo:** {{org/repo}}
+- **Last dispatched phase:** {{phase_number}}
 
 ## Members
 
