@@ -139,6 +139,8 @@ jobs:
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "agy" ]; then
             echo "PM provider is agy. Locating agy CLI..."
+            echo "which gemini: $(which gemini || echo 'not found')"
+            echo "where gemini: $(where gemini 2>/dev/null || echo 'not found')"
             echo "whoami: $(whoami)"
             echo "USERPROFILE: $USERPROFILE"
             echo "LOCALAPPDATA: $LOCALAPPDATA"
