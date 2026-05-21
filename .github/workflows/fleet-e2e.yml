@@ -139,11 +139,42 @@ jobs:
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "agy" ]; then
             echo "PM provider is agy. Locating agy CLI..."
+            echo "whoami: $(whoami)"
+            echo "USERPROFILE: $USERPROFILE"
+            echo "LOCALAPPDATA: $LOCALAPPDATA"
+            echo "HOME: $HOME"
+
+            # Check if agy is already in PATH
+            if command -v agy &>/dev/null; then
+              echo "agy CLI is already in PATH: $(command -v agy)"
+              exit 0
+            fi
+
             AGY_PATH=""
             if [ "$RUNNER_OS" = "Windows" ]; then
-              TEST_PATH="/c/Users/akhil/AppData/Local/agy/bin"
-              if [ -f "$TEST_PATH/agy.exe" ]; then
-                AGY_PATH="$TEST_PATH"
+              # Try LOCALAPPDATA
+              if [ -n "$LOCALAPPDATA" ]; then
+                TEST_PATH=$(cygpath -u "$LOCALAPPDATA/agy/bin")
+                echo "Checking: $TEST_PATH"
+                if [ -f "$TEST_PATH/agy.exe" ]; then
+                  AGY_PATH="$TEST_PATH"
+                fi
+              fi
+              # Try USERPROFILE
+              if [ -z "$AGY_PATH" ] && [ -n "$USERPROFILE" ]; then
+                TEST_PATH=$(cygpath -u "$USERPROFILE/AppData/Local/agy/bin")
+                echo "Checking: $TEST_PATH"
+                if [ -f "$TEST_PATH/agy.exe" ]; then
+                  AGY_PATH="$TEST_PATH"
+                fi
+              fi
+              # Fallback hardcoded path
+              if [ -z "$AGY_PATH" ]; then
+                TEST_PATH="/c/Users/akhil/AppData/Local/agy/bin"
+                echo "Checking fallback: $TEST_PATH"
+                if [ -f "$TEST_PATH/agy.exe" ]; then
+                  AGY_PATH="$TEST_PATH"
+                fi
               fi
             elif [ "$RUNNER_OS" = "Linux" ]; then
               TEST_PATH="$HOME/.local/share/agy/bin"
@@ -160,17 +191,26 @@ jobs:
             if [ -n "$AGY_PATH" ]; then
               echo "Found agy CLI at: $AGY_PATH"
               if [ "$RUNNER_OS" = "Windows" ]; then
-                WIN_PATH="C:\\Users\\akhil\\AppData\\Local\\agy\\bin"
+                WIN_PATH=$(cygpath -w "$AGY_PATH")
                 echo "$WIN_PATH" >> "$GITHUB_PATH"
               else
                 echo "$AGY_PATH" >> "$GITHUB_PATH"
               fi
             else
-              echo "agy CLI not found in standard paths. Searching in $HOME..."
+              echo "agy CLI not found in standard paths. Searching..."
+              SEARCH_DIR=""
               if [ "$RUNNER_OS" = "Windows" ]; then
-                FOUND=$(find /c/Users/akhil -maxdepth 5 -name "agy.exe" 2>/dev/null | head -n 1)
+                if [ -n "$USERPROFILE" ]; then
+                  SEARCH_DIR=$(cygpath -u "$USERPROFILE")
+                else
+                  SEARCH_DIR="/c/Users/akhil"
+                fi
+                echo "Searching in $SEARCH_DIR..."
+                FOUND=$(find "$SEARCH_DIR" -maxdepth 5 -name "agy.exe" 2>/dev/null | head -n 1)
               else
-                FOUND=$(find "$HOME" -maxdepth 5 -name "agy" 2>/dev/null | head -n 1)
+                SEARCH_DIR="$HOME"
+                echo "Searching in $SEARCH_DIR..."
+                FOUND=$(find "$SEARCH_DIR" -maxdepth 5 -name "agy" 2>/dev/null | head -n 1)
               fi
               
               if [ -n "$FOUND" ]; then
