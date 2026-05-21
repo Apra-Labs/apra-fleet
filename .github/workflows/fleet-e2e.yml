@@ -133,6 +133,23 @@ jobs:
           E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
           E2E_ACRED:      ${{ secrets.E2E_ACRED }}
 
+      - name: Install agy CLI if PM provider is agy
+        shell: bash
+        run: |
+          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
+          if [ "$PROVIDER" = "agy" ]; then
+            echo "Installing @google/antigravity-cli..."
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              npm install -g @google/antigravity-cli
+              NPM_PREFIX=$(npm config get prefix)
+              echo "$NPM_PREFIX" >> "$GITHUB_PATH"
+            else
+              npm install -g @google/antigravity-cli || sudo npm install -g @google/antigravity-cli
+              NPM_PREFIX=$(npm config get prefix)
+              echo "$NPM_PREFIX/bin" >> "$GITHUB_PATH"
+            fi
+          fi
+
       - name: Prepare clean PM environment
         shell: bash
         run: |
