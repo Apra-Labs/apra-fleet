@@ -119,7 +119,10 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   oauthCredentialFiles(): Array<{ localPath: string; remotePath: string }> | null {
-    return null;
+    return [
+      { localPath: '~/.gemini/oauth_creds.json', remotePath: '~/.gemini/oauth_creds.json' },
+      { localPath: '~/.gemini/google_accounts.json', remotePath: '~/.gemini/google_accounts.json' },
+    ];
   }
 
   oauthSettingsMerge(): Record<string, unknown> | null {
@@ -127,7 +130,7 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   oauthEnvVarsToUnset(): string[] {
-    return [];
+    return ['GEMINI_API_KEY'];
   }
 
   authEnvVarForToken(token: string): string {

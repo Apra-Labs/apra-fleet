@@ -622,8 +622,9 @@ ${killHint}
     beadsVersion = 'not available';
   }
 
+  const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
-  const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
+  const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}

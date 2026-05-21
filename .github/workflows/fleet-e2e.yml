@@ -138,117 +138,15 @@ jobs:
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "agy" ]; then
-            echo "PM provider is agy. Locating agy CLI..."
-            echo "which gemini: $(which gemini || echo 'not found')"
-            echo "where gemini: $(where gemini 2>/dev/null || echo 'not found')"
-            echo "whoami: $(whoami)"
-            echo "USERPROFILE: $USERPROFILE"
-            echo "LOCALAPPDATA: $LOCALAPPDATA"
-            echo "HOME: $HOME"
-
-            # Check if agy is already in PATH
-            if command -v agy &>/dev/null; then
-              echo "agy CLI is already in PATH: $(command -v agy)"
-              exit 0
-            fi
-
-            # Fallback: Attempt to download from local host machine HTTP server if missing
+            echo "Adding standard agy CLI installation paths to PATH..."
             if [ "$RUNNER_OS" = "Windows" ]; then
-              if ! command -v agy &>/dev/null && [ ! -f "/c/Users/akhil/AppData/Local/agy/bin/agy.exe" ]; then
-                echo "Attempting to download agy.exe from local host machine..."
-                mkdir -p "/c/Users/akhil/AppData/Local/agy/bin"
-                if curl -fsSL --connect-timeout 5 http://192.168.1.158:8888/agy.exe -o "/c/Users/akhil/AppData/Local/agy/bin/agy.exe"; then
-                  echo "Successfully downloaded agy.exe from http://192.168.1.158:8888/agy.exe"
-                  chmod +x "/c/Users/akhil/AppData/Local/agy/bin/agy.exe"
-                else
-                  echo "Failed to download agy.exe from local host server"
-                fi
-              fi
-            fi
-
-            AGY_PATH=""
-            if [ "$RUNNER_OS" = "Windows" ]; then
-              echo "Listing AppData/Local content matching agy:"
-              ls -la "/c/Users/akhil/AppData/Local" | grep -i agy || true
-              if [ -d "/c/Users/akhil/AppData/Local/agy" ]; then
-                echo "Listing AppData/Local/agy recursively:"
-                find "/c/Users/akhil/AppData/Local/agy" 2>/dev/null || true
-              fi
-
-              # Try LOCALAPPDATA
-              if [ -n "$LOCALAPPDATA" ]; then
-                TEST_PATH=$(cygpath -u "$LOCALAPPDATA/agy/bin")
-                echo "Checking: $TEST_PATH"
-                if [ -f "$TEST_PATH/agy.exe" ]; then
-                  AGY_PATH="$TEST_PATH"
-                fi
-              fi
-              # Try USERPROFILE
-              if [ -z "$AGY_PATH" ] && [ -n "$USERPROFILE" ]; then
-                TEST_PATH=$(cygpath -u "$USERPROFILE/AppData/Local/agy/bin")
-                echo "Checking: $TEST_PATH"
-                if [ -f "$TEST_PATH/agy.exe" ]; then
-                  AGY_PATH="$TEST_PATH"
-                fi
-              fi
-              # Fallback hardcoded path
-              if [ -z "$AGY_PATH" ]; then
-                TEST_PATH="/c/Users/akhil/AppData/Local/agy/bin"
-                echo "Checking fallback: $TEST_PATH"
-                if [ -f "$TEST_PATH/agy.exe" ]; then
-                  AGY_PATH="$TEST_PATH"
-                fi
-              fi
+              AGY_DIR="$LOCALAPPDATA/agy/bin"
+              [ -z "$LOCALAPPDATA" ] && AGY_DIR="$USERPROFILE/AppData/Local/agy/bin"
+              echo "$(cygpath -w "$AGY_DIR")" >> "$GITHUB_PATH"
             elif [ "$RUNNER_OS" = "Linux" ]; then
-              TEST_PATH="$HOME/.local/share/agy/bin"
-              if [ -f "$TEST_PATH/agy" ]; then
-                AGY_PATH="$TEST_PATH"
-              fi
+              echo "$HOME/.local/share/agy/bin" >> "$GITHUB_PATH"
             elif [ "$RUNNER_OS" = "macOS" ]; then
-              TEST_PATH="$HOME/Library/Application Support/agy/bin"
-              if [ -f "$TEST_PATH/agy" ]; then
-                AGY_PATH="$TEST_PATH"
-              fi
-            fi
-
-            if [ -n "$AGY_PATH" ]; then
-              echo "Found agy CLI at: $AGY_PATH"
-              if [ "$RUNNER_OS" = "Windows" ]; then
-                WIN_PATH=$(cygpath -w "$AGY_PATH")
-                echo "$WIN_PATH" >> "$GITHUB_PATH"
-              else
-                echo "$AGY_PATH" >> "$GITHUB_PATH"
-              fi
-            else
-              echo "agy CLI not found in standard paths. Searching..."
-              SEARCH_DIR=""
-              if [ "$RUNNER_OS" = "Windows" ]; then
-                if [ -n "$USERPROFILE" ]; then
-                  SEARCH_DIR=$(cygpath -u "$USERPROFILE")
-                else
-                  SEARCH_DIR="/c/Users/akhil"
-                fi
-                echo "Searching in $SEARCH_DIR..."
-                FOUND=$(find "$SEARCH_DIR" -maxdepth 5 -name "agy.exe" 2>/dev/null | head -n 1)
-              else
-                SEARCH_DIR="$HOME"
-                echo "Searching in $SEARCH_DIR..."
-                FOUND=$(find "$SEARCH_DIR" -maxdepth 5 -name "agy" 2>/dev/null | head -n 1)
-              fi
-              
-              if [ -n "$FOUND" ]; then
-                AGY_DIR=$(dirname "$FOUND")
-                echo "Found agy CLI at: $FOUND"
-                if [ "$RUNNER_OS" = "Windows" ]; then
-                  WIN_DIR=$(cygpath -w "$AGY_DIR")
-                  echo "$WIN_DIR" >> "$GITHUB_PATH"
-                else
-                  echo "$AGY_DIR" >> "$GITHUB_PATH"
-                fi
-              else
-                echo "::error::agy CLI could not be found on this runner!"
-                exit 1;
-              fi
+              echo "$HOME/Library/Application Support/agy/bin" >> "$GITHUB_PATH"
             fi
           fi
 
