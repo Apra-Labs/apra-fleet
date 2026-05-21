@@ -4,14 +4,15 @@ Each fleet member needs a provider-specific agent context file in their `work_fo
 
 ## Provider Filename
 
-Use `member_detail` → `llmProvider` to determine the correct target filename:
+Use `member_detail` -> `llmProvider` to determine the correct target filename:
 
 | Provider | Filename |
 |----------|----------|
 | Claude | CLAUDE.md |
+| Antigravity (agy) | GEMINI.md |
 | Gemini | GEMINI.md |
 | Codex | AGENTS.md |
-| Copilot | COPILOT-INSTRUCTIONS.md |
+| Copilot | COPILOT.md |
 
 ## Role Templates
 

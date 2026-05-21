@@ -92,7 +92,10 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
         const hooksObj = hooksConfig.hooks || {};
         let hooksChanged = false;
         
-        const hookEventNames = ['PostToolUse', 'PreToolUse', 'UserPromptSubmit', 'Stop', 'PreCompact'];
+        const hookEventNames = [
+          'PostToolUse', 'PreToolUse', 'UserPromptSubmit', 'Stop', 'PreCompact',
+          'AfterTool', 'BeforeTool', 'BeforeAgent', 'SessionEnd', 'PreCompress'
+        ];
         for (const eventName of hookEventNames) {
           if (hooksObj[eventName]) {
             const originalCount = hooksObj[eventName].length;

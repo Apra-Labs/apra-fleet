@@ -38,6 +38,6 @@ If this task requires secrets, API keys, or tokens (e.g., external API calls, pr
 - NEVER skip tasks — execute in order
 - Read PLAN.md before starting each task
 - Commit and push PLAN.md, progress.json, and all project docs (design.md, feedback-*.md) at every turn — reviewers depend on them
-- NEVER commit this agent context file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT-INSTRUCTIONS.md) — it is role-specific and not shared
-- NEVER push to the base branch (main, master, or integration branch) — always work on feature branches
-- NEVER stage or commit `.fleet-task.md` — these are ephemeral prompt delivery files managed by the fleet server
+- NEVER commit this agent context file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) - it is role-specific and not shared
+- NEVER push to the base branch (main, master, or integration branch) - always work on feature branches
+- NEVER stage or commit `.fleet-task.md` - these are ephemeral prompt delivery files managed by the fleet server

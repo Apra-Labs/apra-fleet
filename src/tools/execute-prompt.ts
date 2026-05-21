@@ -174,7 +174,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
 
   const resuming = !!(input.resume && agent.sessionId && provider.supportsResume());
-  const mintedId = (provider.name === 'claude' || provider.name === 'gemini')
+  const mintedId = (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy')
     ? (resuming ? agent.sessionId! : uuid())
     : (resuming ? agent.sessionId : undefined);
 
@@ -237,7 +237,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     if (result.code !== 0 && input.resume && agent.sessionId) {
       scope.info(`[${resolvedModel}] retrying — stale session`);
       await tryKillPid(agent, strategy, cmds);
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
+      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
       parsed = provider.parseResponse(result);
@@ -249,7 +249,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       scope.info(`[${resolvedModel}] retrying — server overloaded`);
       await tryKillPid(agent, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
+      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
       parsed = provider.parseResponse(result);
