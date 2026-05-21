@@ -26,6 +26,16 @@ function processRawFile(filePath, provider) {
 
   const content = readFileSync(filePath, 'utf8');
 
+  if (provider === 'agy') {
+    return {
+      assistantText: content,
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheCreate: 0,
+      cacheRead: 0
+    };
+  }
+
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
