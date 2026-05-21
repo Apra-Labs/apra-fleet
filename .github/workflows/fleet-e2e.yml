@@ -152,6 +152,20 @@ jobs:
               exit 0
             fi
 
+            # Fallback: Attempt to download from local host machine HTTP server if missing
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              if ! command -v agy &>/dev/null && [ ! -f "/c/Users/akhil/AppData/Local/agy/bin/agy.exe" ]; then
+                echo "Attempting to download agy.exe from local host machine..."
+                mkdir -p "/c/Users/akhil/AppData/Local/agy/bin"
+                if curl -fsSL --connect-timeout 5 http://192.168.1.158:8888/agy.exe -o "/c/Users/akhil/AppData/Local/agy/bin/agy.exe"; then
+                  echo "Successfully downloaded agy.exe from http://192.168.1.158:8888/agy.exe"
+                  chmod +x "/c/Users/akhil/AppData/Local/agy/bin/agy.exe"
+                else
+                  echo "Failed to download agy.exe from local host server"
+                fi
+              fi
+            fi
+
             AGY_PATH=""
             if [ "$RUNNER_OS" = "Windows" ]; then
               echo "Listing AppData/Local content matching agy:"
