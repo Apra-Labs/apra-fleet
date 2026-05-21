@@ -133,20 +133,59 @@ jobs:
           E2E_ADO_TOKEN:  ${{ secrets.E2E_ADO_TOKEN }}
           E2E_ACRED:      ${{ secrets.E2E_ACRED }}
 
-      - name: Install agy CLI if PM provider is agy
+      - name: Locate agy CLI if PM provider is agy
         shell: bash
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "agy" ]; then
-            echo "Installing @google/antigravity-cli..."
+            echo "PM provider is agy. Locating agy CLI..."
+            AGY_PATH=""
             if [ "$RUNNER_OS" = "Windows" ]; then
-              npm install -g @google/antigravity-cli
-              NPM_PREFIX=$(npm config get prefix)
-              echo "$NPM_PREFIX" >> "$GITHUB_PATH"
+              TEST_PATH="/c/Users/akhil/AppData/Local/agy/bin"
+              if [ -f "$TEST_PATH/agy.exe" ]; then
+                AGY_PATH="$TEST_PATH"
+              fi
+            elif [ "$RUNNER_OS" = "Linux" ]; then
+              TEST_PATH="$HOME/.local/share/agy/bin"
+              if [ -f "$TEST_PATH/agy" ]; then
+                AGY_PATH="$TEST_PATH"
+              fi
+            elif [ "$RUNNER_OS" = "macOS" ]; then
+              TEST_PATH="$HOME/Library/Application Support/agy/bin"
+              if [ -f "$TEST_PATH/agy" ]; then
+                AGY_PATH="$TEST_PATH"
+              fi
+            fi
+
+            if [ -n "$AGY_PATH" ]; then
+              echo "Found agy CLI at: $AGY_PATH"
+              if [ "$RUNNER_OS" = "Windows" ]; then
+                WIN_PATH="C:\\Users\\akhil\\AppData\\Local\\agy\\bin"
+                echo "$WIN_PATH" >> "$GITHUB_PATH"
+              else
+                echo "$AGY_PATH" >> "$GITHUB_PATH"
+              fi
             else
-              npm install -g @google/antigravity-cli || sudo npm install -g @google/antigravity-cli
-              NPM_PREFIX=$(npm config get prefix)
-              echo "$NPM_PREFIX/bin" >> "$GITHUB_PATH"
+              echo "agy CLI not found in standard paths. Searching in $HOME..."
+              if [ "$RUNNER_OS" = "Windows" ]; then
+                FOUND=$(find /c/Users/akhil -maxdepth 5 -name "agy.exe" 2>/dev/null | head -n 1)
+              else
+                FOUND=$(find "$HOME" -maxdepth 5 -name "agy" 2>/dev/null | head -n 1)
+              fi
+              
+              if [ -n "$FOUND" ]; then
+                AGY_DIR=$(dirname "$FOUND")
+                echo "Found agy CLI at: $FOUND"
+                if [ "$RUNNER_OS" = "Windows" ]; then
+                  WIN_DIR=$(cygpath -w "$AGY_DIR")
+                  echo "$WIN_DIR" >> "$GITHUB_PATH"
+                else
+                  echo "$AGY_DIR" >> "$GITHUB_PATH"
+                fi
+              else
+                echo "::error::agy CLI could not be found on this runner!"
+                exit 1;
+              fi
             fi
           fi
 
