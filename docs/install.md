@@ -5,8 +5,8 @@ which skills are installed, uninstalling, and self-updating.
 
 ## Requirements
 
-- An AI coding agent CLI on the machine where you run Fleet -- Claude Code,
-  Gemini, Codex, or Copilot.
+- An AI coding agent CLI on the machine where you run Fleet - Claude Code,
+  Antigravity (agy), Codex, Copilot, or Gemini.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
 
@@ -66,6 +66,8 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 inst
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
 
+For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
+
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
 
@@ -91,15 +93,16 @@ control exactly which skills are installed:
 | `install --skill none` | neither |
 | `install --no-skill` | neither (same as `--skill none`) |
 
-## Install for Gemini and other providers
+## Install for other providers (Antigravity, Codex, Copilot, Gemini)
 
 By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
 flag to install for a different provider instead:
 
 ```bash
-apra-fleet install --llm gemini      # Gemini CLI
+apra-fleet install --llm agy         # Google Antigravity CLI
 apra-fleet install --llm codex       # OpenAI Codex CLI
 apra-fleet install --llm copilot     # GitHub Copilot CLI
+apra-fleet install --llm gemini      # Gemini CLI
 apra-fleet install --llm claude      # Claude Code (the default)
 ```
 
@@ -110,7 +113,7 @@ provider's config directory -- for example `~/.gemini/` for Gemini -- instead of
 `install` once per provider.
 
 `--llm` combines with `--skill`, e.g. `apra-fleet install --llm gemini --skill
-pm`. Supported values: `claude` (default), `gemini`, `codex`, `copilot`.
+pm`. Supported values: `claude` (default), `agy`, `codex`, `copilot`, `gemini`.
 
 After a non-Claude install, load the server by restarting that provider's CLI --
 only Claude Code uses `/mcp`.
@@ -139,7 +142,7 @@ apra-fleet uninstall
 | `--dry-run` | Preview what would be removed, without modifying anything |
 | `--force` | Automatically stop the running fleet server before uninstalling |
 | `--yes` | Skip the confirmation prompt |
-| `--llm <provider>` | Remove only a specific provider (`claude`, `gemini`, `codex`, `copilot`) |
+| `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`, `gemini`) |
 | `--skill fleet\|pm\|all` | Remove only the specified skill directories (default: `all`) |
 
 Examples:

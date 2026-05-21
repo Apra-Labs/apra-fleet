@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';

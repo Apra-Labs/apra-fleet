@@ -4,26 +4,27 @@
 
 # Choosing an LLM Provider
 
-Fleet supports Claude, Gemini, Codex, and Copilot. Members can run different providers and mix them freely within a single fleet.
+Fleet supports Claude, Antigravity (agy), Codex, Copilot, and Gemini. Members can run different providers and mix them freely within a single fleet.
 
 ## Provider strengths
 
-- **Claude** -- Balanced coding and reasoning; fine-grained per-tool permissions via `settings.local.json`.
-- **Gemini** -- 1M-token native context window; built-in Google Search for researching APIs and docs without an external tool.
-- **Codex** -- Structured-output enforcement via `--output-schema`; native subagent parallelism for concurrent subtasks with less orchestration overhead.
-- **Copilot** -- Multi-model marketplace (Claude + GPT families in one CLI); auto-compaction keeps sessions running indefinitely.
+- **Claude** - Balanced coding and reasoning; fine-grained per-tool permissions via `settings.local.json`.
+- **Antigravity** - High-performance Gemini-based agentic CLI; supports large context windows, background tasks, and native beads task tracking.
+- **Codex** - Structured-output enforcement via `--output-schema`; native subagent parallelism for concurrent subtasks with less orchestration overhead.
+- **Copilot** - Multi-model marketplace (Claude + GPT families in one CLI); auto-compaction keeps sessions running indefinitely.
+- **Gemini** - 1M-token native context window; built-in Google Search for researching APIs and docs without an external tool.
 
 ## Recommended provider by role
 
 | Role | Recommended | Why |
 |------|-------------|-----|
-| PM (orchestrator) | Claude Opus/Sonnet, or Gemini `gemini-3.1-pro-preview` | Both plan and orchestrate well -- Gemini's orchestration support improved substantially in recent releases. |
-| Doer | Any provider | Sonnet, Gemini, Codex, Copilot -- mix freely. |
+| PM (orchestrator) | Claude Code or Antigravity (agy) | Both plan and orchestrate well - both support planning, background tasks, and premium models (e.g., Opus / premium-tier). |
+| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot, Gemini - mix freely. |
 | Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
 
 ## Gotchas worth knowing
 
-- **`max_turns` is Claude-only.** On Gemini, Codex, and Copilot, use `timeout_s` instead to bound execution time.
+- **`max_turns` is Claude-only.** On Gemini, Codex, Copilot, and Antigravity, use `timeout_s` instead to bound execution time.
 - **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
 
 ---

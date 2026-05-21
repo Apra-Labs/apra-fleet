@@ -59,24 +59,24 @@ The MCP server speaks **stdio** — the standard transport for Claude Code MCP s
 The codebase follows a strict layering:
 
 ```
-  index.ts           ← MCP server entry point, tool registration
-  tools/*            ← one file per tool, each self-contained
-  services/*         ← core capabilities (strategy, registry, SSH, file transfer)
-  providers/*        ← LLM provider adapters (Claude, Gemini, Codex, Copilot)
-  os/*               ← OS-specific command builders (Linux, macOS, Windows)
-  utils/*            ← stateless helpers (crypto, shell escaping)
-  types.ts           ← shared data structures
+  index.ts           <- MCP server entry point, tool registration
+  tools/*            <- one file per tool, each self-contained
+  services/*         <- core capabilities (strategy, registry, SSH, file transfer)
+  providers/*        <- LLM provider adapters (Claude, Antigravity, Codex, Copilot, Gemini)
+  os/*               <- OS-specific command builders (Linux, macOS, Windows)
+  utils/*            <- stateless helpers (crypto, shell escaping)
+  types.ts           <- shared data structures
 ```
 
 Each layer only depends on the layers below it. Tools never import other tools. Services don't know about the MCP protocol.
 
 ## Provider Abstraction
 
-Fleet supports four LLM providers: Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot CLI. Members can mix providers within a single fleet.
+Fleet supports five LLM providers: Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, and Gemini CLI. Members can mix providers within a single fleet.
 
 ### How It Works
 
-Each member has an optional `llmProvider` field (`'claude' | 'gemini' | 'codex' | 'copilot'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
 
 ```
 ┌──────────┐     getProvider()     ┌─────────────────┐
@@ -99,12 +99,13 @@ The `OsCommands` layer sits below this: it handles OS-specific shell wrapping (P
 
 ```
 src/providers/
-  provider.ts    — ProviderAdapter interface + shared types
-  claude.ts      — ClaudeProvider
-  gemini.ts      — GeminiProvider
-  codex.ts       — CodexProvider (NDJSON parser)
-  copilot.ts     — CopilotProvider
-  index.ts       — getProvider() singleton factory
+  provider.ts    - ProviderAdapter interface + shared types
+  claude.ts      - ClaudeProvider
+  agy.ts         - AgyProvider
+  codex.ts       - CodexProvider (NDJSON parser)
+  copilot.ts     - CopilotProvider
+  gemini.ts      - GeminiProvider
+  index.ts       - getProvider() singleton factory
 ```
 
 ### Mix-and-Match Fleet
@@ -124,10 +125,10 @@ All four members use the same `execute_prompt` tool call. The tool builds provid
 
 ### Key Differences Across Providers
 
-- **`max_turns`** — Claude-only. Ignored for Gemini, Codex, and Copilot.
-- **OAuth credential copy** — Claude-only. Non-Claude providers require an API key (`provision_llm_auth` with `api_key`).
-- **JSON output format** — Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
-- **Session resume** — Claude stores a server-side session ID. Others resume the most recent local session via a generic flag.
+- **`max_turns`** - Claude-only. Ignored for Antigravity, Codex, Copilot, and Gemini.
+- **OAuth credential copy** - Claude-only. Non-Claude providers require an API key (`provision_llm_auth` with `api_key`).
+- **JSON output format** - Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
+- **Session resume** - Claude, Antigravity, and Gemini support resuming specific session IDs. Codex and Copilot resume the most recent local session.
 
 See `docs/provider-matrix.md` for the full comparison table.
 
