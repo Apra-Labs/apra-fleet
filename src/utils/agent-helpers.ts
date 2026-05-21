@@ -87,6 +87,28 @@ export function clearStoredPid(agentId: string): void {
 }
 
 /**
+ * Group items by category key, returning a map and alphabetically sorted keys
+ * with `(uncategorized)` always last.
+ */
+export function groupByCategory<T>(
+  items: T[],
+  getCategory: (item: T) => string | null | undefined,
+): { grouped: Map<string, T[]>; sortedKeys: string[] } {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    const key = getCategory(item) || '(uncategorized)';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(item);
+  }
+  const sortedKeys = [...grouped.keys()].sort((a, b) => {
+    if (a === '(uncategorized)') return 1;
+    if (b === '(uncategorized)') return -1;
+    return a.localeCompare(b);
+  });
+  return { grouped, sortedKeys };
+}
+
+/**
  * Touch an agent's lastUsed timestamp and optionally update its sessionId.
  */
 export function touchAgent(agentId: string, sessionId?: string): void {
