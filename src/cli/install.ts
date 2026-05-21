@@ -161,7 +161,23 @@ const GEMINI_HOOK_NAME_MAP: Record<string, string> = {
 };
 
 function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provider: LlmProvider): void {
-  const settings = readConfig(paths);
+  let settingsFile = paths.settingsFile;
+  const isAgy = provider === 'agy';
+
+  let settings: any = {};
+  if (isAgy) {
+    const configDir = path.join(os.homedir(), '.gemini', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    settingsFile = path.join(configDir, 'hooks.json');
+    if (fs.existsSync(settingsFile)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+      } catch {}
+    }
+  } else {
+    settings = readConfig(paths);
+  }
+
   settings.hooks = settings.hooks || {};
 
   for (const [claudeName, hookEntries] of Object.entries(hooksConfig.hooks || {})) {
@@ -188,7 +204,11 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
     }
   }
 
-  writeConfig(paths, settings);
+  if (isAgy) {
+    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  } else {
+    writeConfig(paths, settings);
+  }
 }
 
 
@@ -240,6 +260,24 @@ function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   };
 
   writeConfig(paths, settings);
+}
+
+function mergeAgyConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+  const configDir = path.join(os.homedir(), '.gemini', 'config');
+  fs.mkdirSync(configDir, { recursive: true });
+  const mcpConfigFile = path.join(configDir, 'mcp_config.json');
+
+  let settings: any = {};
+  if (fs.existsSync(mcpConfigFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(mcpConfigFile, 'utf-8'));
+    } catch {}
+  }
+
+  settings.mcpServers = settings.mcpServers || {};
+  settings.mcpServers['apra-fleet'] = mcpConfig;
+
+  fs.writeFileSync(mcpConfigFile, JSON.stringify(settings, null, 2) + '\n');
 }
 
 function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
@@ -319,11 +357,11 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --force           Stop a running server before installing
-  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy
   apra-fleet install --help            Show this help
 
 Options:
-  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot.
+  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy.
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
                           dispatch — Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
@@ -346,7 +384,7 @@ Options:
     }
   }
 
-  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot'];
+  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy'];
   if (!supported.includes(llm)) {
     console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
     process.exit(1);
@@ -505,6 +543,8 @@ ${killHint}
     mergeCodexConfig(paths, mcpConfig);
   } else if (llm === 'copilot') {
     mergeCopilotConfig(paths, mcpConfig);
+  } else if (llm === 'agy') {
+    mergeAgyConfig(paths, mcpConfig);
   }
 
   // --- Step 6: Install fleet skill (optional) ---

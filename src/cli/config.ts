@@ -12,11 +12,40 @@ export const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
 export const DATA_DIR = path.join(FLEET_BASE, 'data');
 export const INSTALL_CONFIG_PATH = path.join(DATA_DIR, 'install-config.json');
 
+export const CURATED_CHEAP_MODELS = [
+  'gpt-oss-120b',
+  'gpt-120',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite-preview',
+  'claude-haiku-4-5',
+  'gpt-5.4-mini',
+] as const;
+
+export const CURATED_STANDARD_MODELS = [
+  'gemini-3.5-flash',
+  'gpt-oss-120b',
+  'gpt-120',
+  'claude-sonnet-4.6',
+  'claude-sonnet-4-5',
+  'gemini-3-flash-preview',
+  'gpt-5.4',
+] as const;
+
+export const CURATED_PREMIUM_MODELS = [
+  'claude-sonnet-4.6',
+  'claude-opus-4.6',
+  'claude-opus-4-6',
+  'claude-opus-4-7',
+  'gpt-oss-120b',
+  'gemini-3.1-pro-preview',
+] as const;
+
 export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   claude: 'claude-sonnet-4-6',
-  gemini: 'gemini-3-flash-preview',
+  gemini: 'gemini-3.5-flash',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
+  agy: 'gemini-3.5-flash',
 };
 
 export interface ProviderInstallConfig {
@@ -36,6 +65,14 @@ export interface MultiProviderInstallConfig {
 
 export function getProviderInstallConfig(provider: LlmProvider): ProviderInstallConfig {
   switch (provider) {
+    case 'agy':
+      return {
+        configDir: path.join(home, '.gemini', 'antigravity-cli'),
+        settingsFile: path.join(home, '.gemini', 'antigravity-cli', 'settings.json'),
+        skillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm'),
+        fleetSkillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
+        name: 'Antigravity',
+      };
     case 'gemini':
       return {
         configDir: path.join(home, '.gemini'),

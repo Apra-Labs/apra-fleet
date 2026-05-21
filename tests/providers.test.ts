@@ -3,6 +3,7 @@ import { ClaudeProvider } from '../src/providers/claude.js';
 import { GeminiProvider } from '../src/providers/gemini.js';
 import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
+import { AgyProvider } from '../src/providers/agy.js';
 import { getProvider } from '../src/providers/index.js';
 import { buildResumeFlag, buildSessionIdFlag } from '../src/providers/provider.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -400,15 +401,15 @@ describe('GeminiProvider', () => {
   });
 
   it('maps model tiers', () => {
-    expect(p.modelForTier('cheap')).toBe('gemini-3.1-flash-lite-preview');
-    expect(p.modelForTier('mid')).toBe('gemini-3-flash-preview');
+    expect(p.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
+    expect(p.modelForTier('mid')).toBe('gemini-3.5-flash');
     expect(p.modelForTier('premium')).toBe('gemini-3.1-pro-preview');
   });
 
   it('modelTiers() returns cheap/standard/premium mapping', () => {
     const tiers = p.modelTiers();
-    expect(tiers.cheap).toBe('gemini-3.1-flash-lite-preview');
-    expect(tiers.standard).toBe('gemini-3-flash-preview');
+    expect(tiers.cheap).toBe('gemini-3.5-flash-lite');
+    expect(tiers.standard).toBe('gemini-3.5-flash');
     expect(tiers.premium).toBe('gemini-3.1-pro-preview');
   });
 
@@ -859,5 +860,61 @@ describe('backwards compatibility', () => {
     expect(cmd).toMatch(/cd "\/work" && claude -p/);
     expect(cmd).toContain('--output-format json');
     expect(cmd).toContain('--max-turns 50');
+  });
+});
+
+describe('AgyProvider', () => {
+  const p = new AgyProvider();
+
+  it('has correct metadata', () => {
+    expect(p.name).toBe('agy');
+    expect(p.processName).toBe('agy');
+    expect(p.authEnvVar).toBe('GEMINI_API_KEY');
+    expect(p.credentialPath).toBe('~/.gemini/antigravity-cli/settings.json');
+    expect(p.instructionFileName).toBe('GEMINI.md');
+  });
+
+  it('builds cliCommand', () => {
+    expect(p.cliCommand('--version')).toBe('agy --version');
+  });
+
+  it('builds versionCommand', () => {
+    expect(p.versionCommand()).toBe('agy --version 2>&1');
+  });
+
+  it('builds installCommand', () => {
+    expect(p.installCommand('linux')).toBe('npm install -g @google/antigravity-cli');
+  });
+
+  it('builds updateCommand', () => {
+    expect(p.updateCommand()).toBe('agy update');
+  });
+
+  it('builds prompt command with defaults', () => {
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md' });
+    expect(cmd).toContain('agy -p');
+    expect(cmd).not.toContain('--model');
+    expect(cmd).not.toContain('--conversation');
+    expect(cmd).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('builds prompt command with resume flag', () => {
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', sessionId: 'sess-abc', resuming: true });
+    expect(cmd).toContain('--conversation "sess-abc"');
+  });
+
+  it('builds prompt command with unattended=dangerous', () => {
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'dangerous' });
+    expect(cmd).toContain('--dangerously-skip-permissions');
+  });
+
+  it('modelFlag returns empty string', () => {
+    expect(p.modelFlag('gemini-3.5-flash')).toBe('');
+  });
+
+  it('modelTiers and modelForTier return correct mappings', () => {
+    expect(p.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
+    expect(p.modelForTier('mid')).toBe('gemini-3.5-flash');
+    expect(p.modelForTier('premium')).toBe('claude-sonnet-4.6');
   });
 });

@@ -15,6 +15,7 @@ import { awsProvider } from '../services/cloud/aws.js';
 import { collectOobPassword, collectOobApiKey } from '../services/auth-socket.js';
 import { classifySshError } from '../utils/ssh-error-messages.js';
 import { logLine } from '../utils/log-helpers.js';
+import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -40,7 +41,10 @@ export const registerMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
+  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
+  model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Custom cheap model choice from a curated list'),
+  model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
+  model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
   unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false (default) = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
 });
 
@@ -173,6 +177,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     gitRepos: input.git_repos,
     cloud: cloudConfig,
     llmProvider: input.llm_provider ?? 'claude',
+    modelCheap: input.model_cheap,
+    modelStandard: input.model_standard,
+    modelPremium: input.model_premium,
     unattended: input.unattended ?? false,
   };
 
@@ -276,6 +283,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.workFolder}\n`;
   result += `  Provider: ${tempAgent.llmProvider ?? 'claude'}\n`;
+  if (tempAgent.modelCheap) result += `  Model Cheap: ${tempAgent.modelCheap}\n`;
+  if (tempAgent.modelStandard) result += `  Model Standard: ${tempAgent.modelStandard}\n`;
+  if (tempAgent.modelPremium) result += `  Model Premium: ${tempAgent.modelPremium}\n`;
   if (claudeVersion) {
     result += `  CLI:     ${claudeVersion}\n`;
   }

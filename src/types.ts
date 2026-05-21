@@ -1,7 +1,7 @@
 export type { CloudConfig } from './services/cloud/types.js';
 import type { CloudConfig } from './services/cloud/types.js';
 
-export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot';
+export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy';
 
 export interface Agent {
   id: string;
@@ -25,6 +25,9 @@ export interface Agent {
   vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
   vcsTokenExpiresAt?: string;  // ISO 8601
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
+  modelCheap?: string;
+  modelStandard?: string;
+  modelPremium?: string;
   encryptedEnvVars?: Record<string, string>;  // envVarName -> encrypted value
   lastBranch?: string;
   tokenUsage?: { input: number; output: number };

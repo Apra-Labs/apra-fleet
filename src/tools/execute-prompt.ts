@@ -156,9 +156,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
 
   const tiers = provider.modelTiers();
-  const resolvedModel = input.model
-    ? (tiers[input.model as keyof typeof tiers] ?? input.model)
-    : tiers.standard;
+  let resolvedModel = input.model || 'standard';
+  if (resolvedModel === 'cheap') {
+    resolvedModel = agent.modelCheap || tiers.cheap;
+  } else if (resolvedModel === 'standard') {
+    resolvedModel = agent.modelStandard || tiers.standard;
+  } else if (resolvedModel === 'premium') {
+    resolvedModel = agent.modelPremium || tiers.premium;
+  } else {
+    resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
+  }
 
   const deprecationWarning = input.dangerously_skip_permissions
     ? '⚠️ DEPRECATION: dangerously_skip_permissions is deprecated and ignored. Use update_member(unattended="dangerous") instead.\n\n'
