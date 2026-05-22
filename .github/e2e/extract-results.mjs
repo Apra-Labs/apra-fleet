@@ -27,35 +27,13 @@ function processRawFile(filePath, provider) {
   const content = readFileSync(filePath, 'utf8');
 
   if (provider === 'agy') {
-    // agy emits the same JSONL stream-json schema as gemini CLI; parse identically.
-    // Falls back gracefully if the file is plain text (no JSON lines parsed -> empty text).
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let obj;
-      try { obj = JSON.parse(trimmed); } catch { continue; }
-
-      // Token telemetry: agy uses the same result.stats shape as gemini
-      if (obj.type === 'result' && obj.stats) {
-        const s = obj.stats;
-        tokensIn  += (s.input ?? 0);
-        tokensOut += (s.output_tokens ?? 0);
-        cacheRead += (s.cached ?? 0);
-        // cacheCreate stays 0: agy does not report cache writes (same as gemini)
-      }
-
-      // Text extraction: result block, assistant message blocks, or delta messages
-      if (obj.type === 'result' && obj.result) {
-        assistantText += '\n' + obj.result;
-      } else if (obj.type === 'assistant') {
-        for (const block of obj.message?.content ?? []) {
-          if (block?.type === 'text' && block.text) assistantText += '\n' + block.text;
-        }
-      } else if (obj.type === 'message' && obj.role === 'assistant' && typeof obj.content === 'string') {
-        assistantText += obj.content;
-      }
-    }
-    return { assistantText, tokensIn, tokensOut, cacheCreate, cacheRead };
+    return {
+      assistantText: content,
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheCreate: 0,
+      cacheRead: 0
+    };
   }
 
   for (const line of content.split('\n')) {
