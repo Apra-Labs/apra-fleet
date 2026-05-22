@@ -298,6 +298,7 @@ jobs:
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           else
             agy --dangerously-skip-permissions \
+              --print-timeout 45m \
               --add-dir "$RUN_DIR" \
               --add-dir "$CFG_DIR" \
               --add-dir "$(dirname "$DOER_FOLDER")" \
@@ -355,6 +356,7 @@ jobs:
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           else
             agy --dangerously-skip-permissions \
+              --print-timeout 45m \
               --add-dir "$RUN_DIR" \
               --add-dir "$CFG_DIR" \
               --add-dir "$(dirname "$DOER_FOLDER")" \
@@ -447,7 +449,7 @@ jobs:
           elif [ "$PROVIDER" = "gemini" ]; then
             gemini --skip-trust -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            agy --dangerously-skip-permissions -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
+            agy --dangerously-skip-permissions --print-timeout 45m -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
 
       - name: Upload results
