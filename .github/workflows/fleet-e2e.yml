@@ -256,10 +256,11 @@ jobs:
             mkdir -p "$RUN_DIR/.gemini"
             cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/settings.json"
           else
-            mkdir -p "$RUN_DIR/.gemini/antigravity-cli"
-            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/antigravity-cli/settings.json"
+            # agy reads settings from ~/.gemini/antigravity-cli/ (home dir), not from RUN_DIR
+            mkdir -p "$HOME/.gemini/antigravity-cli"
+            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$HOME/.gemini/antigravity-cli/settings.json"
           fi
-          echo "Seeded $PROVIDER PM permissions into $RUN_DIR"
+          echo "Seeded $PROVIDER PM permissions into home dir"
 
       - name: Run fleet e2e - setup phase (${{ steps.suite.outputs.pm_provider }})
         id: e2e_setup
@@ -298,6 +299,7 @@ jobs:
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           else
             agy --dangerously-skip-permissions \
+              --output-format stream-json \
               --print-timeout 45m \
               --add-dir "$RUN_DIR" \
               --add-dir "$CFG_DIR" \
@@ -310,11 +312,16 @@ jobs:
           if [ "$LLM_EXIT" -ne 0 ]; then
             echo "::error::LLM CLI ($PROVIDER) setup phase exited with code $LLM_EXIT"
             RAW="$RUN_DIR/raw-setup.txt"
-            R=$(grep '"type":"result"' "$RAW" | tail -1)
+            R=$(grep '"type":"result"\|"type":"final"' "$RAW" | tail -1)
+            if [ -z "$R" ]; then
+              # agy (and other providers in plain-text mode) may not emit a result line
+              R=$(tail -1 "$RAW" 2>/dev/null)
+            fi
             if [ -n "$R" ]; then
-              echo "$R" | jq -r '"reason : " + (.subtype // "?") + (if .is_error then "  (is_error)" else "" end), "errors : " + ((.errors // []) | join("; ") | if . == "" then "(none)" else . end), "message: " + ((.result // "(no final text)") | gsub("\n";" ") | .[0:300])'
+              echo "$R" | jq -r '"reason : " + (.subtype // "?") + (if .is_error then "  (is_error)" else "" end), "errors : " + ((.errors // []) | join("; ") | if . == "" then "(none)" else . end), "message: " + ((.result // "(no final text)") | gsub("\n";" ") | .[0:300])' 2>/dev/null \
+                || echo "last line: $R"
             else
-              echo "(no result line -- LLM produced no final output)"
+              echo "(no output -- LLM produced no output at all)"
             fi
             exit "$LLM_EXIT"
           fi
@@ -356,6 +363,7 @@ jobs:
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           else
             agy --dangerously-skip-permissions \
+              --output-format stream-json \
               --print-timeout 45m \
               --add-dir "$RUN_DIR" \
               --add-dir "$CFG_DIR" \
@@ -366,7 +374,8 @@ jobs:
           fi
 
           # Extract PM session ID from sprint phase
-          SESSION_ID=$(grep -m1 '"type":"system"' "$RUN_DIR/raw-sprint.txt" \
+          # gemini/agy emit type:init; claude emits type:system
+          SESSION_ID=$(grep -m1 '"type":"system"\|"type":"init"' "$RUN_DIR/raw-sprint.txt" \
             | jq -r '.session_id // ""' 2>/dev/null || true)
           echo "session_id=$SESSION_ID" >> "$GITHUB_OUTPUT"
 
@@ -383,11 +392,16 @@ jobs:
           if [ "$LLM_EXIT" -ne 0 ]; then
             echo "::error::LLM CLI ($PROVIDER) sprint phase exited with code $LLM_EXIT"
             RAW="$RUN_DIR/raw-sprint.txt"
-            R=$(grep '"type":"result"' "$RAW" | tail -1)
+            R=$(grep '"type":"result"\|"type":"final"' "$RAW" | tail -1)
+            if [ -z "$R" ]; then
+              # agy (and other providers in plain-text mode) may not emit a result line
+              R=$(tail -1 "$RAW" 2>/dev/null)
+            fi
             if [ -n "$R" ]; then
-              echo "$R" | jq -r '"reason : " + (.subtype // "?") + (if .is_error then "  (is_error)" else "" end), "errors : " + ((.errors // []) | join("; ") | if . == "" then "(none)" else . end), "message: " + ((.result // "(no final text)") | gsub("\n";" ") | .[0:300])'
+              echo "$R" | jq -r '"reason : " + (.subtype // "?") + (if .is_error then "  (is_error)" else "" end), "errors : " + ((.errors // []) | join("; ") | if . == "" then "(none)" else . end), "message: " + ((.result // "(no final text)") | gsub("\n";" ") | .[0:300])' 2>/dev/null \
+                || echo "last line: $R"
             else
-              echo "(no result line -- LLM produced no final output)"
+              echo "(no output -- LLM produced no output at all)"
             fi
             exit "$LLM_EXIT"
           fi
