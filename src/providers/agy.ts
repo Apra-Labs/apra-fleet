@@ -3,6 +3,9 @@ import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import { stripAnsi } from '../utils/ansi.js';
+
+const NODE_TRANSCRIPT_SCRIPT = `const fs = require(\`fs\`); const path = require(\`path\`); try { const home = process.env.USERPROFILE || process.env.HOME || \`\`; const cachePath = path.join(home, \`.gemini\`, \`antigravity-cli\`, \`cache\`, \`last_conversations.json\`); if (!fs.existsSync(cachePath)) { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_CACHE\`); process.exit(0); } const cache = JSON.parse(fs.readFileSync(cachePath, \`utf8\`)); const folder = process.argv[1]; if (!folder) { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_FOLDER_ARG\`); process.exit(0); } const norm = p => path.resolve(p).toLowerCase().split(path.sep).join(\`/\`); const target = norm(folder); let found = \`\`; for (const k of Object.keys(cache)) { if (norm(k) === target) { found = cache[k]; break; } } if (found) { const transPath = path.join(home, \`.gemini\`, \`antigravity-cli\`, \`brain\`, found, \`.system_generated\`, \`logs\`, \`transcript.jsonl\`); if (fs.existsSync(transPath)) { console.log(\`FLEET_TRANSCRIPT_START\`); console.log(fs.readFileSync(transPath, \`utf8\`)); console.log(\`FLEET_TRANSCRIPT_END\`); } else { console.log(\`FLEET_TRANSCRIPT_MISSING:\` + found); } } else { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_SESSION_IN_CACHE\`); } } catch (e) { console.log(\`FLEET_TRANSCRIPT_ERROR:\` + e.message); }`;
 
 export class AgyProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'agy';
@@ -28,7 +31,7 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, inv } = opts;
+    const { folder, promptFile, sessionId, unattended, inv } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
@@ -37,13 +40,18 @@ export class AgyProvider implements ProviderAdapter {
 
     let cmd = `cd "${escapedFolder}" && agy -p "${instruction}"`;
 
-    if (resuming && sessionId) {
+    // Always pass --conversation so fleet knows where the transcript will be written.
+    if (sessionId) {
       cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
     }
 
     if (unattended === 'dangerous') {
       cmd += ' --dangerously-skip-permissions';
     }
+
+    // After agy exits, read its transcript from disk (primary output channel --
+    // agy writes its response to CONOUT$, not stdout, so file I/O is required).
+    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' "$PWD"`;
 
     return cmd;
   }
@@ -57,9 +65,51 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {
-    const raw = result.stdout.trim();
+    const raw = result.stdout;
+
+    // Primary path: extract response from the transcript JSONL that agy writes after
+    // completing its task. This is more reliable than PTY/ANSI capture because agy
+    // writes its LLM response to CONOUT$ (not stdout), but always writes a transcript file.
+    const startMarker = 'FLEET_TRANSCRIPT_START';
+    const endMarker = 'FLEET_TRANSCRIPT_END';
+    const startIdx = raw.indexOf(startMarker);
+    const endIdx = raw.indexOf(endMarker);
+
+    if (startIdx !== -1 && endIdx !== -1) {
+      const section = raw.substring(startIdx + startMarker.length, endIdx);
+      const lines = section.split('\n').map(l => l.trim()).filter(Boolean);
+      let lastResponse = '';
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line) as { type?: string; status?: string; content?: string };
+          if (
+            entry.type === 'PLANNER_RESPONSE' &&
+            entry.status === 'DONE' &&
+            typeof entry.content === 'string' &&
+            entry.content.trim()
+          ) {
+            lastResponse = entry.content.trim();
+          }
+        } catch { /* skip malformed JSON lines */ }
+      }
+      if (lastResponse) {
+        return {
+          result: lastResponse,
+          sessionId: undefined,
+          isError: result.code !== 0,
+          raw,
+          usage: undefined,
+        };
+      }
+    }
+
+    // Fallback: ANSI-strip stdout (covers cases where transcript is missing or incomplete)
+    const stripped = stripAnsi(raw)
+      .replace(/^FLEET_PID:\d+\r?\n/m, '')
+      .replace(/\r/g, '')
+      .trim();
     return {
-      result: raw,
+      result: stripped,
       sessionId: undefined,
       isError: result.code !== 0,
       raw,
@@ -77,7 +127,10 @@ export class AgyProvider implements ProviderAdapter {
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {
     if (!sessionId) return '';
-    return resuming ? `--conversation "${escapeDoubleQuoted(sessionId)}"` : '';
+    // Always pass --conversation so fleet knows where to read the transcript.
+    // When resuming=true this continues an existing session; otherwise starts fresh
+    // with a pre-minted UUID that fleet uses to locate the transcript after exit.
+    return `--conversation "${escapeDoubleQuoted(sessionId)}"`;
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
@@ -138,7 +191,14 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
-    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+    let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+
+    // After agy exits, read its conversation transcript (primary output channel --
+    // agy writes LLM responses to CONOUT$, not stdout; the transcript file is the
+    // reliable way to capture the response text).
+    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' "$((Get-Location).Path)"`;
+
+    return cmd;
   }
 
   jsonOutputFlag(): string {
