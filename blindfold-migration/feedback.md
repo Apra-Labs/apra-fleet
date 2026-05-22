@@ -1,124 +1,101 @@
-# blindfold-migration - Final Review (Phase 6 + Sprint Sign-off)
+# blindfold-migration - Post-PR hardening review
 
 **Reviewer:** reviewerAF
-**Date:** 2026-05-20 15:25:00+05:30
+**Date:** 2026-05-22 15:42:00+05:30
 **Verdict:** APPROVED
 
-> See `git log -- blindfold-migration/feedback.md` for prior reviews.
+> See `git log -- blindfold-migration/feedback.md` for prior reviews (sprint final APPROVED previously).
 
 ---
 
-## Sprint summary
+## Goal of this change
 
-Across 7 work commits (Phases 0-6) on branch md/project-vault, the
-blindfold-migration sprint replaced apra-fleet's in-tree credential-security
-layer with the standalone blindfold package (git submodule pinned at v0.0.1).
-69 files changed: 1231 insertions, 3466 deletions (net -2235 lines). 9 source
-files and 7 test files were deleted. ~30 source and test files had imports
-retargeted from fleet-local paths to `from 'blindfold'`. Local re-implementations
-of resolveSecureTokens, redactOutput, resolveSecureField, and SECURE_TOKEN_RE
-were dropped in favor of blindfold exports. The `secret --confirm` CLI path was
-moved to `auth --confirm` with no deprecation alias. A postinstall hook was added
-to auto-build the submodule on fresh clones. Test baseline: 1169 passing, 3
-failing (all pre-existing: 1 platform login-shell, 2 time-utils IST timezone).
-All hard guarantees from PLAN.md hold.
+Remove the resolve_secure MCP tool from blindfold to close a wire-level
+leak: it returned plaintext credentials in MCP responses, placing them
+into LLM context. blindfold becomes vault-management-only on the wire;
+token resolution stays library-only and is consumed by hosts (apra-fleet).
 
-## Phase 6 - automated + manual verification (commit a1e3e37)
+---
 
-### postinstall hook (BL-1 fix)
+## Verifications
 
-**PASS.** Verified fresh-install scenario: removed `node_modules/blindfold`,
-`blindfold/dist`, and `blindfold/node_modules`, then ran `npm install`.
-The postinstall script (`test -d blindfold/dist || (cd blindfold && npm install
---silent && npm run build)`) correctly detected the missing dist and rebuilt.
-Result: `BLINDFOLD-DIST: OK`, `NODE-MODS: OK`. BL-1 is fully resolved.
+### Wire surface (MCP tools registered): PASS
+4 registerTool calls in blindfold/src/mcp/server.ts (lines 25, 34, 43, 52):
+credential_store_set, credential_store_list, credential_store_delete,
+credential_store_update. No resolve_secure registration.
 
-### Build + smoke + binary
+### resolve_secure removed (file, registration, tests): PASS
+- grep for resolve_secure, resolveSecureHandler, resolveSecureSchema in
+  blindfold/src/ and blindfold/tests/: zero matches.
+- blindfold/src/mcp/tools/resolve-secure.ts: file does not exist.
+- No import of a resolve-secure module anywhere in the MCP server.
 
-**PASS.** `npm install` + `npm run build` (tsc): exit 0, clean output on
-Node 20.20.1. `npm run smoke`: 13/13 passed, 0 failed.
+### Live MCP server tool list: PASS
+JSON-RPC probe (tools/list) against `node dist/cli/index.js` after clean
+rebuild from v0.0.2 source returned exactly 4 tools:
+  credential_store_set
+  credential_store_list
+  credential_store_delete
+  credential_store_update
 
-SEA binary at `dist/apra-fleet-linux-x64`: 96 MB. `node dist/index.js --version`:
-295ms wall time. Binary `./dist/apra-fleet-linux-x64 --version`: 388ms wall time,
-reports `apra-fleet v0.1.1_85b2f3`. Both well under 1s.
+NOTE: initial probe against a stale dist/ (pre-existing from a prior
+checkout) showed 5 tools including resolve_secure. After `rm -rf dist &&
+npm run build`, the rebuilt dist correctly registers only 4. The stale
+dist was a local artifact, not a source-level issue -- the v0.0.2 source
+at 580213c is correct.
 
-### Tests + INC-1 isolation
+### Library exports preserved: PASS
+All 6 symbols exported from blindfold/src/index.ts (lines 24-29):
+  resolveSecureTokens, resolveSecureField, redactOutput,
+  containsSecureTokens, SECURE_TOKEN_RE, SEC_HANDLE_RE
 
-**PASS.** 1169 passing, 3 failing, 5 skipped (72 test files, 74.89s).
+### README updated with vault-only positioning: PASS
+Section "Standalone vs host-integrated usage" at blindfold/README.md:70-94
+(~25 lines). Explains vault-only MCP surface, why resolve_secure is
+intentionally absent (plaintext would enter LLM context), and that host
+integration (e.g. apra-fleet) is required for workflow use. ASCII-only
+(no em-dashes, smart quotes, or emoji in the new section).
 
-Failure breakdown (all pre-existing baseline):
+MCP tool reference table (lines 61-67) lists exactly 4 tools; no
+resolve_secure row.
 
-| Test file | Failure | Classification |
-|---|---|---|
-| tests/platform.test.ts | linux: returns pristine env from login shell | Pre-existing (platform) |
-| tests/time-utils.test.ts:30 | IST timezone offset | Pre-existing (time-utils) |
-| tests/time-utils.test.ts:57 | minute preservation | Pre-existing (time-utils) |
+### blindfold v0.0.2 tag points at correct commit: PASS
+gh api repos/Apra-Labs/blindfold/git/refs/tags/v0.0.2:
+  object.sha = 580213c82e985832eaaa696416c6682783766804
+Commit message: "feat(blindfold)!: remove resolve_secure MCP tool;
+vault-only surface" -- mentions removal, ASCII-only, no AI attribution.
 
-INC-1 isolation: registry.json snapshotted before and after `npm test`;
-`diff pre post | wc -l` -> 0. No leakage into ~/.apra-fleet/data/.
+### apra-fleet submodule pointer advanced: PASS
+git show --stat 80da6cc:
+  blindfold | 2 +-
+  1 file changed, 1 insertion(+), 1 deletion(-)
+Only the submodule pointer changed. Commit message is clean.
 
-### CLI manual flow
+### blindfold tests: 139/0
+7 test files, 139 tests passing, 0 failing. All green.
 
-**PASS.** Using isolated `APRA_FLEET_DATA_DIR=/tmp/reviewer-cli-data`:
+### apra-fleet build + tests: PASS, 1169/3
+npm run build (tsc): exit 0. npm test: 1169 passing, 3 failing (all
+pre-existing baseline: 1 platform login-shell, 2 time-utils IST).
+16/16 in credential-store-and-execute.test.ts.
 
-1. `echo -n "test-val" | node dist/index.js secret --set FOO --persist -y`
-   -> "Secret stored for FOO." + network policy message. Exit 0.
-2. `node dist/index.js secret --list` -> shows FOO as persistent/allow. Exit 0.
-3. `node dist/index.js secret --delete FOO` -> "Credential deleted: FOO". Exit 0.
-4. `node dist/index.js secret --list` -> "No secrets stored." Exit 0.
+### INC-1 isolation (registry diff lines): 0
+Registry.json snapshot before and after npm test: zero diff lines.
 
-Full round-trip confirmed.
+### Spurious OOB pops: none
+No unexpected terminal popups during any test run.
 
-## Cumulative gates
+### ASCII + AI attribution sprint-wide: PASS
+git log main..HEAD: 0 matches for claude/anthropic/ai-generated/
+co-authored-by. All commits authored by mradul <mradul@apra.in>.
 
-### Bare import shape ('blindfold' not relative)
+### execute_command integration spot-check: PASS
+src/tools/execute-command.ts:11 imports resolveSecureTokens, redactOutput,
+SEC_HANDLE_RE, registerTaskCredentials, collectOobConfirm from 'blindfold'.
+Uses resolveSecureTokens at lines 73, 81 and redactOutput at lines 148, 175.
+Integration test (credential-store-and-execute.test.ts): 16/16 pass.
 
-**PASS.** `grep -rn "from '\.\./.*blindfold/\|from '\./.*blindfold/" src/ tests/`
-returns zero matches. All blindfold imports use the bare `'blindfold'` specifier.
-
-### No fleet-local re-implementations
-
-**PASS.** `grep -rn "function resolveSecureTokens\|function redactOutput\|function resolveSecureField\|const SECURE_TOKEN_RE\b" src/`
-returns zero matches. All security primitives are consumed from blindfold.
-
-### secret --confirm fully removed
-
-**PASS.** `grep -rn "secret --confirm" src/ tests/ docs/ README.md` returns zero
-matches. `auth --confirm` present at src/cli/auth.ts:32, :46, and src/index.ts:32.
-
-### ASCII + AI attribution sprint-wide
-
-**PASS.** `git log main..HEAD --pretty=full | grep -iE "claude|anthropic|ai-generated|generated by|co-authored-by"` returns zero. All 15 commits authored by
-`mradul <mradul@apra.in>`.
-
-Non-ASCII check: `LC_ALL=C git diff main..HEAD -- src/ tests/ | grep -P '^\+.*[^\x00-\x7F]'` shows one added line with a pre-existing BOM character
-(U+FEFF) in src/os/windows.ts - carried over from the original file when the
-import target was changed from `'../utils/shell-escape.js'` to `'blindfold'`.
-Zero new non-ASCII introduced by this sprint. Em-dashes in progress.json step
-descriptions are within the project metadata folder, not source/test code.
-
-### Existing user compatibility
-
-**PASS.** src/services/blindfold-init.ts:16-18 passes:
-- `dataDir: process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data')` (matches FLEET_DIR in src/paths.ts)
-- `productName: 'apra-fleet'`
-- `pipeName: 'apra-fleet-auth'`
-
-No data migration needed. Existing credentials at ~/.apra-fleet/data/credentials.json,
-sockets at ~/.apra-fleet/data/auth.sock, and Windows pipes at
-\\.\pipe\apra-fleet-auth-<user> are all preserved.
-
-## Remaining items
-
-- **INC-2** (polluted registry backup at ~/.apra-fleet/data/registry.json.polluted-2026-05-19): 37KB file confirmed present. **Recommend DELETE** - it contains 86 fake test agents from the Phase 1 INC-1 incident. The real registry was restored and has been verified stable through all subsequent phases. The polluted file has no forensic value beyond what is documented in backlog.md.
-
-- **BL-1** (postinstall hook): RESOLVED in commit a1e3e37. Fresh-clone install verified.
-
-- **BL-2** (progress.json SHA mismatch for Phase 0): LOW, cosmetic. No action needed - git log is authoritative.
-
-- Pre-existing non-ASCII: One BOM (U+FEFF) in src/os/windows.ts and emoji characters (checkmark, cross-mark, lock) in several src/ files predate this sprint. Not in scope for this migration but worth noting for a future cleanup pass.
-
-- Pre-existing test failures: 3 tests (1 platform, 2 time-utils) fail on main and throughout this sprint. Not caused by or related to the migration.
+---
 
 ## Summary
 
@@ -128,8 +105,11 @@ sockets at ~/.apra-fleet/data/auth.sock, and Windows pipes at
 **MEDIUM findings:** 0
 **LOW findings:** 0
 
-All 6 phases verified. Every hard guarantee from PLAN.md holds: bare imports
-only, no local re-implementations, secret --confirm fully removed, existing user
-data paths preserved, build/test/smoke/binary all green. The sprint is ready
-for the user's pre-push review. The branch is on origin/md/project-vault with
-no PR opened yet.
+The resolve_secure MCP tool is fully removed from blindfold v0.0.2 at
+both the source and wire levels. The live MCP server (after clean build)
+registers exactly 4 vault-management tools. All 6 library exports are
+preserved for host consumption. The README documents the vault-only
+positioning and the design rationale. The v0.0.2 tag on GitHub points at
+the correct commit (580213c). apra-fleet's submodule bump (80da6cc) is a
+clean single-file change. Build, tests, and INC-1 isolation all pass.
+The wire-level credential leak is closed.
