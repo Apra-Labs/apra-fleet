@@ -9,7 +9,7 @@ export class AgyProvider implements ProviderAdapter {
   readonly processName = 'agy';
   readonly authEnvVar = 'GEMINI_API_KEY';
   readonly credentialPath = '~/.gemini/antigravity-cli/settings.json';
-  readonly instructionFileName = 'GEMINI.md';
+  readonly instructionFileName = 'AGY.md';
 
   cliCommand(args: string): string {
     return `agy ${args}`;

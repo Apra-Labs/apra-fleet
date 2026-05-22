@@ -33,7 +33,7 @@ Review scope covers all phases from Phase 1 through the current phase — not ju
   - Temp/scratch: `*.tmp`, `*.txt`, `*.base64`
   - Tool/security configs: `.gemini/`, `.claude/settings.json`, `permissions.json`
   - Unrelated scripts or stale artifacts: `plan-NNN.md`, `requirements-NNN.md`, `progress-NNN.json`
-  - Tracked agent context: `GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, `COPILOT.md` (ensure gitignored)
+  - Tracked agent context: `GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, `COPILOT.md`, `AGY.md` (ensure gitignored)
 
   Permit only source, tests, and active sprint tracking (`PLAN.md`, `progress.json`, `requirements.md`, `feedback.md`, design docs). When in doubt, flag it.
 
@@ -69,4 +69,4 @@ Commit feedback.md and push.
 
 ## Rules
 - NEVER push to the base branch (main, master, or integration branch) - always work on feature branches
-- NEVER commit this agent context file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md) - it is role-specific and not shared
+- NEVER commit this agent context file (CLAUDE.md / GEMINI.md / AGENTS.md / COPILOT.md / AGY.md) - it is role-specific and not shared

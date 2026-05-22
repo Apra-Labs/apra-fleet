@@ -9,6 +9,9 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 - **doer** (name: `doer`, provider: {{DOER_PROVIDER}})
 - **reviewer** (name: `reviewer`, provider: {{REVIEWER_PROVIDER}})
 
+> [!IMPORTANT]
+> If you are running in non-interactive print mode (e.g. through a CI runner or using the `-p` / `--print` flags) and are waiting for a background task or moving to the next checkpoint, you MUST execute a tool call (such as a status check command or reading progress files) in every intermediate turn. Do not return a text-only response until the entire script/phase/task is fully completed.
+
 ## Checkpoints
 
 When you finish a step, print one line, exactly like this, as plain text (no code block, no backticks):

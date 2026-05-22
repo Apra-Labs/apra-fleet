@@ -871,7 +871,7 @@ describe('AgyProvider', () => {
     expect(p.processName).toBe('agy');
     expect(p.authEnvVar).toBe('GEMINI_API_KEY');
     expect(p.credentialPath).toBe('~/.gemini/antigravity-cli/settings.json');
-    expect(p.instructionFileName).toBe('GEMINI.md');
+    expect(p.instructionFileName).toBe('AGY.md');
   });
 
   it('builds cliCommand', () => {

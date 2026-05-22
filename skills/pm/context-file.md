@@ -9,7 +9,7 @@ Use `member_detail` -> `llmProvider` to determine the correct target filename:
 | Provider | Filename |
 |----------|----------|
 | Claude | CLAUDE.md |
-| Antigravity (agy) | GEMINI.md |
+| Antigravity (agy) | AGY.md |
 | Gemini | GEMINI.md |
 | Codex | AGENTS.md |
 | Copilot | COPILOT.md |
