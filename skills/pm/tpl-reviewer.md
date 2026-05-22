@@ -1,4 +1,4 @@
-# {{PROJECT_NAME}} — Code Review
+# {{PROJECT_NAME}} - Code Review
 
 ## Context Recovery
 Before starting any review: `git log --oneline {{base_branch}}..{{branch}}`
@@ -6,17 +6,17 @@ Before starting any review: `git log --oneline {{base_branch}}..{{branch}}`
 ## Review Model
 You are reviewing work tracked in PLAN.md and progress.json.
 
-Review scope covers all phases from Phase 1 through the current phase — not just the latest diff. Code written in earlier phases may have regressed or been invalidated by later changes.
+Review scope covers all phases from Phase 1 through the current phase - not just the latest diff. Code written in earlier phases may have regressed or been invalidated by later changes.
 
 ## On each review
 
 1. Run `git log --oneline -- feedback.md` then `git show <sha>` on prior versions to understand previous findings and how the doer addressed them. Incorporate the doer's responses into your review notes so the full picture is captured in the new write-up.
-2. Read progress.json — identify which tasks are marked completed since last review
-3. Read PLAN.md, requirements.md, and any design docs in the work folder — verify code aligns with requirements intent, not just plan mechanics
+2. Read progress.json - identify which tasks are marked completed since last review
+3. Read PLAN.md, requirements.md, and any design docs in the work folder - verify code aligns with requirements intent, not just plan mechanics
 4. `git diff` the relevant commits against the base branch
 5. Check each completed task against its "done" criteria in PLAN.md
-6. Run the project build step first, then run ALL tests (unit, integration, e2e). Both must pass — if either fails, CHANGES NEEDED.
-7. Verify CI passes for the latest push — if CI is red, CHANGES NEEDED regardless of code quality
+6. Run the project build step and linter check first, then run ALL tests (unit, integration, e2e). All of them must pass - if any fail, CHANGES NEEDED.
+7. Verify CI passes for the latest push - if CI is red, CHANGES NEEDED regardless of code quality
 8. Check for regressions in previously approved phases
 
 ## What to check
@@ -42,7 +42,7 @@ Review scope covers all phases from Phase 1 through the current phase — not ju
 Overwrite feedback.md with this structure:
 
 ```
-# {{sprint_name}} — Code Review
+# {{sprint_name}} - Code Review
 
 **Reviewer:** {{member_name}}
 **Date:** YYYY-MM-DD HH:MM:SS+TZ
@@ -63,7 +63,7 @@ Overwrite feedback.md with this structure:
 <Synthesize what passed, what must change, what is deferred.>
 ```
 
-If verdict is CHANGES NEEDED: the doer annotates each relevant section with `**Doer:** fixed in commit <sha> — <what changed>` before requesting re-review.
+If verdict is CHANGES NEEDED: the doer annotates each relevant section with **Doer:** fixed in commit <sha> - <what changed> before requesting re-review.
 
 Commit feedback.md and push.
 
