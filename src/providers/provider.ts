@@ -104,7 +104,7 @@ export interface ProviderAdapter {
 
   // Windows / PowerShell prompt building helpers
   /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string;
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string): string;
 
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
   jsonOutputFlag(): string;

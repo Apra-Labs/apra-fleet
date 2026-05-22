@@ -130,7 +130,7 @@ export class WindowsCommands implements OsCommands {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
 
-    return provider.wrapWindowsPrompt(setupCmd, filePath, argList);
+    return provider.wrapWindowsPrompt(setupCmd, filePath, argList, sessionId);
   }
 
   // --- Filesystem ---

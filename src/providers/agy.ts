@@ -5,7 +5,12 @@ import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
 
-const NODE_TRANSCRIPT_SCRIPT = `const fs = require(\`fs\`); const path = require(\`path\`); try { const home = process.env.USERPROFILE || process.env.HOME || \`\`; const cachePath = path.join(home, \`.gemini\`, \`antigravity-cli\`, \`cache\`, \`last_conversations.json\`); if (!fs.existsSync(cachePath)) { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_CACHE\`); process.exit(0); } const cache = JSON.parse(fs.readFileSync(cachePath, \`utf8\`)); const folder = process.argv[1]; if (!folder) { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_FOLDER_ARG\`); process.exit(0); } const norm = p => path.resolve(p).toLowerCase().split(path.sep).join(\`/\`); const target = norm(folder); let found = \`\`; for (const k of Object.keys(cache)) { if (norm(k) === target) { found = cache[k]; break; } } if (found) { const transPath = path.join(home, \`.gemini\`, \`antigravity-cli\`, \`brain\`, found, \`.system_generated\`, \`logs\`, \`transcript.jsonl\`); if (fs.existsSync(transPath)) { console.log(\`FLEET_TRANSCRIPT_START\`); console.log(fs.readFileSync(transPath, \`utf8\`)); console.log(\`FLEET_TRANSCRIPT_END\`); } else { console.log(\`FLEET_TRANSCRIPT_MISSING:\` + found); } } else { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_SESSION_IN_CACHE\`); } } catch (e) { console.log(\`FLEET_TRANSCRIPT_ERROR:\` + e.message); }`;
+// NODE_TRANSCRIPT_SCRIPT_BY_UUID: accepts a conversation UUID as argv[1] and reads
+// the transcript directly from brain/<uuid>/.system_generated/logs/transcript.jsonl.
+// This is robust against agy switching its working directory (e.g. to scratch) because
+// we look up the transcript by the UUID we minted and passed via --conversation, not by
+// folder path via last_conversations.json.
+const NODE_TRANSCRIPT_SCRIPT = `const fs = require(\`fs\`); const path = require(\`path\`); try { const home = process.env.USERPROFILE || process.env.HOME || \`\`; const convId = process.argv[1]; if (!convId) { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_CONV_ID\`); process.exit(0); } const transPath = path.join(home, \`.gemini\`, \`antigravity-cli\`, \`brain\`, convId, \`.system_generated\`, \`logs\`, \`transcript.jsonl\`); if (fs.existsSync(transPath)) { console.log(\`FLEET_TRANSCRIPT_START\`); console.log(fs.readFileSync(transPath, \`utf8\`)); console.log(\`FLEET_TRANSCRIPT_END\`); } else { console.log(\`FLEET_TRANSCRIPT_MISSING:\` + convId); } } catch (e) { console.log(\`FLEET_TRANSCRIPT_ERROR:\` + e.message); }`;
 
 export class AgyProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'agy';
@@ -49,9 +54,12 @@ export class AgyProvider implements ProviderAdapter {
       cmd += ' --dangerously-skip-permissions';
     }
 
-    // After agy exits, read its transcript from disk (primary output channel --
-    // agy writes its response to CONOUT$, not stdout, so file I/O is required).
-    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' "$PWD"`;
+    // After agy exits, read its transcript from disk by conversation UUID (primary output
+    // channel -- agy writes its response to CONOUT$, not stdout, so file I/O is required).
+    // We pass the UUID we minted via --conversation so the lookup is robust even if agy
+    // switches its working directory (e.g. to scratch) on launch.
+    const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
+    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg}`;
 
     return cmd;
   }
@@ -190,13 +198,16 @@ export class AgyProvider implements ProviderAdapter {
     return 'GEMINI_API_KEY';
   }
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string): string {
     let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
 
-    // After agy exits, read its conversation transcript (primary output channel --
+    // After agy exits, read its conversation transcript by UUID (primary output channel --
     // agy writes LLM responses to CONOUT$, not stdout; the transcript file is the
-    // reliable way to capture the response text).
-    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' "$((Get-Location).Path)"`;
+    // reliable way to capture the response text). We look up the transcript directly
+    // by the conversation UUID we passed via --conversation, bypassing last_conversations.json
+    // which would fail if agy switches its working directory (e.g. to scratch) on launch.
+    const convArg = sessionId ? `"${sessionId}"` : '""';
+    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg}`;
 
     return cmd;
   }
