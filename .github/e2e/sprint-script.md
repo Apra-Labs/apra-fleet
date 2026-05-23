@@ -47,7 +47,11 @@ After printing that line, immediately call `fleet_status` and then start T3.3 wi
 
 ### T3.3 Run the sprint
 
-Activate the pm skill, then run:
+Activate the pm skill.
+
+Before running any `/pm` commands, read `projects.md` in the current directory:
+- If `fleet-e2e-toy` already appears in the table with Phase 1 or later and status "active", **skip `/pm init`, `/pm pair`, and `/pm plan`** -- the plan is already done. Go directly to `/pm start doer`.
+- If `fleet-e2e-toy` is not present, run the full sequence:
 
 ```
 /pm init fleet-e2e-toy
