@@ -305,22 +305,21 @@ jobs:
               --add-dir "$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-setup.md")" \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
-            # agy writes to CONOUT$ (Windows console), not stdout -- read its transcript
-            # from disk via last_conversations.json using the run directory as the lookup key.
+            # agy writes to CONOUT$ -- read transcript from disk after exit
             RUN_DIR_WIN="$(cygpath -w "$RUN_DIR" 2>/dev/null || echo "$RUN_DIR")"
-            node -e "
-              const fs = require('fs'), path = require('path');
-              const home = process.env.USERPROFILE || process.env.HOME || '';
-              const cache = JSON.parse(fs.readFileSync(path.join(home, '.gemini', 'antigravity-cli', 'cache', 'last_conversations.json'), 'utf8'));
-              const norm = p => path.resolve(p).toLowerCase().split(path.sep).join('/');
-              const target = norm(process.argv[1]);
-              let convId = '';
-              for (const k of Object.keys(cache)) { if (norm(k) === target) { convId = cache[k]; break; } }
-              if (!convId) { console.log('FLEET_TRANSCRIPT_MISSING:NO_CONV_FOR_DIR'); process.exit(0); }
-              const tp = path.join(home, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
-              if (fs.existsSync(tp)) { process.stdout.write('FLEET_TRANSCRIPT_START\n'); process.stdout.write(fs.readFileSync(tp, 'utf8')); process.stdout.write('\nFLEET_TRANSCRIPT_END\n'); }
-              else { console.log('FLEET_TRANSCRIPT_MISSING:' + convId); }
-            " "$RUN_DIR_WIN" >> "$RUN_DIR/raw-setup.txt" 2>&1 || true
+            AGY_TRANSCRIPT_SCRIPT="const fs=require('fs'),path=require('path');const home=process.env.USERPROFILE||process.env.HOME||'';const cache=JSON.parse(fs.readFileSync(path.join(home,'.gemini','antigravity-cli','cache','last_conversations.json'),'utf8'));const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join('/');const target=norm(process.argv[1]);let id='';for(const k of Object.keys(cache)){if(norm(k)===target){id=cache[k];break;}}if(!id){process.stdout.write('FLEET_TRANSCRIPT_MISSING:NO_CONV\n');process.exit(0);}const tp=path.join(home,'.gemini','antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');if(fs.existsSync(tp)){process.stdout.write('FLEET_TRANSCRIPT_START\n');process.stdout.write(fs.readFileSync(tp,'utf8'));process.stdout.write('\nFLEET_TRANSCRIPT_END\n');}else{process.stdout.write('FLEET_TRANSCRIPT_MISSING:'+id+'\n');}"
+            node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-setup.txt" 2>&1 || true
+            # Resume loop: agy -p stops after each text response; loop until T2-done appears
+            for i in 1 2 3 4; do
+              if grep -q 'T2-done' "$RUN_DIR/raw-setup.txt" 2>/dev/null; then break; fi
+              echo "[e2e] setup resume attempt $i -- T2-done not yet found"
+              agy --dangerously-skip-permissions \
+                --print-timeout 45m \
+                --continue \
+                -p "Continue from where you left off. Complete all remaining tasks (T2, T2-done) without stopping. After each CHECKPOINT, call fleet_status then immediately start the next task." \
+                > /dev/null 2>&1 || true
+              node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-setup.txt" 2>&1 || true
+            done
           fi
 
           if [ "$LLM_EXIT" -ne 0 ]; then
@@ -379,23 +378,23 @@ jobs:
               --add-dir "$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
-            # agy writes to CONOUT$ (Windows console), not stdout -- read its transcript
-            # from disk via last_conversations.json using the run directory as the lookup key.
+            # agy writes to CONOUT$ -- read transcript from disk after exit
             RUN_DIR_WIN="$(cygpath -w "$RUN_DIR" 2>/dev/null || echo "$RUN_DIR")"
-            node -e "
-              const fs = require('fs'), path = require('path');
-              const home = process.env.USERPROFILE || process.env.HOME || '';
-              const cache = JSON.parse(fs.readFileSync(path.join(home, '.gemini', 'antigravity-cli', 'cache', 'last_conversations.json'), 'utf8'));
-              const norm = p => path.resolve(p).toLowerCase().split(path.sep).join('/');
-              const target = norm(process.argv[1]);
-              let convId = '';
-              for (const k of Object.keys(cache)) { if (norm(k) === target) { convId = cache[k]; break; } }
-              if (!convId) { console.log('FLEET_TRANSCRIPT_MISSING:NO_CONV_FOR_DIR'); process.exit(0); }
-              const tp = path.join(home, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
-              if (fs.existsSync(tp)) { process.stdout.write('FLEET_TRANSCRIPT_START\n'); process.stdout.write(fs.readFileSync(tp, 'utf8')); process.stdout.write('\nFLEET_TRANSCRIPT_END\n'); }
-              else { console.log('FLEET_TRANSCRIPT_MISSING:' + convId); }
-            " "$RUN_DIR_WIN" >> "$RUN_DIR/raw-sprint.txt" 2>&1 || true
+            AGY_TRANSCRIPT_SCRIPT="const fs=require('fs'),path=require('path');const home=process.env.USERPROFILE||process.env.HOME||'';const cache=JSON.parse(fs.readFileSync(path.join(home,'.gemini','antigravity-cli','cache','last_conversations.json'),'utf8'));const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join('/');const target=norm(process.argv[1]);let id='';for(const k of Object.keys(cache)){if(norm(k)===target){id=cache[k];break;}}if(!id){process.stdout.write('FLEET_TRANSCRIPT_MISSING:NO_CONV\n');process.exit(0);}const tp=path.join(home,'.gemini','antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');if(fs.existsSync(tp)){process.stdout.write('FLEET_TRANSCRIPT_START\n');process.stdout.write(fs.readFileSync(tp,'utf8'));process.stdout.write('\nFLEET_TRANSCRIPT_END\n');}else{process.stdout.write('FLEET_TRANSCRIPT_MISSING:'+id+'\n');}"
+            node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-sprint.txt" 2>&1 || true
+            # Resume loop: agy -p stops after each text response; loop until T3-done appears
+            for i in 1 2 3 4 5 6; do
+              if grep -q 'T3-done' "$RUN_DIR/raw-sprint.txt" 2>/dev/null; then break; fi
+              echo "[e2e] sprint resume attempt $i -- T3-done not yet found"
+              agy --dangerously-skip-permissions \
+                --print-timeout 45m \
+                --continue \
+                -p "Continue from where you left off. Complete all remaining tasks without stopping. After each CHECKPOINT, call fleet_status then immediately start the next task. Do not stop until T3-done is printed." \
+                > /dev/null 2>&1 || true
+              node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-sprint.txt" 2>&1 || true
+            done
           fi
+
 
           # Extract PM session ID from sprint phase
           SESSION_ID=$(grep -m1 '"type":"system"' "$RUN_DIR/raw-sprint.txt" \
