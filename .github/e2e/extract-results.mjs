@@ -155,7 +155,7 @@ function sumMemberLogs(role) {
 telemetry.push({ role: 'doer', ...sumMemberLogs('doer') });
 telemetry.push({ role: 'reviewer', ...sumMemberLogs('reviewer') });
 
-// Extract checkpoints: one JSON object per "CHECKPOINT:" line
+// Extract checkpoints: one JSON object per "CHECKPOINT:" line (text-based, legacy)
 let checkpoints = [];
 const regex = /CHECKPOINT:\s*(\{[\s\S]*?\})/g;
 let match;
@@ -168,6 +168,24 @@ while ((match = regex.exec(allAssistantText)) !== null) {
       else checkpoints.push(cp);
     }
   } catch {}
+}
+
+// Also read file-based checkpoints written by the PM via Add-Content (agy-specific approach).
+// These are more reliable -- the PM writes them as tool calls (no agy exit risk).
+// File-based entries take precedence over text-based ones.
+const checkpointFile = join(runDir, 'checkpoints.json');
+if (existsSync(checkpointFile)) {
+  for (const line of readFileSync(checkpointFile, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const cp = JSON.parse(line.trim());
+      if (cp && cp.id) {
+        const existing = checkpoints.findIndex(c => c.id === cp.id);
+        if (existing >= 0) checkpoints[existing] = cp;
+        else checkpoints.push(cp);
+      }
+    } catch {}
+  }
 }
 
 // A phase passes only if its terminal checkpoint was emitted.
