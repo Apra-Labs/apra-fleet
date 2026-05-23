@@ -5,12 +5,13 @@ import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
 
-// NODE_TRANSCRIPT_SCRIPT_BY_UUID: accepts a conversation UUID as argv[1] and reads
-// the transcript directly from brain/<uuid>/.system_generated/logs/transcript.jsonl.
-// This is robust against agy switching its working directory (e.g. to scratch) because
-// we look up the transcript by the UUID we minted and passed via --conversation, not by
-// folder path via last_conversations.json.
-const NODE_TRANSCRIPT_SCRIPT = `const fs = require(\`fs\`); const path = require(\`path\`); try { const home = process.env.USERPROFILE || process.env.HOME || \`\`; const convId = process.argv[1]; if (!convId) { console.log(\`FLEET_TRANSCRIPT_MISSING:NO_CONV_ID\`); process.exit(0); } const transPath = path.join(home, \`.gemini\`, \`antigravity-cli\`, \`brain\`, convId, \`.system_generated\`, \`logs\`, \`transcript.jsonl\`); if (fs.existsSync(transPath)) { console.log(\`FLEET_TRANSCRIPT_START\`); console.log(fs.readFileSync(transPath, \`utf8\`)); console.log(\`FLEET_TRANSCRIPT_END\`); } else { console.log(\`FLEET_TRANSCRIPT_MISSING:\` + convId); } } catch (e) { console.log(\`FLEET_TRANSCRIPT_ERROR:\` + e.message); }`;
+// NODE_TRANSCRIPT_SCRIPT: tries two strategies to locate the agy transcript.
+// 1. Direct UUID lookup: brain/<convId>/...transcript.jsonl (when agy honors --conversation)
+// 2. Folder-based lookup: last_conversations.json[workFolder] (when agy ignores --conversation
+//    and registers under its work folder, which happens for local members in a git repo)
+// argv[1] = conversation UUID that fleet minted and passed via --conversation
+// argv[2] = work folder path (Windows absolute path) for the fallback lookup
+const NODE_TRANSCRIPT_SCRIPT = `const fs=require(\`fs\`),path=require(\`path\`);try{const home=process.env.USERPROFILE||process.env.HOME||\`\`;const convId=process.argv[1];const workDir=process.argv[2]||'';function readTranscript(id){const tp=path.join(home,\`.gemini\`,\`antigravity-cli\`,\`brain\`,id,\`.system_generated\`,\`logs\`,\`transcript.jsonl\`);if(fs.existsSync(tp)){console.log(\`FLEET_TRANSCRIPT_START\`);console.log(fs.readFileSync(tp,\`utf8\`));console.log(\`FLEET_TRANSCRIPT_END\`);return true;}return false;}if(convId&&readTranscript(convId)){process.exit(0);}const cachePath=path.join(home,\`.gemini\`,\`antigravity-cli\`,\`cache\`,\`last_conversations.json\`);if(workDir&&fs.existsSync(cachePath)){const cache=JSON.parse(fs.readFileSync(cachePath,\`utf8\`));const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join(\`/\`);const target=norm(workDir);for(const k of Object.keys(cache)){if(norm(k)===target){if(readTranscript(cache[k])){process.exit(0);}break;}}console.log(\`FLEET_TRANSCRIPT_MISSING:NOT_IN_CACHE:\`+target);}else{console.log(\`FLEET_TRANSCRIPT_MISSING:\`+(convId||\`NO_ID\`));}}catch(e){console.log(\`FLEET_TRANSCRIPT_ERROR:\`+e.message);}`;
 
 export class AgyProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'agy';
@@ -36,7 +37,7 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, unattended, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, inv } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
@@ -45,8 +46,9 @@ export class AgyProvider implements ProviderAdapter {
 
     let cmd = `cd "${escapedFolder}" && agy -p "${instruction}"`;
 
-    // Always pass --conversation so fleet knows where the transcript will be written.
-    if (sessionId) {
+    // Only pass --conversation when resuming an existing session. For fresh sessions,
+    // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
+    if (sessionId && resuming) {
       cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
     }
 
@@ -54,12 +56,13 @@ export class AgyProvider implements ProviderAdapter {
       cmd += ' --dangerously-skip-permissions';
     }
 
-    // After agy exits, read its transcript from disk by conversation UUID (primary output
-    // channel -- agy writes its response to CONOUT$, not stdout, so file I/O is required).
-    // We pass the UUID we minted via --conversation so the lookup is robust even if agy
-    // switches its working directory (e.g. to scratch) on launch.
+    // After agy exits, read its transcript from disk (primary output channel --
+    // agy writes its response to CONOUT$, not stdout, so file I/O is required).
+    // Pass both the UUID (argv[1]) and the work folder (argv[2]) so the script can
+    // try UUID lookup first, then fall back to folder-based lookup in last_conversations.json.
     const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
-    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg}`;
+    const folderArg = `"${escapeDoubleQuoted(folder)}"`;
+    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg} ${folderArg}`;
 
     return cmd;
   }
@@ -134,10 +137,10 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {
-    if (!sessionId) return '';
-    // Always pass --conversation so fleet knows where to read the transcript.
-    // When resuming=true this continues an existing session; otherwise starts fresh
-    // with a pre-minted UUID that fleet uses to locate the transcript after exit.
+    if (!sessionId || !resuming) return '';
+    // Only pass --conversation when resuming an existing session (agy uses it to
+    // reload conversation history). For fresh sessions, agy ignores any UUID we
+    // pass and creates its own -- transcript is found via folder lookup instead.
     return `--conversation "${escapeDoubleQuoted(sessionId)}"`;
   }
 
@@ -201,13 +204,14 @@ export class AgyProvider implements ProviderAdapter {
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string): string {
     let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
 
-    // After agy exits, read its conversation transcript by UUID (primary output channel --
-    // agy writes LLM responses to CONOUT$, not stdout; the transcript file is the
-    // reliable way to capture the response text). We look up the transcript directly
-    // by the conversation UUID we passed via --conversation, bypassing last_conversations.json
-    // which would fail if agy switches its working directory (e.g. to scratch) on launch.
+    // After agy exits, read its conversation transcript (primary output channel --
+    // agy writes LLM responses to CONOUT$, not stdout). Try UUID lookup first,
+    // then fall back to folder-based lookup via last_conversations.json.
+    // Extract work folder from argList: it appears after --add-dir or in setupCmd's cd.
+    // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
+    // so the script falls back gracefully (UUID lookup still works when agy honors --conversation).
     const convArg = sessionId ? `"${sessionId}"` : '""';
-    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg}`;
+    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg} ""`;
 
     return cmd;
   }

@@ -58,7 +58,14 @@ Activate the pm skill, then run:
 
 Branch prefix: `{{BRANCH_PREFIX}}`.
 
-The pm skill runs the doer/reviewer loop. After `/pm start doer`, keep driving that loop yourself: when the doer reaches review, dispatch the reviewer; when the reviewer asks for changes, dispatch the doer again. Repeat until the reviewer approves, then run `/pm cleanup fleet-e2e-toy`. Do not stop until the sprint is approved.
+The pm skill runs the doer/reviewer loop. Drive it yourself:
+1. Dispatch the doer with `execute_prompt`. Wait for its response.
+2. Read the doer's response (it will be in the `execute_prompt` result). If it says VERIFY or requests review, dispatch the reviewer.
+3. Read the reviewer's response. If the reviewer requests changes, dispatch the doer again. Repeat until the reviewer explicitly approves.
+4. A reviewer approval means the reviewer's response contains words like "approved", "LGTM", or "no changes needed". If `execute_prompt` returns empty or an error, re-dispatch.
+5. Once approved, run `/pm cleanup fleet-e2e-toy`.
+
+Do NOT print T3-sprint PASS until you have confirmed a reviewer approval response (not just dispatched -- you must read the response).
 
 CHECKPOINT: {"id":"T3-sprint","status":"PASS","notes":"..."}
 
