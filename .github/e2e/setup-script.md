@@ -7,7 +7,7 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 Do all work yourself in this conversation -- no sub-agents. If a step fails, move on to the next one.
 
 > [!IMPORTANT]
-> If you are running in non-interactive print mode (e.g. through a CI runner or using the `-p` / `--print` flags) and are waiting for a background task or moving to the next checkpoint, you MUST execute a tool call (such as a status check command or reading progress files) in every intermediate turn. Do not return a text-only response until the entire script/phase/task is fully completed.
+> If you are running in non-interactive print mode (e.g. through a CI runner or using the `-p` / `--print` flags): after printing each CHECKPOINT line, you MUST immediately execute a tool call (e.g. `fleet_status`) and then continue to the next task without stopping. Never return a text-only response until you have printed ALL checkpoints including the final `-done` one.
 
 ## Checkpoints
 
@@ -66,7 +66,7 @@ grep -q 'HOME/bin' ~/.profile 2>/dev/null || echo 'export PATH=$HOME/bin:$PATH' 
 
 CHECKPOINT: {"id":"T1","status":"PASS","notes":"..."}
 
----
+After printing that line, immediately call `fleet_status` and then start T2 without stopping.
 
 ## T2: Basic Execution
 
@@ -77,6 +77,8 @@ Send a file containing `fleet-e2e-roundtrip` to each member, receive it back, an
 Write any scratch files into the run directory (the current working directory), not /tmp.
 
 CHECKPOINT: {"id":"T2","status":"PASS","notes":"..."}
+
+After printing that line, immediately call `fleet_status` and then print T2-done without stopping.
 
 ### Done
 

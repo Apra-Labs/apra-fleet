@@ -10,7 +10,7 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 - **reviewer** (name: `reviewer`, provider: {{REVIEWER_PROVIDER}})
 
 > [!IMPORTANT]
-> If you are running in non-interactive print mode (e.g. through a CI runner or using the `-p` / `--print` flags) and are waiting for a background task or moving to the next checkpoint, you MUST execute a tool call (such as a status check command or reading progress files) in every intermediate turn. Do not return a text-only response until the entire script/phase/task is fully completed.
+> If you are running in non-interactive print mode (e.g. through a CI runner or using the `-p` / `--print` flags): after printing each CHECKPOINT line, you MUST immediately execute a tool call (e.g. `fleet_status`) and then continue to the next task without stopping. Never return a text-only response until you have printed ALL checkpoints including `T3-done`.
 
 ## Checkpoints
 
@@ -35,11 +35,15 @@ On the doer: clone {{TOY_PROJECT_URL}} into its work folder if needed, then `git
 
 CHECKPOINT: {"id":"T3-repo-setup","status":"PASS","notes":"..."}
 
+After printing that line, immediately call `fleet_status` and then start T3.2 without stopping.
+
 ### T3.2 Pick the work
 
 Run `bd ready` on the doer. Pick 3 P1 issues. Write `requirements.md` for them into the current working directory.
 
 CHECKPOINT: {"id":"T3-discover","status":"PASS","notes":"..."}
+
+After printing that line, immediately call `fleet_status` and then start T3.3 without stopping.
 
 ### T3.3 Run the sprint
 
@@ -58,11 +62,15 @@ The pm skill runs the doer/reviewer loop. After `/pm start doer`, keep driving t
 
 CHECKPOINT: {"id":"T3-sprint","status":"PASS","notes":"..."}
 
+After printing that line, immediately call `fleet_status` and then start T3.4 without stopping.
+
 ### T3.4 Check the result
 
 Confirm a branch with prefix `{{BRANCH_PREFIX}}` exists on origin and a PR was raised.
 
 CHECKPOINT: {"id":"T3-pr-verified","status":"PASS","notes":"..."}
+
+After printing that line, immediately call `fleet_status` and then print T3-done without stopping.
 
 ### Done
 
