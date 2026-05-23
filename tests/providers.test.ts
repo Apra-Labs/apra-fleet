@@ -869,7 +869,7 @@ describe('AgyProvider', () => {
   it('has correct metadata', () => {
     expect(p.name).toBe('agy');
     expect(p.processName).toBe('agy');
-    expect(p.authEnvVar).toBe('GEMINI_API_KEY');
+    expect(p.authEnvVar).toBe('ANTIGRAVITY_API_KEY');
     expect(p.credentialPath).toBe('~/.gemini/antigravity-cli/settings.json');
     expect(p.instructionFileName).toBe('AGY.md');
   });

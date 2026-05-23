@@ -16,7 +16,7 @@ const NODE_TRANSCRIPT_SCRIPT = `const fs=require(\`fs\`),path=require(\`path\`);
 export class AgyProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'agy';
   readonly processName = 'agy';
-  readonly authEnvVar = 'GEMINI_API_KEY';
+  readonly authEnvVar = 'ANTIGRAVITY_API_KEY';
   readonly credentialPath = '~/.gemini/antigravity-cli/settings.json';
   readonly instructionFileName = 'AGY.md';
 
@@ -115,6 +115,7 @@ export class AgyProvider implements ProviderAdapter {
     }
 
     // Fallback: ANSI-strip stdout (covers cases where transcript is missing or incomplete)
+    console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
     const stripped = stripAnsi(raw)
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
       .replace(/\r/g, '')
@@ -194,11 +195,11 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   oauthEnvVarsToUnset(): string[] {
-    return ['GEMINI_API_KEY'];
+    return ['ANTIGRAVITY_API_KEY'];
   }
 
   authEnvVarForToken(token: string): string {
-    return 'GEMINI_API_KEY';
+    return 'ANTIGRAVITY_API_KEY';
   }
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string): string {
@@ -210,7 +211,7 @@ export class AgyProvider implements ProviderAdapter {
     // Extract work folder from argList: it appears after --add-dir or in setupCmd's cd.
     // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
     // so the script falls back gracefully (UUID lookup still works when agy honors --conversation).
-    const convArg = sessionId ? `"${sessionId}"` : '""';
+    const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
     cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg} ""`;
 
     return cmd;

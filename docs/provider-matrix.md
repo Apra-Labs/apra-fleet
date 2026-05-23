@@ -21,7 +21,7 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 | **Model selection** | `--model opus/sonnet/haiku` | **Not available** (custom models configured in apra-fleet registry) | `--model` / `-m` | `--model <name>` or `/model` interactive | `--model <name>` or `GEMINI_MODEL` env var |
 | **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) | **Not available** |
 | **Skip permissions** | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` | `--yolo` / `-y` |
-| **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` | `GEMINI_API_KEY` |
+| **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` | `ANTIGRAVITY_API_KEY` |
 | **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Browser OAuth / settings.json | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) | Google OAuth (browser-based) |
 | **Version check** | `claude --version` | `agy --version 2>&1` | `codex --version` | `copilot --version` | `gemini --version` |
 | **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm install -g @google/antigravity-cli` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` | `npm i -g @google/gemini-cli` |
@@ -91,7 +91,7 @@ Known limitations when using non-Claude providers in a fleet.
 |----------|---------|--------|
 | Claude | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | Gemini | `GEMINI_API_KEY` | aistudio.google.com |
-| Antigravity (agy) | `GEMINI_API_KEY` | aistudio.google.com |
+| Antigravity (agy) | `ANTIGRAVITY_API_KEY` | aistudio.google.com |
 | Codex | `OPENAI_API_KEY` | platform.openai.com |
 | Copilot | `COPILOT_GITHUB_TOKEN` | github.com/settings/tokens (fine-grained PAT with "Copilot Requests" permission) |
 

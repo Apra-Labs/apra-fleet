@@ -1,5 +1,7 @@
 # Architecture & Safety Rationalization: Google Antigravity (agy) Integration
 
+> **Internal document** -- architectural rationale for contributors and reviewers, not user-facing guidance. For user setup instructions see [docs/install.md](install.md).
+
 This document rationalizes the design decisions, safety mechanisms, and compatibility considerations implemented for the Google Antigravity CLI (provider key: "agy") support in apra-fleet.
 
 ---
@@ -37,7 +39,7 @@ Unlike Claude or Gemini, the Antigravity CLI reads its global configurations (MC
 ## 3. Authentication & Credential Isolation (provision-auth.ts)
 
 ### Change Rationalization
-Antigravity utilizes the "GEMINI_API_KEY" environment variable to authenticate requests. We unified authentication provisioning to support local and remote members securely.
+Antigravity utilizes the "ANTIGRAVITY_API_KEY" environment variable to authenticate requests. We unified authentication provisioning to support local and remote members securely.
 
 ### Safety Mechanisms
 - Local Exemption: Local members automatically skip LLM auth provisioning as they run on the host machine and inherit active host credentials directly.

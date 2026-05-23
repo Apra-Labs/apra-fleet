@@ -127,6 +127,17 @@ fan-out. Gemini works well as a doer or reviewer, and as an orchestrator for
 serial workflows; for heavily parallel orchestration, Claude dispatches in
 parallel. This is a property of the Gemini CLI, not a Fleet limitation.
 
+### Agy note
+
+`apra-fleet install --llm agy` configures Fleet for the Google Antigravity CLI.
+Agy uses Google OAuth by default -- a browser-based login flow is required per
+machine, so `provision_llm_auth` does **not** work for remote agy members today.
+
+For headless or remote members, set `ANTIGRAVITY_API_KEY` (obtain from
+[Google AI Studio](https://aistudio.google.com)) in the environment before
+invoking fleet commands. The agy CLI checks env vars before falling back to
+OAuth.
+
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,

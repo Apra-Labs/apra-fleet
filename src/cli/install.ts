@@ -206,7 +206,7 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
   }
 
   if (isAgy) {
-    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
   } else {
     writeConfig(paths, settings);
   }
@@ -222,8 +222,6 @@ function mergePermissions(paths: ProviderInstallConfig): void {
     'activate_skill(*)',
     'tracker_*',
     'Agent(*)',
-      'activate_skill(*)',
-      'tracker_*',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${path.join(paths.configDir, 'skills').replace(/\\/g, '/')}/**)`,
@@ -283,8 +281,10 @@ function mergeAgyConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
 
 function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
   const settings = readConfig(paths);
-  settings.defaultModel = standardModel;
-  writeConfig(paths, settings);
+  if (!settings.defaultModel) {
+    settings.defaultModel = standardModel;
+    writeConfig(paths, settings);
+  }
 }
 
 function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {

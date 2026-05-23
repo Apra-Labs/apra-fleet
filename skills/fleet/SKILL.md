@@ -247,7 +247,7 @@ When you see this notice, surface it to the user verbatim before the rest of the
 
 | Concern | How to handle |
 |---------|---------------|
-| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), GEMINI.md (Antigravity/Gemini), AGENTS.md (Codex), COPILOT.md (Copilot) |
+| **Agent context file** | Use `member_detail` -> `llmProvider` to determine filename: CLAUDE.md (Claude), AGY.md (Antigravity), GEMINI.md (Gemini), AGENTS.md (Codex), COPILOT.md (Copilot) |
 | **Attribution config** | Claude-only (Step 2 in onboarding.md)  -  skip for all other providers |
 | **Timeouts** | Antigravity/Gemini members are slower -> use 2-3x timeout multiplier for `execute_prompt` dispatches to those members. Minimum `timeout_s: 900` for any non-trivial task. |
 
