@@ -305,6 +305,22 @@ jobs:
               --add-dir "$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-setup.md")" \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
+            # agy writes to CONOUT$ (Windows console), not stdout -- read its transcript
+            # from disk via last_conversations.json using the run directory as the lookup key.
+            RUN_DIR_WIN="$(cygpath -w "$RUN_DIR" 2>/dev/null || echo "$RUN_DIR")"
+            node -e "
+              const fs = require('fs'), path = require('path');
+              const home = process.env.USERPROFILE || process.env.HOME || '';
+              const cache = JSON.parse(fs.readFileSync(path.join(home, '.gemini', 'antigravity-cli', 'cache', 'last_conversations.json'), 'utf8'));
+              const norm = p => path.resolve(p).toLowerCase().split(path.sep).join('/');
+              const target = norm(process.argv[1]);
+              let convId = '';
+              for (const k of Object.keys(cache)) { if (norm(k) === target) { convId = cache[k]; break; } }
+              if (!convId) { console.log('FLEET_TRANSCRIPT_MISSING:NO_CONV_FOR_DIR'); process.exit(0); }
+              const tp = path.join(home, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
+              if (fs.existsSync(tp)) { process.stdout.write('FLEET_TRANSCRIPT_START\n'); process.stdout.write(fs.readFileSync(tp, 'utf8')); process.stdout.write('\nFLEET_TRANSCRIPT_END\n'); }
+              else { console.log('FLEET_TRANSCRIPT_MISSING:' + convId); }
+            " "$RUN_DIR_WIN" >> "$RUN_DIR/raw-setup.txt" 2>&1 || true
           fi
 
           if [ "$LLM_EXIT" -ne 0 ]; then
@@ -363,6 +379,22 @@ jobs:
               --add-dir "$(dirname "$REVIEWER_FOLDER")" \
               -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
+            # agy writes to CONOUT$ (Windows console), not stdout -- read its transcript
+            # from disk via last_conversations.json using the run directory as the lookup key.
+            RUN_DIR_WIN="$(cygpath -w "$RUN_DIR" 2>/dev/null || echo "$RUN_DIR")"
+            node -e "
+              const fs = require('fs'), path = require('path');
+              const home = process.env.USERPROFILE || process.env.HOME || '';
+              const cache = JSON.parse(fs.readFileSync(path.join(home, '.gemini', 'antigravity-cli', 'cache', 'last_conversations.json'), 'utf8'));
+              const norm = p => path.resolve(p).toLowerCase().split(path.sep).join('/');
+              const target = norm(process.argv[1]);
+              let convId = '';
+              for (const k of Object.keys(cache)) { if (norm(k) === target) { convId = cache[k]; break; } }
+              if (!convId) { console.log('FLEET_TRANSCRIPT_MISSING:NO_CONV_FOR_DIR'); process.exit(0); }
+              const tp = path.join(home, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
+              if (fs.existsSync(tp)) { process.stdout.write('FLEET_TRANSCRIPT_START\n'); process.stdout.write(fs.readFileSync(tp, 'utf8')); process.stdout.write('\nFLEET_TRANSCRIPT_END\n'); }
+              else { console.log('FLEET_TRANSCRIPT_MISSING:' + convId); }
+            " "$RUN_DIR_WIN" >> "$RUN_DIR/raw-sprint.txt" 2>&1 || true
           fi
 
           # Extract PM session ID from sprint phase
