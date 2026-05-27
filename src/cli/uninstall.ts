@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execSync } from 'node:child_process';
 import * as readlinePromises from 'node:readline/promises';
 import { serverVersion } from '../version.js';
@@ -24,19 +25,37 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
 }
 
 function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean {
+  const providerKey = paths.name === 'Antigravity' ? 'agy' : (paths.name.toLowerCase() as LlmProvider);
   const settings = readConfig(paths);
   let changed = false;
 
   // 1. MCP Servers
-  if (settings.mcpServers?.['apra-fleet']) {
-    console.log(`  - Removing MCP server 'apra-fleet' from settings`);
-    if (!dryRun) delete settings.mcpServers['apra-fleet'];
-    changed = true;
-  }
-  if (settings.mcp_servers?.['apra-fleet']) {
-    console.log(`  - Removing MCP server 'apra-fleet' from settings (Codex format)`);
-    if (!dryRun) delete settings.mcp_servers['apra-fleet'];
-    changed = true;
+  if (providerKey === 'agy') {
+    const mcpConfigFile = path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
+    if (fs.existsSync(mcpConfigFile)) {
+      try {
+        const mcpConfig = JSON.parse(fs.readFileSync(mcpConfigFile, 'utf-8'));
+        if (mcpConfig.mcpServers?.['apra-fleet']) {
+          console.log(`  - Removing MCP server 'apra-fleet' from mcp_config.json`);
+          if (!dryRun) {
+            delete mcpConfig.mcpServers['apra-fleet'];
+            fs.writeFileSync(mcpConfigFile, JSON.stringify(mcpConfig, null, 2) + '\n');
+          }
+          changed = true;
+        }
+      } catch {}
+    }
+  } else {
+    if (settings.mcpServers?.['apra-fleet']) {
+      console.log(`  - Removing MCP server 'apra-fleet' from settings`);
+      if (!dryRun) delete settings.mcpServers['apra-fleet'];
+      changed = true;
+    }
+    if (settings.mcp_servers?.['apra-fleet']) {
+      console.log(`  - Removing MCP server 'apra-fleet' from settings (Codex format)`);
+      if (!dryRun) delete settings.mcp_servers['apra-fleet'];
+      changed = true;
+    }
   }
 
   // 2. Permissions
@@ -64,18 +83,53 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
     }
   }
 
-  // 3. Hooks — Claude uses "PostToolUse", Gemini uses "AfterTool"
-  const hookEventNames = ['PostToolUse', 'AfterTool'];
-  for (const eventName of hookEventNames) {
-    if (settings.hooks?.[eventName]) {
-      const originalCount = settings.hooks[eventName].length;
-      const filtered = (settings.hooks[eventName] as any[]).filter(h =>
-        !h.matcher?.includes('apra-fleet')
-      );
-      if (filtered.length !== originalCount) {
-        console.log(`  - Removing ${originalCount - filtered.length} fleet hooks (${eventName})`);
-        if (!dryRun) settings.hooks[eventName] = filtered;
-        changed = true;
+  // 3. Hooks
+  if (providerKey === 'agy') {
+    const hooksFile = path.join(os.homedir(), '.gemini', 'config', 'hooks.json');
+    if (fs.existsSync(hooksFile)) {
+      try {
+        const hooksConfig = JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
+        const hooksObj = hooksConfig.hooks || {};
+        let hooksChanged = false;
+        
+        const hookEventNames = [
+          'PostToolUse', 'PreToolUse', 'UserPromptSubmit', 'Stop', 'PreCompact',
+          'AfterTool', 'BeforeTool', 'BeforeAgent', 'SessionEnd', 'PreCompress'
+        ];
+        for (const eventName of hookEventNames) {
+          if (hooksObj[eventName]) {
+            const originalCount = hooksObj[eventName].length;
+            const filtered = (hooksObj[eventName] as any[]).filter(h =>
+              !h.matcher?.includes('apra-fleet')
+            );
+            if (filtered.length !== originalCount) {
+              console.log(`  - Removing ${originalCount - filtered.length} fleet hooks (${eventName}) from hooks.json`);
+              if (!dryRun) hooksObj[eventName] = filtered;
+              hooksChanged = true;
+              changed = true;
+            }
+          }
+        }
+        if (hooksChanged && !dryRun) {
+          hooksConfig.hooks = hooksObj;
+          fs.writeFileSync(hooksFile, JSON.stringify(hooksConfig, null, 2) + '\n');
+        }
+      } catch {}
+    }
+  } else {
+    // Claude uses "PostToolUse", Gemini uses "AfterTool"
+    const hookEventNames = ['PostToolUse', 'AfterTool'];
+    for (const eventName of hookEventNames) {
+      if (settings.hooks?.[eventName]) {
+        const originalCount = settings.hooks[eventName].length;
+        const filtered = (settings.hooks[eventName] as any[]).filter(h =>
+          !h.matcher?.includes('apra-fleet')
+        );
+        if (filtered.length !== originalCount) {
+          console.log(`  - Removing ${originalCount - filtered.length} fleet hooks (${eventName})`);
+          if (!dryRun) settings.hooks[eventName] = filtered;
+          changed = true;
+        }
       }
     }
   }
@@ -88,7 +142,6 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
   }
 
   // 5. Default Model
-  const providerKey = paths.name.toLowerCase() as LlmProvider;
   const standardModel = PROVIDER_STANDARD_MODELS[providerKey];
   if (settings.defaultModel === standardModel) {
     console.log(`  - Removing defaultModel '${standardModel}' (matches fleet standard)`);
@@ -118,7 +171,7 @@ Usage:
   apra-fleet uninstall --help            Show this help
 
 Options:
-  --llm <provider>   Specific provider to clean up: claude, gemini, codex, copilot.
+  --llm <provider>   Specific provider to clean up: claude, gemini, codex, copilot, agy.
   --skill <mode>     Skills to remove: fleet, pm, or all (default).
   --dry-run          Preview the uninstall process without modifying anything.
   --force            Automatically stop the running server before uninstalling.
@@ -189,7 +242,7 @@ Options:
   const recordedProviders = Object.keys(installConfig.providers) as LlmProvider[];
   const isFallback = recordedProviders.length === 0;
   const providersToClean = targetLlm === 'all' 
-    ? (recordedProviders.length > 0 ? recordedProviders : (['claude', 'gemini', 'codex', 'copilot'] as LlmProvider[]))
+    ? (recordedProviders.length > 0 ? recordedProviders : (['claude', 'gemini', 'codex', 'copilot', 'agy'] as LlmProvider[]))
     : [targetLlm];
 
   if (isFallback && targetLlm === 'all') {

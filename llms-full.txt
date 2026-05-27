@@ -11,14 +11,14 @@
 ### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
 
 Apra Fleet is an open-source **MCP server** that turns AI agents (Claude
-Code, Gemini, Codex, Copilot) into a coordinated team instead of a lone
+Code, Antigravity, Codex, Copilot, Gemini) into a coordinated team instead of a lone
 assistant. Any job that needs more than one agent -- software sprints,
 customer-support triage, cost and operations-efficiency analysis,
 infrastructure surveys -- becomes a fleet you direct in plain conversation.
 Need more horsepower? Fleet reaches across every machine on your network
 over SSH -- no dashboards, no orchestration YAML.
 
-**The agents need not share a vendor.** A Claude agent and a Gemini agent can
+**The agents need not share a vendor.** A Claude agent and an Antigravity agent can
 work the same sprint -- one writes, the other reviews -- so a different model,
 with different blind spots, checks every change. Cross-provider collaboration is
 a built-in quality mechanism, not an afterthought.
@@ -67,11 +67,11 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
 ```
 
-> Installing for **Gemini**, Codex, or Copilot instead of Claude? Add the
+> Installing for **Antigravity**, Codex, Copilot, or Gemini instead of Claude? Add the
 > `--llm` flag -- see
-> [Install for Gemini and other providers](docs/install.md#install-for-gemini-and-other-providers).
+> [Install for other providers](docs/install.md#install-for-other-providers-antigravity-codex-copilot-gemini).
 
-Then load it in your favorite LLM CLI (claude, gemini, ...) using `/mcp`.
+Then load it in your favorite LLM CLI (claude, agy, gemini, ...) using `/mcp`.
 
 Now register your first members:
 
@@ -214,23 +214,23 @@ When *not* to use Fleet: a one-off single-file change needs no second agent.
 ## Mix providers in one fleet
 
 Every member runs its own LLM backend, and they collaborate across vendors. Put
-a Claude doer with a Gemini reviewer, or the reverse -- the reviewer's model
+a Claude doer with an Antigravity reviewer, or the reverse - the reviewer's model
 disagrees with the doer's by construction, so it catches issues a same-model
 review would wave through. Mix by role:
 
 | Role | Recommended | Why |
 |------|-------------|-----|
-| PM (orchestrator) | Claude Opus/Sonnet, or Gemini `gemini-3.1-pro-preview` | Both plan and orchestrate well -- Gemini's orchestration support improved substantially in recent releases. |
-| Doer | Any provider | Sonnet, Gemini, Codex, Copilot -- mix freely. |
+| PM (orchestrator) | Claude Code or Antigravity (agy) | Both plan and orchestrate well - both support planning, background tasks, and premium models (e.g., Opus / premium-tier). |
+| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot, Gemini - mix freely. |
 | Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
 
 A fleet that has run in production:
 
 ```
-pm-1      Opus 4.7     orchestrator
-doer-1    Sonnet 4.6   feature work
-doer-2    Gemini 3 Pro large-context tasks
-reviewer  Opus 4.7     final review
+pm-1      Opus 4.7        orchestrator
+doer-1    Sonnet 4.6      feature work
+doer-2    Antigravity     large-context tasks
+reviewer  Opus 4.7        final review
 ```
 
 Provider strengths, role recommendations, and gotchas:
@@ -435,24 +435,24 @@ The MCP server speaks **stdio** — the standard transport for Claude Code MCP s
 The codebase follows a strict layering:
 
 ```
-  index.ts           ← MCP server entry point, tool registration
-  tools/*            ← one file per tool, each self-contained
-  services/*         ← core capabilities (strategy, registry, SSH, file transfer)
-  providers/*        ← LLM provider adapters (Claude, Gemini, Codex, Copilot)
-  os/*               ← OS-specific command builders (Linux, macOS, Windows)
-  utils/*            ← stateless helpers (crypto, shell escaping)
-  types.ts           ← shared data structures
+  index.ts           <- MCP server entry point, tool registration
+  tools/*            <- one file per tool, each self-contained
+  services/*         <- core capabilities (strategy, registry, SSH, file transfer)
+  providers/*        <- LLM provider adapters (Claude, Antigravity, Codex, Copilot, Gemini)
+  os/*               <- OS-specific command builders (Linux, macOS, Windows)
+  utils/*            <- stateless helpers (crypto, shell escaping)
+  types.ts           <- shared data structures
 ```
 
 Each layer only depends on the layers below it. Tools never import other tools. Services don't know about the MCP protocol.
 
 ## Provider Abstraction
 
-Fleet supports four LLM providers: Claude Code, Gemini CLI, OpenAI Codex CLI, and GitHub Copilot CLI. Members can mix providers within a single fleet.
+Fleet supports five LLM providers: Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, and Gemini CLI. Members can mix providers within a single fleet.
 
 ### How It Works
 
-Each member has an optional `llmProvider` field (`'claude' | 'gemini' | 'codex' | 'copilot'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
 
 ```
 ┌──────────┐     getProvider()     ┌─────────────────┐
@@ -475,12 +475,13 @@ The `OsCommands` layer sits below this: it handles OS-specific shell wrapping (P
 
 ```
 src/providers/
-  provider.ts    — ProviderAdapter interface + shared types
-  claude.ts      — ClaudeProvider
-  gemini.ts      — GeminiProvider
-  codex.ts       — CodexProvider (NDJSON parser)
-  copilot.ts     — CopilotProvider
-  index.ts       — getProvider() singleton factory
+  provider.ts    - ProviderAdapter interface + shared types
+  claude.ts      - ClaudeProvider
+  agy.ts         - AgyProvider
+  codex.ts       - CodexProvider (NDJSON parser)
+  copilot.ts     - CopilotProvider
+  gemini.ts      - GeminiProvider
+  index.ts       - getProvider() singleton factory
 ```
 
 ### Mix-and-Match Fleet
@@ -500,10 +501,10 @@ All four members use the same `execute_prompt` tool call. The tool builds provid
 
 ### Key Differences Across Providers
 
-- **`max_turns`** — Claude-only. Ignored for Gemini, Codex, and Copilot.
-- **OAuth credential copy** — Claude-only. Non-Claude providers require an API key (`provision_llm_auth` with `api_key`).
-- **JSON output format** — Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
-- **Session resume** — Claude stores a server-side session ID. Others resume the most recent local session via a generic flag.
+- **`max_turns`** - Claude-only. Ignored for Antigravity, Codex, Copilot, and Gemini.
+- **OAuth credential copy** - Claude-only. Non-Claude providers require an API key (`provision_llm_auth` with `api_key`).
+- **JSON output format** - Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
+- **Session resume** - Claude, Antigravity, and Gemini support resuming specific session IDs. Codex and Copilot resume the most recent local session.
 
 See `docs/provider-matrix.md` for the full comparison table.
 
@@ -566,8 +567,8 @@ which skills are installed, uninstalling, and self-updating.
 
 ## Requirements
 
-- An AI coding agent CLI on the machine where you run Fleet -- Claude Code,
-  Gemini, Codex, or Copilot.
+- An AI coding agent CLI on the machine where you run Fleet - Claude Code,
+  Antigravity (agy), Codex, Copilot, or Gemini.
 - SSH access to any remote machines you want to register as members. The local
   machine needs nothing extra; remote members need only an SSH server.
 
@@ -627,6 +628,8 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 inst
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
 
+For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
+
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
 
@@ -652,15 +655,16 @@ control exactly which skills are installed:
 | `install --skill none` | neither |
 | `install --no-skill` | neither (same as `--skill none`) |
 
-## Install for Gemini and other providers
+## Install for other providers (Antigravity, Codex, Copilot, Gemini)
 
 By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
 flag to install for a different provider instead:
 
 ```bash
-apra-fleet install --llm gemini      # Gemini CLI
+apra-fleet install --llm agy         # Google Antigravity CLI
 apra-fleet install --llm codex       # OpenAI Codex CLI
 apra-fleet install --llm copilot     # GitHub Copilot CLI
+apra-fleet install --llm gemini      # Gemini CLI
 apra-fleet install --llm claude      # Claude Code (the default)
 ```
 
@@ -671,7 +675,7 @@ provider's config directory -- for example `~/.gemini/` for Gemini -- instead of
 `install` once per provider.
 
 `--llm` combines with `--skill`, e.g. `apra-fleet install --llm gemini --skill
-pm`. Supported values: `claude` (default), `gemini`, `codex`, `copilot`.
+pm`. Supported values: `claude` (default), `agy`, `codex`, `copilot`, `gemini`.
 
 After a non-Claude install, load the server by restarting that provider's CLI --
 only Claude Code uses `/mcp`.
@@ -700,7 +704,7 @@ apra-fleet uninstall
 | `--dry-run` | Preview what would be removed, without modifying anything |
 | `--force` | Automatically stop the running fleet server before uninstalling |
 | `--yes` | Skip the confirmation prompt |
-| `--llm <provider>` | Remove only a specific provider (`claude`, `gemini`, `codex`, `copilot`) |
+| `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`, `gemini`) |
 | `--skill fleet\|pm\|all` | Remove only the specified skill directories (default: `all`) |
 
 Examples:
@@ -1347,26 +1351,27 @@ New tool: `provision_git_auth`
 
 # Choosing an LLM Provider
 
-Fleet supports Claude, Gemini, Codex, and Copilot. Members can run different providers and mix them freely within a single fleet.
+Fleet supports Claude, Antigravity (agy), Codex, Copilot, and Gemini. Members can run different providers and mix them freely within a single fleet.
 
 ## Provider strengths
 
-- **Claude** -- Balanced coding and reasoning; fine-grained per-tool permissions via `settings.local.json`.
-- **Gemini** -- 1M-token native context window; built-in Google Search for researching APIs and docs without an external tool.
-- **Codex** -- Structured-output enforcement via `--output-schema`; native subagent parallelism for concurrent subtasks with less orchestration overhead.
-- **Copilot** -- Multi-model marketplace (Claude + GPT families in one CLI); auto-compaction keeps sessions running indefinitely.
+- **Claude** - Balanced coding and reasoning; fine-grained per-tool permissions via `settings.local.json`.
+- **Antigravity** - High-performance Gemini-based agentic CLI; supports large context windows, background tasks, and native beads task tracking.
+- **Codex** - Structured-output enforcement via `--output-schema`; native subagent parallelism for concurrent subtasks with less orchestration overhead.
+- **Copilot** - Multi-model marketplace (Claude + GPT families in one CLI); auto-compaction keeps sessions running indefinitely.
+- **Gemini** - 1M-token native context window; built-in Google Search for researching APIs and docs without an external tool.
 
 ## Recommended provider by role
 
 | Role | Recommended | Why |
 |------|-------------|-----|
-| PM (orchestrator) | Claude Opus/Sonnet, or Gemini `gemini-3.1-pro-preview` | Both plan and orchestrate well -- Gemini's orchestration support improved substantially in recent releases. |
-| Doer | Any provider | Sonnet, Gemini, Codex, Copilot -- mix freely. |
+| PM (orchestrator) | Claude Code or Antigravity (agy) | Both plan and orchestrate well - both support planning, background tasks, and premium models (e.g., Opus / premium-tier). |
+| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot, Gemini - mix freely. |
 | Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
 
 ## Gotchas worth knowing
 
-- **`max_turns` is Claude-only.** On Gemini, Codex, and Copilot, use `timeout_s` instead to bound execution time.
+- **`max_turns` is Claude-only.** On Gemini, Codex, Copilot, and Antigravity, use `timeout_s` instead to bound execution time.
 - **Copilot needs a paid GitHub Copilot subscription** (Pro, Business, or Enterprise) and has the smallest context window (64K). It is best suited for smaller, focused tasks.
 
 ---
@@ -1942,7 +1947,7 @@ See [skills/pm/SKILL.md](../skills/pm/SKILL.md) for the full PM skill reference.
 # Frequently Asked Questions
 
 <!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge -- fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
-<!-- keywords: install, setup, single machine, local, provider, Claude, Gemini, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
+<!-- keywords: install, setup, single machine, local, provider, Claude, Antigravity, Codex, Copilot, Gemini, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
 <!-- see-also: ../README.md (getting started), architecture.md (how it works), provider-guide.md (choosing a provider) -->
 
 > **For AI agents:** The FAQ is maintained as GitHub Discussions -- one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file -- follow the link.

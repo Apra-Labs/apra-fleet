@@ -4,12 +4,14 @@ import { ClaudeProvider } from './claude.js';
 import { GeminiProvider } from './gemini.js';
 import { CodexProvider } from './codex.js';
 import { CopilotProvider } from './copilot.js';
+import { AgyProvider } from './agy.js';
 
 const providers: Record<LlmProvider, ProviderAdapter> = {
   claude: new ClaudeProvider(),
   gemini: new GeminiProvider(),
   codex: new CodexProvider(),
   copilot: new CopilotProvider(),
+  agy: new AgyProvider(),
 };
 
 export function getProvider(llmProvider?: LlmProvider | null): ProviderAdapter {
@@ -28,3 +30,4 @@ export { ClaudeProvider } from './claude.js';
 export { GeminiProvider } from './gemini.js';
 export { CodexProvider } from './codex.js';
 export { CopilotProvider } from './copilot.js';
+export { AgyProvider } from './agy.js';

@@ -88,6 +88,23 @@ describe('executePrompt — provider routing', () => {
     expect(cmd).toContain('gemini');
   });
 
+  it('routes Agy member through agy CLI and parses response', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-member', llmProvider: 'agy' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: 'agy response',
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    expect(result).toContain('agy response');
+
+    // calls[0] = writePromptFile, calls[1] = main prompt command
+    const cmd = mockExecCommand.mock.calls[1][0] as string;
+    expect(cmd).toContain('agy -p');
+  });
+
   it('routes Codex member through codex CLI', async () => {
     const member = makeTestAgent({ friendlyName: 'codex-member', llmProvider: 'codex' });
     addAgent(member);
@@ -166,7 +183,7 @@ describe('provisionAuth — API key per provider', () => {
     restoreRegistry();
   });
 
-  const providerNames: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot'];
+  const providerNames: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy'];
 
   for (const llmProvider of providerNames) {
     it(`provisions ${llmProvider} API key using correct env var`, async () => {
@@ -279,6 +296,7 @@ describe('fleetProcessCheck — processName per provider', () => {
     { provider: 'gemini', processName: 'gemini' },
     { provider: 'codex', processName: 'codex' },
     { provider: 'copilot', processName: 'copilot' },
+    { provider: 'agy', processName: 'agy' },
   ];
 
   for (const { provider, processName } of cases) {

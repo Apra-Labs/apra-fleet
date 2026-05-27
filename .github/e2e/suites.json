@@ -71,6 +71,24 @@
       "doer":     { "os": "local_doer_macos",     "provider": "gemini", "type": "local" },
       "reviewer": { "os": "local_reviewer_macos", "provider": "gemini", "type": "local" },
       "vcs": "github"
+    },
+    "s8.1": {
+      "pm":       { "os": "windows", "provider": "agy", "runner": "fleet-windows" },
+      "doer":     { "os": "local_doer_windows",     "provider": "agy", "type": "local" },
+      "reviewer": { "os": "local_reviewer_windows", "provider": "agy", "type": "local" },
+      "vcs": "github"
+    },
+    "s8.2": {
+      "pm":       { "os": "linux",   "provider": "agy", "runner": "fleet-linux" },
+      "doer":     { "os": "local_doer_linux",     "provider": "agy", "type": "local" },
+      "reviewer": { "os": "local_reviewer_linux", "provider": "agy", "type": "local" },
+      "vcs": "github"
+    },
+    "s8.3": {
+      "pm":       { "os": "macos",   "provider": "agy", "runner": "fleet-macos" },
+      "doer":     { "os": "local_doer_macos",     "provider": "agy", "type": "local" },
+      "reviewer": { "os": "local_reviewer_macos", "provider": "agy", "type": "local" },
+      "vcs": "github"
     }
   }
 }

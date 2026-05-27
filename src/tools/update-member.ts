@@ -8,6 +8,7 @@ import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
+import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -41,7 +42,10 @@ export const updateMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name'),
   cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
   cloud_activity_command: z.string().optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot']).optional().describe('Change the LLM provider for this member.'),
+  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy']).optional().describe('Change the LLM provider for this member.'),
+  model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Change custom cheap model'),
+  model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Change custom standard model'),
+  model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Change custom premium model'),
   unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
 });
 
@@ -119,6 +123,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (resolvedIcon) updates.icon = resolvedIcon;
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
+  if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
+  if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
+  if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;
   if (input.unattended !== undefined) updates.unattended = input.unattended;
   if (input.host) updates.host = input.host;
   if (input.port) updates.port = input.port;
@@ -172,6 +179,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (updated.authType) {
     result += `  Auth:    ${updated.authType}\n`;
   }
+  result += `  Provider: ${updated.llmProvider ?? 'claude'}\n`;
+  if (updated.modelCheap) result += `  Model Cheap: ${updated.modelCheap}\n`;
+  if (updated.modelStandard) result += `  Model Standard: ${updated.modelStandard}\n`;
+  if (updated.modelPremium) result += `  Model Premium: ${updated.modelPremium}\n`;
 
   if (warnings.length > 0) {
     result += '\n';

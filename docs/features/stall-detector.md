@@ -97,6 +97,9 @@ function sessionLogDir(provider: string, workFolder: string): string {
     const encoded = workFolder.replace(/[\/\\:]/g, '-');
     return join(home, '.claude', 'projects', encoded);
   }
+  if (provider === 'agy') {
+    throw new Error("Stall detection log polling not supported");
+  }
   if (provider === 'gemini') {
     return join(home, '.gemini', 'tmp', basename(workFolder), 'chats');
   }

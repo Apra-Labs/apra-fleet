@@ -12,27 +12,27 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 
 ## Strategic Comparison
 
-| Feature | Claude Code | Gemini CLI | OpenAI Codex CLI | GitHub Copilot CLI |
-|---------|-------------|------------|------------------|-------------------|
-| **Install** | Native binary / `curl \| bash` | `npm i -g @google/gemini-cli` (Node 20+) | `npm i -g @openai/codex` / Homebrew / binary (Node 18+) | `npm i -g @github/copilot` / Homebrew / WinGet |
-| **Headless prompt** | `claude -p "..."` | `gemini -p "..."` | `codex exec "..."` | `copilot -p "..."` |
-| **Session resume** | `--resume <session_id>` | `-r` / `--resume` (loads most recent) | `codex exec resume` (positional) | `--continue` / `--resume` |
-| **JSON output** | `--output-format json` | `--output-format json` (also `stream-json`) | `--json` (NDJSON -- one event per state change) | `--format json` |
-| **Model selection** | `--model opus/sonnet/haiku` | `--model <name>` or `GEMINI_MODEL` env var | `--model` / `-m` | `--model <name>` or `/model` interactive |
-| **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) |
-| **Skip permissions** | `--dangerously-skip-permissions` | `--yolo` / `-y` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` |
-| **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` |
-| **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Google OAuth (browser-based) | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) |
-| **Version check** | `claude --version` | `gemini --version` | `codex --version` | `copilot --version` |
-| **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` |
-| **Install cmd (macOS)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm i -g @google/gemini-cli` | `brew install --cask codex` | `brew install --cask copilot` |
-| **Install cmd (Windows)** | `irm https://claude.ai/install.ps1 \| iex` | `npm i -g @google/gemini-cli` | Binary from GitHub releases (experimental) | `winget install GitHub.CopilotCLI` |
-| **Update command** | `claude update` | `npm update -g @google/gemini-cli` | `npm update -g @openai/codex` | `copilot update` |
-| **Process name** | `claude` | `gemini` | `codex` | `copilot` |
-| **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` |
-| **Session storage** | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) |
-| **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, web search, MCP tools | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents |
-| **Context window** | 200K (Sonnet) / 1M (Opus 4.7) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) |
+| Feature | Claude Code | Google Antigravity CLI (agy) | OpenAI Codex CLI | GitHub Copilot CLI | Gemini CLI |
+|---------|-------------|------------------------------|------------------|-------------------|------------|
+| **Install** | Native binary / `curl \| bash` | `npm install -g @google/antigravity-cli` | `npm i -g @openai/codex` / Homebrew / binary (Node 18+) | `npm i -g @github/copilot` / Homebrew / WinGet | `npm i -g @google/gemini-cli` (Node 20+) |
+| **Headless prompt** | `claude -p "..."` | `agy -p "..."` | `codex exec "..."` | `copilot -p "..."` | `gemini -p "..."` |
+| **Session resume** | `--resume <session_id>` | `--conversation "<session_id>"` | `codex exec resume` (positional) | `--continue` / `--resume` | `-r` / `--resume` (loads most recent) |
+| **JSON output** | `--output-format json` | **Not available** | `--json` (NDJSON -- one event per state change) | `--format json` | `--output-format json` (also `stream-json`) |
+| **Model selection** | `--model opus/sonnet/haiku` | **Not available** (custom models configured in apra-fleet registry) | `--model` / `-m` | `--model <name>` or `/model` interactive | `--model <name>` or `GEMINI_MODEL` env var |
+| **Max turns** | `--max-turns N` | **Not available** | **Not available** | **Not available** (auto-compaction) | **Not available** |
+| **Skip permissions** | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` | `--ask-for-approval never` + `--sandbox danger-full-access` | `--allow-all-tools` / `--yolo` | `--yolo` / `-y` |
+| **Auth env var** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` | `OPENAI_API_KEY` (or `CODEX_API_KEY` in exec mode) | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` | `ANTIGRAVITY_API_KEY` |
+| **OAuth / login** | `~/.claude/.credentials.json` (copyable) | Browser OAuth / settings.json | `codex login` (ChatGPT account or API key) | `gh auth login` or `/login` (device flow) | Google OAuth (browser-based) |
+| **Version check** | `claude --version` | `agy --version 2>&1` | `codex --version` | `copilot --version` | `gemini --version` |
+| **Install cmd (Linux)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm install -g @google/antigravity-cli` | `npm i -g @openai/codex` | `curl -fsSL https://gh.io/copilot-install \| bash` | `npm i -g @google/gemini-cli` |
+| **Install cmd (macOS)** | `curl -fsSL https://claude.ai/install.sh \| bash` | `npm install -g @google/antigravity-cli` | `brew install --cask codex` | `brew install --cask copilot` | `npm i -g @google/gemini-cli` |
+| **Install cmd (Windows)** | `irm https://claude.ai/install.ps1 \| iex` | `npm install -g @google/antigravity-cli` | Binary from GitHub releases (experimental) | `winget install GitHub.CopilotCLI` | `npm i -g @google/gemini-cli` |
+| **Update command** | `claude update` | `agy update` | `npm update -g @openai/codex` | `copilot update` | `npm update -g @google/gemini-cli` |
+| **Process name** | `claude` | `agy` | `codex` | `copilot` | `gemini` |
+| **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/antigravity-cli/settings.json` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` | `~/.gemini/` |
+| **Session storage** | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Local cache; resumed with `--conversation "<session_id>"` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` |
+| **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, MCP tools, web search, beads | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents | File edit, shell, web search, MCP tools |
+| **Context window** | 200K (Sonnet) / 1M (Opus 4.7) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) | 1M tokens |
 
 ---
 
@@ -40,11 +40,11 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 
 Used by the PM for model escalation (`cheap -> mid -> premium`).
 
-| Tier | Purpose | Claude | Gemini | OpenAI Codex | Copilot |
-|------|---------|--------|--------|--------------|---------|
-| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-3.1-flash-lite-preview` | `gpt-5.4-mini` | `claude-haiku-4-5` |
-| **mid** | Construction, code, config | `sonnet` | `gemini-3-flash-preview` | `gpt-5.4` | `claude-sonnet-4-5` |
-| **premium** | Planning, review, architecture | `opus` | `gemini-3.1-pro-preview` | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) |
+| Tier | Purpose | Claude | Antigravity | OpenAI Codex | Copilot | Gemini |
+|------|---------|--------|-------------|--------------|---------|--------|
+| **cheap** | Execution, status, tests, deploys | `haiku` | `gemini-3.5-flash-lite` | `gpt-5.4-mini` | `claude-haiku-4-5` | `gemini-3.5-flash-lite` |
+| **mid** | Construction, code, config | `sonnet` | `gemini-3.5-flash` | `gpt-5.4` | `claude-sonnet-4-5` | `gemini-3.5-flash` |
+| **premium** | Planning, review, architecture | `opus` | `claude-sonnet-4.6` | `gpt-5.4` (no separate tier) | `claude-sonnet-4-5` (highest available) | `gemini-3.1-pro-preview` |
 
 **Note:** Codex currently lacks a distinct premium tier beyond its best model. Copilot exposes Anthropic's Claude models directly, so it uses the same tier names.
 
@@ -91,6 +91,7 @@ Known limitations when using non-Claude providers in a fleet.
 |----------|---------|--------|
 | Claude | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | Gemini | `GEMINI_API_KEY` | aistudio.google.com |
+| Antigravity (agy) | `ANTIGRAVITY_API_KEY` | aistudio.google.com |
 | Codex | `OPENAI_API_KEY` | platform.openai.com |
 | Copilot | `COPILOT_GITHUB_TOKEN` | github.com/settings/tokens (fine-grained PAT with "Copilot Requests" permission) |
 
@@ -104,6 +105,7 @@ Each provider auto-loads a provider-specific instruction file from the working d
 |----------|-----------------|
 | Claude | `CLAUDE.md` |
 | Gemini | `GEMINI.md` |
+| Antigravity (agy) | `GEMINI.md` |
 | Codex | `AGENTS.md` |
 | Copilot | `COPILOT.md` |
 

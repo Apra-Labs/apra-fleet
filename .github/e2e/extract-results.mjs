@@ -26,6 +26,46 @@ function processRawFile(filePath, provider) {
 
   const content = readFileSync(filePath, 'utf8');
 
+  if (provider === 'agy') {
+    // The raw file contains the stdout of the agy invocation. After agy exits,
+    // fleet appends the transcript JSONL wrapped in FLEET_TRANSCRIPT_START/END markers.
+    // We extract text from PLANNER_RESPONSE entries in the JSONL so that CHECKPOINT lines
+    // embedded in the agent's responses can be detected.
+    const startMarker = 'FLEET_TRANSCRIPT_START';
+    const endMarker = 'FLEET_TRANSCRIPT_END';
+    const startIdx = content.indexOf(startMarker);
+    const endIdx = content.indexOf(endMarker);
+    if (startIdx !== -1 && endIdx !== -1) {
+      const section = content.substring(startIdx + startMarker.length, endIdx);
+      let extracted = '';
+      for (const line of section.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const entry = JSON.parse(trimmed);
+          if (entry.type === 'PLANNER_RESPONSE' && entry.status === 'DONE' && typeof entry.content === 'string' && entry.content.trim()) {
+            extracted += '\n' + entry.content.trim();
+          }
+        } catch { /* skip malformed lines */ }
+      }
+      return {
+        assistantText: extracted || content,
+        tokensIn: 0,
+        tokensOut: 0,
+        cacheCreate: 0,
+        cacheRead: 0,
+      };
+    }
+    // No markers: treat raw content as plain text (fallback for empty or unexpected output)
+    return {
+      assistantText: content,
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheCreate: 0,
+      cacheRead: 0,
+    };
+  }
+
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -115,7 +155,7 @@ function sumMemberLogs(role) {
 telemetry.push({ role: 'doer', ...sumMemberLogs('doer') });
 telemetry.push({ role: 'reviewer', ...sumMemberLogs('reviewer') });
 
-// Extract checkpoints: one JSON object per "CHECKPOINT:" line
+// Extract checkpoints: one JSON object per "CHECKPOINT:" line (text-based, legacy)
 let checkpoints = [];
 const regex = /CHECKPOINT:\s*(\{[\s\S]*?\})/g;
 let match;
@@ -128,6 +168,24 @@ while ((match = regex.exec(allAssistantText)) !== null) {
       else checkpoints.push(cp);
     }
   } catch {}
+}
+
+// Also read file-based checkpoints written by the PM via Add-Content (agy-specific approach).
+// These are more reliable -- the PM writes them as tool calls (no agy exit risk).
+// File-based entries take precedence over text-based ones.
+const checkpointFile = join(runDir, 'checkpoints.json');
+if (existsSync(checkpointFile)) {
+  for (const line of readFileSync(checkpointFile, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const cp = JSON.parse(line.trim());
+      if (cp && cp.id) {
+        const existing = checkpoints.findIndex(c => c.id === cp.id);
+        if (existing >= 0) checkpoints[existing] = cp;
+        else checkpoints.push(cp);
+      }
+    } catch {}
+  }
 }
 
 // A phase passes only if its terminal checkpoint was emitted.
