@@ -1,4 +1,4 @@
-<project title="Apra Fleet" summary="AI-managed fleet orchestration for Claude Code -- run, update, and coordinate multiple Claude Code agents from a single hub.">
+<project title="Apra Fleet" summary="AI-managed fleet orchestration for Claude Code, Gemini, and Antigravity (agy) -- run, update, and coordinate multiple LLM agents from a single hub.">
   <docs>
   <doc title="Readme" desc="Project overview, installation, member registration, and day-to-day usage for operators.">
 # Apra Fleet
@@ -688,6 +688,17 @@ operations run **sequentially** -- one dispatch at a time, with no parallel
 fan-out. Gemini works well as a doer or reviewer, and as an orchestrator for
 serial workflows; for heavily parallel orchestration, Claude dispatches in
 parallel. This is a property of the Gemini CLI, not a Fleet limitation.
+
+### Agy note
+
+`apra-fleet install --llm agy` configures Fleet for the Google Antigravity CLI.
+Agy uses Google OAuth by default -- a browser-based login flow is required per
+machine, so `provision_llm_auth` does **not** work for remote agy members today.
+
+For headless or remote members, set `ANTIGRAVITY_API_KEY` (obtain from
+[Google AI Studio](https://aistudio.google.com)) in the environment before
+invoking fleet commands. The agy CLI checks env vars before falling back to
+OAuth.
 
 ## Uninstall
 
