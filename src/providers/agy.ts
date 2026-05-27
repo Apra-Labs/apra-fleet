@@ -216,8 +216,13 @@ export class AgyProvider implements ProviderAdapter {
     return 'ANTIGRAVITY_API_KEY';
   }
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string): string {
-    let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string): string {
+    // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
+    const tier = this.resolveTierFromModel(model);
+    const displayModel = AGY_MODEL_FOR_TIER[tier];
+    const settingsScript = `${SCRIPTS_WIN}\\agy-settings-merge.js`;
+
+    let cmd = `${setupCmd}node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}"; Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
 
     // After agy exits, read its conversation transcript via the installed helper script.
     // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]

@@ -204,7 +204,7 @@ export class GeminiProvider implements ProviderAdapter {
 
 
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
     // Gemini on Windows needs direct shell execution to resolve .cmd script wrappers reliably.
     // We emit the current shell PID immediately to satisfy fleet's lifecycle tracking.
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
