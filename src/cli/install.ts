@@ -343,6 +343,26 @@ export function killApraFleet(): void {
   }
 }
 
+/**
+ * Write empty .ignore overlay files into a LOCAL agy member's workspace to block
+ * the global apra-fleet MCP server and PM/fleet skills from loading inside that
+ * workspace.  Idempotent -- safe to call multiple times for the same folder.
+ *
+ * Only meaningful for LOCAL members (they share ~/.gemini/antigravity-cli/ with
+ * the PM).  REMOTE members have their own home dir and no conflict.
+ */
+export function writeAgyWorkspaceOverlays(workFolder: string): void {
+  const overlayPaths = [
+    path.join(workFolder, '.gemini', 'antigravity-cli', 'mcp', 'apra-fleet', '.ignore'),
+    path.join(workFolder, '.gemini', 'antigravity-cli', 'skills', 'fleet', '.ignore'),
+    path.join(workFolder, '.gemini', 'antigravity-cli', 'skills', 'pm', '.ignore'),
+  ];
+  for (const filePath of overlayPaths) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, '', { mode: 0o644 });
+  }
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard — must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {

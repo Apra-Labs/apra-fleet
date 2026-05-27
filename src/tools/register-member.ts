@@ -16,6 +16,7 @@ import { collectOobPassword, collectOobApiKey } from '../services/auth-socket.js
 import { classifySshError } from '../utils/ssh-error-messages.js';
 import { logLine } from '../utils/log-helpers.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
+import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -271,6 +272,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   addAgent(tempAgent);
   logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
+
+  // Block global apra-fleet MCP + skills inside local agy member workspaces
+  if (isLocal && (input.llm_provider ?? 'claude') === 'agy') {
+    writeAgyWorkspaceOverlays(input.work_folder);
+  }
 
   let result = `✅ Member registered successfully!\n\n`;
   result += `  Icon:    ${tempAgent.icon}\n`;
