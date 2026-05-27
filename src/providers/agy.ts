@@ -5,6 +5,12 @@ import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
 
+const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
+  cheap:    'Gemini 3.5 Flash (Medium)',
+  standard: 'Gemini 3.1 Pro (Low)',
+  premium:  'Claude Opus 4.6 (Thinking)',
+};
+
 // NODE_TRANSCRIPT_SCRIPT: tries two strategies to locate the agy transcript.
 // 1. Direct UUID lookup: brain/<convId>/...transcript.jsonl (when agy honors --conversation)
 // 2. Folder-based lookup: last_conversations.json[workFolder] (when agy ignores --conversation
@@ -36,15 +42,28 @@ export class AgyProvider implements ProviderAdapter {
     return 'agy update';
   }
 
+  private resolveTierFromModel(model?: string): 'cheap' | 'standard' | 'premium' {
+    const tiers = this.modelTiers();
+    if (model === tiers.cheap) return 'cheap';
+    if (model === tiers.premium) return 'premium';
+    return 'standard';
+  }
+
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, inv, model } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
 
-    let cmd = `cd "${escapedFolder}" && agy -p "${instruction}"`;
+    // Write per-workspace model override before launching agy.
+    // The node -e snippet runs on the target machine (works for both local and remote).
+    const tier = this.resolveTierFromModel(model);
+    const displayModel = AGY_MODEL_FOR_TIER[tier];
+    const modelWriteScript = `const p=require(\`path\`),f=require(\`fs\`);const sp=p.join(\`.gemini\`,\`antigravity-cli\`,\`settings.json\`);f.mkdirSync(p.dirname(sp),{recursive:true});let s={};try{s=JSON.parse(f.readFileSync(sp,\`utf8\`));}catch{}s.model=\`${displayModel}\`;f.writeFileSync(sp,JSON.stringify(s,null,2)+\`\\n\`);`;
+
+    let cmd = `cd "${escapedFolder}" && node -e '${modelWriteScript}' && agy -p "${instruction}"`;
 
     // Only pass --conversation when resuming an existing session. For fresh sessions,
     // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
