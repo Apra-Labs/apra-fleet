@@ -11,13 +11,10 @@ const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
   premium:  'Claude Opus 4.6 (Thinking)',
 };
 
-// NODE_TRANSCRIPT_SCRIPT: tries two strategies to locate the agy transcript.
-// 1. Direct UUID lookup: brain/<convId>/...transcript.jsonl (when agy honors --conversation)
-// 2. Folder-based lookup: last_conversations.json[workFolder] (when agy ignores --conversation
-//    and registers under its work folder, which happens for local members in a git repo)
-// argv[1] = conversation UUID that fleet minted and passed via --conversation
-// argv[2] = work folder path (Windows absolute path) for the fallback lookup
-const NODE_TRANSCRIPT_SCRIPT = `const fs=require(\`fs\`),path=require(\`path\`);try{const home=process.env.USERPROFILE||process.env.HOME||\`\`;const convId=process.argv[1];const workDir=process.argv[2]||"";function readTranscript(id){const tp=path.join(home,\`.gemini\`,\`antigravity-cli\`,\`brain\`,id,\`.system_generated\`,\`logs\`,\`transcript.jsonl\`);if(fs.existsSync(tp)){console.log(\`FLEET_TRANSCRIPT_START\`);console.log(fs.readFileSync(tp,\`utf8\`));console.log(\`FLEET_TRANSCRIPT_END\`);return true;}return false;}if(convId&&readTranscript(convId)){process.exit(0);}const cachePath=path.join(home,\`.gemini\`,\`antigravity-cli\`,\`cache\`,\`last_conversations.json\`);if(workDir&&fs.existsSync(cachePath)){const cache=JSON.parse(fs.readFileSync(cachePath,\`utf8\`));const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join(\`/\`);const target=norm(workDir);for(const k of Object.keys(cache)){if(norm(k)===target){if(readTranscript(cache[k])){process.exit(0);}break;}}console.log(\`FLEET_TRANSCRIPT_MISSING:NOT_IN_CACHE:\`+target);}else{console.log(\`FLEET_TRANSCRIPT_MISSING:\`+(convId||\`NO_ID\`));}}catch(e){console.log(\`FLEET_TRANSCRIPT_ERROR:\`+e.message);}`;
+// Paths to the fleet-installed agy helper scripts on the member machine.
+// Unix (bash): uses $HOME; Windows (PowerShell): uses $env:USERPROFILE.
+const SCRIPTS_UNIX = '$HOME/.apra-fleet/scripts';
+const SCRIPTS_WIN  = '$env:USERPROFILE\\.apra-fleet\\scripts';
 
 export class AgyProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'agy';
@@ -58,12 +55,11 @@ export class AgyProvider implements ProviderAdapter {
     }
 
     // Write per-workspace model override before launching agy.
-    // The node -e snippet runs on the target machine (works for both local and remote).
     const tier = this.resolveTierFromModel(model);
     const displayModel = AGY_MODEL_FOR_TIER[tier];
-    const modelWriteScript = `const p=require(\`path\`),f=require(\`fs\`);const sp=p.join(\`.gemini\`,\`antigravity-cli\`,\`settings.json\`);f.mkdirSync(p.dirname(sp),{recursive:true});let s={};try{s=JSON.parse(f.readFileSync(sp,\`utf8\`));}catch{}s.model=\`${displayModel}\`;f.writeFileSync(sp,JSON.stringify(s,null,2)+\`\\n\`);`;
+    const settingsScript = `${SCRIPTS_UNIX}/agy-settings-merge.js`;
 
-    let cmd = `cd "${escapedFolder}" && node -e '${modelWriteScript}' && agy -p "${instruction}"`;
+    let cmd = `cd "${escapedFolder}" && node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}" && agy -p "${instruction}"`;
 
     // Only pass --conversation when resuming an existing session. For fresh sessions,
     // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
@@ -77,11 +73,10 @@ export class AgyProvider implements ProviderAdapter {
 
     // After agy exits, read its transcript from disk (primary output channel --
     // agy writes its response to CONOUT$, not stdout, so file I/O is required).
-    // Pass both the UUID (argv[1]) and the work folder (argv[2]) so the script can
-    // try UUID lookup first, then fall back to folder-based lookup in last_conversations.json.
+    const transcriptScript = `${SCRIPTS_UNIX}/agy-transcript-reader.js`;
     const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
     const folderArg = `"${escapeDoubleQuoted(folder)}"`;
-    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg} ${folderArg}`;
+    cmd += `; node "${transcriptScript}" ${convArg} ${folderArg}`;
 
     return cmd;
   }
@@ -224,14 +219,12 @@ export class AgyProvider implements ProviderAdapter {
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string): string {
     let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
 
-    // After agy exits, read its conversation transcript (primary output channel --
-    // agy writes LLM responses to CONOUT$, not stdout). Try UUID lookup first,
-    // then fall back to folder-based lookup via last_conversations.json.
-    // Extract work folder from argList: it appears after --add-dir or in setupCmd's cd.
+    // After agy exits, read its conversation transcript via the installed helper script.
     // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
     // so the script falls back gracefully (UUID lookup still works when agy honors --conversation).
+    const transcriptScript = `${SCRIPTS_WIN}\\agy-transcript-reader.js`;
     const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
-    cmd += `; node -e '${NODE_TRANSCRIPT_SCRIPT}' ${convArg} ""`;
+    cmd += `; node "${transcriptScript}" ${convArg} ""`;
 
     return cmd;
   }
