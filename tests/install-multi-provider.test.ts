@@ -859,6 +859,33 @@ describe('runInstall multi-provider', () => {
     expect(parsed.mcp_servers['apra-fleet'].command).toBeUndefined();
   });
 
+  it('--transport http writes url for agy', async () => {
+    await runInstall(['--llm', 'agy']);
+
+    const agyMcpConfig = path.join(mockHome, '.gemini', 'config', 'mcp_config.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(agyMcpConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].url).toBe('http://localhost:7523/mcp');
+  });
+
+  it('--transport stdio writes command+args for agy', async () => {
+    await runInstall(['--llm', 'agy', '--transport', 'stdio']);
+
+    const agyMcpConfig = path.join(mockHome, '.gemini', 'config', 'mcp_config.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(agyMcpConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].command).toBeDefined();
+    expect(parsed.mcpServers['apra-fleet'].url).toBeUndefined();
+  });
+
   it('--transport=invalid exits with error', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
 

@@ -1,30 +1,9 @@
 import fs from 'node:fs';
-import http from 'node:http';
 import { SERVER_INFO_PATH } from '../../paths.js';
 import type { ServiceManager, ServiceStatus } from './types.js';
+import { isPidAlive, postShutdown } from '../../utils/process-utils.js';
 
 export type { ServiceManager, ServiceStatus };
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function postShutdown(url: string): Promise<void> {
-  const shutdownUrl = url.replace('/mcp', '/shutdown');
-  return new Promise((resolve) => {
-    const req = http.request(shutdownUrl, { method: 'POST' }, (res) => {
-      res.resume();
-      resolve();
-    });
-    req.on('error', () => resolve());
-    req.end();
-  });
-}
 
 export async function gracefulStopByServerJson(fallbackKill?: (pid: number) => void): Promise<void> {
   let info: { pid?: number; url?: string };

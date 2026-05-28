@@ -273,15 +273,15 @@ async function startHttpServer() {
   void checkForUpdate();
 
   async function shutdown() {
-    lock.release(); // safety net in case of early shutdown before release above
+    try { lock.release(); } catch {}
     try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
-    await handle.close();
-    await cleanupAuthSocket();
-    closeAllConnections();
-    stallDetector.stop();
+    try { await handle.close(); } catch {}
+    try { await cleanupAuthSocket(); } catch {}
+    try { closeAllConnections(); } catch {}
+    try { stallDetector.stop(); } catch {}
     process.exit(0);
   }
 
-  process.on('SIGINT', () => { shutdown().catch(() => process.exit(1)); });
-  process.on('SIGTERM', () => { shutdown().catch(() => process.exit(1)); });
+  process.on('SIGINT', () => void shutdown());
+  process.on('SIGTERM', () => void shutdown());
 }

@@ -1,39 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { checkRunningInstance } from '../services/singleton.js';
 import { SERVER_INFO_PATH, FLEET_DIR } from '../paths.js';
 import { getServiceManager } from '../services/service-manager/index.js';
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function postShutdown(url: string): Promise<void> {
-  return new Promise((resolve) => {
-    const shutdownUrl = url.replace(/\/mcp$/, '/shutdown');
-    const parsed = new URL(shutdownUrl);
-    const req = http.request(
-      {
-        hostname: parsed.hostname,
-        port: Number(parsed.port),
-        path: parsed.pathname,
-        method: 'POST',
-        timeout: 3000,
-      },
-      (res) => { res.resume(); resolve(); },
-    );
-    req.on('error', () => resolve());
-    req.on('timeout', () => { req.destroy(); resolve(); });
-    req.end();
-  });
-}
+import { isPidAlive, postShutdown } from '../utils/process-utils.js';
 
 export async function runStop(_args: string[]): Promise<void> {
   const svcMgr = await getServiceManager();

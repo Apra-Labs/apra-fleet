@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
+import { isPidAlive } from '../utils/process-utils.js';
 
 // Paths are computed at call time (not module load) so tests can override APRA_FLEET_DATA_DIR
 function getFleetDir(): string {
@@ -29,15 +30,6 @@ export type InstanceCheckResult = RunningInstance | { running: false };
 export interface StartupLock {
   acquired: boolean;
   release: () => void;
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function checkHealthEndpoint(url: string): Promise<boolean> {
