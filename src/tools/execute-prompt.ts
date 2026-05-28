@@ -39,6 +39,14 @@ export const executePromptSchema = z.object({
     'Keys must match [A-Za-z_][A-Za-z0-9_]*. Missing tokens cause the call to fail with no CLI invoked. ' +
     'Extra keys are silently ignored. Values are never logged.'
   ),
+  agent: z.string().optional().describe(
+    'Optional agent name to activate. ' +
+    'For Claude: invokes claude --agent <name>. ' +
+    'For Gemini: prepends @<name> to the prompt on every dispatch. ' +
+    'Substitution runs before the @<name> prepend. ' +
+    'The named agent file must exist at <workFolder>/.<provider>/agents/<name>.md or ~/.<provider>/agents/<name>.md -- ' +
+    'the call is rejected with a clear error if neither is present.'
+  ),
 }).strict();
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
@@ -216,12 +224,41 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     tier: resolvedTier,
     maxTurns: input.max_turns,
     inv: scope.getInv(),
+    agentName: input.agent,
   };
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
 
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+
+  // Agent file validation -- verify named agent exists before any CLI invocation
+  if (input.agent) {
+    const provName = provider.name;
+    let agentFound = false;
+    if (agent.agentType === 'local') {
+      const projPath = path.join(resolvedWorkFolder, `.${provName}`, 'agents', `${input.agent}.md`);
+      const userPath = path.join(os.homedir(), `.${provName}`, 'agents', `${input.agent}.md`);
+      agentFound = fs.existsSync(projPath) || fs.existsSync(userPath);
+      if (!agentFound) {
+        inFlightAgents.delete(agent.id);
+        stallDetector.remove(agent.id);
+        writeStatusline(new Map([[agent.id, 'idle']]));
+        return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath}\n  ${userPath}`;
+      }
+    } else {
+      const ef = escapeDoubleQuoted;
+      const projCheck = `${ef(resolvedWorkFolder)}/.${provName}/agents/${ef(input.agent)}.md`;
+      const userCheck = `$HOME/.${provName}/agents/${ef(input.agent)}.md`;
+      const checkResult = await strategy.execCommand(`test -f "${projCheck}" || test -f "${userCheck}"`, 10000);
+      if (checkResult.code !== 0) {
+        inFlightAgents.delete(agent.id);
+        stallDetector.remove(agent.id);
+        writeStatusline(new Map([[agent.id, 'idle']]));
+        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/.${provName}/agents/${input.agent}.md\n  ~/.${provName}/agents/${input.agent}.md`;
+      }
+    }
+  }
 
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
   await tryKillPid(agent, strategy, cmds);
