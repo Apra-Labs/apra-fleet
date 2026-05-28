@@ -169,6 +169,67 @@ describe('execute_prompt -- agent parameter', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
+  // --- AGY: @name prepend (same as Gemini) ---
+
+  it('AGY: CLI invocation prepends @<name> to the prompt', async () => {
+    const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
+
+    const member = makeTestLocalAgent({
+      friendlyName: 'agy-agent-test',
+      workFolder: tmpDir,
+      llmProvider: 'agy',
+      os: 'linux',
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'do the task', resume: false, timeout_s: 5, agent: 'doer' });
+
+    const cmd = mockExecCommand.mock.calls[0][0];
+    expect(cmd).toContain('@doer ');
+  });
+
+  it('AGY: @name prepend happens on resume=true dispatch', async () => {
+    const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
+
+    const member = makeTestLocalAgent({
+      friendlyName: 'agy-resume-agent-test',
+      workFolder: tmpDir,
+      llmProvider: 'agy',
+      os: 'linux',
+      sessionId: 'existing-session-agy123',
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'continue the task', resume: true, timeout_s: 5, agent: 'doer' });
+
+    const cmd = mockExecCommand.mock.calls[0][0];
+    expect(cmd).toContain('@doer ');
+  });
+
+  it('AGY: unknown agent name returns clear error with antigravity-cli path, no CLI invoked', async () => {
+    // No agent file in tmpDir -- validation must fail for AGY provider
+    const member = makeTestLocalAgent({
+      friendlyName: 'agy-unknown-agent-test',
+      workFolder: tmpDir,
+      llmProvider: 'agy',
+      os: 'linux',
+    });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
+
+    expect(result).toContain('not found');
+    expect(result).toContain('nonexistent');
+    expect(result).toContain('.gemini/antigravity-cli/agents/nonexistent.md');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
   // --- Substitution-then-prepend ordering ---
 
   it('Gemini: substitution runs before @name prepend -- both features work together', async () => {

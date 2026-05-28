@@ -104,8 +104,8 @@ export class WindowsCommands implements OsCommands {
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    if (agentName && provider.name === 'gemini') {
+    // Gemini and AGY activate a subagent via @<name> prepended to the prompt on EVERY dispatch.
+    if (agentName && (provider.name === 'gemini' || provider.name === 'agy')) {
       instruction = `@${agentName} ${instruction}`;
     }
 

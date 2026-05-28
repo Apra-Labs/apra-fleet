@@ -48,11 +48,15 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
+    }
+    // AGY activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
+    if (agentName) {
+      instruction = `@${agentName} ${instruction}`;
     }
 
     // Write per-workspace model override before launching agy.
