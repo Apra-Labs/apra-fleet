@@ -229,17 +229,28 @@ jobs:
           overwrite: true
 
   update-llms-full:
+    # Runs only on push to main (i.e. after a PR has merged). Bypasses the
+    # main-protection ruleset via the apra-fleet-git GitHub App, which is
+    # configured as a bypass actor. No-op when llms-full.txt is already current.
+    # Requires: secret APRA_FLEET_GIT_APP_PRIVATE_KEY (PEM) and variable
+    # APRA_FLEET_GIT_APP_ID.
     needs: build-and-test
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout PR branch
+      - name: Mint app token for apra-fleet-git
+        id: app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APRA_FLEET_GIT_APP_ID }}
+          private-key: ${{ secrets.APRA_FLEET_GIT_APP_PRIVATE_KEY }}
+
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: main
           fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -253,19 +264,18 @@ jobs:
       - name: Regenerate llms-full.txt
         run: node scripts/gen-llms-full.mjs
 
-      - name: Commit if changed
+      - name: Commit + push if changed
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "apra-fleet-git[bot]"
+          git config user.email "apra-fleet-git[bot]@users.noreply.github.com"
           git add llms-full.txt
-          if [[ "${{ github.head_ref }}" == "main" ]]; then
-            echo "Refusing to push auto-commit to main (protected branch)."
-            exit 0
+          if git diff --cached --quiet; then
+            echo "llms-full.txt unchanged - nothing to commit."
+          else
+            git commit -m "chore: regenerate llms-full.txt"
+            git push origin main
+            echo "Pushed regenerated llms-full.txt to main."
           fi
-          git diff --cached --quiet || (
-            git commit -m "chore: regenerate llms-full.txt" &&
-            git push origin HEAD:${{ github.head_ref }} || echo "Branch no longer exists — skipping push."
-          )
 
   release:
     needs: [package, build-binary, sign-windows]
@@ -328,4 +338,3 @@ jobs:
             release-binaries/apra-fleet-installer-darwin-arm64
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
-
