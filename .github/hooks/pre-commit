@@ -1,6 +1,16 @@
 #!/bin/sh
-# pre-commit: portability checks on staged files.
+# pre-commit:
+#   1. Portability checks (non-ASCII, PS backtick escapes) on staged files
+#   2. Auto-regen llms-full.txt when any of its inputs are staged
 #
+# Works on Windows (Git Bash), Linux, and macOS.
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$STAGED" ] && exit 0
+
+# ============================================================================
+# Part 1: portability checks
+# ============================================================================
 # Non-ASCII check: YAML, shell, and Markdown only.
 #   Rationale: GitHub Actions parses YAML, bash runs shell scripts, and Markdown
 #   is rendered across platforms -- non-ASCII characters cause silent failures or
@@ -10,11 +20,6 @@
 # PowerShell backtick-n/t/r check: all staged text file types.
 #   Rationale: backtick-n is a PS escape that silently becomes a literal newline
 #   in bash, breaking scripts on Linux runners.
-#
-# Works on Windows (Git Bash), Linux, and macOS.
-
-STAGED=$(git diff --cached --name-only --diff-filter=ACM)
-[ -z "$STAGED" ] && exit 0
 
 # Files where non-ASCII is banned
 ASCII_FILES=$(echo "$STAGED" | grep -E '\.(yml|yaml|sh|md)$')
@@ -36,26 +41,58 @@ ISSUES=$(
   done
 )
 
-[ -z "$ISSUES" ] && exit 0
+if [ -n "$ISSUES" ]; then
+  echo ""
+  echo "COMMIT BLOCKED -- the following files have portability issues:"
+  echo ""
+  echo "$ASCII_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
+      echo "  [non-ASCII] $file"
+      git show ":$file" | grep -Pn '[^\x00-\x7F]' | head -3 | sed 's/^/    /'
+    fi
+  done
+  echo "$BACKTICK_FILES" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
+      echo "  [PS-escape] $file"
+      git show ":$file" | grep -Pn '`[ntr](?![a-zA-Z0-9_])' | head -3 | sed 's/^/    /'
+    fi
+  done
+  echo ""
+  echo "Fix: use ASCII only in YAML/shell/Markdown -- '-' for dashes, '->' for arrows."
+  echo "     PowerShell backtick-n/t/r are not valid bash -- use a real newline."
+  exit 1
+fi
 
-echo ""
-echo "COMMIT BLOCKED -- the following files have portability issues:"
-echo ""
-echo "$ASCII_FILES" | while IFS= read -r file; do
-  [ -z "$file" ] && continue
-  if git show ":$file" | grep -Pq '[^\x00-\x7F]'; then
-    echo "  [non-ASCII] $file"
-    git show ":$file" | grep -Pn '[^\x00-\x7F]' | head -3 | sed 's/^/    /'
+# ============================================================================
+# Part 2: auto-regen llms-full.txt when its inputs are staged
+# ============================================================================
+# gen-llms-full.mjs reads llms.txt and concatenates every local file it links to.
+# Inputs that could affect output: any .md, llms.txt itself, or the script.
+# We re-run the generator only when one of those is staged. Then re-stage
+# llms-full.txt if it changed. CI verifies (defense against --no-verify).
+
+NEEDS_REGEN=$(echo "$STAGED" | grep -E '(\.md$|^llms\.txt$|^scripts/gen-llms-full\.mjs$)')
+if [ -n "$NEEDS_REGEN" ]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo ""
+    echo "pre-commit: node is not on PATH -- cannot regenerate llms-full.txt"
+    echo "  Install Node.js, or commit with --no-verify and run"
+    echo "  'node scripts/gen-llms-full.mjs' before pushing."
+    echo "  (CI verifies llms-full.txt is current and will fail if stale.)"
+    exit 1
   fi
-done
-echo "$BACKTICK_FILES" | while IFS= read -r file; do
-  [ -z "$file" ] && continue
-  if git show ":$file" | grep -Pq '`[ntr](?![a-zA-Z0-9_])'; then
-    echo "  [PS-escape] $file"
-    git show ":$file" | grep -Pn '`[ntr](?![a-zA-Z0-9_])' | head -3 | sed 's/^/    /'
+  if ! node scripts/gen-llms-full.mjs >/dev/null 2>&1; then
+    echo ""
+    echo "pre-commit: 'node scripts/gen-llms-full.mjs' failed -- not auto-staging llms-full.txt"
+    echo "  Investigate the script error and commit when fixed."
+    exit 1
   fi
-done
-echo ""
-echo "Fix: use ASCII only in YAML/shell/Markdown -- '-' for dashes, '->' for arrows."
-echo "     PowerShell backtick-n/t/r are not valid bash -- use a real newline."
-exit 1
+  if ! git diff --quiet llms-full.txt 2>/dev/null; then
+    git add llms-full.txt
+    echo "pre-commit: regenerated llms-full.txt and staged it."
+  fi
+fi
+
+exit 0
