@@ -236,6 +236,105 @@ reviewer  Opus 4.7        final review
 Provider strengths, role recommendations, and gotchas:
 [docs/provider-guide.md](docs/provider-guide.md).
 
+## Transport
+
+Fleet runs as a singleton service on your machine. When you start it, the server
+listens on port 7523 by default and multiple LLM clients (Claude Code, Gemini,
+Copilot, Codex) connect concurrently to the same fleet instance.
+
+### HTTP+SSE Transport (default)
+
+By default, fleet uses the **HTTP+SSE transport** -- clients connect over HTTP and
+receive server-push notifications over Server-Sent Events (SSE).
+
+```bash
+apra-fleet                  # Start HTTP server (default)
+apra-fleet --transport http # Explicitly use HTTP
+```
+
+When the server starts, it writes a `server.json` file to `~/.apra-fleet/` containing:
+```json
+{
+  "pid": 12345,
+  "port": 7523,
+  "url": "http://localhost:7523/mcp",
+  "version": "x.y.z",
+  "startedAt": "2026-05-19T..."
+}
+```
+
+If port 7523 is busy, the server falls back to port 0 (OS-assigned random port) and
+records the actual port in `server.json`. You can override the default port with the
+`APRA_FLEET_PORT` environment variable.
+
+**Multiple clients, one server.** When a second LLM client starts, it reads
+`server.json`, detects the running server, and connects to it. All clients share the
+same fleet instance -- no restart needed. When you close all clients, the server
+keeps running (as a singleton service on your machine). It shuts down on explicit
+exit (`apra-fleet --shutdown` tool) or on system reboot.
+
+**Re-register with HTTP.** When you upgrade or re-install Fleet, run:
+```bash
+apra-fleet install  # Registers fleet with HTTP transport (default)
+```
+
+### Event Bus
+
+The event bus is an internal notification system. When a subsystem (like credential
+storage) completes an operation, it emits an event, and the HTTP server broadcasts
+the notification to all connected clients via SSE. This lets clients respond
+immediately to fleet events without polling.
+
+### Backward Compatibility: stdio Transport
+
+Existing fleets can continue using the stdio transport:
+
+```bash
+apra-fleet --transport stdio # Use legacy stdio transport
+apra-fleet --stdio            # Alias for --transport stdio
+```
+
+When you run `apra-fleet install --transport stdio`, the MCP config keeps the old
+command-based format (no HTTP URL). The server's behavior is identical to pre-HTTP
+versions: it reads JSON-RPC from stdin, writes responses to stdout, and communicates
+with one client at a time via the stdio pipe.
+
+If you want to stay on stdio for now, run:
+```bash
+apra-fleet install --transport stdio
+```
+
+If you later switch back to HTTP, re-run the default install:
+```bash
+apra-fleet install  # Switches to HTTP transport
+```
+
+## Service Mode
+
+Fleet keeps a singleton server running so all your LLM clients share one instance.
+Registering it as an OS service keeps it alive across terminal sessions -- the server
+survives terminal close and restarts automatically on login:
+
+- Windows: a per-user Scheduled Task (Task Scheduler, OnLogon trigger)
+- Linux: a systemd user unit (`systemctl --user`)
+- macOS: a LaunchAgent in `~/Library/LaunchAgents/`
+
+Four verbs manage the lifecycle directly:
+
+```
+apra-fleet start    # start the server (idempotent -- exits cleanly if already running)
+apra-fleet stop     # graceful shutdown: POST /shutdown, poll, force-kill fallback
+apra-fleet restart  # stop then start
+apra-fleet status   # state, PID, port, uptime, version, and OS service status
+```
+
+`install` and `uninstall` include service registration. Running
+`apra-fleet install` on a packaged binary with the HTTP transport (the default)
+registers and starts the OS service automatically -- no extra step.
+`apra-fleet uninstall` stops and deregisters the service before removing files.
+Service registration failures are non-fatal: a warning is printed and the install
+continues.
+
 ## The PM skill
 
 The **PM skill** is Fleet's reference workflow for **software development**
@@ -375,7 +474,7 @@ Members with different **providers** are interchangeable from the PM's perspecti
   </doc>
 
   <doc title="Architecture" desc="How the fleet hub, MCP server, and members interact at a system level.">
-<!-- llm-context: This document explains the internal architecture of apra-fleet — the MCP server, member registry, SSH transport, session management, and how tools are dispatched. Read this when a user asks how fleet works under the hood, or when debugging connectivity or session issues. -->
+<!-- llm-context: This document explains the internal architecture of apra-fleet - the MCP server, member registry, SSH transport, session management, and how tools are dispatched. Read this when a user asks how fleet works under the hood, or when debugging connectivity or session issues. -->
 <!-- keywords: MCP server, member registry, SSH, transport, session, tool dispatch, child process, local member, remote member, architecture -->
 <!-- see-also: ../README.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
 
@@ -383,20 +482,20 @@ Members with different **providers** are interchangeable from the PM's perspecti
 
 ## Why This Exists
 
-AI coding agents are powerful on a single machine. But real work spans many machines — a dev server, a staging box, a GPU trainer, a production host. Today, if you want Claude Code working across all of them, you SSH in manually, run prompts one at a time, and copy files by hand. There's no single pane of glass.
+AI coding agents are powerful on a single machine. But real work spans many machines - a dev server, a staging box, a GPU trainer, a production host. Today, if you want Claude Code working across all of them, you SSH in manually, run prompts one at a time, and copy files by hand. There's no single pane of glass.
 
-Apra Fleet gives one Claude instance the ability to orchestrate many. Register machines, push files, run prompts, monitor health — all through natural language from your terminal. One master, many members.
+Apra Fleet gives one Claude instance the ability to orchestrate many. Register machines, push files, run prompts, monitor health - all through natural language from your terminal. One master, many members.
 
 ## Conceptual Model
 
 The system has three layers of abstraction:
 
-**Fleet** → **Members** → **Sessions**
+**Fleet** -> **Members** -> **Sessions**
 
-A *fleet* is the collection of all registered machines. A *member* is one machine with a working directory — the unit you talk to. A *session* is a conversation thread on a member — Claude remembers context across prompts within a session, and you can reset it to start fresh.
+A *fleet* is the collection of all registered machines. A *member* is one machine with a working directory - the unit you talk to. A *session* is a conversation thread on a member - Claude remembers context across prompts within a session, and you can reset it to start fresh.
 
 Members come in two flavors:
-- **Remote members** communicate over SSH. They can be any machine you can reach — Linux VMs, macOS servers, Windows boxes.
+- **Remote members** communicate over SSH. They can be any machine you can reach - Linux VMs, macOS servers, Windows boxes.
 - **Local members** run on the same machine as the master, in a different folder. No SSH needed. Useful for isolating work into separate project directories without spinning up another machine.
 
 This distinction is hidden behind a **Strategy pattern**: every tool interacts with members through a uniform interface. The strategy implementation (remote via SSH, or local via child process) is selected at runtime based on member type. Tools never know or care which kind of member they're talking to.
@@ -404,32 +503,32 @@ This distinction is hidden behind a **Strategy pattern**: every tool interacts w
 ## How It Fits Together
 
 ```
-┌────────────────────────────────────────────────────┐
-│  Master Machine                                    │
-│                                                    │
-│  Claude Code CLI ◄──stdio──► Apra Fleet Server      │
-│                               │                    │
-│                    ┌──────────┴──────────┐         │
-│                    │  Member Strategy    │         │
-│                    │  (uniform interface)│         │
-│                    └──┬─────────────┬───┘         │
-│                       │             │              │
-│              Remote Strategy   Local Strategy      │
-│              (ssh2 + sftp)    (child_process + fs) │
-│                       │             │              │
-│                    SSH│        local exec           │
-└───────────────────────┼─────────────┼──────────────┘
-                        │             │
-           ┌────────────┘             └──► /other/project/
-           ▼                               (same machine)
-    ┌──────────────┐
-    │ Remote Member │
-    │ (any OS,      │
-    │  any provider)│
-    └──────────────┘
++------------------------------------------------------+
+|  Master Machine                                    |
+|                                                    |
+|  Claude Code CLI <--stdio--> Apra Fleet Server     |
+|                               |                    |
+|                    +---------+---------+           |
+|                    |  Member Strategy    |         |
+|                    |  (uniform interface)|         |
+|                    +--+------------+---+           |
+|                       |             |              |
+|              Remote Strategy   Local Strategy      |
+|              (ssh2 + sftp)    (child_process + fs) |
+|                       |             |              |
+|                    SSH|        local exec           |
++-------------------+------------+--+---------------+
+                    |             |
+           +--------+             +---> /other/project/
+           |                          (same machine)
+    +------+----------+
+    | Remote Member  |
+    | (any OS,       |
+    |  any provider) |
+    +----------------+
 ```
 
-The MCP server speaks **stdio** — the standard transport for Claude Code MCP servers. Claude sends JSON-RPC tool calls, the server executes them, returns results. No HTTP, no ports to open.
+The MCP server speaks **stdio** - the standard transport for Claude Code MCP servers. Claude sends JSON-RPC tool calls, the server executes them, returns results. No HTTP, no ports to open.
 
 ## Layers
 
@@ -447,6 +546,161 @@ The codebase follows a strict layering:
 
 Each layer only depends on the layers below it. Tools never import other tools. Services don't know about the MCP protocol.
 
+## Transport Layer
+
+Fleet supports two MCP transports: HTTP+SSE (default) and stdio (legacy).
+
+### HTTP+SSE Transport (Default)
+
+The HTTP transport runs as a **singleton service** on your machine. A single fleet
+server listens on port 7523 and multiple LLM clients connect concurrently. Each
+client gets its own session with a dedicated `McpServer` instance inside the fleet
+process, so tool calls and state are isolated per client.
+
+```
+    Client 1 (Claude Code)          Client 2 (Gemini)
+              |                             |
+              +-------------+---+----------+
+                            |
+                 HTTP + SSE  |
+                             |
+                     +-------+-------+
+                     | Singleton    |
+                     | Fleet Server  |
+                     | (port 7523)   |
+                     +-------+-------+
+                             |
+                 +-----------|----------+
+                 |           |          |
+              McpServer   McpServer  Tool Registry
+              (Session 1) (Session 2) (shared)
+                 |           |
+                 +------+----+
+                        |
+                  Event Bus (notifications)
+```
+
+**Per-session McpServer model:** When a client connects, the fleet creates a new
+`McpServer` instance for that session. This isolates tool call state, session storage,
+and concurrent requests. Multiple clients can call the same tool simultaneously
+without interfering with each other.
+
+**Event bus:** The fleet's internal event bus (`FleetEventMap`) carries notifications
+from subsystems (e.g., `credential:stored` when out-of-band auth completes) to all
+connected clients via SSE `notifications/message`. This is the publish-subscribe
+mechanism for server-initiated events.
+
+**Singleton lifecycle:** The server starts on-demand the first time an LLM client
+connects. Subsequent clients reuse the running server. The server keeps running until
+explicitly shut down (via `shutdown_server` tool, SIGINT, SIGTERM, or system reboot).
+This is intentional - the singleton is a long-lived service, not a per-request
+process. Restarting it has a cost (tool re-registration, SSH connection repool,
+stall detector restart).
+
+**server.json discovery:** When the server starts, it writes `~/.apra-fleet/server.json`
+with `{ pid, port, url, version, startedAt }`. Clients discover the running instance
+by reading this file and verifying the process is alive and the port responds to
+`/health` endpoint. The double-check (process.kill(pid, 0) + HTTP health request)
+detects stale entries and cleans them up.
+
+**Localhost-only binding:** The fleet server binds to `127.0.0.1` only, never
+`0.0.0.0`. This ensures only local processes can connect -- no network exposure.
+
+### Stdio Transport (Legacy)
+
+When `--transport stdio` is used, the fleet runs in the legacy mode: one MCP server
+process per client connection. The server reads JSON-RPC from stdin, writes responses
+to stdout, and terminates when the client disconnects. No HTTP, no singleton, no
+event bus. Tools work identically; the transport layer differs.
+
+### Event Flow Subsystem -> Notification
+
+When an event is emitted on the event bus:
+
+1. **Subsystem** (e.g., `auth-socket.ts`) calls `fleetEvents.emit('credential:stored', { name: ... })`
+2. **Event Bus** (`event-bus.ts`) delivers the event to all registered subscribers
+3. **HTTP Transport** (`http-transport.ts`) receives the event in its subscriber callback
+4. **Per-session McpServer** sends a `notifications/message` to each connected client over SSE
+5. **Client** receives the notification in its SSE stream handler
+
+This is the publish-subscribe pattern: producers emit to the bus, subscribers (the
+HTTP transport) are notified, and the transport broadcasts to all session clients.
+
+## Service Manager
+
+The `ServiceManager` component registers and controls the fleet server as an OS
+background service. It uses an adapter pattern so the CLI verbs (`start`, `stop`,
+`restart`, `status`) and the `install`/`uninstall` commands work identically on every
+platform.
+
+### Interface
+
+`src/services/service-manager/types.ts` defines the contract:
+
+```
+interface ServiceManager {
+  register(binaryPath, args, logPath): Promise<void>
+  unregister(): Promise<void>
+  start(): Promise<void>
+  stop(): Promise<void>
+  query(): Promise<ServiceStatus>
+  isInstalled(): Promise<boolean>
+}
+
+interface ServiceStatus {
+  installed: boolean
+  running: boolean
+  pid?: number
+  enabled?: boolean
+}
+```
+
+Service name constants are also in `types.ts`: `WINDOWS_TASK_NAME`,
+`LINUX_UNIT_NAME`, `MACOS_PLIST_LABEL`.
+
+### Platform Adapters
+
+```
+src/services/service-manager/
+  types.ts    - ServiceManager interface, ServiceStatus, service name constants
+  index.ts    - getServiceManager() factory, gracefulStopByServerJson(), NoopServiceManager
+  windows.ts  - WindowsServiceManager  (schtasks per-user Scheduled Task)
+  linux.ts    - LinuxServiceManager    (systemd --user unit)
+  macos.ts    - MacOSServiceManager    (launchd LaunchAgent plist)
+```
+
+- **WindowsServiceManager**: writes a wrapper `.bat` file and creates a per-user
+  Scheduled Task with an `OnLogon` trigger via `schtasks /create`. `start`, `stop`,
+  and `query` use `schtasks /run`, `/end`, and `/query`.
+- **LinuxServiceManager**: writes a systemd user unit file, then runs `daemon-reload`,
+  `enable`, and `loginctl enable-linger`. `start`, `stop`, and `query` use
+  `systemctl --user`.
+- **MacOSServiceManager**: writes a plist to `~/Library/LaunchAgents/` and bootstraps
+  it with `launchctl bootstrap`. `KeepAlive.SuccessfulExit=false` prevents launchd
+  from restarting on a clean exit. `start`, `stop`, and `query` use `launchctl`.
+
+### Factory
+
+`getServiceManager()` in `index.ts` selects the right adapter at runtime via a
+dynamic `import()` keyed on `process.platform`:
+
+```
+win32   -> WindowsServiceManager
+linux   -> LinuxServiceManager
+darwin  -> MacOSServiceManager
+other   -> NoopServiceManager  (warns once; all methods are safe no-ops)
+```
+
+`NoopServiceManager` ensures the CLI verbs work on unsupported platforms without
+crashing -- they simply have no effect.
+
+### Graceful Stop
+
+`gracefulStopByServerJson()` (exported from `index.ts`) reads
+`~/.apra-fleet/server.json`, POSTs to the `/shutdown` endpoint, then polls the
+process at 500 ms intervals for up to 5 s. If the process does not exit in time,
+it falls back to `taskkill /F` on Windows or `SIGTERM` on Unix.
+
 ## Provider Abstraction
 
 Fleet supports five LLM providers: Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, and Gemini CLI. Members can mix providers within a single fleet.
@@ -456,18 +710,18 @@ Fleet supports five LLM providers: Claude Code, Google Antigravity CLI (agy), Op
 Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
 
 ```
-┌──────────┐     getProvider()     ┌─────────────────┐
-│  Tool    │ ───────────────────►  │ ProviderAdapter  │
-│ (generic)│                       │  (per-provider)  │
-└──────────┘                       └────────┬─────────┘
-                                            │ supplies:
-                                     cliCommand()
-                                     buildPromptCommand()
-                                     parseResponse()
-                                     classifyError()
-                                     authEnvVar
-                                     processName
-                                     ...
++----------+     getProvider()     +----------------+
+| Tool     | --------+---------->  | ProviderAdapter |
+| (generic)|                       | (per-provider)  |
++----------+                       +--------+--------+
+                                          | supplies:
+                                   cliCommand()
+                                   buildPromptCommand()
+                                   parseResponse()
+                                   classifyError()
+                                   authEnvVar
+                                   processName
+                                   ...
 ```
 
 The `OsCommands` layer sits below this: it handles OS-specific shell wrapping (PATH prepend, PowerShell syntax, base64 decode) and delegates CLI-specific parts (binary name, flags, JSON format) to the provider.
@@ -487,7 +741,7 @@ src/providers/
 
 ### Mix-and-Match Fleet
 
-A fleet can have members on different providers simultaneously. The PM dispatches work to members by name — it doesn't need to know which LLM backend each member uses. The fleet server resolves the correct CLI commands per member at runtime.
+A fleet can have members on different providers simultaneously. The PM dispatches work to members by name - it doesn't need to know which LLM backend each member uses. The fleet server resolves the correct CLI commands per member at runtime.
 
 ```
 PM (orchestrator, Claude)
@@ -513,11 +767,11 @@ See `docs/provider-matrix.md` for the full comparison table.
 
 ### Strategy Pattern for Member Types
 
-Rather than scattering `if (agent.agentType === 'local')` checks across every tool, the local/remote distinction lives in a single place: the strategy factory. Tools call `getStrategy(agent).execCommand(...)` and get back the same result shape regardless of how it was executed. Adding a third member type (e.g., Docker containers, cloud VMs with API-based access) means writing one new strategy class — no tool changes.
+Rather than scattering `if (agent.agentType === 'local')` checks across every tool, the local/remote distinction lives in a single place: the strategy factory. Tools call `getStrategy(agent).execCommand(...)` and get back the same result shape regardless of how it was executed. Adding a third member type (e.g., Docker containers, cloud VMs with API-based access) means writing one new strategy class - no tool changes.
 
 ### Passwords Encrypted at Rest
 
-SSH passwords are encrypted with AES-256-GCM before being written to the registry file. The encryption key is derived from the machine's identity (hostname + OS username), so the registry file is meaningless if copied to another machine. This isn't meant to stop a determined attacker with root access — it prevents accidental plaintext exposure in backups, screenshots, or config file shares.
+SSH passwords are encrypted with AES-256-GCM before being written to the registry file. The encryption key is derived from the machine's identity (hostname + OS username), so the registry file is meaningless if copied to another machine. This isn't meant to stop a determined attacker with root access - it prevents accidental plaintext exposure in backups, screenshots, or config file shares.
 
 ### Connection Pooling with Idle Timeout
 
@@ -525,15 +779,15 @@ SSH connections are expensive to establish (TCP + key exchange + auth). The serv
 
 ### Base64 Prompt Encoding
 
-Prompts sent to remote members are base64-encoded before being passed through SSH. This sidesteps the shell escaping nightmare of nested quoting across SSH → bash → claude CLI, across different operating systems. The remote member decodes before passing to Claude.
+Prompts sent to remote members are base64-encoded before being passed through SSH. This sidesteps the shell escaping nightmare of nested quoting across SSH -> bash -> claude CLI, across different operating systems. The remote member decodes before passing to Claude.
 
 ### Session Persistence
 
-Each member stores an optional `sessionId` — a Claude conversation thread ID. When `resume=true` (the default), subsequent prompts continue the same conversation, so the remote Claude has full context of prior exchanges. Resetting a session is an explicit action, not an accident.
+Each member stores an optional `sessionId` - a Claude conversation thread ID. When `resume=true` (the default), subsequent prompts continue the same conversation, so the remote Claude has full context of prior exchanges. Resetting a session is an explicit action, not an accident.
 
 ### File-Based Registry
 
-All fleet state lives in `~/.apra-fleet/data/registry.json` — a single JSON file in the user's home directory. It's deliberately not in the project directory (won't be git-committed accidentally) and not in a database (no server to run, no migrations). For a fleet of dozens of members, JSON is more than sufficient.
+All fleet state lives in `~/.apra-fleet/data/registry.json` - a single JSON file in the user's home directory. It's deliberately not in the project directory (won't be git-committed accidentally) and not in a database (no server to run, no migrations). For a fleet of dozens of members, JSON is more than sufficient.
 
 ### Duplicate Folder Prevention
 
@@ -543,21 +797,21 @@ Two members cannot share the same working directory on the same device. For remo
 
 The tools break into natural groups. Each group has detailed documentation:
 
-**[Lifecycle](tools-lifecycle.md)** — `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
+**[Lifecycle](tools-lifecycle.md)** - `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
 Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of auth credentials on the member.
 
-**[Work](tools-work.md)** — `send_files`, `execute_prompt`, `execute_command`, `reset_session`
+**[Work](tools-work.md)** - `send_files`, `execute_prompt`, `execute_command`, `reset_session`
 The core workflow. Push files to a member, run prompts against it, run shell commands directly, manage conversation sessions.
 
-**[Infrastructure](tools-infrastructure.md)** — `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
+**[Infrastructure](tools-infrastructure.md)** - `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
 One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key for any provider), migrate from password to key auth, update the LLM CLI on members.
 
-**[Observability](tools-observability.md)** — `fleet_status`, `member_detail`
+**[Observability](tools-observability.md)** - `fleet_status`, `member_detail`
 Two-layer monitoring. `fleet_status` gives a quick summary table across all members with fleet-aware busy detection (distinguishes between Claude processes serving this member vs unrelated Claude activity). `member_detail` drills into one member with connectivity, CLI version, session state, and system resource metrics.
 
 ## Cross-Platform Support
 
-Members can run Windows, macOS, or Linux. The `platform.ts` utility generates the right shell commands for each OS — different commands for checking processes, reading memory, setting environment variables. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
+Members can run Windows, macOS, or Linux. The `platform.ts` utility generates the right shell commands for each OS - different commands for checking processes, reading memory, setting environment variables. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
   </doc>
 
   <doc title="Install" desc="Installation, uninstallation, and the --llm/--skill flags.">
