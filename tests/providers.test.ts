@@ -883,7 +883,9 @@ describe('AgyProvider', () => {
   });
 
   it('builds installCommand', () => {
-    expect(p.installCommand('linux')).toBe('npm install -g @google/antigravity-cli');
+    expect(p.installCommand('linux')).toBe('curl -fsSL https://antigravity.google/cli/install.sh | bash');
+    expect(p.installCommand('macos')).toBe('curl -fsSL https://antigravity.google/cli/install.sh | bash');
+    expect(p.installCommand('windows')).toBe('powershell -Command "irm https://antigravity.google/cli/install.ps1 | iex"');
   });
 
   it('builds updateCommand', () => {

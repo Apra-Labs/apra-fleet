@@ -33,7 +33,10 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   installCommand(os: 'linux' | 'macos' | 'windows'): string {
-    return 'npm install -g @google/antigravity-cli';
+    if (os === 'windows') {
+      return 'powershell -Command "irm https://antigravity.google/cli/install.ps1 | iex"';
+    }
+    return 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
   }
 
   updateCommand(): string {
