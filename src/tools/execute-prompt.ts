@@ -130,7 +130,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   } else {
     const warnResult = applySubstitutions('execute_prompt', [{ label: 'prompt', content: input.prompt }], undefined);
     if (warnResult.ok && warnResult.warning) {
-      heuristicWarningSuffix = `\n\n⚠️ ${warnResult.warning}`;
+      heuristicWarningSuffix = `\n\n[WARN] ${warnResult.warning}`;
     }
   }
 

@@ -6,7 +6,7 @@ import { updateMember } from '../src/tools/update-member.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
-// ─── Mocks ────────────────────────────────────────────────────────────────────
+// --- Mocks --------------------------------------------------------------------
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
@@ -30,7 +30,7 @@ vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
 }));
 
-// ─── register_member: unattended persistence ──────────────────────────────────
+// --- register_member: unattended persistence ----------------------------------
 
 describe('register_member: unattended field persistence', () => {
   beforeEach(() => {
@@ -98,7 +98,7 @@ describe('register_member: unattended field persistence', () => {
   });
 });
 
-// ─── update_member: unattended set and change ─────────────────────────────────
+// --- update_member: unattended set and change ---------------------------------
 
 describe('update_member: unattended field', () => {
   beforeEach(() => {
@@ -146,7 +146,7 @@ describe('update_member: unattended field', () => {
   });
 });
 
-// ─── execute_prompt: dangerously_skip_permissions removed ─────────────────────
+// --- execute_prompt: dangerously_skip_permissions removed ---------------------
 
 import { executePromptSchema } from '../src/tools/execute-prompt.js';
 
