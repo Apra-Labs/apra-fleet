@@ -36,6 +36,7 @@ export interface PromptOptions {
   tier?: 'cheap' | 'standard' | 'premium';
   maxTurns?: number;
   inv?: string;
+  agentName?: string;
 }
 
 export interface ParsedResponse {

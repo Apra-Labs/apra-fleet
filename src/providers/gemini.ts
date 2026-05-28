@@ -57,11 +57,15 @@ export class GeminiProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, inv, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
+    }
+    // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
+    if (agentName) {
+      instruction = `@${agentName} ${instruction}`;
     }
     let cmd = `cd "${escapedFolder}" && gemini -p "${instruction}" --output-format json --allowed-mcp-server-names "${getAllowedMcpServers()}"`;
     if (resuming && sessionId) {
