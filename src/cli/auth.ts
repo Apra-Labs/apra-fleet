@@ -9,6 +9,7 @@ const PROVIDER_AUTH_ENV: Record<string, string> = {
   gemini: 'GEMINI_API_KEY',
   codex: 'OPENAI_API_KEY',
   copilot: 'COPILOT_GITHUB_TOKEN',
+  agy: 'ANTIGRAVITY_API_KEY',
 };
 
 export async function runAuth(args: string[]): Promise<void> {

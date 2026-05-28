@@ -1,9 +1,9 @@
-﻿import { execSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && ';
+const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA GEMINI_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
 
 /**
  * Wrap a bash command string with PID capture.

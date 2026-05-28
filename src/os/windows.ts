@@ -5,7 +5,7 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
-const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; ';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'GEMINI_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 
 /**
  * Wrap PowerShell setup commands and a CLI invocation with PID capture.
@@ -130,7 +130,7 @@ export class WindowsCommands implements OsCommands {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
     }
 
-    return provider.wrapWindowsPrompt(setupCmd, filePath, argList);
+    return provider.wrapWindowsPrompt(setupCmd, filePath, argList, sessionId, model);
   }
 
   // --- Filesystem ---

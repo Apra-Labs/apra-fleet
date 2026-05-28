@@ -59,6 +59,17 @@ describe('resolveSessionLogPath', () => {
     }).not.toThrow();
   });
 
+  it('throws error for agy (unsupported log polling)', () => {
+    expect(() => {
+      resolveSessionLogPath(
+        'agy',
+        'session-123',
+        '/tmp/project',
+        '/home/user'
+      );
+    }).toThrow('Unsupported log polling for provider: agy');
+  });
+
   it('throws error for unknown provider', () => {
     expect(() => {
       resolveSessionLogPath(

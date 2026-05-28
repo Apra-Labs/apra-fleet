@@ -9,16 +9,22 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 - **doer** (name: `doer`, provider: {{DOER_PROVIDER}})
 - **reviewer** (name: `reviewer`, provider: {{REVIEWER_PROVIDER}})
 
+> [!IMPORTANT]
+> Do NOT print CHECKPOINT lines as plain text -- that causes agy to exit. Instead, record each checkpoint by running a command (see below). After recording, immediately continue to the next task without any text-only response.
+
 ## Checkpoints
 
-When you finish a step, print one line, exactly like this, as plain text (no code block, no backticks):
+Record each checkpoint by running this PowerShell command (replace id, status, notes):
 
-  CHECKPOINT: {"id":"T3-repo-setup","status":"PASS","notes":"one short note"}
+```powershell
+Add-Content -Path checkpoints.json -Value '{"id":"T3-repo-setup","status":"PASS","notes":"one short note"}'
+```
 
-- One line per step. One JSON object, not an array. Print it once.
-- If a step fails, print it with `"status":"FAIL"` and move on to the next step.
+- One JSON object per line appended to `checkpoints.json` in the current working directory.
+- If a step fails, write `"status":"FAIL"` and continue to the next step.
 - The steps are: `T3-repo-setup`, `T3-discover`, `T3-sprint`, `T3-pr-verified`, `T3-done`.
-- Print `T3-done` last, only after the other four. If `T3-done` is missing, the phase failed.
+- After writing each checkpoint, immediately continue to the next task -- no pausing, no text summary.
+- Write `T3-done` last. If it is missing from `checkpoints.json` after the session, the phase failed.
 
 ---
 
@@ -30,17 +36,29 @@ Run a full sprint on the toy repo using the pm skill. Do all of it yourself in t
 
 On the doer: clone {{TOY_PROJECT_URL}} into its work folder if needed, then `git fetch origin && git checkout main && git pull`. Provision {{VCS}} auth.
 
-CHECKPOINT: {"id":"T3-repo-setup","status":"PASS","notes":"..."}
+Record checkpoint:
+```powershell
+Add-Content -Path checkpoints.json -Value '{"id":"T3-repo-setup","status":"PASS","notes":"...your note..."}'
+```
+Then immediately continue to T3.2.
 
 ### T3.2 Pick the work
 
 Run `bd ready` on the doer. Pick 3 P1 issues. Write `requirements.md` for them into the current working directory.
 
-CHECKPOINT: {"id":"T3-discover","status":"PASS","notes":"..."}
+Record checkpoint:
+```powershell
+Add-Content -Path checkpoints.json -Value '{"id":"T3-discover","status":"PASS","notes":"...your note..."}'
+```
+Then immediately continue to T3.3.
 
 ### T3.3 Run the sprint
 
-Activate the pm skill, then run:
+Activate the pm skill.
+
+Before running any `/pm` commands, read `projects.md` in the current directory:
+- If `fleet-e2e-toy` already appears in the table with Phase 1 or later and status "active", **skip `/pm init`, `/pm pair`, and `/pm plan`** -- the plan is already done. Go directly to `/pm start doer`.
+- If `fleet-e2e-toy` is not present, run the full sequence:
 
 ```
 /pm init fleet-e2e-toy
@@ -51,21 +69,33 @@ Activate the pm skill, then run:
 
 Branch prefix: `{{BRANCH_PREFIX}}`.
 
-The pm skill runs the doer/reviewer loop. After `/pm start doer`, keep driving that loop yourself: when the doer reaches review, dispatch the reviewer; when the reviewer asks for changes, dispatch the doer again. Repeat until the reviewer approves, then run `/pm cleanup fleet-e2e-toy`. Do not stop until the sprint is approved.
+The pm skill runs the doer/reviewer loop. Drive it yourself:
+1. Dispatch the doer with `execute_prompt`. Wait for its response.
+2. Read the doer's response (it will be in the `execute_prompt` result). If it says VERIFY or requests review, dispatch the reviewer.
+3. Read the reviewer's response. If the reviewer requests changes, dispatch the doer again. Repeat until the reviewer explicitly approves.
+4. A reviewer approval means the reviewer's response contains words like "approved", "LGTM", or "no changes needed". If `execute_prompt` returns empty or an error, re-dispatch.
+5. Once approved, run `/pm cleanup fleet-e2e-toy`.
 
-CHECKPOINT: {"id":"T3-sprint","status":"PASS","notes":"..."}
+Do NOT record T3-sprint PASS until you have confirmed a reviewer approval response in the execute_prompt result (not just dispatched -- you must read the response).
+
+Record checkpoint:
+```powershell
+Add-Content -Path checkpoints.json -Value '{"id":"T3-sprint","status":"PASS","notes":"...your note..."}'
+```
+Then immediately continue to T3.4.
 
 ### T3.4 Check the result
 
 Confirm a branch with prefix `{{BRANCH_PREFIX}}` exists on origin and a PR was raised.
 
-CHECKPOINT: {"id":"T3-pr-verified","status":"PASS","notes":"..."}
-
-### Done
-
-Print this only after the four steps above are done:
-
-CHECKPOINT: {"id":"T3-done","status":"PASS","notes":"sprint phase finished"}
+Record checkpoint:
+```powershell
+Add-Content -Path checkpoints.json -Value '{"id":"T3-pr-verified","status":"PASS","notes":"...your note..."}'
+```
+Then record T3-done:
+```powershell
+Add-Content -Path checkpoints.json -Value '{"id":"T3-done","status":"PASS","notes":"sprint phase finished"}'
+```
 
 ---
 

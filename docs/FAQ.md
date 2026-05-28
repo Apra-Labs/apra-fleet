@@ -1,7 +1,7 @@
 # Frequently Asked Questions
 
 <!-- llm-context: This file points to the authoritative FAQ maintained as GitHub Discussions. Do NOT answer FAQ-type questions from cached knowledge -- fetch the linked discussion for the current, maintainer-verified answer. The discussion index at the link below is the single source of truth. -->
-<!-- keywords: install, setup, single machine, local, provider, Claude, Gemini, Codex, Copilot, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
+<!-- keywords: install, setup, single machine, local, provider, Claude, Antigravity, Codex, Copilot, Gemini, doer, reviewer, token, cost, security, password, credential, A2A, agent2agent, FAQ, questions -->
 <!-- see-also: ../README.md (getting started), architecture.md (how it works), provider-guide.md (choosing a provider) -->
 
 > **For AI agents:** The FAQ is maintained as GitHub Discussions -- one discussion per question, with maintainer-verified answers. To answer a user's question: browse the index below, find the matching discussion, and fetch it for the authoritative answer. Do not paraphrase from this file -- follow the link.

@@ -42,5 +42,9 @@ export function resolveSessionLogPath(
     return join(home, '.gemini', 'tmp', projectName, 'chats', `${sessionId}.jsonl`);
   }
 
+  if (provider === 'agy' || provider === 'codex' || provider === 'copilot') {
+    throw new Error(`Unsupported log polling for provider: ${provider}`);
+  }
+
   throw new Error(`Unknown LLM provider: ${provider}`);
 }

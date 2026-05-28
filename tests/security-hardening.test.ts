@@ -188,6 +188,44 @@ describe('registerMemberSchema cloud config validation', () => {
   });
 });
 
+describe('curated model tier validations', () => {
+  it('accepts valid/optional and rejects invalid model inputs for registration and update schemas', () => {
+    // cheap
+    expect(registerMemberSchema.shape.model_cheap.safeParse(undefined).success).toBe(true);
+    expect(registerMemberSchema.shape.model_cheap.safeParse('gpt-oss-120b').success).toBe(true);
+    expect(registerMemberSchema.shape.model_cheap.safeParse('gemini-3.5-flash-lite').success).toBe(true);
+    expect(registerMemberSchema.shape.model_cheap.safeParse('claude-opus-4.6').success).toBe(false);
+
+    expect(updateMemberSchema.shape.model_cheap.safeParse(undefined).success).toBe(true);
+    expect(updateMemberSchema.shape.model_cheap.safeParse('gpt-oss-120b').success).toBe(true);
+    expect(updateMemberSchema.shape.model_cheap.safeParse('gemini-3.5-flash-lite').success).toBe(true);
+    expect(updateMemberSchema.shape.model_cheap.safeParse('claude-opus-4.6').success).toBe(false);
+
+    // standard
+    expect(registerMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
+    expect(registerMemberSchema.shape.model_standard.safeParse('gemini-3.5-flash').success).toBe(true);
+    expect(registerMemberSchema.shape.model_standard.safeParse('claude-sonnet-4.6').success).toBe(true);
+    expect(registerMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);
+
+    expect(updateMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
+    expect(updateMemberSchema.shape.model_standard.safeParse('gemini-3.5-flash').success).toBe(true);
+    expect(updateMemberSchema.shape.model_standard.safeParse('claude-sonnet-4.6').success).toBe(true);
+    expect(updateMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);
+
+    // premium
+    expect(registerMemberSchema.shape.model_premium.safeParse(undefined).success).toBe(true);
+    expect(registerMemberSchema.shape.model_premium.safeParse('claude-opus-4.6').success).toBe(true);
+    expect(registerMemberSchema.shape.model_premium.safeParse('gemini-3.1-pro-preview').success).toBe(true);
+    expect(registerMemberSchema.shape.model_premium.safeParse('gemini-3.5-flash-lite').success).toBe(false);
+
+    expect(updateMemberSchema.shape.model_premium.safeParse(undefined).success).toBe(true);
+    expect(updateMemberSchema.shape.model_premium.safeParse('claude-opus-4.6').success).toBe(true);
+    expect(updateMemberSchema.shape.model_premium.safeParse('gemini-3.1-pro-preview').success).toBe(true);
+    expect(updateMemberSchema.shape.model_premium.safeParse('gemini-3.5-flash-lite').success).toBe(false);
+  });
+});
+
+
 // --- T1: Credential leakage audit ---
 
 // Mocks for lifecycle test

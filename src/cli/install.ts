@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
@@ -161,7 +162,23 @@ const GEMINI_HOOK_NAME_MAP: Record<string, string> = {
 };
 
 function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provider: LlmProvider): void {
-  const settings = readConfig(paths);
+  let settingsFile = paths.settingsFile;
+  const isAgy = provider === 'agy';
+
+  let settings: any = {};
+  if (isAgy) {
+    const configDir = path.join(os.homedir(), '.gemini', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    settingsFile = path.join(configDir, 'hooks.json');
+    if (fs.existsSync(settingsFile)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+      } catch {}
+    }
+  } else {
+    settings = readConfig(paths);
+  }
+
   settings.hooks = settings.hooks || {};
 
   for (const [claudeName, hookEntries] of Object.entries(hooksConfig.hooks || {})) {
@@ -188,7 +205,11 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
     }
   }
 
-  writeConfig(paths, settings);
+  if (isAgy) {
+    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+  } else {
+    writeConfig(paths, settings);
+  }
 }
 
 
@@ -201,8 +222,6 @@ function mergePermissions(paths: ProviderInstallConfig): void {
     'activate_skill(*)',
     'tracker_*',
     'Agent(*)',
-      'activate_skill(*)',
-      'tracker_*',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${path.join(paths.configDir, 'skills').replace(/\\/g, '/')}/**)`,
@@ -242,10 +261,30 @@ function mergeGeminiConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   writeConfig(paths, settings);
 }
 
+function mergeAgyConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+  const configDir = path.join(os.homedir(), '.gemini', 'config');
+  fs.mkdirSync(configDir, { recursive: true });
+  const mcpConfigFile = path.join(configDir, 'mcp_config.json');
+
+  let settings: any = {};
+  if (fs.existsSync(mcpConfigFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(mcpConfigFile, 'utf-8'));
+    } catch {}
+  }
+
+  settings.mcpServers = settings.mcpServers || {};
+  settings.mcpServers['apra-fleet'] = mcpConfig;
+
+  fs.writeFileSync(mcpConfigFile, JSON.stringify(settings, null, 2) + '\n');
+}
+
 function writeDefaultModel(paths: ProviderInstallConfig, standardModel: string): void {
   const settings = readConfig(paths);
-  settings.defaultModel = standardModel;
-  writeConfig(paths, settings);
+  if (!settings.defaultModel) {
+    settings.defaultModel = standardModel;
+    writeConfig(paths, settings);
+  }
 }
 
 function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
@@ -304,6 +343,26 @@ export function killApraFleet(): void {
   }
 }
 
+/**
+ * Write empty .ignore overlay files into a LOCAL agy member's workspace to block
+ * the global apra-fleet MCP server and PM/fleet skills from loading inside that
+ * workspace.  Idempotent -- safe to call multiple times for the same folder.
+ *
+ * Only meaningful for LOCAL members (they share ~/.gemini/antigravity-cli/ with
+ * the PM).  REMOTE members have their own home dir and no conflict.
+ */
+export function writeAgyWorkspaceOverlays(workFolder: string): void {
+  const overlayPaths = [
+    path.join(workFolder, '.gemini', 'antigravity-cli', 'mcp', 'apra-fleet', '.ignore'),
+    path.join(workFolder, '.gemini', 'antigravity-cli', 'skills', 'fleet', '.ignore'),
+    path.join(workFolder, '.gemini', 'antigravity-cli', 'skills', 'pm', '.ignore'),
+  ];
+  for (const filePath of overlayPaths) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, '', { mode: 0o644 });
+  }
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard — must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -319,11 +378,11 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --force           Stop a running server before installing
-  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy
   apra-fleet install --help            Show this help
 
 Options:
-  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot.
+  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy.
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
                           dispatch — Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
@@ -346,7 +405,7 @@ Options:
     }
   }
 
-  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot'];
+  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy'];
   if (!supported.includes(llm)) {
     console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
     process.exit(1);
@@ -505,6 +564,8 @@ ${killHint}
     mergeCodexConfig(paths, mcpConfig);
   } else if (llm === 'copilot') {
     mergeCopilotConfig(paths, mcpConfig);
+  } else if (llm === 'agy') {
+    mergeAgyConfig(paths, mcpConfig);
   }
 
   // --- Step 6: Install fleet skill (optional) ---
@@ -581,8 +642,9 @@ ${killHint}
     beadsVersion = 'not available';
   }
 
+  const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
-  const forceNote = force ? '\nRestart Claude Code to reload the MCP server.' : '';
+  const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}

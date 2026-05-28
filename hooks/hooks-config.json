@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.apra-fleet/hooks/post-register-member.sh"
+            "command": "node -e \"const fs = require('fs'), path = require('path'), cp = require('child_process'); let home = process.env.USERPROFILE || process.env.HOME || ''; if (process.platform === 'linux' && home.startsWith('/home/')) { const user = process.env.USER || home.split('/').pop(); const wslHome = '/mnt/c/Users/' + user; if (fs.existsSync(wslHome)) home = wslHome; } const p = path.join(home, '.apra-fleet', 'hooks', 'post-register-member.sh'); if (fs.existsSync(p)) { cp.execSync('bash \\\"' + p + '\\\"', { stdio: 'inherit' }); }\""
           }
         ]
       }

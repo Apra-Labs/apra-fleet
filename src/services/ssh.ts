@@ -206,6 +206,7 @@ export async function execCommand(
           stdoutSpillStream.write(chunk);
         }
       });
+
       stream.stderr.on('data', (data: Buffer) => {
         resetInactivityTimer();
         stderrLen += data.length;
@@ -220,18 +221,19 @@ export async function execCommand(
           stderrSpillStream.write(data);
         }
       });
+
       stream.on('close', (code: number) => {
         clearStoredPid(agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
-          stdout = `[OUTPUT TRUNCATED — full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
+          stdout = `[OUTPUT TRUNCATED -- full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
         }
         if (stderrSpillPath) {
-          stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
+          stderr = `[OUTPUT TRUNCATED -- full stderr saved to ${stderrSpillPath}]\n${stderr}`;
         }
         if (warning) {
-          stderr = `⚠️ ${warning}\n${stderr}`;
+          stderr = `Warning: ${warning}\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
       });

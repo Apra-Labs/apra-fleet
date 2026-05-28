@@ -124,16 +124,16 @@ export class GeminiProvider implements ProviderAdapter {
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
     return {
-      cheap: 'gemini-3.1-flash-lite-preview',
-      standard: 'gemini-3-flash-preview',
+      cheap: 'gemini-3.5-flash-lite',
+      standard: 'gemini-3.5-flash',
       premium: 'gemini-3.1-pro-preview',
     };
   }
 
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
-    if (tier === 'cheap') return 'gemini-3.1-flash-lite-preview';
+    if (tier === 'cheap') return 'gemini-3.5-flash-lite';
     if (tier === 'premium') return 'gemini-3.1-pro-preview';
-    return 'gemini-3-flash-preview';
+    return 'gemini-3.5-flash';
   }
 
   modelFlag(model: string): string {
@@ -204,7 +204,7 @@ export class GeminiProvider implements ProviderAdapter {
 
 
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
     // Gemini on Windows needs direct shell execution to resolve .cmd script wrappers reliably.
     // We emit the current shell PID immediately to satisfy fleet's lifecycle tracking.
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
