@@ -244,7 +244,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath}\n  ${userPath}`;
+        return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`;
       }
     } else {
       const ef = escapeDoubleQuoted;
