@@ -43,8 +43,12 @@ export const executePromptSchema = z.object({
     'Optional agent name to activate. ' +
     'For Claude: invokes claude --agent <name>. ' +
     'For Gemini: prepends @<name> to the prompt on every dispatch. ' +
+    'For AGY: prepends @<name> to the prompt on every dispatch (same as Gemini). ' +
     'Substitution runs before the @<name> prepend. ' +
-    'The named agent file must exist at <workFolder>/.<provider>/agents/<name>.md or ~/.<provider>/agents/<name>.md -- ' +
+    'Agent file must exist at the provider-specific path on the member: ' +
+    'Claude: <workFolder>/.claude/agents/<name>.md or ~/.claude/agents/<name>.md; ' +
+    'Gemini: <workFolder>/.gemini/agents/<name>.md or ~/.gemini/agents/<name>.md; ' +
+    'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md -- ' +
     'the call is rejected with a clear error if neither is present.'
   ),
 }).strict();
@@ -235,10 +239,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // Agent file validation -- verify named agent exists before any CLI invocation
   if (input.agent) {
     const provName = provider.name;
+    // AGY uses ~/.gemini/antigravity-cli/ as its config root, not ~/.agy/
+    const agentRelDir = provName === 'agy' ? '.gemini/antigravity-cli/agents' : `.${provName}/agents`;
     let agentFound = false;
     if (agent.agentType === 'local') {
-      const projPath = path.join(resolvedWorkFolder, `.${provName}`, 'agents', `${input.agent}.md`);
-      const userPath = path.join(os.homedir(), `.${provName}`, 'agents', `${input.agent}.md`);
+      const projPath = path.join(resolvedWorkFolder, agentRelDir, `${input.agent}.md`);
+      const userPath = path.join(os.homedir(), agentRelDir, `${input.agent}.md`);
       agentFound = fs.existsSync(projPath) || fs.existsSync(userPath);
       if (!agentFound) {
         inFlightAgents.delete(agent.id);
@@ -248,14 +254,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       }
     } else {
       const ef = escapeDoubleQuoted;
-      const projCheck = `${ef(resolvedWorkFolder)}/.${provName}/agents/${ef(input.agent)}.md`;
-      const userCheck = `$HOME/.${provName}/agents/${ef(input.agent)}.md`;
+      const projCheck = `${ef(resolvedWorkFolder)}/${agentRelDir}/${ef(input.agent)}.md`;
+      const userCheck = `$HOME/${agentRelDir}/${ef(input.agent)}.md`;
       const checkResult = await strategy.execCommand(`test -f "${projCheck}" || test -f "${userCheck}"`, 10000);
       if (checkResult.code !== 0) {
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/.${provName}/agents/${input.agent}.md\n  ~/.${provName}/agents/${input.agent}.md`;
+        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${agentRelDir}/${input.agent}.md\n  ~/${agentRelDir}/${input.agent}.md`;
       }
     }
   }

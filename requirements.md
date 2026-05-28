@@ -17,7 +17,7 @@ This sprint addresses both: it reorganizes the skill surface so PM only loads wh
 ## Goals
 
 1. PM never reads role template files. Substitution moves into `send_files`. Role files relocate out of the pm skill folder.
-2. Role definitions (planner, plan-reviewer, doer, reviewer) become first-class agents -- installable on Claude and Gemini members via the apra-fleet installer.
+2. Role definitions (planner, plan-reviewer, doer, reviewer) become first-class agents -- installable on Claude, AGY, and Gemini members via the apra-fleet installer.
 3. The `pm` skill is split along load-frequency lines so unused sub-docs don't enter PM's context.
 4. The fleet installer correctly routes every artifact (user-level agents, project-level agents, skill files, hooks) to its proper destination.
 5. A documented migration path exists from `claude -p` (single-shot prompt) to long-running agent mode, validated end-to-end on at least one fleet member, before 2026-06-15.
@@ -26,7 +26,7 @@ This sprint addresses both: it reorganizes the skill surface so PM only loads wh
 
 - Multi-pair sprint reorganization (separate concern; pm choreography stays as-is)
 - Beads/bd workflow changes
-- Provider additions beyond Claude + Gemini (Codex, Copilot stay where they are)
+- Provider additions beyond Claude + AGY + Gemini (Codex, Copilot stay where they are)
 - Production rollout of long-running agents to all members (Task 6 produces a working path and validation; mass migration is a follow-up sprint)
 
 ---
@@ -205,7 +205,7 @@ Body content is the current `tpl-*.md` text with `{{token}}` placeholders remove
 
 **File layout.** One file per agent at `.claude/agents/<name>.md`. No agent-specific subfolders. If an agent's body needs supporting docs (long examples, error catalogues, etc.), those live elsewhere in the repo and the body references them by relative path -- same pattern skills use for sub-docs. Claude loads them on demand when the body cites them. For the 4 roles in this sprint, a single file each suffices.
 
-**Install paths (decided -- both providers symmetric).**
+**Install paths (decided -- all three providers).**
 
 Claude members (Claude Code native):
 - User-level defaults: `~/.claude/agents/<name>.md` -- installed by apra-fleet installer.
@@ -217,7 +217,12 @@ Gemini members (Gemini CLI native, confirmed at geminicli.com/docs/core/subagent
 - Project overrides: `<repo>/.gemini/agents/<name>.md`.
 - Same precedence: project beats user.
 
-Both providers' agent file format (frontmatter + system-prompt body) is compatible enough that the four shipped agent files can be near-identical between `.claude/agents/` and `.gemini/agents/`. The installer ships both pairs from the same canonical source in the apra-fleet repo (location to be decided in Task 5).
+AGY members (AGY CLI; config root is `~/.gemini/antigravity-cli/`, not `~/.gemini/`):
+- User-level defaults: `~/.gemini/antigravity-cli/agents/<name>.md`.
+- Project overrides: `<repo>/.gemini/antigravity-cli/agents/<name>.md`.
+- Same precedence: project beats user.
+
+All three providers' agent file format (frontmatter + system-prompt body) is compatible enough that the four shipped agent files can be near-identical across providers. The installer ships from the same canonical source in the apra-fleet repo (location to be decided in Task 5).
 
 **Role activation mechanism -- native, but asymmetric per provider.**
 
@@ -227,6 +232,7 @@ Both Claude CLI and Gemini CLI support native subagent activation, but via diffe
 |---|---|---|
 | Claude | `claude --agent <name>` -- CLI flag, sets the agent for the whole session at invocation. | Flag |
 | Gemini | `@<name>` mention inside the prompt -- selects the agent for that prompt. | In-prompt |
+| AGY | `@<name>` mention inside the prompt -- same as Gemini; prepended on every dispatch. | In-prompt |
 
 Either way the session is born (or re-asserted) adopting the named agent's system prompt and tool allow-list. No in-prompt "read this file" instruction needed; no risk of the LLM failing to assume the role.
 
@@ -236,8 +242,9 @@ Fleet must:
 
 - **For Claude members:** invoke `claude --agent <name> [--resume <id>] -p "<prompt>"`. The `--agent` flag goes on the CLI; the prompt itself is untouched.
 - **For Gemini members:** invoke `gemini -p "@<name> <prompt>"`. Fleet prepends `@<name> ` to the prompt string. **The prepend happens on every dispatch** (not just the first), because each Gemini prompt is independent -- the role must be re-asserted to remain active across turns.
-- **Substitution interaction:** the substitution engine (Task 1) runs on the prompt BEFORE provider wrapping. So for Gemini, the order is: substitute `{{tokens}}` -> then prepend `@<name>` -> then pass to CLI. The `@<name>` itself is added by fleet (not by the caller) and is not subject to substitution.
-- **Validation before dispatch:** verify the named agent file exists on the member at `<repo>/.<provider>/agents/<name>.md` or `~/.<provider>/agents/<name>.md`. If neither exists, return a clear error and do not invoke the CLI.
+- **For AGY members:** same as Gemini -- fleet prepends `@<name> ` to the prompt on every dispatch (including resume=true continuations).
+- **Substitution interaction:** the substitution engine (Task 1) runs on the prompt BEFORE provider wrapping. So for Gemini and AGY, the order is: substitute `{{tokens}}` -> then prepend `@<name>` -> then pass to CLI. The `@<name>` itself is added by fleet (not by the caller) and is not subject to substitution.
+- **Validation before dispatch:** verify the named agent file exists on the member at the provider-specific path. Claude: `<repo>/.claude/agents/<name>.md` or `~/.claude/agents/<name>.md`. Gemini: `<repo>/.gemini/agents/<name>.md` or `~/.gemini/agents/<name>.md`. AGY: `<repo>/.gemini/antigravity-cli/agents/<name>.md` or `~/.gemini/antigravity-cli/agents/<name>.md`. If neither path exists, return a clear error and do not invoke the CLI.
 - **No collision concern with Gemini's `@`-mention:** our substitution grammar (`{{name}}`, names match `[A-Za-z_][A-Za-z0-9_]*`, no `.`) does not overlap with Gemini's `@<name>` syntax. Fleet's prepend is purely a string concatenation, post-substitution.
 
 **Dispatch flow (how PM uses these).**
@@ -282,19 +289,21 @@ These mirror today's `compose_permissions` profiles but are now declarative in t
 
 **Done criteria.**
 
-- 4 agent files committed at `agents/<name>.md` in the apra-fleet repo root (sibling to `skills/`). One source file per agent, used by the installer for both Claude and Gemini members.
+- 4 agent files committed at `agents/<name>.md` in the apra-fleet repo root (sibling to `skills/`). One source file per agent, used by the installer for Claude, AGY, and Gemini members.
 - Each file valid YAML frontmatter + body, ASCII-only.
 - `execute_prompt` schema gains optional `agent: string` parameter. Per-provider translation implemented and tested:
   - **Claude:** invocation includes `--agent <name>`.
   - **Gemini:** invocation prepends `@<name> ` to the prompt; verified the prepend happens on EVERY dispatch (resume=true continuations included), not just the first.
-- Validation: `execute_prompt` with an `agent` value not present on the member returns a clear error before invoking any CLI. Test both providers.
+  - **AGY:** same as Gemini -- prepends `@<name> ` on every dispatch including resume=true.
+- Validation: `execute_prompt` with an `agent` value not present on the member returns a clear error before invoking any CLI. Test all three providers.
 - Dispatch dry-runs end-to-end on real trivial tasks:
   - Claude path: tested on apra-fleet-reorg. Fleet log shows `claude --agent doer ...`.
   - Gemini path: tested on a gemini member (fleet-dev or fleet-dev2). Fleet log shows `gemini -p "@doer ..."`.
-  - Neither dry-run reads any PM-side `tpl-*` file.
+  - AGY path: tested on an agy member. Fleet log shows `agy -p "@doer ..."`.
+  - None of the dry-runs read any PM-side `tpl-*` file.
 - The 4 source files in `skills/pm/` deleted.
-- Installer ships agent files to both `~/.claude/agents/` and `~/.gemini/agents/` per the member's `llmProvider`. (Implementation handed to Task 5; this task specifies the requirement.)
-- Substitution-then-prepend ordering documented and tested: substitutions are applied to the prompt BEFORE Gemini's `@<name>` is prepended.
+- Installer ships agent files to `~/.claude/agents/`, `~/.gemini/agents/`, and `~/.gemini/antigravity-cli/agents/` per the member's `llmProvider`. (Implementation handed to Task 5; this task specifies the requirement.)
+- Substitution-then-prepend ordering documented and tested: substitutions are applied to the prompt BEFORE Gemini's or AGY's `@<name>` is prepended.
 
 **Open questions.** None.
 
@@ -388,7 +397,7 @@ _None._ Task 1 is locked. Ready to plan.
 ## Acceptance (sprint-level)
 
 - [ ] Task 1 merged and `send_files` documented in fleet `SKILL.md`.
-- [ ] Task 2 produces 4 agent definitions on disk (Claude + Gemini paths) installable via installer.
+- [ ] Task 2 produces 4 agent definitions on disk (Claude + AGY + Gemini paths) installable via installer.
 - [ ] Task 3 produces a split decision document committed to the repo.
 - [ ] Task 4 produces a green dry-run report.
 - [ ] Task 5 produces an installer audit report and any necessary fixes merged.

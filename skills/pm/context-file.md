@@ -21,7 +21,7 @@ Use `member_detail` -> `llmProvider` to determine the correct target filename:
 | Doer | `agents/doer.md` |
 | Reviewer | `agents/reviewer.md` |
 
-Installed by the apra-fleet installer at `~/.claude/agents/<name>.md` (Claude) and `~/.gemini/agents/<name>.md` (Gemini).
+Installed by the apra-fleet installer at `~/.claude/agents/<name>.md` (Claude), `~/.gemini/agents/<name>.md` (Gemini), and `~/.gemini/antigravity-cli/agents/<name>.md` (AGY).
 
 ## Rules
 
