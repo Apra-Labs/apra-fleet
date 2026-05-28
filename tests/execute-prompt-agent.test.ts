@@ -94,6 +94,29 @@ describe('execute_prompt -- agent parameter', () => {
     expect(cmd).toContain('@doer ');
   });
 
+  // --- Gemini: @name prepend on resume=true ---
+
+  it('Gemini: @name prepend happens on resume=true dispatch', async () => {
+    const agentDir = path.join(tmpDir, '.gemini', 'agents');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
+
+    const member = makeTestLocalAgent({
+      friendlyName: 'gemini-resume-agent-test',
+      workFolder: tmpDir,
+      llmProvider: 'gemini',
+      os: 'linux',
+      sessionId: 'existing-session-abc123',
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'continue the task', resume: true, timeout_s: 5, agent: 'doer' });
+
+    const cmd = mockExecCommand.mock.calls[0][0];
+    expect(cmd).toContain('@doer ');
+  });
+
   // --- Unknown agent: error before CLI invoked ---
 
   it('unknown agent name: returns clear error, no CLI invoked', async () => {
@@ -125,6 +148,24 @@ describe('execute_prompt -- agent parameter', () => {
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'myagent' });
 
     expect(result).toContain('.claude/agents/myagent.md');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('Gemini: unknown agent name returns clear error, no CLI invoked', async () => {
+    // No agent file in tmpDir -- validation must fail for Gemini provider
+    const member = makeTestLocalAgent({
+      friendlyName: 'gemini-unknown-agent-test',
+      workFolder: tmpDir,
+      llmProvider: 'gemini',
+      os: 'linux',
+    });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
+
+    expect(result).toContain('not found');
+    expect(result).toContain('nonexistent');
+    expect(result).toContain('.gemini/agents/nonexistent.md');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
