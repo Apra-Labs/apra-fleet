@@ -12,6 +12,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
+import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
@@ -157,12 +158,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const tiers = provider.modelTiers();
   let resolvedModel = input.model || 'standard';
+  let resolvedTier: 'cheap' | 'standard' | 'premium' | undefined;
   if (resolvedModel === 'cheap') {
-    resolvedModel = agent.modelCheap || tiers.cheap;
+    resolvedTier = 'cheap';
+    resolvedModel = agent.modelCheap || getModelOverride(provider.name, 'cheap') || tiers.cheap;
   } else if (resolvedModel === 'standard') {
-    resolvedModel = agent.modelStandard || tiers.standard;
+    resolvedTier = 'standard';
+    resolvedModel = agent.modelStandard || getModelOverride(provider.name, 'standard') || tiers.standard;
   } else if (resolvedModel === 'premium') {
-    resolvedModel = agent.modelPremium || tiers.premium;
+    resolvedTier = 'premium';
+    resolvedModel = agent.modelPremium || getModelOverride(provider.name, 'premium') || tiers.premium;
   } else {
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }
@@ -185,6 +190,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     resuming,
     unattended: agent.unattended,
     model: resolvedModel,
+    tier: resolvedTier,
     maxTurns: input.max_turns,
     inv: scope.getInv(),
   };

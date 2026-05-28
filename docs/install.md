@@ -175,6 +175,51 @@ apra-fleet uninstall --llm claude --skill fleet
 If the fleet server is running, uninstall aborts and tells you to re-run with
 `--force`. Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
+## Customizing model tier mapping
+
+By default, each provider maps the three tiers (`cheap`, `standard`, `premium`)
+to hardcoded model names. You can override any of these per-provider by creating
+a `config.json` file in the Fleet data directory:
+
+```
+~/.apra-fleet/data/config.json
+```
+
+If you set `APRA_FLEET_DATA_DIR`, the file lives at
+`$APRA_FLEET_DATA_DIR/config.json` instead.
+
+**Schema example:**
+
+```json
+{
+  "providers": {
+    "agy": {
+      "modelMapping": {
+        "cheap":    "GPT-OSS 120B (Medium)",
+        "standard": "Gemini 3.1 Pro (High)",
+        "premium":  "Claude Opus 4.6 (Thinking)"
+      }
+    },
+    "claude": {
+      "modelMapping": {
+        "cheap": "claude-haiku-4-5",
+        "premium": "claude-opus-4-7"
+      }
+    }
+  }
+}
+```
+
+Provider keys: `claude`, `gemini`, `codex`, `copilot`, `agy`. Tier keys:
+`cheap`, `standard`, `premium`. All fields are optional -- omitted tiers fall
+back to the provider's built-in default.
+
+**Precedence:** per-member override (`update_member --model-cheap/standard/premium`)
+> user config > hardcoded provider default.
+
+If the file is missing, Fleet proceeds with built-in defaults. If the JSON is
+malformed, Fleet logs a warning to stderr and ignores the file.
+
 ## Self-update
 
 Update the fleet binary to the latest release:

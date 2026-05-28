@@ -29,4 +29,9 @@ Fleet supports Claude, Antigravity (agy), Codex, Copilot, and Gemini. Members ca
 
 ---
 
+To override which model each tier resolves to on a per-provider basis, see
+[Customizing model tier mapping](install.md#customizing-model-tier-mapping).
+
+---
+
 Extending Fleet's provider support, or need the full CLI / integration detail? See [docs/provider-matrix.md](provider-matrix.md).
