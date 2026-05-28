@@ -4,6 +4,7 @@ import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
+import { getModelOverride } from '../services/user-config.js';
 
 const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
   cheap:    'Gemini 3.5 Flash (Medium)',
@@ -47,7 +48,7 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, inv, model } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
@@ -55,8 +56,8 @@ export class AgyProvider implements ProviderAdapter {
     }
 
     // Write per-workspace model override before launching agy.
-    const tier = this.resolveTierFromModel(model);
-    const displayModel = AGY_MODEL_FOR_TIER[tier];
+    const tier = inputTier ?? this.resolveTierFromModel(model);
+    const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
     const settingsScript = `${SCRIPTS_UNIX}/agy-settings-merge.js`;
 
     let cmd = `cd "${escapedFolder}" && node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}" && agy -p "${instruction}"`;
@@ -216,10 +217,10 @@ export class AgyProvider implements ProviderAdapter {
     return 'ANTIGRAVITY_API_KEY';
   }
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, tier?: 'cheap' | 'standard' | 'premium'): string {
     // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
-    const tier = this.resolveTierFromModel(model);
-    const displayModel = AGY_MODEL_FOR_TIER[tier];
+    const resolvedTier = tier ?? this.resolveTierFromModel(model);
+    const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
     const settingsScript = `${SCRIPTS_WIN}\\agy-settings-merge.js`;
 
     let cmd = `${setupCmd}node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}"; Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;

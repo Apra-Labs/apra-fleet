@@ -33,6 +33,7 @@ export interface PromptOptions {
   resuming?: boolean;
   unattended?: false | 'auto' | 'dangerous';
   model?: string;
+  tier?: 'cheap' | 'standard' | 'premium';
   maxTurns?: number;
   inv?: string;
 }
@@ -104,7 +105,7 @@ export interface ProviderAdapter {
 
   // Windows / PowerShell prompt building helpers
   /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string): string;
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, tier?: 'cheap' | 'standard' | 'premium'): string;
 
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
   jsonOutputFlag(): string;
