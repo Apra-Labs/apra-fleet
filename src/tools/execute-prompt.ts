@@ -20,6 +20,7 @@ import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -28,12 +29,17 @@ export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
   resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
-  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds — the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
-  max_total_s: z.number().optional().describe('Hard ceiling in seconds — the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
+  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
+  max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
-  dangerously_skip_permissions: z.boolean().default(false).describe('DEPRECATED: use update_member(unattended="dangerous") instead. This field is ignored and will be removed in a future version.'),
-  model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names — the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
-});
+  model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names -- the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
+  substitutions: z.record(z.string(), z.string()).optional().describe(
+    'Optional map of token name to replacement value. ' +
+    'When provided, every occurrence of {{name}} in the prompt is replaced before the prompt is staged on the member. ' +
+    'Keys must match [A-Za-z_][A-Za-z0-9_]*. Missing tokens cause the call to fail with no CLI invoked. ' +
+    'Extra keys are silently ignored. Values are never logged.'
+  ),
+}).strict();
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
 
@@ -94,17 +100,38 @@ const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 export const inFlightAgents = new Set<string>();
 
 // All exit paths from executePrompt clear busy state via the finally block (inFlightAgents.delete + writeStatusline):
-// (a) normal success: result.code === 0 → finally sets idle and removes agent from inFlight
-// (b) non-zero exit from execCommand: result.code !== 0 → finally sets idle and removes agent from inFlight
-// (c) exception in try block (auth, network, crash) → catch records error type; finally sets offline or idle
-// (d) AbortSignal/MCP client cancellation → abortHandler kills PID, execCommand resolves, finally clears
-// (e) stale session retry → retried without session ID; finally clears on success or failure
-// (f) server overload retry → retried after delay; finally clears on success or failure
+// (a) normal success: result.code === 0 -> finally sets idle and removes agent from inFlight
+// (b) non-zero exit from execCommand: result.code !== 0 -> finally sets idle and removes agent from inFlight
+// (c) exception in try block (auth, network, crash) -> catch records error type; finally sets offline or idle
+// (d) AbortSignal/MCP client cancellation -> abortHandler kills PID, execCommand resolves, finally clears
+// (e) stale session retry -> retried without session ID; finally clears on success or failure
+// (f) server overload retry -> retried after delay; finally clears on success or failure
 // (g) early returns before inFlightAgents.add: busy state never entered
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
+  }
+
+  // Validate substitution keys before any I/O or member resolution.
+  if (input.substitutions !== undefined) {
+    const keyCheck = validateSubstitutionKeys('execute_prompt', input.substitutions);
+    if (!keyCheck.ok) return keyCheck.error;
+  }
+
+  // Apply substitutions to the prompt string (or emit heuristic warning when omitted).
+  let renderedPrompt = input.prompt;
+  let heuristicWarningSuffix = '';
+
+  if (input.substitutions !== undefined) {
+    const result = applySubstitutions('execute_prompt', [{ label: 'prompt', content: input.prompt }], input.substitutions);
+    if (!result.ok) return result.error;
+    renderedPrompt = result.outputs[0];
+  } else {
+    const warnResult = applySubstitutions('execute_prompt', [{ label: 'prompt', content: input.prompt }], undefined);
+    if (warnResult.ok && warnResult.warning) {
+      heuristicWarningSuffix = `\n\n⚠️ ${warnResult.warning}`;
+    }
   }
 
   const promptFileName = `.fleet-task.md`;
@@ -172,10 +199,6 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }
 
-  const deprecationWarning = input.dangerously_skip_permissions
-    ? '⚠️ DEPRECATION: dangerously_skip_permissions is deprecated and ignored. Use update_member(unattended="dangerous") instead.\n\n'
-    : '';
-
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
 
   const resuming = !!(input.resume && agent.sessionId && provider.supportsResume());
@@ -203,8 +226,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
   await tryKillPid(agent, strategy, cmds);
 
-  // Write the prompt to the unique prompt file before execution
-  await writePromptFile(agent, strategy, promptFilePath, input.prompt);
+  // Write the rendered prompt (with substitutions applied) to the prompt file before execution
+  await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
 
   const onPidCaptured = (pid: number) => {
     scope.info(`pid=${pid}`);
@@ -239,9 +262,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
 
-    // Stale session retry — fresh session ID, no resume
+    // Stale session retry -- fresh session ID, no resume
     if (result.code !== 0 && input.resume && agent.sessionId) {
-      scope.info(`[${resolvedModel}] retrying — stale session`);
+      scope.info(`[${resolvedModel}] retrying -- stale session`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
@@ -250,9 +273,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (parsed.usage) _epUsage = parsed.usage;
     }
 
-    // Server/overloaded error retry — single attempt after delay
+    // Server/overloaded error retry -- single attempt after delay
     if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
-      scope.info(`[${resolvedModel}] retrying — server overloaded`);
+      scope.info(`[${resolvedModel}] retrying -- server overloaded`);
       await tryKillPid(agent, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
@@ -295,7 +318,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       });
     }
 
-    let output = `${deprecationWarning}📋 Response from ${agent.friendlyName}:
+    let output = `📋 Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
     if (parsed.usage) output += `
@@ -304,6 +327,7 @@ Tokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}`
 
 ---
 session: ${parsed.sessionId}`;
+    if (heuristicWarningSuffix) output += heuristicWarningSuffix;
     return output;
   } catch (err: any) {
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
@@ -316,7 +340,7 @@ session: ${parsed.sessionId}`;
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);
-    // Skip if stall detector already cleared state — a new execute_prompt may have
+    // Skip if stall detector already cleared state -- a new execute_prompt may have
     // claimed inFlightAgents and set busy again; clobbering it here would be wrong.
     if (!clearedByStall) {
       writeStatusline(new Map([[agent.id, _epOffline ? 'offline' : 'idle']]));
