@@ -148,7 +148,7 @@ Both `send_files` and `execute_prompt` accept an optional `substitutions: { "tok
 **Usage:**
 ```
 send_files(
-  local_paths=["skills/pm/tpl-doer.md"],
+  local_paths=["agents/doer.md"],
   substitutions={ branch: "feat/task-1", base_branch: "main", member_name: "Alice" }
 )
 

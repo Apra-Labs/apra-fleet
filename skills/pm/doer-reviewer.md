@@ -95,7 +95,7 @@ Verify reviewer is at the correct commit before starting review:
 ## Git as transport
 
 - Doers commit: deliverables, PLAN.md, progress.json, project docs. When fixing review findings, doer also annotates feedback.md -- adding `**Doer:** fixed in commit <sha> -- <what changed>` under each addressed finding -- then commits feedback.md. Doer never rewrites feedback.md content.
-- Reviewers commit: feedback.md (full content -- see tpl-reviewer.md for format)
+- Reviewers commit: feedback.md (full content -- see agents/reviewer.md for format)
 - The member agent context file is NEVER committed -- see `context-file.md`
 
 ## Permissions
