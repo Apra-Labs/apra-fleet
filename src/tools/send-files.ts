@@ -48,7 +48,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
   }
 
   if (input.dest_subdir?.includes('\0')) {
-    return `⛔ Invalid dest_subdir: null bytes are not allowed.`;
+    return `[ERR] Invalid dest_subdir: null bytes are not allowed.`;
   }
 
   // Path security: verify dest_subdir stays within work_folder
@@ -85,7 +85,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     }
   }
   if (collisionLines.length > 0) {
-    return `⛔ Basename collision: these files share a name and would overwrite each other at destination:\n${collisionLines.join('\n')}`;
+    return `[ERR] Basename collision: these files share a name and would overwrite each other at destination:\n${collisionLines.join('\n')}`;
   }
 
   // Substitution phase: read files, apply engine, write temp files.
@@ -136,7 +136,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
       }));
       const result = applySubstitutions('send_files', subInputs, undefined);
       if (result.ok && result.warning) {
-        warningLine = `\n⚠️ ${result.warning}`;
+        warningLine = `\n[WARN] ${result.warning}`;
       }
     } catch { /* binary file or missing file -- skip warning */ }
   }
@@ -155,14 +155,14 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     let output = '';
 
     if (result.success.length > 0) {
-      output += `✅ Successfully uploaded ${result.success.length} file(s) to ${agent.friendlyName}:\n`;
+      output += `[OK] Successfully uploaded ${result.success.length} file(s) to ${agent.friendlyName}:\n`;
       for (const f of result.success) {
         output += `  - ${f}\n`;
       }
     }
 
     if (result.failed.length > 0) {
-      output += `\n❌ Failed to upload ${result.failed.length} file(s):\n`;
+      output += `\n[FAIL] Failed to upload ${result.failed.length} file(s):\n`;
       for (const f of result.failed) {
         output += `  - ${f.path}: ${f.error}\n`;
       }
