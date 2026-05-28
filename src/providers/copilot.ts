@@ -182,7 +182,7 @@ export class CopilotProvider implements ProviderAdapter {
 
 
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string, _folder?: string): string {
     // For native binaries on Windows, shell-based wrapping ensures reliable output redirection
     // while still allowing for tree-based process termination via the shell PID.
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;

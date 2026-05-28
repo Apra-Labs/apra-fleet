@@ -187,7 +187,7 @@ export class ClaudeProvider implements ProviderAdapter {
 
 
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string, _folder?: string): string {
     // Native claude.exe (2.1.113+) does not inherit stdout via ProcessStartInfo.
     // Direct shell execution ensures stdout is captured through the PowerShell pipe.
     // $pid is the shell PID - killing it also kills claude as a direct child.

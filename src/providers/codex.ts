@@ -186,7 +186,7 @@ export class CodexProvider implements ProviderAdapter {
 
 
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string, _folder?: string): string {
     // Codex on Windows is typically an npm-based .cmd script.
     // Use direct shell execution to ensure resolution, while emitting PID immediately.
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;

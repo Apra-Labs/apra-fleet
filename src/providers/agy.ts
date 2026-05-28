@@ -216,7 +216,7 @@ export class AgyProvider implements ProviderAdapter {
     return 'ANTIGRAVITY_API_KEY';
   }
 
-  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string): string {
+  wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, folder?: string): string {
     // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
     const tier = this.resolveTierFromModel(model);
     const displayModel = AGY_MODEL_FOR_TIER[tier];
@@ -225,11 +225,12 @@ export class AgyProvider implements ProviderAdapter {
     let cmd = `${setupCmd}node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}"; Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
 
     // After agy exits, read its conversation transcript via the installed helper script.
-    // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
-    // so the script falls back gracefully (UUID lookup still works when agy honors --conversation).
+    // Pass the work folder so the script can fall back to folder-based lookup in
+    // last_conversations.json when agy ignores --conversation and creates its own UUID.
     const transcriptScript = `${SCRIPTS_WIN}\\agy-transcript-reader.js`;
     const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
-    cmd += `; node "${transcriptScript}" ${convArg} ""`;
+    const folderArg = folder ? `"${escapeDoubleQuoted(folder)}"` : '""';
+    cmd += `; node "${transcriptScript}" ${convArg} ${folderArg}`;
 
     return cmd;
   }
