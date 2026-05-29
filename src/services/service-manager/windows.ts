@@ -31,7 +31,14 @@ export class WindowsServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> {
-    execFileSync('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME]);
+    // Use spawn (detached) so schtasks /run does not block the installer.
+    // schtasks /run returns quickly but on some Windows versions it waits
+    // for the launched process -- detaching avoids that.
+    const { spawn } = await import('node:child_process');
+    const child = spawn('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME], {
+      detached: true, stdio: 'ignore',
+    });
+    child.unref();
   }
 
   async stop(): Promise<void> {

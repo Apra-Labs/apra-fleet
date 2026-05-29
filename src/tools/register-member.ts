@@ -316,7 +316,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     settings.mcpServers = settings.mcpServers ?? {};
     settings.mcpServers['apra-fleet'] = {
       type: 'http',
-      url: 'http://127.0.0.1:7523/mcp',
+      url: 'http://127.0.0.1:7523/mcp?member=' + input.friendly_name,
       headers: { Authorization: 'Bearer ' + token },
     };
     try {

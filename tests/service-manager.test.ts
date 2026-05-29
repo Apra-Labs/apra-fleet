@@ -74,10 +74,14 @@ describe('WindowsServiceManager', () => {
   });
 
   describe('start', () => {
-    it('calls schtasks /run', async () => {
+    it('calls schtasks /run via detached spawn', async () => {
+      const { spawn } = await import('node:child_process');
+      const mockChild = { unref: vi.fn() };
+      vi.mocked(spawn).mockReturnValueOnce(mockChild as any);
       const mgr = new WindowsServiceManager();
       await mgr.start();
-      expect(execFileSync).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet']);
+      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore' });
+      expect(mockChild.unref).toHaveBeenCalled();
     });
   });
 

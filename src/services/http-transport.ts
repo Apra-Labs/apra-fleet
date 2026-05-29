@@ -117,7 +117,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
 
-    if (url !== '/mcp') {
+    if (url !== '/mcp' && !url.startsWith('/mcp?')) {
       res.writeHead(404);
       res.end();
       return;
@@ -126,6 +126,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     if (req.method === 'POST') {
       // JWT auth: verify Bearer token if present; unauthenticated (PM/tool) connections pass through
       const rawToken = extractBearer(req);
+      const parsedUrl = new URL(req.url ?? '/', 'http://localhost');
+      const memberParam = parsedUrl.searchParams.get('member');
       let postClaims: JwtClaims | null = null;
       if (rawToken !== null) {
         postClaims = verifyJwt(rawToken);
@@ -134,6 +136,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           res.end(JSON.stringify({ error: 'invalid token' }));
           return;
         }
+      }
+      if (rawToken === null && memberParam !== null) {
+        logLine('session', 'member identity from URL param: ' + memberParam);
       }
 
       let parsedBody: unknown;
@@ -174,6 +179,16 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 sessionId: sid,
                 status: 'online',
               });
+            } else if (memberParam) {
+              sessionRegistry.register(memberParam, {
+                member_id: memberParam,
+                project_id: 'default',
+                role: 'doer',
+                work_folder: '',
+                server: sessionServer,
+                sessionId: sid,
+                status: 'online',
+              });
             }
           },
           onsessionclosed: (sid) => {
@@ -187,6 +202,8 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             // Unregister interactive member session
             if (postClaims) {
               sessionRegistry.unregister(postClaims.member_id);
+            } else if (memberParam) {
+              sessionRegistry.unregister(memberParam);
             }
           },
         });
