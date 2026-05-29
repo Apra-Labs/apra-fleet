@@ -11,7 +11,7 @@ Items marked [*] are good first issues for new contributors.
 
 - [ ] **npm publish** -- Publish to npm so users can `npx apra-fleet install` [*]
 - [ ] **HTTP+SSE transport** -- MCP HTTP+SSE transport enabling remote members to connect over the network
-- [ ] **Web dashboard** -- Browser UI for fleet status, member management, and live prompt monitoring [*]
+- [ ] **Web dashboard** -- Browser UI for fleet status, member management, live prompt monitoring, and token/cloud cost visibility [*]
 - [ ] **Expanded member targets** -- Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
 - [ ] **Member groups / tags** -- Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups
 - [ ] **Session log export** -- One-click markdown export of `fleet logs` output from the dashboard [*]
@@ -21,7 +21,6 @@ Items marked [*] are good first issues for new contributors.
 - [ ] **Agent-to-agent communication** -- Members communicate directly, not only through coordinator
 - [ ] **Plugin system** -- Community-built plugins for custom tools and providers
 - [ ] **Result aggregation** -- Merge outputs from parallel member executions into a unified report
-- [ ] **Cost dashboard** -- Visualize token and cloud spend across members
 
 ## Long-term (6+ months)
 
