@@ -15,7 +15,7 @@ Items marked [*] are good first issues for new contributors.
 - [ ] **Memory plane integration** -- Connect fleet agents to codebase knowledge indices (e.g. DeepWiki) so task planning starts from a structured map of architecture and relevant files rather than blind token-expensive discovery; reduces drift and cuts initial exploration cost
 - [ ] **Session log export** -- One-click markdown export of `fleet logs` output from the dashboard [*]
 
-## Medium-term (3-6 months)
+## Medium-term (1-2 months)
 
 - [ ] **Agent-to-agent communication** -- Members communicate directly, not only through coordinator
 - [ ] **Expanded member targets** -- Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
@@ -23,13 +23,13 @@ Items marked [*] are good first issues for new contributors.
 - [ ] **Result aggregation** -- Merge outputs from parallel member executions into a unified report
 - [ ] **Member groups / tags** -- Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups
 
-## Long-term (6+ months)
+## Long-term (3+ months)
 
-- [ ] **Distributed task queue** -- Priority-based job scheduling with retry and dead-letter handling
 - [ ] **Fleet-as-a-Service** -- Hosted version for teams that don't want to self-host
+- [ ] **Multi-fleet federation** -- Connect multiple fleet servers for cross-team orchestration
+- [ ] **Distributed task queue** -- Priority-based job scheduling with retry and dead-letter handling
 - [ ] **Terraform / Pulumi provider** -- Infrastructure-as-code for fleet topology
 - [ ] **Audit log** -- Immutable log of all fleet operations for enterprise governance [*]
-- [ ] **Multi-fleet federation** -- Connect multiple fleet servers for cross-team orchestration
 
 ---
 
