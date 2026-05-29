@@ -118,7 +118,7 @@ append-only. The audit log is the authoritative record for compliance, incident
 investigation, and cost accounting. It cannot be modified after the fact.
 
 **Auth layer.** Four-layer authentication covering fleet access, LLM provider auth,
-VCS auth, and member-to-member auth. Described in Section 7.
+VCS auth, and member-to-member auth. Described in Section 8.
 
 ### Multi-tenancy model
 
@@ -172,7 +172,7 @@ PM from doer/reviewer members.
 
 **LLM-Claude.** Supports two dispatch paths: (a) interactive mode -- `claude` with no
 `-p` flag, MCP config pointing to fleet.apralabs.com/<project-id>, tasks received via
-SSE message injection, hooks configured by the fleet installer (see Section 5); and
+SSE message injection, hooks configured by the fleet installer (see Section 6); and
 (b) SSH+`-p` mode -- the existing `ClaudeProvider.buildPromptCommand()` subprocess
 dispatch. The interactive path is preferred starting 2026-06-15 (lower per-task cost
 at scale, bidirectional communication, persistent session state). The SSH+`-p` path
@@ -194,7 +194,7 @@ mode is a future option.
 binary in service mode) is installed on the machine and connects outbound to
 fleet.apralabs.com at startup. Only `execute_command` is available. Useful for build
 servers, test runners, CI machines, and database servers where AI decision-making is
-not needed. Described in detail in Section 9.
+not needed. Described in detail in Section 10.
 
 ### PM as a member
 
@@ -207,7 +207,138 @@ is routed through the event bus with a verifiable sender identity.
 
 ---
 
-## 4. How Interactive Sessions Complement claude -p
+## 4. Process Lifecycle Management
+
+The HTTP+SSE interactive session model (Section 5) is the data plane: it carries task
+dispatch, prompt injection, and response delivery. Process lifecycle is a separate
+concern handled by the control plane. These two planes are orthogonal -- an interactive
+session cannot exist until a process is running, and the process can be managed
+independently of any active session.
+
+### The two-plane model
+
+**Control plane (SSH + execute_command).** Responsible for starting, stopping,
+restarting, and monitoring the LLM process (`claude`, `agy`, `gemini`) on the member
+machine. This is the existing fleet capability -- SSH-based `execute_command` already
+handles remote process management. No new infrastructure is needed for this plane.
+
+**Data plane (HTTP+SSE).** Responsible for delivering task prompts to a running session
+and receiving responses. Requires the LLM process to already be running and connected
+to the fleet MCP server.
+
+The fleet server coordinates both planes but does not collapse them. Process lifecycle
+events (crash detected, restart needed, update available) come in on the control plane
+and may trigger data plane actions (re-announce, re-deliver pending message). Data plane
+events (session idle too long, behavioral contract violation) may trigger control plane
+actions (kill and restart the process).
+
+### Launching member processes
+
+**Local members.** The fleet installer registers a per-user service (using the service
+manager built in `src/services/service-manager/`) that starts the LLM process on login.
+On Windows this is a Scheduled Task; on Linux a systemd --user unit; on macOS a
+LaunchAgent plist. The service manager already exists from the apra-fleet-svc sprint
+(`src/services/service-manager/windows.ts`, `linux.ts`, `macos.ts`).
+
+**Remote members.** SSH `execute_command` launches the LLM process on the remote
+machine. This is no different from any other remote command fleet already runs:
+
+```
+execute_command: ssh <member> "cd <workFolder> && claude &"
+```
+
+For the interactive session model, `claude` starts with no `-p` flag and its MCP config
+already points to the fleet server (configured by the installer). The process daemonizes
+(or runs in a screen/tmux session) so it survives the SSH session ending.
+
+Fleet's `register_member` and install flows can be extended to optionally launch the
+process after installation. The launch is a single `execute_command` -- no new
+infrastructure required.
+
+### /clear and /resume
+
+These scenarios are process restart operations, not protocol operations.
+
+**/clear** (fresh context, drop conversation history):
+Kill the current process and relaunch without `--resume`. In fleet terms:
+
+```
+execute_command: pkill -f "claude"  (or equivalent for agy/gemini)
+execute_command: cd <workFolder> && claude &
+```
+
+The member's interactive session reconnects to fleet MCP, calls `announce_self`, and
+fleet treats it as a fresh session. PM can trigger this via a new fleet tool:
+`fleet_restart_member(member_name, clear=true)`.
+
+**/resume** (reconnect to a previous conversation):
+Kill and relaunch with `--resume <sessionId>`:
+
+```
+execute_command: pkill -f "claude"
+execute_command: cd <workFolder> && claude --resume <sessionId> &
+```
+
+The `sessionId` is stored in the fleet member registry. PM can trigger this via
+`fleet_restart_member(member_name, resume_session_id=<id>)`.
+
+**Magical /clear via SSE (future option).** Instead of killing the process, inject a
+special fleet message into the running session that causes it to summarize completed
+work, discard conversation history, and continue from the summary. This avoids the
+reconnect latency of a full process restart. Requires Claude to support context-window
+reset without process exit -- not currently available, but worth building as
+`fleet_clear_context` tool if it becomes possible. For now, kill and relaunch is the
+reliable path.
+
+### Crash recovery
+
+**Graceful exit (Stop hook fires).** When the LLM process exits cleanly, the Stop hook
+calls fleet to mark the member offline and deliver any pending response. Fleet marks
+the member offline in the session registry. PM is notified via the event bus.
+
+**Ungraceful crash (Stop hook does not fire).** Fleet detects the crash via SSE
+connection drop -- the HTTP+SSE connection from the member's process closes. Fleet marks
+the member offline immediately and notifies PM. No polling required; the SSE disconnect
+is instantaneous.
+
+Auto-restart policy is configurable per member: `none` (PM decides), `immediate` (fleet
+triggers `execute_command` restart automatically), or `backoff` (fleet retries with
+exponential delay up to N attempts). Auto-restart uses the same SSH `execute_command`
+path as a manual restart.
+
+### Updates
+
+When a new `claude`/`agy`/`gemini` binary is available:
+
+1. Fleet sends `update_llm_cli` command to the member (existing tool in
+   `src/tools/update-member.ts`).
+2. `update_llm_cli` downloads and installs the new binary via `execute_command`.
+3. Fleet kills the current process (`execute_command: pkill`).
+4. Fleet relaunches the process (`execute_command: cd <workFolder> && claude &`).
+5. The new process connects to fleet MCP and announces itself.
+
+The existing `update_llm_cli` tool handles steps 1-2. Steps 3-5 are a
+`fleet_restart_member` call. No changes to the update flow beyond adding the restart
+step.
+
+### The beyond-SSH future
+
+SSH handles the control plane today and will continue to do so for all reachable
+members. The beyond-SSH requirement arises only when a member machine cannot accept
+inbound SSH connections (NAT, corporate firewall, cloud VM without public IP).
+
+For those cases, the no-LLM fleet-service daemon (Section 10) is the answer. The daemon
+connects outbound to fleet and can execute process lifecycle commands on behalf of fleet:
+start the LLM process, kill it, restart it, check its status. The daemon is the SSH
+replacement for control plane operations on unreachable machines -- same operations,
+different transport.
+
+Until a genuine beyond-SSH requirement appears in production, SSH `execute_command`
+remains the control plane transport. Do not over-engineer this.
+
+---
+
+## 5. How Interactive Sessions Complement claude -p
 
 ### Current mechanism (SSH+claude -p path, preserved as alternative)
 
@@ -235,7 +366,7 @@ existing HTTP+SSE protocol in `src/services/http-transport.ts`.
 **Step 2 -- Claude's hooks are configured.**
 The installer writes hook definitions for `PreToolUse`, `PostToolUse`, `Stop`,
 `Notification`, and `UserPromptSubmit` events into the member's Claude settings. These
-hooks are the behavioral contract between the autonomous session and fleet (see Section 5).
+hooks are the behavioral contract between the autonomous session and fleet (see Section 6).
 
 **Step 3 -- Announce self.**
 Claude's MCP client calls `announce_self(member_name, role, capabilities)` via fleet's
@@ -301,7 +432,7 @@ management is not worth the overhead.
 
 ---
 
-## 5. Hooks as the Control Plane
+## 6. Hooks as the Control Plane
 
 Hooks are shell commands that fire at specific points in a Claude session. The fleet
 installer writes hook definitions into the member's Claude settings during member
@@ -392,7 +523,7 @@ tasks without blocking on stdin. It is the non-blocking complement to `fleet_req
 
 ---
 
-## 6. The fleet_request_human Tool
+## 7. The fleet_request_human Tool
 
 `fleet_request_human` is a new fleet MCP tool that enables selective human escalation
 from any autonomous member session. It is the bridge between fully autonomous operation
@@ -447,13 +578,13 @@ override per-project), `fleet_request_human` returns a structured timeout respon
 }
 ```
 
-The member's behavioral contract (Section 8, Rule 6) defines what to do on timeout:
+The member's behavioral contract (Section 9, Rule 6) defines what to do on timeout:
 abort the risky operation, document what was blocked, stop cleanly. The session does
 not crash -- it receives the timeout response and executes the abort path.
 
 ---
 
-## 7. Auth Architecture
+## 8. Auth Architecture
 
 The cloud fleet server requires four distinct auth layers. Each layer is independent --
 a credential that grants access at one layer does not grant access at another.
@@ -547,7 +678,7 @@ a role elevation -- role is looked up from the registry, not from the session's 
 
 ---
 
-## 8. The "Almost Never Ask" Behavioral Contract
+## 9. The "Almost Never Ask" Behavioral Contract
 
 Autonomous remote sessions run without a human on stdin. The behavioral contract baked
 into agent definitions (`agents/doer.md`, `agents/reviewer.md`, `agents/planner.md`,
@@ -602,7 +733,7 @@ to the agent's own judgment when deciding whether to call `fleet_request_human`.
 
 ---
 
-## 9. No-LLM Members
+## 10. No-LLM Members
 
 Not every fleet member needs an AI model. No-LLM members are pure execution workers --
 they run commands, produce output, and return results. They are ideal for deterministic
@@ -647,7 +778,7 @@ machine's API key from gaining access to other members.
 
 ---
 
-## 10. Operations Carried Forward (Semantics Preserved)
+## 11. Operations Carried Forward (Semantics Preserved)
 
 All current fleet capabilities are preserved in the cloud model. The PM-facing tool API
 is unchanged. Routing and delivery mechanisms differ internally for Claude members;
@@ -702,7 +833,7 @@ connection state rather than SSH reachability.
 
 ---
 
-## 11. Risks and Mitigations
+## 12. Risks and Mitigations
 
 ### R1 -- fleet.apralabs.com is a single point of failure
 
@@ -845,7 +976,7 @@ A member cannot request a role elevation via any fleet API.
 
 ---
 
-## 12. Migration Path from Current Model
+## 13. Migration Path from Current Model
 
 Migration is phased so that no capability is lost before a replacement is ready, and
 so that the mandatory change (Claude `-p` restriction) is addressed before its deadline.
