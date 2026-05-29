@@ -14,7 +14,7 @@ Items marked [*] are good first issues for new contributors.
 - [ ] **Web dashboard** -- Browser UI for fleet status, member management, and live prompt monitoring [*]
 - [ ] **Expanded member targets** -- Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
 - [ ] **Member groups / tags** -- Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups
-- [ ] **Session log export** -- Export prompt execution history as markdown [*]
+- [ ] **Session log export** -- One-click markdown export of `fleet logs` output from the dashboard [*]
 
 ## Medium-term (3-6 months)
 
