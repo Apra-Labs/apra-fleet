@@ -13,7 +13,6 @@ Items marked [*] are good first issues for new contributors.
 - [ ] **HTTP+SSE transport** -- MCP HTTP+SSE transport enabling remote members to connect over the network
 - [ ] **Web dashboard** -- Browser UI for fleet status, member management, and live prompt monitoring [*]
 - [ ] **Expanded member targets** -- Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
-- [ ] **Cursor / Windsurf integration guide** -- Step-by-step docs for non-Claude-Code AI assistants [*]
 - [ ] **Member groups / tags** -- Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups
 - [ ] **Session log export** -- Export prompt execution history as markdown [*]
 
