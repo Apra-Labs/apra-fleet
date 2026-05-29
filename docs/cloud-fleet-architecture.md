@@ -71,7 +71,90 @@ alternative. Neither provider's `-p` path is removed.
 
 ---
 
-## 2. The Omnipresent Fleet Server (fleets.apralabs.com)
+## 2. Market Context and Positioning
+
+### The product landscape
+
+The AI-assisted software development market has grown rapidly into several distinct
+categories. Understanding where fleet sits requires distinguishing between them.
+
+**AI coding assistants.** Tools that work alongside a developer in an editor, suggesting
+completions, explaining code, and answering questions. The developer remains in the loop
+for every action. These tools do not run autonomously -- they assist.
+
+**Single-agent autonomous platforms.** Platforms that deploy one AI agent per task.
+The agent is given a codebase and a goal and works toward it without per-step human
+approval. Results are returned when the task completes or the agent asks for input.
+Most commercially available autonomous coding platforms fall into this category today.
+
+**Multi-agent orchestration frameworks.** Libraries and frameworks that let developers
+compose multiple AI agents into pipelines or teams in code. These typically run in
+cloud sandboxes or containerized environments and require the developer to write the
+orchestration logic themselves.
+
+**Fleet.** Fleet occupies a different position: a multi-agent orchestration platform
+built around real machines, real SSH, real git workflows, and provider choice. The PM
+member is itself an AI agent that drives a team of doer and reviewer members. Fleet is
+not a sandbox -- it runs on the same machines where the work lives.
+
+### What makes fleet architecturally distinct
+
+Several design decisions separate fleet from other approaches:
+
+**Provider-agnostic dispatch.** Fleet members can run Claude, AGY (Antigravity),
+Gemini, or other LLM providers. The PM dispatches to members using the same tool
+regardless of which provider the member uses. This means cost, capability, and
+provider risk are all manageable at the orchestration layer rather than being fixed
+at build time.
+
+**Real machines over SSH.** Fleet members are real machines -- developer laptops,
+remote servers, CI runners, or cloud VMs -- reachable via SSH. Tasks run in the
+actual environment where the code lives: the same file system, the same git history,
+the same network topology. There is no environment parity gap between where fleet
+runs and where the code will be deployed.
+
+**Persistent session + SSH control plane.** Fleet separates two concerns: process
+lifecycle (SSH execute_command) and task dispatch (HTTP+SSE). Both paths coexist.
+This means fleet can manage long-running interactive sessions while retaining the
+simplicity of SSH for process management.
+
+**Cost as a design principle.** Fleet's planning layer splits tasks by model tier
+(cheap, standard, premium) and groups consecutive same-tier tasks into streaks to
+minimize expensive model switches. The PM prefers execute_command over execute_prompt
+wherever possible, spending zero LLM tokens on deterministic operations. The playbook
+and runbook model amortizes exploration cost over repeated executions of the same
+task class.
+
+**Self-hostable with identical protocol.** The same codebase that runs at
+fleets.apralabs.com can be self-hosted on an organization's own infrastructure.
+Members connect to the self-hosted instance using the same protocol. There is no
+feature difference between the hosted and self-hosted deployments.
+
+### The economic alignment argument
+
+Most AI platforms are priced per token or per compute unit consumed. This creates a
+structural tension: the platform benefits from more consumption, while the customer
+benefits from less. A platform with this pricing model has limited incentive to
+optimize for token efficiency or to route work to cheaper models when they are
+sufficient.
+
+Fleet's design makes cost discipline a first-class concern at the architecture level:
+tier routing, execute_command preference, playbook amortization, and context management
+are built into the orchestration layer, not left to the user to implement. Fleet's
+business model is intended to be outcome-based (per seat or per result) rather than
+consumption-based, which aligns fleet's incentives with the customer's.
+
+### What fleet is not optimized for
+
+Fleet is designed for software development and engineering workflows running on real
+machines. It is not a general-purpose cloud compute platform, a streaming media
+processor, or a real-time inference service. Workloads that require millisecond
+latency, GPU-intensive inference, or stateless horizontal scaling are better served
+by infrastructure designed for those requirements.
+
+---
+
+## 3. The Omnipresent Fleet Server (fleets.apralabs.com)
 
 ### Role
 
@@ -118,7 +201,7 @@ append-only. The audit log is the authoritative record for compliance, incident
 investigation, and cost accounting. It cannot be modified after the fact.
 
 **Auth layer.** Four-layer authentication covering fleet access, LLM provider auth,
-VCS auth, and member-to-member auth. Described in Section 8.
+VCS auth, and member-to-member auth. Described in Section 9.
 
 ### Multi-tenancy model
 
@@ -143,7 +226,7 @@ changes.
 
 ---
 
-## 3. Project and Member Model
+## 4. Project and Member Model
 
 ### Hierarchy
 
@@ -172,7 +255,7 @@ PM from doer/reviewer members.
 
 **LLM-Claude.** Supports two dispatch paths: (a) interactive mode -- `claude` with no
 `-p` flag, MCP config pointing to fleets.apralabs.com/<project-id>, tasks received via
-SSE message injection, hooks configured by the fleet installer (see Section 6); and
+SSE message injection, hooks configured by the fleet installer (see Section 7); and
 (b) SSH+`-p` mode -- the existing `ClaudeProvider.buildPromptCommand()` subprocess
 dispatch. The interactive path is preferred starting 2026-06-15 (lower per-task cost
 at scale, bidirectional communication, persistent session state). The SSH+`-p` path
@@ -194,7 +277,7 @@ mode is a future option.
 binary in service mode) is installed on the machine and connects outbound to
 fleets.apralabs.com at startup. Only `execute_command` is available. Useful for build
 servers, test runners, CI machines, and database servers where AI decision-making is
-not needed. Described in detail in Section 10.
+not needed. Described in detail in Section 11.
 
 ### PM as a member
 
@@ -207,9 +290,9 @@ is routed through the event bus with a verifiable sender identity.
 
 ---
 
-## 4. Process Lifecycle Management
+## 5. Process Lifecycle Management
 
-The HTTP+SSE interactive session model (Section 5) is the data plane: it carries task
+The HTTP+SSE interactive session model (Section 6) is the data plane: it carries task
 dispatch, prompt injection, and response delivery. Process lifecycle is a separate
 concern handled by the control plane. These two planes are orthogonal -- an interactive
 session cannot exist until a process is running, and the process can be managed
@@ -327,7 +410,7 @@ SSH handles the control plane today and will continue to do so for all reachable
 members. The beyond-SSH requirement arises only when a member machine cannot accept
 inbound SSH connections (NAT, corporate firewall, cloud VM without public IP).
 
-For those cases, the no-LLM fleet-service daemon (Section 10) is the answer. The daemon
+For those cases, the no-LLM fleet-service daemon (Section 11) is the answer. The daemon
 connects outbound to fleet and can execute process lifecycle commands on behalf of fleet:
 start the LLM process, kill it, restart it, check its status. The daemon is the SSH
 replacement for control plane operations on unreachable machines -- same operations,
@@ -338,7 +421,7 @@ remains the control plane transport. Do not over-engineer this.
 
 ---
 
-## 5. How Interactive Sessions Complement claude -p
+## 6. How Interactive Sessions Complement claude -p
 
 ### Current mechanism (SSH+claude -p path, preserved as alternative)
 
@@ -366,7 +449,7 @@ existing HTTP+SSE protocol in `src/services/http-transport.ts`.
 **Step 2 -- Claude's hooks are configured.**
 The installer writes hook definitions for `PreToolUse`, `PostToolUse`, `Stop`,
 `Notification`, and `UserPromptSubmit` events into the member's Claude settings. These
-hooks are the behavioral contract between the autonomous session and fleet (see Section 6).
+hooks are the behavioral contract between the autonomous session and fleet (see Section 7).
 
 **Step 3 -- Announce self.**
 Claude's MCP client calls `announce_self(member_name, role, capabilities)` via fleet's
@@ -432,7 +515,7 @@ management is not worth the overhead.
 
 ---
 
-## 6. Hooks as the Control Plane
+## 7. Hooks as the Control Plane
 
 Hooks are shell commands that fire at specific points in a Claude session. The fleet
 installer writes hook definitions into the member's Claude settings during member
@@ -523,7 +606,7 @@ tasks without blocking on stdin. It is the non-blocking complement to `fleet_req
 
 ---
 
-## 7. The fleet_request_human Tool
+## 8. The fleet_request_human Tool
 
 `fleet_request_human` is a new fleet MCP tool that enables selective human escalation
 from any autonomous member session. It is the bridge between fully autonomous operation
@@ -578,13 +661,13 @@ override per-project), `fleet_request_human` returns a structured timeout respon
 }
 ```
 
-The member's behavioral contract (Section 9, Rule 6) defines what to do on timeout:
+The member's behavioral contract (Section 10, Rule 6) defines what to do on timeout:
 abort the risky operation, document what was blocked, stop cleanly. The session does
 not crash -- it receives the timeout response and executes the abort path.
 
 ---
 
-## 8. Auth Architecture
+## 9. Auth Architecture
 
 The cloud fleet server requires four distinct auth layers. Each layer is independent --
 a credential that grants access at one layer does not grant access at another.
@@ -678,7 +761,7 @@ a role elevation -- role is looked up from the registry, not from the session's 
 
 ---
 
-## 9. The "Almost Never Ask" Behavioral Contract
+## 10. The "Almost Never Ask" Behavioral Contract
 
 Autonomous remote sessions run without a human on stdin. The behavioral contract baked
 into agent definitions (`agents/doer.md`, `agents/reviewer.md`, `agents/planner.md`,
@@ -733,7 +816,7 @@ to the agent's own judgment when deciding whether to call `fleet_request_human`.
 
 ---
 
-## 10. No-LLM Members
+## 11. No-LLM Members
 
 Not every fleet member needs an AI model. No-LLM members are pure execution workers --
 they run commands, produce output, and return results. They are ideal for deterministic
@@ -778,7 +861,7 @@ machine's API key from gaining access to other members.
 
 ---
 
-## 11. Operations Carried Forward (Semantics Preserved)
+## 12. Operations Carried Forward (Semantics Preserved)
 
 All current fleet capabilities are preserved in the cloud model. The PM-facing tool API
 is unchanged. Routing and delivery mechanisms differ internally for Claude members;
@@ -833,7 +916,7 @@ connection state rather than SSH reachability.
 
 ---
 
-## 12. Risks and Mitigations
+## 13. Risks and Mitigations
 
 ### R1 -- fleets.apralabs.com is a single point of failure
 
@@ -976,7 +1059,7 @@ A member cannot request a role elevation via any fleet API.
 
 ---
 
-## 13. Migration Path from Current Model
+## 14. Migration Path from Current Model
 
 Migration is phased so that no capability is lost before a replacement is ready, and
 so that the mandatory change (Claude `-p` restriction) is addressed before its deadline.
@@ -1019,7 +1102,7 @@ for organizations with sovereignty requirements.
 
 ---
 
-## 14. The Dashboard (fleets.apralabs.com Web UI)
+## 15. The Dashboard (fleets.apralabs.com Web UI)
 
 See also: GitHub Discussion #188 (https://github.com/Apra-Labs/apra-fleet/discussions/188) --
 original dashboard + VS Code extension proposal. The cloud architecture described in this
@@ -1045,12 +1128,12 @@ The dashboard provides a full project lifecycle UI:
   name and elapsed time. Status updates arrive via SSE from the fleet server -- the
   dashboard itself is an SSE client.
 - Restart, stop, or update a member from the dashboard. These trigger the same SSH
-  execute_command flows described in Section 4 (process lifecycle), initiated server-side.
+  execute_command flows described in Section 5 (process lifecycle), initiated server-side.
 
 ### Secure secret management
 
 The dashboard is the primary entry point for secrets. Secrets entered here go directly
-into the credential vault (Section 8) and are never visible again after submission.
+into the credential vault (Section 9) and are never visible again after submission.
 
 Secret entry surfaces:
 - LLM provider tokens: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, ANTIGRAVITY_API_KEY,
@@ -1074,7 +1157,7 @@ Security invariants for the dashboard secret UI:
 
 ### Human escalation surface
 
-The dashboard is the preferred surface for fleet_request_human escalations (Section 7).
+The dashboard is the preferred surface for fleet_request_human escalations (Section 8).
 When an autonomous member session calls fleet_request_human, the escalation appears in
 the dashboard as a notification panel:
 
@@ -1101,7 +1184,7 @@ view:
   token cost, and outcome.
 - Export to CSV for billing reconciliation or compliance review.
 
-The cost dashboard aggregates the PostToolUse hook data (Section 6) into per-member
+The cost dashboard aggregates the PostToolUse hook data (Section 7) into per-member
 and per-task views:
 - Cost per task (tokens x provider rate).
 - Cost per member per day/week/month.
