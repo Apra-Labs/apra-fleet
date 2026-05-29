@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
@@ -276,6 +278,47 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // Block global apra-fleet MCP + skills inside local agy member workspaces
   if (isLocal && (input.llm_provider ?? 'claude') === 'agy') {
     writeAgyWorkspaceOverlays(input.work_folder);
+  }
+
+  // Interactive session bootstrap for local Claude members
+  const name = input.friendly_name;
+  const provider = input.llm_provider ?? 'claude';
+  if (isLocal && provider === 'claude') {
+    const { sign } = await import('../services/jwt.js');
+    const token = sign({
+      member_id: name,
+      project_id: 'default',
+      role: 'doer',
+      work_folder: input.work_folder,
+    });
+
+    const settingsPath = `${input.work_folder}/.claude/settings.local.json`;
+    let settings: any = {};
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    } catch {
+      // file missing or invalid -- start fresh
+    }
+    settings.mcpServers = settings.mcpServers ?? {};
+    settings.mcpServers['apra-fleet'] = {
+      type: 'http',
+      url: 'http://127.0.0.1:7523/mcp',
+      headers: { Authorization: 'Bearer ' + token },
+    };
+    try {
+      fs.mkdirSync(`${input.work_folder}/.claude`, { recursive: true });
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    } catch (e: any) {
+      warnings.push(`Could not write settings.local.json: ${e.message}`);
+    }
+
+    try {
+      const proc = spawn('claude', [], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
+      proc.unref();
+      logLine('register_member', `Launched claude for member ${name}, pid ${proc.pid}`);
+    } catch (e: any) {
+      warnings.push(`Could not launch claude: ${e.message}`);
+    }
   }
 
   let result = `✅ Member registered successfully!\n\n`;
