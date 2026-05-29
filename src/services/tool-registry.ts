@@ -31,6 +31,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { credentialStoreListSchema, credentialStoreList } = await import('../tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('../tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('../tools/credential-store-update.js');
+  const { sendMessageSchema, sendMessage } = await import('../tools/send-message.js');
 
   // Onboarding helpers
   async function sendOnboardingNotification(srv: typeof server, text: string): Promise<void> {
@@ -127,4 +128,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // Interactive Session Messaging
+  server.tool('send_message', 'Send a task message to a connected interactive member session via SSE. Returns the message ID.', sendMessageSchema.shape, wrapTool('send_message', (input) => sendMessage(input as any)));
 }
