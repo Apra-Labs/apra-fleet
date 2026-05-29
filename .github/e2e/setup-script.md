@@ -40,7 +40,6 @@ for remote members use {{secure.E2E_ACRED}} as password first and then `setup_ss
 - Host: {{REVIEWER_HOST}}
 - Username: {{REVIEWER_USER}}
 - Work folder: {{REVIEWER_FOLDER}}
-- Clone URL: {{REVIEWER_CLONE_URL}}  (if non-empty, pass as clone_url to register_member; omit if empty)
 
 ### After registering each member
 
