@@ -155,7 +155,7 @@ fleets.apralabs.com
 |   +-- member: fleet-rev          (Claude, interactive, macOS)
 |   +-- member: fleet-ci           (no-LLM, Linux CI runner)
 |   +-- PM: orchestrator           (Claude, dispatches to the above)
-+-- project: blub0x-core
++-- project: customer-core
 |   +-- member: bb-dev1            (Claude, cloud VM)
 |   +-- member: bb-dev2            (AGY, on-prem)
 |   +-- PM: orchestrator
