@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { fleetEvents, FleetEventMap } from './event-bus.js';
-import { verify as verifyJwt } from './jwt.js';
+import { verify as verifyJwt, type JwtClaims } from './jwt.js';
 import { sessionRegistry } from './session-registry.js';
 import { DEFAULT_PORT } from '../paths.js';
 import { serverVersion } from '../version.js';
@@ -75,8 +75,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   // LOW-1: Track event listener references for cleanup in close()
   const eventCleanups: Array<() => void> = [];
 
-  // LOW-3: Shared handler for DELETE -- looks up session and delegates
-  async function handleDeleteRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  async function handleSessionRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId) {
       res.writeHead(400);
@@ -125,16 +124,16 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     }
 
     if (req.method === 'POST') {
-      // JWT auth: check Bearer token if present; unauthenticated (PM/tool) connections pass through
+      // JWT auth: verify Bearer token if present; unauthenticated (PM/tool) connections pass through
       const rawToken = extractBearer(req);
+      let postClaims: JwtClaims | null = null;
       if (rawToken !== null) {
-        const claims = verifyJwt(rawToken);
-        if (!claims) {
+        postClaims = verifyJwt(rawToken);
+        if (!postClaims) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid token' }));
           return;
         }
-        sessionRegistry.register(claims.member_id, { ...claims, sseRes: null, status: 'online' });
       }
 
       let parsedBody: unknown;
@@ -167,6 +166,15 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
           onsessioninitialized: (sid) => {
             sessions.set(sid, { server: sessionServer, transport: sessionTransport });
             logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} channel=${hasChannel}`);
+            // Register interactive member session when JWT claims are present
+            if (postClaims) {
+              sessionRegistry.register(postClaims.member_id, {
+                ...postClaims,
+                server: sessionServer,
+                sessionId: sid,
+                status: 'online',
+              });
+            }
           },
           onsessionclosed: (sid) => {
             logLine('session', `closed sid=${sid}`);
@@ -176,6 +184,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               (s.server as any).server?.close().catch(() => {});
             }
             sessions.delete(sid);
+            // Unregister interactive member session
+            if (postClaims) {
+              sessionRegistry.unregister(postClaims.member_id);
+            }
           },
         });
         await registerTools(sessionServer);
@@ -200,44 +212,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       return;
     }
 
-    // GET: SSE channel -- capture response for message injection
-    if (req.method === 'GET') {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      if (!sessionId) {
-        res.writeHead(400);
-        res.end('Missing mcp-session-id header');
-        return;
-      }
-      const session = sessions.get(sessionId);
-      if (!session) {
-        res.writeHead(404);
-        res.end('Session not found');
-        return;
-      }
-
-      const rawToken = extractBearer(req);
-      let memberId: string | null = null;
-      if (rawToken !== null) {
-        const claims = verifyJwt(rawToken);
-        if (!claims) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'invalid token' }));
-          return;
-        }
-        memberId = claims.member_id;
-      }
-
-      await session.transport.handleRequest(req, res);
-
-      if (memberId !== null) {
-        sessionRegistry.setSseResponse(memberId, res);
-        res.on('close', () => sessionRegistry.unregister(memberId!));
-      }
-      return;
-    }
-
-    if (req.method === 'DELETE') {
-      await handleDeleteRequest(req, res);
+    // GET and DELETE: look up session and delegate
+    if (req.method === 'GET' || req.method === 'DELETE') {
+      await handleSessionRequest(req, res);
       return;
     }
 
