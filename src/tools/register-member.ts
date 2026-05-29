@@ -47,6 +47,7 @@ export const registerMemberSchema = z.object({
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
   unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false (default) = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  clone_url: z.string().url().optional().describe('Git repository URL. When set and the work folder does not exist, the repo is cloned into that folder instead of creating an empty directory.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -245,11 +246,25 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       : Promise.resolve();
 
     const mkdirCheck = isLocal
-      ? import('node:fs').then(({ mkdirSync }) => {
-          mkdirSync(input.work_folder, { recursive: true });
+      ? import('node:fs').then(async (fs) => {
+          if (input.clone_url && !fs.existsSync(input.work_folder)) {
+            const cp = await import('node:child_process');
+            const p = await import('node:path');
+            cp.execSync(
+              `git clone "${input.clone_url}" "${p.basename(input.work_folder)}"`,
+              { cwd: p.dirname(input.work_folder), stdio: 'pipe' },
+            );
+          } else {
+            fs.mkdirSync(input.work_folder, { recursive: true });
+          }
         }).catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); })
-      : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
-          .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
+      : input.clone_url
+        ? strategy.execCommand(
+            `[ -d "${input.work_folder}" ] || git clone "${input.clone_url}" "${input.work_folder}"`,
+            60000,
+          ).catch(() => { warnings.push(`Could not clone repository into "${input.work_folder}"`); })
+        : strategy.execCommand(cmds.mkdir(input.work_folder), 10000)
+            .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
 
     await Promise.all([versionCheck, authCheck, mkdirCheck]);
   } else {
