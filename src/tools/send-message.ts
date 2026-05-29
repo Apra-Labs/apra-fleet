@@ -14,13 +14,15 @@ export async function sendMessage(input: SendMessageInput): Promise<string> {
   const { member_id, content, reply_to } = input;
 
   const session = sessionRegistry.get(member_id);
-  if (!session || !session.sseRes) {
-    return JSON.stringify({ error: 'member not connected or no SSE channel' });
+  if (!session || !session.server) {
+    return JSON.stringify({ error: 'member not connected or no MCP session' });
   }
 
   const msgid = crypto.randomUUID();
-  const event = JSON.stringify({ type: 'fleet:task', content, reply_to, from: 'pm', msgid });
-  session.sseRes.write('event: message\ndata: ' + event + '\n\n');
+  const data = JSON.stringify({ type: 'fleet:task', content, reply_to, from: 'pm', msgid });
+
+  await session.server.sendLoggingMessage({ level: 'info', data });
+
   sessionRegistry.setStatus(member_id, 'busy');
 
   return JSON.stringify({ ok: true, msgid });

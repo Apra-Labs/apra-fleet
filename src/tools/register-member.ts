@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
@@ -282,8 +283,21 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
   // Interactive session bootstrap for local Claude members
   const name = input.friendly_name;
-  const provider = input.llm_provider ?? 'claude';
-  if (isLocal && provider === 'claude') {
+  const memberProvider = input.llm_provider ?? 'claude';
+  if (isLocal && memberProvider === 'claude') {
+    // HIGH-1: Verify fleet server is running before spawning
+    const serverReady = await new Promise<boolean>((resolve) => {
+      const req = http.get('http://127.0.0.1:7523/health', (res) => {
+        resolve(res.statusCode === 200);
+        res.resume();
+      });
+      req.on('error', () => resolve(false));
+      req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+    });
+    if (!serverReady) {
+      return `❌ Fleet server not running on port 7523. Start it first with apra-fleet start, then re-run register_member.`;
+    }
+
     const { sign } = await import('../services/jwt.js');
     const token = sign({
       member_id: name,
@@ -312,9 +326,32 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       warnings.push(`Could not write settings.local.json: ${e.message}`);
     }
 
+    // CRITICAL-2: Kill existing claude process for this member before re-spawning
+    const { sessionRegistry } = await import('../services/session-registry.js');
+    const existingSession = sessionRegistry.get(name);
+    if (existingSession?.pid) {
+      try {
+        process.kill(existingSession.pid);
+        logLine('register_member', `Killed existing claude pid=${existingSession.pid} for member ${name}`);
+      } catch {
+        // Process already gone -- ignore
+      }
+    }
+
     try {
       const proc = spawn('claude', [], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
       proc.unref();
+      if (proc.pid) {
+        sessionRegistry.register(name, {
+          member_id: name,
+          project_id: 'default',
+          role: 'doer',
+          work_folder: input.work_folder,
+          server: null,
+          pid: proc.pid,
+          status: 'idle',
+        });
+      }
       logLine('register_member', `Launched claude for member ${name}, pid ${proc.pid}`);
     } catch (e: any) {
       warnings.push(`Could not launch claude: ${e.message}`);

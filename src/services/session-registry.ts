@@ -1,3 +1,5 @@
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
 export type SessionStatus = 'online' | 'busy' | 'idle';
 
 export interface SessionState {
@@ -5,7 +7,9 @@ export interface SessionState {
   project_id: string;
   role: string;
   work_folder: string;
-  sseRes: any | null;
+  server: McpServer | null;
+  sessionId?: string;
+  pid?: number;
   status: SessionStatus;
 }
 
@@ -33,9 +37,14 @@ class SessionRegistry {
     if (s) s.status = status;
   }
 
-  setSseResponse(member_id: string, sseRes: any): void {
+  setMcpServer(member_id: string, server: McpServer): void {
     const s = this.sessions.get(member_id);
-    if (s) s.sseRes = sseRes;
+    if (s) s.server = server;
+  }
+
+  setPid(member_id: string, pid: number): void {
+    const s = this.sessions.get(member_id);
+    if (s) s.pid = pid;
   }
 }
 
