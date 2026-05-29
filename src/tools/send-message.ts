@@ -19,9 +19,11 @@ export async function sendMessage(input: SendMessageInput): Promise<string> {
   }
 
   const msgid = crypto.randomUUID();
-  const data = JSON.stringify({ type: 'fleet:task', content, reply_to, from: 'pm', msgid });
 
-  await session.server.sendLoggingMessage({ level: 'info', data });
+  await (session.server as any).server.sendNotification({
+    method: 'notifications/claude/channel',
+    params: { message: content, reply_to: reply_to ?? null, from: 'pm', msgid },
+  });
 
   sessionRegistry.setStatus(member_id, 'busy');
 

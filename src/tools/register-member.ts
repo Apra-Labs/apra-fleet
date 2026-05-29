@@ -339,7 +339,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
 
     try {
-      const proc = spawn('claude', [], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
+      const proc = spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
       proc.unref();
       if (proc.pid) {
         sessionRegistry.register(name, {
