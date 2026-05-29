@@ -22,7 +22,10 @@ export async function sendMessage(input: SendMessageInput): Promise<string> {
 
   await (session.server as any).server.sendNotification({
     method: 'notifications/claude/channel',
-    params: { message: content, reply_to: reply_to ?? null, from: 'pm', msgid },
+    params: {
+      content,
+      meta: { from: 'pm', msgid, ...(reply_to ? { reply_to } : {}) },
+    },
   });
 
   sessionRegistry.setStatus(member_id, 'busy');
