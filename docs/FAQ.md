@@ -10,6 +10,19 @@ All questions and answers are maintained at:
 
 **[FAQ Index -- GitHub Discussions #127](https://github.com/Apra-Labs/apra-fleet/discussions/127)**
 
+---
+
+Want to explore the codebase or ask questions about how Fleet works internally?
+The **[Fleet DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet)** has an AI assistant trained on the Fleet source code.
+
+Some useful starting points:
+
+- [How does execute_prompt work end-to-end?](https://deepwiki.com/Apra-Labs/apra-fleet/4.2-work-execution-tools)
+- [How do I register and manage fleet members?](https://deepwiki.com/Apra-Labs/apra-fleet/4.1-member-lifecycle-tools)
+- [What is the doer-reviewer workflow?](https://deepwiki.com/Apra-Labs/apra-fleet/7.1-sprint-lifecycle-and-doer-reviewer-loop)
+
+---
+
 Topics covered:
 
 - **Getting started** -- installation, device requirements, provider support

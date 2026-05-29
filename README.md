@@ -270,6 +270,7 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 
 | Topic | Link |
 |-------|------|
+| Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider | [docs/provider-guide.md](docs/provider-guide.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
