@@ -1021,6 +1021,11 @@ for organizations with sovereignty requirements.
 
 ## 14. The Dashboard (fleets.apralabs.com Web UI)
 
+See also: GitHub Discussion #188 (https://github.com/Apra-Labs/apra-fleet/discussions/188) --
+original dashboard + VS Code extension proposal. The cloud architecture described in this
+document extends that proposal from a local binary-served dashboard to a cloud-hosted
+multi-tenant service at fleets.apralabs.com.
+
 fleets.apralabs.com hosts both the fleet MCP server and a web-based dashboard at the
 same domain. The dashboard is the human interface to the fleet server -- it is how
 users create projects, register members, enter secrets, monitor activity, and respond
@@ -1112,6 +1117,30 @@ equivalent:
 - The dashboard generates the compose_permissions call parameters that PM will use
   at dispatch time. PM still calls compose_permissions -- the dashboard is a
   configuration and visualization layer, not a bypass of the permission model.
+
+### VS Code extension
+
+The dashboard is also embeddable as a VS Code webview extension. The extension opens
+the fleets.apralabs.com dashboard inside a VS Code panel, giving developers direct
+visibility into fleet activity without leaving the editor.
+
+One capability that is unique to the editor context: local filename resolution. When
+fleet logs or audit entries reference a file path (for example, src/api/auth.ts:42
+in a command output or error message), the extension intercepts those strings and
+makes them clickable -- opening the file at the correct line in the editor. This
+eliminates the manual navigation step when reading fleet output.
+
+The extension and the web dashboard share the same React application and the same
+fleets.apralabs.com API. The extension adds only the filename-resolution bridge (a
+message-passing layer between the VS Code webview and the extension host, required
+because VS Code webviews run under a strict content security policy).
+
+Read-only mode is the safe default for the extension (observe member status, cost,
+audit log, live activity). Interactive dispatch (send a prompt, cancel a session,
+respond to fleet_request_human escalations) is opt-in, gated behind a project
+permission setting to prevent accidental interruption of running agents.
+
+A UI prototype is available at: https://majestic-biscuit-bef096.netlify.app/
 
 ### What the dashboard is not
 
