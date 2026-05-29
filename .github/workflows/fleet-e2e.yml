@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Test suite to run. s1.1/s1.2/s1.3 = local-only variants; s7.1/s7.2/s7.3 = all-Gemini.'
+        description: 'Test suite to run. s1.1/s1.2/s1.3 = local-only variants; s7.1/s7.2/s7.3 = all-Gemini; toy = local Windows Claude dev test.'
         required: true
         type: choice
-        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3, s8.1, s8.2, s8.3]
+        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3, s8.1, s8.2, s8.3, toy]
 
 jobs:
   e2e:
@@ -31,6 +31,7 @@ jobs:
          || inputs.suite == 's8.1' && 'fleet-windows'
          || inputs.suite == 's8.2' && 'fleet-linux'
          || inputs.suite == 's8.3' && 'fleet-macos'
+         || inputs.suite == 'toy'  && 'fleet-windows'
          || 'fleet-macos' }}
 
     steps:
@@ -75,6 +76,7 @@ jobs:
           REV_HOST=$(echo $MEMBERS    | jq -r ".$REV_OS.host")
           REV_USER=$(echo $MEMBERS    | jq -r ".$REV_OS.username  // empty")
           REV_FOLDER=$(echo $MEMBERS  | jq -r ".$REV_OS.work_folder")
+          REV_CLONE_URL=$(echo $MEMBERS | jq -r ".$REV_OS.clone_url // empty")
           TOY_URL=$(echo $MEMBERS     | jq -r ".toy_projects.$VCS")
 
           echo "pm_provider=$PM_PROVIDER"   >> $GITHUB_OUTPUT
@@ -88,11 +90,12 @@ jobs:
           echo "reviewer_os=$REV_OS"        >> $GITHUB_OUTPUT
           echo "reviewer_provider=$REV_PROV" >> $GITHUB_OUTPUT
           echo "reviewer_type=$REV_TYPE"    >> $GITHUB_OUTPUT
-          echo "reviewer_host=$REV_HOST"    >> $GITHUB_OUTPUT
-          echo "reviewer_user=$REV_USER"    >> $GITHUB_OUTPUT
-          echo "reviewer_folder=$REV_FOLDER" >> $GITHUB_OUTPUT
-          echo "vcs=$VCS"                   >> $GITHUB_OUTPUT
-          echo "toy_url=$TOY_URL"           >> $GITHUB_OUTPUT
+          echo "reviewer_host=$REV_HOST"           >> $GITHUB_OUTPUT
+          echo "reviewer_user=$REV_USER"           >> $GITHUB_OUTPUT
+          echo "reviewer_folder=$REV_FOLDER"       >> $GITHUB_OUTPUT
+          echo "reviewer_clone_url=$REV_CLONE_URL" >> $GITHUB_OUTPUT
+          echo "vcs=$VCS"                          >> $GITHUB_OUTPUT
+          echo "toy_url=$TOY_URL"                  >> $GITHUB_OUTPUT
 
       - name: Build and install fleet binary on PM
         shell: bash
@@ -199,11 +202,16 @@ jobs:
           DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
           REV_HOST='${{ steps.suite.outputs.reviewer_host }}'
           REV_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
+          REV_CLONE_URL='${{ steps.suite.outputs.reviewer_clone_url }}'
           if [ "$DOER_HOST" = "local" ]; then
             mkdir -p "$DOER_FOLDER"
           fi
           if [ "$REV_HOST" = "local" ]; then
-            mkdir -p "$REV_FOLDER"
+            if [ -n "$REV_CLONE_URL" ] && [ ! -d "$REV_FOLDER" ]; then
+              git clone "$REV_CLONE_URL" "$REV_FOLDER"
+            else
+              mkdir -p "$REV_FOLDER"
+            fi
           fi
 
       - name: Render test scripts
@@ -228,6 +236,7 @@ jobs:
             ["{{REVIEWER_TYPE}}"]='${{ steps.suite.outputs.reviewer_type }}'
             ["{{REVIEWER_PROVIDER}}"]='${{ steps.suite.outputs.reviewer_provider }}'
             ["{{REVIEWER_FOLDER}}"]='${{ steps.suite.outputs.reviewer_folder }}'
+            ["{{REVIEWER_CLONE_URL}}"]='${{ steps.suite.outputs.reviewer_clone_url }}'
             ["{{TOY_PROJECT_URL}}"]='${{ steps.suite.outputs.toy_url }}'
             ["{{VCS}}"]='${{ steps.suite.outputs.vcs }}'
             ["{{BRANCH_PREFIX}}"]='e2e-${{ inputs.suite }}-${{ github.run_id }}'

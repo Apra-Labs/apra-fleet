@@ -89,6 +89,12 @@
       "doer":     { "os": "local_doer_macos",     "provider": "agy", "type": "local" },
       "reviewer": { "os": "local_reviewer_macos", "provider": "agy", "type": "local" },
       "vcs": "github"
+    },
+    "toy": {
+      "pm":       { "os": "windows", "provider": "claude", "runner": "fleet-windows" },
+      "doer":     { "os": "toy_doer",     "provider": "claude", "type": "local" },
+      "reviewer": { "os": "toy_reviewer", "provider": "claude", "type": "local" },
+      "vcs": "github"
     }
   }
 }
