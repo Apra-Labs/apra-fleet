@@ -14,6 +14,7 @@ Items marked [*] are good first issues for new contributors.
 - [ ] **Web dashboard** -- Browser UI for fleet topology, member status, live prompt monitoring, token/cloud cost visibility, git activity, and audit trail; VS Code extension embeds the same view with clickable file paths ([discussion #188](https://github.com/Apra-Labs/apra-fleet/discussions/188))
 - [ ] **Memory plane integration** -- Connect fleet agents to codebase knowledge indices so task planning starts from a structured map of architecture and relevant files rather than blind token-expensive discovery; encompasses both persistent inter-session memory ([RFC #265](https://github.com/Apra-Labs/apra-fleet/discussions/265)) and sprint-accumulated knowledge graphs ([discussion #249](https://github.com/Apra-Labs/apra-fleet/discussions/249))
 - [ ] **Session log export** -- One-click markdown export of `fleet logs` output from the dashboard [*]
+- [ ] **Member groups / tags** -- Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups; categorized grouping in status output ([PR #238](https://github.com/Apra-Labs/apra-fleet/pull/238))
 
 ## Medium-term (1-2 months)
 
@@ -22,7 +23,6 @@ Items marked [*] are good first issues for new contributors.
 - [ ] **PM as full product lifecycle manager** -- Extend the PM skill through deploy, integration verification, quality grading, log monitoring, and backlog reprioritization; closes the loop beyond PR approval ([discussion #198](https://github.com/Apra-Labs/apra-fleet/discussions/198))
 - [ ] **Extension layer** -- Org-private skills and template overrides that survive fleet updates via a shadowing directory (`~/.apra-fleet/extensions/`); foundation for a community marketplace ([discussion #195](https://github.com/Apra-Labs/apra-fleet/discussions/195))
 - [ ] **Expanded member targets** -- Docker containers, Kubernetes pods, WSL instances, Azure VMs, and GCP VMs as first-class fleet members
-- [ ] **Member groups / tags** -- Tag members (e.g. `gpu`, `build`, `test`) and target prompts at groups; categorized grouping in status output ([PR #238](https://github.com/Apra-Labs/apra-fleet/pull/238))
 
 ## Long-term (3+ months)
 
