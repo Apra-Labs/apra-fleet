@@ -1,9 +1,25 @@
 #!/bin/sh
 # pre-commit:
+#   0. Self-update: reinstall if .github/hooks/pre-commit is newer than the installed copy
 #   1. Portability checks (non-ASCII, PS backtick escapes) on staged files
 #   2. Auto-regen llms-full.txt when any of its inputs are staged
 #
 # Works on Windows (Git Bash), Linux, and macOS.
+
+# ============================================================================
+# Part 0: self-update
+# ============================================================================
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -n "$REPO_ROOT" ]; then
+  HOOK_SRC="$REPO_ROOT/.github/hooks/pre-commit"
+  HOOK_DST="$REPO_ROOT/.git/hooks/pre-commit"
+  if [ -f "$HOOK_SRC" ] && [ -f "$HOOK_DST" ] && [ "$HOOK_SRC" -nt "$HOOK_DST" ]; then
+    cp "$HOOK_SRC" "$HOOK_DST"
+    chmod +x "$HOOK_DST"
+    echo "pre-commit: hook updated from .github/hooks -- re-running"
+    exec "$HOOK_DST" "$@"
+  fi
+fi
 
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
 [ -z "$STAGED" ] && exit 0
