@@ -1,5 +1,5 @@
-<!-- llm-context: Next-major-evolution architecture for apra-fleet: cloud-hosted multi-tenant fleet server (fleet.apralabs.com), persistent interactive member sessions replacing claude -p, auth model, hooks as control plane, migration path from current one-shot model. Read before planning any work on the cloud fleet server, interactive session migration, or fleet.apralabs.com deployment. -->
-<!-- keywords: cloud fleet, fleet.apralabs.com, interactive sessions, multi-tenant, SSE, MCP, hooks, credential vault, behavioral contract, no-LLM members, migration path -->
+<!-- llm-context: Next-major-evolution architecture for apra-fleet: cloud-hosted multi-tenant fleet server (fleets.apralabs.com), persistent interactive member sessions replacing claude -p, auth model, hooks as control plane, migration path from current one-shot model. Read before planning any work on the cloud fleet server, interactive session migration, or fleets.apralabs.com deployment. -->
+<!-- keywords: cloud fleet, fleets.apralabs.com, interactive sessions, multi-tenant, SSE, MCP, hooks, credential vault, behavioral contract, no-LLM members, migration path -->
 <!-- see-also: architecture.md (current local model), provider-guide.md (provider strengths and gotchas) -->
 
 # Cloud Fleet Architecture
@@ -52,7 +52,7 @@ writing to a shared file and waiting for PM to poll it.
 
 The next major evolution addresses all five problems. Members run persistent interactive
 sessions that connect outbound TO fleet as MCP clients. Fleet is the hub -- a permanently
-running cloud MCP server at fleet.apralabs.com. PM dispatches via message-passing over
+running cloud MCP server at fleets.apralabs.com. PM dispatches via message-passing over
 SSE. Members respond via the same channel.
 
 The key design insight: the HTTP+SSE transport already built in `src/services/http-transport.ts`
@@ -71,14 +71,14 @@ alternative. Neither provider's `-p` path is removed.
 
 ---
 
-## 2. The Omnipresent Fleet Server (fleet.apralabs.com)
+## 2. The Omnipresent Fleet Server (fleets.apralabs.com)
 
 ### Role
 
-fleet.apralabs.com is a permanently-running cloud MCP server. It is the hub that all
+fleets.apralabs.com is a permanently-running cloud MCP server. It is the hub that all
 members and PMs connect to. It is not tied to any single machine, project, or user
 session. When a member's machine reboots and Claude restarts, the member connects back
-to the same fleet.apralabs.com instance and picks up where it left off. When the PM's
+to the same fleets.apralabs.com instance and picks up where it left off. When the PM's
 machine sleeps, the fleet server remains reachable for other members.
 
 ### Internal structure
@@ -134,10 +134,10 @@ the member session registry.
 
 ### Hosted vs. self-hosted
 
-fleet.apralabs.com is the Apra Labs hosted instance. Organizations with air-gapped
+fleets.apralabs.com is the Apra Labs hosted instance. Organizations with air-gapped
 environments or data sovereignty requirements can self-host their own fleet server.
 The self-hosted instance runs the same codebase and implements the identical protocol.
-Members and PMs connect to the self-hosted URL instead of fleet.apralabs.com. No
+Members and PMs connect to the self-hosted URL instead of fleets.apralabs.com. No
 code changes are required on members for self-hosted deployments -- only the server URL
 changes.
 
@@ -148,7 +148,7 @@ changes.
 ### Hierarchy
 
 ```
-fleet.apralabs.com
+fleets.apralabs.com
 +-- project: apra-fleet
 |   +-- member: fleet-dev          (Claude, interactive, local Windows)
 |   +-- member: fleet-dev2         (AGY, -p mode or interactive, local Windows)
@@ -171,7 +171,7 @@ PM from doer/reviewer members.
 ### Member types
 
 **LLM-Claude.** Supports two dispatch paths: (a) interactive mode -- `claude` with no
-`-p` flag, MCP config pointing to fleet.apralabs.com/<project-id>, tasks received via
+`-p` flag, MCP config pointing to fleets.apralabs.com/<project-id>, tasks received via
 SSE message injection, hooks configured by the fleet installer (see Section 6); and
 (b) SSH+`-p` mode -- the existing `ClaudeProvider.buildPromptCommand()` subprocess
 dispatch. The interactive path is preferred starting 2026-06-15 (lower per-task cost
@@ -180,7 +180,7 @@ remains available as an alternative for short one-shot tasks, simpler environmen
 or cost/complexity tradeoffs.
 
 **LLM-AGY.** Supports two dispatch paths: (a) interactive mode -- `agy` with MCP config
-pointing to fleet.apralabs.com/<project-id>, tasks received via SSE message injection,
+pointing to fleets.apralabs.com/<project-id>, tasks received via SSE message injection,
 same interactive model as Claude; and (b) SSH+`-p` mode -- the existing
 `AgyProvider.buildPromptCommand()` (`src/providers/agy.ts:50`) which produces
 `agy -p "<instruction>"` over SSH. The interactive path is architecturally preferred
@@ -192,7 +192,7 @@ mode is a future option.
 
 **No-LLM.** No AI model running. The fleet-service daemon (the existing apra-fleet
 binary in service mode) is installed on the machine and connects outbound to
-fleet.apralabs.com at startup. Only `execute_command` is available. Useful for build
+fleets.apralabs.com at startup. Only `execute_command` is available. Useful for build
 servers, test runners, CI machines, and database servers where AI decision-making is
 not needed. Described in detail in Section 10.
 
@@ -359,7 +359,7 @@ call.
 
 **Step 1 -- Member starts an interactive Claude session.**
 The fleet installer configures the member's Claude to run in interactive mode with
-an MCP server entry pointing to fleet.apralabs.com/<project-id>. The member runs
+an MCP server entry pointing to fleets.apralabs.com/<project-id>. The member runs
 `claude` (no `-p`), which connects to fleet MCP on startup. This connection uses the
 existing HTTP+SSE protocol in `src/services/http-transport.ts`.
 
@@ -591,7 +591,7 @@ a credential that grants access at one layer does not grant access at another.
 
 ### Layer 1 -- Fleet server auth
 
-Controls who can connect to fleet.apralabs.com.
+Controls who can connect to fleets.apralabs.com.
 
 **Project API key.** Issued per project at creation time. Used by no-LLM members and
 CI machines that authenticate without an OAuth flow. Long-lived but revocable. Scoped
@@ -751,7 +751,7 @@ workloads where LLM decision-making adds cost without value.
 ### How they work
 
 The fleet-service daemon -- the existing apra-fleet binary in service mode -- is
-installed on the machine. The daemon connects outbound to fleet.apralabs.com at startup
+installed on the machine. The daemon connects outbound to fleets.apralabs.com at startup
 and authenticates with the project API key (no LLM auth needed). No SSH inbound is
 required -- the daemon initiates the connection.
 
@@ -835,9 +835,9 @@ connection state rather than SSH reachability.
 
 ## 12. Risks and Mitigations
 
-### R1 -- fleet.apralabs.com is a single point of failure
+### R1 -- fleets.apralabs.com is a single point of failure
 
-**Impact.** If fleet.apralabs.com goes down, all active member sessions lose their
+**Impact.** If fleets.apralabs.com goes down, all active member sessions lose their
 dispatch channel. No-LLM member daemons stop accepting commands. PM cannot reach any
 member.
 
@@ -847,7 +847,7 @@ and avoid the hosted service dependency.
 (b) Offline queue. Members that lose fleet connectivity can continue executing the
 current task and re-sync with fleet when the connection is restored. The task being
 executed was already delivered before the outage.
-(c) HA deployment. fleet.apralabs.com runs in an active-passive or active-active
+(c) HA deployment. fleets.apralabs.com runs in an active-passive or active-active
 configuration. SSE connections use sticky sessions (connection to the same server
 instance) so reconnects land on the same server and pick up the session JWT.
 
@@ -986,7 +986,7 @@ so that the mandatory change (Claude `-p` restriction) is addressed before its d
 The current model is unchanged for AGY and Gemini. Claude members can optionally use
 the interactive session model as an opt-in -- the installer configures MCP connection
 and hooks, but `execute_prompt` still works in subprocess mode as a fallback.
-fleet.apralabs.com is not required. The local fleet server at `127.0.0.1:7523` remains
+fleets.apralabs.com is not required. The local fleet server at `127.0.0.1:7523` remains
 the default. Task 6 in this sprint validates the interactive session path end-to-end
 on at least one Claude member.
 
@@ -1004,7 +1004,7 @@ modification -- the routing change is internal.
 
 ### Phase 3 -- Post-2026-06-15
 
-fleet.apralabs.com is deployed. Multi-tenant project support goes live. Members can
+fleets.apralabs.com is deployed. Multi-tenant project support goes live. Members can
 connect to the cloud server in addition to the local server. The credential vault
 migrates from the local encrypted file to the cloud vault. PM gains the ability to
 orchestrate members across machines without SSH.
@@ -1012,7 +1012,7 @@ orchestrate members across machines without SSH.
 ### Phase 4 -- Later
 
 No-LLM member support via the fleet-service daemon goes live. Remote members connect to
-fleet.apralabs.com over the internet without requiring inbound SSH. The PM-as-member
+fleets.apralabs.com over the internet without requiring inbound SSH. The PM-as-member
 model is fully realized: PM's session is itself a fleet MCP client, not just a consumer
 of a locally-running fleet MCP server. Self-hosted fleet server packaging is published
 for organizations with sovereignty requirements.
