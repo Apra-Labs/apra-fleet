@@ -20,11 +20,13 @@ its response to CONOUT$ rather than stdout.
 
 This one-shot model has five structural problems:
 
-**P1 -- Anthropic -p restriction.** Anthropic is restricting `claude -p` for non-enterprise
-accounts starting 2026-06-15. Fleet's Claude dispatch path depends entirely on this flag.
-After that date, `ClaudeProvider.buildPromptCommand()` produces a command that will fail
-for any non-enterprise member. AGY (`agy -p`) is not affected by this restriction --
-Antigravity controls their own CLI, and there is no announced restriction on that path.
+**P1 -- Anthropic -p pricing change.** Anthropic is moving `claude -p` to enterprise
+pricing starting 2026-06-15. Fleet's Claude dispatch path currently relies on this flag.
+After that date, `ClaudeProvider.buildPromptCommand()` remains functional but becomes
+significantly more expensive for non-enterprise members. The interactive session model
+is the cost-preferred alternative at scale -- not a forced migration, but a strong
+financial incentive. AGY (`agy -p`) is not affected by this pricing change --
+Antigravity controls their own CLI, and there is no announced pricing change on that path.
 
 **P2 -- Cold start per task.** Each `execute_prompt` call is a new process. Even with
 `--resume <sessionId>`, the Claude process starts cold, reads the conversation log from
@@ -58,11 +60,14 @@ is structurally correct for this -- one singleton server, per-session McpServer 
 event bus for pub/sub, SSE for server-initiated delivery. The cloud model extends this
 transport for multi-tenancy and makes it internet-accessible rather than localhost-only.
 
-**Provider asymmetry.** The -p restriction is Claude-specific. AGY continues to use
-`agy -p` over SSH for task dispatch. The interactive session model is an architectural
-improvement for all providers, but it is mandatory only for Claude before 2026-06-15.
-AGY and Gemini can adopt it in a future phase if their CLIs gain restrictions, but
-there is no deadline pressure on those paths.
+**Both paths coexist.** The pricing change applies to Claude's `-p` flag only. The
+interactive session model (HTTP+SSE) is the preferred path for both Claude and AGY --
+it is architecturally cleaner, supports bidirectional communication, and avoids per-task
+cold starts. For Claude, the interactive path is the cost-preferred option starting
+2026-06-15; the SSH+`-p` path remains valid for short one-shot tasks or environments
+where interactive session management adds unnecessary overhead. For AGY, the interactive
+path is the preferred direction now; `agy -p` over SSH remains fully supported as an
+alternative. Neither provider's `-p` path is removed.
 
 ---
 
@@ -165,15 +170,22 @@ PM from doer/reviewer members.
 
 ### Member types
 
-**LLM-Claude.** Runs `claude` in interactive mode (no `-p` flag), with MCP config
-pointing to fleet.apralabs.com/<project-id>. The fleet installer configures hooks
-(see Section 5). The member receives tasks via SSE message injection. This is the new
-mandatory path for Claude members after 2026-06-15.
+**LLM-Claude.** Supports two dispatch paths: (a) interactive mode -- `claude` with no
+`-p` flag, MCP config pointing to fleet.apralabs.com/<project-id>, tasks received via
+SSE message injection, hooks configured by the fleet installer (see Section 5); and
+(b) SSH+`-p` mode -- the existing `ClaudeProvider.buildPromptCommand()` subprocess
+dispatch. The interactive path is preferred starting 2026-06-15 (lower per-task cost
+at scale, bidirectional communication, persistent session state). The SSH+`-p` path
+remains available as an alternative for short one-shot tasks, simpler environments,
+or cost/complexity tradeoffs.
 
-**LLM-AGY.** Runs `agy -p` (or interactive mode optionally). Uses existing SSH-based
-dispatch via `execute_prompt` unchanged. The existing `AgyProvider.buildPromptCommand()`
-(`src/providers/agy.ts:50`) continues to work. AGY can adopt the interactive session
-model in a future phase if Antigravity restricts `-p`, but there is no current deadline.
+**LLM-AGY.** Supports two dispatch paths: (a) interactive mode -- `agy` with MCP config
+pointing to fleet.apralabs.com/<project-id>, tasks received via SSE message injection,
+same interactive model as Claude; and (b) SSH+`-p` mode -- the existing
+`AgyProvider.buildPromptCommand()` (`src/providers/agy.ts:50`) which produces
+`agy -p "<instruction>"` over SSH. The interactive path is architecturally preferred
+(cleaner, bidirectional, no transcript reader needed). The SSH+`-p` path remains fully
+supported as an alternative. There is no pricing deadline pressure on AGY's `-p` path.
 
 **LLM-Gemini.** Same pattern as AGY. The `-p` path continues to work. Interactive
 mode is a future option.
@@ -195,9 +207,9 @@ is routed through the event bus with a verifiable sender identity.
 
 ---
 
-## 4. How Claude Interactive Sessions Replace claude -p
+## 4. How Interactive Sessions Complement claude -p
 
-### Current mechanism (to be replaced for Claude)
+### Current mechanism (SSH+claude -p path, preserved as alternative)
 
 `executePrompt()` (`src/tools/execute-prompt.ts:123`) builds a shell command via
 `ClaudeProvider.buildPromptCommand()`, which produces:
@@ -272,12 +284,20 @@ spawning a subprocess. The PM-facing API is identical -- the routing difference 
 entirely internal to the fleet tool handler. This preserves backward compatibility
 for all PM skills and prompt templates.
 
-### AGY path unchanged
+### AGY and the dual-path model
 
-For AGY members, `execute_prompt` continues to use `AgyProvider.buildPromptCommand()`
-which produces `agy -p "<instruction>"`. The SSH-based dispatch mechanism is unchanged.
-The transcript reader script (`agy-transcript-reader.js`) continues to capture output.
-No deadline pressure exists for AGY.
+For AGY members, `execute_prompt` supports both paths. The SSH+`-p` path uses
+`AgyProvider.buildPromptCommand()` which produces `agy -p "<instruction>"`, with the
+transcript reader script (`agy-transcript-reader.js`) capturing output. The interactive
+path uses the same SSE-based routing as Claude: `execute_prompt` routes via
+`send_message` + wait-for-response over the member's SSE channel. The interactive path
+is the preferred direction for AGY (architecturally cleaner, no transcript reader
+needed), but the SSH+`-p` path remains fully supported as an alternative.
+
+The `claude -p` subprocess path for Claude is similarly preserved as an alternative.
+For Claude members, the interactive path is the cost-preferred option at scale; `claude -p`
+remains valid for short one-shot tasks or environments where interactive session
+management is not worth the overhead.
 
 ---
 
@@ -841,11 +861,15 @@ on at least one Claude member.
 
 ### Phase 2 -- Before 2026-06-15
 
-Claude members are migrated to interactive mode. `execute_prompt` for Claude routes via
-`send_message` + wait-for-response on the local fleet server. The subprocess path
-(`ClaudeProvider.buildPromptCommand()` with `-p`) is removed from the Claude dispatch
-path. AGY and Gemini are unchanged. All existing `execute_prompt` call sites continue
-to work without modification -- the routing change is internal.
+Interactive sessions become the production-ready default for Claude members.
+`execute_prompt` for Claude routes via `send_message` + wait-for-response on the local
+fleet server. The subprocess path (`ClaudeProvider.buildPromptCommand()` with `-p`)
+remains available as a supported alternative -- it is not removed. Both paths coexist:
+the interactive path is preferred for cost and capability reasons; the SSH+`-p` path
+is retained for short one-shot tasks, simpler environments, or cases where interactive
+session management is not worth the overhead. AGY interactive sessions can also be
+enabled in Phase 2. All existing `execute_prompt` call sites continue to work without
+modification -- the routing change is internal.
 
 ### Phase 3 -- Post-2026-06-15
 
@@ -872,8 +896,8 @@ for organizations with sovereignty requirements.
 | Event bus | `src/services/event-bus.ts` | Add project scoping, message queue per member |
 | Member registry | `src/services/registry.ts` | Add session registry (online/offline/busy/awaiting_human) |
 | execute_prompt | `src/tools/execute-prompt.ts` | Add send_message routing for Claude; subprocess path stays for AGY/Gemini |
-| ClaudeProvider | `src/providers/claude.ts` | buildPromptCommand() deprecated for cloud path; kept for Phase 1 fallback |
-| AgyProvider | `src/providers/agy.ts` | Unchanged; -p dispatch continues |
+| ClaudeProvider | `src/providers/claude.ts` | buildPromptCommand() kept for SSH path; interactive routing added as alternative |
+| AgyProvider | `src/providers/agy.ts` | buildPromptCommand() kept for SSH path; interactive session support added |
 | Strategy pattern | `src/services/strategy.ts` | Third strategy: cloud SSE (joins remote/SSH and local/child_process) |
 | Service manager | `src/services/service-manager/` | Extend for fleet-service daemon (no-LLM members) |
 | compose_permissions | `src/tools/compose-permissions.ts` | Permissions sent as task message metadata; hook enforcement replaces local settings.local.json |
