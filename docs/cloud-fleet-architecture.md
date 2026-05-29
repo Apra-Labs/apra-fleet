@@ -1019,6 +1019,114 @@ for organizations with sovereignty requirements.
 
 ---
 
+## 14. The Dashboard (fleets.apralabs.com Web UI)
+
+fleets.apralabs.com hosts both the fleet MCP server and a web-based dashboard at the
+same domain. The dashboard is the human interface to the fleet server -- it is how
+users create projects, register members, enter secrets, monitor activity, and respond
+to human escalations without ever touching the CLI.
+
+### Project and member management
+
+The dashboard provides a full project lifecycle UI:
+
+- Create and configure projects. Set project name, description, token budget, and
+  auto-restart policy. Invite team members by email (each gets a scoped project token).
+- Register fleet members. Enter the member name, machine address, SSH credentials,
+  LLM provider, and role (doer, reviewer, pm, no-LLM). The dashboard runs the same
+  register_member and install flows that the CLI does today, but through a guided wizard.
+- View member status in real time. The session registry (Section 3) feeds a live status
+  panel: each member shows as online/busy/awaiting_human/offline with the current task
+  name and elapsed time. Status updates arrive via SSE from the fleet server -- the
+  dashboard itself is an SSE client.
+- Restart, stop, or update a member from the dashboard. These trigger the same SSH
+  execute_command flows described in Section 4 (process lifecycle), initiated server-side.
+
+### Secure secret management
+
+The dashboard is the primary entry point for secrets. Secrets entered here go directly
+into the credential vault (Section 8) and are never visible again after submission.
+
+Secret entry surfaces:
+- LLM provider tokens: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, ANTIGRAVITY_API_KEY,
+  Gemini OAuth. Each has a dedicated input with provider-specific instructions.
+- VCS tokens: GitHub personal access token, GitLab token, SSH key pair upload or
+  server-side generation. The dashboard can trigger a GitHub App authorization flow
+  for organization-wide VCS access.
+- Custom secrets: any named key-value pair stored in the vault and referenced by name
+  in execute_command calls using the {{secure.NAME}} syntax.
+
+Security invariants for the dashboard secret UI:
+- All secret input fields are write-only: once submitted, the value is never shown again.
+  The UI shows only 'set' or 'not set' for each secret slot.
+- Secret values are encrypted in the browser before submission (client-side encryption
+  using the project's public key). The fleet server receives ciphertext only. Plaintext
+  never appears in server logs, browser history, or network intermediaries beyond the
+  TLS layer.
+- The dashboard never exposes a 'reveal secret' function. Rotation is the only recovery
+  path if a secret needs to change -- enter the new value, which overwrites the vault
+  entry.
+
+### Human escalation surface
+
+The dashboard is the preferred surface for fleet_request_human escalations (Section 7).
+When an autonomous member session calls fleet_request_human, the escalation appears in
+the dashboard as a notification panel:
+
+- The question, context, and options provided by the member are displayed.
+- The human selects one of the suggested options or types a free-form response.
+- Submitting the response calls fleet_respond_human server-side, which injects the
+  answer into the waiting member session via SSE.
+- The member's session resumes. The dashboard shows the member status change from
+  awaiting_human back to busy.
+
+Multiple escalations from different members can be queued simultaneously. Each is
+addressed independently. The dashboard shows a badge count of pending escalations.
+
+This replaces the current model where the PM surfaces questions to the human via
+a terminal session -- the terminal path remains available for CLI-first workflows,
+but the dashboard provides a cleaner surface for humans who are not watching a terminal.
+
+### Audit log and cost visibility
+
+The dashboard exposes the immutable audit log (Section 3) in a searchable, filterable
+view:
+- Filter by member, tool name, time range, risk level, and outcome (approved/blocked/escalated).
+- Each audit entry shows: member, tool, arguments (redacted for secrets), duration,
+  token cost, and outcome.
+- Export to CSV for billing reconciliation or compliance review.
+
+The cost dashboard aggregates the PostToolUse hook data (Section 6) into per-member
+and per-task views:
+- Cost per task (tokens x provider rate).
+- Cost per member per day/week/month.
+- Budget consumption gauge: current spend vs. the project token budget.
+- Alert configuration: notify when budget exceeds N% consumed.
+
+### Permissions management
+
+The compose_permissions workflow (currently a PM-side tool call) has a dashboard
+equivalent:
+- Define named permission profiles (e.g., 'doer-standard', 'reviewer-readonly').
+- Assign profiles to members or roles.
+- The dashboard generates the compose_permissions call parameters that PM will use
+  at dispatch time. PM still calls compose_permissions -- the dashboard is a
+  configuration and visualization layer, not a bypass of the permission model.
+
+### What the dashboard is not
+
+The dashboard does not replace the PM skill or the fleet CLI. It does not dispatch
+tasks, run sprints, or orchestrate members. Orchestration is the PM's job. The
+dashboard is the administrative and monitoring layer -- it is how a human manages
+the fleet, not how the fleet does its work.
+
+The dashboard does not store secrets in the browser. No secret value persists in
+localStorage, sessionStorage, or the browser cache. Secret entry is a one-way
+write into the vault; the browser discards the value immediately after encryption
+and transmission.
+
+---
+
 ## Appendix -- Relationship to Existing Code
 
 | Cloud concept | Current codebase location | Change required |
