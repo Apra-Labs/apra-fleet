@@ -63,21 +63,25 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 inst
 | `~/.apra-fleet/bin/apra-fleet[.exe]` | The fleet binary |
 | `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
 | `~/.apra-fleet/scripts/` | Helper scripts |
+| `~/.apra-fleet/data/fleet.log` | Fleet server log (HTTP transport) |
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
+| `~/.claude/agents/*.md` | Agent definitions (claude installs; see below) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
 
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
 
+For HTTP transport (the default), install also registers a per-user OS background
+service and starts the fleet server immediately. No admin or elevation required.
+See the Agent Files and Service Registration sections below.
+
 **What `install` does NOT do:**
 
 - No system-level changes -- no `/usr/local`, no PATH modification, no
   admin/sudo required.
 - No network calls beyond `claude mcp add` -- the binary stays local.
-- No background services or daemons -- the fleet server starts on demand when
-  your AI coding agent connects.
 
 ## The `--skill` flag
 
@@ -138,6 +142,87 @@ For headless or remote members, set `ANTIGRAVITY_API_KEY` (obtain from
 invoking fleet commands. The agy CLI checks env vars before falling back to
 OAuth.
 
+## Agent files
+
+`install` writes agent definition files (`*.md`) to the provider's agents directory.
+These files are required by `execute_prompt` when dispatching with the `agent` parameter
+(e.g. `agent: "doer"`). On a fresh install, without these files, agent-named dispatches
+fail with "agent not found."
+
+| Provider | `--llm` flag | Agents directory |
+|----------|-------------|-----------------|
+| Claude Code | `--llm claude` (default) | `~/.claude/agents/` |
+| Gemini CLI | `--llm gemini` | `~/.gemini/agents/` |
+| Antigravity (agy) | `--llm agy` | `~/.gemini/antigravity-cli/agents/` |
+| Codex | `--llm codex` | (no agent concept -- skipped silently) |
+| Copilot | `--llm copilot` | (no agent concept -- skipped silently) |
+
+The repo ships four agent definitions:
+
+- `doer.md` -- general-purpose task executor
+- `planner.md` -- sprint and task planning
+- `reviewer.md` -- code review
+- `plan-reviewer.md` -- plan review
+
+These are bundled into the fleet binary (SEA mode) and extracted during install.
+In dev mode, they are read from the `agents/` source directory. The install step
+creates the agents directory with `mkdir -p` (idempotent) and writes each file.
+
+## Service registration
+
+For HTTP transport (the default), `install` registers the fleet server as a
+per-user OS background service and starts it immediately after installing. The
+server stays running across reboots. No admin or elevation is required.
+
+| OS | Mechanism | Service unit location |
+|----|-----------|----------------------|
+| Windows | Scheduled Task (`schtasks /create ... /rl limited`) | Task name: `ApraFleet` |
+| Linux | systemd user unit (`systemctl --user`) | `~/.config/systemd/user/apra-fleet.service` |
+| macOS | launchd LaunchAgent (`launchctl bootstrap`) | `~/Library/LaunchAgents/com.apra-fleet.server.plist` |
+
+**Stop behavior:** All platforms use `POST /shutdown` for graceful stop (HTTP to
+localhost). Service managers are configured to restart on crash but NOT on clean exit
+(`Restart=on-failure` on Linux, `KeepAlive.SuccessfulExit=false` on macOS). This means
+`apra-fleet stop` (which triggers a clean exit) does not cause the service to restart.
+
+**Stdio transport:** `--transport stdio` skips service registration entirely. Stdio
+mode is per-client (one process per connection) and does not benefit from a
+persistent background service.
+
+**Dev mode:** Service registration is skipped in dev mode (non-SEA builds). Use
+`apra-fleet start` to launch the server manually in dev mode.
+
+Log file location: `~/.apra-fleet/data/fleet.log` (append-only, no rotation).
+
+## Service management verbs
+
+Once installed, use these verbs to control the fleet server:
+
+```bash
+apra-fleet start      # Start the server (idempotent -- no-op if already running)
+apra-fleet stop       # Stop the server gracefully (idempotent -- no-op if not running)
+apra-fleet restart    # Stop then start
+apra-fleet status     # Show running state, PID, port, version, uptime, service unit state
+```
+
+`status` output example:
+
+```
+apra-fleet status
+  State:    running
+  PID:      12345
+  Port:     7523
+  URL:      http://127.0.0.1:7523
+  Version:  1.4.2
+  Uptime:   2h 15m 30s
+  Sessions: 2
+  Service:  installed (enabled)
+```
+
+If the server was installed without a service unit, `Service: not installed` is shown.
+The server can still be started and stopped manually; only the automatic-at-login
+behavior is absent.
+
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,
@@ -173,7 +258,9 @@ apra-fleet uninstall --llm claude --skill fleet
 ```
 
 If the fleet server is running, uninstall aborts and tells you to re-run with
-`--force`. Full detail: [docs/features/uninstall.md](features/uninstall.md).
+`--force`. With `--force`, uninstall stops the server gracefully via `/shutdown`
+and removes the OS service unit (Scheduled Task, systemd unit, or LaunchAgent plist)
+before removing files. Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
 ## Customizing model tier mapping
 

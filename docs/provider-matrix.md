@@ -30,6 +30,7 @@ Reference tables for all LLM providers supported by Apra Fleet. Extracted from `
 | **Update command** | `claude update` | `agy update` | `npm update -g @openai/codex` | `copilot update` | `npm update -g @google/gemini-cli` |
 | **Process name** | `claude` | `agy` | `codex` | `copilot` | `gemini` |
 | **Credential path** | `~/.claude/.credentials.json` | `~/.gemini/antigravity-cli/settings.json` | `~/.codex/` | `~/.config/gh/` or `~/.copilot/` | `~/.gemini/` |
+| **Agents dir (fleet install)** | `~/.claude/agents/` | `~/.gemini/antigravity-cli/agents/` | (none -- skipped) | (none -- skipped) | `~/.gemini/agents/` |
 | **Session storage** | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` | Local cache; resumed with `--conversation "<session_id>"` | Local (exec resume) | Local: `~/.copilot/session-state/` (SQLite) | Fleet-minted UUID; passed as `--session-id <id>`; resumed with `--resume <id>` |
 | **Agentic capabilities** | File edit, shell, MCP tools | File edit, shell, MCP tools, web search, beads | File edit, shell, MCP tools, subagents | File edit, shell, MCP tools, custom agents | File edit, shell, web search, MCP tools |
 | **Context window** | 200K (Sonnet) / 1M (Opus 4.7) | 1M tokens | 192K tokens | 64K tokens (auto-compaction at 95%) | 1M tokens |
