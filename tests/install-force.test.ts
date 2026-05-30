@@ -73,7 +73,7 @@ describe('install --force (#96)', () => {
     // Simulate SEA mode so the process-detection guard runs
     _setSeaOverride(true);
     // Provide an empty manifest so loadManifest() doesn't call getSeaAsset()
-    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {}, agents: {} });
   });
 
   afterEach(() => {

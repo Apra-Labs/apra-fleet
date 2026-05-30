@@ -84,7 +84,7 @@ describe('install -- service lifecycle (T11)', () => {
     vi.clearAllMocks();
     vi.mocked(os.homedir).mockReturnValue('/mock/home');
     makeFsMock();
-    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {}, agents: {} });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -139,15 +139,15 @@ describe('install -- service lifecycle (T11)', () => {
   });
 
   it('increments totalSteps by 1 in SEA + HTTP mode', async () => {
-    // With SEA + HTTP + no skills: base=6 steps, +1 service = 7 total
+    // With SEA + HTTP + no skills + Claude agentsStep: base=7 steps, +1 service = 8 total
     _setSeaOverride(true);
     const logSpy = vi.mocked(console.log);
     await runInstall(['--transport', 'http', '--skill', 'none']);
     const allOutput = logSpy.mock.calls.flat().join('\n');
-    // Service step should show as [7/7]
-    expect(allOutput).toContain('[7/7]');
-    // Beads step should show as [6/7]
-    expect(allOutput).toContain('[6/7]');
+    // Service step should show as [8/8] (agents step adds 1 for Claude)
+    expect(allOutput).toContain('[8/8]');
+    // Beads step should show as [7/8]
+    expect(allOutput).toContain('[7/8]');
   });
 });
 

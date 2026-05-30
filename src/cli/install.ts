@@ -51,6 +51,7 @@ interface AssetManifest {
   scripts: Record<string, string>;
   skills: Record<string, string>;
   fleetSkills: Record<string, string>;
+  agents: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -97,8 +98,17 @@ function buildDevManifest(root: string): AssetManifest {
   }
   const skills = collectFilesRec(path.join(root, 'skills', 'pm'), 'skills/pm');
   const fleetSkills = collectFilesRec(path.join(root, 'skills', 'fleet'), 'skills/fleet');
+  const agents: Record<string, string> = {};
+  const agentsPath = path.join(root, 'agents');
+  if (fs.existsSync(agentsPath)) {
+    for (const entry of fs.readdirSync(agentsPath) as string[]) {
+      if (entry.endsWith('.md')) {
+        agents[entry] = `agents/${entry}`;
+      }
+    }
+  }
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills, fleetSkills };
+  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents };
 }
 
 let _manifestOverride: AssetManifest | null = null;
@@ -495,7 +505,10 @@ Options:
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const serviceStep = isSea() && transport === 'http';
-  const baseSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const agentsStep = paths.agentsDir !== undefined;
+  // coreSteps = step number just before Beads (used as agents step number when agentsStep is true)
+  const coreSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const baseSteps = coreSteps + (agentsStep ? 1 : 0);
   const totalSteps = baseSteps + (serviceStep ? 1 : 0);
 
   if (llm === 'gemini' && (installFleet || installPm)) {
@@ -666,8 +679,18 @@ ${killHint}
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
-  // --- Step 8: Install Beads task tracker ---
-  // shell:true required on Windows — npm global packages install as .cmd wrappers
+  // --- Step: Install agent files (claude, gemini, agy only) ---
+  if (agentsStep) {
+    console.log(`  [${coreSteps}/${totalSteps}] Installing agent files...`);
+    fs.mkdirSync(paths.agentsDir!, { recursive: true });
+    for (const [name, assetKey] of Object.entries(manifest.agents)) {
+      const content = extractAsset(assetKey);
+      writeAssetFile(path.join(paths.agentsDir!, name), content);
+    }
+  }
+
+  // --- Step: Install Beads task tracker ---
+  // shell:true required on Windows -- npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
   console.log(`  [${baseSteps}/${totalSteps}] Installing Beads task tracker...`);
   try {
@@ -727,7 +750,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
+  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${agentsStep ? `\n  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsVersion}${serviceLine}
 
 ${instructions}${forceNote}

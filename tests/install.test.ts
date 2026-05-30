@@ -43,7 +43,7 @@ describe('install config persistence (T5)', () => {
     vi.mocked(os.homedir).mockReturnValue(mockHome);
     makeFsMock();
     _setSeaOverride(false); // Dev mode is fine for these tests
-    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {}, agents: {} });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -115,7 +115,7 @@ describe('install step 8 — Beads task tracker', () => {
     vi.mocked(fs.copyFileSync).mockImplementation(() => {});
     vi.mocked(fs.writeFileSync).mockImplementation(() => {});
     _setSeaOverride(false);
-    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {}, agents: {} });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -136,7 +136,7 @@ describe('install step 8 — Beads task tracker', () => {
     await runInstall([]);
 
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(logs).toContain('[8/8] Installing Beads task tracker...');
+    expect(logs).toContain('[9/9] Installing Beads task tracker...');
 
     logSpy.mockRestore();
   });
@@ -150,7 +150,7 @@ describe('install step 8 — Beads task tracker', () => {
     await runInstall([]);
 
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(logs).toContain('[8/8] Installing Beads task tracker...');
+    expect(logs).toContain('[9/9] Installing Beads task tracker...');
 
     // npm install -g @beads/bd should NOT have been called
     const npmCall = vi.mocked(execFileSync).mock.calls.find(

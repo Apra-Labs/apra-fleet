@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { parse as parseToml } from 'smol-toml';
-import { runInstall } from '../src/cli/install.js';
+import { runInstall, _setManifestOverride } from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -892,5 +892,112 @@ describe('runInstall multi-provider', () => {
     await expect(runInstall(['--transport=invalid'])).rejects.toThrow('exit');
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
+  });
+
+  // -- Agent file installation tests --
+
+  function setupWithAgents() {
+    const fileState = new Map<string, string>();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps.endsWith('agents')) return true;
+      if (fileState.has(ps)) return true;
+      return false;
+    });
+    vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.endsWith('agents')) return ['doer.md', 'planner.md'] as any;
+      return [] as any;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (fileState.has(ps)) return fileState.get(ps)!;
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+      if (ps.includes('agents')) return '# agent';
+      return '';
+    });
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
+  }
+
+  it('installs agent files for Claude to ~/.claude/agents/', async () => {
+    setupWithAgents();
+
+    await runInstall([]);
+
+    const claudeAgentsDir = path.join(mockHome, '.claude', 'agents');
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(claudeAgentsDir),
+      expect.objectContaining({ recursive: true })
+    );
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(claudeAgentsDir, 'doer.md')),
+      expect.any(String)
+    );
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(claudeAgentsDir, 'planner.md')),
+      expect.any(String)
+    );
+  });
+
+  it('installs agent files for Gemini to ~/.gemini/agents/', async () => {
+    setupWithAgents();
+
+    await runInstall(['--llm', 'gemini']);
+
+    const geminiAgentsDir = path.join(mockHome, '.gemini', 'agents');
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(geminiAgentsDir),
+      expect.objectContaining({ recursive: true })
+    );
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(geminiAgentsDir, 'doer.md')),
+      expect.any(String)
+    );
+  });
+
+  it('installs agent files for agy to ~/.gemini/antigravity-cli/agents/', async () => {
+    setupWithAgents();
+
+    await runInstall(['--llm', 'agy']);
+
+    const agyAgentsDir = path.join(mockHome, '.gemini', 'antigravity-cli', 'agents');
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
+      expect.stringContaining(agyAgentsDir),
+      expect.objectContaining({ recursive: true })
+    );
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(agyAgentsDir, 'doer.md')),
+      expect.any(String)
+    );
+  });
+
+  it('skips agent installation for codex (no agentsDir)', async () => {
+    setupWithAgents();
+
+    await runInstall(['--llm', 'codex']);
+
+    const codexAgentsDir = path.join(mockHome, '.codex', 'agents');
+    const agentWrite = vi.mocked(fs.writeFileSync).mock.calls.find(c =>
+      c[0].toString().includes(codexAgentsDir)
+    );
+    expect(agentWrite).toBeUndefined();
+  });
+
+  it('skips agent installation for copilot (no agentsDir)', async () => {
+    setupWithAgents();
+
+    await runInstall(['--llm', 'copilot']);
+
+    const copilotAgentsDir = path.join(mockHome, '.copilot', 'agents');
+    const agentWrite = vi.mocked(fs.writeFileSync).mock.calls.find(c =>
+      c[0].toString().includes(copilotAgentsDir)
+    );
+    expect(agentWrite).toBeUndefined();
   });
 });
