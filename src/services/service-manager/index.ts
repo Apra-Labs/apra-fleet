@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import { SERVER_INFO_PATH } from '../../paths.js';
 import type { ServiceManager, ServiceStatus } from './types.js';
 import { isPidAlive, postShutdown } from '../../utils/process-utils.js';
+import { WindowsServiceManager } from './windows.js';
+import { LinuxServiceManager } from './linux.js';
+import { MacOSServiceManager } from './macos.js';
 
 export type { ServiceManager, ServiceStatus };
 
@@ -45,21 +48,14 @@ class NoopServiceManager implements ServiceManager {
 
 export async function getServiceManager(): Promise<ServiceManager> {
   switch (process.platform) {
-    case 'win32': {
-      const { WindowsServiceManager } = await import('./windows.js');
+    case 'win32':
       return new WindowsServiceManager();
-    }
-    case 'linux': {
-      const { LinuxServiceManager } = await import('./linux.js');
+    case 'linux':
       return new LinuxServiceManager();
-    }
-    case 'darwin': {
-      const { MacOSServiceManager } = await import('./macos.js');
+    case 'darwin':
       return new MacOSServiceManager();
-    }
-    default: {
+    default:
       console.warn(`apra-fleet: service management is not supported on platform '${process.platform}'. Using no-op stub.`);
       return new NoopServiceManager();
-    }
   }
 }
