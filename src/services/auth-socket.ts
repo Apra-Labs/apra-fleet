@@ -648,7 +648,12 @@ export function launchAuthTerminal(
         return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
       }
       if (terminal === 'gnome-terminal') {
-        child = spawn(terminal, ['--', ...fullArgs], { detached: true, stdio: 'ignore' });
+        // --wait is required: without it, gnome-terminal hands the window off to
+        // gnome-terminal-server and the client process exits immediately (code 0).
+        // That premature exit makes collectOobInput see raceResult===null and fall
+        // through to the 500ms grace window, cancelling before the user can type.
+        // With --wait the client stays alive until the secret CLI exits.
+        child = spawn(terminal, ['--wait', '--', ...fullArgs], { detached: true, stdio: 'ignore' });
       } else {
         // xterm, x-terminal-emulator etc.
         child = spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' });
