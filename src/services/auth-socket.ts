@@ -8,6 +8,7 @@ import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
+import { launchAuthWeb } from './auth-web.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -98,29 +99,10 @@ export async function ensureAuthSocket(): Promise<void> {
         try {
           const msg = JSON.parse(line);
           if (msg.type === 'auth' && msg.member_name && msg.password) {
-            const pending = pendingRequests.get(msg.member_name);
-            if (!pending) {
-              conn.write(JSON.stringify({ type: 'ack', ok: false, error: `No pending auth for ${msg.member_name}` }) + '\n');
-              return;
-            }
-            // Encrypt immediately, discard plaintext
-            pending.encryptedPassword = encryptPassword(msg.password);
-            if (msg.persist !== undefined) pending.persist = !!msg.persist;
+            const res = submitPassword(msg.member_name, msg.password, msg.persist);
             // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
             (msg as any).password = '';
-            conn.write(JSON.stringify({ type: 'ack', ok: true }) + '\n');
-            // Kill the spawned terminal process if one was launched
-            if (pending.spawned_pid) {
-              killProcess(pending.spawned_pid);
-              pending.spawned_pid = undefined;
-            }
-            // Resolve any waiting tool handler
-            const waiter = passwordWaiters.get(msg.member_name);
-            if (waiter) {
-              clearTimeout(waiter.timer);
-              passwordWaiters.delete(msg.member_name);
-              waiter.resolve(pending.encryptedPassword);
-            }
+            conn.write(JSON.stringify({ type: 'ack', ...res }) + '\n');
           } else {
             conn.write(JSON.stringify({ type: 'ack', ok: false, error: 'Invalid message' }) + '\n');
           }
@@ -183,6 +165,32 @@ export function getPendingPassword(memberName: string): string | null {
   const pw = entry.encryptedPassword;
   pendingRequests.delete(memberName);
   return pw;
+}
+
+/**
+ * Deliver a plaintext credential to a pending auth request: encrypt it
+ * immediately, store it on the pending entry, and resolve any waiting tool
+ * handler. Shared by the socket handler (CLI entry) and the browser fallback
+ * (local web UI entry) so both delivery paths behave identically.
+ */
+export function submitPassword(memberName: string, plaintext: string, persist?: boolean): { ok: boolean; error?: string } {
+  const pending = pendingRequests.get(memberName);
+  if (!pending) return { ok: false, error: `No pending auth for ${memberName}` };
+  // Encrypt immediately; plaintext is never stored or logged.
+  pending.encryptedPassword = encryptPassword(plaintext);
+  if (persist !== undefined) pending.persist = !!persist;
+  // Kill the spawned terminal process if one was launched.
+  if (pending.spawned_pid) {
+    killProcess(pending.spawned_pid);
+    pending.spawned_pid = undefined;
+  }
+  const waiter = passwordWaiters.get(memberName);
+  if (waiter) {
+    clearTimeout(waiter.timer);
+    passwordWaiters.delete(memberName);
+    waiter.resolve(pending.encryptedPassword);
+  }
+  return { ok: true };
 }
 
 /**
@@ -326,6 +334,12 @@ async function collectOobInput(
   await ensureAuthSocket();
   createPendingAuth(memberName);
 
+  // Tear-down for the local browser UI if it ends up being the active
+  // collector; called on every exit path. A holder object (rather than a bare
+  // let) so the assignment inside the Promise executor below stays visible to
+  // the type checker at the call sites.
+  const webUi: { close: (() => void) | null } = { close: null };
+
   try {
     const passwordPromise = waitForPassword(memberName, waitTimeoutMs);
 
@@ -340,6 +354,20 @@ async function collectOobInput(
       });
 
       if (result.startsWith('fallback:')) {
+        // No terminal available. For credential entry, try the local browser UI
+        // before giving up to a manual CLI instruction. Confirm prompts and
+        // test-injected launchers stay on the original path.
+        if (mode !== 'confirm' && !_opts?.launchFn) {
+          const webPrompt = _opts?.prompt
+            ?? (mode === 'api-key' ? `Enter API key for ${memberName}` : `Enter SSH password for ${memberName}`);
+          const web = launchAuthWeb(memberName, mode, webPrompt, (value) => submitPassword(memberName, value));
+          if (web.kind === 'launched') {
+            webUi.close = web.close;
+            // Leave this promise pending: passwordPromise resolves when the
+            // browser POSTs the value, or rejects on timeout.
+            return;
+          }
+        }
         const manualMsg = result.slice('fallback:'.length);
         resolve({ fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
       }
@@ -359,11 +387,13 @@ async function collectOobInput(
         ]);
         const persist = pendingRequests.get(memberName)?.persist;
         pendingRequests.delete(memberName);
+        webUi.close?.();
         return { password: pw, persist };
       } catch {
         const waiter = passwordWaiters.get(memberName);
         if (waiter) { clearTimeout(waiter.timer); passwordWaiters.delete(memberName); }
         pendingRequests.delete(memberName);
+        webUi.close?.();
         return { fallback: cancelledMessage };
       }
     }
@@ -379,11 +409,13 @@ async function collectOobInput(
         passwordWaiters.delete(memberName);
       }
       pendingRequests.delete(memberName);
+      webUi.close?.();
       return raceResult;
     }
 
     const persist = pendingRequests.get(memberName)?.persist;
     pendingRequests.delete(memberName);
+    webUi.close?.();
     return { password: raceResult as string, persist };
   } catch (err: any) {
     // Clean up the pending request if the user cancelled.
@@ -393,6 +425,7 @@ async function collectOobInput(
       passwordWaiters.delete(memberName);
     }
     pendingRequests.delete(memberName);
+    webUi.close?.();
 
     if (err.message === 'cancelled') {
       return { fallback: cancelledMessage };
@@ -527,14 +560,54 @@ export function hasInteractiveDesktop(): boolean {
   return process.env.SESSIONNAME === 'Console';
 }
 
+interface TerminalEntry {
+  bin: string;
+  execArgs: string[]; // arguments that precede the command to run
+}
+
 /**
- * Detect available terminal emulator on Linux.
+ * Detect available terminal emulator on Linux/BSD.
+ * Checks $TERM_PROGRAM first (set by kitty, WezTerm, Ghostty, etc.) then
+ * probes a broad list ordered by popularity on modern distros.
+ * Each entry includes the exec-flag convention for that terminal.
  */
-function findLinuxTerminal(): string | null {
-  for (const term of ['gnome-terminal', 'xterm', 'x-terminal-emulator']) {
+function findLinuxTerminal(): TerminalEntry | null {
+  // $TERM_PROGRAM is set by several terminals when they launch a shell
+  const termProg = process.env.TERM_PROGRAM;
+  const termProgramMap: Record<string, TerminalEntry> = {
+    kitty:   { bin: 'kitty',    execArgs: [] },
+    WezTerm: { bin: 'wezterm',  execArgs: ['start', '--'] },
+    ghostty: { bin: 'ghostty',  execArgs: ['-e'] },
+  };
+  if (termProg && termProgramMap[termProg]) {
+    const entry = termProgramMap[termProg];
     try {
-      execSync(`which ${term}`, { stdio: 'ignore' });
-      return term;
+      execSync(`which ${entry.bin}`, { stdio: 'ignore' });
+      return entry;
+    } catch { /* not in PATH, fall through */ }
+  }
+
+  // Ordered probe list: most common on modern Linux first
+  const candidates: TerminalEntry[] = [
+    { bin: 'kitty',             execArgs: [] },
+    { bin: 'alacritty',         execArgs: ['-e'] },
+    { bin: 'foot',              execArgs: [] },
+    { bin: 'wezterm',           execArgs: ['start', '--'] },
+    { bin: 'ghostty',           execArgs: ['-e'] },
+    { bin: 'gnome-terminal',    execArgs: ['--'] },
+    { bin: 'konsole',           execArgs: ['-e'] },
+    { bin: 'xfce4-terminal',    execArgs: ['-x'] },
+    { bin: 'mate-terminal',     execArgs: ['-x'] },
+    { bin: 'x-terminal-emulator', execArgs: ['-e'] },
+    { bin: 'urxvt',             execArgs: ['-e'] },
+    { bin: 'xterm',             execArgs: ['-e'] },
+    { bin: 'st',                execArgs: ['-e'] },
+  ];
+
+  for (const entry of candidates) {
+    try {
+      execSync(`which ${entry.bin}`, { stdio: 'ignore' });
+      return entry;
     } catch { /* not found */ }
   }
   return null;
@@ -642,17 +715,12 @@ export function launchAuthTerminal(
         if (pending) pending.spawned_pid = child.pid;
       }
     } else {
-      // Linux: find available terminal emulator. Most support an execute flag.
+      // Linux: find available terminal emulator and use its exec-flag convention.
       const terminal = findLinuxTerminal();
       if (!terminal) {
         return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
       }
-      if (terminal === 'gnome-terminal') {
-        child = spawn(terminal, ['--', ...fullArgs], { detached: true, stdio: 'ignore' });
-      } else {
-        // xterm, x-terminal-emulator etc.
-        child = spawn(terminal, ['-e', ...fullArgs], { detached: true, stdio: 'ignore' });
-      }
+      child = spawn(terminal.bin, [...terminal.execArgs, ...fullArgs], { detached: true, stdio: 'ignore' });
       if (child.pid) {
         const pending = pendingRequests.get(memberName);
         if (pending) pending.spawned_pid = child.pid;

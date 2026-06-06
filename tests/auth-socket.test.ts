@@ -15,6 +15,7 @@ import {
   hasGraphicalDisplay,
   hasInteractiveDesktop,
   launchAuthTerminal,
+  submitPassword,
 } from '../src/services/auth-socket.js';
 
 describe('auth-socket', () => {
@@ -32,6 +33,38 @@ describe('auth-socket', () => {
     it('returns a named pipe path on Windows', () => {
       // Can only truly test on Windows, but we can verify the function exists
       expect(typeof getSocketPath()).toBe('string');
+    });
+  });
+
+  describe('submitPassword', () => {
+    afterEach(() => {
+      cleanupAuthSocket();
+    });
+
+    it('fails when there is no pending auth for the member', () => {
+      const res = submitPassword('nobody', 'pw');
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain('No pending auth');
+    });
+
+    it('stores an encrypted password on a pending entry and reports ok', () => {
+      createPendingAuth('sub-member');
+      const res = submitPassword('sub-member', 'sup3r-secret');
+      expect(res.ok).toBe(true);
+      // The stored value is encrypted (crypto format is IV:tag:cipher), never plaintext.
+      const stored = getPendingPassword('sub-member');
+      expect(stored).toContain(':');
+      expect(stored).not.toContain('sup3r-secret');
+    });
+
+    it('resolves a waiting handler when the password arrives', async () => {
+      createPendingAuth('wait-member');
+      const waiting = waitForPassword('wait-member', 1000);
+      const res = submitPassword('wait-member', 'delivered');
+      expect(res.ok).toBe(true);
+      const encrypted = await waiting;
+      expect(encrypted).toContain(':');
+      expect(encrypted).not.toContain('delivered');
     });
   });
 
