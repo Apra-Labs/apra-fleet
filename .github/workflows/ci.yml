@@ -32,7 +32,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -76,7 +75,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -143,7 +141,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -256,7 +253,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
