@@ -2,8 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Agent, FleetRegistry } from '../types.js';
-import { encryptPassword } from '../utils/crypto.js';
-import { enforceOwnerOnly } from '../utils/file-permissions.js';
+import { encryptPassword, enforceOwnerOnly } from 'blindfold';
 import { FLEET_DIR } from '../paths.js';
 import { assignIcon } from './icons.js';
 

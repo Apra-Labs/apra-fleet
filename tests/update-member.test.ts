@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
-import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { credentialSet, credentialDelete } from 'blindfold';
 
 describe('updateMember', () => {
   beforeEach(() => {

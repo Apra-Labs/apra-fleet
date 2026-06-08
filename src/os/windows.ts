@@ -3,7 +3,7 @@ export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
-import { escapeBatchMetachars } from '../utils/shell-escape.js';
+import { escapeBatchMetachars } from 'blindfold';
 
 const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'GEMINI_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 

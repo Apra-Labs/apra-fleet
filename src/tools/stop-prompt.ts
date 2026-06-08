@@ -8,7 +8,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { inFlightAgents } from './execute-prompt.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getStallDetector } from '../services/stall/index.js';
-import { cancelPendingAuth } from '../services/auth-socket.js';
+import { cancelPendingAuth } from 'blindfold';
 
 export const stopPromptSchema = z.object({
   ...memberIdentifier,

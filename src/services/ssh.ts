@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
-import { decryptPassword } from '../utils/crypto.js';
+import { decryptPassword } from 'blindfold';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
 import { setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 

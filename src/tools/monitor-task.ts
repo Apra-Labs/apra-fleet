@@ -5,7 +5,7 @@ import { getAgentOS } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
-import { getTaskCredentials } from '../services/credential-store.js';
+import { getTaskCredentials } from 'blindfold';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import type { Agent } from '../types.js';
 

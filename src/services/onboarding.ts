@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { OnboardingState } from '../types.js';
 import { FLEET_DIR } from '../paths.js';
-import { enforceOwnerOnly } from '../utils/file-permissions.js';
+import { enforceOwnerOnly } from 'blindfold';
 import { BANNER, GETTING_STARTED_GUIDE, WELCOME_BACK, NUDGE_AFTER_FIRST_REGISTER, NUDGE_AFTER_FIRST_PROMPT, NUDGE_AFTER_MULTI_MEMBER } from '../onboarding/text.js';
 import { getAllAgents } from './registry.js';
 

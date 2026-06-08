@@ -1,7 +1,13 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
+import readline from 'node:readline';
 import { execSync } from 'node:child_process';
+import { getSocketPath } from 'blindfold';
+
+const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
 
 /** Provider -> auth env var name */
 const PROVIDER_AUTH_ENV: Record<string, string> = {
@@ -13,6 +19,9 @@ const PROVIDER_AUTH_ENV: Record<string, string> = {
 };
 
 export async function runAuth(args: string[]): Promise<void> {
+  if (args.includes('--confirm')) {
+    return handleConfirm(args);
+  }
   if (args.includes('--oauth')) {
     return handleOAuth(args);
   }
@@ -21,9 +30,112 @@ export async function runAuth(args: string[]): Promise<void> {
   }
 
   console.error('Usage:');
+  console.error('  apra-fleet auth --confirm <credential-name>');
   console.error('  apra-fleet auth --oauth [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
   console.error('  apra-fleet auth --api-key [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
   process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// --confirm: OOB network egress confirmation
+// ---------------------------------------------------------------------------
+
+async function handleConfirm(args: string[]): Promise<void> {
+  const credentialName = args.find((a) => !a.startsWith('-'));
+
+  if (!credentialName) {
+    console.error('Usage: apra-fleet auth --confirm <credential-name>');
+    process.exit(1);
+  }
+
+  if (!NAME_REGEX.test(credentialName)) {
+    console.error('Usage: apra-fleet auth --confirm <credential-name>');
+    console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
+    process.exit(1);
+  }
+
+  const contextIdx = args.indexOf('--context');
+  const rawCommand = contextIdx !== -1 && contextIdx + 1 < args.length ? args[contextIdx + 1] : undefined;
+  const commandContext = rawCommand ? rawCommand.replace(CONTROL_CHARS, '') : undefined;
+
+  const onIdx = args.indexOf('--on');
+  const rawMember = onIdx !== -1 && onIdx + 1 < args.length ? args[onIdx + 1] : undefined;
+  const memberContext = rawMember ? rawMember.replace(CONTROL_CHARS, '') : undefined;
+
+  console.error(`\napra-fleet - Network Egress Confirmation\n`);
+  if (commandContext && memberContext) {
+    console.error(`  This command on ${memberContext} will send credential "${credentialName}" over the network:`);
+    console.error(`  ${commandContext}`);
+  } else {
+    console.error(`  Credential "${credentialName}" will be sent over the network.`);
+    if (memberContext) console.error(`  Member:  ${memberContext}`);
+    if (commandContext) console.error(`  Command: ${commandContext}`);
+  }
+  console.error('');
+
+  let inputValue: string;
+  try {
+    inputValue = await new Promise<string>((resolve, reject) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+      rl.question('  Type "yes" to allow network access: ', (answer) => {
+        rl.close();
+        resolve(answer);
+      });
+      rl.on('close', () => resolve(''));
+      rl.on('error', reject);
+    });
+  } catch {
+    console.error('Cancelled.');
+    process.exit(1);
+    return;
+  }
+
+  if (inputValue.toLowerCase() !== 'yes') {
+    console.error('  x Confirmation not received. Aborting.');
+    process.exit(1);
+    return;
+  }
+
+  const sockPath = getSocketPath();
+
+  await new Promise<void>((resolve, reject) => {
+    const client = net.connect(sockPath, () => {
+      const msg = JSON.stringify({ type: 'auth', member_name: credentialName, password: inputValue }) + '\n';
+      inputValue = '';
+      client.write(msg);
+    });
+
+    let buffer = '';
+    client.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const nl = buffer.indexOf('\n');
+      if (nl === -1) return;
+
+      const line = buffer.slice(0, nl);
+      try {
+        const resp = JSON.parse(line);
+        if (resp.ok) {
+          console.error('\n  + Confirmed. You can close this window.\n');
+          resolve();
+        } else {
+          console.error(`\n  x Error: ${resp.error}\n`);
+          reject(new Error(resp.error));
+        }
+      } catch {
+        console.error('\n  x Invalid response from server.\n');
+        reject(new Error('Invalid server response'));
+      }
+      client.end();
+    });
+
+    client.on('error', (err) => {
+      console.error(`\n  x Could not connect to apra-fleet server.`);
+      console.error(`    Is the MCP server running?\n`);
+      reject(err);
+    });
+  }).catch(() => {
+    process.exit(1);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +190,7 @@ async function parseTokenArgs(
 
   let token: string;
   if (storeRef) {
-    const { credentialResolve } = await import('../services/credential-store.js');
+    const { credentialResolve } = await import('blindfold');
     const entry = credentialResolve(storeRef, '*');
     if (!entry) {
       console.error(`✗ Credential "${storeRef}" not found in persistent store.`);

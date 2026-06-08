@@ -14,7 +14,7 @@ import {
   credentialList,
   credentialDelete,
   credentialResolve,
-} from '../src/services/credential-store.js';
+} from 'blindfold';
 import type { SSHExecResult } from '../src/types.js';
 
 // ---------------------------------------------------------------------------
@@ -273,19 +273,23 @@ const { mockCollectOobConfirm } = vi.hoisted(() => ({
   mockCollectOobConfirm: vi.fn(),
 }));
 
-vi.mock('../src/services/auth-socket.js', () => ({
-  collectOobConfirm: mockCollectOobConfirm,
-  collectOobPassword: vi.fn(),
-  collectOobApiKey: vi.fn(),
-  ensureAuthSocket: vi.fn(),
-  createPendingAuth: vi.fn(),
-  hasPendingAuth: vi.fn().mockReturnValue(false),
-  getPendingPassword: vi.fn().mockReturnValue(null),
-  waitForPassword: vi.fn(),
-  cleanupAuthSocket: vi.fn(),
-  getSocketPath: vi.fn().mockReturnValue('/tmp/test.sock'),
-  launchAuthTerminal: vi.fn(),
-}));
+vi.mock('blindfold', async () => {
+  const actual = await vi.importActual<typeof import('blindfold')>('blindfold');
+  return {
+    ...actual,
+    collectOobConfirm: mockCollectOobConfirm,
+    collectOobPassword: vi.fn(),
+    collectOobApiKey: vi.fn(),
+    ensureAuthSocket: vi.fn(),
+    createPendingAuth: vi.fn(),
+    hasPendingAuth: vi.fn().mockReturnValue(false),
+    getPendingPassword: vi.fn().mockReturnValue(null),
+    waitForPassword: vi.fn(),
+    cleanupAuthSocket: vi.fn(),
+    getSocketPath: vi.fn().mockReturnValue('/tmp/test.sock'),
+    launchAuthTerminal: vi.fn(),
+  };
+});
 
 describe('execute_command: network egress policy', () => {
   beforeEach(() => {
