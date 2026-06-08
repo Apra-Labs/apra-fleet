@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import http from 'node:http';
 import { launchAuthWeb } from '../src/services/auth-web.js';
 
@@ -116,5 +116,58 @@ describe('auth-web (local browser credential UI)', () => {
     expect(retry.status).toBe(200);
 
     if (handle.kind === 'launched') handle.close();
+  });
+
+  // These exercise the REAL findBrowserOpener() (no injected openUrl), which is
+  // bypassed by every test above. They cover the platform-specific headless
+  // guards that decide whether to fall through to the manual CLI instruction.
+  describe('findBrowserOpener headless detection', () => {
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const origSession = process.env.SESSIONNAME;
+    const origSshTty = process.env.SSH_TTY;
+
+    function setPlatform(p: NodeJS.Platform) {
+      Object.defineProperty(process, 'platform', { value: p, configurable: true });
+    }
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', origPlatform);
+      if (origSession === undefined) delete process.env.SESSIONNAME;
+      else process.env.SESSIONNAME = origSession;
+      if (origSshTty === undefined) delete process.env.SSH_TTY;
+      else process.env.SSH_TTY = origSshTty;
+    });
+
+    it('returns unavailable on headless Windows (SESSIONNAME != Console)', () => {
+      setPlatform('win32');
+      process.env.SESSIONNAME = 'RDP-Tcp#0';
+      const handle = launchAuthWeb('m', 'password', 'Enter password for m', () => ({ ok: true }));
+      expect(handle.kind).toBe('unavailable');
+      if (handle.kind === 'launched') handle.close();
+    });
+
+    it('launches on interactive Windows (SESSIONNAME == Console)', () => {
+      setPlatform('win32');
+      process.env.SESSIONNAME = 'Console';
+      const handle = launchAuthWeb('m', 'password', 'Enter password for m', () => ({ ok: true }));
+      expect(handle.kind).toBe('launched');
+      if (handle.kind === 'launched') handle.close();
+    });
+
+    it('returns unavailable on macOS over SSH (SSH_TTY set)', () => {
+      setPlatform('darwin');
+      process.env.SSH_TTY = '/dev/ttys000';
+      const handle = launchAuthWeb('m', 'password', 'Enter password for m', () => ({ ok: true }));
+      expect(handle.kind).toBe('unavailable');
+      if (handle.kind === 'launched') handle.close();
+    });
+
+    it('launches on local macOS (no SSH_TTY)', () => {
+      setPlatform('darwin');
+      delete process.env.SSH_TTY;
+      const handle = launchAuthWeb('m', 'password', 'Enter password for m', () => ({ ok: true }));
+      expect(handle.kind).toBe('launched');
+      if (handle.kind === 'launched') handle.close();
+    });
   });
 });

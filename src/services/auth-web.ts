@@ -24,8 +24,21 @@ const MAX_BODY = 64 * 1024;   // reject oversized POST bodies
  * graphical session or no opener available (e.g. headless / SSH).
  */
 function findBrowserOpener(): { cmd: string; args: string[] } | null {
-  if (process.platform === 'darwin') return { cmd: 'open', args: [] };
-  if (process.platform === 'win32') return { cmd: 'cmd', args: ['/c', 'start', ''] };
+  if (process.platform === 'darwin') {
+    // Over SSH there may be no Aqua console session for `open` to target; a
+    // non-zero exit is swallowed by the detached spawn below, so guard here and
+    // fall through to the manual CLI instruction. Mirrors the darwin SSH gate
+    // in launchAuthTerminal (auth-socket.ts).
+    if (process.env.SSH_TTY) return null;
+    return { cmd: 'open', args: [] };
+  }
+  if (process.platform === 'win32') {
+    // Headless Windows (SSH / service account) has no interactive desktop;
+    // mirrors hasInteractiveDesktop() in auth-socket.ts so the caller falls
+    // through to the manual CLI instruction instead of spawning a no-op opener.
+    if (process.env.SESSIONNAME !== 'Console') return null;
+    return { cmd: 'cmd', args: ['/c', 'start', ''] };
+  }
   // Linux / BSD: needs a display and xdg-open
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;
   try {
