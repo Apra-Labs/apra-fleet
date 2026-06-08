@@ -594,7 +594,12 @@ function findLinuxTerminal(): TerminalEntry | null {
     { bin: 'foot',              execArgs: [] },
     { bin: 'wezterm',           execArgs: ['start', '--'] },
     { bin: 'ghostty',           execArgs: ['-e'] },
-    { bin: 'gnome-terminal',    execArgs: ['--'] },
+    // --wait is required: without it, gnome-terminal hands the window off to
+    // gnome-terminal-server and the client process exits immediately (code 0).
+    // That premature exit makes collectOobInput see raceResult===null and fall
+    // through to the 500ms grace window, cancelling before the user can type.
+    // With --wait the client stays alive until the secret CLI exits.
+    { bin: 'gnome-terminal',    execArgs: ['--wait', '--'] },
     { bin: 'konsole',           execArgs: ['-e'] },
     { bin: 'xfce4-terminal',    execArgs: ['-x'] },
     { bin: 'mate-terminal',     execArgs: ['-x'] },
