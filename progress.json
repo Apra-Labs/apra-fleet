@@ -62,9 +62,9 @@
       "id": 6,
       "step": "VERIFY: Phase 2 -- version ESM fallback",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "48521be",
+      "notes": "[PASS] npm test: 81 test files passed (1 skipped), 1324 tests passed (14 skipped), 0 failed. New tests/version.test.ts adds 8 tests (ESM real-semver, git-hash, BUILD_VERSION/SEA, fallback-structural). update.test.ts green (no regression). [PASS] npm run build succeeds (tsc clean build). [PASS] node dist/index.js --version prints 'apra-fleet v0.2.2_48521b' (real semver from version.json + git hash) -- NOT v0.0.0-unknown. [PASS] npm run build:sea succeeds: 'Building SEA bundle -- version: v0.2.2_48521b', bundle written to dist/sea-bundle.cjs. Phase 2 VALIDATED."
     },
     {
       "id": 7,
