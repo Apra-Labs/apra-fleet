@@ -2,6 +2,9 @@
   "project": "apra-fleet npm packaging",
   "plan_file": "PLAN.md",
   "created": "2026-06-09",
+  "epic": "apra-fleet-tmt",
+  "lastDispatchedPhase": 0,
+  "model_map_note": "Tier->model resolved by orchestrator: cheap/standard -> claude-sonnet-4-6; regression-sensitive code tasks (3,5) -> claude-opus-4-8; reviews -> claude-opus-4-8.",
   "tasks": [
     {
       "id": 1,
@@ -9,6 +12,8 @@
       "type": "work",
       "status": "pending",
       "tier": "cheap",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.1",
       "commit": "",
       "notes": "Add bin, files, engines, publishConfig, prepublishOnly, scoped name"
     },
@@ -18,6 +23,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.2",
       "commit": "",
       "notes": "Validation only -- no code changes. Proves riskiest assumption."
     },
@@ -35,8 +42,10 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-opus-4-8",
+      "bead": "apra-fleet-tmt.3",
       "commit": "",
-      "notes": "Refactor version.ts to use import.meta.url under ESM"
+      "notes": "Refactor version.ts to use import.meta.url under ESM. Regression-sensitive -> opus."
     },
     {
       "id": 5,
@@ -44,6 +53,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.4",
       "commit": "",
       "notes": "tests/version.test.ts -- ESM path, CJS path, fallback, git hash"
     },
@@ -61,8 +72,10 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-opus-4-8",
+      "bead": "apra-fleet-tmt.5",
       "commit": "",
-      "notes": "install.ts: npm detection, binary-copy gate, MCP config for npm"
+      "notes": "install.ts: npm detection, binary-copy gate, MCP config for npm. Regression-sensitive -> opus. Watch: harden dev-path check vs symlinked npm global dirs; non-ASCII em-dash at install.ts:504 in edit window."
     },
     {
       "id": 8,
@@ -70,6 +83,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.6",
       "commit": "",
       "notes": "tests/install-npm.test.ts -- npm detection, binary skip, MCP config"
     },
@@ -87,6 +102,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.7",
       "commit": "",
       "notes": "update.ts: early return with npm update -g + skill-refresh reminder"
     },
@@ -96,6 +113,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.8",
       "commit": "",
       "notes": "tests/update-npm.test.ts -- npm redirect, dev message, SEA passthrough"
     },
@@ -113,6 +132,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.9",
       "commit": "",
       "notes": "src/delivery-mode.ts + index.ts --version enhancement"
     },
@@ -122,6 +143,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.10",
       "commit": "",
       "notes": "tests/delivery-mode.test.ts -- sea, npm, dev modes"
     },
@@ -139,6 +162,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.11",
       "commit": "",
       "notes": "Tag-gated, provenance, lockstep guard, dry-run check, idempotency"
     },
@@ -148,6 +173,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.12",
       "commit": "",
       "notes": "tests/ci-npm-publish.test.ts -- structural YAML assertions"
     },
@@ -165,6 +192,8 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
+      "model": "claude-sonnet-4-6",
+      "bead": "apra-fleet-tmt.13",
       "commit": "",
       "notes": "Validation only: build, test, pack, global install, SEA build check"
     },
