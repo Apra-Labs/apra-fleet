@@ -141,12 +141,12 @@
       "id": 14,
       "step": "Unit tests for delivery-mode + version output",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.10",
-      "commit": "",
-      "notes": "tests/delivery-mode.test.ts -- sea, npm, dev modes"
+      "commit": "442857e",
+      "notes": "DONE. tests/delivery-mode.test.ts: 7 tests covering getDeliveryMode() (sea/npm/dev) and getDeliveryInfo() (binary path per mode, nodeVersion, mode consistency). Mock isSea + isNpmGlobalInstall via vi.mock. Full suite: 1345 passed (1338 baseline + 7 new), 14 skipped."
     },
     {
       "id": 15,
