@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride, isNpmGlobalInstall } from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
@@ -161,22 +161,22 @@ describe('install binary-copy step in npm mode', () => {
     process.argv[1] = origArgv1;
   });
 
-  it('sets binaryPath to process.argv[1] in npm mode', async () => {
+  it('sets binaryPath to process.argv[1] in npm mode (flows into claude MCP script arg)', async () => {
     const origArgv1 = process.argv[1];
     const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
-    // Capture console logs to see which binaryPath was set (shown in MCP config step)
-    const logCalls: string[] = [];
-    vi.mocked(console.log).mockImplementation((msg: any) => {
-      logCalls.push(String(msg));
-    });
-
     await runInstall([]);
 
-    // Check that "npm global install detected" message appears
-    const npmDetectedMsg = logCalls.find(m => m.includes('npm global install detected'));
-    expect(npmDetectedMsg).toBeDefined();
+    // binaryPath is set to process.argv[1] in npm mode and flows into mcpConfig.args[0],
+    // which is the second segment of the claude registration command. Assert on the real
+    // execSync command, not just a log string.
+    const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
+    const mcpAdd = calls.find(c => c.includes('claude mcp add'));
+    expect(mcpAdd).toBeDefined();
+    // Must carry the npm script path (binaryPath) -- this fails against the pre-fix code
+    // that dropped mcpConfig.args[0].
+    expect(mcpAdd).toContain(npmPath);
 
     process.argv[1] = origArgv1;
   });
@@ -222,28 +222,16 @@ describe('install MCP config in npm mode', () => {
     const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
-    // Mock the run() function's child_process call to capture MCP config commands
-    vi.mocked(execFileSync).mockImplementation((cmd: any, args: any, opts: any) => {
-      if (cmd === 'bd') {
-        throw new Error('bd not found'); // Trigger npm install
-      }
-      return '' as any;
-    });
-
-    const logSpy = vi.spyOn(console, 'log');
-
     await runInstall([]);
 
-    // The MCP config step calls 'claude mcp add ...' which should contain:
-    // - process.execPath (the node executable)
-    // - the npmPath
-    const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n');
+    // run() calls the mocked execSync; the claude registration command must carry BOTH the
+    // node executable (process.execPath) AND the npm script path (process.argv[1]).
+    const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
+    const mcpAdd = calls.find(c => c.includes('claude mcp add'));
+    expect(mcpAdd).toBeDefined();
+    expect(mcpAdd).toContain(process.execPath); // node executable
+    expect(mcpAdd).toContain(npmPath);          // script path -- fails against pre-fix code
 
-    // The key indicator: npm mode should NOT have "Dev mode" in the output
-    // and SHOULD have "npm global install detected"
-    expect(logs).toContain('npm global install detected');
-
-    logSpy.mockRestore();
     process.argv[1] = origArgv1;
   });
 
@@ -252,19 +240,16 @@ describe('install MCP config in npm mode', () => {
     const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
-    // We'll verify indirectly: check that console output reflects npm mode (not dev mode)
-    const logSpy = vi.spyOn(console, 'log');
-
     await runInstall([]);
 
-    const logs = logSpy.mock.calls.map(call => String(call[0])).join('\n');
-    // In npm mode, the MCP config section should exist and be distinct from dev mode
-    // which would say "Dev mode -- skipping binary copy"
-    expect(logs).toContain('npm global install detected');
-    // Verify it's NOT dev mode message
-    expect(logs).not.toContain('Dev mode -- skipping binary copy');
+    const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
+    const mcpAdd = calls.find(c => c.includes('claude mcp add'));
+    expect(mcpAdd).toBeDefined();
+    // Both segments are quoted so paths with spaces survive; assert the exact registered form.
+    expect(mcpAdd).toBe(
+      `claude mcp add --scope user apra-fleet -- "${process.execPath}" "${npmPath}"`
+    );
 
-    logSpy.mockRestore();
     process.argv[1] = origArgv1;
   });
 });

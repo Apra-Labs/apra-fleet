@@ -581,8 +581,12 @@ ${killHint}
       run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
     } catch { /* not registered */ }
     
-    const cmd = mcpConfig.command === 'node' 
-      ? `claude mcp add --scope user apra-fleet -- node "${mcpConfig.args[0]}"`
+    // Build the claude MCP command from the actual mcpConfig structure.
+    // SEA mode: { command: binaryPath, args: [] } -> register the binary alone.
+    // npm/dev mode: { command: <node>, args: [<script>] } -> register node + script path.
+    // Quote both segments so paths with spaces (e.g. Windows "Program Files") work.
+    const cmd = mcpConfig.args.length > 0
+      ? `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" "${mcpConfig.args[0]}"`
       : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
     run(cmd);
   } else if (llm === 'gemini') {
