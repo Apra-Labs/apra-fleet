@@ -1,7 +1,7 @@
 {
-  "name": "apra-fleet",
+  "name": "@apra-labs/apra-fleet",
   "version": "0.2.1",
-  "description": "MCP server for orchestrating multiple agentic AI instances like Claude, Gemini and others (called 'members') across machines via SSH",
+  "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Gemini, Codex, Copilot, AGY) across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
   "repository": {
@@ -13,6 +13,25 @@
   },
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "apra-fleet": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "dist/",
+    "hooks/",
+    "scripts/fleet-statusline.sh",
+    "scripts/agy-settings-merge.js",
+    "scripts/agy-transcript-reader.js",
+    "skills/",
+    "agents/",
+    "version.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "build:sea": "node scripts/build-sea.mjs",
@@ -25,7 +44,8 @@
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
-    "prepare": "node scripts/install-hooks.mjs"
+    "prepare": "node scripts/install-hooks.mjs",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "ai-agent",
