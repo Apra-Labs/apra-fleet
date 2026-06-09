@@ -152,9 +152,9 @@
       "id": 15,
       "step": "VERIFY: Phase 5 -- coexistence guards",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "99f91d7",
+      "notes": "[PASS] npm test: 84 test files passed (1 skipped), 1345 tests passed (14 skipped), 0 failed. New tests/delivery-mode.test.ts: 7 tests covering getDeliveryMode() (returns sea/npm/dev per isSea/isNpmGlobalInstall) and getDeliveryInfo() (returns binary=process.execPath for sea, process.argv[1] for npm/dev, nodeVersion=process.version, mode consistent). [PASS] npm run build: tsc clean build, no errors. [PASS] node dist/index.js --version outputs 3 lines: 'apra-fleet v0.2.2_99f91d' (version), 'Mode: dev (node v20.19.0)' (with node version for non-sea modes), 'Binary: C:\\akhil\\git\\apra-fleet\\dist\\index.js' (script path). [PASS] getDeliveryMode and getDeliveryInfo importable from dist/delivery-mode.js as functions. Phase 5 VALIDATED. All phases 1-5 code complete."
     },
     {
       "id": 16,
