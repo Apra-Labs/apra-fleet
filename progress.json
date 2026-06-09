@@ -205,5 +205,31 @@
       "commit": "",
       "notes": ""
     }
+  ],
+  "deferred_review_fixes": [
+    {
+      "bead": "apra-fleet-tmt.16",
+      "description": "Clear deferred Phase 2 MEDIUM + LOW and Phase 5 MEDIUM/LOW before Phase 7 gate",
+      "status": "completed",
+      "items": [
+        {
+          "source": "Phase 2 MEDIUM",
+          "action": "Introduced resolveVersionFromRoot(rootDir) exported seam in src/version.ts. Replaced structural source-grep fallback test in tests/version.test.ts with real execution: resolveVersionFromRoot('/nonexistent-path') fires the catch and asserts the constant 'v0.0.0-unknown'. No mocking of native built-ins. Public contract (serverVersion, BUILD_VERSION wins first, CJS/ESM/git-hash) unchanged."
+        },
+        {
+          "source": "Phase 2 LOW",
+          "action": "Loosened git-hash assertion in Suite 2 from mandatory /^v\\d+\\.\\d+\\.\\d+_[0-9a-f]{6}$/ to optional /^v\\d+\\.\\d+\\.\\d+(_[0-9a-f]{6})?$/ -- passes in worktree or packed-ref checkouts where .git/HEAD does not resolve to a loose ref."
+        },
+        {
+          "source": "Phase 5 MEDIUM",
+          "action": "Removed dead/inert vi.mock() call inside test body in tests/delivery-mode.test.ts (line 119-122 original). Added explanatory comment that vi.mock is hoisted and mid-test calls are no-ops. Real assertion still driven by vi.mocked().mockReturnValue()."
+        },
+        {
+          "source": "Phase 5 LOW",
+          "action": "Removed unused afterEach import from tests/delivery-mode.test.ts import line."
+        }
+      ],
+      "test_results": "npm run build: clean (tsc). npm test: 85 files passed (1 skipped), 1360 passed (14 skipped), 0 failed. version.test.ts: 9 tests (was 8, +1 real fallback test). delivery-mode.test.ts: 7 tests (same count, cleaner code). Baseline preserved and exceeded."
+    }
   ]
 }
