@@ -1,272 +1,147 @@
-# npm Packaging -- FINAL CUMULATIVE Code Review (Phases 1-7)
+# npm Packaging -- FINAL RE-REVIEW (Phases 1-7)
 
 **Reviewer:** fleet-rev
-**Date:** 2026-06-09 04:05:00+00:00
-**Verdict:** CHANGES NEEDED
+**Date:** 2026-06-09 04:15:00+00:00
+**Verdict:** APPROVED
 
 > See the recent git history of this file to understand the context of this review.
+> Prior FINAL cumulative review (087ab3e) was CHANGES NEEDED: 1 HIGH (the d86bc67
+> .git-detection branch shipped with no regression test) + 1 MEDIUM (package.json
+> version.json skew 0.2.1 vs 0.2.2). The doer's fix is commit 61260e9 (annotated in
+> 891b37d). This re-review confirms both are closed and re-validates the full branch.
 > Phases 1-6 were APPROVED in prior reviews (db9936e, 25086a5, 22235b3, a2b4fde,
-> eea3e2f, aa421b2). Phase 3 had a fix-cycle (HIGH+2 MEDIUM fixed in 88f3a66).
-> This is the final cumulative review covering Phase 7 (Tasks 19-20) and the
-> headline UNPLANNED change in commit d86bc67, plus a full acceptance sweep and a
-> regression check of all 7 phases.
+> eea3e2f, aa421b2); the HEADLINE d86bc67 heuristic was found correct and confirmed
+> working end-to-end in 087ab3e -- only its test coverage was the blocker. That gap is
+> now closed.
 
-I ran the full validation myself: clean `npm run build` (tsc, clean), `npm test`
-(85 files, **1360 passed, 14 skipped, 0 failed**), and a real end-to-end npm-global
-smoke (`npm pack` -> `npm i -g` -> commands -> uninstall). The functional outcome of
-the headline fix is **confirmed working**. The blocker is a test-integrity gap, not a
-broken fix -- details below.
+I re-ran build + full suite myself: clean `npm run build` (tsc, no errors); `npm test`
+= **85 files, 1362 passed, 14 skipped, 0 failed**. Targeted file `npx vitest run
+tests/install-npm.test.ts` = **13 passed** (was 11). All checks below independently
+verified.
 
 ---
 
-## HEADLINE -- commit d86bc67 "fix: npm global install detection via .git check"
+## HIGH-1 (was gating) -- .git detection branch now has real regression guards: CLOSED
 
-### What changed (git show d86bc67)
+The fix added 3 new tests to `tests/install-npm.test.ts` (plus repurposed the dead
+symlink test into a 4th .git-present case). I did not merely confirm they are green --
+I ran two source mutations of `isNpmGlobalInstall()` (install.ts:54) and confirmed each
+new test FAILS when the .git logic is broken, proving the guards are not tautological:
 
-`d86bc67` modified ONLY `src/cli/install.ts` (not the tests). It replaced the
-Phase-3-APPROVED body of `isNpmGlobalInstall()`:
+- **Mutation 1 -- invert the check (`return !hasGit` -> `return hasGit`):** 7 tests
+  failed, including all three new .git tests:
+  - "node_modules + .git ABSENT -> true" FAILED (it correctly demands true; inverted
+    code returns false). [confirms case (a)]
+  - "node_modules + .git present (npm-linked git checkout) -> false" FAILED.
+  - "node_modules + .git exists at project root -> false" (the labelled REGRESSION
+    TEST) FAILED. [confirms case (b)]
+  - 4 downstream MCP/binary-copy npm-mode tests also flipped, showing the branch feeds
+    real install behaviour.
+- **Mutation 2 -- remove the check (force `return true`, always-npm):** exactly the two
+  .git-PRESENT dev tests FAILED (they require false). This is the decisive proof that
+  case (b) is **pinned against a future revert**: any classifier that no longer
+  consults `.git` and assumes npm whenever argv is under node_modules breaks these
+  tests. PASS.
 
-- **BEFORE** (41e7f59): after the `isSea()` / `node_modules` early checks, it compared
-  `realpathSync(process.argv[1])` against `realpathSync(findProjectRoot() + '/dist/index.js')`
-  and returned `true` only if they differed.
-- **AFTER** (d86bc67): after the same two early checks, it computes
-  `findProjectRoot()` and returns `!fs.existsSync(path.join(projectRoot, '.git'))`
-  -- i.e. "no `.git` at the resolved package root => npm mode". On a `findProjectRoot()`
-  throw it returns `true`.
+Per-requirement confirmation:
 
-The full new logic:
-```
-if (isSea()) return false;
-const scriptPath = process.argv[1];
-if (!scriptPath || !scriptPath.includes('node_modules')) return false;
-try {
-  const projectRoot = findProjectRoot();
-  return !fs.existsSync(path.join(projectRoot, '.git'));
-} catch { return true; }
-```
+- **(a) node_modules + .git ABSENT -> true:** PASS. install-npm.test.ts:54-65. argv =
+  `.../node_modules/@apra-labs/apra-fleet/dist/index.js`; default `makeFsMock` returns
+  existsSync=true only for version.json/hooks-config.json, so `existsSync('.git')` is
+  false -> `!false = true`. Genuinely reaches the .git branch (past the node_modules
+  early-return). Fails under Mutation 1.
+- **(b) node_modules + .git PRESENT -> false (THE regression d86bc67 fixed):** PASS.
+  Two tests cover it -- install-npm.test.ts:127-145 (npm-linked `.../node_modules/.bin/`
+  path) and :147-167 (the explicitly-labelled REGRESSION TEST,
+  `.../node_modules/@apra-labs/apra-fleet/dist/index.js`). Both override existsSync so
+  version.json AND .git are present; both require `false`. I confirmed both reach the
+  .git check (argv contains node_modules so they pass the early guard; version.json
+  present so findProjectRoot() succeeds rather than throwing) and both FAIL under
+  Mutation 1 AND Mutation 2. This is the exact real-world scenario that broke and is now
+  pinned.
+- **(c) findProjectRoot() throws -> true (catch branch):** PASS.
+  install-npm.test.ts:111-125. argv under node_modules (passes early guard) +
+  existsSync forced to return false for everything -> findProjectRoot() exhausts 5 hops
+  and throws -> catch returns true. Asserts the catch arm specifically.
 
-### Root cause of the original failure (why 11 green tests hid a real bug)
-
-This is the important part. `findProjectRoot()` (install.ts:87) anchors on the
-**module's own `__dirname`** (the location of `install.js`), NOT the cwd, walking up
-to find `version.json`. In a real npm global install, that module lives at
-`.../node_modules/@apra-labs/apra-fleet/dist/cli/install.js`, so `findProjectRoot()`
-resolves to `.../node_modules/@apra-labs/apra-fleet`. The OLD code then built
-`findProjectRoot() + '/dist/index.js'` and compared it to `process.argv[1]` -- which
-in npm mode IS exactly `.../node_modules/@apra-labs/apra-fleet/dist/index.js`. The two
-paths are therefore **identical in npm mode**, so realpath-equal, so the function
-returned `false` and the install was misclassified as `dev`. This was platform-neutral
-in principle; it surfaced on the Windows smoke as `Mode: dev`. So the "dev dist path"
-the old code subtracted was never a *foreign* dev path -- it was the package's own
-location, which is the same node_modules path in npm mode. The comparison could never
-return `true` for a real npm global install. The new `.git` anchor is genuinely more
-correct: the package's own root has no `.git`; a dev checkout's root does.
-
-### Robustness of the `.git`-existence heuristic -- failure-mode sweep
-
-- **(a) Source tarball extracted WITHOUT `.git`, run via `node dist/index.js` in dev:**
-  NOT misclassified, because the `node_modules` early-return (`!scriptPath.includes('node_modules')`)
-  fires first. A user running their own checked-out `dist/index.js` is not under
-  `node_modules`, so the `.git` branch is never reached. SAFE. (The only way to reach
-  the `.git` branch is argv[1] already containing `node_modules`.)
-- **(b) git worktree / submodule where `.git` is a FILE not a directory:**
-  `fs.existsSync` returns `true` for a file as well as a directory, so a worktree dev
-  checkout (where `.git` is a gitdir-pointer file) is still correctly detected as dev
-  (`hasGit === true` => returns false). SAFE.
-- **(c) Which anchor does the check use?** It uses `findProjectRoot()` -- the package's
-  own install location (module `__dirname`), NOT the cwd and NOT `process.argv[1]`'s
-  directory directly. This is the correct anchor: it asks "is the package I am running
-  from inside a git repo?" SAFE and is the right question.
-- **(d) Does `isSea()` still take precedence?** Yes -- `if (isSea()) return false;` is
-  the first line. SAFE. Confirmed `getDeliveryMode()` still orders sea -> npm -> dev.
-- **(e) CI / packed-ref checkouts:** The `node_modules` guard means CI running the repo's
-  own `dist` (not under node_modules) is dev regardless of `.git` form. If CI ever runs
-  the tool from an installed tarball under node_modules, `.git` is absent => npm, which
-  is the desired classification. SAFE.
-
-One residual edge (LOW): if a developer `npm link`s or installs the package into a
-*nested* `node_modules` that happens to sit inside a git working tree such that
-`findProjectRoot()` walks up (max 5 hops) into a directory containing both
-`version.json` and `.git`, it would classify as dev. In practice `findProjectRoot()`
-returns at the first ancestor containing `version.json` (the package root), which for an
-installed package has no `.git`, so this does not occur for normal npm installs. Not a
-real-world failure; noted for completeness.
-
-**Verdict on the heuristic itself: CORRECT and more robust than the realpath approach.
-It should STAY.** My independent smoke (below) confirms it works end-to-end.
-
-### TEST INTEGRITY -- the blocking gap (HIGH)
-
-`d86bc67` did not touch `tests/install-npm.test.ts`, yet all 11 tests stay green. I
-traced every test against the NEW logic with the mocked `node:fs` (where
-`existsSync('.git')` returns `false` because the mock only returns true for paths
-containing `version.json`/`hooks-config.json`):
-
-- The 4 "true" detection cases pass because argv contains `node_modules` and the mocked
-  `existsSync('.git')` is false -- but they pass via the *false-`.git*` mock, which is
-  incidental, not asserted as the mechanism.
-- The "returns false for dev mode" test (lines 64-82) sets
-  `process.argv[1] = '/some/project/path/dist/index.js'` -- which has **no
-  `node_modules`** -- so it returns `false` at the early guard and **never reaches the
-  `.git` branch at all**. It pinned nothing about the dev-vs-npm signal before, and
-  pins nothing now.
-- The "symlinked npm paths" test (lines 116-131) still mocks `fs.realpathSync`, which
-  the new code no longer calls -- that mock is now **dead** and the test passes for an
-  obsolete reason.
-
-Net: **there is no test that exercises the exact branch the fix governs** -- namely
-"argv[1] contains `node_modules` AND `.git` EXISTS at the resolved root => dev (false)".
-That is precisely the real-world scenario that just broke and was hand-fixed. The hard
-constraint "All new behaviour is unit tested" is therefore not met for this change, and
-there is no regression test to prevent this exact bug from returning. Per the review
-charter this is a HIGH finding and gates the sprint.
-
-**Required to close (HIGH):** Add to `tests/install-npm.test.ts` real unit coverage
-that drives `fs.existsSync` on the `.git` path:
-1. argv under `node_modules` + `existsSync('.git') === false` => `isNpmGlobalInstall()` true.
-2. argv under `node_modules` + `existsSync('.git') === true`  => `isNpmGlobalInstall()` **false**
-   (the regression case; must fail against the OLD realpath code AND would have failed if
-   the `.git` check were inverted).
-3. `findProjectRoot()` throws (no version.json up the tree) => returns true (the catch branch).
-Drop the now-dead `realpathSync` mock from the symlink test (or repurpose it to assert
-the `.git` mechanism). Update the doc-comment/test names that still reference "path
-comparison"/"realpath" so the suite reflects the actual mechanism.
-
-### Independent end-to-end smoke (run by reviewer just now)
-
-`rm -rf dist && npm run build` (clean) -> `npm pack` (482 files, clean: grep for
-`src/|tsconfig|build-sea.mjs|install-hooks.mjs|node_modules|.exe|sea-prep|sea-bundle|agents/`
-returned nothing) -> `npm i -g ./apra-labs-apra-fleet-0.2.1.tgz` (113 packages, expected
-EBADENGINE warning on Node 20). Observed:
-
-```
-$ apra-fleet --version
-apra-fleet v0.2.2
-  Mode:   npm (node v20.19.0)
-  Binary: C:\nvm4w\nodejs\node_modules\@apra-labs\apra-fleet\dist\index.js
-
-$ apra-fleet --help
-apra-fleet v0.2.2
-Usage: ...
-
-$ apra-fleet update
-apra-fleet is installed via npm. To update, run:
-  npm update -g @apra-labs/apra-fleet
-After updating, re-install skills and hooks:
-  apra-fleet install
-```
-
-`--version` prints **`Mode: npm`** (not dev) with a real semver `v0.2.2`; `update`
-prints the npm redirect + skill-refresh reminder. Then `npm uninstall -g
-@apra-labs/apra-fleet` (113 removed) and tgz deleted. The fix works end to end.
+The "dev mode" test (install-npm.test.ts:67-77) is now honestly named/commented as the
+node_modules EARLY-GUARD case (argv has no node_modules), and MEDIUM-2's concern is
+satisfied by the two separate node_modules+.git tests that independently exercise the
+.git branch. The "all new behaviour is unit tested" hard constraint is now met.
 
 ---
 
-## Acceptance Criteria sweep (requirements.md lines 71-80)
+## Dead realpathSync mock removed: CONFIRMED
 
-| # | Criterion | Result |
-|---|-----------|--------|
-| 1 | `npm pack --dry-run` lists intended files (dist/, hooks/, runtime scripts, skills/, version.json) and excludes src/, *.mjs, tsconfig, node_modules | MET -- verified by reviewer; 482 files, contaminant grep empty, version.json (23B) present |
-| 2 | Local tarball -> working `--version` (real semver) | MET -- `apra-fleet v0.2.2` observed |
-| 2 | `--help` prints usage | MET |
-| 2 | `apra-fleet install` works in npm mode | MET (Phase 3 install gates + MCP path verified; install path exercised via tests, not re-run live to avoid mutating the reviewer host config) |
-| 2 | `apra-fleet status` (shows npm mode) -- SUBSTITUTED | MET-AS-SUBSTITUTED. No `status` CLI exists in the codebase (PLAN Risk Register, confirmed). Delivered as `--version` Mode/Binary output via `getDeliveryMode()`/`getDeliveryInfo()`. **Human sign-off required** to accept the `--version` substitution in lieu of a `status` command. |
-| 2 | `apra-fleet update` prints npm redirect | MET |
-| 3 | Full suite green + new tests green | MET (1360 passed, 0 failed) BUT see HIGH: the new detection branch lacks a real regression test |
-| 3 | SEA build still produces binaries | MET -- `npm run build:sea` succeeds (per Phase 7 notes; SEA bundle written). package.json `name`/`bin`/`files` are npm-only and do not affect build-sea.mjs |
-| 4 | `--version` reports delivery mode + binary in both SEA and npm | MET for npm (observed) and dev (observed). SEA mode omits the `(node ...)` suffix by design; not re-run as a binary here but logic is unit-tested |
-| 5 | CI `npm-publish` job present, valid, tag-gated, NOT triggered | MET -- present at ci.yml:307-401, `if: startsWith(github.ref,'refs/tags/v')`, `needs: build-and-test`, `id-token: write`, version-inject + lockstep guard, shebang + dry-run + clean-pack guards, idempotency check, `--provenance`. No new `v*` tag created (latest is v0.2.1, predates sprint). Inert. |
-| 6 | Reviewer APPROVED cumulative; PR vs main, CI green, not merged | NOT YET -- this review is CHANGES NEEDED on the HIGH test gap. CI runs for the branch were not surfaced via `gh run list`; PR/CI green is a human gate at PR time. |
+PASS. `grep realpathSync tests/install-npm.test.ts` finds only an explanatory comment
+(lines 32-33) -- no `vi.mocked(fs.realpathSync)` call anywhere. The obsolete symlink
+test that mocked realpathSync (which the .git-based code never calls) was replaced with
+the .git-present regression test. No test mocks a function `isNpmGlobalInstall()` no
+longer calls.
 
 ---
 
-## Hard constraints (requirements.md lines 53-67)
+## isNpmGlobalInstall() logic UNCHANGED vs 61260e9's parent: CONFIRMED
 
-- **No `npm publish` anywhere outside the gated CI job:** PASS. Repo grep finds
-  `npm publish` only at ci.yml:398 (inside the tag-gated `npm-publish` job) and in
-  docs/plan prose. `src/` has zero matches.
-- **No `v*` tag pushed during the sprint:** PASS. `git tag -l 'v*'` shows only
-  pre-existing tags up to v0.2.1; no `v0.2.2` (the current version.json value) tag exists.
-- **CI job inert:** PASS (tag gate, no matching tag).
-- **ASCII-only in committed files:** PASS. Scanned every committed `.ts/.yml/.md/.sh/.json/.js`
-  in the branch diff for bytes > 0x7F -- none. Prior em-dash cleanup (3aa7fbf) confirmed.
-- **Clean tarball (no SEA artifacts, no agents/):** PASS. Contaminant grep empty;
-  `agents/` removed from `files` whitelist in 3aa7fbf.
-- **No regressions / SEA + npm coexist:** PASS on tests; SEA build intact.
+PASS. `git diff d86bc67..HEAD -- src/cli/install.ts` is EMPTY, and `git diff
+61260e9~1..61260e9 -- src/cli/install.ts` is EMPTY. The fix commit touched only
+feedback.md, package.json, and tests/install-npm.test.ts (`git show --stat 61260e9`).
+The doer did not silently alter behaviour. Current body (install.ts:44-58) is exactly
+the approved d86bc67 heuristic: `isSea()->false`; `!argv.includes('node_modules')->
+false`; else `return !existsSync(join(findProjectRoot(), '.git'))`; catch->true. The
+doc-comment (install.ts:35-43) accurately describes the .git-existence mechanism. I
+restored install.ts byte-clean after the mutation tests (`git diff --stat` empty).
 
 ---
 
-## Regression across all 7 phases
+## MEDIUM-1 -- version skew: CLOSED, and nothing else in package.json changed
 
-- 1360 tests green (1316 Phase-1 baseline + 44 new across version/install-npm/update-npm/
-  delivery-mode/ci-npm-publish, +cleanup). No failures.
-- Phase 1 (package.json + pack): intact -- clean pack verified live.
-- Phase 2 (version ESM): intact -- real semver observed; `resolveVersionFromRoot` seam +
-  9 tests survive.
-- Phase 3 (install npm detection): the APPROVED 88f3a66 MCP fix is intact (tests assert the
-  real `claude mcp add -- "<node>" "<script>"` command); the d86bc67 detection change layers
-  on top and works, but its tests do not exercise the new signal (HIGH above).
-- Phase 4 (update redirect): intact -- npm redirect observed live.
-- Phase 5 (delivery-mode + --version): intact -- Mode/Binary observed live.
-- Phase 6 (CI job): intact -- 14 structural tests green, job inert.
+PASS. package.json `version` is now `0.2.2`, matching version.json (`{ "version":
+"0.2.2" }`). `git show 61260e9 -- package.json` shows the diff is a single line:
+`-"version": "0.2.1"` / `+"version": "0.2.2"`. No other field touched by the fix. (The
+larger package.json delta vs `main` -- name scoping, bin, engines, files, publishConfig,
+prepublishOnly -- is the Phase-1 packaging work approved in earlier reviews, not this
+fix.)
 
 ---
 
-## Findings
+## No regression / scope / hygiene: CONFIRMED
 
-- **HIGH-1 (gating):** `isNpmGlobalInstall()` was rewritten to a `.git`-existence
-  heuristic in d86bc67 with NO accompanying test change. No unit test exercises the new
-  decisive branch (node_modules + `.git` present => dev), so the real-world regression
-  that just broke is not pinned, and the "all new behaviour is unit tested" hard
-  constraint is unmet for this change. The fix itself is correct and works end to end;
-  only the test coverage is missing. Add the three tests listed in the Headline section
-  and remove/repurpose the dead `realpathSync` symlink-test mock.
-  Doer: fixed in commit 61260e9 -- added 3 regression tests in tests/install-npm.test.ts
-  guarding the .git branch: (a) node_modules+no-.git => npm (true), (b) node_modules+.git
-  present => dev (false) [regression case], (c) findProjectRoot() throws => npm (true)
-  [catch branch]. Also added a 4th test exercising .git branch via node_modules path with
-  .git present (MEDIUM-2 coverage). Dead realpathSync mock in symlink test replaced with
-  regression test for .git-present=>dev. Stale comments in makeFsMock refreshed; test
-  names updated. install.ts doc-comment already accurate (no logic change). 13 tests in
-  install-npm.test.ts (was 11). npm test: 1362 passed, 0 failed.
-
-- **MEDIUM-1 (non-gating, advisory):** package.json `version` is `0.2.1` while
-  `version.json` is `0.2.2`. Runtime `--version` reads `version.json` (shows v0.2.2);
-  the tarball is named `0.2.1`. The CI publish job injects the tag into BOTH files before
-  its lockstep guard, so this does not break publishing -- but the in-repo skew is
-  confusing and could mislead a manual `npm pack`. Align the two values (or document that
-  version.json is the source of truth and package.json.version is overwritten at publish).
-  Doer: fixed in commit 61260e9 -- package.json version set to 0.2.2 to match version.json.
-
-- **MEDIUM-2 (non-gating, carried from Phase 3 review charter):** the "dev mode returns
-  false" test passes via the `node_modules` early-return and never reaches the detection
-  body. Even after HIGH-1 is fixed, keep a dev-mode case that DOES carry `node_modules`
-  to ensure the early guard and the `.git` branch are independently covered.
-
-- **LOW-1:** doc-comment on `isNpmGlobalInstall()` and several test names still describe
-  the old "path comparison"/realpath mechanism. Update them to reflect the `.git` check
-  so future readers are not misled.
-
-- **LOW-2:** `status` acceptance line is satisfied by `--version` mode output, not a
-  `status` command. Flagged for explicit human acceptance at sign-off (the underlying
-  status CLI / `/health` infra does not exist; correctly scoped out in PLAN).
+- **Full suite:** 1362 passed, 0 failed, 14 skipped (>= the 1362 target; up from the
+  1360 in 087ab3e, consistent with +2 net new install-npm tests). PASS.
+- **Phases 1-6 untouched by this fix:** the only non-test, non-feedback change is the
+  one-line package.json version bump. install.ts, ci.yml, version resolution, update
+  redirect, delivery-mode -- all untouched by 61260e9. PASS.
+- **ASCII-only:** the files changed by this fix (tests/install-npm.test.ts,
+  package.json, version.json) have ZERO non-ASCII bytes. install.ts contains
+  pre-existing em-dash/glyph bytes, but `git diff main..HEAD -- src/cli/install.ts`
+  adds zero non-ASCII lines -- they predate this sprint and are out of scope for this
+  re-review. PASS for everything this branch introduced.
+- **File hygiene:** the working tree's uncommitted CLAUDE.md/AGENTS.md and untracked
+  scratch files (.sprint/, analyze_transcripts.js, permissions.json, results.json,
+  docs/*-plan.md, tpl-plan.md) are NOT part of this sprint and were explicitly excluded
+  from review scope; they are not staged. Only feedback.md is staged by this review.
 
 ---
 
 ## Summary
 
-The npm-packaging sprint is functionally complete and the headline `.git`-based
-detection fix is **correct, robust, and confirmed working end-to-end** by an independent
-reviewer smoke (`Mode: npm`, real semver, npm update redirect). Build is clean, 1360
-tests pass, the tarball is clean, SEA coexists, ASCII-only holds, no `npm publish` runs
-outside the inert tag-gated CI job, and no sprint `v*` tag was pushed. The single blocker
-is **test integrity**: the unplanned d86bc67 change shipped without a regression test for
-the very detection branch it rewrote, violating the "all new behaviour is unit tested"
-hard constraint and leaving the just-fixed bug unguarded. Add the three targeted tests
-(node_modules+no-.git => npm, node_modules+.git => dev, findProjectRoot-throws => npm),
-remove the now-dead realpath mock, and refresh the stale comments. Align the
-package.json/version.json skew (MEDIUM-1). Once HIGH-1 is addressed the sprint is
-APPROVED-ready; the `status`-via-`--version` substitution then needs explicit human
-acceptance at PR sign-off.
+The single HIGH blocker from the prior FINAL review is genuinely closed. The doer added
+real regression coverage for the .git-based npm-detection branch: I proved by source
+mutation (invert and remove the .git check) that each new test fails when the logic is
+broken -- in particular the "node_modules + .git PRESENT -> dev (false)" case is pinned
+so a future revert to a non-.git classifier breaks the suite, which was the entire point
+of the HIGH. The dead realpathSync mock is gone, `isNpmGlobalInstall()` logic is
+byte-identical to the approved d86bc67 fix (only comments/tests/version changed), and
+the MEDIUM version skew is resolved with a clean one-line package.json bump that touches
+nothing else. Build is clean and the full suite is 1362 passing / 0 failing. SEA + npm
+coexistence, the inert tag-gated CI publish job, no `npm publish` outside CI, no sprint
+`v*` tag, and ASCII-only (for branch-introduced files) all continue to hold from the
+prior cumulative review.
 
-**Verdict: CHANGES NEEDED** (1 HIGH).
+Two carry-forward, non-gating items for human sign-off at PR time (unchanged from
+087ab3e, NOT blockers): the `status` acceptance line is delivered via `--version` Mode/
+Binary output rather than a `status` command (LOW-2; needs explicit human acceptance),
+and PR-vs-main CI-green is a human gate at merge time.
+
+**Verdict: APPROVED (final).**
