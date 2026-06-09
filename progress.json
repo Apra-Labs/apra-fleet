@@ -171,12 +171,12 @@
       "id": 17,
       "step": "Unit test -- CI workflow validation",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.12",
-      "commit": "",
-      "notes": "tests/ci-npm-publish.test.ts -- structural YAML assertions"
+      "commit": "1915214",
+      "notes": "DONE. tests/ci-npm-publish.test.ts created with 14 structural tests using regex-based YAML validation (js-yaml not a dep). Tests assert: (1) npm-publish job exists; (2) needs: build-and-test; (3) if: startsWith(github.ref, 'refs/tags/v'); (4) permissions.id-token: write; (5-9) five required steps: version lockstep guard, shebang check, dry-run pack verification, clean-pack guard, idempotency check; (10) release job does NOT list npm-publish in needs; (11) runs-on: ubuntu-latest; (12) environment: npm; (13-14) existing 5 jobs unchanged, no npm publish outside npm-publish job. All tests green. Full suite: 1359 passed (1345 baseline + 14 new), 14 skipped, 0 failed. npm run build: clean (tsc)."
     },
     {
       "id": 18,
