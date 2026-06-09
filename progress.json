@@ -130,12 +130,12 @@
       "id": 13,
       "step": "Add getDeliveryMode() utility + enhance --version output",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-sonnet-4-6",
       "bead": "apra-fleet-tmt.9",
-      "commit": "",
-      "notes": "src/delivery-mode.ts (new module) + index.ts --version wiring. Cross-file -> sonnet."
+      "commit": "bfdeef2",
+      "notes": "DONE. Created src/delivery-mode.ts exporting: DeliveryMode type ('sea'|'npm'|'dev'), getDeliveryMode() (isSea->sea, isNpmGlobalInstall->npm, else dev), getDeliveryInfo() (mode, binary=process.execPath for sea/process.argv[1] for npm+dev, nodeVersion=process.version). Modified src/index.ts --version handler to call getDeliveryInfo() and print 3 lines. Actual --version output (dev mode): 'apra-fleet v0.2.2_a2b4fd' / '  Mode:   dev (node v20.19.0)' / '  Binary: C:\\akhil\\git\\apra-fleet\\dist\\index.js'. SEA mode omits the (node ...) suffix. npm test: 83 test files passed, 1338 tests passed, 14 skipped, 0 failed (baseline preserved)."
     },
     {
       "id": 14,
