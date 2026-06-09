@@ -100,12 +100,12 @@
       "id": 10,
       "step": "Add npm-mode redirect to runUpdate()",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-sonnet-4-6",
       "bead": "apra-fleet-tmt.7",
-      "commit": "",
-      "notes": "update.ts: early return with npm update -g + skill-refresh reminder. Cross-file (export isSea from install.ts) -> sonnet."
+      "commit": "04a23b9",
+      "notes": "DONE. (1) install.ts: added export keyword to isSea() at line 24 -- behavior unchanged, _setSeaOverride still works. (2) update.ts: imported isSea and isNpmGlobalInstall from ./install.js; added early-return at top of runUpdate() before any fetch call -- npm mode prints 'apra-fleet is installed via npm. To update, run:' + 'npm update -g @apra-labs/apra-fleet' + blank line + 'After updating, re-install skills and hooks:' + 'apra-fleet install' (S14.4 skill-refresh reminder); dev mode prints 'apra-fleet is running in dev mode. Pull the latest source and rebuild.'; SEA path (isSea()=true) falls through to existing fetch/download logic unchanged. (3) tests/update.test.ts: added vi.mock('../src/cli/install.js') with isSea=()=>true so all 4 existing SEA-path tests continue to pass. node dist/index.js update prints dev-mode message (no network call, no error). npm test: 1335 passed, 14 skipped, 0 failed (baseline preserved). ASCII clean."
     },
     {
       "id": 11,
