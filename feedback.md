@@ -1,139 +1,148 @@
-# apra-fleet npm Packaging -- Phase 4 Code Review
+# apra-fleet npm Packaging -- Phase 5 Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-06-09 02:55:00-0400
+**Date:** 2026-06-09 03:10:00-04:00
 **Verdict:** APPROVED
 
 > See the recent git history of this file to understand the context of this review.
-> Prior entries: db9936e (Phase 1 -- APPROVED), 25086a5 (Phase 2 -- APPROVED), bfc2e47
-> (Phase 3 -- CHANGES NEEDED), 22235b3 (Phase 3 re-review -- APPROVED). This review covers
-> Phase 4 (Task 7 / commit 04a23b9, Task 8 / commit 7d791a7, VERIFY 4445c04..200af0f).
-> progress.json tasks 10, 11 are work; 12 is the Phase 4 VERIFY checkpoint.
+> Phases 1-4 were APPROVED in prior reviews (db9936e, 25086a5, 22235b3, a2b4fde).
+> This review covers Phase 5 (Task 9 / Task 10 / VERIFY -- progress.json ids 13,14,15)
+> plus a regression check across Phases 1-4.
 
 ---
 
-## Independent verification
+## Context recovery
 
-- `npm run build` -- clean (tsc, no errors).
-- `npm test` -- **83 files passed (1 skipped), 1338 passed, 14 skipped, 0 failed.** Confirms
-  the doer's 1338-passing claim exactly (Phase-3 baseline 1335 + 3 new update-npm tests).
-- `node dist/index.js update` -- prints `apra-fleet is running in dev mode. Pull the latest
-  source and rebuild.` No `Checking for updates...`, no fetch, no network error. PASS.
-- File hygiene: `git diff --name-only 534e8dc~2..HEAD` lists only progress.json,
-  src/cli/install.ts, src/cli/update.ts, tests/update-npm.test.ts, tests/update.test.ts --
-  all justified (source, tests, tracking). No stray artifacts committed. The uncommitted
-  CLAUDE.md/AGENTS.md and untracked .sprint/, results.json, docs plans are working-tree only,
-  not in any sprint commit, and out of scope per the review brief.
+Reviewed prior feedback.md history. Phase 3 was the only CHANGES NEEDED
+(bfc2e47: claude MCP dropped the script path in npm mode; fixed in 88f3a66 and
+re-approved in 22235b3 after confirming the pre-fix tests fail). Phases 1, 2, 4
+approved clean with non-gating notes only. No carried-over blocking findings apply
+to Phase 5.
 
----
-
-## Focus 1 -- Redirect correctness in runUpdate() -- PASS
-
-Read `src/cli/update.ts:11-23`. The early-return is the first statement in `runUpdate()`,
-firing BEFORE any fetch/AbortController/network code (which begins at line 25
-`Checking for updates...`).
-
-- npm mode (`!isSea()` && `isNpmGlobalInstall()`): logs the four required lines including
-  `  npm update -g @apra-labs/apra-fleet` AND the S14.4 skill-refresh reminder
-  `  apra-fleet install`, then `return`. Correct.
-- dev mode (`!isSea()` && `!isNpmGlobalInstall()`): logs the dev rebuild message, then
-  `return`. Correct (verified live above).
-- SEA mode (`isSea()` true): skips the entire `if (!isSea())` block and falls through to the
-  existing fetch/download/spawn logic at lines 25-115 -- UNCHANGED from main
-  (`git diff main..HEAD -- src/cli/update.ts` shows only the added early-return block + the
-  import; no edits to the download path). Correct.
-
-`isSea` export in install.ts (`git diff main..HEAD -- src/cli/install.ts`): the only change to
-the function is `function isSea` -> `export function isSea`. Body is byte-for-byte identical
-(`_seaOverride` short-circuit, `require('node:sea')`, catch->false). The `_setSeaOverride` test
-hook is untouched. No behavioral change. PASS.
+Phase 5 committed diff inspected: `git diff bfdeef2~1..HEAD -- src/delivery-mode.ts
+src/index.ts tests/delivery-mode.test.ts`. The diff is exactly those three files
+(one new module, one --version handler change, one new test file) -- nothing else.
 
 ---
 
-## Focus 2 -- New tests (tests/update-npm.test.ts) -- PASS
+## Focus 1 -- delivery-mode.ts correctness  PASS
 
-All 3 tests assert real behavior via per-test `vi.resetModules()` + `vi.doMock` of install.js,
-re-importing update.js fresh each time:
+`src/delivery-mode.ts` is correct against PLAN Task 9:
 
-- Test 1 (npm): asserts the five exact strings logged (`apra-fleet is installed via npm...`,
-  `  npm update -g @apra-labs/apra-fleet`, ``, `After updating...`, `  apra-fleet install`)
-  AND `fetch` NOT called. Real + non-tautological.
-- Test 2 (dev): asserts the exact dev-mode string AND `fetch` NOT called. Real.
-- Test 3 (SEA): mocks `isSea => true`, primes `fetch` to resolve `{ok:false}`, and asserts
-  `fetch` WAS called -- proving the early return did NOT fire and the network path was
-  reached. Real; the `{ok:false}` short-circuits cleanly at line 40-43 so no spawn side
-  effects leak. Non-tautological.
-
-No log-only or weak assertions found. Coverage of the new redirect surface is meaningful.
-
----
-
-## Focus 3 -- Regression risk from MODIFIED tests/update.test.ts -- PASS (no weakening)
-
-`git diff main..HEAD -- tests/update.test.ts` shows the ONLY change is an added
-`vi.mock('../src/cli/install.js', () => ({ isSea: () => true, isNpmGlobalInstall: () => false,
-_setSeaOverride }))` block. The 4 pre-existing SEA tests (lines 70-190: up-to-date, newer-
-available-downloads-spawns, missing-config, invalid-config) are otherwise byte-for-byte
-unchanged.
-
-Judgment: this mock does NOT over-mock or hollow out the 4 SEA tests.
-
-- Those tests exercise update.ts's OWN download/spawn logic (fetch -> asset selection ->
-  writeStream -> chmod -> config read -> `spawn(installer, ['install','--force',...])` ->
-  `process.exit(0)`). They do not assert anything about install.js internals.
-- The only install.js symbol they touch transitively is `isSea()`, used solely by the new
-  early-return gate. Before Phase 4 there was no gate in `runUpdate()`, so the tests reached
-  the download path unconditionally. After Phase 4 added the gate, `isSea()` evaluated in the
-  vitest process (a plain node run, not a SEA binary) would return false and short-circuit all
-  4 tests into the npm/dev branch -- they would assert `Updating to v99.9.9`/`spawn` and FAIL.
-  The mock's `isSea => true` is the minimal shim restoring the original intent: keep these
-  tests on the binary-download path.
-- The mock does not stub fetch, spawn, fs, or any assertion target. Every meaningful assertion
-  (fetch call count, asset URL, spawn args, exit code, config-fallback warnings) still runs
-  against real update.ts code. A genuine regression in the download/spawn logic would still
-  break these tests.
-
-This is the correct, idiomatic fix -- functionally equivalent to a partial mock that only
-overrides `isSea`, since the SEA tests never invoke `isNpmGlobalInstall` (the gate returns
-early on `isSea()===true`). Using `_setSeaOverride(true)` instead would have been an
-alternative, but the full module mock is no weaker here. No finding.
+- `getDeliveryMode()` precedence is `sea -> npm -> dev` with `isSea()` checked first,
+  then `isNpmGlobalInstall()`, then the `dev` default. This matches the documented
+  precedence and is consistent with the rest of the sprint (install.ts gates check
+  `isSea()` first and `isNpmGlobalInstall()` returns false under SEA, so the ordering
+  is also defensively correct).
+- `getDeliveryInfo()` returns `binary = process.execPath` for `sea` and
+  `process.argv[1]` for both `npm` and `dev`; `nodeVersion = process.version`; and
+  `mode` is sourced from `getDeliveryMode()` (single source of truth, no drift).
+- Imports `isSea` / `isNpmGlobalInstall` from `./cli/install.js`. Both are confirmed
+  exported (install.ts:24, install.ts:40). The functions are referenced lazily inside
+  the `getDeliveryMode()` body, not evaluated at module load, so there is no
+  eager-eval-at-import hazard. No circular import: delivery-mode imports from
+  cli/install, and cli/install does not import delivery-mode (delivery-mode is only
+  consumed by index.ts). Build is clean (`tsc` no errors).
 
 ---
 
-## Focus 4 -- No regression elsewhere -- PASS
+## Focus 2 -- index.ts --version output  PASS
 
-- Full suite green: 1338 passed, 14 skipped, 0 failed (>= 1338 requirement met).
-- Phases 1-3 artifacts unaffected: install.ts isSea export is additive; version.ts,
-  install-npm.test.ts, package.json untouched in Phase 4.
-- ASCII in newly-written/edited code: tests/update-npm.test.ts ASCII-clean; the update.ts
-  early-return block and install.ts isSea/isNpmGlobalInstall additions ASCII-clean
-  (verified the Phase-4 diffs introduce no non-ASCII bytes).
+The `--version` / `-v` handler (index.ts:10-16) prints `apra-fleet ${serverVersion}`,
+then a `  Mode:` line, then a `  Binary:` line. The `(node ${nodeVersion})` suffix is
+gated on `info.mode !== 'sea'`, so it appears for npm/dev and is omitted for sea --
+exactly per PLAN.
 
-### LOW (informational, non-gating, pre-existing -- NOT introduced by Phase 4)
+Verified live (dev mode):
 
-`src/cli/update.ts:67,114` and the 4 `it(...)` titles in `tests/update.test.ts` contain
-non-ASCII em-dashes (U+2014). These predate this sprint (the Phase-4 diffs do not touch those
-lines) and the pre-commit hook tolerated them (build + commits succeeded). Per the project
-ASCII-only convention they should eventually become `--`, but this is out of Phase 4 scope and
-does not gate. Worth a cleanup pass when update.ts is next touched (e.g. a future phase or the
-Phase 7 regression task).
+```
+apra-fleet v0.2.2_7f0ced
+  Mode:   dev (node v20.19.0)
+  Binary: C:\akhil\git\apra-fleet\dist\index.js
+```
+
+Three lines, suffix present for dev, binary = process.argv[1]. This satisfies the
+descope substitution recorded in requirements.md (getDeliveryMode + --version is the
+stand-in for the nonexistent `status` command / `/health` endpoint; the diagnostic
+need from design-doc S14.3 is met for the modes the codebase actually supports).
+
+No other index.ts behaviour changed: the diff touches only the --version block (added
+the `getDeliveryInfo` import and two console.log lines). The `--help` and all
+downstream CLI dispatch paths are untouched. (Note: the em-dash on help line 28,
+"PM depends on fleet -", predates this branch -- introduced in PR #212, commit c572e53
+-- and is not in the Phase 5 diff. Out of scope, not flagged.)
+
+---
+
+## Focus 3 -- test honesty (delivery-mode.test.ts)  PASS with one MEDIUM note
+
+The 7 tests assert REAL return values, not tautologies:
+
+- getDeliveryMode() sea/npm/dev: each asserts the actual returned string
+  (`toBe('sea')` / `'npm'` / `'dev'`) after setting the underlying mocks. Genuine.
+- getDeliveryInfo() binary-path-per-mode: the npm and dev tests mutate
+  `process.argv[1]` to a distinct sentinel path and assert `info.binary` equals that
+  exact path (and restore argv[1] after). The sea test asserts `info.binary ===
+  process.execPath`. This is real binary-path-per-mode coverage -- the strongest part
+  of the suite, and it would catch a regression that swapped execPath/argv[1].
+- nodeVersion asserted `=== process.version` in each info test.
+
+All three modes AND the binary-path-per-mode behaviour are genuinely covered.
+
+**MEDIUM (non-gating) -- dead/misleading `vi.mock` inside a test body.** The 7th test
+("returns mode that matches getDeliveryMode() result", lines 117-130) calls
+`vi.mock('../src/cli/install.js', ...)` inside the test body after a
+`vi.resetModules()`. `vi.mock` is hoisted by vitest to the top of the module at
+transform time; calling it mid-test does not register a factory at that line. What
+actually drives the NPM assertion is the subsequent `vi.mocked(isSea2).mockReturnValue
+(false)` / `vi.mocked(isNpmGlobalInstall2).mockReturnValue(true)` (lines 125-126). So
+the test still asserts real values and passes for the right reason, but the inline
+`vi.mock` is dead code that implies a mechanism not in effect. It is also largely
+redundant with the dedicated sea/npm getDeliveryMode tests. Recommend deleting the
+inline `vi.mock` (and ideally the whole consistency test, since mode==getMode() is
+structurally guaranteed by getDeliveryInfo calling getDeliveryMode). Not gating: no
+false confidence about the SUT, and coverage of the real surfaces is intact.
+
+**LOW** -- `afterEach` is imported (line 1) but never used. Cosmetic.
+
+---
+
+## Focus 4 -- regression / hygiene  PASS
+
+- Full suite green: `npm test` -> 84 files passed (1 skipped), **1345 passed, 14
+  skipped, 0 failed**. Confirms the doer's 1345 claim exactly (1338 Phase-4 baseline
+  + 7 new). Build clean.
+- ASCII-only: byte scan of `src/delivery-mode.ts` and `tests/delivery-mode.test.ts`
+  found zero non-ASCII characters.
+- Phases 1-4 untouched: the Phase 5 commits modify only delivery-mode.ts, index.ts
+  (--version block), and the new test file. install.ts / update.ts / version.ts /
+  package.json carry no Phase 5 changes; their tests (install-npm, update-npm,
+  update, version) remain green within the suite total.
+- File hygiene: `git diff --name-only main..HEAD` lists only source, tests, sprint
+  tracking, and files inherited from merged PRs #288/#291/#292 (auth-web, auth-socket,
+  pre-commit hook, their tests) plus `.sprint/bead-ids.txt` from sprint setup. All
+  justified. No stray temp/config/scratch artifacts in the tracked diff. (The
+  uncommitted working-tree CLAUDE.md/AGENTS.md and untracked `.sprint/`,
+  `analyze_transcripts.js`, `permissions.json`, etc. are NOT part of this branch's
+  commits and are out of scope.)
 
 ---
 
 ## Summary
 
-Phase 4 (Tasks 7-8) is correct and complete. The npm-redirect early-return fires before any
-network call; npm mode emits both the `npm update -g @apra-labs/apra-fleet` command and the
-S14.4 `apra-fleet install` skill-refresh reminder; dev mode prints the rebuild message; SEA
-mode is byte-for-byte unchanged and still reaches the binary-download path. The `isSea` export
-is a pure visibility change with no behavioral impact. The 3 new tests assert real behavior
-(exact strings + fetch-not-called for npm/dev, fetch-called for SEA). The full-module mock
-added to the existing update.test.ts is the minimal shim needed to keep the 4 SEA tests on the
-download path -- it does not hollow out their assertions or mask a regression. Build clean,
-full suite 1338 green, dev-mode update verified live with no network call. The doer's
-1338-passing claim is confirmed.
+Phase 5 is correct and complete. `getDeliveryMode()`/`getDeliveryInfo()` implement the
+documented precedence and binary-path semantics with no circular-import or eager-eval
+issue; `--version` emits the version + Mode + Binary lines with the sea-suffix
+exception exactly per PLAN. This is the agreed substitute for the descoped
+status/health surface and meets requirements Scope item 6 within the codebase's actual
+capabilities. The test file asserts genuine return values across all three modes and
+the per-mode binary path. Full suite is 1345 green, ASCII clean, Phases 1-4 not
+regressed.
 
-The one non-gating note (pre-existing em-dashes in update.ts/update.test.ts) is not introduced
-by this phase and is deferred.
+Two non-gating findings to clean up opportunistically (no re-review required):
+- MEDIUM: dead inline `vi.mock` in the 7th test (lines 117-130) -- misleading and
+  redundant; delete it.
+- LOW: unused `afterEach` import.
 
-**Verdict: APPROVED.**
+**APPROVED.** Phase 6 (CI npm-publish job) and Phase 7 (final regression) remain
+pending per progress.json.
