@@ -206,6 +206,12 @@
       "notes": "[PASS] npm test: 85 test files passed (1 skipped), 1360 tests passed (14 skipped), 0 failed. Baseline confirmed (1360 = 1359 Phase 6 + 1 ASCII em-dash test cleanup). [PASS] npm run build: clean build (rm -rf dist && npm run build), tsc succeeds. [PASS] npm pack: tarball 311.4 kB, 1.3 MB unpacked, 482 files. CLEAN pack (no src/, tsconfig, .mjs build scripts, node_modules/, .exe, sea-prep.blob, sea-bundle.cjs, or agents/ directory entry). INCLUDES: dist/index.js, version.json, hooks-config.json, skills/. Tarball size is ~1.3 MB unpacked (small, not 30 MB contaminated). [PASS] npm pack --dry-run: verified dist/index.js, version.json, hooks-config.json, skills/ present; verified NO src/, tsconfig, .mjs, node_modules, .exe, sea-prep, sea-bundle. [PASS] Global install: npm i -g ./apra-labs-apra-fleet-0.2.1.tgz succeeds (EBADENGINE warning expected and recorded). [PASS] apra-fleet --version: shows real semver v0.2.2 + Mode: npm (not dev) + Binary path + node version. npm global install detection fixed in d86bc67 (uses .git check, not path comparison). [PASS] apra-fleet --help: prints full usage text. [PASS] apra-fleet update: prints npm redirect message ('npm update -g @apra-labs/apra-fleet') + skill-refresh reminder ('apra-fleet install'), no fetch error, no dev message. [PASS] Global uninstall: npm uninstall -g succeeds, cleanup complete. [PASS] SEA build: npm run build:sea succeeds ('Building SEA bundle -- version: v0.2.2_d86bc6', bundle written to dist/sea-bundle.cjs). No regression. CLEAN-UP COMMITS: A1 (3aa7fbf) removed phantom agents/ from files array. A2 (3aa7fbf) replaced 5 em-dashes with ASCII -- in src/cli/update.ts (2), src/cli/install.ts (1 JSDoc), tests/update.test.ts (4 test titles). FUNCTIONAL COMMIT: d86bc67 fixed isNpmGlobalInstall() detection. Phase 7 VALIDATED. All code complete, all validations pass, ready for final PR review."
     }
   ],
+  "docs_harvest": {
+    "bead": "apra-fleet-tmt.20",
+    "file": "docs/npm-packaging.md",
+    "status": "completed",
+    "notes": "As-built reference for npm packaging sprint. Covers two delivery modes, isNpmGlobalInstall .git-detection rationale (why path-comparison was wrong), version.ts ESM/createRequire strategy, update redirect per mode, --version diagnostic output, descoped service-manager/status work, files whitelist, and CI npm-publish job structure and hard constraints. ASCII-only. npm run build clean; npm test 85 files / 1362 passed (sprint baseline preserved)."
+  },
   "deferred_review_fixes": [
     {
       "bead": "apra-fleet-tmt.16",
