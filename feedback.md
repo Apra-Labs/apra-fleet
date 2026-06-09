@@ -1,112 +1,139 @@
-# apra-fleet npm Packaging -- Phase 3 Re-Review
+# apra-fleet npm Packaging -- Phase 4 Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-06-09 02:30:00-0400
+**Date:** 2026-06-09 02:55:00-0400
 **Verdict:** APPROVED
 
 > See the recent git history of this file to understand the context of this review.
 > Prior entries: db9936e (Phase 1 -- APPROVED), 25086a5 (Phase 2 -- APPROVED), bfc2e47
-> (Phase 3 -- CHANGES NEEDED: 1 HIGH claude MCP drops script path + 2 MEDIUM over-mocked
-> tests), fc5f69b (doer sha annotations). This re-review covers the fix in commit 88f3a66
-> (install.ts MCP command builder + tests/install-npm.test.ts strengthening).
+> (Phase 3 -- CHANGES NEEDED), 22235b3 (Phase 3 re-review -- APPROVED). This review covers
+> Phase 4 (Task 7 / commit 04a23b9, Task 8 / commit 7d791a7, VERIFY 4445c04..200af0f).
+> progress.json tasks 10, 11 are work; 12 is the Phase 4 VERIFY checkpoint.
 
 ---
 
 ## Independent verification
 
 - `npm run build` -- clean (tsc, no errors).
-- `npm test` -- **82 files passed (1 skipped), 1335 passed, 14 skipped, 0 failed.** Matches
-  the Phase-3 baseline; the fix added no net tests (the 3 over-mocked tests were strengthened
-  in place, file still has 11). install-npm.test.ts: 11 green.
-- `tests/install.test.ts` -- **unchanged from main** (empty `git diff main..HEAD --
-  tests/install.test.ts`); 7 tests green. No regression to the existing install suite.
-- File hygiene: the fix diff (`git diff bfc2e47..HEAD`) touches only `src/cli/install.ts`
-  (lines 584-590) and `tests/install-npm.test.ts`. Clean. The uncommitted CLAUDE.md/AGENTS.md
-  and untracked working-tree files are not part of any sprint commit and are out of scope.
+- `npm test` -- **83 files passed (1 skipped), 1338 passed, 14 skipped, 0 failed.** Confirms
+  the doer's 1338-passing claim exactly (Phase-3 baseline 1335 + 3 new update-npm tests).
+- `node dist/index.js update` -- prints `apra-fleet is running in dev mode. Pull the latest
+  source and rebuild.` No `Checking for updates...`, no fetch, no network error. PASS.
+- File hygiene: `git diff --name-only 534e8dc~2..HEAD` lists only progress.json,
+  src/cli/install.ts, src/cli/update.ts, tests/update-npm.test.ts, tests/update.test.ts --
+  all justified (source, tests, tracking). No stray artifacts committed. The uncommitted
+  CLAUDE.md/AGENTS.md and untracked .sprint/, results.json, docs plans are working-tree only,
+  not in any sprint commit, and out of scope per the review brief.
 
 ---
 
-## Finding 1 (was HIGH): claude MCP registration now includes node + script -- FIXED / PASS
+## Focus 1 -- Redirect correctness in runUpdate() -- PASS
 
-Read `src/cli/install.ts:573-591`. The mcpConfig ternary is unchanged: SEA -> `{command:
-binaryPath, args: []}`, npm -> `{command: process.execPath, args: [process.argv[1]]}`, dev ->
-`{command: 'node', args: [<dist/index.js>]}`. The claude command builder (lines 588-590) now
-branches on `mcpConfig.args.length > 0` instead of the literal `'node'` string:
+Read `src/cli/update.ts:11-23`. The early-return is the first statement in `runUpdate()`,
+firing BEFORE any fetch/AbortController/network code (which begins at line 25
+`Checking for updates...`).
 
-```
-const cmd = mcpConfig.args.length > 0
-  ? `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" "${mcpConfig.args[0]}"`
-  : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
-```
+- npm mode (`!isSea()` && `isNpmGlobalInstall()`): logs the four required lines including
+  `  npm update -g @apra-labs/apra-fleet` AND the S14.4 skill-refresh reminder
+  `  apra-fleet install`, then `return`. Correct.
+- dev mode (`!isSea()` && `!isNpmGlobalInstall()`): logs the dev rebuild message, then
+  `return`. Correct (verified live above).
+- SEA mode (`isSea()` true): skips the entire `if (!isSea())` block and falls through to the
+  existing fetch/download/spawn logic at lines 25-115 -- UNCHANGED from main
+  (`git diff main..HEAD -- src/cli/update.ts` shows only the added early-return block + the
+  import; no edits to the download path). Correct.
 
-Confirmed against each requested sub-case:
+`isSea` export in install.ts (`git diff main..HEAD -- src/cli/install.ts`): the only change to
+the function is `function isSea` -> `export function isSea`. Body is byte-for-byte identical
+(`_seaOverride` short-circuit, `require('node:sea')`, catch->false). The `_setSeaOverride` test
+hook is untouched. No behavioral change. PASS.
 
-- **(a) npm mode -- PASS.** `args.length === 1` -> emits `... -- "<execPath>" "<scriptPath>"`.
-  The script path (`process.argv[1]`) is no longer dropped. This is the core fix.
-- **(b) dev mode -- PASS.** `args.length === 1` -> emits `... -- "node" "<dist/index.js>"`.
-  Functionally identical to the pre-bug behavior; `'node'` is now quoted, which the shell
-  spawns the same way. Node + script both present.
-- **(c) SEA mode -- PASS.** `args.length === 0` -> the `else` branch emits just
-  `... -- "<binaryPath>"`. Byte-identical to prior SEA behavior; unchanged.
-- **(d) gemini/codex/copilot/agy -- PASS.** Untouched. They consume `mcpConfig` directly via
-  `mergeGeminiConfig`/`mergeCodexConfig`/`mergeCopilotConfig`/`mergeAgyConfig` (lines 592-599);
-  the claude-only command builder edit does not affect them.
-- **(e) Windows-path quoting -- PASS.** Both `mcpConfig.command` and `mcpConfig.args[0]` are
-  double-quoted, so an execPath like `C:\Program Files\nodejs\node.exe` and a script path with
-  spaces survive intact. The empirical pre-fix run (below) showed the actual execPath
-  `C:\nvm4w\nodejs\node.exe` correctly quoted.
+---
 
-`run()` (line 331) dispatches via `execSync` (line 334), so the registration command is a real
-shell command, and the test mock observes it on the `execSync` call list. Verified.
+## Focus 2 -- New tests (tests/update-npm.test.ts) -- PASS
 
-## Finding 2 (was MEDIUM x2): the 3 tests now assert real registered command/args -- FIXED / PASS
+All 3 tests assert real behavior via per-test `vi.resetModules()` + `vi.doMock` of install.js,
+re-importing update.js fresh each time:
 
-All three previously-tautological tests now capture `vi.mocked(execSync).mock.calls`, find the
-`claude mcp add` command, and assert on its actual content rather than a console.log string:
+- Test 1 (npm): asserts the five exact strings logged (`apra-fleet is installed via npm...`,
+  `  npm update -g @apra-labs/apra-fleet`, ``, `After updating...`, `  apra-fleet install`)
+  AND `fetch` NOT called. Real + non-tautological.
+- Test 2 (dev): asserts the exact dev-mode string AND `fetch` NOT called. Real.
+- Test 3 (SEA): mocks `isSea => true`, primes `fetch` to resolve `{ok:false}`, and asserts
+  `fetch` WAS called -- proving the early return did NOT fire and the network path was
+  reached. Real; the `{ok:false}` short-circuits cleanly at line 40-43 so no spawn side
+  effects leak. Non-tautological.
 
-- "sets binaryPath ... (flows into claude MCP script arg)" (lines 164-182):
-  `expect(mcpAdd).toContain(npmPath)`.
-- "registers MCP config with process.execPath + absolute script path" (lines 220-236):
-  `toContain(process.execPath)` AND `toContain(npmPath)`.
-- "uses process.execPath for npm mode MCP registration" (lines 238-254): exact-match
-  `toBe(\`claude mcp add --scope user apra-fleet -- "${process.execPath}" "${npmPath}"\`)`.
+No log-only or weak assertions found. Coverage of the new redirect surface is meaningful.
 
-**Are these real regression guards?** Yes -- verified empirically, not just by reasoning. I
-checked out the pre-fix `install.ts` (bfc2e47) and ran the new test file against it: **3 tests
-FAILED, 8 passed.** The failure was exactly the dropped script path -- pre-fix Received
-`... -- "C:\nvm4w\nodejs\node.exe"` (no script) vs Expected `... -- "<execPath>"
-"<scriptPath>"`. Restored HEAD; all 11 pass. So these assertions would have caught the HIGH
-bug -- they are genuine regression guards now, not tautologies.
+---
 
-The 6 `isNpmGlobalInstall()` detection tests (lines 53-131) and the copyFileSync-skip test
-(line 153) are intact and unchanged -- confirmed in the diff and the green run.
+## Focus 3 -- Regression risk from MODIFIED tests/update.test.ts -- PASS (no weakening)
 
-## Finding 3: regression + ASCII -- PASS
+`git diff main..HEAD -- tests/update.test.ts` shows the ONLY change is an added
+`vi.mock('../src/cli/install.js', () => ({ isSea: () => true, isNpmGlobalInstall: () => false,
+_setSeaOverride }))` block. The 4 pre-existing SEA tests (lines 70-190: up-to-date, newer-
+available-downloads-spawns, missing-config, invalid-config) are otherwise byte-for-byte
+unchanged.
 
-- Full suite green at 1335 passing (== Phase-3 baseline; no net change in count, as expected
-  for an in-place strengthening). install.test.ts unchanged and green. SEA and dev paths
-  unaltered (SEA `args:[]` -> binary-alone; dev `node` + script both registered).
-- ASCII-only in the committed sprint files: `tests/install-npm.test.ts` and this `feedback.md`
-  contain no non-ASCII. The fix diff lines in `install.ts` (584-590) introduced none. The
-  pre-existing em-dashes elsewhere in `install.ts` (.ts exempt from the ASCII hook) are
-  out of scope and were already noted in the prior review.
+Judgment: this mock does NOT over-mock or hollow out the 4 SEA tests.
+
+- Those tests exercise update.ts's OWN download/spawn logic (fetch -> asset selection ->
+  writeStream -> chmod -> config read -> `spawn(installer, ['install','--force',...])` ->
+  `process.exit(0)`). They do not assert anything about install.js internals.
+- The only install.js symbol they touch transitively is `isSea()`, used solely by the new
+  early-return gate. Before Phase 4 there was no gate in `runUpdate()`, so the tests reached
+  the download path unconditionally. After Phase 4 added the gate, `isSea()` evaluated in the
+  vitest process (a plain node run, not a SEA binary) would return false and short-circuit all
+  4 tests into the npm/dev branch -- they would assert `Updating to v99.9.9`/`spawn` and FAIL.
+  The mock's `isSea => true` is the minimal shim restoring the original intent: keep these
+  tests on the binary-download path.
+- The mock does not stub fetch, spawn, fs, or any assertion target. Every meaningful assertion
+  (fetch call count, asset URL, spawn args, exit code, config-fallback warnings) still runs
+  against real update.ts code. A genuine regression in the download/spawn logic would still
+  break these tests.
+
+This is the correct, idiomatic fix -- functionally equivalent to a partial mock that only
+overrides `isSea`, since the SEA tests never invoke `isNpmGlobalInstall` (the gate returns
+early on `isSea()===true`). Using `_setSeaOverride(true)` instead would have been an
+alternative, but the full module mock is no weaker here. No finding.
+
+---
+
+## Focus 4 -- No regression elsewhere -- PASS
+
+- Full suite green: 1338 passed, 14 skipped, 0 failed (>= 1338 requirement met).
+- Phases 1-3 artifacts unaffected: install.ts isSea export is additive; version.ts,
+  install-npm.test.ts, package.json untouched in Phase 4.
+- ASCII in newly-written/edited code: tests/update-npm.test.ts ASCII-clean; the update.ts
+  early-return block and install.ts isSea/isNpmGlobalInstall additions ASCII-clean
+  (verified the Phase-4 diffs introduce no non-ASCII bytes).
+
+### LOW (informational, non-gating, pre-existing -- NOT introduced by Phase 4)
+
+`src/cli/update.ts:67,114` and the 4 `it(...)` titles in `tests/update.test.ts` contain
+non-ASCII em-dashes (U+2014). These predate this sprint (the Phase-4 diffs do not touch those
+lines) and the pre-commit hook tolerated them (build + commits succeeded). Per the project
+ASCII-only convention they should eventually become `--`, but this is out of Phase 4 scope and
+does not gate. Worth a cleanup pass when update.ts is next touched (e.g. a future phase or the
+Phase 7 regression task).
 
 ---
 
 ## Summary
 
-The HIGH finding is fully resolved: the claude MCP command builder no longer keys on the
-literal `'node'` string; it branches on `mcpConfig.args.length`, so npm mode now registers
-BOTH the node executable and the script path (`"<execPath>" "<scriptPath>"`), with both
-segments quoted for Windows paths. SEA (binary alone), dev (node + script), and the
-gemini/codex/copilot/agy providers are functionally unchanged.
+Phase 4 (Tasks 7-8) is correct and complete. The npm-redirect early-return fires before any
+network call; npm mode emits both the `npm update -g @apra-labs/apra-fleet` command and the
+S14.4 `apra-fleet install` skill-refresh reminder; dev mode prints the rebuild message; SEA
+mode is byte-for-byte unchanged and still reaches the binary-download path. The `isSea` export
+is a pure visibility change with no behavioral impact. The 3 new tests assert real behavior
+(exact strings + fetch-not-called for npm/dev, fetch-called for SEA). The full-module mock
+added to the existing update.test.ts is the minimal shim needed to keep the 4 SEA tests on the
+download path -- it does not hollow out their assertions or mask a regression. Build clean,
+full suite 1338 green, dev-mode update verified live with no network call. The doer's
+1338-passing claim is confirmed.
 
-Both MEDIUM findings are resolved: the three formerly log-only tests now assert on the real
-registered `claude mcp add` command/args. I confirmed empirically that all three FAIL against
-the pre-fix code and PASS against the fix -- they are real regression guards, not tautologies.
-The 6 detection tests and the copyFileSync-skip test remain intact.
+The one non-gating note (pre-existing em-dashes in update.ts/update.test.ts) is not introduced
+by this phase and is deferred.
 
-Build clean, full suite green (1335 passing), existing install.test.ts unchanged, file hygiene
-clean, committed files ASCII-only. No new issues introduced and no scope creep.
-
-**Verdict: APPROVED.** Phase 3 closes.
+**Verdict: APPROVED.**
