@@ -21,12 +21,12 @@
       "id": 2,
       "step": "npm pack + local global install smoke test",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "standard",
       "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.2",
-      "commit": "",
-      "notes": "Validation only -- no code changes. Proves riskiest assumption."
+      "commit": "d077ba4",
+      "notes": "VALIDATION PASSED: (a) npm pack --dry-run lists dist/index.js, version.json, hooks/hooks-config.json, skills/, agents/, scripts/fleet-statusline.sh, scripts/agy-*.js -- no src/, tsconfig.json, *.mjs, node_modules; (b) npm pack successful (30.3MB tarball); (c) global install succeeded (npm i -g); (d) apra-fleet --version outputs v0.0.0-unknown (expected until Phase 2); (e) apra-fleet --help prints full usage text; (f) dist/index.js contains shebang #!/usr/bin/env node; (g) npm uninstall -g succeeded. Cleanup complete."
     },
     {
       "id": 3,
