@@ -6,8 +6,22 @@ import { serverVersion } from '../version.js';
 import { parseVersion, isNewer } from '../services/update-check.js';
 import { FLEET_DIR } from '../paths.js';
 import { readInstallConfig } from './config.js';
+import { isSea, isNpmGlobalInstall } from './install.js';
 
 export async function runUpdate(): Promise<void> {
+  if (!isSea()) {
+    if (isNpmGlobalInstall()) {
+      console.log('apra-fleet is installed via npm. To update, run:');
+      console.log('  npm update -g @apra-labs/apra-fleet');
+      console.log('');
+      console.log('After updating, re-install skills and hooks:');
+      console.log('  apra-fleet install');
+    } else {
+      console.log('apra-fleet is running in dev mode. Pull the latest source and rebuild.');
+    }
+    return;
+  }
+
   console.log(`Checking for updates...`);
 
   try {

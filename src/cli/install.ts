@@ -21,7 +21,7 @@ let _seaOverride: boolean | null = null;
 /** Override isSea() result — for tests only. Pass null to restore default. */
 export function _setSeaOverride(v: boolean | null): void { _seaOverride = v; }
 
-function isSea(): boolean {
+export function isSea(): boolean {
   if (_seaOverride !== null) return _seaOverride;
   try {
     const sea = require('node:sea');

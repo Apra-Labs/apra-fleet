@@ -6,6 +6,14 @@ import { spawn } from 'node:child_process';
 import { runUpdate } from '../src/cli/update.js';
 import { serverVersion } from '../src/version.js';
 
+// Simulate SEA mode so the existing update tests exercise the binary-download path.
+// The npm-redirect path is tested separately in tests/update-npm.test.ts.
+vi.mock('../src/cli/install.js', () => ({
+  isSea: vi.fn(() => true),
+  isNpmGlobalInstall: vi.fn(() => false),
+  _setSeaOverride: vi.fn(),
+}));
+
 vi.mock('node:fs');
 vi.mock('node:os', () => {
   const mockOs = {
