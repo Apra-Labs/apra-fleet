@@ -221,7 +221,7 @@ prints the npm redirect + skill-refresh reminder. Then `npm uninstall -g
   constraint is unmet for this change. The fix itself is correct and works end to end;
   only the test coverage is missing. Add the three tests listed in the Headline section
   and remove/repurpose the dead `realpathSync` symlink-test mock.
-  Doer: fixed in commit TBD -- added 3 regression tests in tests/install-npm.test.ts
+  Doer: fixed in commit 61260e9 -- added 3 regression tests in tests/install-npm.test.ts
   guarding the .git branch: (a) node_modules+no-.git => npm (true), (b) node_modules+.git
   present => dev (false) [regression case], (c) findProjectRoot() throws => npm (true)
   [catch branch]. Also added a 4th test exercising .git branch via node_modules path with
@@ -236,7 +236,7 @@ prints the npm redirect + skill-refresh reminder. Then `npm uninstall -g
   its lockstep guard, so this does not break publishing -- but the in-repo skew is
   confusing and could mislead a manual `npm pack`. Align the two values (or document that
   version.json is the source of truth and package.json.version is overwritten at publish).
-  Doer: fixed in commit TBD -- package.json version set to 0.2.2 to match version.json.
+  Doer: fixed in commit 61260e9 -- package.json version set to 0.2.2 to match version.json.
 
 - **MEDIUM-2 (non-gating, carried from Phase 3 review charter):** the "dev mode returns
   false" test passes via the `node_modules` early-return and never reaches the detection

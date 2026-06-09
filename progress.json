@@ -230,6 +230,31 @@
         }
       ],
       "test_results": "npm run build: clean (tsc). npm test: 85 files passed (1 skipped), 1360 passed (14 skipped), 0 failed. version.test.ts: 9 tests (was 8, +1 real fallback test). delivery-mode.test.ts: 7 tests (same count, cleaner code). Baseline preserved and exceeded."
+    },
+    {
+      "bead": "apra-fleet-tmt.19",
+      "description": "Review-fix cycle for FINAL Phase 7 HIGH finding (d86bc67 .git detection missing regression tests)",
+      "status": "completed",
+      "commit": "61260e9",
+      "items": [
+        {
+          "source": "HIGH-1",
+          "action": "Added 3 regression tests to tests/install-npm.test.ts: (a) node_modules+no-.git=>true (npm), (b) node_modules+.git-present=>false (dev, regression case), (c) findProjectRoot-throws=>true (catch branch). Added 4th test for MEDIUM-2 (.git branch independently exercised with node_modules path). Each test would fail if .git branch were removed or inverted."
+        },
+        {
+          "source": "dead realpathSync mock",
+          "action": "Removed realpathSync mock from makeFsMock() and from old symlink test. Replaced symlink test with regression test for .git-present=>dev (node_modules+.git present => false). Added explanatory comment in makeFsMock explaining why realpathSync is not mocked."
+        },
+        {
+          "source": "stale comments",
+          "action": "Updated test names and makeFsMock comment to describe .git-existence check, not old realpath/path-comparison approach. install.ts doc-comment was already accurate."
+        },
+        {
+          "source": "MEDIUM-1",
+          "action": "Set package.json version to 0.2.2 to match version.json (was 0.2.1)."
+        }
+      ],
+      "test_results": "npm run build: clean (tsc). npm test: 85 files passed (1 skipped), 1362 passed (14 skipped), 0 failed. install-npm.test.ts: 13 tests (was 11, +2 net: 3 new tests, 1 symlink test repurposed). All new tests genuinely guard the .git branch."
     }
   ]
 }
