@@ -4,7 +4,7 @@
   "created": "2026-06-09",
   "epic": "apra-fleet-tmt",
   "lastDispatchedPhase": 0,
-  "model_map_note": "Tier->model resolved by orchestrator: cheap/standard -> claude-sonnet-4-6; regression-sensitive code tasks (3,5) -> claude-opus-4-8; reviews -> claude-opus-4-8.",
+  "model_map_note": "Tier->model resolved by orchestrator (cost-aggressive Haiku, user-approved 2026-06-09): mechanical edits, validation-only, and pattern-following tests -> claude-haiku-4-5; cross-file/fiddly tasks + version-mocking test -> claude-sonnet-4-6; regression-sensitive code refactors (tasks 3,5) and all reviews -> claude-opus-4-8.",
   "tasks": [
     {
       "id": 1,
@@ -12,7 +12,7 @@
       "type": "work",
       "status": "pending",
       "tier": "cheap",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.1",
       "commit": "",
       "notes": "Add bin, files, engines, publishConfig, prepublishOnly, scoped name"
@@ -23,7 +23,7 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.2",
       "commit": "",
       "notes": "Validation only -- no code changes. Proves riskiest assumption."
@@ -56,7 +56,7 @@
       "model": "claude-sonnet-4-6",
       "bead": "apra-fleet-tmt.4",
       "commit": "",
-      "notes": "tests/version.test.ts -- ESM path, CJS path, fallback, git hash"
+      "notes": "tests/version.test.ts -- ESM path, CJS path, fallback, git hash. Subtle module re-eval/import.meta mocking -> sonnet."
     },
     {
       "id": 6,
@@ -83,7 +83,7 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.6",
       "commit": "",
       "notes": "tests/install-npm.test.ts -- npm detection, binary skip, MCP config"
@@ -105,7 +105,7 @@
       "model": "claude-sonnet-4-6",
       "bead": "apra-fleet-tmt.7",
       "commit": "",
-      "notes": "update.ts: early return with npm update -g + skill-refresh reminder"
+      "notes": "update.ts: early return with npm update -g + skill-refresh reminder. Cross-file (export isSea from install.ts) -> sonnet."
     },
     {
       "id": 11,
@@ -113,7 +113,7 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.8",
       "commit": "",
       "notes": "tests/update-npm.test.ts -- npm redirect, dev message, SEA passthrough"
@@ -135,7 +135,7 @@
       "model": "claude-sonnet-4-6",
       "bead": "apra-fleet-tmt.9",
       "commit": "",
-      "notes": "src/delivery-mode.ts + index.ts --version enhancement"
+      "notes": "src/delivery-mode.ts (new module) + index.ts --version wiring. Cross-file -> sonnet."
     },
     {
       "id": 14,
@@ -143,7 +143,7 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.10",
       "commit": "",
       "notes": "tests/delivery-mode.test.ts -- sea, npm, dev modes"
@@ -165,7 +165,7 @@
       "model": "claude-sonnet-4-6",
       "bead": "apra-fleet-tmt.11",
       "commit": "",
-      "notes": "Tag-gated, provenance, lockstep guard, dry-run check, idempotency"
+      "notes": "Tag-gated, provenance, lockstep guard, dry-run check, idempotency. Fiddly YAML structure -> sonnet."
     },
     {
       "id": 17,
@@ -173,7 +173,7 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.12",
       "commit": "",
       "notes": "tests/ci-npm-publish.test.ts -- structural YAML assertions"
@@ -192,7 +192,7 @@
       "type": "work",
       "status": "pending",
       "tier": "standard",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.13",
       "commit": "",
       "notes": "Validation only: build, test, pack, global install, SEA build check"
