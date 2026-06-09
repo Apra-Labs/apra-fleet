@@ -31,6 +31,28 @@ function isSea(): boolean {
   }
 }
 
+/**
+ * Detect npm global install mode: the script runs from a node_modules-managed
+ * location (npm bin) rather than the SEA binary or the project's own dev dist.
+ * Returns false under SEA. Distinguishes npm global installs from `npm test` /
+ * dev-mode runs (which execute the project's own dist/index.js).
+ */
+export function isNpmGlobalInstall(): boolean {
+  if (isSea()) return false;
+  const scriptPath = process.argv[1];
+  if (!scriptPath || !scriptPath.includes('node_modules')) return false;
+  // Exclude the project's own dev dist path. Resolve both sides through
+  // realpath so a symlinked npm global dir is still detected as npm (npm
+  // prefix is often symlinked on macOS/Linux) and a symlinked dev path is
+  // not misclassified as npm.
+  const devDistPath = path.join(findProjectRoot(), 'dist', 'index.js');
+  let resolvedScript = scriptPath;
+  let resolvedDev = devDistPath;
+  try { resolvedScript = fs.realpathSync(scriptPath); } catch { /* keep raw */ }
+  try { resolvedDev = fs.realpathSync(devDistPath); } catch { /* keep raw */ }
+  return resolvedScript !== resolvedDev;
+}
+
 function getSeaAsset(key: string): string {
   const sea = require('node:sea');
   const buf = sea.getAsset(key);
@@ -465,8 +487,8 @@ Options:
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
   }
 
-  // --- Running-process guard (SEA mode only — dev mode runs via node, not the binary) ---
-  if (isSea() && isApraFleetRunning()) {
+  // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
+  if ((isSea() || isNpmGlobalInstall()) && isApraFleetRunning()) {
     if (!force) {
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
@@ -500,8 +522,11 @@ ${killHint}
     if (process.platform !== 'win32') {
       fs.chmodSync(binaryPath, 0o755);
     }
+  } else if (isNpmGlobalInstall()) {
+    console.log(`  [1/${totalSteps}] npm global install detected -- skipping binary copy`);
+    binaryPath = process.argv[1];
   } else {
-    console.log(`  [1/${totalSteps}] Dev mode — skipping binary copy`);
+    console.log(`  [1/${totalSteps}] Dev mode -- skipping binary copy`);
   }
 
   // --- Step 2: Extract hooks ---
@@ -545,8 +570,10 @@ ${killHint}
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
 
-  const mcpConfig = isSea() 
+  const mcpConfig = isSea()
     ? { command: binaryPath, args: [] }
+    : isNpmGlobalInstall()
+    ? { command: process.execPath, args: [process.argv[1]] }
     : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
 
   if (llm === 'claude') {
