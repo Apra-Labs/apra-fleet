@@ -10,12 +10,12 @@
       "id": 1,
       "step": "Update package.json for npm publishing",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "tier": "cheap",
       "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.1",
-      "commit": "",
-      "notes": "Add bin, files, engines, publishConfig, prepublishOnly, scoped name"
+      "commit": "ee0af4f",
+      "notes": "Added bin, files, engines, publishConfig, prepublishOnly, scoped name @apra-labs/apra-fleet. npm run build and npm test both pass."
     },
     {
       "id": 2,
