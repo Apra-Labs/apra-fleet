@@ -182,9 +182,9 @@
       "id": 18,
       "step": "VERIFY: Phase 6 -- CI npm-publish job",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "08a1765",
+      "notes": "[PASS] npm test: 85 test files passed (1 skipped), 1359 tests passed (14 skipped), 0 failed. New tests/ci-npm-publish.test.ts includes 14 structural tests covering npm-publish job configuration (needs, if gate, permissions, steps, existing jobs). [PASS] Manual workflow inspection: 15/15 checks passed. npm-publish job present, tag-gated (if: startsWith(github.ref, 'refs/tags/v')), requires build-and-test, has permissions.id-token: write, includes all 5 required steps (version lockstep guard, shebang check, dry-run pack, idempotency check, clean-pack guard), runs with --provenance. release job unchanged (needs [package, build-binary, sign-windows]). All 5 existing jobs present. npm publish --provenance appears exactly once in npm-publish job (not elsewhere). [PASS] npm publish NOT triggered: no v0.2.2 tag, npm view @apra-labs/apra-fleet returns 404 (not published). Phase 6 VALIDATED."
     },
     {
       "id": 19,
