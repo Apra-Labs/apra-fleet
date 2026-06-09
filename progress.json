@@ -1,0 +1,180 @@
+{
+  "project": "apra-fleet npm packaging",
+  "plan_file": "PLAN.md",
+  "created": "2026-06-09",
+  "tasks": [
+    {
+      "id": 1,
+      "step": "Update package.json for npm publishing",
+      "type": "work",
+      "status": "pending",
+      "tier": "cheap",
+      "commit": "",
+      "notes": "Add bin, files, engines, publishConfig, prepublishOnly, scoped name"
+    },
+    {
+      "id": 2,
+      "step": "npm pack + local global install smoke test",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "Validation only -- no code changes. Proves riskiest assumption."
+    },
+    {
+      "id": 3,
+      "step": "VERIFY: Phase 1 -- npm pack validation",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 4,
+      "step": "Fix resolveVersion() for ESM (npm mode)",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "Refactor version.ts to use import.meta.url under ESM"
+    },
+    {
+      "id": 5,
+      "step": "Unit tests for version.ts ESM fallback",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "tests/version.test.ts -- ESM path, CJS path, fallback, git hash"
+    },
+    {
+      "id": 6,
+      "step": "VERIFY: Phase 2 -- version ESM fallback",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 7,
+      "step": "Add isNpmGlobalInstall() + modify binary-copy and MCP config gates",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "install.ts: npm detection, binary-copy gate, MCP config for npm"
+    },
+    {
+      "id": 8,
+      "step": "Unit tests for isNpmGlobalInstall + install npm-mode paths",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "tests/install-npm.test.ts -- npm detection, binary skip, MCP config"
+    },
+    {
+      "id": 9,
+      "step": "VERIFY: Phase 3 -- install npm detection",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 10,
+      "step": "Add npm-mode redirect to runUpdate()",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "update.ts: early return with npm update -g + skill-refresh reminder"
+    },
+    {
+      "id": 11,
+      "step": "Unit tests for update npm redirect",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "tests/update-npm.test.ts -- npm redirect, dev message, SEA passthrough"
+    },
+    {
+      "id": 12,
+      "step": "VERIFY: Phase 4 -- update redirect",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 13,
+      "step": "Add getDeliveryMode() utility + enhance --version output",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "src/delivery-mode.ts + index.ts --version enhancement"
+    },
+    {
+      "id": 14,
+      "step": "Unit tests for delivery-mode + version output",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "tests/delivery-mode.test.ts -- sea, npm, dev modes"
+    },
+    {
+      "id": 15,
+      "step": "VERIFY: Phase 5 -- coexistence guards",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 16,
+      "step": "Author npm-publish job in ci.yml",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "Tag-gated, provenance, lockstep guard, dry-run check, idempotency"
+    },
+    {
+      "id": 17,
+      "step": "Unit test -- CI workflow validation",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "tests/ci-npm-publish.test.ts -- structural YAML assertions"
+    },
+    {
+      "id": 18,
+      "step": "VERIFY: Phase 6 -- CI npm-publish job",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    },
+    {
+      "id": 19,
+      "step": "Full regression + npm smoke test",
+      "type": "work",
+      "status": "pending",
+      "tier": "standard",
+      "commit": "",
+      "notes": "Validation only: build, test, pack, global install, SEA build check"
+    },
+    {
+      "id": 20,
+      "step": "VERIFY: Phase 7 -- final validation",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": ""
+    }
+  ]
+}
