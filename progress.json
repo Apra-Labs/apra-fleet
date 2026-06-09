@@ -111,12 +111,12 @@
       "id": 11,
       "step": "Unit tests for update npm redirect",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.8",
-      "commit": "",
-      "notes": "tests/update-npm.test.ts -- npm redirect, dev message, SEA passthrough"
+      "commit": "7d791a7",
+      "notes": "DONE. tests/update-npm.test.ts: 3 tests covering (1) npm mode -- prints 'npm update -g @apra-labs/apra-fleet' + skill-refresh reminder 'apra-fleet install', no fetch; (2) dev mode -- prints dev-mode message, no fetch; (3) SEA mode -- fetch IS called (passthrough confirmed). Uses vi.resetModules() + vi.doMock() per test. Full suite: 1338 tests passed (1335 baseline + 3 new), 14 skipped, 0 failed. Existing tests/update.test.ts green (4 SEA tests, no regression)."
     },
     {
       "id": 12,
