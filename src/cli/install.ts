@@ -18,16 +18,43 @@ import {
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
-/** Override isSea() result — for tests only. Pass null to restore default. */
+/** Override isSea() result -- for tests only. Pass null to restore default. */
 export function _setSeaOverride(v: boolean | null): void { _seaOverride = v; }
 
-function isSea(): boolean {
+export function isSea(): boolean {
   if (_seaOverride !== null) return _seaOverride;
   try {
     const sea = require('node:sea');
     return sea.isSea();
   } catch {
     return false;
+  }
+}
+
+/**
+ * Detect npm global install mode: the script runs from a node_modules-managed
+ * location (npm bin) rather than the SEA binary or the project's own dev dist.
+ * Returns false under SEA. Distinguishes npm global installs from `npm test` /
+ * dev-mode runs (which execute the project's own dist/index.js).
+ *
+ * Key insight: when npm installs globally, findProjectRoot() resolves to the
+ * npm package's root (where version.json is), which has no .git/. Dev mode has
+ * a .git/ directory at or above the root. This allows us to distinguish them.
+ */
+export function isNpmGlobalInstall(): boolean {
+  if (isSea()) return false;
+  const scriptPath = process.argv[1];
+  if (!scriptPath || !scriptPath.includes('node_modules')) return false;
+  // Check if the resolved project root is a git repo (has .git). If not, we
+  // assume npm global install mode. This is more reliable than comparing paths
+  // because npm package root and git repo root differ when npm is global.
+  try {
+    const projectRoot = findProjectRoot();
+    const hasGit = fs.existsSync(path.join(projectRoot, '.git'));
+    return !hasGit; // npm mode if no .git at project root
+  } catch {
+    // If we can't find a project root, assume npm (not in a known git repo)
+    return true;
   }
 }
 
@@ -465,8 +492,8 @@ Options:
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
   }
 
-  // --- Running-process guard (SEA mode only — dev mode runs via node, not the binary) ---
-  if (isSea() && isApraFleetRunning()) {
+  // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
+  if ((isSea() || isNpmGlobalInstall()) && isApraFleetRunning()) {
     if (!force) {
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
@@ -500,8 +527,11 @@ ${killHint}
     if (process.platform !== 'win32') {
       fs.chmodSync(binaryPath, 0o755);
     }
+  } else if (isNpmGlobalInstall()) {
+    console.log(`  [1/${totalSteps}] npm global install detected -- skipping binary copy`);
+    binaryPath = process.argv[1];
   } else {
-    console.log(`  [1/${totalSteps}] Dev mode — skipping binary copy`);
+    console.log(`  [1/${totalSteps}] Dev mode -- skipping binary copy`);
   }
 
   // --- Step 2: Extract hooks ---
@@ -545,8 +575,10 @@ ${killHint}
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
 
-  const mcpConfig = isSea() 
+  const mcpConfig = isSea()
     ? { command: binaryPath, args: [] }
+    : isNpmGlobalInstall()
+    ? { command: process.execPath, args: [process.argv[1]] }
     : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
 
   if (llm === 'claude') {
@@ -554,8 +586,12 @@ ${killHint}
       run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
     } catch { /* not registered */ }
     
-    const cmd = mcpConfig.command === 'node' 
-      ? `claude mcp add --scope user apra-fleet -- node "${mcpConfig.args[0]}"`
+    // Build the claude MCP command from the actual mcpConfig structure.
+    // SEA mode: { command: binaryPath, args: [] } -> register the binary alone.
+    // npm/dev mode: { command: <node>, args: [<script>] } -> register node + script path.
+    // Quote both segments so paths with spaces (e.g. Windows "Program Files") work.
+    const cmd = mcpConfig.args.length > 0
+      ? `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" "${mcpConfig.args[0]}"`
       : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
     run(cmd);
   } else if (llm === 'gemini') {

@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 
 import { serverVersion } from './version.js';
+import { getDeliveryInfo } from './delivery-mode.js';
 import { logLine, logError } from './utils/log-helpers.js';
 
 // --- CLI dispatch (before MCP server imports to keep --version fast) ---
 const arg = process.argv[2];
 
 if (arg === '--version' || arg === '-v') {
+  const info = getDeliveryInfo();
   console.log(`apra-fleet ${serverVersion}`);
+  console.log(`  Mode:   ${info.mode}${info.mode !== 'sea' ? ' (node ' + info.nodeVersion + ')' : ''}`);
+  console.log(`  Binary: ${info.binary}`);
   process.exit(0);
 }
 
