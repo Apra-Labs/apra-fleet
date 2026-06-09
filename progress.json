@@ -40,12 +40,12 @@
       "id": 4,
       "step": "Fix resolveVersion() for ESM (npm mode)",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-opus-4-8",
       "bead": "apra-fleet-tmt.3",
-      "commit": "",
-      "notes": "Refactor version.ts to use import.meta.url under ESM. Regression-sensitive -> opus."
+      "commit": "7e7813a",
+      "notes": "DONE. Before: node dist/index.js --version -> 'apra-fleet v0.0.0-unknown'. After: 'apra-fleet v0.2.2_db9936' (real semver + dev git hash). SEA bundle (dist/sea-bundle.cjs --version) still 'v0.2.2_db9936' via BUILD_VERSION (unaffected). Implementation: added ESM branch detected by 'typeof __dirname === undefined'; derives package dir from dirname(fileURLToPath(import.meta.url)); BUILD_VERSION check stays first; CJS/SEA bare-__dirname path unchanged; git-hash suffix kept (dev only, npm ships no .git). NOTE: switched fs/path/url from top-level ESM imports to lazy require() via createRequire(import.meta.url) -- a static 'import {readFileSync} from node:fs' got intercepted by tests/update.test.ts's vi.mock('node:fs'), making serverVersion resolve to v0.0.0-unknown at module load and breaking 3 update.test.ts cases. Lazy require() from createRequire bypasses the module-scope fs mock (node:module is not mocked). Full suite: 1316 passed, 14 skipped, 0 failed (Phase 1 baseline preserved). ASCII clean."
     },
     {
       "id": 5,
