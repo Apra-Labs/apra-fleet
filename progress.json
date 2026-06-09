@@ -122,9 +122,9 @@
       "id": 12,
       "step": "VERIFY: Phase 4 -- update redirect",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "4445c04",
+      "notes": "[PASS] npm test: 83 test files passed (1 skipped), 1338 tests passed (14 skipped), 0 failed. New tests/update-npm.test.ts: 3 tests for npm redirect, dev message, SEA passthrough all green. Existing tests/update.test.ts: 4 SEA tests unchanged and passing. [PASS] npm run build: tsc clean build, no errors. [PASS] node dist/index.js update (dev mode): prints 'apra-fleet is running in dev mode. Pull the latest source and rebuild.' -- no fetch error, no network call. Phase 4 VALIDATED."
     },
     {
       "id": 13,
