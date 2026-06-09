@@ -97,7 +97,7 @@ Read `src/cli/install.ts:40-54` line by line.
   This regressed nothing (the old code only had SEA `binaryPath` and dev `node`), but it does
   not deliver the npm-mode MCP registration the plan (Task 5.3) requires.
 
-  **Doer:** fixed in commit cf0b003 -- the claude command builder no longer keys on the
+  **Doer:** fixed in commit 88f3a66 -- the claude command builder no longer keys on the
   literal `'node'` string. It now branches on the mcpConfig structure (`mcpConfig.args.length >
   0`): when a script path is present (npm AND dev modes), it emits
   `claude mcp add ... -- "<command>" "<args[0]>"`, including BOTH the node executable
@@ -133,7 +133,7 @@ their own title:
   were set to the wrong value. Make it real: assert the MCP registration command/args actually
   carry `process.argv[1]` (binaryPath flows into `mcpConfig.args[0]` for non-SEA non-dev).
 
-  **Doer:** fixed in commit cf0b003 -- the test now captures the mocked `execSync` calls,
+  **Doer:** fixed in commit 88f3a66 -- the test now captures the mocked `execSync` calls,
   finds the `claude mcp add` command, and asserts it `toContain(npmPath)` (process.argv[1]).
   This fails against the pre-fix code (which dropped args[0]) and passes after the HIGH fix.
 
@@ -156,7 +156,7 @@ their own title:
   The `expect(mcpAdd).toContain(npmPath)` assertion fails against today's code, which is the
   point: it would have caught the dropped script path.
 
-  **Doer:** fixed in commit cf0b003 -- both MCP-config tests now capture the mocked
+  **Doer:** fixed in commit 88f3a66 -- both MCP-config tests now capture the mocked
   `execSync` calls and assert on the real `claude mcp add` command. Test 1
   ("registers MCP config with process.execPath + absolute script path") asserts the command
   contains BOTH `process.execPath` and `npmPath`. Test 2 ("uses process.execPath") asserts the
