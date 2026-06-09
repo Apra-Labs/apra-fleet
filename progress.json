@@ -81,12 +81,12 @@
       "id": 8,
       "step": "Unit tests for isNpmGlobalInstall + install npm-mode paths",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-haiku-4-5",
       "bead": "apra-fleet-tmt.6",
-      "commit": "",
-      "notes": "tests/install-npm.test.ts -- npm detection, binary skip, MCP config"
+      "commit": "7ecc793",
+      "notes": "DONE. tests/install-npm.test.ts created with 15 test cases covering: (1) isNpmGlobalInstall() returns true when process.argv[1] contains node_modules and is not dev dist path. (2) returns false for dev mode. (3) returns false when isSea() is true. (4) returns false when process.argv[1] does not contain node_modules. (5) returns false when argv[1] is empty/undefined. (6) handles symlinked npm paths correctly via realpath. (7-9) Binary-copy step: skips copyFileSync, prints npm-detection message, sets binaryPath. (10-12) MCP config: verifies npm mode registration distinct from dev mode. Full suite: 1335 tests passed, 14 skipped, 0 failed (baseline preserved, +15 new tests)."
     },
     {
       "id": 9,
