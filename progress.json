@@ -92,9 +92,9 @@
       "id": 9,
       "step": "VERIFY: Phase 3 -- install npm detection",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "8f0500b",
+      "notes": "[PASS] npm test: 82 test files passed (1 skipped), 1335 tests passed (14 skipped), 0 failed. New tests/install-npm.test.ts adds 11 tests across 3 test suites: isNpmGlobalInstall() detection (6 tests), binary-copy step (3 tests), MCP config (3 tests -- indirectly via message verification). existing tests/install.test.ts green (7 tests, no regression). [PASS] Code inspection confirms: (1) isNpmGlobalInstall() exported at line 40 with proper logic (returns false for isSea(), requires node_modules + non-dev-dist); (2) binary-copy gate (lines 516-530): three-branch isSea/isNpmGlobalInstall/dev-mode, skips copyFileSync in npm mode, sets binaryPath=process.argv[1]; (3) MCP config gate (lines 573-577): npm mode uses { command: process.execPath, args: [process.argv[1]] }; (4) running-process guard (line 491): updated to (isSea() || isNpmGlobalInstall()) && isApraFleetRunning(). [PASS] npm run build: tsc clean (no errors). Phase 3 VALIDATED."
     },
     {
       "id": 10,
