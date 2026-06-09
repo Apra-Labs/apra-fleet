@@ -1,208 +1,193 @@
-# apra-fleet npm Packaging -- Phase 2 Code Review
+# apra-fleet npm Packaging -- Phase 3 Code Review
 
 **Reviewer:** fleet-rev
-**Date:** 2026-06-09 02:05:00-0400
-**Verdict:** APPROVED
+**Date:** 2026-06-09 02:18:00-0400
+**Verdict:** CHANGES NEEDED
 
 > See the recent git history of this file to understand the context of this review.
-> Prior entry (db9936e) is the Phase 1 code review (APPROVED -- package.json + pack
-> validation). This is the Phase 2 review covering Task 3 (version.ts ESM fix), Task 4
-> (version.test.ts), and the Phase 2 VERIFY checkpoint.
+> Prior entries: db9936e (Phase 1 -- APPROVED, package.json + pack), 25086a5 (Phase 2 --
+> APPROVED, version.ts ESM fix). This is the Phase 3 review covering Task 5 (install.ts npm
+> detection + gate edits, commit 41e7f59), Task 6 (tests/install-npm.test.ts, commit
+> 7ecc793), and the Phase 3 VERIFY checkpoint (8f0500b).
 
 ---
 
-## Scope and context recovery
+## Scope and independent verification
 
-Phase 2 commits: `7e7813a` (src/version.ts ESM fix), `a008578` (tests/version.test.ts),
-plus progress.json bookkeeping (`5d14606`, `48521be`, `7284406`). The only sprint source
-changes in src/tests this phase are `src/version.ts` and `tests/version.test.ts` --
-confirmed via `git log ee0af4f^..HEAD -- src/version.ts tests/version.test.ts`. The
-`auth-*.ts/.test.ts` files in `main..HEAD` are ancestor auth PRs (#291/#292/#288), already
-ruled out of scope in the Phase 1 review; no Phase 2 commit touches them.
+Phase 3 sprint source changes: `src/cli/install.ts` and `tests/install-npm.test.ts` only --
+confirmed via `git log ee0af4f^..HEAD -- src/cli/install.ts tests/install-npm.test.ts` (just
+the two sprint commits) and an empty log for the auth-*/pre-commit files (they are ancestor
+PRs #288/#291/#292 in the main..HEAD baseline, ruled out in the Phase 1/2 reviews; no Phase 3
+commit touches them). File hygiene: clean -- no temp/scratch/config artifacts in the sprint
+diff. The uncommitted CLAUDE.md/AGENTS.md and untracked files in the working tree are not part
+of any sprint commit and are out of scope.
 
-I independently re-ran everything below; all doer claims hold.
+Independently re-ran everything; doer build/test claims hold:
 
 - `npm run build` -- clean (tsc, no errors).
-- `npm test` -- **81 files passed (1 skipped), 1324 passed, 14 skipped, 0 failed.**
-  Independently confirms the doer's 1324-passing claim (1316 Phase-1 baseline + 8 new).
-- `node dist/index.js --version` -> **`apra-fleet v0.2.2_728440`** -- real semver + dev
-  git-hash, NOT `v0.0.0-unknown`. Done-criterion met.
-- `npm run build:sea` -> **succeeds** (`Building SEA bundle -- version: v0.2.2_728440`,
-  bundle written to dist/sea-bundle.cjs). No SEA regression.
-- `tests/update.test.ts` (4 tests) -- **green**, the regression the createRequire trick
-  protects is intact.
-
-No regression to Phase 1: package.json unchanged this phase (verified -- not in the diff).
+- `npm test` -- **82 files passed (1 skipped), 1335 passed, 14 skipped, 0 failed.**
+  Independently confirms the doer's 1335-passing claim (1324 Phase-2 baseline + 11 new).
+- `tests/install-npm.test.ts` -- **11 tests, green** (note: commit-7ecc793 notes say "15
+  test cases" but the file and VERIFY both report 11; the "15" is a stale doer note, harmless).
+- `tests/install.test.ts` -- **unchanged from main** (empty `git diff main..HEAD`) and **green
+  (7 tests)**. No regression to the existing install suite.
 
 ---
 
-## Focus 1: resolveVersion() correctness -- PASS
+## Focus 1: isNpmGlobalInstall() correctness -- PASS
 
-Read `src/version.ts` line by line against PLAN Task 3 and design S8.4.
+Read `src/cli/install.ts:40-54` line by line.
 
-- **BUILD_VERSION returns FIRST (SEA) -- PASS.** Lines 9-13: the `typeof BUILD_VERSION
-  !== 'undefined'` check is the first thing in the function, before any path resolution or
-  file I/O. SEA's esbuild `define` injection still wins. Verified empirically: the SEA
-  bundle reports its BUILD_VERSION value.
-- **ESM detection via `typeof __dirname === 'undefined'` -- PASS.** Line 25. This is the
-  correct, robust discriminator: under tsc ESM output `__dirname` is genuinely undefined
-  (referencing it bare would normally throw, but `typeof` is safe on an undeclared name),
-  and under CJS/SEA bundle output `__dirname` is a real binding. The design doc explicitly
-  endorsed exactly this detection mechanism.
-- **Package-root resolution from import.meta.url -- PASS.** Lines 27-30: ESM branch builds
-  `dir = dirname(fileURLToPath(import.meta.url))`, then `root = join(dir, '..')` (line 41).
-  `import.meta.url` resolves to `dist/version.js`; one level up is the package root
-  containing `version.json`. Correct for both the dev tree and an npm-installed package
-  (where dist/ sits directly under the package dir). Empirically the npm-mode read returns
-  the real semver.
-- **CJS path intact -- PASS.** Lines 31-35: when `__dirname` is defined, `req = require`
-  and `dir = __dirname` -- the exact pre-existing behavior. The old code's `join(__dirname,
-  '..')` is preserved via the shared `root` computation. SEA/CJS path is byte-for-byte
-  equivalent in behavior.
-- **Function stays SYNCHRONOUS -- PASS.** No `await`/`async`. This matters: the design doc
-  S8.4 sketch used top-level `await import(...)`, which would have forced an async function
-  and broken the eager `export const serverVersion = resolveVersion()` at module scope (line
-  68). The doer correctly rejected the doc's literal sketch in favor of synchronous
-  `createRequire` + `req('node:fs')`. Good call; this is the right deviation from the doc.
-- **Git-hash suffix is dev-only -- PASS.** Lines 46-60 only append a suffix when
-  `.git/HEAD` exists. npm tarballs ship no `.git/`, so npm users get a bare semver; dev
-  trees get the `_<6hex>` suffix. The HEAD/ref resolution handles both detached-HEAD and
-  symbolic-ref cases, wrapped in its own try/catch so a malformed `.git` never poisons the
-  version. Matches the done-criterion.
+- **isSea() guard first -- PASS.** Line 41 returns false under SEA before any path work. The
+  unit test "returns false when isSea() is true" covers it.
+- **node_modules + empty/undefined argv[1] -- PASS.** Line 43 `if (!scriptPath ||
+  !scriptPath.includes('node_modules')) return false;` short-circuits on empty string AND
+  `undefined` (both falsy), so no throw on a missing argv[1]. Verified empirically by the
+  "empty or undefined" test (it exercises `''`; `undefined` is covered by the same `!scriptPath`
+  branch, though not literally asserted -- LOW, see Focus 3).
+- **realpath hardening on BOTH sides with try/catch fallback -- PASS.** Lines 49-52: both
+  `resolvedScript` and `resolvedDev` are initialized to the raw path and only overwritten on a
+  successful `realpathSync`; each call is independently guarded. No throw can escape (a missing
+  dev dist or a non-existent script simply keeps the raw path). The comparison `resolvedScript
+  !== resolvedDev` (line 53) is the correct discriminator: a symlinked npm prefix still resolves
+  away from the dev dist (true), and a symlinked dev path resolves to the same real path as the
+  dev dist (false). No false positive/negative in the reasoned cases. The symlink test covers
+  the realpath-resolves-to-different-path branch.
+- **findProjectRoot() throw risk -- NOTE (LOW).** `isNpmGlobalInstall()` calls
+  `findProjectRoot()` (line 48) which throws if `version.json` is not found within 5 parent
+  dirs. In a real npm install `version.json` ships in the package root, so this resolves; in the
+  pathological case where it does not, the throw would escape `isNpmGlobalInstall()`. This is
+  pre-existing find-root behavior and not introduced here, but worth a mental note. Not gating.
 
-### The createRequire(import.meta.url) lazy-load -- SOUND, well-contained (PASS, with a NOTE)
+## Focus 2: the three gate edits -- one bug (HIGH)
 
-The deliberate choice to load `fs`/`path`/`url` via `createRequire(import.meta.url)` rather
-than top-level `import { readFileSync } from 'node:fs'` is, in my judgment, **sound and
-appropriately contained**, not a maintainability risk. Reasoning:
+- **Binary-copy three-branch (lines 516-530) -- PASS.** `isSea()` branch is byte-identical to
+  before (copy + chmod). `else if (isNpmGlobalInstall())` prints the detection message and sets
+  `binaryPath = process.argv[1]` without copying. `else` is the dev-mode message (now ASCII
+  `--`). SEA and dev behavior unaltered. The "no copyFileSync" test confirms npm mode does not
+  copy.
 
-- The motivation is real and verified. `tests/update.test.ts` does `vi.mock('node:fs')` at
-  module scope *and* imports `serverVersion`. A static ESM `import` of `node:fs` in
-  version.ts would be intercepted by that hoisted mock at the moment version.ts is loaded,
-  so the eager `serverVersion = resolveVersion()` would read a mocked fs, fail, and resolve
-  to `v0.0.0-unknown` -- breaking 3 update.test.ts assertions that derive from
-  `serverVersion`. The lazy `createRequire` require resolves the *real* native module
-  (`node:module` itself is not mocked), bypassing the fs mock. I confirmed update.test.ts is
-  green and that it both mocks node:fs and consumes serverVersion.
-- It is well-contained: the single `import { createRequire }` is the only top-level import;
-  the require-shimming lives entirely inside `resolveVersion()`; the rationale is documented
-  in an in-code comment (lines 16-21). A future maintainer is warned.
-- **NOTE (LOW):** this couples a production module's import strategy to a test's mocking
-  behavior, which is a faint code smell -- the "right" long-term fix is for update.test.ts
-  to scope its `vi.mock('node:fs')` more narrowly rather than for version.ts to defend
-  against it. But given (a) it is documented, (b) the alternative (refactoring an unrelated,
-  already-passing test in a different phase) is out of Phase 2 scope, and (c) the production
-  behavior is correct in all three real modes (SEA/npm/dev), this does not gate. Leave as
-  is; do not expand the pattern to other modules without the same justification.
+- **Running-process guard (line 491) -- PASS.** `(isSea() || isNpmGlobalInstall()) &&
+  isApraFleetRunning()` matches PLAN Task 5.4. SEA still triggers exactly as before; dev mode
+  (neither sea nor npm) still skips. Correct.
 
-ASCII clean (the old non-ASCII em-dash in the comment on line ~12 was replaced with `--`).
+- **MCP config object (lines 573-577) -- PASS at the object level.** The ternary produces
+  `{ command: process.execPath, args: [process.argv[1]] }` in npm mode, and the SEA/dev
+  branches are unchanged. Gemini/codex/copilot/agy consumers spread `mcpConfig` (lines 278-279)
+  or read `mcpConfig.command`/`mcpConfig.args` (lines 324-325), so for those providers npm mode
+  registers `node <script>` correctly.
 
----
+- **[HIGH] claude MCP registration drops the script path in npm mode.** Lines 584-586:
 
-## Focus 2: Test coverage and honesty -- PASS with one MEDIUM finding (non-gating)
+  ```
+  const cmd = mcpConfig.command === 'node'
+    ? `claude mcp add --scope user apra-fleet -- node "${mcpConfig.args[0]}"`
+    : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
+  ```
 
-PLAN Task 4 requires four covered behaviors. Status:
+  This branch keys on the literal string `'node'`. In npm mode `mcpConfig.command` is
+  `process.execPath` (an absolute path like `/usr/local/bin/node` or
+  `C:\Program Files\nodejs\node.exe`), NOT the string `'node'`, so it falls to the `else` branch
+  and emits `claude mcp add ... -- "<execPath>"` -- registering the node executable with **no
+  script argument**. `mcpConfig.args[0]` (the dist/index.js path) is silently dropped. The
+  result is a broken MCP server registration for claude npm installs: claude would launch bare
+  `node` with no entry point. Since claude is the default provider (`runInstall([])` -> `llm =
+  'claude'`, line 419) and the primary target, this breaks the core install flow for npm users.
 
-1. **ESM real-semver path -- PASS (real).** Suite 1 imports the real module; in vitest's
-   ESM environment `__dirname` is undefined so the ESM branch genuinely fires, reads the
-   real `version.json`, and the assertions (`/^v/`, `/^v\d+\.\d+\.\d+/`, not-fallback)
-   exercise the actual code path. Legitimate.
-2. **BUILD_VERSION / SEA path -- PASS (real).** Suite 3 uses `vi.stubGlobal('BUILD_VERSION',
-   ...)` + `vi.resetModules()` + dynamic re-import and asserts the stubbed value is returned
-   verbatim with no semver parsing -- proving the early return is taken before file I/O.
-   This is a genuine exercise of the SEA path. Good.
-3. **Git-hash suffix -- PASS (real).** Suite 2 asserts `/^v\d+\.\d+\.\d+_[0-9a-f]{6}$/`
-   against the real import (project root has `.git/`). Genuinely exercises the suffix branch.
-4. **Fallback v0.0.0-unknown -- COVERED ONLY STRUCTURALLY -- MEDIUM finding (non-gating).**
-   Suite 4 does NOT execute the fallback. It greps `src/version.ts` for the literal
-   `'v0.0.0-unknown'` and asserts it sits after a `} catch {`, plus a negative assertion
-   that the real serverVersion is not the fallback. A source-greps-itself test runs zero
-   production code and would keep passing even if the catch logic were broken (e.g. if the
-   catch re-threw, or returned the wrong constant via a variable) -- it only proves a string
-   is textually present. That is a real coverage gap and a smell.
+  This regressed nothing (the old code only had SEA `binaryPath` and dev `node`), but it does
+  not deliver the npm-mode MCP registration the plan (Task 5.3) requires.
 
-   **Is the doer's "genuinely untestable" claim correct? Partly -- but it is testable with a
-   small refactor the doer did not pursue.** The doer's stated blocker (vi.mock cannot
-   intercept the native built-in resolved by createRequire before interceptors run) is
-   accurate *for the current module shape*. But the fallback is reachable for real without
-   fighting the module loader, via either:
-   - **(preferred) Export `resolveVersion` and give it a seam.** e.g.
-     `export function resolveVersion(rootDir = defaultRoot, req = createRequire(import.meta.url))`,
-     or accept an injected reader. A test then calls `resolveVersion('/nonexistent')` (or
-     passes a require whose `readFileSync` throws) and asserts the real return value
-     `'v0.0.0-unknown'`. This executes the catch. Today `resolveVersion` is private and the
-     path is fixed, which is *why* it is awkward to test -- a self-imposed constraint, not a
-     platform limit.
-   - **(alternative) Fixture dir / dynamic import of a copied module** pointed at a temp dir
-     with no `version.json`, exercising the JSON.parse-throws -> catch -> constant path.
+  **Fix:** handle the npm case in the claude command builder. E.g. treat any
+  `{command, args:[script]}` shape uniformly:
+  ```
+  const cmd = mcpConfig.args.length > 0
+    ? `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" "${mcpConfig.args[0]}"`
+    : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
+  ```
+  (or branch explicitly on `isNpmGlobalInstall()`). Quote both segments for paths with spaces
+  (Windows `Program Files`). Add a test that asserts the `execSync`/`run` command string
+  contains BOTH `process.execPath` and the script path (see Focus 3).
 
-   **Verdict on this finding: MEDIUM, non-gating for Phase 2, but should be addressed.** I
-   am not gating because: the fallback is a pure defensive catch-all returning a literal
-   constant (no branching, no computation), the three substantive paths (SEA / npm-read /
-   git-hash) are all genuinely exercised, the production `--version` output is empirically
-   correct, and exporting `resolveVersion` is a refactor that touches the production surface
-   and is cleaner to fold into a later phase than to block a one-function fix on. **Action
-   for the doer:** before the Phase 7 cumulative review, replace the source-grep test with a
-   real execution of the fallback via an exported `resolveVersion` seam (preferred approach
-   above). If you disagree that it is feasible, respond with the specific blocker; "the
-   built-in can't be mocked" is not sufficient because the seam avoids mocking entirely.
+## Focus 3: test honesty -- two over-mocked tests (MEDIUM)
 
-   The doer was **honest** about this -- the test file's header comment and progress.json
-   both explicitly flag the fallback as "STRUCTURAL TEST ONLY" and explain why. Honesty is
-   not in question; the engineering choice is what I am pushing on.
+The 6 detection tests (lines 53-131) genuinely call `isNpmGlobalInstall()` and assert the
+boolean return -- real and meaningful. The binary-copy "skips copyFileSync" test (line 153)
+genuinely drives `runInstall([])` and asserts `fs.copyFileSync` was NOT called -- this is the
+real exercise Focus 3 asked for. PASS on those.
 
----
+However, three tests assert ONLY on console.log text and do not verify the behavior named in
+their own title:
 
-## Focus 3: No regression -- PASS
+- **[MEDIUM] "sets binaryPath to process.argv[1] in npm mode" (lines 164-182).** The title
+  claims it verifies `binaryPath`, but the only assertion is that the log contains "npm global
+  install detected". `binaryPath` is never observed. The test would pass even if `binaryPath`
+  were set to the wrong value. Make it real: assert the MCP registration command/args actually
+  carry `process.argv[1]` (binaryPath flows into `mcpConfig.args[0]` for non-SEA non-dev).
 
-- `tests/update.test.ts` -- green (4/4). The createRequire trick does its job; serverVersion
-  resolves to the real value even under update.test.ts's `vi.mock('node:fs')`.
-- `npm run build:sea` -- succeeds; SEA bundle version injected via BUILD_VERSION unchanged.
-- Full suite 1324 passed / 0 failed -- no pre-existing test weakened; the 8 new tests are
-  purely additive (new file).
-- Phase 1 (package.json) untouched this phase -- no regression.
+- **[MEDIUM] "registers MCP config with process.execPath + absolute script path" (lines
+  220-248) and "uses process.execPath for npm mode MCP registration" (lines 250-269).** Both
+  titles/comments promise to verify `process.execPath` + the script path in the registration,
+  but both assert only `logs).toContain('npm global install detected')` (the second adds a
+  `not.toContain('Dev mode')`). Neither inspects the actual `claude mcp add` command or the
+  mcpConfig passed to the merge functions. They are tautological relative to their names.
 
-### Test-fragility NOTE (LOW, non-gating)
+  This is exactly how the HIGH bug above slipped through: `run()` calls the mocked `execSync`
+  (line 334, `node:child_process` is mocked), so a real assertion was available and cheap. Make
+  it real:
+  ```
+  const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
+  const mcpAdd = calls.find(c => c.includes('claude mcp add'));
+  expect(mcpAdd).toContain(process.execPath);   // currently passes
+  expect(mcpAdd).toContain(npmPath);            // currently FAILS -- catches the bug
+  ```
+  The `expect(mcpAdd).toContain(npmPath)` assertion fails against today's code, which is the
+  point: it would have caught the dropped script path.
 
-Suite 2's git-hash assertion `/^v\d+\.\d+\.\d+_[0-9a-f]{6}$/` *requires* a hash suffix to
-be present. It passes here and in the doer's VERIFY because `.git` is a real directory. But
-in a git **worktree** (where `.git` is a file pointing elsewhere) or a checkout whose
-current ref is packed (`.git/refs/...` absent, only `packed-refs`), the code's simple ref
-resolver yields no suffix and this exact-match test would FAIL even though production
-behavior (bare semver) is correct and acceptable. Consider loosening to
-`/^v\d+\.\d+\.\d+(_[0-9a-f]{6})?$/` and asserting the suffix only when `.git/HEAD` resolves,
-or gating the strict assertion on detected git layout. Not gating Phase 2 -- flagging so CI
-on alternative checkout topologies does not surprise a later phase.
+Net: phase coverage is present but not yet meaningful on the MCP path. Phase does not close
+until at least one test asserts the real registered command/args for claude npm mode.
 
-### File hygiene
+## Focus 4: regression + ASCII -- PASS
 
-`git diff --name-only main..HEAD` for this phase's commits touches only `src/version.ts`,
-`tests/version.test.ts`, `progress.json`, and `feedback.md` -- all justified. The untracked
-working-tree files (`.sprint/`, `analyze_transcripts.js`, `permissions.json`, `results.json`,
-`tpl-plan.md`, docs plans) and the uncommitted CLAUDE.md/AGENTS.md are NOT part of any Phase
-2 commit and per instructions are out of scope -- not flagged, and explicitly NOT staged.
+- **Existing install.test.ts unchanged + green -- PASS.** Empty `git diff main..HEAD --
+  tests/install.test.ts`; 7 tests pass in isolation and in the full run. The doer's
+  `_setSeaOverride(false)` dev-mode tests are unaffected by the new gates.
+- **SEA + dev paths intact -- PASS.** SEA binary-copy block byte-identical; dev branches only
+  changed an em-dash to `--`. SEA MCP `{command: binaryPath, args: []}` and dev `{command:
+  'node', ...}` unchanged. (Phase 2 already confirmed `build:sea` succeeds; no Phase 3 change
+  touches the SEA bundle path.)
+- **ASCII in committed sprint files -- PASS (with note).** The Phase 3 edits introduced no new
+  non-ASCII; the doer converted two pre-existing em-dashes to `--`. As called out in the review
+  brief, a pre-existing non-ASCII em-dash remains at the install.ts:21 JSDoc -- out of scope
+  (.ts is exempt from the ASCII hook), not gating. NOTE only.
 
 ---
 
 ## Summary
 
-**APPROVED.** Phase 2 meets its done-criteria: `node dist/index.js --version` prints real
-semver (`v0.2.2_728440`), the full suite is green at 1324 passed / 0 failed (independently
-reproduced), the SEA build is unregressed, and update.test.ts -- the test the createRequire
-design protects -- is green. The version.ts refactor is correct across all three delivery
-modes; the synchronous createRequire approach is a sound, well-documented, well-contained
-deviation from the design doc's async sketch.
+What passed: `isNpmGlobalInstall()` is correct and well-hardened (isSea-first, empty-argv safe,
+two-sided realpath with safe try/catch fallback). The binary-copy three-branch and the
+running-process guard edits are correct and SEA/dev-safe. Build is clean, the full suite is
+green at 1335 passing, and the existing install.test.ts is unchanged and green -- doer claims
+independently confirmed. File hygiene is clean.
 
-Two non-gating items to carry forward, both already disclosed honestly by the doer:
+What must change (gating):
 
-- **MEDIUM (address before Phase 7 cumulative review):** the fallback `v0.0.0-unknown` path
-  is tested by source-grepping, not execution. It IS reachable for real by exporting
-  `resolveVersion` with a root-dir/require seam and asserting the catch return. Replace the
-  structural test, or respond with a concrete blocker.
-- **LOW:** Suite 2's git-hash test exact-matches a mandatory suffix; loosen it to tolerate
-  bare-semver checkouts (worktrees / packed refs) so it does not become a flaky gate later.
+- **HIGH -- claude MCP registration drops the script path in npm mode** (install.ts:584-586).
+  The command builder keys on the literal `'node'`; in npm mode `mcpConfig.command` is
+  `process.execPath`, so it registers `node` with no entry script. Breaks the default (claude)
+  npm install flow. Fix the claude command builder to emit `"<execPath>" "<script>"` (quote both
+  for Windows paths), and add a real assertion.
+- **MEDIUM -- three over-mocked tests** assert only on log text, not the behavior in their
+  titles ("sets binaryPath", "registers MCP config with execPath + script path", "uses
+  execPath"). At minimum, assert the real `execSync` command for claude npm mode contains both
+  `process.execPath` and the script path -- that assertion fails today and is what should have
+  caught the HIGH bug.
 
-- **LOW (note, no action required):** the lazy-require coupling to update.test.ts's fs mock
-  is a faint smell but acceptable as documented; do not propagate the pattern.
+Non-gating notes: LOW -- the "empty/undefined argv[1]" test exercises only `''` (the
+`undefined` case shares the same `!scriptPath` branch); LOW -- `findProjectRoot()` can throw if
+`version.json` is absent (pre-existing); NOTE -- pre-existing em-dash at install.ts:21 (.ts
+exempt); the "15 test cases" in commit 7ecc793's notes is stale (file has 11).
 
-Nothing here blocks Phase 2. Proceed to Phase 3 (install.ts npm detection).
+Re-review once the HIGH MCP bug is fixed with a real command/args assertion. The doer should
+annotate each gating section with `**Doer:** fixed in commit <sha> -- <what changed>` before
+requesting re-review.
