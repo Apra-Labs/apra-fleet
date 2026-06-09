@@ -1,6 +1,6 @@
 {
   "name": "@apra-labs/apra-fleet",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Gemini, Codex, Copilot, AGY) across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
