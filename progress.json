@@ -70,12 +70,12 @@
       "id": 7,
       "step": "Add isNpmGlobalInstall() + modify binary-copy and MCP config gates",
       "type": "work",
-      "status": "pending",
+      "status": "done",
       "tier": "standard",
       "model": "claude-opus-4-8",
       "bead": "apra-fleet-tmt.5",
-      "commit": "",
-      "notes": "install.ts: npm detection, binary-copy gate, MCP config for npm. Regression-sensitive -> opus. Watch: harden dev-path check vs symlinked npm global dirs; non-ASCII em-dash at install.ts:504 in edit window."
+      "commit": "41e7f59",
+      "notes": "DONE. install.ts: (1) Added exported isNpmGlobalInstall() -- true when process.argv[1] contains node_modules AND (after fs.realpathSync resolution of BOTH the script and findProjectRoot()+'/dist/index.js', each guarded in try/catch) the resolved script != resolved dev dist path; returns false under isSea(). Realpath hardening handles symlinked npm prefix (macOS/Linux) and avoids misclassifying symlinked dev paths. (2) Binary-copy block now three-branch: isSea() unchanged copy; else if isNpmGlobalInstall() prints 'npm global install detected -- skipping binary copy' and sets binaryPath=process.argv[1]; else dev-mode message. (3) MCP config: npm mode registers { command: process.execPath, args: [process.argv[1]] }; SEA and dev branches unchanged. (4) Running-process guard now (isSea() || isNpmGlobalInstall()) && isApraFleetRunning(). Also fixed pre-existing non-ASCII em-dash in old line 504 dev-mode message and the guard comment to ASCII '--'. npm run build clean (tsc). Full suite: 1324 passed, 14 skipped, 0 failed (baseline preserved); existing install.test.ts unchanged and green. Task 6 tests + Phase 3 VERIFY deferred to next agent."
     },
     {
       "id": 8,
