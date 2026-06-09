@@ -18,7 +18,7 @@ import {
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
-/** Override isSea() result — for tests only. Pass null to restore default. */
+/** Override isSea() result -- for tests only. Pass null to restore default. */
 export function _setSeaOverride(v: boolean | null): void { _seaOverride = v; }
 
 export function isSea(): boolean {

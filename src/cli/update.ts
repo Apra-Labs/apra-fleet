@@ -64,7 +64,7 @@ export async function runUpdate(): Promise<void> {
       return;
     }
 
-    console.log(`Updating to ${tagName} — restarting...`);
+    console.log(`Updating to ${tagName} -- restarting...`);
 
     const tmpPath = path.join(os.tmpdir(), assetName);
     const downloadRes = await fetch(asset.browser_download_url);
@@ -111,6 +111,6 @@ export async function runUpdate(): Promise<void> {
     process.exit(0);
 
   } catch (e) {
-    console.error(`Error: Update failed — ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`Error: Update failed -- ${e instanceof Error ? e.message : String(e)}`);
   }
 }

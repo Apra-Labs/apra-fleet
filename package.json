@@ -26,7 +26,6 @@
     "scripts/agy-settings-merge.js",
     "scripts/agy-transcript-reader.js",
     "skills/",
-    "agents/",
     "version.json"
   ],
   "publishConfig": {

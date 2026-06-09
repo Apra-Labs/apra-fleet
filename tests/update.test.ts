@@ -67,7 +67,7 @@ describe('runUpdate (T6)', () => {
     vi.restoreAllMocks();
   });
 
-  it('already up to date — prints message and exits', async () => {
+  it('already up to date -- prints message and exits', async () => {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({ tag_name: serverVersion.split('_')[0] }),
@@ -80,7 +80,7 @@ describe('runUpdate (T6)', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it('newer available — downloads and spawns installer', async () => {
+  it('newer available -- downloads and spawns installer', async () => {
     const newerVersion = 'v99.9.9';
     const assetUrl = 'https://example.com/installer.exe';
     
@@ -124,7 +124,7 @@ describe('runUpdate (T6)', () => {
     expect(process.exit).toHaveBeenCalledWith(0);
   });
 
-  it('missing install-config.json — uses defaults with warning', async () => {
+  it('missing install-config.json -- uses defaults with warning', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false);
 
     vi.mocked(fetch).mockImplementation(async (url: any) => {
@@ -156,7 +156,7 @@ describe('runUpdate (T6)', () => {
     expect(process.exit).toHaveBeenCalledWith(0);
   });
 
-  it('invalid install-config.json — uses defaults with warning', async () => {
+  it('invalid install-config.json -- uses defaults with warning', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue('invalid json');
 
