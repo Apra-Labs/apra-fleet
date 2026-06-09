@@ -36,21 +36,26 @@ export function isSea(): boolean {
  * location (npm bin) rather than the SEA binary or the project's own dev dist.
  * Returns false under SEA. Distinguishes npm global installs from `npm test` /
  * dev-mode runs (which execute the project's own dist/index.js).
+ *
+ * Key insight: when npm installs globally, findProjectRoot() resolves to the
+ * npm package's root (where version.json is), which has no .git/. Dev mode has
+ * a .git/ directory at or above the root. This allows us to distinguish them.
  */
 export function isNpmGlobalInstall(): boolean {
   if (isSea()) return false;
   const scriptPath = process.argv[1];
   if (!scriptPath || !scriptPath.includes('node_modules')) return false;
-  // Exclude the project's own dev dist path. Resolve both sides through
-  // realpath so a symlinked npm global dir is still detected as npm (npm
-  // prefix is often symlinked on macOS/Linux) and a symlinked dev path is
-  // not misclassified as npm.
-  const devDistPath = path.join(findProjectRoot(), 'dist', 'index.js');
-  let resolvedScript = scriptPath;
-  let resolvedDev = devDistPath;
-  try { resolvedScript = fs.realpathSync(scriptPath); } catch { /* keep raw */ }
-  try { resolvedDev = fs.realpathSync(devDistPath); } catch { /* keep raw */ }
-  return resolvedScript !== resolvedDev;
+  // Check if the resolved project root is a git repo (has .git). If not, we
+  // assume npm global install mode. This is more reliable than comparing paths
+  // because npm package root and git repo root differ when npm is global.
+  try {
+    const projectRoot = findProjectRoot();
+    const hasGit = fs.existsSync(path.join(projectRoot, '.git'));
+    return !hasGit; // npm mode if no .git at project root
+  } catch {
+    // If we can't find a project root, assume npm (not in a known git repo)
+    return true;
+  }
 }
 
 function getSeaAsset(key: string): string {
