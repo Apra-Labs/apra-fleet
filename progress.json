@@ -32,9 +32,9 @@
       "id": 3,
       "step": "VERIFY: Phase 1 -- npm pack validation",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": ""
+      "status": "completed",
+      "commit": "387e493",
+      "notes": "[PASS] npm pack --dry-run confirms correct file list: dist/index.js, version.json, hooks/hooks-config.json, skills/ (pm + fleet), agents/, scripts/ (fleet-statusline.sh, agy-settings-merge.js, agy-transcript-reader.js) ARE included. src/, tsconfig.json, build-*.mjs, install-hooks.mjs, node_modules/ are NOT included. Tarball size: 30.3MB (unpacked: 80.0MB), 613 files. [PASS] Global install succeeds (npm i -g). [PASS] apra-fleet --version outputs v0.0.0-unknown (expected, version.ts fix in Phase 2). [PASS] apra-fleet --help prints full usage text. [PASS] dist/index.js shebang confirmed: #!/usr/bin/env node. [PASS] npm test: 80 test files passed, 1316 tests passed, 14 skipped. No regressions. [PASS] Global uninstall succeeds. Phase 1 VALIDATED."
     },
     {
       "id": 4,
