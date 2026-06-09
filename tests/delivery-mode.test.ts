@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getDeliveryMode, getDeliveryInfo } from '../src/delivery-mode.js';
 
 // Mock the install module so we can control isSea() and isNpmGlobalInstall()
@@ -114,12 +114,11 @@ describe('getDeliveryInfo()', () => {
     expect(info.mode).toBe(mode);
     expect(info.mode).toBe('sea');
 
-    // Re-import to reset cache, then test NPM mode
+    // Re-import to reset cache, then test NPM mode.
+    // Note: vi.mock() is hoisted to module scope at transform time and has no
+    // effect when called inside a test body.  The NPM-mode assertion below is
+    // driven by vi.mocked(isSea2/isNpmGlobalInstall2).mockReturnValue() below.
     vi.resetModules();
-    vi.mock('../src/cli/install.js', () => ({
-      isSea: vi.fn(() => false),
-      isNpmGlobalInstall: vi.fn(() => true),
-    }));
     const { getDeliveryMode: getMode2, getDeliveryInfo: getInfo2 } = await import('../src/delivery-mode.js');
     const { isSea: isSea2, isNpmGlobalInstall: isNpmGlobalInstall2 } = await import('../src/cli/install.js');
     vi.mocked(isSea2).mockReturnValue(false);
