@@ -164,6 +164,7 @@ async function startServer() {
   const { kbSessionPrimeSchema, kbSessionPrime } = await import('./tools/kb-session-prime.js');
   const { kbQuerySchema, kbQuery } = await import('./tools/kb-query.js');
   const { kbHarvestSchema, kbHarvest } = await import('./tools/kb-harvest.js');
+  const { kbPromoteSchema, kbPromote } = await import('./tools/kb-promote.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -303,6 +304,7 @@ async function startServer() {
   server.tool('kb_session_prime', 'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.', kbSessionPrimeSchema.shape, wrapTool('kb_session_prime', (input) => kbSessionPrime(input as any)));
   server.tool('kb_query', 'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default.', kbQuerySchema.shape, wrapTool('kb_query', (input) => kbQuery(input as any)));
   server.tool('kb_harvest', 'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and source=kb_agent_harvest.', kbHarvestSchema.shape, wrapTool('kb_harvest', (input) => kbHarvest(input as any)));
+  server.tool('kb_promote', 'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.', kbPromoteSchema.shape, wrapTool('kb_promote', (input) => kbPromote(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
