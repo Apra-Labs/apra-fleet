@@ -32,9 +32,9 @@
       "step": "Task 1: GitNexus Integration",
       "type": "work",
       "tier": "cheap",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": "Conditional on Task 0 Go verdict. Add gitnexus to .mcp.json, run analyze, verify 16 tools respond."
+      "notes": "Added gitnexus MCP server to .mcp.json (npx -y gitnexus mcp). Created docs/knowledge-layer.md stub."
     },
     {
       "id": 2,
