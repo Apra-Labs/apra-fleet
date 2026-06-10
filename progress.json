@@ -1,0 +1,255 @@
+{
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | completed | blocked"
+  },
+  "project": "knowledge-bank",
+  "plan_file": "PLAN.md",
+  "created": "2026-06-11",
+  "tasks": [
+    {
+      "id": 0,
+      "phase": 0,
+      "step": "Task 0: Foundation ADRs + GitNexus Spike",
+      "type": "work",
+      "tier": "cheap",
+      "status": "completed",
+      "commit": "15f9dd3",
+      "notes": "ADR-003 completed with Go verdict. Validated codebase structure amenable to GitNexus AST analysis."
+    },
+    {
+      "id": "0-verify",
+      "phase": 0,
+      "step": "VERIFY: Phase 0",
+      "type": "verify",
+      "status": "completed",
+      "commit": "current",
+      "notes": "ADR-001, ADR-002, ADR-003 all written with explicit decisions. npm run build succeeded. npm test: 1314 passed, 14 skipped, 2 pre-existing failures in time-utils (unrelated to KB). No regressions."
+    },
+    {
+      "id": 1,
+      "phase": 1,
+      "step": "Task 1: GitNexus Integration",
+      "type": "work",
+      "tier": "cheap",
+      "status": "pending",
+      "commit": "",
+      "notes": "Conditional on Task 0 Go verdict. Add gitnexus to .mcp.json, run analyze, verify 16 tools respond."
+    },
+    {
+      "id": 2,
+      "phase": 1,
+      "step": "Task 2: MemoryProvider Interface + KBEntry Types",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "src/services/knowledge/types.ts - full schema including content_hash_type, flagged_for_review, contradiction_of."
+    },
+    {
+      "id": 3,
+      "phase": 1,
+      "step": "Task 3: SQLiteProvider - Schema, FTS5, Init",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "better-sqlite3, WAL mode, FTS5 triggers (DELETE+INSERT), FLEET_DIR path, content cap 4000 chars."
+    },
+    {
+      "id": 4,
+      "phase": 1,
+      "step": "Task 4: computeFileHash + Staleness Logic",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "computeFileHash (git primary, sha256 fallback), computeFileHashBatch, checkStaleness. 8 unit tests."
+    },
+    {
+      "id": "1-verify",
+      "phase": 1,
+      "step": "VERIFY: Phase 1 - Foundation",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": "npm run build passes. npm test passes. DB initializes. FTS5 table works. No regressions."
+    },
+    {
+      "id": 5,
+      "phase": 2,
+      "step": "Task 5: kb_capture MCP Tool",
+      "type": "work",
+      "tier": "cheap",
+      "status": "pending",
+      "commit": "",
+      "notes": "src/tools/kb-capture.ts. Full SqliteProvider.capture() with AUDN evaluation. Returns audn_decision."
+    },
+    {
+      "id": 6,
+      "phase": 2,
+      "step": "Task 6: kb_invalidate MCP Tool + Git Hook",
+      "type": "work",
+      "tier": "cheap",
+      "status": "pending",
+      "commit": "",
+      "notes": "src/tools/kb-invalidate.ts. CLI shim. Git hook: while IFS= read -r f; do ... done (quoting fix)."
+    },
+    {
+      "id": 7,
+      "phase": 2,
+      "step": "Task 7: AUDN Logic",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "AND-logic dedup (symbol + file + title ALL required). flagged_for_review path. 5 unit test cases."
+    },
+    {
+      "id": "2-verify",
+      "phase": 2,
+      "step": "VERIFY: Phase 2 - Write Path",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": "kb_capture creates entry. Duplicate returns none. Updated fact supersedes. Git hook fires on commit."
+    },
+    {
+      "id": 8,
+      "phase": 3,
+      "step": "Task 8: kb_context MCP Tool",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "Returns stale/fresh entries for given files. Uses computeFileHashBatch (single git call)."
+    },
+    {
+      "id": 9,
+      "phase": 3,
+      "step": "Task 9: kb_session_prime MCP Tool",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "Warm/cold detection. L1 scan. Returns recommended_gitnexus_calls as {tool, args}[] not strings."
+    },
+    {
+      "id": 10,
+      "phase": 3,
+      "step": "Task 10: kb_query MCP Tool",
+      "type": "work",
+      "tier": "premium",
+      "status": "pending",
+      "commit": "",
+      "notes": "FTS5 search, L1/L2 two-level retrieval. Type filter. Stale exclusion. Superseded exclusion."
+    },
+    {
+      "id": "3-verify",
+      "phase": 3,
+      "step": "VERIFY: Phase 3 - Read Path",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": "Cold->warm session E2E. kb_query returns results. Token warm-hit ratio > 50% (measure it)."
+    },
+    {
+      "id": 11,
+      "phase": "4a",
+      "step": "Task 11: KB Agent Role + kb_harvest",
+      "type": "work",
+      "tier": "cheap",
+      "status": "pending",
+      "commit": "",
+      "notes": "knowledge-curator fleet role. kb_harvest reads session transcript, captures learnings."
+    },
+    {
+      "id": 12,
+      "phase": "4a",
+      "step": "Task 12: kb_promote MCP Tool",
+      "type": "work",
+      "tier": "cheap",
+      "status": "pending",
+      "commit": "",
+      "notes": "Upgrades entry confidence INFERRED->CONFIRMED. Reviewer tool."
+    },
+    {
+      "id": 13,
+      "phase": "4a",
+      "step": "Task 13: KB Harvest Auto-Wire",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "Auto-wire kb_harvest to execute_prompt completion. PM does NOT dispatch manually."
+    },
+    {
+      "id": 14,
+      "phase": "4a",
+      "step": "Task 14: kb_setup MCP Tool",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "Installs git hook, writes config, stores credentials encrypted."
+    },
+    {
+      "id": 15,
+      "phase": "4a",
+      "step": "Task 15: Security Audit",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "No SQL injection (prepared statements). No command injection (execFile not exec). No path traversal. No plaintext credentials."
+    },
+    {
+      "id": 17,
+      "phase": "4a",
+      "step": "Task 17: KB Server (HTTP REST)",
+      "type": "work",
+      "tier": "premium",
+      "status": "pending",
+      "commit": "",
+      "notes": "apra-fleet kb-server --port 7878. Bearer token auth. Rate limiting 100 req/min. EADDRINUSE message."
+    },
+    {
+      "id": "4a-verify",
+      "phase": "4a",
+      "step": "VERIFY: Phase 4a - KB Agent + Security + Server",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": "KB Agent harvests. Promote works. Security: no injection/traversal/plaintext creds. Server starts, rejects 401."
+    },
+    {
+      "id": 18,
+      "phase": "4b",
+      "step": "Task 18: HttpKbProvider",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "Proxies to kb-server. Offline read fallback to SqliteProvider. Write queue max 1000. beforeExit warning."
+    },
+    {
+      "id": 16,
+      "phase": "4b",
+      "step": "Task 16: Documentation",
+      "type": "work",
+      "tier": "standard",
+      "status": "pending",
+      "commit": "",
+      "notes": "docs/knowledge-layer.md, docs/architecture.md, README.md. Setup guide, provider swap, troubleshooting."
+    },
+    {
+      "id": "4b-verify",
+      "phase": "4b",
+      "step": "VERIFY: Phase 4b - Full System",
+      "type": "verify",
+      "status": "pending",
+      "commit": "",
+      "notes": "Full E2E cold->warm. Central service E2E. Offline degradation. Security clean. npm test passes. npm run build:binary works. Docs accurate."
+    }
+  ]
+}
