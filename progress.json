@@ -228,9 +228,9 @@
       "step": "Task 18: HttpKbProvider",
       "type": "work",
       "tier": "standard",
-      "status": "pending",
-      "commit": "",
-      "notes": "Proxies to kb-server. Offline read fallback to SqliteProvider. Write queue max 1000. beforeExit warning."
+      "status": "completed",
+      "commit": "20147a9",
+      "notes": "http-provider.ts: proxies all 8 MemoryProvider methods to kb-server. READS (query/context/prime) fall back to SqliteProvider on ECONNREFUSED. WRITES (capture/invalidate) queued in memory (max 1000, drops oldest with warning). tryFlushQueue on each request handles reconnect. process.on('beforeExit') warns if queue non-empty. KBService.getProvider() instantiates HttpKbProvider when config.provider='http'. kb_setup auto-sets provider='http' when --remote provided. SqliteProvider.init() made idempotent (guard on this.db). 6 tests: proxy success, offline read fallback, write queue, queue flush, queue overflow, beforeExit warning."
     },
     {
       "id": 16,
@@ -238,18 +238,18 @@
       "step": "Task 16: Documentation",
       "type": "work",
       "tier": "standard",
-      "status": "pending",
-      "commit": "",
-      "notes": "docs/knowledge-layer.md, docs/architecture.md, README.md. Setup guide, provider swap, troubleshooting."
+      "status": "completed",
+      "commit": "b143264",
+      "notes": "docs/knowledge-layer.md: architecture two-plane diagram, setup guide (SQLite/HTTP/GitNexus/git hook), usage guide (session prime, capture, promote, dream cycle), provider swap table (SQLite/HTTP/Postgres), KB Agent dispatch, troubleshooting (stale graph, SQLITE_BUSY, hook not firing, offline queue warning, 401). docs/architecture.md: Knowledge Layer section with two-plane diagram, MemoryProvider abstraction, FTS5 two-phase retrieval, staleness tracking, AUDN, HTTP offline mode. All box-drawing and em-dash replaced with ASCII. README.md: Knowledge Layer row in Workflows table, Knowledge Layer section with 8-tool reference table, knowledge-layer.md link in Documentation table."
     },
     {
       "id": "4b-verify",
       "phase": "4b",
       "step": "VERIFY: Phase 4b - Full System",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": "Full E2E cold->warm. Central service E2E. Offline degradation. Security clean. npm test passes. npm run build:binary works. Docs accurate."
+      "status": "completed",
+      "commit": "b143264",
+      "notes": "npm run build: PASS. npm run build:binary: PASS (dist/apra-fleet-installer-win-x64.exe). npm test: 1385 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged from Phase 4a). E2E smoke: cold prime 3 stale_files, 3x kb_capture (add), warm prime session_warm=true stale_files=[]. kb-server: /health 200, unauthenticated 401. HttpKbProvider: 6 tests (proxy, fallback, queue, flush, overflow, beforeExit). Total KB tests: 77 across 14 files. Docs: knowledge-layer.md complete (architecture, setup, usage, provider swap, KB Agent, troubleshooting), architecture.md Knowledge Layer section, README.md Knowledge Layer section + 8-tool table."
     }
   ]
 }
