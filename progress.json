@@ -33,7 +33,7 @@
       "type": "work",
       "tier": "cheap",
       "status": "completed",
-      "commit": "",
+      "commit": "55c376d",
       "notes": "Added gitnexus MCP server to .mcp.json (npx -y gitnexus mcp). Created docs/knowledge-layer.md stub."
     },
     {
@@ -42,9 +42,9 @@
       "step": "Task 2: MemoryProvider Interface + KBEntry Types",
       "type": "work",
       "tier": "standard",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": "src/services/knowledge/types.ts - full schema including content_hash_type, flagged_for_review, contradiction_of."
+      "notes": "Created src/services/knowledge/types.ts. All types exported: KBEntry, KBEntryInput, MemoryProvider, AudnDecision ('add'|'update'|'flagged'|'none'), GitNexusCall, PrimedContext. Compiles with zero errors."
     },
     {
       "id": 3,
