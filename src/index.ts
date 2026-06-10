@@ -88,6 +88,28 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
+} else if (arg === 'kb') {
+  const subCmd = process.argv[3];
+  if (subCmd === 'invalidate') {
+    const files = process.argv.slice(4);
+    if (files.length === 0) {
+      console.error('Usage: apra-fleet kb invalidate <file1> [file2 ...]');
+      process.exit(1);
+    }
+    import('./services/knowledge/kb-service.js')
+      .then(async m => {
+        const service = m.getKBService();
+        const provider = service.getProvider();
+        await provider.init();
+        const result = await provider.invalidate(files);
+        console.log(`Invalidated ${result.invalidated} entries.`);
+        process.exit(0);
+      })
+      .catch(err => { logError('cli', `kb invalidate failed: ${err.message}`); process.exit(1); });
+  } else {
+    console.error(`Error: unknown kb subcommand '${subCmd}'`);
+    process.exit(1);
+  }
 } else if (arg === undefined || arg === '--stdio') {
   // Default: start MCP server
   startServer();
@@ -136,6 +158,8 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const { kbCaptureSchema, kbCapture } = await import('./tools/kb-capture.js');
+  const { kbInvalidateSchema, kbInvalidate } = await import('./tools/kb-invalidate.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -267,6 +291,10 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- Knowledge Bank ---
+  server.tool('kb_capture', 'Capture a learning, fact, or file summary into the knowledge bank. Returns {id, audn_decision}. audn_decision: add=new entry, none=duplicate skipped, update=superseded old, flagged=contradiction flagged for review.', kbCaptureSchema.shape, wrapTool('kb_capture', (input) => kbCapture(input as any)));
+  server.tool('kb_invalidate', 'Mark context-cache entries stale for the given file paths. Call after modifying files to ensure the KB reflects the current state.', kbInvalidateSchema.shape, wrapTool('kb_invalidate', (input) => kbInvalidate(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

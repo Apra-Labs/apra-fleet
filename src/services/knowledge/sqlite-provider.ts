@@ -21,9 +21,31 @@ import type {
 const CONTENT_CAP = 4000;
 const TRUNCATION_SUFFIX = '...[truncated]';
 
+const CONTRADICTION_KEYWORDS = ['was wrong', 'actually', 'correction', 'not true', 'incorrect'];
+
 function truncateContent(content: string): string {
   if (content.length <= CONTENT_CAP) return content;
   return content.slice(0, CONTENT_CAP) + TRUNCATION_SUFFIX;
+}
+
+function hasContradictionKeywords(content: string): boolean {
+  const lower = content.toLowerCase();
+  return CONTRADICTION_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+function symbolsOverlap(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  return a.some(s => b.includes(s));
+}
+
+function filesOverlap(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  return a.some(f => b.includes(f));
+}
+
+function makeFtsQuery(title: string): string {
+  const tokens = title.match(/\b[a-zA-Z0-9_]{3,}\b/g) ?? [];
+  return tokens.join(' ');
 }
 
 class NotImplementedError extends Error {
@@ -153,13 +175,14 @@ export class SqliteProvider implements MemoryProvider {
     };
   }
 
-  async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
-    const db = this.getDb();
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const content = truncateContent(input.content);
-
-    const stmt = db.prepare(`
+  private insertEntry(
+    db: Database.Database,
+    id: string,
+    input: KBEntryInput,
+    content: string,
+    now: string
+  ): void {
+    db.prepare(`
       INSERT INTO entries (
         id, type, title, summary, content,
         source_files, symbols, module, tags,
@@ -175,9 +198,7 @@ export class SqliteProvider implements MemoryProvider {
         ?, ?, ?, ?,
         NULL, NULL, 0
       )
-    `);
-
-    stmt.run(
+    `).run(
       id,
       input.type,
       input.title,
@@ -197,7 +218,110 @@ export class SqliteProvider implements MemoryProvider {
       input.confidence,
       now
     );
+  }
 
+  private findAudnCandidates(db: Database.Database, input: KBEntryInput): KBEntry[] {
+    const ftsQuery = makeFtsQuery(input.title);
+    if (!ftsQuery) return [];
+    try {
+      const rows = db.prepare(`
+        SELECT e.* FROM entries e
+        JOIN entries_fts ON entries_fts.rowid = e.rowid
+        WHERE entries_fts MATCH ?
+          AND e.superseded_at IS NULL
+          AND e.type = ?
+        ORDER BY rank
+        LIMIT 10
+      `).all(ftsQuery, input.type) as Record<string, unknown>[];
+      return rows.map(r => this.rowToEntry(r));
+    } catch {
+      return [];
+    }
+  }
+
+  private evaluateAudn(
+    db: Database.Database,
+    input: KBEntryInput,
+    candidates: KBEntry[],
+    newContent: string,
+    now: string
+  ): { id: string; audn_decision: AudnDecision } | null {
+    for (const candidate of candidates) {
+      const symMatch = symbolsOverlap(input.symbols ?? [], candidate.symbols);
+      const fileMatch = filesOverlap(input.source_files ?? [], candidate.source_files);
+      // AND-logic: all three required
+      if (!symMatch || !fileMatch) continue;
+
+      if (hasContradictionKeywords(input.content)) {
+        // Flag existing for review; store new as UNVERIFIED with contradiction_of
+        db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(candidate.id);
+        const newId = randomUUID();
+        this.insertEntry(db, newId, {
+          ...input,
+          confidence: 'UNVERIFIED',
+          contradiction_of: candidate.id,
+          flagged_for_review: false,
+        }, newContent, now);
+        this.wireLinks(db, newId, input);
+        return { id: newId, audn_decision: 'flagged' };
+      }
+
+      if (newContent === candidate.content) {
+        // Exact duplicate: skip write, return existing
+        return { id: candidate.id, audn_decision: 'none' };
+      }
+
+      // Same topic, different content: supersede old, insert new
+      db.prepare('UPDATE entries SET superseded_at = ? WHERE id = ?').run(now, candidate.id);
+      const newId = randomUUID();
+      this.insertEntry(db, newId, input, newContent, now);
+      this.wireLinks(db, newId, input);
+      return { id: newId, audn_decision: 'update' };
+    }
+    return null;
+  }
+
+  private wireLinks(db: Database.Database, newId: string, input: KBEntryInput): void {
+    const symbols = input.symbols ?? [];
+    const files = input.source_files ?? [];
+    if (symbols.length === 0 && files.length === 0) return;
+
+    const existingRows = db.prepare(
+      'SELECT id, symbols, source_files FROM entries WHERE id != ? AND superseded_at IS NULL'
+    ).all(newId) as { id: string; symbols: string; source_files: string }[];
+
+    const linkStmt = db.prepare(
+      'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
+    );
+
+    for (const row of existingRows) {
+      const existingSymbols: string[] = JSON.parse(row.symbols || '[]');
+      const existingFiles: string[] = JSON.parse(row.source_files || '[]');
+      if (symbols.length > 0 && symbols.some(s => existingSymbols.includes(s))) {
+        linkStmt.run(newId, row.id, 'shares_symbol');
+      }
+      if (files.length > 0 && files.some(f => existingFiles.includes(f))) {
+        linkStmt.run(newId, row.id, 'shares_file');
+      }
+    }
+  }
+
+  async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+    const content = truncateContent(input.content);
+
+    // AUDN: find near-duplicate candidates and evaluate
+    const candidates = this.findAudnCandidates(db, input);
+    if (candidates.length > 0) {
+      const result = this.evaluateAudn(db, input, candidates, content, now);
+      if (result) return result;
+    }
+
+    // No AUDN match: add new entry
+    const id = randomUUID();
+    this.insertEntry(db, id, input, content, now);
+    this.wireLinks(db, id, input);
     return { id, audn_decision: 'add' };
   }
 
@@ -245,10 +369,12 @@ export class SqliteProvider implements MemoryProvider {
       return entry;
     });
 
-    db.prepare(`
-      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
-      WHERE id IN (${results.map(() => '?').join(',')})
-    `).run(new Date().toISOString(), ...results.map(r => r.id));
+    if (results.length > 0) {
+      db.prepare(`
+        UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+        WHERE id IN (${results.map(() => '?').join(',')})
+      `).run(new Date().toISOString(), ...results.map(r => r.id));
+    }
 
     return { results, total: results.length, l1_only: opts.l1_only ?? false };
   }
@@ -259,17 +385,7 @@ export class SqliteProvider implements MemoryProvider {
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
     const db = this.getDb();
-    const now = new Date().toISOString();
     let invalidated = 0;
-
-    const stmt = db.prepare(`
-      UPDATE entries
-      SET content_hash = 'invalidated', stale = 1
-      WHERE type = 'context-cache'
-        AND superseded_at IS NULL
-        AND json_each.value = ?
-      FROM json_each(source_files)
-    `);
 
     for (const file of files) {
       const rows = db.prepare(`
@@ -293,6 +409,17 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     return { invalidated };
+  }
+
+  async getLinked(id: string): Promise<KBEntry[]> {
+    const db = this.getDb();
+    const rows = db.prepare(`
+      SELECT DISTINCT e.* FROM entries e
+      JOIN links l ON (l.from_id = ? AND l.to_id = e.id)
+                   OR (l.to_id = ? AND l.from_id = e.id)
+      WHERE e.superseded_at IS NULL
+    `).all(id, id) as Record<string, unknown>[];
+    return rows.map(r => this.rowToEntry(r));
   }
 
   async prime(task: string, hint_files?: string[], hint_symbols?: string[]): Promise<PrimedContext> {
