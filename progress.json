@@ -53,7 +53,7 @@
       "type": "work",
       "tier": "standard",
       "status": "completed",
-      "commit": "",
+      "commit": "e99ce0a",
       "notes": "Created sqlite-provider.ts and kb-service.ts. better-sqlite3 installed. WAL mode set. FTS5 virtual table with DELETE+INSERT triggers. Content cap 4000 chars. FLEET_DIR path from paths.ts. All 8 stub methods present. npm run build passes."
     },
     {
@@ -62,9 +62,9 @@
       "step": "Task 4: computeFileHash + Staleness Logic",
       "type": "work",
       "tier": "standard",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": "computeFileHash (git primary, sha256 fallback), computeFileHashBatch, checkStaleness. 8 unit tests."
+      "notes": "computeFileHash (git primary via execFile, sha256 fallback), computeFileHashBatch (single git call for N files), checkStaleness (invalidated/file_missing/unreadable/hash compare). 10 unit tests (all pass): git hash, null for missing file, sha256 fallback, batch single call, stale=false match, stale=true mismatch, file_missing, EACCES unreadable, invalidated immediate stale, non-context-cache skip."
     },
     {
       "id": "1-verify",
