@@ -43,7 +43,7 @@
       "type": "work",
       "tier": "standard",
       "status": "completed",
-      "commit": "",
+      "commit": "0134ccf",
       "notes": "Created src/services/knowledge/types.ts. All types exported: KBEntry, KBEntryInput, MemoryProvider, AudnDecision ('add'|'update'|'flagged'|'none'), GitNexusCall, PrimedContext. Compiles with zero errors."
     },
     {
@@ -52,9 +52,9 @@
       "step": "Task 3: SQLiteProvider - Schema, FTS5, Init",
       "type": "work",
       "tier": "standard",
-      "status": "pending",
+      "status": "completed",
       "commit": "",
-      "notes": "better-sqlite3, WAL mode, FTS5 triggers (DELETE+INSERT), FLEET_DIR path, content cap 4000 chars."
+      "notes": "Created sqlite-provider.ts and kb-service.ts. better-sqlite3 installed. WAL mode set. FTS5 virtual table with DELETE+INSERT triggers. Content cap 4000 chars. FLEET_DIR path from paths.ts. All 8 stub methods present. npm run build passes."
     },
     {
       "id": 4,

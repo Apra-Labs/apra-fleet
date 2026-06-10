@@ -1,0 +1,314 @@
+import Database from 'better-sqlite3';
+import path from 'node:path';
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { FLEET_DIR } from '../../paths.js';
+import type {
+  MemoryProvider,
+  KBEntry,
+  KBEntryInput,
+  QueryOptions,
+  KBResult,
+  FileContextResult,
+  PrimedContext,
+  StalenessResult,
+  SyncOptions,
+  SyncResult,
+  AudnDecision,
+  Confidence,
+} from './types.js';
+
+const CONTENT_CAP = 4000;
+const TRUNCATION_SUFFIX = '...[truncated]';
+
+function truncateContent(content: string): string {
+  if (content.length <= CONTENT_CAP) return content;
+  return content.slice(0, CONTENT_CAP) + TRUNCATION_SUFFIX;
+}
+
+class NotImplementedError extends Error {
+  constructor(method: string) {
+    super(`SqliteProvider.${method}() not yet implemented`);
+    this.name = 'NotImplementedError';
+  }
+}
+
+export class SqliteProvider implements MemoryProvider {
+  private db: Database.Database | null = null;
+  private readonly dbPath: string;
+
+  constructor(dbPath?: string) {
+    this.dbPath = dbPath ?? path.join(FLEET_DIR, 'knowledge', 'kb.sqlite');
+  }
+
+  async init(): Promise<void> {
+    const dir = path.dirname(this.dbPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    this.db = new Database(this.dbPath);
+
+    this.db.pragma('journal_mode=WAL');
+    this.db.pragma('busy_timeout=5000');
+    this.db.pragma('synchronous=NORMAL');
+    this.db.pragma('cache_size=-20000');
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entries (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_files TEXT NOT NULL DEFAULT '[]',
+        symbols TEXT NOT NULL DEFAULT '[]',
+        module TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
+        content_hash TEXT NOT NULL DEFAULT '',
+        content_hash_type TEXT NOT NULL DEFAULT 'sha256',
+        stale INTEGER NOT NULL DEFAULT 0,
+        flagged_for_review INTEGER NOT NULL DEFAULT 0,
+        contradiction_of TEXT,
+        author TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'doer',
+        confidence TEXT NOT NULL DEFAULT 'INFERRED',
+        created_at TEXT NOT NULL,
+        superseded_at TEXT,
+        promoted_at TEXT,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_accessed TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
+      CREATE INDEX IF NOT EXISTS idx_entries_confidence ON entries(confidence);
+      CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at);
+      CREATE INDEX IF NOT EXISTS idx_entries_superseded_at ON entries(superseded_at);
+      CREATE INDEX IF NOT EXISTS idx_entries_use_count ON entries(use_count);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+        title,
+        summary,
+        content,
+        tags,
+        content='entries',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts(rowid, title, summary, content, tags)
+        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
+        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
+        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
+        INSERT INTO entries_fts(rowid, title, summary, content, tags)
+        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
+      END;
+
+      CREATE TABLE IF NOT EXISTS links (
+        from_id TEXT NOT NULL,
+        to_id TEXT NOT NULL,
+        link_type TEXT NOT NULL,
+        PRIMARY KEY (from_id, to_id, link_type)
+      );
+    `);
+  }
+
+  private getDb(): Database.Database {
+    if (!this.db) throw new Error('SqliteProvider not initialized. Call init() first.');
+    return this.db;
+  }
+
+  private rowToEntry(row: Record<string, unknown>): KBEntry {
+    return {
+      id: row.id as string,
+      type: row.type as KBEntry['type'],
+      title: row.title as string,
+      summary: row.summary as string,
+      content: row.content as string,
+      source_files: JSON.parse((row.source_files as string) || '[]'),
+      symbols: JSON.parse((row.symbols as string) || '[]'),
+      module: row.module as string | undefined,
+      tags: JSON.parse((row.tags as string) || '[]'),
+      content_hash: row.content_hash as string,
+      content_hash_type: row.content_hash_type as 'git' | 'sha256',
+      stale: (row.stale as number) === 1,
+      flagged_for_review: (row.flagged_for_review as number) === 1,
+      contradiction_of: row.contradiction_of as string | undefined,
+      author: row.author as string,
+      source: row.source as KBEntry['source'],
+      confidence: row.confidence as Confidence,
+      created_at: row.created_at as string,
+      superseded_at: row.superseded_at as string | undefined,
+      promoted_at: row.promoted_at as string | undefined,
+      use_count: row.use_count as number,
+      last_accessed: row.last_accessed as string | undefined,
+    };
+  }
+
+  async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
+    const db = this.getDb();
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const content = truncateContent(input.content);
+
+    const stmt = db.prepare(`
+      INSERT INTO entries (
+        id, type, title, summary, content,
+        source_files, symbols, module, tags,
+        content_hash, content_hash_type, stale,
+        flagged_for_review, contradiction_of,
+        author, source, confidence, created_at,
+        superseded_at, promoted_at, use_count
+      ) VALUES (
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?,
+        ?, ?, ?, ?,
+        NULL, NULL, 0
+      )
+    `);
+
+    stmt.run(
+      id,
+      input.type,
+      input.title,
+      input.summary,
+      content,
+      JSON.stringify(input.source_files ?? []),
+      JSON.stringify(input.symbols ?? []),
+      input.module ?? null,
+      JSON.stringify(input.tags ?? []),
+      input.content_hash,
+      input.content_hash_type,
+      0,
+      input.flagged_for_review ? 1 : 0,
+      input.contradiction_of ?? null,
+      input.author,
+      input.source,
+      input.confidence,
+      now
+    );
+
+    return { id, audn_decision: 'add' };
+  }
+
+  async query(opts: QueryOptions): Promise<KBResult> {
+    const db = this.getDb();
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (!opts.include_superseded) {
+      conditions.push('e.superseded_at IS NULL');
+    }
+    if (opts.type) {
+      conditions.push('e.type = ?');
+      params.push(opts.type);
+    }
+
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    const limit = opts.limit ?? 20;
+
+    let rows: Record<string, unknown>[];
+
+    if (opts.query) {
+      rows = db.prepare(`
+        SELECT e.* FROM entries e
+        JOIN entries_fts ON entries_fts.rowid = e.rowid
+        WHERE entries_fts MATCH ?
+        ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+        ORDER BY rank
+        LIMIT ?
+      `).all(opts.query, ...params, limit) as Record<string, unknown>[];
+    } else {
+      rows = db.prepare(`
+        SELECT e.* FROM entries e
+        ${where}
+        ORDER BY e.created_at DESC
+        LIMIT ?
+      `).all(...params, limit) as Record<string, unknown>[];
+    }
+
+    const results = rows.map(r => {
+      const entry = this.rowToEntry(r);
+      if (opts.l1_only) {
+        return { ...entry, content: '' };
+      }
+      return entry;
+    });
+
+    db.prepare(`
+      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+      WHERE id IN (${results.map(() => '?').join(',')})
+    `).run(new Date().toISOString(), ...results.map(r => r.id));
+
+    return { results, total: results.length, l1_only: opts.l1_only ?? false };
+  }
+
+  async context(files: string[]): Promise<FileContextResult[]> {
+    throw new NotImplementedError('context');
+  }
+
+  async invalidate(files: string[]): Promise<{ invalidated: number }> {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+    let invalidated = 0;
+
+    const stmt = db.prepare(`
+      UPDATE entries
+      SET content_hash = 'invalidated', stale = 1
+      WHERE type = 'context-cache'
+        AND superseded_at IS NULL
+        AND json_each.value = ?
+      FROM json_each(source_files)
+    `);
+
+    for (const file of files) {
+      const rows = db.prepare(`
+        SELECT id FROM entries
+        WHERE type = 'context-cache'
+          AND superseded_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM json_each(source_files) WHERE value = ?
+          )
+      `).all(file) as { id: string }[];
+
+      if (rows.length > 0) {
+        const ids = rows.map(r => r.id);
+        db.prepare(`
+          UPDATE entries
+          SET content_hash = 'invalidated', stale = 1
+          WHERE id IN (${ids.map(() => '?').join(',')})
+        `).run(...ids);
+        invalidated += ids.length;
+      }
+    }
+
+    return { invalidated };
+  }
+
+  async prime(task: string, hint_files?: string[], hint_symbols?: string[]): Promise<PrimedContext> {
+    throw new NotImplementedError('prime');
+  }
+
+  async promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    throw new NotImplementedError('promote');
+  }
+
+  async sync(opts?: SyncOptions): Promise<SyncResult> {
+    return { synced: false, reason: 'local-only provider' };
+  }
+
+  close(): void {
+    this.db?.close();
+    this.db = null;
+  }
+}
