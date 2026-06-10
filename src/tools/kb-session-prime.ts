@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getKBService } from '../services/knowledge/kb-service.js';
+import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbSessionPrimeSchema = z.object({
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
@@ -10,6 +11,8 @@ export const kbSessionPrimeSchema = z.object({
 export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;
 
 export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string> {
+  if (input.session_files?.length) validateFilePaths(input.session_files);
+
   const service = getKBService();
   const provider = service.getProvider();
   await provider.init();
