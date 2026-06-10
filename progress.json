@@ -63,7 +63,7 @@
       "type": "work",
       "tier": "standard",
       "status": "completed",
-      "commit": "",
+      "commit": "4e7b45b",
       "notes": "computeFileHash (git primary via execFile, sha256 fallback), computeFileHashBatch (single git call for N files), checkStaleness (invalidated/file_missing/unreadable/hash compare). 10 unit tests (all pass): git hash, null for missing file, sha256 fallback, batch single call, stale=false match, stale=true mismatch, file_missing, EACCES unreadable, invalidated immediate stale, non-context-cache skip."
     },
     {
@@ -71,9 +71,9 @@
       "phase": 1,
       "step": "VERIFY: Phase 1 - Foundation",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": "npm run build passes. npm test passes. DB initializes. FTS5 table works. No regressions."
+      "status": "completed",
+      "commit": "4e7b45b",
+      "notes": "npm run build: PASS. npm test: 1324 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged from Phase 0). DB initialized at ~/.apra-fleet/data/knowledge/kb.sqlite (57344 bytes). FTS5 table entries_fts created via triggers. 10 new KB unit tests all green. No regressions. GitNexus added to .mcp.json."
     },
     {
       "id": 5,
