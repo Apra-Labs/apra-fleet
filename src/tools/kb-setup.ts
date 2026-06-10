@@ -40,7 +40,7 @@ export async function kbSetup(input: KbSetupInput): Promise<string> {
   }
 
   const config: Record<string, string> = {
-    provider: input.provider || 'sqlite',
+    provider: input.provider || (input.remote ? 'http' : 'sqlite'),
   };
 
   if (input.remote) {

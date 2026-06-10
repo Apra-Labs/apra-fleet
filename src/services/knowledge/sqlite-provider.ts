@@ -51,6 +51,8 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   async init(): Promise<void> {
+    if (this.db !== null) return;
+
     const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
