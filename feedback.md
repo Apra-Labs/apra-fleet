@@ -65,9 +65,6 @@ exercise GitNexus for real. Not blocking.
 | 9 | No non-ASCII characters | PASS | All 4 new files scanned, no non-ASCII found |
 | 10 | CLAUDE.md not committed by Phase 1 | PASS | CLAUDE.md change is from commit a682694 (pre-Phase-1 PR #269), not Phase 1 work |
 
-**[POST-REVIEW FINDING]** CLAUDE.md was inadvertently committed on feat/knowledge-bank during Phase 2 work.
-**Doer:** verified clean (CLAUDE.md matches origin/main, no sprint commit modified it) - confirmed via git diff origin/main -- CLAUDE.md
-
 ### Build and Test
 
 - `npm run build` -- PASS (zero errors)
@@ -121,7 +118,7 @@ exercise GitNexus for real. Not blocking.
 | 5 | computeFileHash uses execFile (not exec) | PASS | kb-service.ts:1 imports `execFile` from node:child_process. kb-service.ts:9 calls `execFile(cmd, args, ...)`. No shell interpolation. |
 | 6 | .mcp.json has BOTH apra-fleet AND gitnexus entries | PASS | .mcp.json contains `apra-fleet` and `gitnexus` server entries side by side. |
 | 7 | No non-ASCII characters in new files | PASS | Scanned all new KB source and test files -- zero non-ASCII bytes. |
-| 8 | CLAUDE.md not committed | **FAIL** | CLAUDE.md appears in `git diff --name-only main..feat/knowledge-bank`. Changes: em-dash replaced with ASCII dash, "ASCII only" convention line added. |
+| 8 | CLAUDE.md not committed | PASS | `git diff origin/main -- CLAUDE.md` returns empty. The diff against local `main` is from commit a682694 (PR #269, already merged to origin/main). Local main is stale -- no sprint commit modified CLAUDE.md. |
 | 9 | 4+ tests for kb_capture | PASS | kb-capture.test.ts: 4 tests (add, none, update, flagged). |
 | 10 | 4+ tests for kb_invalidate | PASS | kb-invalidate.test.ts: 4 tests (marks stale, different files skip, non-context-cache skip, no match returns 0). |
 | 11 | 5+ tests for AUDN paths | PASS | audn.test.ts: 14 tests (hasContradictionKeywords: 2, symbolsOverlap: 3, filesOverlap: 3, makeAudnDecision: 5, self-wiring: 1). |
@@ -144,19 +141,15 @@ exercise GitNexus for real. Not blocking.
 | Self-wiring: two entries about same file are linked | PASS -- test confirms (audn.test.ts:162-205) |
 | npm test passes, npm run build succeeds | PASS (KB tests green; 2 pre-existing failures in time-utils) |
 
-### Findings
+### Findings (informational only)
 
-**Finding 1: CLAUDE.md committed on feature branch (CHANGES NEEDED)**
+**Finding 1: CLAUDE.md (resolved)**
 
-CLAUDE.md is modified in this branch. The diff shows: (a) em-dash replaced with
-ASCII dash on the commit style line, (b) new "ASCII only" convention line added.
-While these changes are self-consistent with the ASCII-only rule being
-established, CLAUDE.md modifications should be committed separately on main (e.g.
-`chore/ascii-convention` branch), not bundled with a feature branch. This risks
-merge conflicts and makes the diff noisy for reviewers.
-
-Action: cherry-pick the CLAUDE.md change to a separate branch and revert it from
-feat/knowledge-bank before opening the PR.
+Initial review flagged CLAUDE.md as committed on the feature branch. Re-review
+confirmed the diff is from commit a682694 (PR #269), already merged to
+origin/main. `git diff origin/main -- CLAUDE.md` returns empty -- no sprint
+commit modified CLAUDE.md. The appearance in `git diff main..feat/knowledge-bank`
+was due to local main being stale (not fetched). Finding closed.
 
 **Finding 2: AUDN extraction is clean (informational)**
 
@@ -176,11 +169,11 @@ AUDN comparison, so stored content equals compared content. Correct behavior.
 
 ## Verdict
 
-**CHANGES NEEDED**
+**APPROVED**
 
-One critical check fails: CLAUDE.md is committed on the feature branch. All
-code, logic, and tests for Phase 2 are correct and complete. The CLAUDE.md issue
-is a branch hygiene problem, not a code defect -- revert it from this branch
-before opening the PR.
+All 11 critical checks pass. All Phase 2 code, AUDN logic, and tests are
+correct and complete. The CLAUDE.md finding from the initial review was a false
+positive caused by stale local main -- CLAUDE.md at the branch tip is identical
+to origin/main. Build succeeds, all 32 KB tests pass, no regressions.
 
-After CLAUDE.md is removed from the branch diff, Phase 2 is approved for merge.
+Phase 2 (Write Path) is approved. Ready to proceed to Phase 3 (Read Path).
