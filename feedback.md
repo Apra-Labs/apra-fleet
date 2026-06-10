@@ -236,15 +236,68 @@ AUDN comparison, so stored content equals compared content. Correct behavior.
 
 ---
 
-## Cumulative Verdict (Phases 0-3)
+## Phase 4a: KB Agent + Security + KB Server
+
+**Reviewer:** Claude Opus 4.6 (automated)
+**Date:** 2026-06-11
+**Commits reviewed:** defa412..951dce7 (Tasks 11-17)
+**Cumulative scope:** Phase 0 + 1 + 2 + 3 + 4a (26e18f9..951dce7)
+
+### Critical Checks
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | path-validation.ts exists and called from ALL 5 tools | PASS -- kb-capture (L26-27), kb-invalidate (L31), kb-context (L12), kb-session-prime (L14), kb-server (L130,155,168,179) |
+| 2 | Authorization header never logged in kb-server | PASS -- only process.stderr.write for token gen (L89), EADDRINUSE (L202), listen msg (L209); no auth/header logging |
+| 3 | kb-server token stored via AES-256-GCM credential store | PASS -- encryptPassword/decryptPassword, file mode 0o600 |
+| 4 | kb-server rate limiting (100 req/min) | PASS -- RATE_LIMIT_MAX=100, RATE_LIMIT_WINDOW_MS=60000, per-IP buckets |
+| 5 | EADDRINUSE produces actionable error message | PASS -- "port N is already in use. Try --port N+1" |
+| 6 | 401 on missing/wrong token | PASS -- lines 116-122, tested in kb-server.test.ts |
+| 7 | Request body size limit (413 on large body) | PASS -- MAX_BODY_SIZE=1MB, BODY_TOO_LARGE -> 413 PAYLOAD_TOO_LARGE |
+| 8 | kb_harvest auto-wire fire-and-forget | PASS -- `void import(...)...catch()` in execute-prompt.ts:310-314, error does not propagate |
+| 9 | kb_promote confidence upgrade chain | PASS -- UNVERIFIED->INFERRED->CONFIRMED, promoted_at set, reason appended to content |
+| 10 | kb_setup stores token encrypted | PASS -- encryptPassword(input.token), never returned in output |
+| 11 | 65 KB tests passing | PASS -- 65/65 pass across 13 test files |
+| 12 | No non-ASCII in new files | PASS -- all Phase 4a source files verified clean |
+| 13 | CLAUDE.md not committed | LOW -- CLAUDE.md diff (em-dash fix + ASCII convention) is from PR #269, pre-sprint; no Phase 4a commit modified it |
+
+### Build and Test
+
+- `npm run build` -- PASS (zero errors)
+- `npm test` -- 1379 passed, 2 failed (pre-existing time-utils.test.ts timezone tests), 14 skipped
+- KB tests: 65/65 passed across 13 test files
+
+### Observations (informational, no changes needed)
+
+1. **Rate limiter is per-IP, in-memory** -- resets on server restart and does not
+   share state across processes. Adequate for a local/team KB server. If deployed
+   behind a reverse proxy, X-Forwarded-For is not consulted (uses socket IP).
+
+2. **kb_harvest extraction regex** -- LEARNING_PATTERNS uses three regex groups
+   to detect learnings. Coverage depends on transcript format (requires markers
+   like "I found that", "Note:", "Bug:", etc.). Adequate for structured agent
+   output; may miss freeform insights. Not a defect -- by design.
+
+3. **kb_promote is a thin wrapper** -- the tool delegates entirely to
+   provider.promote(). Promote logic in sqlite-provider.ts correctly handles the
+   full chain (UNVERIFIED->INFERRED->CONFIRMED), no-ops on CONFIRMED, and
+   refuses superseded entries. Evidence trail appended to content.
+
+4. **kb-server readBody destroys request on oversize** -- `req.destroy()` at
+   kb-server.ts:72 immediately kills the connection when body exceeds 1MB,
+   preventing memory exhaustion. The error is caught and returned as 413.
+
+---
+
+## Cumulative Verdict (Phases 0-4a)
 
 **APPROVED**
 
-All critical checks pass across all four phases. 47 KB tests green, 1361 total
-tests pass, build succeeds. The implementation delivers on the three Phase 3
-goals: no re-reads (warm prime = 0 stale files), no bloated context (L1/L2
-tiered retrieval with content caps), and lower cost (batch git calls,
-summary-only priming). Warm-hit ratio is 0% (0/3 files re-read on warm session),
-well under the 50% investigation threshold.
+All critical checks pass across all five review phases. 65 KB tests green, 1379
+total tests pass, build succeeds. No HIGH findings. Security posture is solid:
+path traversal blocked, credentials encrypted at rest, auth headers never logged,
+rate limiting and body size limits enforced. The implementation delivers on all
+Phase 4a goals: automated harvest with fire-and-forget semantics, confidence
+promotion chain, encrypted setup, and a production-ready HTTP server.
 
-Ready to proceed to Phase 4a.
+Ready to proceed to Phase 4b.
