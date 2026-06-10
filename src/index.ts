@@ -84,6 +84,13 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
+} else if (arg === 'kb-server') {
+  import('./commands/kb-server.js')
+    .then(async m => {
+      const opts = m.parseKbServerArgs(process.argv.slice(3));
+      await m.startKbServer(opts.port, opts.generateToken);
+    })
+    .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'kb') {
   const subCmd = process.argv[3];
   if (subCmd === 'invalidate') {
