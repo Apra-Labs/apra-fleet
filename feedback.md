@@ -65,6 +65,9 @@ exercise GitNexus for real. Not blocking.
 | 9 | No non-ASCII characters | PASS | All 4 new files scanned, no non-ASCII found |
 | 10 | CLAUDE.md not committed by Phase 1 | PASS | CLAUDE.md change is from commit a682694 (pre-Phase-1 PR #269), not Phase 1 work |
 
+**[POST-REVIEW FINDING]** CLAUDE.md was inadvertently committed on feat/knowledge-bank during Phase 2 work.
+**Doer:** fixed in commit TBD - restored CLAUDE.md from origin/main
+
 ### Build and Test
 
 - `npm run build` -- PASS (zero errors)
