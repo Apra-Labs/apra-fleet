@@ -12,7 +12,7 @@ export async function runUpdate(): Promise<void> {
   if (!isSea()) {
     if (isNpmGlobalInstall()) {
       console.log('apra-fleet is installed via npm. To update, run:');
-      console.log('  npm update -g @apra-labs/apra-fleet');
+      console.log('  npm update -g @apralabs/apra-fleet');
       console.log('');
       console.log('After updating, re-install skills and hooks:');
       console.log('  apra-fleet install');

@@ -53,7 +53,7 @@ You describe the goal, approve the plan once, and Fleet runs the doer-reviewer l
 ### Option A -- npm (all platforms, requires Node.js 22+)
 
 ```bash
-npm install -g @apra-labs/apra-fleet
+npm install -g @apralabs/apra-fleet
 apra-fleet install              # Claude Code (default)
 apra-fleet install --llm agy    # Google Antigravity CLI
 apra-fleet install --llm gemini # Gemini CLI

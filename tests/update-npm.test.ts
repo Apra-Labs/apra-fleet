@@ -26,7 +26,7 @@ describe('runUpdate - npm redirect path (T8)', () => {
     await runUpdateNpm();
 
     expect(console.log).toHaveBeenCalledWith('apra-fleet is installed via npm. To update, run:');
-    expect(console.log).toHaveBeenCalledWith('  npm update -g @apra-labs/apra-fleet');
+    expect(console.log).toHaveBeenCalledWith('  npm update -g @apralabs/apra-fleet');
     expect(console.log).toHaveBeenCalledWith('');
     expect(console.log).toHaveBeenCalledWith('After updating, re-install skills and hooks:');
     expect(console.log).toHaveBeenCalledWith('  apra-fleet install');

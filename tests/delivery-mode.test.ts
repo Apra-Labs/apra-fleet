@@ -66,7 +66,7 @@ describe('getDeliveryInfo()', () => {
 
   it('returns binary = process.argv[1] when mode is "npm"', async () => {
     const origArgv1 = process.argv[1];
-    const npmBinary = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    const npmBinary = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     process.argv[1] = npmBinary;
 
     const { isSea, isNpmGlobalInstall } = await import('../src/cli/install.js');

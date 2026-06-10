@@ -386,7 +386,7 @@ jobs:
         id: check-published
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          if npm view @apra-labs/apra-fleet@${TAG} version 2>/dev/null; then
+          if npm view @apralabs/apra-fleet@${TAG} version 2>/dev/null; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
             echo "::warning::Version ${TAG} is already published to npm -- skipping publish"
           else

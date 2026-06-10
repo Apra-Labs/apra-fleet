@@ -56,7 +56,7 @@ describe('isNpmGlobalInstall() detection', () => {
     // existsSync returns false for .git (only true for version.json/hooks-config.json),
     // so isNpmGlobalInstall() returns !false = true.
     const origArgv1 = process.argv[1];
-    process.argv[1] = '/home/user/.npm/_npx/abc123def/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    process.argv[1] = '/home/user/.npm/_npx/abc123def/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
 
     const result = isNpmGlobalInstall();
 
@@ -78,7 +78,7 @@ describe('isNpmGlobalInstall() detection', () => {
 
   it('returns false when isSea() is true', () => {
     const origArgv1 = process.argv[1];
-    process.argv[1] = '/home/user/.npm/_npx/abc123def/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    process.argv[1] = '/home/user/.npm/_npx/abc123def/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     _setSeaOverride(true); // SEA mode
 
     const result = isNpmGlobalInstall();
@@ -114,7 +114,7 @@ describe('isNpmGlobalInstall() detection', () => {
     // The catch block returns true (assume npm, not in a known git repo).
     // This would FAIL if the catch block returned false or re-threw.
     const origArgv1 = process.argv[1];
-    process.argv[1] = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    process.argv[1] = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     // No version.json anywhere => findProjectRoot() exhausts 5 hops and throws.
     vi.mocked(fs.existsSync).mockImplementation((_p: any) => false);
 
@@ -150,7 +150,7 @@ describe('isNpmGlobalInstall() detection', () => {
     // true (a git checkout). isNpmGlobalInstall() must return false (dev/git-checkout mode).
     // This test would FAIL if the .git branch were removed or inverted.
     const origArgv1 = process.argv[1];
-    process.argv[1] = '/home/dev/projects/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    process.argv[1] = '/home/dev/projects/node_modules/@apralabs/apra-fleet/dist/index.js';
     // Override existsSync: version.json present (so findProjectRoot succeeds) AND .git present.
     vi.mocked(fs.existsSync).mockImplementation((p: any) => {
       const ps = p.toString();
@@ -188,7 +188,7 @@ describe('install binary-copy step in npm mode', () => {
 
   it('skips binary copy in npm mode (no fs.copyFileSync call)', async () => {
     const origArgv1 = process.argv[1];
-    process.argv[1] = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    process.argv[1] = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
 
     await runInstall([]);
 
@@ -199,7 +199,7 @@ describe('install binary-copy step in npm mode', () => {
 
   it('sets binaryPath to process.argv[1] in npm mode (flows into claude MCP script arg)', async () => {
     const origArgv1 = process.argv[1];
-    const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
     await runInstall([]);
@@ -219,7 +219,7 @@ describe('install binary-copy step in npm mode', () => {
 
   it('prints "npm global install detected -- skipping binary copy" message', async () => {
     const origArgv1 = process.argv[1];
-    process.argv[1] = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    process.argv[1] = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
 
     const logSpy = vi.spyOn(console, 'log');
 
@@ -255,7 +255,7 @@ describe('install MCP config in npm mode', () => {
 
   it('registers MCP config with process.execPath + absolute script path in npm mode', async () => {
     const origArgv1 = process.argv[1];
-    const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
     await runInstall([]);
@@ -273,7 +273,7 @@ describe('install MCP config in npm mode', () => {
 
   it('uses process.execPath for npm mode MCP registration', async () => {
     const origArgv1 = process.argv[1];
-    const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apra-labs/apra-fleet/dist/index.js';
+    const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
     await runInstall([]);
