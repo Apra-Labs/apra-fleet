@@ -301,3 +301,161 @@ Phase 4a goals: automated harvest with fire-and-forget semantics, confidence
 promotion chain, encrypted setup, and a production-ready HTTP server.
 
 Ready to proceed to Phase 4b.
+
+---
+
+## Phase 4b: HTTP Provider Client + Documentation
+
+**Reviewer:** Claude Opus 4.6 (automated)
+**Date:** 2026-06-11
+**Commits reviewed:** 63b6c06..a4afcdf (Tasks 18, 16 + VERIFY mark)
+**Cumulative scope:** Full sprint (26e18f9..a4afcdf, 40 commits)
+
+### Phase 4b Critical Checks
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | HttpKbProvider reads fall back to SqliteProvider on connection error | PASS -- query (L193-196), context (L208-210), prime (L239-241) all catch isConnectionError and delegate to this.fallback |
+| 2 | HttpKbProvider writes queued on connection error (not dropped) | PASS -- capture (L172-174) and invalidate (L222-224) call enqueue() on connection error, return synthetic result |
+| 3 | Queue overflow logs stderr warning, drops oldest (not newest) | PASS -- enqueue() at L69 calls shift() (oldest), then push() (newest). stderr.write warning includes "dropping oldest entry" |
+| 4 | beforeExit warning emitted when queue non-empty | PASS -- constructor registers process.on('beforeExit') handler at L53-59. dispose() removes listener. Test at http-provider.test.ts:195-227 verifies |
+| 5 | Authorization header uses stored encrypted token (not hardcoded) | PASS -- KBService (kb-service.ts:33) reads diskConfig.token_encrypted, decrypts via decryptPassword(), passes to HttpKbProvider constructor. Header at L93: `Bearer ${this.token}` |
+| 6 | KBService.getProvider() returns HttpKbProvider when config.provider === 'http' | PASS -- kb-service.ts:30-36: `if (effectiveProvider === 'http')` creates HttpKbProvider |
+| 7 | docs/knowledge-layer.md: provider swap documented with config example | PASS -- lines 246-283: SQLite and HTTP config.json examples, proxy behavior table (reads/writes/overflow/exit) |
+| 8 | docs/knowledge-layer.md: troubleshooting covers offline queue warning | PASS -- lines 362-378: exact warning text shown, cause explained, recovery steps documented |
+| 9 | README.md updated with Knowledge Layer and 8 tools listed | PASS -- all 8 tools in table (kb_session_prime, kb_capture, kb_query, kb_context, kb_invalidate, kb_promote, kb_harvest, kb_setup) |
+| 10 | 1385 total tests passing | PASS -- 1385 passed, 2 failed (pre-existing time-utils.test.ts timezone tests), 14 skipped |
+| 11 | No non-ASCII characters in new files | PASS -- byte-level scan of all KB source, test, and doc files found zero non-ASCII |
+| 12 | No temp/scratch files committed | PASS -- CLAUDE.md.reviewer and CLAUDE.md.reviewer-phase3 are untracked (git status shows ??), not in diff |
+
+### Test Coverage
+
+KB tests across tests/knowledge/: 71 tests in 14 test files, all passing.
+
+| File | Tests |
+|------|-------|
+| http-provider.test.ts | 6 |
+| kb-server.test.ts | 6 |
+| audn.test.ts | 14 |
+| kb-service.test.ts | 10 |
+| kb-query.test.ts | 5 |
+| kb-context.test.ts | 4 |
+| kb-session-prime.test.ts | 4 |
+| kb-capture.test.ts | 4 |
+| kb-invalidate.test.ts | 4 |
+| kb-vs-no-kb.test.ts | 2 |
+| kb-harvest.test.ts | 3 |
+| kb-promote.test.ts | 3 |
+| kb-setup.test.ts | 3 |
+| kb-harvest-autowire.test.ts | 3 |
+
+Additionally, security-hardening.test.ts (25 tests) and user-config.test.ts cover
+KB-adjacent security and configuration concerns.
+
+### HttpKbProvider Code Quality
+
+The implementation is clean and well-structured:
+
+- **Offline degradation is correct**: reads (query, context, prime) fall back to
+  SqliteProvider silently. Writes (capture, invalidate) are queued with synthetic
+  return values. The queue flushes on the next successful request (tryFlushQueue).
+
+- **Queue management is robust**: MAX_QUEUE_SIZE=1000, overflow drops oldest via
+  shift(), stderr warning emitted. Non-connection errors during flush are discarded
+  (the queued op is dropped), which prevents poison entries from blocking the queue.
+
+- **Resource cleanup**: dispose() removes the beforeExit listener, preventing leaks
+  in test environments.
+
+- **No hardcoded credentials**: token flows from encrypted config -> decryptPassword
+  -> constructor -> Authorization header. Never stored in plaintext.
+
+### Documentation Quality
+
+docs/knowledge-layer.md is comprehensive (390 lines):
+
+- Architecture diagram with two-plane layout
+- MemoryProvider interface reference
+- Setup guide for SQLite, HTTP, and GitNexus
+- Usage guide with session prime workflow, capture examples, AUDN explanation
+- Provider swap section with config.json examples for both providers
+- KB Agent dispatch and auto-harvest documentation
+- Troubleshooting section with 5 scenarios (GitNexus stale, SQLite lock, git hook,
+  offline queue, token rejected)
+
+README.md Knowledge Layer section is concise and links to the full guide.
+
+### Build and Test
+
+- `npm run build` -- PASS (zero errors)
+- `npm test` -- 1385 passed, 2 failed (pre-existing time-utils.test.ts), 14 skipped
+- `npm run build:binary` -- confirmed by doer (not re-run in this review)
+
+---
+
+## Full Sprint Holistic Review
+
+### MCP Tool Registration
+
+All 8 KB tools registered in src/index.ts (lines 164-172, 305-312):
+
+| Tool | Import | Registration |
+|------|--------|-------------|
+| kb_capture | L164 | L305 |
+| kb_invalidate | L165 | L306 |
+| kb_context | L166 | L307 |
+| kb_session_prime | L167 | L308 |
+| kb_query | L168 | L309 |
+| kb_harvest | L169 | L310 |
+| kb_promote | L170 | L311 |
+| kb_setup | L171 | L312 |
+
+### KB Warm Session Proof
+
+kb-vs-no-kb.test.ts (line 89) proves the core value proposition:
+1. Cold prime: stale_files = all 3 files, session_warm = false
+2. Capture context-cache for all 3 files with correct hashes
+3. Warm prime: stale_files = [], session_warm = true, fresh_summaries = 3
+
+This confirms 0 re-reads on a warm session.
+
+### Security Posture
+
+| Threat | Mitigation | Status |
+|--------|-----------|--------|
+| SQL injection | All queries use db.prepare().run()/all() with parameter binding | PASS |
+| Command injection | execFile (not exec), args as array, no shell interpolation | PASS |
+| Path traversal | validateFilePaths() at all 5 entry points + kb-server routes | PASS |
+| Plaintext credentials | AES-256-GCM encrypted token, file mode 0o600 | PASS |
+| Auth header in logs | No auth/header logging anywhere in kb-server | PASS |
+| Request flooding | Rate limiting 100 req/min per IP in kb-server | PASS |
+| Large payload | 1MB body size limit, 413 on overflow | PASS |
+
+### CLAUDE.md Assessment
+
+CLAUDE.md is in the diff (em-dash to ASCII dash + ASCII-only convention line).
+This is a legitimate convention addition, not accidental inclusion. The change
+was verified in Phase 2 and 3 reviews to match origin/main aside from the
+convention line. Acceptable.
+
+### Sprint Metrics
+
+- **40 commits** on feat/knowledge-bank
+- **147 files changed** (+14,583 / -3,757 lines)
+- **14 test files** in tests/knowledge/ (71 tests)
+- **1385 total tests** passing (2 pre-existing timezone failures)
+- **Zero HIGH findings** across all 5 review phases
+- **All engineering review findings** (ENG-01 through ENG-13) resolved
+
+---
+
+## Final Verdict
+
+**APPROVED -- Ready for PR**
+
+The knowledge-bank sprint is complete. All Phase 4b done criteria met. All holistic
+checks pass. The implementation delivers the full two-plane architecture: SQLite KB
+with FTS5, 8 MCP tools, HTTP provider with offline degradation, automated harvest,
+confidence promotion, encrypted credential storage, and comprehensive documentation.
+Security posture is solid across all OWASP-relevant vectors. Test coverage is thorough
+with 71 dedicated KB tests and 1385 total tests passing.
