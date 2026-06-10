@@ -36,7 +36,7 @@ export interface KBEntry {
   last_accessed?: string;
 }
 
-export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'superseded_at' | 'use_count' | 'last_accessed'>;
+export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'superseded_at' | 'use_count' | 'last_accessed'>;
 
 export interface QueryOptions {
   query?: string;
