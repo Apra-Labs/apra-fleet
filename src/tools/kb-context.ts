@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getKBService } from '../services/knowledge/kb-service.js';
+import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbContextSchema = z.object({
   files: z.array(z.string()).min(1).describe('File paths to check freshness for'),
@@ -8,6 +9,8 @@ export const kbContextSchema = z.object({
 export type KbContextInput = z.infer<typeof kbContextSchema>;
 
 export async function kbContext(input: KbContextInput): Promise<string> {
+  validateFilePaths(input.files);
+
   const service = getKBService();
   const provider = service.getProvider();
   await provider.init();

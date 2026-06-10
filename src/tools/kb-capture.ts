@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getKBService, computeFileHash } from '../services/knowledge/kb-service.js';
+import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbCaptureSchema = z.object({
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook'])
@@ -22,6 +23,9 @@ export const kbCaptureSchema = z.object({
 export type KbCaptureInput = z.infer<typeof kbCaptureSchema>;
 
 export async function kbCapture(input: KbCaptureInput): Promise<string> {
+  if (input.source_files?.length) validateFilePaths(input.source_files);
+  if (input.source_file) validateFilePaths([input.source_file]);
+
   const service = getKBService();
   const provider = service.getProvider();
   await provider.init();

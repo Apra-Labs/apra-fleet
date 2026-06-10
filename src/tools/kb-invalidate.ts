@@ -2,6 +2,7 @@ import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getKBService } from '../services/knowledge/kb-service.js';
+import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbInvalidateSchema = z.object({
   files: z.array(z.string()).min(1).describe('File paths to invalidate (context-cache entries for these files will be marked stale)'),
@@ -27,6 +28,8 @@ export function installKbPostCommitHook(repoPath: string): void {
 }
 
 export async function kbInvalidate(input: KbInvalidateInput): Promise<string> {
+  validateFilePaths(input.files);
+
   const service = getKBService();
   const provider = service.getProvider();
   await provider.init();
