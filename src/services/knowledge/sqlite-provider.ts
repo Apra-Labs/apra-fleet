@@ -3,6 +3,13 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { FLEET_DIR } from '../../paths.js';
+import {
+  hasContradictionKeywords,
+  symbolsOverlap,
+  filesOverlap,
+  makeFtsQuery,
+  makeAudnDecision,
+} from './audn.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -11,7 +18,6 @@ import type {
   KBResult,
   FileContextResult,
   PrimedContext,
-  StalenessResult,
   SyncOptions,
   SyncResult,
   AudnDecision,
@@ -21,31 +27,9 @@ import type {
 const CONTENT_CAP = 4000;
 const TRUNCATION_SUFFIX = '...[truncated]';
 
-const CONTRADICTION_KEYWORDS = ['was wrong', 'actually', 'correction', 'not true', 'incorrect'];
-
 function truncateContent(content: string): string {
   if (content.length <= CONTENT_CAP) return content;
   return content.slice(0, CONTENT_CAP) + TRUNCATION_SUFFIX;
-}
-
-function hasContradictionKeywords(content: string): boolean {
-  const lower = content.toLowerCase();
-  return CONTRADICTION_KEYWORDS.some(kw => lower.includes(kw));
-}
-
-function symbolsOverlap(a: string[], b: string[]): boolean {
-  if (a.length === 0 || b.length === 0) return false;
-  return a.some(s => b.includes(s));
-}
-
-function filesOverlap(a: string[], b: string[]): boolean {
-  if (a.length === 0 || b.length === 0) return false;
-  return a.some(f => b.includes(f));
-}
-
-function makeFtsQuery(title: string): string {
-  const tokens = title.match(/\b[a-zA-Z0-9_]{3,}\b/g) ?? [];
-  return tokens.join(' ');
 }
 
 class NotImplementedError extends Error {
@@ -246,38 +230,29 @@ export class SqliteProvider implements MemoryProvider {
     newContent: string,
     now: string
   ): { id: string; audn_decision: AudnDecision } | null {
-    for (const candidate of candidates) {
-      const symMatch = symbolsOverlap(input.symbols ?? [], candidate.symbols);
-      const fileMatch = filesOverlap(input.source_files ?? [], candidate.source_files);
-      // AND-logic: all three required
-      if (!symMatch || !fileMatch) continue;
+    const decision = makeAudnDecision(input, candidates, newContent);
+    if (!decision) return null;
 
-      if (hasContradictionKeywords(input.content)) {
-        // Flag existing for review; store new as UNVERIFIED with contradiction_of
-        db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(candidate.id);
-        const newId = randomUUID();
-        this.insertEntry(db, newId, {
-          ...input,
-          confidence: 'UNVERIFIED',
-          contradiction_of: candidate.id,
-          flagged_for_review: false,
-        }, newContent, now);
-        this.wireLinks(db, newId, input);
-        return { id: newId, audn_decision: 'flagged' };
-      }
+    if (decision.decision === 'none') {
+      return { id: decision.matchedId, audn_decision: 'none' };
+    }
 
-      if (newContent === candidate.content) {
-        // Exact duplicate: skip write, return existing
-        return { id: candidate.id, audn_decision: 'none' };
-      }
+    if (decision.decision === 'flagged') {
+      db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(decision.matchedId);
+      const newId = randomUUID();
+      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now);
+      this.wireLinks(db, newId, input);
+      return { id: newId, audn_decision: 'flagged' };
+    }
 
-      // Same topic, different content: supersede old, insert new
-      db.prepare('UPDATE entries SET superseded_at = ? WHERE id = ?').run(now, candidate.id);
+    if (decision.decision === 'update') {
+      db.prepare('UPDATE entries SET superseded_at = ? WHERE id = ?').run(now, decision.matchedId);
       const newId = randomUUID();
       this.insertEntry(db, newId, input, newContent, now);
       this.wireLinks(db, newId, input);
       return { id: newId, audn_decision: 'update' };
     }
+
     return null;
   }
 

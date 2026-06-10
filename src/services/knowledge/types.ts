@@ -101,6 +101,7 @@ export interface MemoryProvider {
   query(opts: QueryOptions): Promise<KBResult>;
   context(files: string[]): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
+  getLinked(id: string): Promise<KBEntry[]>;
   prime(task: string, hint_files?: string[], hint_symbols?: string[]): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
