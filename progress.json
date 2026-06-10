@@ -81,9 +81,9 @@
       "step": "Task 5: kb_capture MCP Tool",
       "type": "work",
       "tier": "cheap",
-      "status": "pending",
-      "commit": "",
-      "notes": "src/tools/kb-capture.ts. Full SqliteProvider.capture() with AUDN evaluation. Returns audn_decision."
+      "status": "completed",
+      "commit": "ce085eb",
+      "notes": "kb_capture MCP tool created. SqliteProvider.capture() fully implemented with AUDN evaluation: FTS search finds candidates, AND-logic (symbol+file overlap required), flagged/none/update/add decisions. insertEntry/evaluateAudn/wireLinks/findAudnCandidates as private helpers. KBEntryInput now omits created_at. 4 unit tests all green."
     },
     {
       "id": 6,
@@ -91,9 +91,9 @@
       "step": "Task 6: kb_invalidate MCP Tool + Git Hook",
       "type": "work",
       "tier": "cheap",
-      "status": "pending",
-      "commit": "",
-      "notes": "src/tools/kb-invalidate.ts. CLI shim. Git hook: while IFS= read -r f; do ... done (quoting fix)."
+      "status": "completed",
+      "commit": "511474e",
+      "notes": "kb_invalidate MCP tool. SqliteProvider.invalidate() already implemented. CLI shim: apra-fleet kb invalidate <files...>. installKbPostCommitHook() writes .git/hooks/post-commit using while IFS= read -r f loop. KB_POST_COMMIT_HOOK template exported. 4 unit tests: invalidate by file, skip other files, skip non-context-cache, zero for missing file."
     },
     {
       "id": 7,
@@ -101,18 +101,18 @@
       "step": "Task 7: AUDN Logic",
       "type": "work",
       "tier": "standard",
-      "status": "pending",
-      "commit": "",
-      "notes": "AND-logic dedup (symbol + file + title ALL required). flagged_for_review path. 5 unit test cases."
+      "status": "completed",
+      "commit": "7f4ed9d",
+      "notes": "AUDN logic extracted to src/services/knowledge/audn.ts. makeAudnDecision() is pure function (no DB). sqlite-provider.ts uses makeAudnDecision via evaluateAudn(). getLinked(id) added to SqliteProvider and MemoryProvider interface. 14 tests in audn.test.ts: pure helpers + 5 makeAudnDecision cases + self-wiring test (two entries sharing registry.ts linked in links table)."
     },
     {
       "id": "2-verify",
       "phase": 2,
       "step": "VERIFY: Phase 2 - Write Path",
       "type": "verify",
-      "status": "pending",
-      "commit": "",
-      "notes": "kb_capture creates entry. Duplicate returns none. Updated fact supersedes. Git hook fires on commit."
+      "status": "completed",
+      "commit": "7f4ed9d",
+      "notes": "npm run build: PASS. npm test: 1346 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged from Phase 1, +22 new KB tests). kb_capture: add/none/update/flagged all tested. kb_invalidate: marks context-cache stale, non-context-cache unaffected. AUDN AND-logic verified (symbol-only match -> add). Self-wiring: entries sharing registry.ts linked. .mcp.json fix: both apra-fleet and gitnexus entries restored."
     },
     {
       "id": 8,
