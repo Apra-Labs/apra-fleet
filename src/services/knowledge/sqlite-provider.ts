@@ -10,6 +10,7 @@ import {
   makeFtsQuery,
   makeAudnDecision,
 } from './audn.js';
+import { computeFileHashBatch } from './file-hash.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -17,11 +18,13 @@ import type {
   QueryOptions,
   KBResult,
   FileContextResult,
+  PrimeOptions,
   PrimedContext,
   SyncOptions,
   SyncResult,
   AudnDecision,
   Confidence,
+  GitNexusCall,
 } from './types.js';
 
 const CONTENT_CAP = 4000;
@@ -286,14 +289,12 @@ export class SqliteProvider implements MemoryProvider {
     const now = new Date().toISOString();
     const content = truncateContent(input.content);
 
-    // AUDN: find near-duplicate candidates and evaluate
     const candidates = this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
       const result = this.evaluateAudn(db, input, candidates, content, now);
       if (result) return result;
     }
 
-    // No AUDN match: add new entry
     const id = randomUUID();
     this.insertEntry(db, id, input, content, now);
     this.wireLinks(db, id, input);
@@ -305,8 +306,28 @@ export class SqliteProvider implements MemoryProvider {
     const conditions: string[] = [];
     const params: unknown[] = [];
 
+    // Direct ID lookup bypasses FTS and filters
+    if (opts.ids?.length) {
+      const placeholders = opts.ids.map(() => '?').join(',');
+      const rows = db.prepare(
+        `SELECT * FROM entries WHERE id IN (${placeholders})`
+      ).all(...opts.ids) as Record<string, unknown>[];
+
+      const results = rows.map(r => this.rowToEntry(r));
+      if (results.length > 0) {
+        db.prepare(`
+          UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+          WHERE id IN (${results.map(() => '?').join(',')})
+        `).run(new Date().toISOString(), ...results.map(r => r.id));
+      }
+      return { results, total: results.length, l1_only: false };
+    }
+
     if (!opts.include_superseded) {
       conditions.push('e.superseded_at IS NULL');
+    }
+    if (!opts.include_stale) {
+      conditions.push('e.stale = 0');
     }
     if (opts.type) {
       conditions.push('e.type = ?');
@@ -319,11 +340,12 @@ export class SqliteProvider implements MemoryProvider {
     let rows: Record<string, unknown>[];
 
     if (opts.query) {
+      const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
       rows = db.prepare(`
         SELECT e.* FROM entries e
         JOIN entries_fts ON entries_fts.rowid = e.rowid
         WHERE entries_fts MATCH ?
-        ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+        ${ftsWhere}
         ORDER BY rank
         LIMIT ?
       `).all(opts.query, ...params, limit) as Record<string, unknown>[];
@@ -355,7 +377,59 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   async context(files: string[]): Promise<FileContextResult[]> {
-    throw new NotImplementedError('context');
+    const db = this.getDb();
+    const results: FileContextResult[] = [];
+
+    const fileEntries = new Map<string, KBEntry>();
+    for (const file of files) {
+      const rows = db.prepare(`
+        SELECT * FROM entries
+        WHERE type = 'context-cache'
+          AND superseded_at IS NULL
+          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).all(file) as Record<string, unknown>[];
+
+      if (rows.length > 0) {
+        fileEntries.set(file, this.rowToEntry(rows[0]));
+      }
+    }
+
+    const hashes = await computeFileHashBatch(files);
+
+    for (const file of files) {
+      const entry = fileEntries.get(file);
+      if (!entry) {
+        results.push({ file, status: 'missing' });
+        continue;
+      }
+
+      if (entry.content_hash === 'invalidated') {
+        results.push({ file, status: 'stale', reason: 'invalidated', entry_id: entry.id });
+        continue;
+      }
+
+      const hashResult = hashes[file];
+      if (!hashResult) {
+        results.push({ file, status: 'stale', reason: 'file_missing', entry_id: entry.id });
+        continue;
+      }
+
+      if (hashResult.hash === entry.content_hash) {
+        results.push({
+          file,
+          status: 'fresh',
+          summary: entry.summary,
+          content_hash: entry.content_hash,
+          entry_id: entry.id,
+        });
+      } else {
+        results.push({ file, status: 'stale', reason: 'hash_mismatch', entry_id: entry.id });
+      }
+    }
+
+    return results;
   }
 
   async invalidate(files: string[]): Promise<{ invalidated: number }> {
@@ -397,8 +471,68 @@ export class SqliteProvider implements MemoryProvider {
     return rows.map(r => this.rowToEntry(r));
   }
 
-  async prime(task: string, hint_files?: string[], hint_symbols?: string[]): Promise<PrimedContext> {
-    throw new NotImplementedError('prime');
+  async prime(opts: PrimeOptions): Promise<PrimedContext> {
+    const fileResults = opts.session_files?.length
+      ? await this.context(opts.session_files)
+      : [];
+
+    const stale_files = fileResults
+      .filter(r => r.status === 'stale' || r.status === 'missing')
+      .map(r => r.file);
+
+    const fresh_summaries = fileResults.filter(r => r.status === 'fresh');
+
+    const session_warm = opts.session_files?.length
+      ? stale_files.length === 0
+      : true;
+
+    const searchTerms: string[] = [];
+    if (opts.hint_symbols?.length) searchTerms.push(...opts.hint_symbols);
+    if (opts.hint_modules?.length) searchTerms.push(...opts.hint_modules);
+
+    let top_entries: KBEntry[] = [];
+    if (searchTerms.length > 0) {
+      try {
+        const l1 = await this.query({
+          query: searchTerms.join(' '),
+          l1_only: true,
+          limit: 10,
+          include_stale: false,
+        });
+        top_entries = l1.results.filter(e => e.type !== 'context-cache');
+      } catch {
+        // FTS match may fail on unusual tokens
+      }
+    }
+
+    const recommended_gitnexus_calls: GitNexusCall[] = [];
+    if (opts.hint_symbols?.length) {
+      for (const symbol of opts.hint_symbols) {
+        recommended_gitnexus_calls.push({ tool: 'context', args: { symbol } });
+      }
+    }
+    if (opts.session_files?.length) {
+      for (const file of opts.session_files) {
+        recommended_gitnexus_calls.push({ tool: 'impact', args: { file } });
+      }
+    }
+
+    let token_estimate = 0;
+    for (const entry of top_entries) {
+      token_estimate += Math.ceil((entry.summary?.length || 0) / 4);
+    }
+    for (const result of fresh_summaries) {
+      token_estimate += Math.ceil((result.summary?.length || 0) / 4);
+    }
+
+    return {
+      session_warm,
+      stale_files,
+      top_entries,
+      fresh_summaries,
+      recommended_gitnexus_calls,
+      token_estimate,
+    };
   }
 
   async promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {

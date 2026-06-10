@@ -160,6 +160,9 @@ async function startServer() {
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
   const { kbCaptureSchema, kbCapture } = await import('./tools/kb-capture.js');
   const { kbInvalidateSchema, kbInvalidate } = await import('./tools/kb-invalidate.js');
+  const { kbContextSchema, kbContext } = await import('./tools/kb-context.js');
+  const { kbSessionPrimeSchema, kbSessionPrime } = await import('./tools/kb-session-prime.js');
+  const { kbQuerySchema, kbQuery } = await import('./tools/kb-query.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -295,6 +298,9 @@ async function startServer() {
   // --- Knowledge Bank ---
   server.tool('kb_capture', 'Capture a learning, fact, or file summary into the knowledge bank. Returns {id, audn_decision}. audn_decision: add=new entry, none=duplicate skipped, update=superseded old, flagged=contradiction flagged for review.', kbCaptureSchema.shape, wrapTool('kb_capture', (input) => kbCapture(input as any)));
   server.tool('kb_invalidate', 'Mark context-cache entries stale for the given file paths. Call after modifying files to ensure the KB reflects the current state.', kbInvalidateSchema.shape, wrapTool('kb_invalidate', (input) => kbInvalidate(input as any)));
+  server.tool('kb_context', 'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read.', kbContextSchema.shape, wrapTool('kb_context', (input) => kbContext(input as any)));
+  server.tool('kb_session_prime', 'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.', kbSessionPrimeSchema.shape, wrapTool('kb_session_prime', (input) => kbSessionPrime(input as any)));
+  server.tool('kb_query', 'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default.', kbQuerySchema.shape, wrapTool('kb_query', (input) => kbQuery(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

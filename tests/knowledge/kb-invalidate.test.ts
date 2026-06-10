@@ -60,7 +60,7 @@ describe('kb_invalidate', () => {
     expect(result.invalidated).toBe(1);
 
     // Entry should have content_hash='invalidated'
-    const { results } = await provider.query({ type: 'context-cache' });
+    const { results } = await provider.query({ type: 'context-cache', include_stale: true });
     expect(results[0].content_hash).toBe('invalidated');
     expect(results[0].stale).toBe(true);
   });

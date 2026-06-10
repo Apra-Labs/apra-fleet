@@ -66,10 +66,17 @@ export interface FileContextResult {
   entry_id?: string;
 }
 
+export interface PrimeOptions {
+  session_files?: string[];
+  hint_symbols?: string[];
+  hint_modules?: string[];
+}
+
 export interface PrimedContext {
-  learnings: KBEntry[];
-  fresh_summaries: FileContextResult[];
+  session_warm: boolean;
   stale_files: string[];
+  top_entries: KBEntry[];
+  fresh_summaries: FileContextResult[];
   recommended_gitnexus_calls: GitNexusCall[];
   token_estimate: number;
 }
@@ -102,7 +109,7 @@ export interface MemoryProvider {
   context(files: string[]): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
   getLinked(id: string): Promise<KBEntry[]>;
-  prime(task: string, hint_files?: string[], hint_symbols?: string[]): Promise<PrimedContext>;
+  prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
 }
