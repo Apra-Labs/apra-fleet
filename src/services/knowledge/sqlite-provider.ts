@@ -536,7 +536,34 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   async promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
-    throw new NotImplementedError('promote');
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error(`Entry not found: ${id}`);
+
+    const entry = this.rowToEntry(row);
+    if (entry.superseded_at) throw new Error(`Cannot promote superseded entry: ${id}`);
+
+    const confidence_before = entry.confidence;
+    let confidence_after: Confidence;
+
+    if (confidence_before === 'UNVERIFIED') {
+      confidence_after = 'INFERRED';
+    } else if (confidence_before === 'INFERRED') {
+      confidence_after = 'CONFIRMED';
+    } else {
+      return { id, confidence_before, confidence_after: confidence_before };
+    }
+
+    const now = new Date().toISOString();
+    const promotionNote = reason
+      ? `\n[Promoted: ${reason} -- ${entry.author || 'unknown'}]`
+      : `\n[Promoted -- ${entry.author || 'unknown'}]`;
+    const newContent = entry.content + promotionNote;
+
+    db.prepare('UPDATE entries SET confidence = ?, promoted_at = ?, content = ? WHERE id = ?')
+      .run(confidence_after, now, newContent, id);
+
+    return { id, confidence_before, confidence_after };
   }
 
   async sync(opts?: SyncOptions): Promise<SyncResult> {
