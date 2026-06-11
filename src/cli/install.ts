@@ -241,21 +241,36 @@ function mergeHooksConfig(paths: ProviderInstallConfig, hooksConfig: any, provid
 
 
 
-function mergePermissions(paths: ProviderInstallConfig): void {
-  const settings = readConfig(paths);
+const CLAUDE_INVALID_RULES = ['tracker_*'];
 
-  const requiredPerms = [
+export function pruneInvalidRules(allow: string[], providerName: string): string[] {
+  if (providerName !== 'Claude') return allow;
+  return allow.filter(rule => !CLAUDE_INVALID_RULES.includes(rule));
+}
+
+export function buildRequiredPerms(paths: ProviderInstallConfig): string[] {
+  const perms = [
     'mcp__apra-fleet__*',
     'activate_skill(*)',
-    'tracker_*',
     'Agent(*)',
     `Read(${paths.skillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${path.join(paths.configDir, 'skills').replace(/\\/g, '/')}/**)`,
   ];
+  if (paths.name !== 'Claude') {
+    perms.push('tracker_*');
+  }
+  return perms;
+}
+
+function mergePermissions(paths: ProviderInstallConfig): void {
+  const settings = readConfig(paths);
+
+  const requiredPerms = buildRequiredPerms(paths);
 
   settings.permissions = settings.permissions || {};
   settings.permissions.allow = settings.permissions.allow || [];
+  settings.permissions.allow = pruneInvalidRules(settings.permissions.allow as string[], paths.name);
   const existing = new Set(settings.permissions.allow as string[]);
   for (const perm of requiredPerms) {
     if (!existing.has(perm)) {
