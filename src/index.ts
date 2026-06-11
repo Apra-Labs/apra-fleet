@@ -88,6 +88,35 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
+} else if (arg === 'kb-server') {
+  import('./commands/kb-server.js')
+    .then(async m => {
+      const opts = m.parseKbServerArgs(process.argv.slice(3));
+      await m.startKbServer(opts.port, opts.generateToken);
+    })
+    .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'kb') {
+  const subCmd = process.argv[3];
+  if (subCmd === 'invalidate') {
+    const files = process.argv.slice(4);
+    if (files.length === 0) {
+      console.error('Usage: apra-fleet kb invalidate <file1> [file2 ...]');
+      process.exit(1);
+    }
+    import('./services/knowledge/kb-service.js')
+      .then(async m => {
+        const service = m.getKBService();
+        const provider = service.getProvider();
+        await provider.init();
+        const result = await provider.invalidate(files);
+        console.log(`Invalidated ${result.invalidated} entries.`);
+        process.exit(0);
+      })
+      .catch(err => { logError('cli', `kb invalidate failed: ${err.message}`); process.exit(1); });
+  } else {
+    console.error(`Error: unknown kb subcommand '${subCmd}'`);
+    process.exit(1);
+  }
 } else if (arg === undefined || arg === '--stdio') {
   // Default: start MCP server
   startServer();
@@ -136,6 +165,14 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const { kbCaptureSchema, kbCapture } = await import('./tools/kb-capture.js');
+  const { kbInvalidateSchema, kbInvalidate } = await import('./tools/kb-invalidate.js');
+  const { kbContextSchema, kbContext } = await import('./tools/kb-context.js');
+  const { kbSessionPrimeSchema, kbSessionPrime } = await import('./tools/kb-session-prime.js');
+  const { kbQuerySchema, kbQuery } = await import('./tools/kb-query.js');
+  const { kbHarvestSchema, kbHarvest } = await import('./tools/kb-harvest.js');
+  const { kbPromoteSchema, kbPromote } = await import('./tools/kb-promote.js');
+  const { kbSetupSchema, kbSetup } = await import('./tools/kb-setup.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -267,6 +304,16 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- Knowledge Bank ---
+  server.tool('kb_capture', 'Capture a learning, fact, or file summary into the knowledge bank. Returns {id, audn_decision}. audn_decision: add=new entry, none=duplicate skipped, update=superseded old, flagged=contradiction flagged for review.', kbCaptureSchema.shape, wrapTool('kb_capture', (input) => kbCapture(input as any)));
+  server.tool('kb_invalidate', 'Mark context-cache entries stale for the given file paths. Call after modifying files to ensure the KB reflects the current state.', kbInvalidateSchema.shape, wrapTool('kb_invalidate', (input) => kbInvalidate(input as any)));
+  server.tool('kb_context', 'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read.', kbContextSchema.shape, wrapTool('kb_context', (input) => kbContext(input as any)));
+  server.tool('kb_session_prime', 'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.', kbSessionPrimeSchema.shape, wrapTool('kb_session_prime', (input) => kbSessionPrime(input as any)));
+  server.tool('kb_query', 'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default.', kbQuerySchema.shape, wrapTool('kb_query', (input) => kbQuery(input as any)));
+  server.tool('kb_harvest', 'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and source=kb_agent_harvest.', kbHarvestSchema.shape, wrapTool('kb_harvest', (input) => kbHarvest(input as any)));
+  server.tool('kb_promote', 'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.', kbPromoteSchema.shape, wrapTool('kb_promote', (input) => kbPromote(input as any)));
+  server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.', kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
