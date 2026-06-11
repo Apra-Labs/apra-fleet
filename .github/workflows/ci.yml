@@ -39,6 +39,11 @@ jobs:
           node-version: 22.x
           cache: npm
 
+      - name: Configure Windows build tools
+        if: runner.os == 'Windows'
+        run: npm config set msvs_version 2022
+        shell: pwsh
+
       - name: Install dependencies
         run: npm ci
 
