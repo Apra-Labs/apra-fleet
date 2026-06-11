@@ -107,8 +107,8 @@ describe('KB token usage -- CI regression guards', () => {
 
     console.log('cold tokens:', coldTokens, '| warm tokens:', warmTokens, '| savings:', savingsPct.toFixed(1) + '%');
 
-    // CI guard: warm prime response (summaries only) must cost less than 80% of cold file reads
-    expect(warmTokens).toBeLessThan(coldTokens * 0.80);
+    // CI guard: warm prime response (summaries only) must cost less than 15% of cold file reads
+    expect(warmTokens).toBeLessThan(coldTokens * 0.15);
   });
 
   it('L1 scan (titles + summaries) costs under 20% of naive file load', async () => {
