@@ -47,6 +47,21 @@ You describe the goal, approve the plan once, and Fleet runs the doer-reviewer l
 
 ## Quick start
 
+### Option A -- npm (all platforms, requires Node.js 22+)
+
+```bash
+npm install -g @apralabs/apra-fleet
+apra-fleet install              # Claude Code (default)
+apra-fleet install --llm agy    # Google Antigravity CLI
+apra-fleet install --llm gemini # Gemini CLI
+apra-fleet install --llm codex  # OpenAI Codex CLI
+```
+
+Run `install` once per provider you want to support. After install, load the
+server in Claude Code using `/mcp`, or restart your CLI for other providers.
+
+### Option B -- standalone binary (no Node.js required)
+
 Copy-paste the one-liner for your platform:
 
 **macOS (Apple Silicon)**

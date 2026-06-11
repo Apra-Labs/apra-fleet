@@ -6,6 +6,14 @@ import { spawn } from 'node:child_process';
 import { runUpdate } from '../src/cli/update.js';
 import { serverVersion } from '../src/version.js';
 
+// Simulate SEA mode so the existing update tests exercise the binary-download path.
+// The npm-redirect path is tested separately in tests/update-npm.test.ts.
+vi.mock('../src/cli/install.js', () => ({
+  isSea: vi.fn(() => true),
+  isNpmGlobalInstall: vi.fn(() => false),
+  _setSeaOverride: vi.fn(),
+}));
+
 vi.mock('node:fs');
 vi.mock('node:os', () => {
   const mockOs = {
@@ -59,7 +67,7 @@ describe('runUpdate (T6)', () => {
     vi.restoreAllMocks();
   });
 
-  it('already up to date — prints message and exits', async () => {
+  it('already up to date -- prints message and exits', async () => {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({ tag_name: serverVersion.split('_')[0] }),
@@ -72,7 +80,7 @@ describe('runUpdate (T6)', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it('newer available — downloads and spawns installer', async () => {
+  it('newer available -- downloads and spawns installer', async () => {
     const newerVersion = 'v99.9.9';
     const assetUrl = 'https://example.com/installer.exe';
     
@@ -116,7 +124,7 @@ describe('runUpdate (T6)', () => {
     expect(process.exit).toHaveBeenCalledWith(0);
   });
 
-  it('missing install-config.json — uses defaults with warning', async () => {
+  it('missing install-config.json -- uses defaults with warning', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false);
 
     vi.mocked(fetch).mockImplementation(async (url: any) => {
@@ -148,7 +156,7 @@ describe('runUpdate (T6)', () => {
     expect(process.exit).toHaveBeenCalledWith(0);
   });
 
-  it('invalid install-config.json — uses defaults with warning', async () => {
+  it('invalid install-config.json -- uses defaults with warning', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue('invalid json');
 

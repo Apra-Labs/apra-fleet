@@ -313,3 +313,98 @@ jobs:
             release-binaries/apra-fleet-installer-darwin-arm64
             release-binaries/apra-fleet-installer-win-x64.exe
           generate_release_notes: true
+
+  npm-publish:
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment: npm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Inject version from tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf-8'));
+            const ver = JSON.parse(fs.readFileSync('version.json','utf-8'));
+            pkg.version = '${TAG}';
+            ver.version = '${TAG}';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            fs.writeFileSync('version.json', JSON.stringify(ver, null, 2) + '\n');
+          "
+          echo "Injected version: ${TAG}"
+
+      - name: Version lockstep guard
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json','utf-8')).version)")
+          VER_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('version.json','utf-8')).version)")
+          echo "Tag=$TAG  package.json=$PKG_VER  version.json=$VER_VER"
+          if [ "$TAG" != "$PKG_VER" ] || [ "$TAG" != "$VER_VER" ]; then
+            echo "::error::Version mismatch! tag=$TAG package.json=$PKG_VER version.json=$VER_VER"
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify shebang
+        run: head -1 dist/index.js | grep -q '^#!/usr/bin/env node'
+
+      - name: Dry-run pack verification
+        run: |
+          npm pack --dry-run 2>&1 | tee pack-output.txt
+          grep -q 'dist/index.js' pack-output.txt
+          grep -q 'version.json' pack-output.txt
+          grep -q 'hooks/hooks-config.json' pack-output.txt
+          grep -q 'skills/pm/' pack-output.txt || grep -q 'skills/fleet/' pack-output.txt
+          echo "Pack verification passed"
+
+      - name: Clean-pack guard -- reject stale SEA build artifacts
+        run: |
+          npm pack --dry-run 2>&1 | tee pack-check.txt
+          if grep -qE '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt; then
+            echo "::error::Pack contains stale SEA build artifacts (exe/sea-prep.blob/sea-bundle.cjs). Clean dist/ and retry."
+            grep -E '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt
+            exit 1
+          fi
+          PACK_SIZE=$(npm pack --dry-run 2>&1 | grep 'unpacked size' | grep -oE '[0-9]+(\.[0-9]+)? [kMG]B' | head -1)
+          echo "Unpacked size: $PACK_SIZE"
+          PACK_BYTES=$(npm pack --dry-run 2>&1 | grep 'unpacked size' | grep -oE '[0-9]+' | head -1)
+          if [ -n "$PACK_BYTES" ] && [ "$PACK_BYTES" -gt 10000000 ]; then
+            echo "::error::Pack unpacked size exceeds 10MB ($PACK_SIZE). Check for stale SEA artifacts in dist/."
+            exit 1
+          fi
+          echo "Clean-pack guard passed"
+
+      - name: Check if version already published
+        id: check-published
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          if npm view @apralabs/apra-fleet@${TAG} version 2>/dev/null; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Version ${TAG} is already published to npm -- skipping publish"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.check-published.outputs.already_published == 'false'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

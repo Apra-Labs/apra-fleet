@@ -6,8 +6,22 @@ import { serverVersion } from '../version.js';
 import { parseVersion, isNewer } from '../services/update-check.js';
 import { FLEET_DIR } from '../paths.js';
 import { readInstallConfig } from './config.js';
+import { isSea, isNpmGlobalInstall } from './install.js';
 
 export async function runUpdate(): Promise<void> {
+  if (!isSea()) {
+    if (isNpmGlobalInstall()) {
+      console.log('apra-fleet is installed via npm. To update, run:');
+      console.log('  npm update -g @apralabs/apra-fleet');
+      console.log('');
+      console.log('After updating, re-install skills and hooks:');
+      console.log('  apra-fleet install');
+    } else {
+      console.log('apra-fleet is running in dev mode. Pull the latest source and rebuild.');
+    }
+    return;
+  }
+
   console.log(`Checking for updates...`);
 
   try {
@@ -50,7 +64,7 @@ export async function runUpdate(): Promise<void> {
       return;
     }
 
-    console.log(`Updating to ${tagName} — restarting...`);
+    console.log(`Updating to ${tagName} -- restarting...`);
 
     const tmpPath = path.join(os.tmpdir(), assetName);
     const downloadRes = await fetch(asset.browser_download_url);
@@ -97,6 +111,6 @@ export async function runUpdate(): Promise<void> {
     process.exit(0);
 
   } catch (e) {
-    console.error(`Error: Update failed — ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`Error: Update failed -- ${e instanceof Error ? e.message : String(e)}`);
   }
 }
