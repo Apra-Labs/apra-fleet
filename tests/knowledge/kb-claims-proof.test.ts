@@ -207,6 +207,44 @@ describe('KB Claims Proof -- real measured numbers', () => {
     );
   });
 
+  it('cross-task: reviewer correction captured and recalled for different task', async () => {
+    // Warm the session files first (simulating prior session that cached them)
+    await captureAllEvalFiles(provider);
+
+    // Capture the reviewer correction (simulating kb_harvest after Task A review)
+    await provider.capture({
+      type: 'knowledge',
+      title: 'cross-task: extend Parser not Evaluator for token processors',
+      summary: 'Reviewer correction: token-processing classes must extend Parser, not Evaluator',
+      content: 'REVIEWER CORRECTION: Any class that processes tokens (Lexer, Validator, Printer) must extend Parser, not Evaluator. Evaluator is for AST evaluation only.',
+      confidence: 'CONFIRMED',
+      symbols: ['Lexer', 'Parser', 'Evaluator', 'Printer'],
+      source_files: ['src/lexer.ts', 'src/evaluator.ts', 'src/parser.ts'],
+      source: 'kb_agent_harvest',
+      tags: ['inheritance', 'correction', 'reviewer'],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      author: 'kb-claims-proof',
+    });
+
+    // Task B: query KB for Printer task -- correction must surface
+    // hint_symbols tells prime() what the agent is about to work on
+    const result = await provider.prime({
+      session_files: EVAL_FILES,
+      hint_symbols: ['Printer', 'Parser', 'Evaluator'],
+    });
+
+    const correctionEntry = result.top_entries?.find(e => e.type === 'knowledge' && e.confidence === 'CONFIRMED');
+    expect(correctionEntry).toBeDefined();
+    expect(correctionEntry?.symbols).toContain('Printer');
+
+    // File reads should be 0 for Task B (all files are warm)
+    expect(result.stale_files.length).toBe(0);
+
+    console.log('CROSS_TASK: correction recalled for Task B, file reads =', result.stale_files.length);
+  });
+
   it('Claim 3b: contradiction capture triggers AUDN flagged_for_review on existing entry', async () => {
     const entry1Input = {
       type: 'knowledge' as const,
