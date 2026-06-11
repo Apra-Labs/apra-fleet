@@ -31,7 +31,7 @@ export interface TaskConfig {
 export function generateTaskWrapper(config: TaskConfig): string {
   const cmdB64 = Buffer.from(config.command).toString('base64');
   const restartB64 = Buffer.from(config.restartCommand ?? config.command).toString('base64');
-  const taskDir = `~/.fleet-tasks/${config.taskId}`;
+  const taskDir = `$HOME/.fleet-tasks/${config.taskId}`;
 
   // We build the bash script as an array of lines then join, using
   // plain string concatenation for shell $VAR references to avoid
