@@ -20,15 +20,15 @@ export function resolveProjectSlug(cwd?: string): string {
 }
 
 function slugify(remoteUrl: string): string {
-  // Strip protocol, auth, .git suffix
+  // Strip protocol + optional auth + hostname, then .git suffix
   let s = remoteUrl
-    .replace(/^https?:\/\/[^@]*@?/, '')   // https://user@
-    .replace(/^git@/, '')                   // git@
-    .replace(/\.git$/, '')                  // .git suffix
-    .replace(/[:/]/g, '-')                  // : and / -> -
-    .replace(/[^a-zA-Z0-9-]/g, '')          // remove anything else
+    .replace(/^https?:\/\/(?:[^@/]+@)?[^/]+\//, '')  // https://[user@]hostname/
+    .replace(/^git@[^:]+:/, '')                        // git@hostname:
+    .replace(/\.git$/, '')                             // .git suffix
+    .replace(/[:/]/g, '-')                             // remaining : and / -> -
+    .replace(/[^a-zA-Z0-9-]/g, '')                    // remove anything else
     .toLowerCase()
-    .replace(/-+/g, '-')                    // collapse multiple dashes
-    .replace(/^-|-$/g, '');                 // trim leading/trailing dashes
+    .replace(/-+/g, '-')                               // collapse multiple dashes
+    .replace(/^-|-$/g, '');                            // trim leading/trailing dashes
   return s || 'default';
 }
