@@ -100,6 +100,7 @@ export interface SyncResult {
 export interface ProviderConfig {
   provider: 'sqlite' | 'http';
   url?: string;
+  dbPath?: string;
 }
 
 export interface MemoryProvider {

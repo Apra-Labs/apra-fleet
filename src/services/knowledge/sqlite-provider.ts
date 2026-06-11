@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { FLEET_DIR } from '../../paths.js';
+import { resolveProjectSlug } from './project-slug.js';
 import {
   hasContradictionKeywords,
   symbolsOverlap,
@@ -44,10 +45,20 @@ class NotImplementedError extends Error {
 
 export class SqliteProvider implements MemoryProvider {
   private db: Database.Database | null = null;
-  private readonly dbPath: string;
+  readonly dbPath: string;
+  readonly projectSlug: string;
 
   constructor(dbPath?: string) {
-    this.dbPath = dbPath ?? path.join(FLEET_DIR, 'knowledge', 'kb.sqlite');
+    if (dbPath !== undefined) {
+      this.dbPath = dbPath;
+      this.projectSlug = path.basename(dbPath, '.sqlite') || 'custom';
+    } else {
+      const slug = resolveProjectSlug();
+      this.projectSlug = slug;
+      const dir = path.join(FLEET_DIR, 'knowledge', slug);
+      fs.mkdirSync(dir, { recursive: true });
+      this.dbPath = path.join(dir, 'kb.sqlite');
+    }
   }
 
   async init(): Promise<void> {

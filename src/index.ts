@@ -92,7 +92,7 @@ Usage:
   import('./commands/kb-server.js')
     .then(async m => {
       const opts = m.parseKbServerArgs(process.argv.slice(3));
-      await m.startKbServer(opts.port, opts.generateToken);
+      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath);
     })
     .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'kb') {

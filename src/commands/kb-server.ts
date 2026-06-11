@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { FLEET_DIR } from '../paths.js';
 import { getKBService } from '../services/knowledge/kb-service.js';
+import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import type { KBEntryInput } from '../services/knowledge/types.js';
@@ -83,16 +84,19 @@ function getClientIp(req: http.IncomingMessage): string {
   return req.socket.remoteAddress || '0.0.0.0';
 }
 
-export async function startKbServer(port: number, generateToken: boolean): Promise<http.Server> {
+export async function startKbServer(port: number, generateToken: boolean, dbPath?: string): Promise<http.Server> {
   if (generateToken) {
     const token = generateNewToken();
     process.stderr.write(`KB server token: ${token}\n`);
   }
 
   const serverToken = getOrCreateToken();
-  const service = getKBService();
+  const service = getKBService(dbPath ? { provider: 'sqlite', dbPath } : undefined);
   const provider = service.getProvider();
   await provider.init();
+  if (provider instanceof SqliteProvider) {
+    process.stderr.write('[kb-server] Using KB: ' + provider.projectSlug + ' at ' + provider.dbPath + '\n');
+  }
 
   const server = http.createServer(async (req, res) => {
     const ip = getClientIp(req);
@@ -212,9 +216,10 @@ export async function startKbServer(port: number, generateToken: boolean): Promi
   });
 }
 
-export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean } {
+export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean; dbPath?: string } {
   let port = 7878;
   let generateToken = false;
+  let dbPath: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port' && argv[i + 1]) {
       port = parseInt(argv[i + 1], 10);
@@ -223,6 +228,10 @@ export function parseKbServerArgs(argv: string[]): { port: number; generateToken
     if (argv[i] === '--generate-token') {
       generateToken = true;
     }
+    if (argv[i] === '--db' && argv[i + 1]) {
+      dbPath = argv[i + 1];
+      i++;
+    }
   }
-  return { port, generateToken };
+  return { port, generateToken, dbPath };
 }

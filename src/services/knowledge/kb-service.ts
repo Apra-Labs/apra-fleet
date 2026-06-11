@@ -35,7 +35,7 @@ export class KBService {
       }
       this.provider = new HttpKbProvider(url, token);
     } else {
-      this.provider = new SqliteProvider();
+      this.provider = new SqliteProvider(config?.dbPath);
     }
   }
 

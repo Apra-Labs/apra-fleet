@@ -116,6 +116,12 @@ ROI positive after first warm session.
 
 ---
 
+## DB Details
+
+Project isolation: per-project DB at ~/.apra-fleet/data/knowledge/<repo-slug>/kb.sqlite (implemented in feat/kb-project-isolation, fixes #301)
+
+---
+
 ## Summary Table
 
 | Claim | Target | Measured | Verdict |
