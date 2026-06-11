@@ -520,7 +520,9 @@ export class SqliteProvider implements MemoryProvider {
           limit: 10,
           include_stale: false,
         });
-        top_entries = l1.results.filter(e => e.type !== 'context-cache');
+        top_entries = l1.results
+          .filter(e => e.type !== 'context-cache')
+          .map(e => ({ ...e, content: '' }));
       } catch {
         // FTS match may fail on unusual tokens
       }
