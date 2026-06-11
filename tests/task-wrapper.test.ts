@@ -29,6 +29,18 @@ describe('generateTaskWrapper - python3 removal', () => {
   });
 });
 
+describe('generateTaskWrapper - TASK_DIR uses $HOME (not tilde)', () => {
+  it('TASK_DIR contains $HOME/.fleet-tasks/', () => {
+    const script = generateTaskWrapper(baseConfig);
+    expect(script).toContain('TASK_DIR="$HOME/.fleet-tasks/');
+  });
+
+  it('does not contain a quoted literal tilde path', () => {
+    const script = generateTaskWrapper(baseConfig);
+    expect(script).not.toContain('"~/.fleet-tasks');
+  });
+});
+
 describe('generateTaskWrapper - restart_command (F1)', () => {
   it('MAIN_CMD and RESTART_CMD are same base64 when restartCommand is omitted', () => {
     const script = generateTaskWrapper(baseConfig);
