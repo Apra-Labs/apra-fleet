@@ -21,11 +21,18 @@ permissions:
 
 jobs:
   build-and-test:
-    runs-on: ${{ matrix.os }}
+    name: build-and-test (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-2022]
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+          - os: macos-latest
+            runner: macos-latest
+          - os: windows-latest
+            runner: windows-2022
 
     steps:
       - name: Checkout repository
