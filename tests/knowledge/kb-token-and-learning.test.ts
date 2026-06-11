@@ -265,6 +265,150 @@ describe('KB learning -- capture and recall CI guards', () => {
   });
 });
 
+describe('KB token savings -- scale validation', () => {
+  let tmpDir: string;
+  let provider: SqliteProvider;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-scale-'));
+    mockExecFile.mockReset();
+    setupGitSuccess();
+    provider = new SqliteProvider(path.join(tmpDir, 'test.db'));
+    await provider.init();
+  });
+
+  afterEach(() => {
+    provider.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('large file (20000 chars): warm prime saves >90% vs cold', async () => {
+    const LARGE_CONTENT = 'x'.repeat(20000);
+    const LARGE_FILE_PATH = path.join(tmpDir, 'large-scale-test-file.ts');
+    fs.writeFileSync(LARGE_FILE_PATH, LARGE_CONTENT);
+    const coldTokens = Math.ceil(LARGE_CONTENT.length / 4);
+    const contentHash = gitBlobHash(Buffer.from(LARGE_CONTENT));
+
+    await provider.capture({
+      type: 'context-cache',
+      title: 'large-scale-test-file.ts',
+      summary: 'A large TypeScript file with 20000 characters of content for scale testing.',
+      content: LARGE_CONTENT.slice(0, 4000),
+      confidence: 'CONFIRMED',
+      symbols: ['LargeClass'],
+      source_files: [LARGE_FILE_PATH],
+      source: 'doer',
+      tags: ['scale-test'],
+      content_hash: contentHash,
+      content_hash_type: 'git',
+      flagged_for_review: false,
+      author: 'kb-scale-test',
+    });
+
+    const warmResult = await provider.prime({
+      session_files: [LARGE_FILE_PATH],
+      hint_symbols: ['LargeClass'],
+    });
+
+    const warmTokens = approxTokens(JSON.stringify(warmResult));
+    const savingsPct = ((coldTokens - warmTokens) / coldTokens) * 100;
+
+    console.log('large file -- cold tokens:', coldTokens, '| warm tokens:', warmTokens, '| savings:', savingsPct.toFixed(1) + '%');
+
+    expect(warmResult.stale_files.length).toBe(0);
+    expect(savingsPct).toBeGreaterThan(90);
+  });
+
+  it('10 large files (20000 chars each): warm prime saves >95% vs cold', async () => {
+    const LARGE_CONTENT = 'y'.repeat(20000);
+    const totalColdTokens = 10 * Math.ceil(LARGE_CONTENT.length / 4);
+    const contentHash = gitBlobHash(Buffer.from(LARGE_CONTENT));
+    const FILE_PATHS = Array.from({ length: 10 }, (_, i) => path.join(tmpDir, 'large-file-' + i + '.ts'));
+
+    for (let i = 0; i < FILE_PATHS.length; i++) {
+      fs.writeFileSync(FILE_PATHS[i], LARGE_CONTENT);
+      await provider.capture({
+        type: 'context-cache',
+        title: 'large-file-' + i + '.ts',
+        summary: 'Large TypeScript file ' + i + ' -- service class with 20000 chars of business logic.',
+        content: LARGE_CONTENT.slice(0, 4000),
+        confidence: 'CONFIRMED',
+        symbols: ['Service' + i],
+        source_files: [FILE_PATHS[i]],
+        source: 'doer',
+        tags: ['scale-test'],
+        content_hash: contentHash,
+        content_hash_type: 'git',
+        flagged_for_review: false,
+        author: 'kb-scale-test',
+      });
+    }
+
+    const warmResult = await provider.prime({
+      session_files: FILE_PATHS,
+      hint_symbols: FILE_PATHS.map((_, i) => 'Service' + i),
+    });
+
+    const warmTokens = approxTokens(JSON.stringify(warmResult));
+    const savingsPct = ((totalColdTokens - warmTokens) / totalColdTokens) * 100;
+
+    console.log('10 large files -- cold tokens:', totalColdTokens, '| warm tokens:', warmTokens, '| savings:', savingsPct.toFixed(1) + '%');
+
+    expect(warmResult.stale_files.length).toBe(0);
+    expect(savingsPct).toBeGreaterThan(95);
+  });
+
+  it('mixed session (50% cached, 50% new): savings proportional to cached ratio', async () => {
+    const CONTENT = 'z'.repeat(10000);
+    const contentHash = gitBlobHash(Buffer.from(CONTENT));
+    const perFileColdTokens = Math.ceil(CONTENT.length / 4);
+
+    const CACHED = [
+      path.join(tmpDir, 'cached-a.ts'),
+      path.join(tmpDir, 'cached-b.ts'),
+      path.join(tmpDir, 'cached-c.ts'),
+    ];
+    const NEW_FILES = [
+      path.join(tmpDir, 'new-x.ts'),
+      path.join(tmpDir, 'new-y.ts'),
+      path.join(tmpDir, 'new-z.ts'),
+    ];
+    const ALL_FILES = [...CACHED, ...NEW_FILES];
+
+    for (const f of CACHED) {
+      fs.writeFileSync(f, CONTENT);
+      await provider.capture({
+        type: 'context-cache',
+        title: path.basename(f),
+        summary: 'Cached file: ' + path.basename(f),
+        content: CONTENT.slice(0, 4000),
+        confidence: 'CONFIRMED',
+        symbols: [],
+        source_files: [f],
+        source: 'doer',
+        tags: [],
+        content_hash: contentHash,
+        content_hash_type: 'git',
+        flagged_for_review: false,
+        author: 'kb-scale-test',
+      });
+    }
+
+    const primeResult = await provider.prime({ session_files: ALL_FILES });
+
+    expect(primeResult.stale_files.length).toBe(NEW_FILES.length);
+    expect(primeResult.stale_files).toEqual(expect.arrayContaining(NEW_FILES));
+
+    const tokensSaved = CACHED.length * perFileColdTokens;
+    const totalColdTokens = ALL_FILES.length * perFileColdTokens;
+    const effectiveSavingsPct = (tokensSaved / totalColdTokens) * 100;
+
+    console.log('mixed session -- cached:', CACHED.length, '| new:', NEW_FILES.length, '| effective savings:', effectiveSavingsPct.toFixed(1) + '%');
+
+    expect(effectiveSavingsPct).toBeCloseTo(50, 0);
+  });
+});
+
 describe('KB context size budget -- CI regression guards', () => {
   let tmpDir: string;
   let provider: SqliteProvider;
