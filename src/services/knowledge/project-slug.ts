@@ -3,10 +3,11 @@ import path from 'path';
 
 export function resolveProjectSlug(cwd?: string): string {
   const dir = cwd ?? process.cwd();
+  const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) };
   // 1. git remote URL
   try {
     const remote = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: dir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     const slug = slugify(remote);
     if (slug) return slug;
@@ -14,14 +15,13 @@ export function resolveProjectSlug(cwd?: string): string {
   // 2. git repo root dir name
   try {
     const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: dir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: dir, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     const slug = slugify(path.basename(root));
     if (slug) return slug;
   } catch {}
-  // 3. cwd basename (non-git: research tasks, scratch work)
-  const slug = slugify(path.basename(dir));
-  return slug || 'default';
+  // 3. non-git dirs always get 'default'
+  return 'default';
 }
 
 function slugify(s: string): string {

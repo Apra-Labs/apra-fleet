@@ -94,11 +94,11 @@ describe('KB project isolation', () => {
     expect(resolveProjectSlug()).toBe(resolveProjectSlug());
   });
 
-  it('resolveProjectSlug with non-git dir returns cwd basename slug', () => {
+  it('resolveProjectSlug with non-git dir returns default slug', () => {
     const tmpNonGit = fs.mkdtempSync(path.join(os.tmpdir(), 'my-research-project-'));
     try {
       const slug = resolveProjectSlug(tmpNonGit);
-      expect(slug).toMatch(/^[a-z0-9-]+$/);
+      expect(slug).toBe('default');
     } finally {
       fs.rmSync(tmpNonGit, { recursive: true, force: true });
     }
