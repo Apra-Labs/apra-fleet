@@ -29,6 +29,7 @@ export interface KBEntry {
   author: string;
   source: CaptureSource;
   confidence: Confidence;
+  scope?: 'project' | 'global';
   created_at: string;
   superseded_at?: string;
   promoted_at?: string;

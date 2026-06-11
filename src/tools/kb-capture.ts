@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { getKBService, computeFileHash } from '../services/knowledge/kb-service.js';
+import { computeFileHash } from '../services/knowledge/kb-service.js';
+import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbCaptureSchema = z.object({
@@ -18,6 +19,8 @@ export const kbCaptureSchema = z.object({
   confidence: z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED']).optional()
     .describe('Confidence level (default: INFERRED)'),
   author: z.string().optional().describe('Agent or user that captured this'),
+  scope: z.enum(['project', 'global']).optional()
+    .describe('Scope: project (default) or global for team-wide conventions'),
 });
 
 export type KbCaptureInput = z.infer<typeof kbCaptureSchema>;
@@ -26,9 +29,7 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
   if (input.source_files?.length) validateFilePaths(input.source_files);
   if (input.source_file) validateFilePaths([input.source_file]);
 
-  const service = getKBService();
-  const provider = service.getProvider();
-  await provider.init();
+  const providers = await getKbProviders();
 
   let content_hash = '';
   let content_hash_type: 'git' | 'sha256' = 'sha256';
@@ -41,7 +42,12 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     }
   }
 
-  const { id, audn_decision } = await provider.capture({
+  // context-cache always goes to project; scope='global' goes to global; otherwise project
+  const target = (input.type === 'context-cache' || input.scope !== 'global')
+    ? providers.project
+    : providers.global;
+
+  const { id, audn_decision } = await target.capture({
     type: input.type,
     title: input.title,
     summary: input.summary,
@@ -56,6 +62,7 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     author: input.author ?? '',
     source: input.source ?? 'doer',
     confidence: input.confidence ?? 'INFERRED',
+    scope: input.scope ?? 'project',
   });
 
   return JSON.stringify({ id, audn_decision });

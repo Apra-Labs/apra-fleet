@@ -3,8 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { FLEET_DIR } from '../paths.js';
-import { getKBService } from '../services/knowledge/kb-service.js';
-import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
+import { createKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import type { KBEntryInput } from '../services/knowledge/types.js';
@@ -91,12 +90,16 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
   }
 
   const serverToken = getOrCreateToken();
-  const service = getKBService(dbPath ? { provider: 'sqlite', dbPath } : undefined);
-  const provider = service.getProvider();
-  await provider.init();
-  if (provider instanceof SqliteProvider) {
-    process.stderr.write('[kb-server] Using KB: ' + provider.projectSlug + ' at ' + provider.dbPath + '\n');
+  const providers = await createKbProviders();
+  // If --db flag provided, override the project DB path
+  if (dbPath) {
+    const { SqliteProvider } = await import('../services/knowledge/sqlite-provider.js');
+    const overrideProvider = new SqliteProvider(dbPath);
+    await overrideProvider.init();
+    (providers as any).project = overrideProvider;
   }
+  const provider = providers.project;
+  process.stderr.write('[kb-server] project=' + providers.projectSlug + '\n');
 
   const server = http.createServer(async (req, res) => {
     const ip = getClientIp(req);

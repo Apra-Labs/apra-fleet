@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs';
-import { getKBService } from '../services/knowledge/kb-service.js';
+import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbInvalidateSchema = z.object({
@@ -30,10 +30,7 @@ export function installKbPostCommitHook(repoPath: string): void {
 export async function kbInvalidate(input: KbInvalidateInput): Promise<string> {
   validateFilePaths(input.files);
 
-  const service = getKBService();
-  const provider = service.getProvider();
-  await provider.init();
-
-  const { invalidated } = await provider.invalidate(input.files);
+  const providers = await getKbProviders();
+  const { invalidated } = await providers.project.invalidate(input.files);
   return JSON.stringify({ invalidated, files: input.files });
 }

@@ -95,6 +95,7 @@ export class SqliteProvider implements MemoryProvider {
         author TEXT NOT NULL DEFAULT '',
         source TEXT NOT NULL DEFAULT 'doer',
         confidence TEXT NOT NULL DEFAULT 'INFERRED',
+        scope TEXT NOT NULL DEFAULT 'project',
         created_at TEXT NOT NULL,
         superseded_at TEXT,
         promoted_at TEXT,
@@ -141,6 +142,11 @@ export class SqliteProvider implements MemoryProvider {
         PRIMARY KEY (from_id, to_id, link_type)
       );
     `);
+
+    // Migration: add scope column to existing DBs
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
+    } catch {}
   }
 
   private getDb(): Database.Database {
@@ -167,6 +173,7 @@ export class SqliteProvider implements MemoryProvider {
       author: row.author as string,
       source: row.source as KBEntry['source'],
       confidence: row.confidence as Confidence,
+      scope: (row.scope as 'project' | 'global' | undefined) ?? 'project',
       created_at: row.created_at as string,
       superseded_at: row.superseded_at as string | undefined,
       promoted_at: row.promoted_at as string | undefined,
@@ -188,14 +195,14 @@ export class SqliteProvider implements MemoryProvider {
         source_files, symbols, module, tags,
         content_hash, content_hash_type, stale,
         flagged_for_review, contradiction_of,
-        author, source, confidence, created_at,
+        author, source, confidence, scope, created_at,
         superseded_at, promoted_at, use_count
       ) VALUES (
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?,
         ?, ?,
-        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
         NULL, NULL, 0
       )
     `).run(
@@ -208,14 +215,15 @@ export class SqliteProvider implements MemoryProvider {
       JSON.stringify(input.symbols ?? []),
       input.module ?? null,
       JSON.stringify(input.tags ?? []),
-      input.content_hash,
-      input.content_hash_type,
+      input.content_hash ?? '',
+      input.content_hash_type ?? 'sha256',
       0,
       input.flagged_for_review ? 1 : 0,
       input.contradiction_of ?? null,
-      input.author,
+      input.author ?? '',
       input.source,
       input.confidence,
+      input.scope ?? 'project',
       now
     );
   }

@@ -1,34 +1,37 @@
 import { execFileSync } from 'child_process';
+import path from 'path';
 
-// Derives a filesystem-safe slug from the git remote URL of the current repo.
-// Examples:
-//   https://github.com/Apra-Labs/apra-fleet.git -> apra-labs-apra-fleet
-//   git@github.com:Apra-Labs/apra-fleet.git     -> apra-labs-apra-fleet
-//   (no remote / git not available)              -> default
 export function resolveProjectSlug(cwd?: string): string {
+  const dir = cwd ?? process.cwd();
+  // 1. git remote URL
   try {
     const remote = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: cwd ?? process.cwd(),
-      encoding: 'utf-8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
+      cwd: dir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    return slugify(remote);
-  } catch {
-    return 'default';
-  }
+    const slug = slugify(remote);
+    if (slug) return slug;
+  } catch {}
+  // 2. git repo root dir name
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const slug = slugify(path.basename(root));
+    if (slug) return slug;
+  } catch {}
+  // 3. cwd basename (non-git: research tasks, scratch work)
+  const slug = slugify(path.basename(dir));
+  return slug || 'default';
 }
 
-function slugify(remoteUrl: string): string {
-  // Strip protocol + optional auth + hostname, then .git suffix
-  let s = remoteUrl
-    .replace(/^https?:\/\/(?:[^@/]+@)?[^/]+\//, '')  // https://[user@]hostname/
-    .replace(/^git@[^:]+:/, '')                        // git@hostname:
-    .replace(/\.git$/, '')                             // .git suffix
-    .replace(/[:/]/g, '-')                             // remaining : and / -> -
-    .replace(/[^a-zA-Z0-9-]/g, '')                    // remove anything else
+function slugify(s: string): string {
+  return s
+    .replace(/^https?:\/\/[^@]*@?/, '')
+    .replace(/^git@/, '')
+    .replace(/\.git$/, '')
+    .replace(/[:/]/g, '-')
+    .replace(/[^a-zA-Z0-9-]/g, '')
     .toLowerCase()
-    .replace(/-+/g, '-')                               // collapse multiple dashes
-    .replace(/^-|-$/g, '');                            // trim leading/trailing dashes
-  return s || 'default';
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }

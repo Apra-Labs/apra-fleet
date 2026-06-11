@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getKBService } from '../services/knowledge/kb-service.js';
+import { getKbProviders } from '../services/knowledge/kb-providers.js';
 
 const L2_CONTENT_CAP = 3200;
 
@@ -14,25 +14,40 @@ export const kbQuerySchema = z.object({
 export type KbQueryInput = z.infer<typeof kbQuerySchema>;
 
 export async function kbQuery(input: KbQueryInput): Promise<string> {
-  const service = getKBService();
-  const provider = service.getProvider();
-  await provider.init();
+  const providers = await getKbProviders();
 
-  const l1 = await provider.query({
+  const queryOpts = {
     query: input.query,
     type: input.type,
     limit: input.limit ?? 20,
     l1_only: true,
     include_stale: input.include_stale ?? false,
     include_superseded: input.include_stale ?? false,
-  });
+  };
 
-  const top5Ids = l1.results.slice(0, 5).map(e => e.id);
-  let l2Results = l1.results.slice(0, 5);
+  const projectL1 = await providers.project.query(queryOpts);
+  const globalL1 = await providers.global.query(queryOpts);
+
+  // Merge project first, deduplicate global entries by title
+  const seen = new Set(projectL1.results.map(e => e.title));
+  const mergedL1 = [
+    ...projectL1.results,
+    ...globalL1.results.filter(e => !seen.has(e.title)),
+  ];
+
+  const top5Ids = mergedL1.slice(0, 5).map(e => e.id);
+  let l2Results = mergedL1.slice(0, 5);
 
   if (top5Ids.length > 0) {
-    const l2 = await provider.query({ ids: top5Ids });
-    l2Results = l2.results.map(e => ({
+    // L2 fetch: check project first, then global for IDs not found in project
+    const projectL2 = await providers.project.query({ ids: top5Ids });
+    const projectL2Ids = new Set(projectL2.results.map(e => e.id));
+    const missingIds = top5Ids.filter(id => !projectL2Ids.has(id));
+    let globalL2Results = missingIds.length > 0
+      ? (await providers.global.query({ ids: missingIds })).results
+      : [];
+
+    l2Results = [...projectL2.results, ...globalL2Results].map(e => ({
       ...e,
       content: e.content.length > L2_CONTENT_CAP
         ? e.content.slice(0, L2_CONTENT_CAP) + '...[truncated]'
@@ -41,7 +56,7 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
   }
 
   return JSON.stringify({
-    l1_results: l1.results,
+    l1_results: mergedL1,
     l2_expanded: l2Results,
   });
 }

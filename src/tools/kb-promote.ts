@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getKBService } from '../services/knowledge/kb-service.js';
+import { getKbProviders } from '../services/knowledge/kb-providers.js';
 
 export const kbPromoteSchema = z.object({
   id: z.string().min(1).describe('ID of the KB entry to promote'),
@@ -9,11 +9,9 @@ export const kbPromoteSchema = z.object({
 export type KbPromoteInput = z.infer<typeof kbPromoteSchema>;
 
 export async function kbPromote(input: KbPromoteInput): Promise<string> {
-  const service = getKBService();
-  const provider = service.getProvider();
-  await provider.init();
+  const providers = await getKbProviders();
 
-  const result = await provider.promote(input.id, input.reason);
+  const result = await providers.project.promote(input.id, input.reason);
   return JSON.stringify({
     id: result.id,
     previous_confidence: result.confidence_before,

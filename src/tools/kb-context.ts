@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getKBService } from '../services/knowledge/kb-service.js';
+import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbContextSchema = z.object({
@@ -11,11 +11,19 @@ export type KbContextInput = z.infer<typeof kbContextSchema>;
 export async function kbContext(input: KbContextInput): Promise<string> {
   validateFilePaths(input.files);
 
-  const service = getKBService();
-  const provider = service.getProvider();
-  await provider.init();
+  const providers = await getKbProviders();
 
-  const results = await provider.context(input.files);
+  let results = await providers.project.context(input.files);
+
+  // Fallback to global if project has no results
+  const hasFresh = results.some(r => r.status === 'fresh');
+  if (!hasFresh) {
+    const globalResults = await providers.global.context(input.files);
+    const hasFreshGlobal = globalResults.some(r => r.status === 'fresh');
+    if (hasFreshGlobal) {
+      results = globalResults;
+    }
+  }
 
   const fresh = results.filter(r => r.status === 'fresh');
   const stale = results.filter(r => r.status === 'stale');
