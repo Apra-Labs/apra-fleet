@@ -67,7 +67,7 @@ describe('gen-llms-full: link parser', () => {
       'docs/provider-guide.md',
       'docs/cloud-compute.md',
       'docs/writing-skills.md',
-      'skills/pm/SKILL.md',
+      'vendor/apra-pm/skills/pm/SKILL.md',
       'docs/beads.md',
       'docs/FAQ.md',
       'docs/troubleshooting.md',
