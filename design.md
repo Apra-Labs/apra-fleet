@@ -179,7 +179,7 @@ Systematic comparison of every concept in old `skills/pm/` vs new `skills/pm-lit
 | 4 | `/pm` command reference (init, pair, plan, start, status, resume, deploy, recover, cleanup, backlog, tasks) | SKILL.md:36-47 | SKILL.md (less formal) | **Partial** | **Port** | pm-lite uses a different command structure. Port the explicit command table as reference. |
 | 5 | Beads central DB rule (one DB in PM root, not per-project) | SKILL.md:52-54, beads.md | beads.md | **Present** | -- | pm-lite's beads.md covers this. |
 | 6 | Beads lifecycle hooks (init/plan/start/verify/changes-needed/cleanup) | SKILL.md:56-63, beads.md | beads.md | **Present** | -- | Equivalent coverage. |
-| 7 | Core rules (13 rules including project sandboxing, status.md updates, never read code, etc.) | SKILL.md:66-82 | SKILL.md (5 design principles) | **Partial** | **Port** | pm-lite has high-level design principles but lacks the explicit operational rules. Port rules: project sandboxing (#2), status.md updates (#3), tool verification (#4), idle prevention (#6), agent dispatch grouping (#8), unattended mode (#9), security audit in DoD (#11), PR lifecycle (#12-13). |
+| 7 | Core rules (14 rules, SKILL.md:66-82) | SKILL.md:66-82 | SKILL.md (5 design principles) | **Partial** | **Port (per-rule below)** | pm-lite has high-level design principles but lacks the explicit operational rules. Explicit decision for ALL 14 (no "etc."): **R1** PM never reads/writes code, only orchestrates -> **Present** (pm-lite's planner/doer/reviewer split embodies this; add a one-line statement to pm SKILL.md). **R2** project sandboxing -> **Port**. **R3** status.md recovery + per-dispatch update -> **Port**. **R4** tool verification before dispatch -> **Port** (fleet-gated). **R5** 1-3 step ad-hoc vs task harness -> **Port** (fleet-gated; local mode = inline subagent). **R6** never idle -> **Port**. **R7** keep going until stuck/done, filter questions, escalate genuine ambiguity -> **Port** (both modes). **R8** club fleet calls into one background Agent -> **Port** (fleet-gated). **R9** unattended modes + compose_permissions -> **Port** (fleet-gated). **R10** PLAN/progress/feedback committed+pushed every turn, only context file uncommitted -> **Port** (this is the git-as-transport discipline; pm-lite has it implicitly via item #16 but the explicit per-turn-commit rule must be stated). **R11** security audit + docs in DoD -> **Port**. **R12** raise PR, verify CI, never merge -> **Port** (user-facing, critical). **R13** PM runs gh directly, owns PR lifecycle -> **Port** (fleet-gated; in local mode the single conversation runs gh). **R14** always read referenced sub-docs before executing -> **Present** (agent definitions inline their own context). |
 | 8 | Secrets & credentials reference | SKILL.md:85-87 | -- | Missing | **Port** | Reference to fleet secure credentials. Important for fleet execution. Add a section to pm SKILL.md noting `{{secure.NAME}}` usage. |
 | 9 | Model selection (reference to fleet skill Model Tiers) | SKILL.md:102-103 | sprint.md (model assignment by planner) | **Present** | -- | pm-lite handles model assignment differently (planner chooses per-task tier). Both valid; pm-lite approach is more sophisticated. |
 | 10 | Provider awareness (reference to fleet skill Provider Awareness) | SKILL.md:107-110 | -- | Missing | **Port** | When running via fleet, the orchestrator needs to know provider-specific behaviors (e.g., agent context file naming). Port a provider-awareness section referencing context-file equivalents. |
@@ -202,19 +202,24 @@ Systematic comparison of every concept in old `skills/pm/` vs new `skills/pm-lit
 
 ### Gap Summary
 
-**Must port (7 items):**
+**Must port (9 items):**
 1. Sprint selection logic (simple/single/multi) -> SKILL.md
 2. Explicit `/pm` command reference -> SKILL.md
-3. Core operational rules (project sandboxing, status.md, tool verification, etc.) -> SKILL.md
+3. Core operational rules R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R12,R13 (project sandboxing, status.md, tool verification, ad-hoc-vs-harness, never-idle, keep-going/escalate, fleet-call-clubbing, unattended+compose_permissions, per-turn commit/push, security+docs DoD, PR/never-merge, PM-owns-gh) -> SKILL.md + fleet addendum (fleet-gated rules clearly marked) -- see Gap Table row 7 for the per-rule decision
 4. Secrets/credentials reference -> SKILL.md
 5. Provider awareness + context-file filename table -> new section
 6. Pre-flight checks (SHA matching before review) -> doer-reviewer-loop.md
 7. Fleet-specific sections (permissions, stop_prompt, unattended modes) -> new "Fleet Execution" addendum
+8. Simple sprint lightweight flow -> new file/section (RECLASSIFIED from "should": user-facing -- `/pm` users rely on the lightweight 1-3 task path; dropping it would annoy them)
+9. Resume rules (data-driven from phase numbers) -> doer-reviewer-loop.md (RECLASSIFIED from "should": fleet-critical -- without it, fleet dispatch loses the within-phase session-continue optimization)
 
-**Should port (3 items):**
-8. Simple sprint lightweight flow -> new file or section
-9. Resume rules (data-driven from phase numbers) -> doer-reviewer-loop.md
+**Should port (1 item):**
 10. Documentation harvest step -> sprint.md
+
+**Present, no action (core rules R1, R14):**
+- R1 (PM never reads/writes code, only orchestrates) and R14 (read referenced sub-docs first)
+  are already embodied by pm-lite's agent split; add a one-line R1 statement to SKILL.md for
+  explicitness.
 
 **Drop (2 items):**
 11. Fleet skill dependency bootstrap -- by design, pm has no fleet dep
@@ -333,11 +338,17 @@ OpenCodeProvider
   permissionModeAutoFlag() -> null   // no auto mode in OpenCode
 
   parseResponse(result):
-    Parse NDJSON (one JSON object per line from --format json)
-    Extract assistant messages, tool results, errors
-    Build result string from last assistant content
-    Extract session ID if present in events
-    No usage tracking initially (OpenCode doesn't emit token counts in JSON mode -- TBD)
+    Parse NDJSON (one JSON object per line from --format json). REAL schema verified
+    on spark -- see docs/opencode-exploration.md section 8a (the authoritative spec/fixture).
+    Each line: { type, sessionID, part }. Extract:
+      - result  = concat of every `text` event's part.text (assistant message lives in
+                  part.text, NOT part.content)
+      - usage   = last `step_finish` event's part.tokens {total,input,output,reasoning,cache}
+                  (usage IS emitted -- the earlier "no token counts" assumption was WRONG)
+      - session = top-level sessionID (present on EVERY event)
+      - tools   = `tool_use` events: part.tool, part.state.{status,input,output}
+      - isError = unparseable line, explicit error event, or step_finish.part.reason not in
+                  {stop, tool-calls}
 
   supportsResume() -> true
   supportsMaxTurns() -> false
@@ -495,26 +506,34 @@ No changes needed in `update-agent-cli.ts` itself -- it already iterates provide
 
 ### parseResponse Design Detail
 
-OpenCode `--format json` emits NDJSON events. Expected event types (from ai-sdk patterns):
+OpenCode `--format json` emits NDJSON. The schema below is VERIFIED from real captures on
+spark (opencode v1.17.4 + ollama), NOT assumed. The authoritative spec + the captured fixture
+lines live in `docs/opencode-exploration.md` section 8a; T3.4 saves them as
+`tests/fixtures/opencode-output.ndjson` and drives the unit tests off them.
+
+Every line is `{ type, sessionID, part }`. Real event types:
 
 ```json
-{"type": "text", "content": "..."}
-{"type": "tool-call", "name": "edit", "args": {...}}
-{"type": "tool-result", "name": "edit", "result": "..."}
-{"type": "finish", "reason": "stop", "usage": {...}}
+{"type":"step_start","sessionID":"ses_...","part":{"type":"step-start"}}
+{"type":"text","sessionID":"ses_...","part":{"type":"text","text":"hello"}}
+{"type":"tool_use","sessionID":"ses_...","part":{"type":"tool","tool":"write","callID":"call_...","state":{"status":"completed","input":{...},"output":"Wrote file successfully."}}}
+{"type":"step_finish","sessionID":"ses_...","part":{"type":"step-finish","reason":"tool-calls","tokens":{"total":7167,"input":7165,"output":2,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}
 ```
 
 Parser strategy (mirrors codex.ts):
-1. Split stdout by newlines
-2. Filter lines starting with `{`
-3. Parse each as JSON
-4. Collect text content from `type: "text"` events
-5. Check for error events
-6. Return last meaningful text as result
-7. Extract session ID from finish event if present
+1. Split stdout by newlines; parse each non-empty line as JSON (unparseable line -> isError).
+2. `result` = ordered concat of every `text` event's `part.text` (assistant text is in
+   `part.text`, NOT `part.content` -- the original draft was wrong).
+3. `usage` = last `step_finish` event's `part.tokens` (usage IS emitted -- original "no token
+   counts" assumption was wrong).
+4. `session` = top-level `sessionID` (on every event; no separate extraction needed).
+5. `tools` = `tool_use` events -> `part.tool` (name), `part.state.{status,input,output}`.
+6. `isError` = unparseable line, explicit error event, or `step_finish.part.reason` outside
+   {stop, tool-calls}.
 
-Risk: the exact JSON schema of `opencode run --format json` is not fully documented. Need to
-capture real output during implementation and adjust the parser.
+Remaining unknown: the exact error-event shape. T3.4 pre-step induces a failure (bad model id
+or endpoint down) to capture it before finalizing isError handling. This is the ONLY part of
+the schema still unverified -- the happy path (text/tool/usage/session) is fully captured.
 
 ---
 

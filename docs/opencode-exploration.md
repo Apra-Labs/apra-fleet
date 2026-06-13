@@ -310,8 +310,8 @@ adapter surface to OpenCode, with confidence markers.
 | permissionModeAutoFlag()  | OpenCode permission system (allow/ask/deny)       | [TBD]  |
 | composePermissionConfig() | opencode.json `permission`/agent perms per role   | [TBD]  |
 | permissionConfigPaths()   | `opencode.json` (and/or `.opencode/`)             | [TBD]  |
-| parseResponse()           | parse `opencode run` stdout; JSON mode?           | [TBD]  |
-| jsonOutputFlag()          | structured output flag for `run`                  | [TBD]  |
+| parseResponse()           | parse `--format json` NDJSON events (see 8a)      | [OK]   |
+| jsonOutputFlag()          | `--format json` on `opencode run`                 | [OK]   |
 | supportsResume()/resumeFlag()| OpenCode sessions; headless resume mechanism   | [TBD]  |
 | supportsMaxTurns()        | unknown                                           | [TBD]  |
 | authEnvVar / credentialPath| local: none; remote endpoints: key sourcing      | [TBD]  |
@@ -337,6 +337,43 @@ Cross-cutting:
    (edit/write/bash = allow|deny|ask), verified via the doer/reviewer install (section 6.1).
    Still TBD: full tool-name list + global vs per-agent precedence.
 6. [TBD] How fleet should template the endpoint into opencode.json (per member) - ties to #299.
+
+---
+
+## 8a. VERIFIED `opencode run --format json` event schema (parseResponse spec + fixture)
+
+Captured live on spark (opencode v1.17.4 + ollama). `--format json` emits NDJSON: one JSON
+object per line, each with a top-level `type` and `sessionID`, plus a `part` object. This is
+the REAL schema -- use it as the test fixture for T3.4. (The earlier design draft guessed
+`{type:text, content:...}` and "usage unavailable" -- BOTH WRONG; corrected below.)
+
+Top-level event `type` values and what parseResponse must extract:
+
+| `type`        | `part.type`  | Key fields                                                            | parseResponse use                          |
+|---------------|--------------|----------------------------------------------------------------------|--------------------------------------------|
+| `step_start`  | `step-start` | (boundary marker)                                                    | ignore                                     |
+| `text`        | `text`       | `part.text` (assistant message), `part.time`                         | COLLECT `part.text` -> result string       |
+| `tool_use`    | `tool`       | `part.tool` (e.g. "write"), `part.callID`, `part.state.{status,input,output,metadata,title,time}` | tool actions; status="completed" + output  |
+| `step_finish` | `step-finish`| `part.reason` ("stop" \| "tool-calls"), `part.tokens` `{total,input,output,reasoning,cache:{write,read}}`, `part.cost` | finish reason + USAGE                       |
+
+Rules for parseResponse:
+- `result` = concatenation (in order) of every `text` event's `part.text`.
+- `usage` IS available -> last `step_finish.part.tokens` (NOT unavailable as first assumed).
+- `sessionID` is top-level on EVERY event -> trivial resume capture (no separate call).
+- `isError`: no error event was captured in the happy-path runs. Treat an unparseable line,
+  an explicit error event, or a `step_finish.part.reason` outside {stop, tool-calls} as error.
+  T3.4 pre-step: induce a failure (bad model id / endpoint down) to capture the real error
+  event shape before finalizing isError handling.
+
+Captured shapes (verbatim, trimmed):
+```
+{"type":"step_start","sessionID":"ses_...","part":{"type":"step-start"}}
+{"type":"text","sessionID":"ses_...","part":{"type":"text","text":"hello","time":{...}}}
+{"type":"tool_use","sessionID":"ses_...","part":{"type":"tool","tool":"write","callID":"call_nxvlfvg2","state":{"status":"completed","input":{"content":"hello","filePath":"/tmp/oc_json2/hi.txt"},"output":"Wrote file successfully.","metadata":{...},"time":{...}}}}
+{"type":"step_finish","sessionID":"ses_...","part":{"type":"step-finish","reason":"tool-calls","tokens":{"total":7167,"input":7165,"output":2,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}
+```
+Save these lines (plus a real induced-error line) as `tests/fixtures/opencode-output.ndjson`
+and drive the unit tests off them -- do NOT hand-invent fixtures.
 
 ---
 
@@ -371,3 +408,9 @@ Cross-cutting:
   `opencode run "<msg>"` (NOT `--prompt`); bypass = `--dangerously-skip-permissions`;
   JSON = `--format json`; resume = `-c`/`-s`. Network fix logged: spark NIC was 100Mb
   (bad cable) -> gigabit after swap, ollama pulls 11 -> 117 MB/s.
+- 2026-06-13: Added section 8a "VERIFIED --format json event schema" - captured REAL NDJSON
+  (text/tool_use/step_start/step_finish) live on spark; corrected the design's wrong
+  assumptions (text is in part.text NOT content; usage IS emitted in step_finish.part.tokens;
+  sessionID is top-level on every event). Flipped parseResponse + jsonOutputFlag to [OK].
+  This de-risks T3.4 (the plan's #1 risk). Only the error-event shape remains [TBD] (needs an
+  induced failure to capture).

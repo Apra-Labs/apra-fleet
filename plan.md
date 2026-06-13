@@ -6,7 +6,13 @@
 Phase 1, OpenCode headless reliability in Phase 3). Each phase ends with a VERIFY checkpoint.
 
 **Tier key:** cheap = mechanical edits; standard = typical implementation; premium = design
-decisions, multi-file reasoning, parser design.
+decisions, multi-file reasoning, parser design. Tier is a PER-TASK advisory hint for model
+selection -- it is NOT a monotonic phase property. Task ORDER within a phase follows
+dependencies (e.g. T1.1 rename must precede T1.2 submodule; T2.1 delete-old-pm must precede
+T2.2 gap-ports; T6.2 integration must precede T6.3 commit-doc), so a cheap task can correctly
+follow a premium/standard one inside the same phase. The doer escalates per task as needed;
+VERIFY checkpoints are kept whole (not split at tier boundaries) so review covers a coherent
+unit of work.
 
 **Doer:** fleet-dev. **Reviewer:** fleet-rev (premium for all reviews).
 
@@ -77,8 +83,10 @@ Riskiest first: validate submodule + npm vendoring works before building anythin
   - `skills/pm/doer-reviewer-loop.md` -- add pre-flight checks (SHA matching), resume rules table
   - `skills/pm/sprint.md` -- add documentation harvest step, simple-sprint section or reference
   - New file: `skills/pm/fleet-addendum.md` -- fleet-specific sections: permissions, stop_prompt, unattended modes, compose_permissions, context-file filename table
-  - New file: `skills/pm/simple-sprint.md` -- lightweight 1-3 task flow (ported from old pm)
-- **Done:** All 7 "must port" items from gap analysis are present in the new pm skill files; grep for each feature term confirms presence
+  - New file: `skills/pm/simple-sprint.md` -- lightweight 1-3 task flow (ported from old pm; MUST port -- user-facing)
+  - `skills/pm/doer-reviewer-loop.md` -- add resume-rules table (data-driven from planned.json phase numbers; MUST port -- fleet-critical session-continue optimization)
+  - `skills/pm/SKILL.md` -- add one-line R1 statement (PM orchestrates, never reads/writes code)
+- **Done:** All 9 "must port" items from the design gap analysis (Gap Summary) are present in the new pm skill files, including simple-sprint.md and the resume-rules table; the 12 fleet-gated/shared core rules (R2-R13) from Gap Table row 7 are present and fleet-only ones clearly marked; grep for each feature term confirms presence
 - **Blockers:** T2.1 (old pm removed, no confusion about which is canonical)
 - **Risk:** This modifies the submodule -- requires a commit in apra-pm repo and submodule SHA update in apra-fleet
 
