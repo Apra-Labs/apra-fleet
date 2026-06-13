@@ -1,83 +1,122 @@
-# Phase 1 Implementation Review -- VERIFY 1
+# VERIFY 2 Review -- Phase 2: PM Skill Replacement + Gap Ports
 
-**Verdict: APPROVED**
+**Verdict: CHANGES NEEDED**
 
-**Reviewer:** nbkuh (reviewer)
-**Date:** 2026-06-13
+**Reviewer:** fleet-rev (premium)
 **Branch:** feat/opencode-pm-epic
-**Commits reviewed:** 70279e3, 678d2d3, fbc8b72
+**Commits reviewed:** 22f8720 (submodule pin bump to 265b03f), fe3a044 (delete old skills/pm/)
+**Submodule reviewed:** apra-pm @ 265b03f (gap ports commit)
+**Date:** 2026-06-13
 
 ---
 
-## VERIFY 1 Checklist
+## VERIFY 2 Checklist
 
-### 1. Submodule -- PASS
-- `git submodule status` -> `3667cc11f4c7d310b01dcaee0a40f954b63fa294 vendor/apra-pm (heads/main)` -- valid SHA, pinned
-- `.gitmodules` URL correct: `https://github.com/Apra-Labs/apra-pm.git`
-- `vendor/apra-pm/skills/pm/SKILL.md` exists (8824 bytes)
-- `vendor/apra-pm/agents/planner.md` exists (7048 bytes)
+### 1. All 9 must-port items present -- PASS
 
-### 2. Build vendoring -- PASS
-- `npm run build` (tsc) succeeds with clean output
-- `node scripts/vendor-pm.mjs` produces `dist/skills/pm/SKILL.md` and `dist/agents/planner.md`
-- `npm pack --dry-run` (after vendoring) includes all 6 PM skill files and 4 agent files in dist/
-- `prepublishOnly` correctly wired in package.json: `"node scripts/vendor-pm.mjs && npm run build"`
-- gen-sea-config.mjs updated to collect from `vendor/apra-pm/` for both skills and agents
+All 9 items from design.md Gap Summary verified by grep in vendor/apra-pm/skills/pm/:
 
-### 3. install.ts -- PASS
-- `buildDevManifest` sources skills from `vendor/apra-pm/skills/pm/` (falls back to `dist/skills/pm/`)
-- `buildDevManifest` sources agents from `vendor/apra-pm/agents/` (falls back to `dist/agents/`)
-- PM skill install step (Step 7) sources from `vendor/apra-pm/skills/pm` with dist/ fallback
-- Empty-submodule guard present (lines 656-668): checks for `SKILL.md` marker in vendor dir, errors with clear `git submodule update --init --recursive` guidance
-- `agents` field added to `AssetManifest` interface (infrastructure for Phase 4)
+| # | Item | File | Status |
+|---|------|------|--------|
+| 1 | Sprint selection table (simple/single/multi) | SKILL.md | Present (3-row table) |
+| 2 | /pm command reference | SKILL.md | Present (10-command table: init, pair, plan, start, status, resume/recover, deploy, backlog/tasks, cleanup) |
+| 3 | Core rules R2-R13 (R1,R14 already present) | SKILL.md | Present (see criterion 2) |
+| 4 | Secrets/credentials reference ({{secure.NAME}}) | SKILL.md + fleet-addendum.md | Present |
+| 5 | Provider awareness + context-file filename table | SKILL.md + fleet-addendum.md | Present (6-provider table in both) |
+| 6 | Pre-flight SHA-matching checks | doer-reviewer-loop.md | Present (3-step SHA verify before review dispatch) |
+| 7 | Fleet-addendum (permissions/stop_prompt/unattended) | fleet-addendum.md (new) | Present (116 lines: mode detection, permissions, unattended, stop_prompt, pairing, context-file delivery, secrets, R8 batching) |
+| 8 | Simple-sprint.md | simple-sprint.md (new) | Present (58 lines: when-to-use criteria, 8-step flow, recovery) |
+| 9 | Resume rules table (data-driven from progress.json) | doer-reviewer-loop.md | Present (2 tables: doer dispatches + all dispatches, keyed on lastDispatchedPhase) |
 
-### 4. Hygiene -- PASS
-- `grep -rn 'pm-lite|apra-pm-lite'` across src/, scripts/, package.json, .gitmodules: 0 hits
-- No old `skills/pm/` paths referenced in new code (install.ts now uses `vendor/apra-pm/` exclusively)
-- Only implementation files touched: .gitmodules, package.json, scripts/gen-sea-config.mjs, scripts/vendor-pm.mjs (new), src/cli/install.ts
-- No stray artifacts committed
+### 2. All 14 core rules R1-R14; fleet-only gating -- PASS
 
-### 5. Dev-mode install -- PASS
-- `node dist/index.js install --llm claude` completes successfully (8 steps)
-- Installed `~/.claude/skills/pm/SKILL.md` is byte-identical to `vendor/apra-pm/skills/pm/SKILL.md` (diff returns empty)
-- All 6 vendor PM skill files installed: SKILL.md, beads.md, doer-reviewer-loop.md, sprint.md, tpl-progress.json, worktrees.md
+All 14 rules present in SKILL.md:66-168. Fleet-only rules marked with `**[Fleet mode]**`:
+- R4 (tool verification before dispatch)
+- R5 (ad-hoc vs task harness)
+- R8 (fleet call batching)
+- R9 (unattended modes + compose_permissions)
+- R13 (PM runs gh directly)
 
-### 6. Tests -- PASS
-- `npm test`: 86 test files passed, 1 skipped (auth-terminal-wait, unrelated)
-- 1379 tests passed, 7 skipped -- no regressions
+Closing note at line 169-171: "Rules marked **[Fleet mode]** apply only when running with fleet members. In local subagent mode they are skipped or adapted (see fleet-addendum.md for the fleet-specific execution model)."
+
+### 3. Dual-mode gating -- PASS
+
+- fleet-addendum.md opens with "This document covers features that apply ONLY when the pm skill runs in fleet mode...In local subagent mode, everything here is skipped."
+- Mode detection section describes MCP-probe-based detection per design.md 4a finding B.
+- All skill sub-document cross-references resolve: 8 skill files in skills/pm/ all reachable; sprint artifact references (requirements.md, PLAN.md, etc.) are correctly runtime-created files.
+- No broken references or errors in a local/no-fleet read of the skill.
+
+### 4. Old skills/pm/ fully deleted -- PASS
+
+`ls skills/pm/` -> "No such file or directory". 22 files deleted in commit fe3a044.
+
+### 5. Build succeeds -- PASS
+
+`npm install && npm run build` (tsc) completes without errors. `dist/skills/pm/SKILL.md` generated by vendor-pm.mjs. install.ts sources from `vendor/apra-pm/skills/pm/` (line 131) with `dist/skills/pm/` fallback.
+
+### 6. Backward-compat smoke -- PASS
+
+All 11 old /pm commands have equivalents in new SKILL.md command reference table:
+
+| Old command | New equivalent | Present |
+|-------------|---------------|---------|
+| /pm init | /pm init <project> | Yes |
+| /pm pair | /pm pair <doer> <reviewer> (fleet mode) | Yes |
+| /pm plan | /pm plan <requirement> | Yes |
+| /pm start | /pm start | Yes |
+| /pm status | /pm status | Yes |
+| /pm resume | /pm resume / /pm recover | Yes |
+| /pm deploy | /pm deploy | Yes |
+| /pm recover | /pm resume / /pm recover | Yes |
+| /pm cleanup | /pm cleanup | Yes |
+| /pm backlog | /pm backlog | Yes |
+| /pm tasks | /pm tasks | Yes |
+
+State-file names unchanged: PLAN.md (11 refs), progress.json (12 refs), feedback.md (6 refs), status.md (2 refs).
+
+### 7. No `-lite` naming -- PASS
+
+`grep -r "-lite" vendor/apra-pm/skills/pm/` -> 0 hits.
+`grep -r "-lite" vendor/apra-pm/agents/` -> 0 hits.
+
+### 8. File hygiene -- PASS
+
+Commit 22f8720: 1 file changed (vendor/apra-pm submodule pointer). Commit fe3a044: 22 files deleted (old skills/pm/). No stray artifacts. Doc commit 35bddda is out of scope.
+
+### 9. npm test -- all pass -- **FAIL**
+
+85 test files passed, 1 failed (gen-llms-full.test.ts), 1 skipped. 1377 passed, 2 failed, 7 skipped.
 
 ---
 
 ## Findings
 
-### A. npm pack tarball contains both old and new PM skills (LOW)
-**Location:** package.json `files` field
-**Detail:** The `files` array includes `"skills/"` (old PM files from repo root) AND `"dist/"` (where vendor-pm.mjs copies submodule files). After `prepublishOnly` runs, the tarball contains both sets. install.ts correctly uses only `vendor/apra-pm/` or `dist/skills/pm/`, never the root `skills/pm/`. This is benign dead weight that will resolve itself when Phase 2 (T2.1) deletes `skills/pm/`.
-**Action:** None required in Phase 1. Phase 2 should also remove `"skills/"` from the `files` field.
+### HIGH-1: llms.txt stale reference causes 2 test failures
 
-### B. dist/ vendor files not produced by `npm run build` alone (INFORMATIONAL)
-**Detail:** The VERIFY 1 criteria says to confirm `dist/skills/pm/SKILL.md` exists after `npm run build`. Build is just `tsc`; vendor files are populated by `vendor-pm.mjs` (wired to `prepublishOnly`). In dev mode, install.ts reads from `vendor/apra-pm/` directly, bypassing dist/. This is correct by design -- the criteria wording is slightly off, not the code.
-**Action:** None.
+**File:** llms.txt:26
+**Tests:** tests/gen-llms-full.test.ts (2 failures: "extracts exactly 17 local docs" and "docs appear in the required order")
 
-### C. No agent install step yet (EXPECTED)
-**Detail:** `agents` field added to AssetManifest; gen-sea-config.mjs collects agent files; vendor-pm.mjs copies agents to dist/. But no install step writes agents to `~/.claude/agents/`. This is explicitly Phase 4 (T4.2) work. The Phase 1 infrastructure prep is correct.
-**Action:** None.
+**Issue:** `llms.txt` line 26 still references `skills/pm/SKILL.md`, which was deleted in commit fe3a044. The test's link parser finds the file missing, drops it from the list, and now returns 16 docs vs the expected 17.
 
-### D. .gitmodules omits `branch = main` (INFORMATIONAL)
-**Detail:** Design doc shows `branch = main` in .gitmodules. Implementation omits it. This is fine -- `branch` is only used by `git submodule update --remote`; without it, the submodule stays pinned to the committed SHA, which is more stable.
-**Action:** None.
+**Fix:** Update `llms.txt:26` to point to `vendor/apra-pm/skills/pm/SKILL.md` (the PM skill docs are still relevant and should be discoverable). Then update the test:
+- Change expected count from 17 to 17 (stays the same if path is updated)
+- Update the expected order list to use the new path
+
+Alternatively, if the vendored skill should not appear in llms-full.txt, remove the line entirely and update the test to expect 16 docs.
 
 ---
 
-## Code Quality Notes
+## Notes
 
-- vendor-pm.mjs has a clean three-way guard: submodule present -> copy; dist/ already populated -> skip; neither -> error with guidance. Covers all three installation scenarios (dev, npm global, broken clone).
-- install.ts empty-submodule guard correctly checks for the SKILL.md marker file rather than just directory existence, catching the non-recursive clone case.
-- gen-sea-config.mjs correctly uses the `rootBase` parameter for relative path calculation, ensuring consistent manifest keys for both skills and agents.
-- The fallback chain (vendor/apra-pm -> dist/) is consistently applied in both buildDevManifest and the PM skill install step.
+- Submodule correctly pinned at 265b03f as specified in the task
+- Gap port commit (265b03f in apra-pm) cleanly scoped: 3 files modified (SKILL.md, doer-reviewer-loop.md, sprint.md) + 2 new files (fleet-addendum.md, simple-sprint.md) = 334 insertions
+- Documentation harvest (should-port item 10 from Gap Summary) added to sprint.md Completion step 1 -- goes beyond the 9 must-ports
+- Resume rules table is properly data-driven from `lastDispatchedPhase` as specified in design
+- SKILL.md Sub-documents section at the end provides a clean index of all 7 sub-docs
+- Commit messages follow repo conventions: type(scope): description
 
 ---
 
 ## Summary
 
-Phase 1 implementation is clean and correct. The submodule is properly pinned, build-time vendoring works, dev-mode install sources PM skills from the submodule, the empty-submodule guard provides clear recovery guidance, and all existing tests pass. No blocking issues found.
+Phase 2 gap ports are thorough and well-structured. All 9 must-port items are present, dual-mode gating is clean, the old PM is fully removed, and backward compatibility is preserved. One blocking issue: `llms.txt` still references the deleted `skills/pm/SKILL.md`, breaking 2 tests. Fix the stale reference and this phase is ready to ship.
