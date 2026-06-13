@@ -76,6 +76,7 @@ interface AssetManifest {
   scripts: Record<string, string>;
   skills: Record<string, string>;
   fleetSkills: Record<string, string>;
+  agents: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -120,10 +121,21 @@ function buildDevManifest(root: string): AssetManifest {
     if (entry.endsWith('.mjs')) continue; // skip build scripts
     scripts[entry] = `scripts/${entry}`;
   }
-  const skills = collectFilesRec(path.join(root, 'skills', 'pm'), 'skills/pm');
+
+  // Source PM skills and agents from vendor/apra-pm submodule (dev mode),
+  // fall back to dist/ for npm global installs where submodule is absent.
+  const vendorPmSkills = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
+  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
+  const pmSkillsDir = fs.existsSync(vendorPmSkills) ? vendorPmSkills : path.join(root, 'dist', 'skills', 'pm');
+  const agentsDir = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
+  const pmBase = fs.existsSync(vendorPmSkills) ? 'vendor/apra-pm/skills/pm' : 'dist/skills/pm';
+  const agentsBase = fs.existsSync(vendorAgents) ? 'vendor/apra-pm/agents' : 'dist/agents';
+
+  const skills = collectFilesRec(pmSkillsDir, pmBase, pmBase);
+  const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
   const fleetSkills = collectFilesRec(path.join(root, 'skills', 'fleet'), 'skills/fleet');
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills, fleetSkills };
+  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents };
 }
 
 let _manifestOverride: AssetManifest | null = null;
@@ -640,6 +652,20 @@ ${killHint}
   }
 
   // --- Step 7: Install PM skill (optional) ---
+  // Empty-submodule guard: vendor/apra-pm dir exists but was not initialized
+  if (installPm && !isSea()) {
+    const root = findProjectRoot();
+    const vendorDir = path.join(root, 'vendor', 'apra-pm');
+    if (fs.existsSync(vendorDir)) {
+      const skillMarker = path.join(vendorDir, 'skills', 'pm', 'SKILL.md');
+      if (!fs.existsSync(skillMarker)) {
+        console.error(`Error: vendor/apra-pm exists but appears empty (non-recursive clone).
+Run:  git submodule update --init --recursive
+Then re-run:  apra-fleet install`);
+        process.exit(1);
+      }
+    }
+  }
   if (installPm) {
     console.log(`  [7/${totalSteps}] Installing PM skill...`);
     clearDirSync(paths.skillsDir);
@@ -650,8 +676,10 @@ ${killHint}
         writeAssetFile(path.join(paths.skillsDir, name), content);
       }
     } else {
-      // Dev mode: copy from project skills/pm/
-      const pmSrc = path.join(findProjectRoot(), 'skills', 'pm');
+      // Dev/npm mode: prefer vendor/apra-pm submodule, fall back to dist/
+      const root = findProjectRoot();
+      const vendorPm = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
+      const pmSrc = fs.existsSync(vendorPm) ? vendorPm : path.join(root, 'dist', 'skills', 'pm');
       copyDirSync(pmSrc, paths.skillsDir);
     }
   }
