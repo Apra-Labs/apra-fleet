@@ -360,10 +360,21 @@ Rules for parseResponse:
 - `result` = concatenation (in order) of every `text` event's `part.text`.
 - `usage` IS available -> last `step_finish.part.tokens` (NOT unavailable as first assumed).
 - `sessionID` is top-level on EVERY event -> trivial resume capture (no separate call).
-- `isError`: no error event was captured in the happy-path runs. Treat an unparseable line,
-  an explicit error event, or a `step_finish.part.reason` outside {stop, tool-calls} as error.
-  T3.4 pre-step: induce a failure (bad model id / endpoint down) to capture the real error
-  event shape before finalizing isError handling.
+- `isError`: TRUE if any line has top-level `type:"error"` (now captured -- see below), an
+  unparseable line, or a `step_finish.part.reason` outside {stop, tool-calls}.
+
+Error-event shape (VERIFIED -- induced via `opencode run -m ollama/nonexistent-model --format
+json`):
+```
+{"type":"error","timestamp":N,"sessionID":"ses_...","error":{"name":"UnknownError","data":{"message":"Model not found: ollama/nonexistent-model-xyz123."}}}
+```
+- Error events have top-level `type:"error"` + `sessionID` but NO `part` field (unlike
+  text/tool/step events) -- the parser must not assume `part` exists.
+- `error.data.message` = human message; `error.name` = error class (e.g. UnknownError).
+- MULTIPLE error events can appear in one run (a generic "Unexpected server error" followed by
+  a specific "Model not found: ...") -- prefer the most specific (last) message for the result.
+- A separate pretty-printed `ERROR (#NNN): failed {...}` block goes to STDERR (not the NDJSON
+  stream) -- parse the `{"type":"error"}` JSON lines, not the stderr log block.
 
 Captured shapes (verbatim, trimmed):
 ```
@@ -372,8 +383,10 @@ Captured shapes (verbatim, trimmed):
 {"type":"tool_use","sessionID":"ses_...","part":{"type":"tool","tool":"write","callID":"call_nxvlfvg2","state":{"status":"completed","input":{"content":"hello","filePath":"/tmp/oc_json2/hi.txt"},"output":"Wrote file successfully.","metadata":{...},"time":{...}}}}
 {"type":"step_finish","sessionID":"ses_...","part":{"type":"step-finish","reason":"tool-calls","tokens":{"total":7167,"input":7165,"output":2,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}
 ```
-Save these lines (plus a real induced-error line) as `tests/fixtures/opencode-output.ndjson`
-and drive the unit tests off them -- do NOT hand-invent fixtures.
+Save these lines (happy-path + the verified error line above) as
+`tests/fixtures/opencode-output.ndjson` and drive the unit tests off them -- do NOT hand-invent
+fixtures. The schema is now FULLY captured (text/tool/step/error) -- T3.4 has no remaining
+unknowns.
 
 ---
 
@@ -412,5 +425,9 @@ and drive the unit tests off them -- do NOT hand-invent fixtures.
   (text/tool_use/step_start/step_finish) live on spark; corrected the design's wrong
   assumptions (text is in part.text NOT content; usage IS emitted in step_finish.part.tokens;
   sessionID is top-level on every event). Flipped parseResponse + jsonOutputFlag to [OK].
-  This de-risks T3.4 (the plan's #1 risk). Only the error-event shape remains [TBD] (needs an
-  induced failure to capture).
+  This de-risks T3.4 (the plan's #1 risk). Only the error-event shape remained [TBD].
+- 2026-06-13: Captured the error-event shape (induced via `opencode run -m
+  ollama/nonexistent-model --format json`): top-level `type:"error"` + `sessionID`, NO `part`,
+  message at `error.data.message`; multiple error events possible (prefer most specific);
+  stderr also carries a pretty `ERROR (#NNN)` block to ignore. T3.4 schema now 100% captured
+  (text/tool/step/error) -- zero remaining unknowns.

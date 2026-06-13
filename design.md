@@ -539,9 +539,12 @@ Parser strategy (mirrors codex.ts):
 6. `isError` = unparseable line, explicit error event, or `step_finish.part.reason` outside
    {stop, tool-calls}.
 
-Remaining unknown: the exact error-event shape. T3.4 pre-step induces a failure (bad model id
-or endpoint down) to capture it before finalizing isError handling. This is the ONLY part of
-the schema still unverified -- the happy path (text/tool/usage/session) is fully captured.
+Error-event shape (VERIFIED -- induced via a bad model id): `{"type":"error","timestamp":N,
+"sessionID":"ses_...","error":{"name":"UnknownError","data":{"message":"Model not found: ..."}}}`.
+Error events have top-level `type:"error"` + `sessionID` but NO `part` field; message at
+`error.data.message`. Multiple error events can appear -- prefer the most specific (last). The
+schema is now FULLY captured (text/tool/usage/session/error) -- no remaining unknowns for T3.4.
+See docs/opencode-exploration.md section 8a for the complete fixture.
 
 ---
 
