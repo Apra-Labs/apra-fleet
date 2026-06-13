@@ -189,7 +189,7 @@ Systematic comparison of every concept in old `skills/pm/` vs new `skills/pm-lit
 | 14 | Resume rules (data-driven from planned.json phase numbers, explicit table) | doer-reviewer.md:56-78, single-pair-sprint.md:83-101 | doer-reviewer-loop.md (dispatch fresh/continue) | **Partial** | **Port** | pm-lite uses fresh dispatches per role. The resume optimization (continuing the session within a phase) is valuable for fleet. Port the resume rule table with the planned.json phase-number derivation. |
 | 15 | Safeguards table (max_turns, retry limit, cycle limit, model escalation) | doer-reviewer.md:83-88, single-pair-sprint.md:120-125 | doer-reviewer-loop.md (safeguards section) | **Present** | -- | pm-lite has equivalent safeguards: dispatch retry (3/dispatch), doer-reviewer cycle (3/phase), zero progress (escalate model). Same limits. |
 | 16 | Git as transport (doer commits PLAN/progress, reviewer commits feedback, annotated findings) | doer-reviewer.md:92-99 | sprint.md (git is the message bus) | **Present** | -- | pm-lite uses git as the primary state transport. Equivalent. |
-| 17 | Permissions section (compose_permissions, mid-sprint denial handling, stop_prompt) | doer-reviewer.md:103-117 | -- | Missing | **Port** | Fleet-specific: compose_permissions, permission denial recovery, stop_prompt. Port as a "Fleet Execution" addendum. |
+| 17 | Permissions section (compose_permissions, mid-sprint denial handling, stop_prompt) | doer-reviewer.md:103-117 | -- | Missing | **Port** | Fleet-specific: compose_permissions, permission denial recovery, stop_prompt. Port into the fleet-only section of the dual-mode design (see section 4a). These features are gated to fleet mode only. |
 | 18 | Simple sprint (lightweight 1-3 task flow without PLAN.md/progress.json) | simple-sprint.md | -- | Missing | **Port** | pm-lite does not have a lightweight path. Port simple-sprint as an alternative flow for trivial work. The pm-lite "lightweight path" in its direction doc mentions this as near-term roadmap. |
 | 19 | Multi-pair sprint (parallel doer/reviewer pairs, contracts, integration flow) | multi-pair-sprint.md | worktrees.md | **Present** (different approach) | -- | pm-lite's worktrees.md handles parallel tracks via git worktrees (single orchestrator, multiple branches). The old multi-pair-sprint used multiple fleet member pairs. Both valid; worktrees.md is more sophisticated for local execution. For fleet dispatch with multiple members, worktrees.md applies (each worktree can map to a member). |
 | 20 | Sprint completion documentation harvest | single-pair-sprint.md:139-141 | sprint.md (deploy phase) | **Partial** | **Port** | pm-lite has deploy but not the explicit "documentation harvest" step. Port as optional post-completion step. |
@@ -222,6 +222,83 @@ Systematic comparison of every concept in old `skills/pm/` vs new `skills/pm-lit
 
 ---
 
+## 4a. Dual-Mode Execution (Local Subagents vs Fleet Members)
+
+The PM skill must work FLAWLESSLY in BOTH modes. These are two fundamentally different
+orchestration models -- not a "fleet addendum" bolted onto local execution.
+
+### Mode detection and selection
+
+The SAME pm skill detects the execution mode at sprint start:
+
+```
+Mode selection logic (in pm SKILL.md or orchestrator):
+  1. Check: are fleet members available? (fleet skill loaded + members registered)
+  2. Check: does the user's /pm command specify --local or --fleet?
+  3. Default: if fleet members available AND the task tier has a matching member -> fleet mode
+     Otherwise -> local mode (Claude Code subagents via Task/Agent tool)
+```
+
+The mode is stored in `status.md` at sprint init so recovery/resume uses the same mode.
+
+### Loop semantics: how they differ
+
+| Aspect | Local Subagent Mode | Fleet Member Mode |
+|--------|-------------------|------------------|
+| Dispatch mechanism | `Agent` tool (subagent_type from agent.md) | `execute_prompt` MCP tool to remote member |
+| Blocking model | INLINE BLOCKING: orchestrator keeps its turn alive until the subagent returns (SKILL.md core rule 4) | ASYNC DISPATCH: orchestrator dispatches via execute_prompt, then polls/monitors via `monitor_task` |
+| Turn lifecycle | Single turn encompasses dispatch + work + result | Dispatch is one turn; monitoring is periodic turns; result collection is another turn |
+| Error recovery | Subagent failure returns inline; orchestrator retries immediately | Member failure detected via monitor_task; orchestrator retries or escalates |
+| Concurrency | Sequential within a turn (one subagent at a time per orchestrator) OR parallel via multiple Agent tool calls | Naturally concurrent: multiple members can work simultaneously |
+| Context passing | Subagent inherits conversation context + agent.md system prompt | Member receives prompt via execute_prompt; context passed via git (committed files) + prompt text |
+
+### How the 4 roles map in each mode
+
+| Role | Local Mode | Fleet Mode |
+|------|-----------|-----------|
+| Planner | `Agent` tool with `subagent_type: "planner"`, reads planner.md agent definition | `execute_prompt` to a planner-capable member; agent.md installed on member at install time |
+| Plan-reviewer | `Agent` tool with `subagent_type: "plan-reviewer"` | `execute_prompt` to a reviewer member |
+| Doer | `Agent` tool with `subagent_type: "doer"` in a worktree | `execute_prompt` to doer member; member works in its own work_folder |
+| Reviewer | `Agent` tool with `subagent_type: "reviewer"` | `execute_prompt` to reviewer member |
+
+In BOTH modes, the agent.md files define the role's system prompt and capabilities. The
+canonical source is `vendor/apra-pm/agents/`. In local mode, the Agent tool loads them
+directly. In fleet mode, they are installed on the member at `apra-fleet install` time.
+
+### State and transport: identical across modes
+
+- **Git is the message bus** in both modes. Doer commits code + PLAN.md updates + progress.json.
+  Reviewer commits feedback.md. Orchestrator reads git state to decide next action.
+- **Beads** tracks task lifecycle (create, in_progress, close) identically.
+- **Sprint state files** (status.md, progress.json, planned.json, PLAN.md, feedback.md) have
+  the same schema and semantics.
+- **Worktrees** apply in both modes: local mode uses git worktrees directly; fleet mode
+  maps each worktree to a member's work_folder.
+
+### Fleet-only features
+
+These features belong ONLY to fleet mode and are skipped/no-op in local mode:
+
+| Feature | Why fleet-only |
+|---------|---------------|
+| `compose_permissions` | Local subagents inherit orchestrator permissions; fleet members need explicit permission config written to their provider settings |
+| Context-file filenames (provider-specific) | Local subagents use the Agent tool's built-in context; fleet members need provider-specific context files (e.g. CLAUDE.md vs AGENTS.md) written to work_folder |
+| Member pairing (doer + reviewer assignment) | Local mode uses whichever Agent tool the orchestrator spawns; fleet mode pairs specific members |
+| `stop_prompt` | Only needed for fleet members running unattended; local subagents are stopped by the orchestrator ending the turn |
+| Unattended mode flags | Fleet members need `--dangerously-skip-permissions` etc.; local subagents inherit orchestrator's permission state |
+| `monitor_task` polling | Local subagents return inline; fleet members need async monitoring |
+
+### Acceptance criteria for dual-mode
+
+- [ ] pm skill detects mode at sprint start and records it in status.md
+- [ ] A complete sprint (plan -> execute -> review -> deploy) passes in local-only mode with no fleet skill loaded
+- [ ] The same sprint passes in fleet mode with registered members
+- [ ] Fleet-only features are cleanly gated (no errors/warnings in local mode)
+- [ ] Reviewer explicitly checks BOTH modes in every VERIFY checkpoint
+- [ ] E2E tests cover both modes (existing claude e2e = fleet mode; new local-only e2e = local mode)
+
+---
+
 ## 5. OpenCode Provider Adapter Design
 
 ### Class: `OpenCodeProvider implements ProviderAdapter`
@@ -234,7 +311,8 @@ OpenCodeProvider
   processName: 'opencode'
   authEnvVar: ''                    // local endpoints need no API key
   credentialPath: '~/.config/opencode/'
-  instructionFileName: 'OPENCODE.md'  // TBD: verify OpenCode project instruction file
+  instructionFileName: 'OPENCODE.md'  // **UNVERIFIED** -- must confirm real filename
+                                      // (likely AGENTS.md). Verify in T3.1 before relying.
 
   cliCommand(args) -> `opencode ${args}`
   versionCommand() -> `opencode --version 2>&1`
@@ -272,9 +350,12 @@ OpenCodeProvider
     { cheap: 'ollama/qwen3-coder:30b',
       standard: 'ollama/qwen3-coder:30b',
       premium: 'ollama/qwen3-coder:30b' }
-    NOTE: these are defaults for local Ollama -- user overrides via register_member
+    NOTE: static FALLBACK DEFAULTS only. Actual tier->model resolution is per-member
+    at dispatch time (see section 5a below). These apply only if a member has no
+    model_tiers map.
 
   modelForTier(tier) -> modelTiers()[tier] ?? modelTiers().standard
+    NOTE: called only as default fallback. Dispatch layer overrides with member's map.
   modelFlag(model) -> `-m "${model}"`
 
   classifyError(output):
@@ -303,6 +384,70 @@ OpenCodeProvider
   jsonOutputFlag() -> '--format json'
   headlessInvocation(prompt) -> `run "${prompt}"`
 ```
+
+### 5a. Per-Member Model Tier Configuration
+
+OpenCode members point at ARBITRARY user models (their local Ollama ladder or a cloud's model
+IDs). The tier->model mapping CANNOT be hardcoded in the adapter -- it must be user-configurable
+per member.
+
+#### register_member parameter
+
+`register_member` for an opencode member accepts an optional `model_tiers` param:
+
+```
+model_tiers: {
+  cheap:    "ollama/qwen3-coder:30b",
+  standard: "ollama/qwen3-coder-next",
+  premium:  "ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M"
+}
+```
+
+Stored on the member record in `members.json` as a new `model_tiers` field.
+
+#### Validation rules
+
+- At least one model must be supplied at registration (no zero-model registration).
+- If only one model is supplied, it fills all three tiers.
+- Missing tiers inherit from the next-lower tier (premium -> standard -> cheap).
+- `model_tiers` is optional on non-opencode members (existing members unaffected).
+
+#### Dispatch-time tier resolution
+
+Resolution happens in `src/tools/execute-prompt.ts` (or a thin helper it calls), NOT in
+the ProviderAdapter:
+
+```
+function resolveModelForTier(member: MemberRecord, tier: string): string {
+  // 1. Check member.model_tiers[tier]
+  // 2. Fallback: member.model_tiers.standard (or the single supplied model)
+  // 3. Last resort: provider.modelForTier(tier) -- adapter static defaults
+  const memberTiers = member.model_tiers;
+  if (memberTiers) {
+    return memberTiers[tier] ?? memberTiers.standard ?? memberTiers.cheap ?? Object.values(memberTiers)[0];
+  }
+  return getProvider(member.llm_provider).modelForTier(tier);
+}
+```
+
+The execute_prompt layer calls `resolveModelForTier(member, taskTier)` and passes the
+concrete model ID to `provider.buildPromptCommand()`. The adapter never needs to know
+about per-member overrides.
+
+#### Adapter's modelTiers() / modelForTier() role
+
+For opencode, these become placeholder defaults only -- used when:
+- A member was registered without `model_tiers` (legacy or test scenarios)
+- Non-fleet local execution where no member record exists
+
+They remain the primary source for other providers (claude, gemini, etc.) where model IDs
+are well-known and consistent across members.
+
+#### Tie to issue #299 (MODEL_EP_URL)
+
+MODEL_EP_URL addresses endpoint configuration; `model_tiers` addresses model selection.
+They are complementary: MODEL_EP_URL tells opencode WHERE to connect, `model_tiers` tells
+the dispatcher WHICH model to request. Both are stored on the member record.
 
 ### Registration
 
@@ -493,6 +638,8 @@ Reuse `fleet-e2e-toy` repo. The scenario:
 | 6 | Gap analysis misses a feature used by existing users | Low | High | Exhaustive file-by-file comparison (done above); solicit user feedback during review; backward-compat e2e test |
 | 7 | OpenCode + local models unreliable for agentic loops (tool call failures) | Medium | Medium | Use proven models (qwen3-coder:30b); OpenCode's built-in recovery handles tool stumbles; e2e validates real agentic completion |
 | 8 | Session resume (`--session <id>`) may not work reliably in headless mode | Medium | Low | Fall back to `--continue` (resume last session); test both paths |
+| 9 | Dual-mode execution drift: local subagent and fleet member code paths diverge over time, breaking one mode while fixing the other | Medium | High | Explicit dual-mode acceptance criteria in every VERIFY checkpoint; e2e tests cover BOTH modes; mode-selection logic is a single well-tested function, not scattered conditionals |
+| 10 | Per-member model_tiers map adds complexity to register_member and dispatch; invalid tier names or model IDs silently fail | Low | Medium | Validate tier keys at registration; dispatch-time resolution logs the resolved model; unit tests cover all fallback paths |
 
 ---
 

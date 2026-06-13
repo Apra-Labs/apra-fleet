@@ -94,7 +94,8 @@ Riskiest first: validate submodule + npm vendoring works before building anythin
 - New pm skill (from submodule) contains all gap-ported features
 - `apra-fleet install --llm claude` installs the new pm skill with gap ports
 - No `-lite` naming anywhere in installed skill files
-- **Reviewer checks:** gap analysis completeness, no regression in pm capabilities, fleet-addendum covers all fleet-specific features
+- Dual-mode design (section 4a) is reflected in the ported skill files: fleet-only features are gated, local mode documented
+- **Reviewer checks:** gap analysis completeness, no regression in pm capabilities, fleet-only features cleanly gated (no errors in local mode), dual-mode acceptance criteria addressed
 
 ---
 
@@ -108,14 +109,15 @@ Front-loads the second riskiest assumption: OpenCode headless + JSON parsing.
   - `src/types.ts:4` -- add `'opencode'` to union
   - `src/providers/opencode.ts` (new) -- skeleton class implementing ProviderAdapter
   - `src/providers/index.ts` -- import and register OpenCodeProvider
-- **Done:** `npm run build` compiles; `getProvider('opencode')` returns OpenCodeProvider instance
+- **Pre-step:** VERIFY OpenCode's real project-instruction filename before setting `instructionFileName`. Check OpenCode source or docs -- the current guess is `'OPENCODE.md'` but it may be `'AGENTS.md'` or something else. Set the verified value in the skeleton; if unverifiable, leave it as `'OPENCODE.md'` with a TODO comment.
+- **Done:** `npm run build` compiles; `getProvider('opencode')` returns OpenCodeProvider instance; `instructionFileName` is verified or explicitly marked TODO
 - **Blockers:** None (independent of Phase 1-2, but ordered here for cohesion)
 
 ### T3.2: Implement core adapter methods
 - **Tier:** standard
 - **Files:**
-  - `src/providers/opencode.ts` -- implement: cliCommand, versionCommand, installCommand, updateCommand, skipPermissionsFlag, permissionModeAutoFlag, modelTiers, modelForTier, modelFlag, classifyError, headlessInvocation, jsonOutputFlag
-- **Done:** All simple getter/builder methods implemented; unit tests pass for each method
+  - `src/providers/opencode.ts` -- implement: cliCommand, versionCommand, installCommand, updateCommand, skipPermissionsFlag, permissionModeAutoFlag, modelTiers (static defaults only -- see T3.7 for per-member resolution), modelForTier (fallback only), modelFlag, classifyError, headlessInvocation, jsonOutputFlag
+- **Done:** All simple getter/builder methods implemented; modelTiers() documented as fallback defaults; unit tests pass for each method
 - **Blockers:** T3.1
 
 ### T3.3: Implement buildPromptCommand + session management
@@ -127,11 +129,13 @@ Front-loads the second riskiest assumption: OpenCode headless + JSON parsing.
 
 ### T3.4: Implement parseResponse for OpenCode JSON output
 - **Tier:** premium
+- **Pre-step: CAPTURE REAL OUTPUT FIRST.** Before writing any parser code, capture real `opencode run --format json` output from a working opencode+ollama endpoint (e.g. spark). The PM can provide captured output if no endpoint is available. Do NOT code parseResponse against an assumed schema -- use real captured NDJSON as the test fixture and design basis.
 - **Files:**
-  - `src/providers/opencode.ts` -- implement parseResponse() parsing `--format json` NDJSON
-- **Done:** Unit tests with captured real OpenCode JSON output pass; handles text events, tool events, error events, empty output; returns ParsedResponse with result + isError
+  - `tests/fixtures/opencode-output.ndjson` (new) -- captured real output from `opencode run --format json`
+  - `src/providers/opencode.ts` -- implement parseResponse() parsing the captured NDJSON format
+- **Done:** Unit tests use REAL captured OpenCode JSON output (not invented fixtures); handles text events, tool events, error events, empty output; returns ParsedResponse with result + isError
 - **Blockers:** T3.3
-- **Risk:** JSON format not fully documented -- capture real output first, then code parser
+- **Risk:** JSON format not fully documented -- the pre-step mitigates by using real output
 
 ### T3.5: Implement permission and auth methods
 - **Tier:** standard
@@ -148,11 +152,23 @@ Front-loads the second riskiest assumption: OpenCode headless + JSON parsing.
 - **Done:** `getProviderInstallConfig('opencode')` returns correct paths; config compiles
 - **Blockers:** T3.1
 
+### T3.7: Per-member model_tiers in register_member + dispatch-time resolution
+- **Tier:** standard
+- **Files:**
+  - `src/types.ts` -- add optional `model_tiers?: { cheap?: string; standard?: string; premium?: string }` to `MemberRecord` type
+  - `src/tools/register-member.ts` -- accept `model_tiers` param; validate at least one model if provider is opencode; store on member record; single-model fills all tiers
+  - `src/tools/execute-prompt.ts` -- add `resolveModelForTier(member, tier)` that reads member.model_tiers before falling back to provider.modelForTier(); pass resolved model to buildPromptCommand
+- **Done:** `register_member` with `model_tiers: { cheap: "ollama/x", premium: "ollama/y" }` stores the map; `execute_prompt` with tier=premium resolves to "ollama/y" for that member; unit tests cover: full map, single-model expansion, missing map (falls back to adapter defaults)
+- **Blockers:** T3.2 (adapter core methods exist)
+
 ### VERIFY 3
 - `npm run build` succeeds with opencode provider
 - All existing tests pass (no regression)
 - Unit tests for OpenCode adapter cover: command building, response parsing, error classification, permission composition
-- **Reviewer checks:** adapter method correctness, parseResponse robustness, edge cases (empty output, malformed JSON, error events)
+- Per-member model_tiers: register_member stores the map; dispatch resolves tier->model from member record; fallback to adapter defaults when no map
+- parseResponse tests use REAL captured OpenCode output (not invented fixtures)
+- instructionFileName is verified or explicitly marked as TODO
+- **Reviewer checks:** adapter method correctness, parseResponse robustness, edge cases (empty output, malformed JSON, error events), tier resolution correctness (member map -> adapter fallback chain)
 
 ---
 
@@ -229,7 +245,8 @@ Front-loads the second riskiest assumption: OpenCode headless + JSON parsing.
 - E2E suite configuration complete and valid
 - Validation gates implemented
 - Backward compatibility tests pass
-- **Reviewer checks:** e2e coverage completeness, no gaps in validation, backward-compat test comprehensiveness
+- Dual-mode: e2e covers BOTH local-only mode (no fleet) AND fleet member dispatch mode
+- **Reviewer checks:** e2e coverage completeness, no gaps in validation, backward-compat test comprehensiveness, BOTH execution modes tested
 
 ---
 
@@ -277,9 +294,9 @@ T1.1 (rename) -> T1.2 (submodule) -> T1.3 (vendor script) -> T1.4 (install paths
 T2.1 (delete old pm) -> T2.2 (gap ports, PREMIUM) -> T2.3 (submodule pin) -> VERIFY 2
                                                                                 |
 T3.1 (type+skeleton) -> T3.2 (core methods) -> T3.3 (prompt+session) ----------+
-        |                                           |                           |
-        +-> T3.6 (install config)                   +-> T3.4 (parseResponse, PREMIUM)
-                    |                               |       |
+        |                       |                   |                           |
+        +-> T3.6 (install cfg)  +-> T3.7 (member    +-> T3.4 (parseResponse, PREMIUM)
+                    |               tier-map)       |       |
                     v                               v       v
               T4.1 (agentsDir) -> T4.2 (install step) -> T4.3 (transform) -> T4.4 (tests) -> VERIFY 4
                                                                                                |

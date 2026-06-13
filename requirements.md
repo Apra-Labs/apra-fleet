@@ -129,11 +129,15 @@ For each gap: feature name, which repo has it, decision (port/drop), justificati
 | P3.7 | Parse `--format json` NDJSON output in `parseResponse()` | Must |
 | P3.8 | Session resume via `--continue` / `--session <id>` flags | Must |
 | P3.9 | Permission composition: agent frontmatter `permission:` map (edit/write/bash = allow/deny/ask) | Must |
-| P3.10 | Model tiers mapped to user-configurable local model IDs (e.g. `ollama/qwen3-coder:30b`) | Should |
+| P3.10 | Model tiers are USER-CONFIGURABLE PER MEMBER via a tier->model map supplied at `register_member` time (e.g. `model_tiers: { cheap: "ollama/qwen3-coder:30b", standard: "ollama/qwen3-coder-next", premium: "ollama/GLM-4.5-Air:Q4_K_M" }`). Adapter defaults are placeholders only. | Must |
+| P3.10a | `register_member` for an opencode member accepts an optional `model_tiers` param: a map of `{cheap, standard, premium}` to concrete model IDs. Stored on the member record. At least one model must be supplied (no zero-model registration). | Must |
+| P3.10b | Tier resolution happens AT DISPATCH TIME in the execute_prompt / dispatch layer: when the planner assigns a task tier, the dispatcher reads the member's `model_tiers` map and passes the concrete model ID to the ProviderAdapter. The adapter's static `modelTiers()`/`modelForTier()` serve only as fallback defaults. | Must |
+| P3.10c | Fallback: if a member supplies only one model, it is used for all three tiers. If `model_tiers` is absent on the member record, the adapter's static defaults apply. Ties to issue #299 (MODEL_EP_URL). | Should |
 | P3.11 | Error classification for common OpenCode errors | Must |
 | P3.12 | `instructionFileName` for OpenCode (project-level config file) | Must |
 | P3.13 | Windows `wrapWindowsPrompt()` support | Must |
 | P3.14 | No endpoint provisioning -- assume user has configured opencode.json with provider/baseURL | Must |
+| P3.15 | PM skill works FLAWLESSLY in BOTH modes: (a) local subagents in a single conversation (no fleet), and (b) dispatched to fleet members via execute_prompt. Dual-mode correctness is an explicit acceptance criterion. | Must |
 
 ### Provider Adapter Mapping (from opencode-exploration.md)
 
@@ -143,7 +147,7 @@ For each gap: feature name, which repo has it, decision (port/drop), justificati
 | processName | `'opencode'` |
 | authEnvVar | `''` (local endpoints need no key; user configures per-endpoint) |
 | credentialPath | `'~/.config/opencode/'` |
-| instructionFileName | `'OPENCODE.md'` (TBD -- verify OpenCode's project instruction file) |
+| instructionFileName | `'OPENCODE.md'` -- **UNVERIFIED**: must confirm OpenCode's real project-instruction filename (likely AGENTS.md) before relying on this. See plan.md T3.1 verify-step. |
 | cliCommand(args) | `opencode ${args}` |
 | versionCommand() | `opencode --version 2>&1` |
 | installCommand(os) | `npm install -g opencode-ai` (all OS) or curl for linux |
@@ -156,7 +160,7 @@ For each gap: feature name, which repo has it, decision (port/drop), justificati
 | supportsResume() | true |
 | resumeFlag(sessionId) | `--session "${sessionId}"` or `--continue` |
 | supportsMaxTurns() | false |
-| modelTiers() | user-configurable; defaults to `{ cheap: 'ollama/qwen3-coder:30b', standard: 'ollama/qwen3-coder:30b', premium: 'ollama/qwen3-coder:30b' }` |
+| modelTiers() | Static defaults only (fallback when member has no `model_tiers`): `{ cheap: 'ollama/qwen3-coder:30b', standard: 'ollama/qwen3-coder:30b', premium: 'ollama/qwen3-coder:30b' }`. Actual tier resolution is per-member at dispatch time -- see P3.10-P3.10c. |
 
 ### Constraints
 
@@ -201,11 +205,12 @@ For each gap: feature name, which repo has it, decision (port/drop), justificati
 ## Acceptance Criteria Summary
 
 1. `apra-fleet install --llm opencode` succeeds: installs pm skill, fleet skill, 4 agents (OpenCode format)
-2. `register_member` with `llm_provider: 'opencode'` creates a valid member
-3. `execute_prompt` on an OpenCode member completes a simple task and returns parsed result
+2. `register_member` with `llm_provider: 'opencode'` creates a valid member with user-supplied `model_tiers` map
+3. `execute_prompt` on an OpenCode member completes a simple task, resolving tier->model from the member's map at dispatch time
 4. pm skill dispatches doer/reviewer via OpenCode members in a sprint
-5. pm skill works standalone (Claude Code local subagents, no fleet) -- unchanged from pm-lite
-6. All existing tests pass (no regression)
-7. Gap analysis complete with every old-pm feature accounted for
-8. E2E suite for OpenCode defined and runnable (may initially be manual until self-hosted runner available)
-9. No `-lite` naming anywhere in either repo after rename
+5. pm skill works FLAWLESSLY standalone (Claude Code local subagents, no fleet) -- unchanged from pm-lite
+6. pm skill works FLAWLESSLY dispatched to fleet members -- dual-mode is an explicit reviewer check
+7. All existing tests pass (no regression)
+8. Gap analysis complete with every old-pm feature accounted for
+9. E2E suite for OpenCode defined and runnable (may initially be manual until self-hosted runner available)
+10. No `-lite` naming anywhere in either repo after rename
