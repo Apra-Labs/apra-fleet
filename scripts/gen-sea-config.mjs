@@ -44,8 +44,9 @@ for (const [name, assetPath] of Object.entries(allScripts)) {
   if (!name.endsWith('.mjs')) scripts[name] = assetPath;
 }
 
-const skills = collectFiles(join(root, 'skills', 'pm'), 'skills/pm');
+const skills = collectFiles(join(root, 'vendor', 'apra-pm', 'skills', 'pm'), 'vendor/apra-pm/skills/pm', 'vendor/apra-pm/skills/pm');
 const fleetSkills = collectFiles(join(root, 'skills', 'fleet'), 'skills/fleet');
+const agents = collectFiles(join(root, 'vendor', 'apra-pm', 'agents'), 'vendor/apra-pm/agents', 'vendor/apra-pm/agents');
 
 const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf-8'));
 
@@ -55,6 +56,7 @@ const manifest = {
   scripts,
   skills,
   fleetSkills,
+  agents,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -63,6 +65,7 @@ console.log(`  Hooks:        ${Object.keys(hooks).length} files`);
 console.log(`  Scripts:      ${Object.keys(scripts).length} files`);
 console.log(`  Skills (pm):  ${Object.keys(skills).length} files`);
 console.log(`  Skills (fleet): ${Object.keys(fleetSkills).length} files`);
+console.log(`  Agents:       ${Object.keys(agents).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -87,6 +90,11 @@ for (const [, relPath] of Object.entries(skills)) {
 
 // Add all fleet skill files
 for (const [, relPath] of Object.entries(fleetSkills)) {
+  assets[relPath] = join(root, relPath);
+}
+
+// Add all agent files
+for (const [, relPath] of Object.entries(agents)) {
   assets[relPath] = join(root, relPath);
 }
 
