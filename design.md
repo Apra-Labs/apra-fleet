@@ -6,7 +6,7 @@
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| Provider interface | `src/providers/provider.ts:49-115` | `ProviderAdapter` (24 methods), `PromptOptions`, `ParsedResponse` |
+| Provider interface | `src/providers/provider.ts:49-115` | `ProviderAdapter` (26 methods + 5 readonly props = 31 members), `PromptOptions`, `ParsedResponse` |
 | Provider registry | `src/providers/index.ts:9-15` | 5 providers: claude, gemini, codex, copilot, agy |
 | LlmProvider type | `src/types.ts:4` | `'claude' \| 'gemini' \| 'codex' \| 'copilot' \| 'agy'` |
 | Install config | `src/cli/config.ts:51-57` | `ProviderInstallConfig` (configDir, settingsFile, skillsDir, fleetSkillsDir, name) |

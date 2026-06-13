@@ -280,19 +280,20 @@ Front-loads the second riskiest assumption: OpenCode headless + JSON parsing.
 - **Done:** README lists opencode as supported; architecture doc reflects submodule design
 - **Blockers:** T5.3
 
-### T6.2: Final integration test
+### T6.2: Finalize + commit docs/opencode-exploration.md
+- **Tier:** cheap
+- **Files:**
+  - `docs/opencode-exploration.md` -- the research log (already committed in ea00535 with the verified s8a JSON schema; this task ensures it is up to date with final adapter learnings from Phase 3)
+- **Done:** File committed on the feature branch and reflects the as-built adapter (no stale TBDs that were resolved during implementation)
+- **Blockers:** None
+- **Note:** reordered before the final integration test (reviewer finding E) so the last task in the phase is the all-tests gate, keeping Phase 6 tiers monotonic (cheap -> cheap -> standard).
+
+### T6.3: Final integration test
 - **Tier:** standard
 - **Files:**
   - No new files -- run full test suite + build + install across all providers
 - **Done:** `npm test` passes; `npm run build` succeeds; `npm pack` includes all files; install works for claude, gemini, agy, opencode, codex, copilot
-- **Blockers:** T6.1
-
-### T6.3: Commit docs/opencode-exploration.md
-- **Tier:** cheap
-- **Files:**
-  - `docs/opencode-exploration.md` -- commit the untracked research log
-- **Done:** File committed on the feature branch
-- **Blockers:** None
+- **Blockers:** T6.1, T6.2
 
 ### VERIFY 6 (Final)
 - All tests green
@@ -325,7 +326,7 @@ T3.1 (type+skeleton) -> T3.2 (core methods) -> T3.3 (prompt+session) ----------+
                                                                                         -> T5.2 (validation)
                                                                                         -> T5.3 (compat) -> VERIFY 5
                                                                                                               |
-                                                                                              T6.1 (docs) -> T6.2 (integration) -> T6.3 (exploration.md) -> VERIFY 6
+                                                                                              T6.1 (docs) -> T6.2 (exploration.md) -> T6.3 (integration) -> VERIFY 6
 ```
 
 ---
