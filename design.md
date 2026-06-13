@@ -244,6 +244,14 @@ Mode selection logic (in pm SKILL.md or orchestrator):
      Otherwise -> local mode (Claude Code subagents via Task/Agent tool)
 ```
 
+Detection mechanism (finding B): the pm skill is a markdown skill and CANNOT import fleet
+TypeScript code. Step 1 must be done by PROBING the fleet MCP tools at runtime -- e.g. attempt
+`fleet_status` / `list_members`; if the tool is absent or returns no members, fall to local
+mode. Do NOT assume fleet internals are importable. Likewise, local mode assumes the host
+exposes a subagent dispatch primitive (Claude Code's Agent/Task tool); if neither fleet MCP
+nor a subagent tool is present, the skill degrades to single-conversation inline execution and
+says so rather than failing silently.
+
 The mode is stored in `status.md` at sprint init so recovery/resume uses the same mode.
 
 ### Loop semantics: how they differ

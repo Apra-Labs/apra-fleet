@@ -30,8 +30,8 @@ Riskiest first: validate submodule + npm vendoring works before building anythin
   - Search-replace: `apra-pm-lite` -> `apra-pm`, `pm-lite` -> `pm`
   - Rename `docs/pm-lite-direction.md` -> `docs/pm-direction.md`
 - **Done:** `grep -r "pm-lite\|apra-pm-lite" --include='*.md' --include='*.mjs' --include='*.json'` returns 0 hits; `npm test` passes in apra-pm repo
-- **Blockers:** None (first task)
-- **Risk:** Existing forks break (GitHub auto-redirects mitigate)
+- **Blockers:** None (first task), BUT implicit prerequisite: `gh repo rename` of an org repo needs Apra-Labs org-admin / repo-admin rights on the doer's gh account. If the rename returns 403/permission-denied, STOP and escalate to the PM -- the user (org admin) runs the one rename command, then the doer resumes from the clone+internal-refs step. Do NOT work around by forking.
+- **Risk:** Existing forks break (GitHub auto-redirects mitigate). Cross-repo push: the doer needs push rights to apra-pm for the internal-refs commit (same auth as the rename).
 
 ### T1.2: Add apra-pm as git submodule in apra-fleet
 - **Tier:** cheap
@@ -55,7 +55,8 @@ Riskiest first: validate submodule + npm vendoring works before building anythin
 - **Files:**
   - `src/cli/install.ts` -- update `findProjectRoot()` or asset collection to look in `vendor/apra-pm/skills/pm/` and `vendor/apra-pm/agents/`
   - `src/cli/install.ts` -- update dev-mode manifest builder (`buildDevManifest`)
-- **Done:** `node dist/index.js install --llm claude` installs pm skill from submodule source; installed SKILL.md content matches `vendor/apra-pm/skills/pm/SKILL.md`
+  - `src/cli/install.ts` -- empty-submodule guard (finding G): if `vendor/apra-pm/` exists but is empty (user cloned non-recursively), fail with a clear message directing them to `git submodule update --init --recursive` instead of installing an empty skill
+- **Done:** `node dist/index.js install --llm claude` installs pm skill from submodule source; installed SKILL.md content matches `vendor/apra-pm/skills/pm/SKILL.md`; empty `vendor/apra-pm/` triggers the guard message (not a silent empty install)
 - **Blockers:** T1.3
 
 ### VERIFY 1
@@ -63,7 +64,8 @@ Riskiest first: validate submodule + npm vendoring works before building anythin
 - `npm run build` succeeds with submodule files in output
 - `npm pack` includes pm skill + agent files
 - Dev-mode install works
-- **Reviewer checks:** submodule URL correct, .gitmodules entry clean, no old pm files referenced
+- Empty-submodule guard (finding G): a non-recursive clone (empty `vendor/apra-pm/`) produces the `git submodule update --init` guidance, not a silent empty install
+- **Reviewer checks:** submodule URL correct, .gitmodules entry clean, no old pm files referenced, empty-clone guard present
 
 ---
 
@@ -76,34 +78,43 @@ Riskiest first: validate submodule + npm vendoring works before building anythin
 - **Done:** `ls skills/pm/` fails (directory gone); `npm run build` still succeeds
 - **Blockers:** T1.4 (install now sources from submodule)
 
-### T2.2: Port gap-analysis items into apra-pm skill files
+T2.2 was split (reviewer finding E: a single 9-item / 5-file port risks exceeding ~50 tool
+calls). T2.2a = SKILL.md-centric ports; T2.2b = sub-doc ports + new files. Both commit to the
+apra-pm submodule repo (requires push rights to apra-pm -- same auth as T1.1).
+
+### T2.2a: Port SKILL.md gap items into apra-pm
 - **Tier:** premium
-- **Files (in vendor/apra-pm/ submodule -- requires a PR to apra-pm repo):**
-  - `skills/pm/SKILL.md` -- add sprint selection table, /pm command reference, core operational rules, secrets reference, provider awareness section
-  - `skills/pm/doer-reviewer-loop.md` -- add pre-flight checks (SHA matching), resume rules table
-  - `skills/pm/sprint.md` -- add documentation harvest step, simple-sprint section or reference
-  - New file: `skills/pm/fleet-addendum.md` -- fleet-specific sections: permissions, stop_prompt, unattended modes, compose_permissions, context-file filename table
-  - New file: `skills/pm/simple-sprint.md` -- lightweight 1-3 task flow (ported from old pm; MUST port -- user-facing)
-  - `skills/pm/doer-reviewer-loop.md` -- add resume-rules table (data-driven from planned.json phase numbers; MUST port -- fleet-critical session-continue optimization)
-  - `skills/pm/SKILL.md` -- add one-line R1 statement (PM orchestrates, never reads/writes code)
-- **Done:** All 9 "must port" items from the design gap analysis (Gap Summary) are present in the new pm skill files, including simple-sprint.md and the resume-rules table; the 12 fleet-gated/shared core rules (R2-R13) from Gap Table row 7 are present and fleet-only ones clearly marked; grep for each feature term confirms presence
+- **Files (in vendor/apra-pm/ submodule):**
+  - `skills/pm/SKILL.md` -- add: sprint selection table (simple/single/multi); `/pm` command reference table; core operational rules R2-R13 from Gap Table row 7 (fleet-only ones -- R4,R5,R8,R9,R13 -- clearly marked as fleet-mode); secrets/credentials reference (`{{secure.NAME}}`); provider awareness section + context-file filename table; one-line R1 statement (PM orchestrates, never reads/writes code)
+- **Done:** SKILL.md contains all of the above; grep for each feature term confirms presence; fleet-only rules visibly gated; `npm test` passes in apra-pm
 - **Blockers:** T2.1 (old pm removed, no confusion about which is canonical)
-- **Risk:** This modifies the submodule -- requires a commit in apra-pm repo and submodule SHA update in apra-fleet
+- **Risk:** modifies the submodule repo (commit in apra-pm, SHA bump in apra-fleet at T2.3)
+
+### T2.2b: Port sub-doc gap items + new files into apra-pm
+- **Tier:** premium
+- **Files (in vendor/apra-pm/ submodule):**
+  - `skills/pm/doer-reviewer-loop.md` -- add pre-flight checks (SHA matching before review) AND the resume-rules table (data-driven from planned.json phase numbers; MUST port -- fleet-critical session-continue optimization)
+  - `skills/pm/sprint.md` -- add documentation harvest step
+  - New file: `skills/pm/fleet-addendum.md` -- fleet-only sections: permissions, stop_prompt, unattended modes, compose_permissions, context-file filename table
+  - New file: `skills/pm/simple-sprint.md` -- lightweight 1-3 task flow (MUST port -- user-facing; old `/pm` users rely on it)
+- **Done:** All 9 "must port" items from the design Gap Summary now present across T2.2a+T2.2b (verified by grep per item); simple-sprint.md and resume-rules table exist; `npm test` passes in apra-pm
+- **Blockers:** T2.2a
 
 ### T2.3: Update submodule pin after gap ports
 - **Tier:** cheap
 - **Files:**
   - `vendor/apra-pm` -- update to latest SHA that includes gap ports
 - **Done:** `git submodule status` shows new SHA; `cat vendor/apra-pm/skills/pm/SKILL.md` contains ported content
-- **Blockers:** T2.2
+- **Blockers:** T2.2b
 
 ### VERIFY 2
 - Old skills/pm/ deleted from apra-fleet
-- New pm skill (from submodule) contains all gap-ported features
+- New pm skill (from submodule) contains all 9 gap-ported must-port items
 - `apra-fleet install --llm claude` installs the new pm skill with gap ports
 - No `-lite` naming anywhere in installed skill files
 - Dual-mode design (section 4a) is reflected in the ported skill files: fleet-only features are gated, local mode documented
-- **Reviewer checks:** gap analysis completeness, no regression in pm capabilities, fleet-only features cleanly gated (no errors in local mode), dual-mode acceptance criteria addressed
+- **Backward-compat smoke test (finding F):** because old pm is deleted here in Phase 2 but the full backward-compat.test.ts lands in Phase 5, add a minimal smoke check at this checkpoint -- verify the new pm SKILL.md still exposes equivalents for each old `/pm` command and that state-file names (PLAN.md, progress.json, feedback.md, status.md) are unchanged. Catches regressions 3 phases before the full suite.
+- **Reviewer checks:** gap analysis completeness (all 9 must-port present), no regression in pm capabilities, fleet-only features cleanly gated (no errors in local mode), dual-mode acceptance criteria addressed, smoke test passes
 
 ---
 
@@ -299,7 +310,7 @@ Front-loads the second riskiest assumption: OpenCode headless + JSON parsing.
 T1.1 (rename) -> T1.2 (submodule) -> T1.3 (vendor script) -> T1.4 (install paths) -> VERIFY 1
                                                                         |
                                                                         v
-T2.1 (delete old pm) -> T2.2 (gap ports, PREMIUM) -> T2.3 (submodule pin) -> VERIFY 2
+T2.1 (delete old pm) -> T2.2a (SKILL.md ports, PREMIUM) -> T2.2b (sub-doc ports, PREMIUM) -> T2.3 (submodule pin) -> VERIFY 2
                                                                                 |
 T3.1 (type+skeleton) -> T3.2 (core methods) -> T3.3 (prompt+session) ----------+
         |                       |                   |                           |
