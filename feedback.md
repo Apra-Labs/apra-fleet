@@ -1,221 +1,158 @@
 # OpenCode+PM epic - Plan Review
 
-**Reviewer:** fleet-plan-reviewer-2 (independent plan-reviewer agent)
+**Reviewer:** zxmc2 (plan-reviewer)
 **Date:** 2026-06-13
-**Sprint:** OpenCode Provider + PM Submodule + Agent Install Epic
-**Documents reviewed:** requirements.md, design.md, plan.md, docs/opencode-exploration.md, old PM skill files (git show main:skills/pm/* -- all 21 files cross-checked), src/providers/provider.ts (ProviderAdapter interface), src/providers/codex.ts (reference adapter), src/cli/config.ts
+**Branch:** feat/opencode-pm-epic
+**Documents reviewed:** requirements.md, design.md, plan.md, docs/opencode-exploration.md, old PM skill files (git show main:skills/pm/* -- all 21 files), src/providers/provider.ts (ProviderAdapter interface, 5 readonly properties + 26 methods), src/providers/codex.ts (reference adapter)
 
 ---
 
 ## Verdict: CHANGES NEEDED
 
-The overall architecture is sound across all three parts. The dual-mode execution design is particularly strong. The per-member model tier design is clean and ready for implementation. However, two categories of defect require correction: (1) the parseResponse section in design.md contains a fabricated NDJSON schema and incorrectly claims usage metrics are unavailable -- both contradicted by the PM's own captured output; (2) the plan violates its own tier-monotonicity rule in 4 of 6 phases.
+Three blocking defect categories: (1) the parseResponse design section presents a fabricated NDJSON schema contradicted by the PM's own verified observations and incorrectly claims usage metrics are unavailable when they are emitted in `step_finish.part.tokens`; (2) the gap analysis covers only 9 of 14 core operational rules, hides 5 behind an implicit "etc.", and misclassifies two user-facing features (resume rules, simple sprint) as "should port" when dropping them would break existing workflows; (3) the plan violates its own tier monotonicity rule in three phases and contains a task (T2.2) that likely exceeds the ~50 tool-call ceiling.
 
 ---
 
-## A. GAP ANALYSIS COMPLETENESS -- PASS (with minor concerns)
+## Section A: Gap Analysis Completeness -- FAIL
 
-Cross-checked all 21 old PM files against the gap table's 26 rows. Every file is accounted for. The decisions are well-reasoned.
+**What works:** The gap table is structurally sound -- 26 rows covering all 21 old-pm files file-by-file. Every old concept gets a row. The status column (Present / Missing / Partial) is clear and well-reasoned. Both "Drop" decisions (#1 fleet dependency and #2 dependency bootstrap) are correct: pm-lite's fleet-independent design is the whole point of the unification, and re-introducing fleet coupling would defeat the purpose. The 7 must-port / 3 should-port / 2 drop structure is clearly articulated.
 
-**What works well:**
-- All 21 old PM files present in the gap table with per-file analysis
-- The 7 "must-port" items identify the right critical features: sprint selection, /pm command reference, core operational rules, secrets, provider awareness + context-file table, pre-flight checks, fleet-specific sections (permissions, stop_prompt, unattended)
-- Both "Drop" items (fleet dependency bootstrap) are correct -- pm-lite's fleet-independence is the raison d'etre
-- "Present" items spot-checked: beads lifecycle (old beads.md vs pm-lite beads.md -- equivalent), git-as-transport (old doer-reviewer.md vs pm-lite sprint.md -- equivalent), safeguards (same limits: 3 retries, 3 cycles, 2 resets per tier), worktrees (pm-lite has worktrees.md), cleanup (pm-lite sprint.md completion section), init (pm-lite setup phase), plan generation (pm-lite agents/planner.md -- more sophisticated than old plan-prompt.md), backlog (beads deferred items)
-- The "Partial" items correctly identify where pm-lite covers the concept but not completely
+The comparison between old multi-pair-sprint.md and pm-lite's worktrees.md (gap row #19, marked "Present, different approach") is correctly assessed -- worktrees.md is architecturally more sophisticated (single orchestrator, multiple branches via git worktrees) than the old multi-member-pair model, and the worktree approach maps cleanly to fleet dispatch (each worktree -> one member's work_folder). No port needed.
 
-**Minor concerns (not blocking):**
+**What fails:**
 
-1. **Gap #19 (multi-pair-sprint -> worktrees.md) conflates two concepts.** The old multi-pair-sprint.md has two distinct ideas: (a) parallel git branches for independent tracks (covered by worktrees.md) and (b) **contracts** -- shared interfaces documented in `contracts.md` before dispatch, immutable during the sprint, with an explicit revision protocol if a contract must change. Worktrees handles (a) but not (b). This is defensible in the pm-lite model: a single orchestrator managing multiple worktrees can coordinate cross-track dependencies directly without formal contracts. But the gap analysis should acknowledge this distinction rather than treating them as equivalent.
+1. **5 of 14 core rules are unaccounted for.** Gap row #7 lists rules for porting: "project sandboxing (#2), status.md updates (#3), tool verification (#4), idle prevention (#6), agent dispatch grouping (#8), unattended mode (#9), security audit in DoD (#11), PR lifecycle (#12-13)." That covers rules 2, 3, 4, 6, 8, 9, 11, 12, 13. The old SKILL.md has 14 numbered rules. The following 5 are neither listed for porting NOR confirmed present in pm-lite's "5 design principles":
 
-2. **Core rule enumeration.** Gap row #7 lists 8 of 14 core rules for porting. The unlisted rules (#1 never read code, #5 ad-hoc vs task harness, #7 keep going until stuck, #10 commit state files every turn, #14 read sub-documents first) are behavioral constraints that pm-lite likely satisfies through its design principles, but this should be confirmed explicitly rather than left implicit. Rule #10 in particular (commit PLAN/progress/feedback every turn) is critical for git-as-transport integrity.
+   - **Rule 1:** "NEVER read code, diagnose bugs, or suggest fixes -- assign a member." This is the PM's core identity constraint. Without it, nothing prevents the PM from writing code itself or manually debugging instead of delegating. If pm-lite's design principles cover this implicitly (e.g. "orchestrator never writes code"), the gap analysis must say so explicitly. Otherwise it must be ported.
 
-3. **tpl-status.md.** Dismissed as "nice-to-have" in gap #26, but it contains the `lastDispatchedPhase` field structure that the resume rules (gap #14) depend on. When resume rules are ported, the `lastDispatchedPhase` mechanism must be included in the status.md format specification.
+   - **Rule 5:** "If a member can finish in one session (1-3 steps), use ad-hoc execute_prompt. Otherwise use the task harness." This is the decision gate between simple sprint and full sprint -- it is tightly coupled to gap row #18 (simple sprint, classified as "should port"). If simple sprint is promoted to must-port (see finding #3 below), this rule must be ported alongside it.
 
-4. **Simple sprint classification.** Gap #18 marks simple-sprint as "should port." The old SKILL.md sprint selection table routes 1-3 task work to simple-sprint.md. This is a user-visible workflow path. If existing users expecting the lightweight flow get the full heavyweight sprint instead, that is friction -- though not breakage since the full sprint still works for small tasks. "Should port" is defensible but borderline.
+   - **Rule 7:** "During execution: keep going until stuck or done -- don't wait for the user." This is the PM's autonomy directive. Without it, the PM may stop at every checkpoint and ask the user whether to proceed, which defeats unattended sprint execution. Critical for both local and fleet modes.
+
+   - **Rule 10:** "PLAN.md, progress.json, and feedback.md must be committed and pushed by the member at every turn." This is a data integrity rule underpinning the git-as-transport model. If members don't commit state files every turn, the PM cannot recover from crashes, reviewers cannot see current state, and the entire doer-reviewer loop's git transport (design.md section 4a, "State and transport: identical across modes") breaks down. Must be confirmed present in pm-lite's doer-reviewer-loop.md or explicitly ported.
+
+   - **Rule 14:** "Always read referenced sub-documents before executing PM commands." Procedural, but prevents the PM from acting on stale or incomplete information when the skill document references doer-reviewer.md, sprint.md, etc.
+
+   The gap analysis must explicitly enumerate all 14 rules with a per-rule decision: present in pm-lite (with citation) / port / drop (with justification). A gap analysis that omits 36% of the rules list is incomplete.
+
+2. **Resume rules misclassified as "should port" (gap row #14).** The old PM has an 8-entry resume table in doer-reviewer.md keyed to phase numbers, role switches, post-stop_prompt cancellation, and post-timeout scenarios. Each entry determines whether the dispatcher passes `resume=true` (continue existing session) or `resume=false` (fresh session). Getting this wrong in fleet mode has real costs: `resume=true` when it should be `false` causes the member to inherit stale context from a previous role or phase, producing incorrect work. `resume=false` when it should be `true` wastes the entire session's accumulated context and potentially re-executes completed work. pm-lite's "dispatch fresh/continue" model is simpler and works for local subagents where sessions are cheap. For fleet dispatch, where each session costs compute time and context window tokens, the full resume table is needed. The plan itself (T3.7) even references tier resolution "at dispatch time," confirming dispatch-time decisions are architecturally significant. **Promote to must-port.**
+
+3. **Simple sprint misclassified as "should port" (gap row #18).** The old SKILL.md sprint selection table explicitly routes 1-3 task work to simple-sprint.md -- a user-facing workflow. Existing users who invoke `/pm start` for trivial tasks expect the lightweight path: no PLAN.md, no progress.json, no planner/reviewer cycle, just ad-hoc execute_prompt. If the new PM drops this path, those users get the full heavyweight sprint for a 2-task bug fix. This is user disruption, violating hard constraint #2 ("NO USER DISRUPTION after the PR folds in"). The pm-lite direction doc (referenced in design.md) mentions a lightweight path as "near-term roadmap" -- but "on the roadmap" is not "present." Either confirm pm-lite already has an equivalent lightweight flow or **promote to must-port.**
+
+4. **Template equivalence asserted without verification.** Gap row #26 classifies tpl-status.md, tpl-requirements.md, tpl-design.md, tpl-deploy.md, tpl-projects.md as "nice-to-have templates that can be generated inline." But the old init.md explicitly scaffolds `<project>/status.md` from tpl-status.md (with {{PROJECT_NAME}}, {{member_id}}, {{branch}} placeholders), `<project>/requirements.md` from tpl-requirements.md, `<project>/design.md` from tpl-design.md, and projects.md from tpl-projects.md. These templates define the schema of the PM's project folder -- if pm-lite's sprint setup phase generates equivalent scaffolding inline, that is acceptable, but the gap analysis must confirm this equivalence rather than asserting it without evidence.
+
+**Required fix:** Expand the must-port list from 7 to at least 9 items (promote resume rules and simple sprint). Enumerate all 14 core rules individually with present/port/drop per rule and citations for "present" claims. Verify template equivalence for the init-flow scaffolding templates.
 
 ---
 
-## B. DUAL-MODE EXECUTION -- PASS (with advisory notes)
+## Section B: Dual-Mode Execution -- PASS
 
-Design section 4a is the strongest section of the entire design document. It treats the two execution models as architecturally distinct rather than bolting fleet dispatch onto local execution.
+**What works:** Design.md section 4a is the strongest part of this design. The mode detection logic is concrete and deterministic: 3-step check (fleet members available -> user flag -> default). The comparison table covering dispatch mechanism, blocking model, turn lifecycle, error recovery, concurrency, and context passing precisely articulates the fundamental differences between inline-blocking local subagents and async fleet-member dispatch. The insight that "state and transport are identical across modes" (git is the message bus, beads tracks lifecycle, sprint state files have the same schema) is the architectural key that makes dual-mode feasible without two separate implementations.
 
-**What works well:**
-- **Mode detection** is concrete: 3-step check (fleet members available -> user flag -> default based on tier matching). Mode stored in status.md for recovery/resume. Testable and deterministic.
-- **Loop semantics table** clearly articulates the fundamental difference: inline-blocking (local subagents return within the same turn) vs async-dispatch (execute_prompt + monitor_task). This is the hardest thing to get right and it is correctly specified.
-- **Role mapping** maps all 4 roles (planner, plan-reviewer, doer, reviewer) in both modes with concrete mechanisms (Agent tool with subagent_type vs execute_prompt to member).
-- **State/transport identity** ("git is the message bus in both modes") is the architectural insight that makes dual-mode feasible. Sprint state files, beads lifecycle, and worktrees work identically regardless of mode because the transport layer is the same.
-- **Fleet-only features** are cleanly enumerated with justification for why each is fleet-only (compose_permissions, context-file filenames, member pairing, stop_prompt, unattended flags, monitor_task polling).
-- **Risk #9 (drift)** is acknowledged with mitigations: dual-mode acceptance criteria in every VERIFY, e2e for both modes, mode-selection as a single function. Process-level mitigation, not architectural enforcement, but pragmatic for LLM-driven skill files.
-- **Acceptance criteria** are explicit: 6 checkboxes covering mode detection, complete sprint in each mode, fleet feature gating, reviewer checks, and e2e coverage.
+Fleet-only features (compose_permissions, context-file filenames, member pairing, stop_prompt, unattended mode flags, monitor_task polling) are cleanly enumerated with clear justification for why each is fleet-only. The acceptance criteria (6 items) are explicit, testable, and include the critical check: "Reviewer explicitly checks BOTH modes in every VERIFY checkpoint."
 
 **Advisory (not blocking):**
 
-1. **Mode detection assumes fleet skill introspection.** The pm skill detects fleet availability by checking "fleet skill loaded + members registered." But pm is fleet-independent -- it cannot import fleet code. The detection must work via MCP tool probing (attempt `fleet_status`, catch error) or environment signals. Solvable at implementation time but worth noting.
+1. **Mode detection mechanism is intent-level, not mechanism-level.** The design says "Check: are fleet members available? (fleet skill loaded + members registered)" -- but the PM skill is designed to be fleet-independent and cannot import fleet code directly. The concrete mechanism must be MCP tool availability probing (attempt a `fleet_status` call, catch the error if fleet is absent) or similar runtime detection. This is solvable at implementation time without design changes, but the implementer needs to know that fleet introspection is indirect.
 
-2. **Local-mode Agent tool is Claude Code specific.** The design says local mode uses `Agent` tool with `subagent_type: "planner"`. If PM runs on OpenCode, the equivalent is the `task` tool with agent names. Since PM currently only runs on Claude Code, this is not a defect, but the assumption should be explicit.
+2. **Local-mode dispatch is Claude Code-specific.** The design specifies `Agent` tool with `subagent_type: "planner"` for local mode. This is correct for Claude Code but would not work for Gemini or OpenCode running the PM role (OpenCode uses the `task` tool with different invocation semantics). Since PM currently only runs on Claude Code, this is not a defect -- but the assumption should be stated explicitly so future provider support knows to address it.
 
-3. **Fleet polling loop is unspecified.** After execute_prompt dispatch in fleet mode, how does the PM detect completion? The design mentions monitor_task in the fleet-only features table but doesn't specify the polling interval, timeout, or completion detection. The old doer-reviewer.md had explicit flow steps for this. This needs to be covered in the fleet-addendum (gap port #7).
+3. **Mid-sprint mode fallback is unspecified.** If a fleet member goes down mid-sprint and no replacement is available, can the PM fall back to local subagent mode? The design stores the mode in status.md at sprint init and does not address mid-sprint switching. This is an edge case, but the PM should at minimum detect member failure and flag the user rather than attempting indefinite dispatch to a dead member.
 
----
-
-## C. PER-MEMBER MODEL TIERS -- PASS
-
-Design section 5a and plan T3.7 are well-specified and ready for implementation as-is.
-
-**What works well:**
-- `model_tiers` as an optional field on MemberRecord is backward-compatible for existing members
-- Dispatch-time resolution in execute-prompt.ts (not in the adapter) is correct separation of concerns
-- Fallback chain is concrete and correct: `memberTiers[tier]` -> `memberTiers.standard` -> `memberTiers.cheap` -> `Object.values(memberTiers)[0]` -> `provider.modelForTier(tier)`. Handles all partial-map combinations.
-- Validation: at least one model required for opencode at registration, single-model expansion, non-opencode members unaffected
-- `resolveModelForTier()` function is concrete enough to implement directly
-- Clean tie to issue #299 (endpoint vs model selection -- complementary)
-- T3.7 covers all implementation pieces with unit tests for each fallback path
-
-**No concerns.** This section is well-architected.
+4. **Risk #9 mitigation is concrete.** The design identifies dual-mode drift as a Medium-likelihood, High-impact risk and proposes three mitigations: explicit dual-mode acceptance criteria in every VERIFY, e2e tests for BOTH modes, and mode-selection as a single well-tested function. These are practical, not hand-wavy. The mitigation would be stronger with a concrete invariant test ("dispatch a sprint in local mode and fleet mode, compare the resulting git history for structural equivalence"), but the current approach is adequate.
 
 ---
 
-## D. OPENCODE ADAPTER -- FAIL
+## Section C: Per-Member Model Tiers -- PASS
 
-The adapter method mapping is complete. I verified against the ProviderAdapter interface in `src/providers/provider.ts` -- all 5 readonly properties and 26 methods are accounted for with OpenCode-specific values. Most values are correct per the exploration document. However, the parseResponse design section contains critical technical errors.
+**What works:** Design.md section 5a is architecturally sound. The separation of concerns is clean: the ProviderAdapter holds static fallback defaults, the member record holds user-configured tiers, and the dispatch layer resolves the concrete model at dispatch time without the adapter needing to know about member-specific configuration.
 
-### What works
+The `resolveModelForTier` function is concrete and handles all edge cases via a clear priority chain: `member.model_tiers[tier]` -> `member.model_tiers.standard` -> `member.model_tiers.cheap` -> `Object.values(memberTiers)[0]` -> `provider.modelForTier(tier)`. Validation rules are clear: at least one model at registration (no zero-model members), single-model fills all tiers, missing tiers inherit. The tie-in to issue #299 (MODEL_EP_URL) is correctly identified as complementary (endpoint vs model selection).
 
-- Method coverage: all ProviderAdapter members mapped (the design says "24 methods" in the current-state map which is a minor count error; actual interface has 26 methods + 5 properties, all covered)
-- `instructionFileName: 'OPENCODE.md'` correctly flagged UNVERIFIED with TODO. Plan T3.1 includes verification. Acceptable.
-- `permissionModeAutoFlag(): null` -- correct, OpenCode has no auto mode
-- `buildPromptCommand` correctly uses positional arg `run "<prompt>"` (not --prompt). Verified in exploration doc section 4.
-- `resumeFlag` correctly uses `--session <id>` and `--continue`. Verified.
-- `composePermissionConfig` maps doer/reviewer to OpenCode permission frontmatter. Exploration doc section 6.1 verified the tool->permission mapping.
-- `classifyError` patterns are reasonable for OpenCode error strings
-- `skipPermissionsFlag: '--dangerously-skip-permissions'` -- verified in exploration doc
-- `supportsOAuthCopy: false`, `supportsApiKey: false` -- correct for local-endpoint members
-- Install config paths (`~/.config/opencode/`, `~/.config/opencode/agents/`, etc.) match OpenCode's documented paths
+The plan's implementation in T3.7 is well-scoped: add `model_tiers` to MemberRecord type, accept it in register_member with validation, add `resolveModelForTier` to execute_prompt. Unit test coverage requirements are specified (full map, single-model expansion, missing map fallback).
 
-### What fails
-
-**1. parseResponse NDJSON schema is fabricated and wrong.**
-
-Design.md section 5 (parseResponse Design Detail) shows:
-```
-{"type": "text", "content": "..."}
-{"type": "tool-call", "name": "edit", "args": {...}}
-{"type": "tool-result", "name": "edit", "result": "..."}
-{"type": "finish", "reason": "stop", "usage": {...}}
-```
-
-These are labeled "Expected event types (from ai-sdk patterns)" -- meaning they are speculative, extrapolated from the ai-sdk library's internal types, not from actual `opencode run --format json` output. The PM captured REAL output and the actual format is structurally different:
-
-- **Top-level structure is `{type, timestamp, sessionID, part}`** -- not flat `{type, content}`. Every event wraps its payload in a `part` object.
-- **Text content is in `part.text`** of `type:"text"` events -- not in a top-level `content` field. A parser that reads `event.content` will get `undefined`.
-- **Session ID is `sessionID` at the top level on EVERY event** -- not only available from a finish event. The parser should extract it from the first event.
-- **The finish event is `step_finish` with `part.tokens`** -- not `{"type":"finish","usage":{...}}`.
-
-**2. Design incorrectly claims usage metrics are unavailable.**
-
-Design.md line 340: "No usage tracking initially (OpenCode doesn't emit token counts in JSON mode -- TBD)."
-
-This is factually wrong. The real output DOES emit usage in `step_finish.part.tokens`. Claiming unavailability means the implementer will set `usage: undefined` in ParsedResponse, losing token tracking that exists in the wire format. This is a verified capability, not a TBD.
-
-**3. Plan mitigation is strong but insufficient.**
-
-Plan T3.4 says: "Pre-step: CAPTURE REAL OUTPUT FIRST. Do NOT code parseResponse against an assumed schema -- use real captured NDJSON as the test fixture and design basis." This is excellent defensive planning. However:
-- The design document is the first thing the implementer reads. It presents a concrete, plausible-looking wrong schema that will shape the implementer's mental model.
-- The PM already HAS real captured output. The design should have been updated before review.
-- The "No usage tracking" claim is actively misleading, not merely uncertain.
-
-### Required changes
-
-1. Replace the speculative NDJSON examples with real captured output showing `{type, timestamp, sessionID, part}` structure
-2. Remove "No usage tracking initially" -- replace with: "Usage extracted from `step_finish.part.tokens`"
-3. Update session ID extraction: top-level `sessionID` field on every event, not just finish
-4. Keep the format-instability risk callout (the format IS undocumented and may change) but base it on the real structure
+**Minor note:** The documentation says "Missing tiers inherit from the next-lower tier (premium -> standard -> cheap)" but the code implements a different mechanism -- a priority list where any missing tier falls through to standard, then cheap, then first-available. The result is the same (any supplied model is used), but the documentation describes a strictly next-lower chain that the code doesn't implement. The code is more robust; the documentation should match it. Not blocking.
 
 ---
 
-## E. PHASING/DEPENDENCY SOUNDNESS -- FAIL
+## Section D: OpenCode Adapter -- FAIL
 
-### What works
+**What works:** The adapter surface mapping is comprehensive. I verified it against `src/providers/provider.ts:49-115`: all 5 readonly properties (`name`, `processName`, `authEnvVar`, `credentialPath`, `instructionFileName`) and 26 methods are accounted for in the design's adapter layout. The implementation mirrors codex.ts patterns, which is the correct reference for a non-Claude provider. The classifyError patterns (not-found -> auth, connection-refused -> server, timeout -> server, rate-limit -> overloaded) are sensible. Session resume flags (--continue, --session) match verified `opencode run --help` output. Install config paths are correct.
 
-- **Riskiest assumptions front-loaded:** Phase 1 = submodule+vendoring (build complexity), Phase 3 = OpenCode headless+parseResponse (format uncertainty). Correct ordering.
-- **VERIFY checkpoints at cohesion boundaries:** 6 VERIFYs at natural increment boundaries. Each produces a testable, coherent artifact.
-- **Dependency graph** is explicit and acyclic. The ASCII diagram shows all task dependencies clearly.
-- **Test strategy table** is complete: unit (adapter, transform, config), integration (install flow, backward compat), e2e (opencode member sprint, existing suites).
+The `composePermissionConfig` design correctly maps Claude's tool-based allowlist to OpenCode's per-tool permission system (edit/bash = allow|deny|ask), matching the verified conversion pattern from exploration doc section 6.1.
 
-### What fails
+**What fails:**
 
-**1. Tier monotonicity violated in 4 of 6 phases.**
+1. **parseResponse design presents a fabricated NDJSON schema.** Design.md section 5 ("parseResponse Design Detail", around the event types description) shows:
+   ```
+   {"type": "text", "content": "..."}
+   {"type": "tool-call", "name": "edit", "args": {...}}
+   {"type": "tool-result", "name": "edit", "result": "..."}
+   {"type": "finish", "reason": "stop", "usage": {...}}
+   ```
+   This is labeled "Expected event types (from ai-sdk patterns)" -- meaning it is speculative, extrapolated from the ai-sdk library's internal types, NOT from actual `opencode run --format json` output. The PM captured REAL output and the actual format is NDJSON with top-level `{type, timestamp, sessionID, part}`. Text content is in `part.text` of `type:"text"` events, NOT in a top-level `content` field. The session ID is a top-level field on every event, not buried in a finish event.
 
-The plan's own plan-prompt.md mandates: "Monotonically non-decreasing tiers within a phase [...] If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary."
+   This is actively harmful because it presents a concrete, plausible-looking schema that will mislead the implementer. Even though T3.4 says "capture real output first," the implementer reads the design document first and will form a mental model around `event.content` instead of `event.part.text`, `event.type === "finish"` for session ID instead of reading it from any event's `sessionID` field. **The design must either show the REAL schema or explicitly mark the speculative schema as "HYPOTHETICAL -- DO NOT USE AS IMPLEMENTATION BASIS."**
 
-| Phase | Task tiers (in order) | Violation |
-|-------|----------------------|-----------|
-| Phase 1 (T1.1-T1.4) | standard, **cheap**, standard, standard | T1.1(std) -> T1.2(cheap) |
-| Phase 2 (T2.1-T2.3) | cheap, premium, **cheap** | T2.2(prem) -> T2.3(cheap) |
-| Phase 3 (T3.1-T3.7) | cheap, std, std, premium, **std**, **cheap**, std | T3.4(prem) -> T3.5(std), T3.5(std) -> T3.6(cheap) |
-| Phase 4 (T4.1-T4.4) | cheap, std, std, std | VALID |
-| Phase 5 (T5.1-T5.3) | std, std, std | VALID |
-| Phase 6 (T6.1-T6.3) | cheap, std, **cheap** | T6.2(std) -> T6.3(cheap) |
+2. **Design falsely claims usage metrics are unavailable.** The parseResponse section states: "No usage tracking initially (OpenCode doesn't emit token counts in JSON mode -- TBD)." The real output DOES emit usage data in `step_finish.part.tokens`. This is a verified capability. Claiming unavailability means the implementer will skip usage extraction entirely and return `usage: undefined` (as codex.ts does), losing token tracking that the wire format actually provides. This directly contradicts the exploration doc's observations and the PM's captured evidence. The `ParsedResponse` interface already has a `usage?: { input_tokens: number; output_tokens: number }` field (provider.ts:46) -- it should be populated from `step_finish.part.tokens`.
 
-Fixes per phase:
-- **Phase 1:** T1.2 depends on T1.1, so reorder is impossible. Split after T1.1, or promote T1.2 to standard.
-- **Phase 2:** Move T2.3 (cheap, trivial submodule pin) to the start of Phase 3.
-- **Phase 3:** Independent branches in the dependency graph allow reordering. T3.6(cheap) and T3.5(standard) are independent of T3.3/T3.4. Reorder: T3.1(cheap) -> T3.6(cheap) -> T3.2(std) -> T3.5(std) -> T3.7(std) -> T3.3(std) -> T3.4(premium).
-- **Phase 6:** T6.3(cheap) has no dependency on T6.2(std). Move T6.3 before T6.1.
+3. **Session ID extraction incorrectly specified.** The design says "Extract session ID from finish event if present." In the real format, `sessionID` is a top-level field on every NDJSON event. The implementer can extract it from the first event, not the last. The parser strategy should read `sessionID` from the first successfully parsed event and carry it forward.
 
-**2. T2.2 (gap ports) may exceed ~50 tool calls.**
+4. **Method count discrepancy.** Design.md line 10 says "ProviderAdapter (24 methods)." The actual interface has 26 methods (plus 5 readonly properties). The adapter mapping in section 5 does cover all 31 interface members, so this is a documentation error rather than a coverage gap, but it may confuse the implementer about scope.
 
-T2.2 modifies 5+ files in the submodule with 7 must-port items + 3 should-port items. Each port involves reading the old source, understanding the pm-lite gap, writing ported content, and verifying consistency. At 4-6 tool calls per item across 10 items = 40-60 tool calls. Plan-prompt.md says: "Too large -- more than ~50 tool calls? Split it." Suggested split:
-- T2.2a: SKILL.md ports (sprint selection, command reference, core rules, secrets, provider awareness)
-- T2.2b: doer-reviewer-loop/sprint.md ports (pre-flight checks, resume rules, doc harvest)
-- T2.2c: New files (fleet-addendum.md, simple-sprint.md)
-
-**3. Cross-repo workflow under-specified.**
-
-T1.1 (rename) and T2.2 (gap ports) modify the apra-pm repo, not apra-fleet. The plan acknowledges this ("requires a PR to apra-pm repo") but does not specify:
-- Does the doer push directly to apra-pm, or create a PR?
-- Who reviews apra-pm changes?
-- How does "ONE PR at the end" constraint apply across two repos?
-
-Natural approach: separate PR to apra-pm (reviewed and merged independently), then pin the merged SHA in apra-fleet's submodule. Should be stated explicitly.
-
-**4. T1.1 has an implicit org-admin pre-condition.**
-
-`gh repo rename` requires org-admin permissions on Apra-Labs. If the doer's token lacks admin scope, T1.1 blocks the entire epic at the first task. Should be listed as a pre-condition.
+**Required fix:** Replace the speculative ai-sdk NDJSON schema with the REAL format: top-level `{type, timestamp, sessionID, part}`, text in `part.text` of `type:"text"` events, usage in `step_finish.part.tokens`. Remove the "No usage tracking initially (TBD)" claim and specify the usage extraction path. Fix session ID extraction to read from top-level `sessionID` on any event. Fix method count to 26.
 
 ---
 
-## F. BACKWARD COMPAT + MIGRATION -- PASS
+## Section E: Phasing/Dependency Soundness -- FAIL
 
-**What works well:**
-- T5.3 (backward-compat.test.ts) verifies: old `/pm` commands map to new equivalents, old state file formats work, beads lifecycle unchanged, context-file filenames preserved
-- Rollout gates the merge on ALL existing e2e suites (s1-s8) passing -- strongest backward-compat guarantee available
-- Protection table: fleet skill untouched, hooks untouched, settings merge logic unchanged, beads DB untouched, provider configs only additive, old sprint state files compatible
-- ND.1-ND.6 requirements are concrete and testable
-- The rollout's 5-step migration path requires no new manual steps for existing users
+**What works:** The 6-phase structure is well-ordered by dependency. Riskiest assumptions are correctly front-loaded: submodule + npm vendoring in Phase 1 (build infrastructure that everything else depends on), OpenCode headless + JSON parsing in Phase 3 (the second-riskiest unknown). VERIFY checkpoints exist at every phase boundary with reviewer-specific check items. The dependency graph is explicit, acyclic, and correctly rendered. The test strategy table is comprehensive (unit, integration, e2e). The rollout section correctly gates the merge on existing s1-s8 e2e suites passing with the new PM skill.
 
-**Minor concern (not blocking):**
+**What fails:**
 
-- Backward-compat testing is in Phase 5 but old PM is deleted in Phase 2. If a regression is introduced during gap ports (T2.2), it won't be caught for 3 phases. Consider adding a smoke test to VERIFY 2.
-- Mid-sprint upgrade continuity is not explicitly tested. A user mid-sprint who upgrades should be able to resume. The format compatibility tests imply this works but it's worth noting as a manual verification item.
+1. **Tier monotonicity violated in 3 phases.** The plan's own generation rules (plan-prompt.md, Phase 3 "SELF-CRITIQUE") state: "Monotonically non-decreasing tiers within a phase [...] If a dependency forces a higher-tier task before a lower-tier task within a phase, split the phase at that boundary." The plan violates this:
+
+   - **Phase 1:** T1.1(standard) -> T1.2(cheap) -- downgrade. T1.2 depends on T1.1 so reordering is impossible. Fix: promote T1.2 to standard (it's a simple `git submodule add` but its position after a standard task means the session context is already at standard complexity).
+   - **Phase 2:** T2.1(cheap) -> T2.2(premium) -> T2.3(cheap) -- downgrade at T2.3. T2.3 depends on T2.2, so reordering is impossible. Fix: move T2.3 (submodule pin update, mechanical) to the start of Phase 3, or split Phase 2 after T2.2.
+   - **Phase 6:** T6.1(cheap) -> T6.2(standard) -> T6.3(cheap) -- downgrade at T6.3. T6.3 (commit exploration doc) has no dependency on T6.2 (integration test), so reordering is valid. Fix: move T6.3 before T6.2.
+
+   The tier rule exists to prevent a cheap-tier model from being dispatched into a session whose context window was built by a premium-tier model's deeper reasoning. The violations are not catastrophic but the plan contradicts its own generation rules.
+
+2. **T2.2 (gap ports) likely exceeds ~50 tool calls.** This task modifies 5 files across the apra-pm submodule, porting 7 must-port items (9+ after gap analysis fixes from Section A). Each port requires: (a) reading the old PM source file for the feature, (b) reading the pm-lite equivalent to understand the gap, (c) writing the ported content, (d) verifying consistency. At 4-6 tool calls per port across 9+ items, this reaches 40-55+ calls. The plan-prompt.md self-critique says "Too large -- more than ~50 tool calls? Split it." Fix: split into T2.2a (SKILL.md additions: sprint selection, command reference, core rules, secrets, provider awareness) and T2.2b (sub-document additions: pre-flight checks, resume rules, fleet-addendum, simple-sprint).
+
+3. **T1.1 has an implicit external dependency.** `gh repo rename apra-pm --repo Apra-Labs/apra-pm-lite` requires org-admin permissions on the Apra-Labs GitHub organization. If the doer's token lacks admin scope, T1.1 blocks the entire epic at the first task with no fallback. This must be listed as a pre-condition ("org-admin access to Apra-Labs verified") or handled as a manual pre-step the user confirms before the sprint starts.
+
+4. **T2.2 cross-repo workflow is under-specified.** The task modifies files in the apra-pm submodule -- a different git repository (Apra-Labs/apra-pm). The plan acknowledges "requires a commit in apra-pm repo and submodule SHA update in apra-fleet" but does not specify: Does the doer clone apra-pm separately? Does the PM create a branch + PR in apra-pm? Does the doer need push access to apra-pm? Is the gap port PR merged before updating the submodule pin in T2.3? This process gap could block Phase 2 if the doer cannot push to the submodule repo.
+
+5. **Phase 3 parallel execution opportunities are implicit.** T3.5 (permissions, depends on T3.2), T3.6 (install config, depends on T3.1), and T3.7 (member tier map, depends on T3.2) are all independent of T3.3-T3.4 but the linear task numbering (T3.1 -> ... -> T3.7) implies strict sequential execution. If the intent is parallel dispatch (which would significantly reduce Phase 3 wall time), the plan should explicitly group independent tasks or note which can run concurrently. If sequential is intended, the plan should say so.
 
 ---
 
-## G. SUBMODULE+NPM VENDOR -- PASS
+## Section F: Backward Compat + Migration -- PASS
 
-Design section 2 covers all three install paths correctly.
+**What works:** The rollout section is solidly constructed. The merge gate on s1-s8 e2e suites is the strongest backward-compat guarantee: if existing sprint workflows pass end-to-end with the new PM skill, the upgrade is safe. T5.3 (backward-compat.test.ts) covers the key compatibility surfaces: `/pm` command mapping, state file format (status.md, progress.json, planned.json), beads lifecycle hooks, and provider-specific context-file filenames. Requirements ND.1-ND.6 are concrete and independently testable.
 
-**What works well:**
-- **npm:** `prepublishOnly` runs `vendor-pm.mjs` to copy submodule files into the package. Fallback checks (submodule initialized -> copy; not initialized -> check dist/; neither -> clear error). Correct.
-- **git clone:** `vendor/apra-pm/` submodule provides files directly. Install.ts looks in vendor first, falls back to dist/. Correct.
-- **SEA binary:** `gen-sea-config.mjs` collects from `vendor/apra-pm/`. Correct.
-- Alternatives-considered table is well-reasoned. Submodule+vendor is the right choice.
-- Error messages ("run git submodule update --init") are user-friendly.
+The protection table is comprehensive: fleet skill untouched, hooks untouched, settings merge unchanged (readConfig/writeConfig), beads DB untouched (separate binary), provider configs unchanged (only new opencode permissions added), old sprint state files compatible (same file names and formats).
 
-**Minor concern (not blocking):**
+**Advisory (not blocking):**
 
-For a fresh `git clone` without `--recursive`, both `vendor/apra-pm/` and `dist/` may be empty. The vendor-pm.mjs handles the npm publish case, but install.ts's dev-mode path should also detect and print a clear error. Verify during VERIFY 1.
+1. **Backward-compat testing is late in the pipeline.** Old PM is deleted in T2.1 (Phase 2) but backward-compat tests are not written until T5.3 (Phase 5). If a compatibility regression is introduced during the gap ports in T2.2, it will not surface until 3 phases later, requiring expensive rework. Consider adding a smoke test to VERIFY 2: "install new pm skill, verify `/pm init` scaffolds correct files, verify existing status.md parses without errors."
+
+2. **In-flight sprint migration is not explicitly tested.** T5.3 covers state file format compatibility (implying in-flight sprints would work), but there is no explicit test scenario: "user is mid-sprint with old pm, upgrades to new pm, resumes sprint." This is an edge case worth adding -- even as a manual test.
+
+---
+
+## Section G: Submodule+NPM Vendor -- PASS
+
+**What works:** All three install paths are explicitly addressed with concrete mechanisms:
+
+- **npm (`npm install -g apra-fleet`):** `prepublishOnly` script copies submodule files to `dist/` before publish. The tarball includes pm skill + agent files. Users never need `--recursive` or git.
+- **git clone:** `vendor/apra-pm/` submodule provides files directly. install.ts looks in `vendor/apra-pm/` first, falls back to `dist/` for npm installs.
+- **SEA binary:** `gen-sea-config.mjs` updated to collect from `vendor/apra-pm/`.
+
+The vendor-pm.mjs fallback logic is sound: submodule initialized -> copy; not initialized -> check dist/ populated -> error with "run git submodule update --init." The alternatives-considered table (4 options with pros/cons) is thorough and the submodule + build-time vendor choice is well-justified.
+
+**Minor note:** For a developer who runs `git clone` without `--recursive` AND hasn't built yet (so `dist/` is empty), install.ts needs a clear error in dev-mode when both `vendor/apra-pm/` and `dist/skills/pm/` are empty. The design's vendor-pm.mjs handles the npm publish path but install.ts's dev-mode path also needs the both-empty detection. The plan should verify this in VERIFY 1.
 
 ---
 
@@ -223,32 +160,18 @@ For a fresh `git clone` without `--recursive`, both `vendor/apra-pm/` and `dist/
 
 | Section | Verdict | Key Finding |
 |---------|---------|-------------|
-| A. Gap Analysis | PASS | Comprehensive coverage; minor concerns about contracts concept, core rule enumeration, and tpl-status.md |
-| B. Dual-Mode Execution | PASS | Strongest section; concrete mode detection, correct state/transport identity |
-| C. Per-Member Model Tiers | PASS | Well-specified; correct fallback chain; ready for implementation |
-| D. OpenCode Adapter | **FAIL** | parseResponse shows fabricated NDJSON schema (`content` vs `part.text`); falsely claims usage unavailable; contradicts PM's captured output |
-| E. Phasing/Dependencies | **FAIL** | Tier monotonicity violated in 4/6 phases; T2.2 too large; cross-repo workflow and org-admin pre-condition unspecified |
-| F. Backward Compat | PASS | Solid rollout gates; s1-s8 must pass before merge |
-| G. Submodule+NPM Vendor | PASS | All three install paths covered correctly |
+| A. Gap Analysis | FAIL | 5 of 14 core rules unaccounted for; resume rules and simple sprint misclassified as "should port" when dropping them breaks existing workflows (hard constraint #2); template equivalence asserted without verification |
+| B. Dual-Mode Execution | PASS | Strongest section; mode detection, state transport, fleet-only gating all concrete and testable |
+| C. Per-Member Model Tiers | PASS | Sound resolution chain; clean separation of adapter defaults vs member config vs dispatch resolution |
+| D. OpenCode Adapter | FAIL | parseResponse presents fabricated NDJSON schema ({content} vs real {part.text}); falsely claims usage unavailable when step_finish.part.tokens provides it; session ID extraction mis-located |
+| E. Phasing/Dependency | FAIL | Tier monotonicity violated in 3 phases; T2.2 likely exceeds ~50 tool-call ceiling; T1.1 org-admin and T2.2 cross-repo push are implicit dependencies |
+| F. Backward Compat | PASS | Solid rollout gates with s1-s8 e2e as merge guard; backward-compat testing could start earlier |
+| G. Submodule+NPM Vendor | PASS | All three install paths (npm, git-clone, SEA) covered with concrete mechanisms |
 
----
+**Top 3 required changes before implementation proceeds:**
 
-### Required changes (minimum to reach APPROVED)
+1. **Fix parseResponse design (Section D).** Replace the speculative ai-sdk NDJSON schema with the REAL format: top-level `{type, timestamp, sessionID, part}`, text in `part.text` of `type:"text"` events, usage in `step_finish.part.tokens`. Remove the "No usage tracking initially (TBD)" claim -- usage is verified available. Fix session ID extraction to read from top-level `sessionID` on any event. The plan's T3.4 "capture real output first" mitigation is good, but the design document itself must not present a wrong schema as if it were real.
 
-1. **Fix design.md parseResponse section (D):** Replace the speculative NDJSON schema with the REAL captured format: top-level `{type, timestamp, sessionID, part}`, text in `part.text`, usage in `step_finish.part.tokens`. Remove "No usage tracking initially -- TBD." Keep the format-instability risk callout but base it on the real structure, not a guess.
+2. **Strengthen gap analysis (Section A).** Enumerate all 14 core rules with per-rule present/port/drop decisions and citations. Promote resume rules (row #14) and simple sprint (row #18) from "should port" to "must port." Confirm template equivalence for init-flow templates (tpl-status.md, tpl-requirements.md, tpl-design.md, tpl-deploy.md, tpl-projects.md) by checking what pm-lite's sprint setup phase actually generates.
 
-2. **Fix plan.md tier ordering (E):** Reorder or split phases 1, 2, 3, 6 to achieve monotonically non-decreasing tiers. Concrete fixes: Phase 1 split after T1.1; Phase 2 move T2.3 to Phase 3 start; Phase 3 reorder independent tasks cheap-first; Phase 6 move T6.3 before T6.1.
-
-3. **Split plan T2.2 (E):** Break into 2-3 sub-tasks to keep each under ~50 tool calls.
-
-4. **Clarify cross-repo workflow (E):** State explicitly that apra-pm changes go through a separate PR, and the apra-fleet PR pins the resulting SHA.
-
-### Items that would strengthen the plan (advisory, not blocking)
-
-- Acknowledge the contracts vs worktrees distinction in gap #19
-- Ensure tpl-status.md's `lastDispatchedPhase` mechanism is included when resume rules are ported
-- Explicitly enumerate all 14 core rules with per-rule present/port/drop decisions
-- Add fleet polling loop (interval, timeout) to the fleet-addendum specification
-- Add backward-compat smoke test in VERIFY 2 rather than waiting for Phase 5
-- List org-admin permissions as a pre-condition for T1.1
-- Consider promoting simple sprint (gap #18) from "should port" to "must port" to avoid user friction
+3. **Fix tier monotonicity and task sizing (Section E).** Correct tier downgrades: Phase 1 -- promote T1.2 to standard; Phase 2 -- move T2.3 to Phase 3 start; Phase 6 -- move T6.3 before T6.2. Split T2.2 into two tasks (SKILL.md ports and sub-document/fleet-addendum ports) to stay under the ~50 tool-call ceiling. Add T1.1 org-admin access as an explicit pre-condition. Specify the T2.2 cross-repo workflow (branch/PR strategy for apra-pm modifications).
