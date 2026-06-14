@@ -105,6 +105,9 @@ describe('suite config files', () => {
     const cfg = JSON.parse(raw);
     expect(cfg.toy).toBeTruthy();
     expect(Array.isArray(cfg.suites)).toBe(true);
+    expect(cfg.suites).toHaveLength(1);
+    expect(cfg.suites[0].id).toBe('s10');
+    expect(cfg.suites[0].provider).toBe('opencode');
     for (const s of cfg.suites) {
       expect(s.id).toBeTruthy();
       expect(s.provider).toBeTruthy();

@@ -1,26 +1,12 @@
 {
-  "_comment": "Fleet-less / local-subagent suites (s10). Suites are OS-independent; the runner is selected via the workflow runner input (default any self-hosted). Per-OS install coverage lives in the main fleet suites + ci.yml.",
+  "_comment": "s10 is a THIN install-path smoke that proves `apra-fleet install --llm opencode` yields a working fleet-less pm (local subagents, no fleet); comprehensive per-provider fleet-less coverage lives in the apra-pm submodule's own e2e (pm-e2e.yml: claude/gemini/agy/opencode).",
   "toy": "https://github.com/Apra-Labs/fleet-e2e-toy",
   "suites": [
     {
-      "id": "s10.1",
-      "provider": "claude",
-      "cli": "claude",
-      "minCommits": 4,
-      "expectedIssues": 3
-    },
-    {
-      "id": "s10.2",
+      "id": "s10",
       "provider": "opencode",
       "cli": "opencode",
       "model": "ollama/qwen3-coder:30b",
-      "minCommits": 4,
-      "expectedIssues": 3
-    },
-    {
-      "id": "s10.3",
-      "provider": "agy",
-      "cli": "agy",
       "minCommits": 4,
       "expectedIssues": 3
     }

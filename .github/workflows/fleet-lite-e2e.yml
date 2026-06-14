@@ -12,10 +12,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Fleet-less / local-subagent suite. s10.1 = Claude, s10.2 = OpenCode+Ollama, s10.3 = agy.'
+        description: 'Fleet-less install-path smoke. s10 = OpenCode+Ollama.'
         required: true
         type: choice
-        options: [s10.1, s10.2, s10.3]
+        options: [s10]
       runner:
         description: 'Runner to target. Default "self-hosted" = any available self-hosted runner. Override with a specific label (e.g. fleet-linux, fleet-macos, fleet-windows, fleet-opencode) to pin.'
         required: false
@@ -41,9 +41,7 @@ jobs:
         shell: bash
         run: |
           case "${{ inputs.suite }}" in
-            s10.1) P=claude ;;
-            s10.2) P=opencode ;;
-            s10.3) P=agy ;;
+            s10) P=opencode ;;
             *) echo "::error::unknown suite ${{ inputs.suite }}"; exit 1 ;;
           esac
           echo "provider=$P" >> "$GITHUB_OUTPUT"
@@ -60,28 +58,6 @@ jobs:
             || curl -sf "$(echo "$ENDPOINT" | sed 's|/v1$||')/api/tags" > /dev/null 2>&1 \
             || { echo "::error::Ollama endpoint not reachable at $ENDPOINT"; exit 1; }
           echo "OpenCode CLI and Ollama endpoint verified"
-
-      - name: Locate agy CLI if provider is agy
-        if: steps.prov.outputs.provider == 'agy'
-        shell: bash
-        run: |
-          echo "Adding standard agy CLI installation paths to PATH..."
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            AGY_DIR="$LOCALAPPDATA/agy/bin"
-            [ -z "$LOCALAPPDATA" ] && AGY_DIR="$USERPROFILE/AppData/Local/agy/bin"
-            echo "$(cygpath -w "$AGY_DIR")" >> "$GITHUB_PATH"
-          elif [ "$RUNNER_OS" = "Linux" ]; then
-            echo "$HOME/.local/share/agy/bin" >> "$GITHUB_PATH"
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            echo "$HOME/Library/Application Support/agy/bin" >> "$GITHUB_PATH"
-          fi
-
-      - name: Verify agy CLI if provider is agy
-        if: steps.prov.outputs.provider == 'agy'
-        shell: bash
-        run: |
-          agy --version || { echo "::error::agy CLI not found; see https://github.com/anthropics/agy for install"; exit 1; }
-          echo "agy CLI verified"
 
       - name: Build and install fleet binary
         shell: bash
@@ -105,22 +81,9 @@ jobs:
       - name: Verify skill + agents installed
         shell: bash
         run: |
-          P='${{ steps.prov.outputs.provider }}'
-          if [ "$P" = "claude" ]; then
-            CFG="$HOME/.claude"
-          elif [ "$P" = "opencode" ]; then
-            CFG="$HOME/.config/opencode"
-          elif [ "$P" = "agy" ]; then
-            CFG="$HOME/.gemini/antigravity-cli"
-          fi
+          CFG="$HOME/.config/opencode"
           test -f "$CFG/skills/pm/SKILL.md" || { echo "::error::pm skill missing at $CFG/skills/pm/SKILL.md"; exit 1; }
-          if [ "$P" = "claude" ]; then
-            AGENTS_DIR="$HOME/.claude/agents"
-          elif [ "$P" = "opencode" ]; then
-            AGENTS_DIR="$HOME/.config/opencode/agents"
-          elif [ "$P" = "agy" ]; then
-            AGENTS_DIR="$HOME/.gemini/antigravity-cli/agents"
-          fi
+          AGENTS_DIR="$HOME/.config/opencode/agents"
           for a in planner plan-reviewer doer reviewer; do
             test -f "$AGENTS_DIR/$a.md" || { echo "::error::agent $a missing at $AGENTS_DIR/$a.md"; exit 1; }
           done
@@ -129,15 +92,8 @@ jobs:
       - name: Pre-flight - subagent dispatch works
         shell: bash
         run: |
-          P='${{ steps.prov.outputs.provider }}'
           PROMPT="Dispatch ONE subagent (use your agent/subagent/task mechanism) whose only job is to reply with the exact text SUBAGENT-OK. Wait for it to finish, then print its reply and the text PMLITE-READY. Do nothing else."
-          if [ "$P" = "claude" ]; then
-            cmd=(claude -p "$PROMPT" --dangerously-skip-permissions)
-          elif [ "$P" = "opencode" ]; then
-            cmd=(opencode run "$PROMPT" --format json --dangerously-skip-permissions)
-          elif [ "$P" = "agy" ]; then
-            cmd=(agy -p "$PROMPT" --dangerously-skip-permissions)
-          fi
+          cmd=(opencode run "$PROMPT" --format json --dangerously-skip-permissions)
           TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
           if [ -n "$TIMEOUT_BIN" ]; then
             out=$("$TIMEOUT_BIN" 180 "${cmd[@]}" 2>&1); rc=$?
@@ -145,27 +101,18 @@ jobs:
             out=$("${cmd[@]}" 2>&1); rc=$?
           fi
           echo "$out"
-          if [ $rc -eq 124 ]; then echo "::error::$P hung dispatching a subagent (timeout) -- fleet-less pm cannot run on this provider/config"; exit 1; fi
-          echo "$out" | grep -q "PMLITE-READY" || { echo "::error::$P produced no response -- start/auth issue"; exit 1; }
-          echo "$out" | grep -q "SUBAGENT-OK"  || { echo "::error::$P responded but the subagent never returned -- subagent dispatch broken"; exit 1; }
-          echo "$P: subagent dispatch OK"
+          if [ $rc -eq 124 ]; then echo "::error::opencode hung dispatching a subagent (timeout) -- fleet-less pm cannot run on this provider/config"; exit 1; fi
+          echo "$out" | grep -q "PMLITE-READY" || { echo "::error::opencode produced no response -- start/auth issue"; exit 1; }
+          echo "$out" | grep -q "SUBAGENT-OK"  || { echo "::error::opencode responded but the subagent never returned -- subagent dispatch broken"; exit 1; }
+          echo "opencode: subagent dispatch OK"
 
       - name: Seed PM permissions
         shell: bash
         run: |
-          P='${{ steps.prov.outputs.provider }}'
           RUN_DIR="$(pwd)"
-          if [ "$P" = "claude" ]; then
-            mkdir -p "$RUN_DIR/.claude"
-            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/claude.settings.json" "$RUN_DIR/.claude/settings.json"
-          elif [ "$P" = "opencode" ]; then
-            mkdir -p "$RUN_DIR/.config/opencode"
-            echo '{"permissions":{"allow":["*"]}}' > "$RUN_DIR/.config/opencode/opencode.json"
-          elif [ "$P" = "agy" ]; then
-            mkdir -p "$RUN_DIR/.gemini/antigravity-cli"
-            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/antigravity-cli/settings.json"
-          fi
-          echo "Seeded $P PM permissions"
+          mkdir -p "$RUN_DIR/.config/opencode"
+          echo '{"permissions":{"allow":["*"]}}' > "$RUN_DIR/.config/opencode/opencode.json"
+          echo "Seeded opencode PM permissions"
 
       - name: Run fleet-less e2e
         shell: bash

@@ -83,17 +83,9 @@ function main() {
     .replaceAll('{{VCS}}', 'github');
 
   let cmd, args;
-  if (suite.provider === 'claude') {
-    cmd = 'claude';
-    args = ['-p', prompt, '--model', 'sonnet', '--output-format', 'stream-json',
-      '--verbose', '--max-turns', '80', '--add-dir', repo];
-  } else if (suite.provider === 'opencode') {
+  if (suite.provider === 'opencode') {
     cmd = 'opencode';
     args = ['run', prompt, '--format', 'json', '--dangerously-skip-permissions'];
-  } else if (suite.provider === 'agy') {
-    // agy on Windows may write transcript to CONOUT$ (stdout empty); Linux/macOS -p prints normally
-    cmd = 'agy';
-    args = ['-p', prompt, '--dangerously-skip-permissions', '--print-timeout', '45m', '--add-dir', repo];
   } else {
     console.error(`unsupported provider: ${suite.provider}`);
     process.exit(2);
