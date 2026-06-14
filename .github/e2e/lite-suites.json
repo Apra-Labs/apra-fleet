@@ -1,0 +1,23 @@
+{
+  "_comment": "Fleet-less / local-subagent suites (s10). No register_member, no /pm pair, no fleet MCP. The orchestrator uses its own installed planner/plan-reviewer/doer/reviewer subagents directly.",
+  "toy": "https://github.com/Apra-Labs/fleet-e2e-toy",
+  "suites": [
+    {
+      "id": "s10.1",
+      "provider": "claude",
+      "os": "linux",
+      "cli": "claude",
+      "minCommits": 4,
+      "expectedIssues": 3
+    },
+    {
+      "id": "s10.2",
+      "provider": "opencode",
+      "os": "linux",
+      "cli": "opencode",
+      "model": "ollama/qwen3-coder:30b",
+      "minCommits": 4,
+      "expectedIssues": 3
+    }
+  ]
+}
