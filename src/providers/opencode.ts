@@ -167,7 +167,7 @@ export class OpenCodeProvider implements ProviderAdapter {
     if (role === 'doer') {
       return [{ permission: { edit: 'allow', write: 'allow', bash: 'allow' } }];
     }
-    return [{ permission: { edit: 'deny', write: 'deny', bash: 'allow' } }];
+    return [{ permission: { edit: 'deny', write: 'allow', bash: 'allow' } }];
   }
 
   supportsOAuthCopy(): boolean {

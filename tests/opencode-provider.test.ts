@@ -309,12 +309,12 @@ describe('OpenCodeProvider permission and auth methods', () => {
     expect(perm.bash).toBe('allow');
   });
 
-  it('composePermissionConfig reviewer denies edit and write, allows bash', () => {
+  it('composePermissionConfig reviewer denies edit, allows write and bash', () => {
     const config = p.composePermissionConfig('reviewer');
     expect(config).toHaveLength(1);
     const perm = (config[0] as Record<string, unknown>).permission as Record<string, string>;
     expect(perm.edit).toBe('deny');
-    expect(perm.write).toBe('deny');
+    expect(perm.write).toBe('allow');
     expect(perm.bash).toBe('allow');
   });
 
