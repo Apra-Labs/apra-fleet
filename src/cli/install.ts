@@ -269,6 +269,9 @@ export function buildRequiredPerms(paths: ProviderInstallConfig): string[] {
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${path.join(paths.configDir, 'skills').replace(/\\/g, '/')}/**)`,
   ];
+  if (paths.agentsDir) {
+    perms.push(`Read(${paths.agentsDir.replace(/\\/g, '/')}/**)`);
+  }
   if (paths.name !== 'Claude') {
     perms.push('tracker_*');
   }
@@ -346,6 +349,13 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void 
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = mcpConfig;
 
+  writeConfig(paths, settings);
+}
+
+function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+  const settings = readConfig(paths);
+  settings.mcpServers = settings.mcpServers || {};
+  settings.mcpServers['apra-fleet'] = mcpConfig;
   writeConfig(paths, settings);
 }
 
@@ -459,7 +469,7 @@ Options:
     }
   }
 
-  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy'];
+  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode'];
   if (!supported.includes(llm)) {
     console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
     process.exit(1);
@@ -513,7 +523,9 @@ Options:
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
-  const totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const installAgents = installPm && paths.agentsDir !== undefined;
+  let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  if (installAgents) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -629,6 +641,8 @@ ${killHint}
     mergeCopilotConfig(paths, mcpConfig);
   } else if (llm === 'agy') {
     mergeAgyConfig(paths, mcpConfig);
+  } else if (llm === 'opencode') {
+    mergeOpenCodeConfig(paths, mcpConfig);
   }
 
   // --- Step 6: Install fleet skill (optional) ---
@@ -688,7 +702,30 @@ Then re-run:  apra-fleet install`);
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
-  // --- Step 8: Install Beads task tracker ---
+  // --- Agent install step (only when agentsDir is defined and PM is installed) ---
+  if (installAgents) {
+    const agentStep = (installFleet && installPm) ? 8 : installPm ? 8 : 7;
+    console.log(`  [${agentStep}/${totalSteps}] Installing PM agents...`);
+    const agentsDestDir = paths.agentsDir!;
+    fs.mkdirSync(agentsDestDir, { recursive: true });
+    if (isSea()) {
+      for (const [name, assetKey] of Object.entries(manifest.agents)) {
+        const content = extractAsset(assetKey);
+        writeAssetFile(path.join(agentsDestDir, name), content);
+      }
+    } else {
+      const root = findProjectRoot();
+      const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
+      const agentsSrc = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
+      for (const entry of fs.readdirSync(agentsSrc, { withFileTypes: true })) {
+        if (entry.isDirectory()) continue;
+        const content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf-8');
+        writeAssetFile(path.join(agentsDestDir, entry.name), content);
+      }
+    }
+  }
+
+  // --- Beads install step ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
   console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
@@ -729,7 +766,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
+  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsVersion}
 
 ${instructions}${forceNote}
