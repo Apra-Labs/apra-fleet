@@ -744,4 +744,101 @@ describe('runInstall multi-provider', () => {
     expect(pmIdx).toBeGreaterThanOrEqual(0);
     expect(fleetIdx).toBeLessThan(pmIdx);
   });
+
+  // ── Agent install tests ──────────────────────────────────────────────
+
+  for (const llm of ['claude', 'gemini', 'agy'] as const) {
+    it(`installs 4 agent files for ${llm}`, async () => {
+      vi.mocked(fs.readdirSync).mockImplementation((p: any, opts?: any) => {
+        const ps = p.toString();
+        if (ps.includes('agents')) {
+          return [
+            { name: 'doer.md', isDirectory: () => false },
+            { name: 'planner.md', isDirectory: () => false },
+            { name: 'plan-reviewer.md', isDirectory: () => false },
+            { name: 'reviewer.md', isDirectory: () => false },
+          ] as any;
+        }
+        if (ps.includes('skills') && ps.includes('pm')) {
+          return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+        }
+        return [];
+      });
+
+      vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+        const ps = p.toString();
+        if (ps.includes('version.json')) return true;
+        if (ps.includes('hooks-config.json')) return true;
+        if (ps.includes('vendor') && ps.includes('agents')) return true;
+        return false;
+      });
+
+      await runInstall(['--llm', llm]);
+
+      const writeAssetCalls = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+        c[0].toString().includes('agents') && c[0].toString().endsWith('.md')
+      );
+      expect(writeAssetCalls.length).toBe(4);
+    });
+  }
+
+  it('installs transformed agent files for opencode', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p: any, opts?: any) => {
+      const ps = p.toString();
+      if (ps.includes('agents')) {
+        return [
+          { name: 'doer.md', isDirectory: () => false },
+          { name: 'planner.md', isDirectory: () => false },
+          { name: 'plan-reviewer.md', isDirectory: () => false },
+          { name: 'reviewer.md', isDirectory: () => false },
+        ] as any;
+      }
+      if (ps.includes('skills') && ps.includes('pm')) {
+        return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+      }
+      return [];
+    });
+
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps.includes('vendor') && ps.includes('agents')) return true;
+      return false;
+    });
+
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+      if (ps.includes('agents') && ps.endsWith('.md')) {
+        return '---\nname: test\ndescription: Test agent.\ntools: [Read, Write, Bash]\n---\n\n# Body';
+      }
+      return '';
+    });
+
+    await runInstall(['--llm', 'opencode']);
+
+    const agentWrites = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes('agents') && c[0].toString().endsWith('.md')
+    );
+    expect(agentWrites.length).toBe(4);
+    for (const [, content] of agentWrites) {
+      const text = content.toString();
+      expect(text).toContain('mode: subagent');
+      expect(text).not.toContain('name: test');
+      expect(text).toContain('# Body');
+    }
+  });
+
+  for (const llm of ['codex', 'copilot'] as const) {
+    it(`skips agent install for ${llm} (agentsDir undefined)`, async () => {
+      await runInstall(['--llm', llm]);
+
+      const agentMkdir = vi.mocked(fs.mkdirSync).mock.calls.find(c =>
+        c[0].toString().includes('agents')
+      );
+      expect(agentMkdir).toBeUndefined();
+    });
+  }
 });
