@@ -8,7 +8,7 @@ on:
         description: 'Test suite to run. s1.1/s1.2/s1.3 = local-only variants; s7.1/s7.2/s7.3 = all-Gemini.'
         required: true
         type: choice
-        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3, s8.1, s8.2, s8.3]
+        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3, s8.1, s8.2, s8.3, s9, s9.1, s9.2, s9.3]
 
 jobs:
   e2e:
@@ -31,6 +31,10 @@ jobs:
          || inputs.suite == 's8.1' && 'fleet-windows'
          || inputs.suite == 's8.2' && 'fleet-linux'
          || inputs.suite == 's8.3' && 'fleet-macos'
+         || inputs.suite == 's9'   && 'fleet-opencode'
+         || inputs.suite == 's9.1' && 'fleet-opencode-win'
+         || inputs.suite == 's9.2' && 'fleet-opencode'
+         || inputs.suite == 's9.3' && 'fleet-opencode-mac'
          || 'fleet-macos' }}
 
     steps:
@@ -150,6 +154,20 @@ jobs:
             fi
           fi
 
+      - name: Verify OpenCode + Ollama if PM provider is opencode
+        if: steps.suite.outputs.pm_provider == 'opencode'
+        shell: bash
+        run: |
+          echo "Verifying OpenCode CLI is installed..."
+          opencode --version || { echo "::error::opencode CLI not found; install with: npm install -g opencode-ai"; exit 1; }
+          MEMBERS=$(cat .github/e2e/members.json)
+          ENDPOINT=$(echo "$MEMBERS" | jq -r '.opencode.endpoint // "http://localhost:11434/v1"')
+          echo "Verifying Ollama endpoint at $ENDPOINT ..."
+          curl -sf "$ENDPOINT/models" > /dev/null 2>&1 \
+            || curl -sf "$(echo "$ENDPOINT" | sed 's|/v1$||')/api/tags" > /dev/null 2>&1 \
+            || { echo "::error::Ollama endpoint not reachable at $ENDPOINT"; exit 1; }
+          echo "OpenCode CLI and Ollama endpoint verified"
+
       - name: Prepare clean PM environment
         shell: bash
         run: |
@@ -179,6 +197,10 @@ jobs:
             output=$(agy -p "$PROMPT" --dangerously-skip-permissions 2>&1)
             echo "$output"
             echo "PM agy auth OK"
+          elif [ "$PROVIDER" = "opencode" ]; then
+            output=$(opencode run --prompt "$PROMPT" --format json --dangerously-skip-permissions 2>&1)
+            echo "$output"
+            echo "PM opencode auth OK"
           fi
 
       - name: Purge fleet daemon logs
@@ -255,6 +277,9 @@ jobs:
           elif [ "$PROVIDER" = "gemini" ]; then
             mkdir -p "$RUN_DIR/.gemini"
             cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/settings.json"
+          elif [ "$PROVIDER" = "opencode" ]; then
+            mkdir -p "$RUN_DIR/.config/opencode"
+            echo '{"permissions":{"allow":["*"]}}' > "$RUN_DIR/.config/opencode/opencode.json"
           else
             mkdir -p "$RUN_DIR/.gemini/antigravity-cli"
             cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/antigravity-cli/settings.json"
@@ -295,6 +320,12 @@ jobs:
               --include-directories "$RUN_DIR,$CFG_DIR,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
               --allowed-mcp-server-names apra-fleet \
               -p "$(cat "$RUN_DIR/rendered-setup.md")" \
+              > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
+          elif [ "$PROVIDER" = "opencode" ]; then
+            opencode run \
+              --prompt "$(cat "$RUN_DIR/rendered-setup.md")" \
+              --format json \
+              --dangerously-skip-permissions \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           else
             agy --dangerously-skip-permissions \
@@ -368,6 +399,12 @@ jobs:
               --include-directories "$RUN_DIR,$CFG_DIR,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
               --allowed-mcp-server-names apra-fleet \
               -p "$(cat "$RUN_DIR/rendered-sprint.md")" \
+              > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
+          elif [ "$PROVIDER" = "opencode" ]; then
+            opencode run \
+              --prompt "$(cat "$RUN_DIR/rendered-sprint.md")" \
+              --format json \
+              --dangerously-skip-permissions \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           else
             agy --dangerously-skip-permissions \
@@ -481,6 +518,8 @@ jobs:
             claude -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --model haiku > "$RUN_DIR/t6-output.txt" 2>&1 || true
           elif [ "$PROVIDER" = "gemini" ]; then
             gemini --skip-trust -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
+          elif [ "$PROVIDER" = "opencode" ]; then
+            opencode run --prompt "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --format json --dangerously-skip-permissions > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
             agy --dangerously-skip-permissions --print-timeout 45m -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
