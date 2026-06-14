@@ -198,7 +198,7 @@ jobs:
             echo "$output"
             echo "PM agy auth OK"
           elif [ "$PROVIDER" = "opencode" ]; then
-            output=$(opencode run --prompt "$PROMPT" --format json --dangerously-skip-permissions 2>&1)
+            output=$(opencode run "$PROMPT" --format json --dangerously-skip-permissions 2>&1)
             echo "$output"
             echo "PM opencode auth OK"
           fi
@@ -323,7 +323,7 @@ jobs:
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
           elif [ "$PROVIDER" = "opencode" ]; then
             opencode run \
-              --prompt "$(cat "$RUN_DIR/rendered-setup.md")" \
+              "$(cat "$RUN_DIR/rendered-setup.md")" \
               --format json \
               --dangerously-skip-permissions \
               > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
@@ -402,7 +402,7 @@ jobs:
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
           elif [ "$PROVIDER" = "opencode" ]; then
             opencode run \
-              --prompt "$(cat "$RUN_DIR/rendered-sprint.md")" \
+              "$(cat "$RUN_DIR/rendered-sprint.md")" \
               --format json \
               --dangerously-skip-permissions \
               > "$RUN_DIR/raw-sprint.txt" 2>&1 || LLM_EXIT=$?
@@ -519,7 +519,7 @@ jobs:
           elif [ "$PROVIDER" = "gemini" ]; then
             gemini --skip-trust -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           elif [ "$PROVIDER" = "opencode" ]; then
-            opencode run --prompt "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --format json --dangerously-skip-permissions > "$RUN_DIR/t6-output.txt" 2>&1 || true
+            opencode run "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --format json --dangerously-skip-permissions > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
             agy --dangerously-skip-permissions --print-timeout 45m -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
