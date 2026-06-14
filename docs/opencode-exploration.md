@@ -303,21 +303,21 @@ adapter surface to OpenCode, with confidence markers.
 | cliCommand(args)          | `opencode <args>`                                 | [OK]   |
 | versionCommand()          | `opencode --version`                              | [OK]   |
 | installCommand(os)        | linux/win: `npm install -g opencode-ai`; or curl  | [OK]   |
-| buildPromptCommand()      | `cd <dir> && opencode run -m <prov>/<model> "..."`| [OK] (flags [TBD]) |
+| buildPromptCommand()      | `cd <dir> && opencode run -m <prov>/<model> "..."`| [OK]   |
 | headlessInvocation()      | `run "<prompt>"`                                   | [OK]   |
 | modelFlag(model)          | `-m <provider>/<model>`                            | [OK]   |
-| skipPermissionsFlag()     | trust/approval bypass for headless                | [TBD]  |
-| permissionModeAutoFlag()  | OpenCode permission system (allow/ask/deny)       | [TBD]  |
-| composePermissionConfig() | opencode.json `permission`/agent perms per role   | [TBD]  |
-| permissionConfigPaths()   | `opencode.json` (and/or `.opencode/`)             | [TBD]  |
+| skipPermissionsFlag()     | `--dangerously-skip-permissions`                  | [OK]   |
+| permissionModeAutoFlag()  | returns null (OpenCode has no equivalent)          | [OK]   |
+| composePermissionConfig() | per-role permission map (doer: edit+write+bash allow; reviewer: write+bash allow) | [OK] |
+| permissionConfigPaths()   | `.opencode/settings.json`                         | [OK]   |
 | parseResponse()           | parse `--format json` NDJSON events (see 8a)      | [OK]   |
 | jsonOutputFlag()          | `--format json` on `opencode run`                 | [OK]   |
-| supportsResume()/resumeFlag()| OpenCode sessions; headless resume mechanism   | [TBD]  |
-| supportsMaxTurns()        | unknown                                           | [TBD]  |
-| authEnvVar / credentialPath| local: none; remote endpoints: key sourcing      | [TBD]  |
+| supportsResume()/resumeFlag()| `--session <id>` / `--continue`                | [OK]   |
+| supportsMaxTurns()        | false (OpenCode has no max-turns flag)             | [OK]   |
+| authEnvVar / credentialPath| empty (user-provisioned endpoint, no fleet auth)  | [OK]   |
 | instructionFileName       | AGENTS.md (verified: opencode.ai/docs/rules/)     | [OK]   |
-| modelTiers()/modelForTier()| map cheap/standard/premium -> local model ids    | [OK-ish] |
-| classifyError()           | map OpenCode error strings -> auth/server/overloaded | [TBD] |
+| modelTiers()/modelForTier()| map cheap/standard/premium -> local model ids; per-member override via model_tiers | [OK] |
+| classifyError()           | regex-based: auth/server/overloaded/unknown        | [OK]   |
 
 Cross-cutting:
 - OpenCode model id includes the provider prefix (`ollama/...`), unlike other adapters
@@ -328,15 +328,18 @@ Cross-cutting:
 - Permission roles (doer/reviewer) map to OpenCode's per-tool permission system
   (edit/bash/... = allow|deny|ask), analogous to codex composePermissionConfig.
 
-### Open questions to resolve before/while coding the adapter
+### Open questions (all resolved during implementation)
 1. [OK] Headless trust/approval bypass = `--dangerously-skip-permissions` on `opencode run`.
 2. [OK] Structured output = `opencode run --format json` (raw JSON events).
 3. [OK] Session resume = `opencode run -c|--continue` or `-s|--session <id>` (+ `--fork`).
 4. [OK] AGENTS.md (primary) at project root, with CLAUDE.md as fallback, plus `instructions` field in opencode.json. Ref: https://opencode.ai/docs/rules/
-5. [OK-partial] Per-tool permission config = agent frontmatter `permission:` map
-   (edit/write/bash = allow|deny|ask), verified via the doer/reviewer install (section 6.1).
-   Still TBD: full tool-name list + global vs per-agent precedence.
-6. [TBD] How fleet should template the endpoint into opencode.json (per member) - ties to #299.
+5. [OK] Per-tool permission config = agent frontmatter `permission:` map
+   (edit/write/bash = allow|deny|ask). Implemented in composePermissionConfig and agent
+   transform (doer: edit/write/bash=allow; reviewer: write/bash=allow, edit=deny).
+6. [OK] Endpoint provisioning is the user's responsibility. The fleet adapter does not
+   template opencode.json -- users configure their provider+baseURL before registering
+   the member. Per-member model tiers (`model_tiers` on register_member) handle model
+   selection at dispatch time.
 
 ---
 
@@ -431,3 +434,31 @@ unknowns.
   message at `error.data.message`; multiple error events possible (prefer most specific);
   stderr also carries a pretty `ERROR (#NNN)` block to ignore. T3.4 schema now 100% captured
   (text/tool/step/error) -- zero remaining unknowns.
+- 2026-06-14: Finalized exploration doc for Phase 6 -- updated adapter table (all methods
+  now [OK]), resolved remaining open questions, added final integration status.
+
+---
+
+## 11. Final integration status
+
+OpenCode is now a fully supported apra-fleet provider (`src/providers/opencode.ts`),
+shipped as part of the OpenCode/PM epic alongside the apra-pm submodule and agent install
+system.
+
+What shipped:
+- Provider adapter with all ProviderAdapter methods implemented (command building, NDJSON
+  response parsing, error classification, permission composition, session resume).
+- Agent install with Claude-to-OpenCode frontmatter transform (tools allowlist -> permission
+  map, mode: subagent). Four agents installed: planner, plan-reviewer, doer, reviewer.
+- Per-member model tiers (`model_tiers` on `register_member`) so each OpenCode member can
+  specify its own cheap/standard/premium models based on its endpoint.
+- Install config (`getProviderInstallConfig('opencode')`) with correct paths for config,
+  settings, skills, and agents directories.
+- Full test coverage: unit tests for the adapter, agent transform tests, multi-provider
+  install tests, backward compatibility tests, and e2e suite configuration.
+
+What the user provides:
+- The OpenCode CLI (installed via `apra-fleet install --llm opencode`).
+- An `opencode.json` configuration with at least one provider and base URL pointing to their
+  inference endpoint (Ollama, vLLM, or any OpenAI-compatible server).
+- Model names used in `model_tiers` at member registration.
