@@ -1,93 +1,126 @@
-# Phase 5 Review -- VERIFY 5
+# VERIFY 6 (FINAL) -- Whole-Epic Review
 
 **Verdict: APPROVED**
 
 **Reviewer:** fleet-rev
 **Branch:** feat/opencode-pm-epic
-**Commits reviewed:** f024f8f..39f5acd (T5.1, T5.2, T5.3)
-**Base:** 4957701 (end of Phase 4)
+**Diff range:** e4f3ebb..00aec18 (entire epic, 59 files changed, ~4053 insertions)
+**Date:** 2026-06-14
 
 ---
 
-## 1. Build + Tests
+## Criterion 1: Build and Tests
 
-- `npm install && npm run build`: succeeds (tsc, no errors)
-- `npm test`: **1502 passed**, 7 skipped, 91 test files (90 passed, 1 skipped)
-- backward-compat.test.ts: **42 tests** all passing
-- Expected ~1495; actual 1502 (7 more than projected -- no regressions)
+**PASS**
 
-## 2. T5.1 -- E2E Suite Configuration
+- `npm install && npm run build` (tsc): succeeds, zero errors.
+- `npm test`: **1502 passed**, 7 skipped, 0 failures (90 test files, 27.74s).
 
-**suites.json**: s9/s9.1/s9.2/s9.3 entries present. Schema validated programmatically against existing s1-s8 pattern (pm/doer/reviewer/vcs fields, correct role keys). All have `model: "ollama/qwen3-coder:30b"`. s9 doer.type = "remote" (fleet dispatch), s9.1/s9.2/s9.3 doer.type = "local" (local-only). Matches the established s1/s1.1-s1.3 pattern.
+## Criterion 2: npm pack Contents
 
-**members.json**: `opencode` member added with `host`, `username`, `work_folder`, `endpoint`, and a `_comment` noting "user-provisioned Ollama endpoint; CI must ensure Ollama is running". Correctly NOT fleet-provisioned.
+**PASS**
 
-**fleet-e2e.yml**:
-- Options list includes s9, s9.1, s9.2, s9.3 (line 11)
-- Runner mapping covers all 4 suites (lines 34-37): fleet-opencode, fleet-opencode-win, fleet-opencode-mac
-- "Verify OpenCode + Ollama" step (line 157): conditionally runs for opencode provider, checks CLI + endpoint reachability with fallback URL
-- OpenCode branches in setup phase (lines 324-329), sprint phase (lines 403-408), teardown (line 522), smoke test (lines 200-204), and permission seeding (lines 281-283)
-- **YAML validation**: `python3 yaml.safe_load` parses successfully. Zero tab characters. No indentation errors.
+- `dist/skills/pm/`: 6 files (SKILL.md, beads.md, doer-reviewer-loop.md, sprint.md, tpl-progress.json, worktrees.md).
+- `dist/agents/`: 4 agent definitions (doer.md, plan-reviewer.md, planner.md, reviewer.md).
+- `dist/providers/opencode.js` (+ .d.ts, .d.ts.map, .js.map): present.
+- No stray files observed. Total packed: 579 files.
 
-## 3. T5.2 -- Validation Harness
+## Criterion 3: Provider Installs
 
-**validate-sprint.mjs**: Core logic (evaluateGates + validateSprint) is identical to vendor/apra-pm/e2e/validate-sprint.mjs. Diff is comments only (fleet version has shorter header, vendor has inline documentation) + fleet version adds CLI entry block for standalone use. All 5 gates verified with mock data:
+**PASS**
 
-| Gate | Pass scenario | Fail scenario |
-|------|---------------|---------------|
-| pr-exists | PR with url+number -> PASS | null PR -> FAIL |
-| commits>=10 | 15 commits -> PASS | 5 commits -> FAIL |
-| final-changeset-clean | no scaffold in diff -> PASS | plan.md in diff -> FAIL |
-| process-discipline | all scaffold touched -> PASS | no scaffold touched -> FAIL |
-| beads-closed | 3 of 3 closed -> PASS | 1 of 3 closed -> FAIL |
+Real temp-home installs for all 6 providers:
 
-**extract-results.mjs**: OpenCode NDJSON parsing tested with mock data. Correctly extracts text from `{type:"text", part:{text:...}}` events and accumulates tokens from `{type:"step_finish", part:{tokens:{input,output,cache:{write,read}}}}` events. Token sums verified (3000 input, 600 output, 150 cache_create, 800 cache_read across two step_finish events). Checkpoints extracted from text content via regex. Overall: PASS.
+| Provider | Agents | Install Path | Notes |
+|----------|--------|-------------|-------|
+| claude   | 4      | ~/.claude/agents/ | Default provider, MCP registration |
+| gemini   | 4      | ~/.gemini/agents/ | |
+| agy      | 4      | ~/.agy/agents/ | |
+| opencode | 4      | ~/.config/opencode/agents/ | Agent transform applied (mode: subagent, permission map) |
+| codex    | 0      | n/a | Correctly skips agents |
+| copilot  | 0      | n/a | Correctly skips agents |
 
-## 4. T5.3 -- Backward Compatibility
+- OpenCode install writes to `.config/opencode/` paths, configures `opencode.json`, and displays "Restart OpenCode to load the server."
+- Agent transform converts Claude frontmatter (name, tools list) to OpenCode frontmatter (description, mode: subagent, permission map). Verified in installed files.
 
-42 tests across 6 describe blocks. All check real content from vendor/apra-pm files:
+## Criterion 4: No -lite Naming in Shipped Artifacts
 
-**(a) /pm command equivalents**: All 11 commands (init, pair, plan, start, status, resume, deploy, recover, cleanup, backlog, tasks) verified present in actual SKILL.md + sub-documents. Each command confirmed to exist in at least one skill file via independent grep.
+**PASS**
 
-**(b) State-file names**: PLAN.md (3 files), progress.json (3 files), feedback.md (3 files), status.md (1 file), requirements.md (3 files) -- all verified present in the real pm skill docs. Note: the task spec mentioned `planned.json` but this file does not exist anywhere in vendor/apra-pm -- the correct name is `progress.json`, which the test correctly uses. Also confirms tpl-progress.json template file exists.
+- `grep -ri '\-lite' dist/` returns only `gemini-3.5-flash-lite` model name references in provider adapters and config -- these are Google model names, not the historical `-lite` project naming.
+- Zero hits for `-lite` in installed files (confirmed across all 6 temp-home installs).
+- Process files (design.md, requirements.md, plan.md) do reference the rename history but are not shipped artifacts (see Criterion 7).
 
-**(c) Beads lifecycle**: All 6 `bd` commands (create, close, ready, update, list, show) verified in beads.md + SKILL.md. Epic lifecycle reference confirmed.
+## Criterion 5: Docs Correctness
 
-**(d) Provider context filenames**: Tests call the real `getProvider()` function from src/providers/index.ts and check `instructionFileName` against expected values. opencode -> AGENTS.md confirmed both in the test and in src/providers/opencode.ts:12.
+**PASS with one finding (non-blocking)**
 
-**(e) Agent + sub-document existence**: Verifies 4 agent files and 8 skill sub-documents exist on disk. Not tautological -- these check real filesystem state.
+- **README.md**: Lists OpenCode in the intro, quick-start install example (`apra-fleet install --llm opencode`), endpoint-is-user's-responsibility note, per-member `model_tiers` documentation. Factually accurate.
+- **docs/architecture.md**: Reflects 6 providers, lists `opencode.ts` in provider files, documents apra-pm submodule at `vendor/apra-pm/`, covers agent-transform at install time, model_tiers per-member, OpenCode session resume, and mix-and-match fleet diagram with opencode member.
+- **CHANGELOG.md**: Documents all 3 epic parts -- OpenCode provider, per-member model tiers, PM agent installation, and PM skill submodule migration. Clean and accurate.
+- **docs/opencode-exploration.md**: Present and updated (T6.2).
 
-## 5. Dual-Mode Coverage
+**Finding (non-blocking):**
+`src/cli/install.ts` lines 446 and 449-450: the `--help` text lists supported providers as `claude, gemini, codex, copilot, agy` -- **opencode is missing** from both the usage line and the Options description. The implementation at line 473 correctly includes `opencode` in the `supported` array, and installs work. This is a help-text omission, not a functional bug. Recommend fixing before the PR is merged but it does not block APPROVED status.
 
-| Suite | Mode | Doer/Reviewer Type | Coverage |
-|-------|------|--------------------|----------|
-| s9 | Fleet dispatch | remote | Full fleet orchestration with remote OpenCode members |
-| s9.1 | Local-only | local (Windows) | No fleet server needed; PM spawns local subagents |
-| s9.2 | Local-only | local (Linux) | Same as s9.1, different OS |
-| s9.3 | Local-only | local (macOS) | Same as s9.1, different OS |
+## Criterion 6: Whole-Epic Cohesion
 
-Coverage is real and meaningful: s9 exercises the fleet member registration + dispatch path (ssh-based remote execution), while s9.1-s9.3 exercise local-only mode (PM runs doer/reviewer as local processes). This matches the existing dual-mode pattern established by s1/s1.1-s1.3 for Claude and s7.1-s7.3 for Gemini.
+**PASS**
 
-## 6. File Hygiene
+The three parts work together as a cohesive whole:
 
-Only 6 files changed (404 insertions, 1 deletion):
+**(a) Installer installs 4 agents per provider:**
+- 4 agents (planner, plan-reviewer, doer, reviewer) installed for claude/gemini/agy/opencode.
+- Codex and copilot correctly skip (no agent system).
+- OpenCode agents are transformed at install time (frontmatter rewrite).
 
-| File | Status | Expected |
-|------|--------|----------|
-| .github/e2e/extract-results.mjs | modified (+20) | YES |
-| .github/e2e/members.json | modified (+7) | YES |
-| .github/e2e/suites.json | modified (+28) | YES |
-| .github/e2e/validate-sprint.mjs | new (154 lines) | YES |
-| .github/workflows/fleet-e2e.yml | modified (+41/-1) | YES |
-| tests/backward-compat.test.ts | new (155 lines) | YES |
+**(b) PM skill sourced from apra-pm submodule:**
+- `vendor/apra-pm/` submodule initialized and populated.
+- Build-time vendoring copies skill files to `dist/skills/pm/`.
+- Install-time skill copy to `~/.claude/skills/pm/` (or provider equivalent).
+- Backward compat test (T5.3) verifies old state file names (PLAN.md, progress.json, feedback.md, status.md) and `/pm` commands.
+- Gap-port features (sprint selection, operational rules, provider awareness, fleet addendum, resume rules, documentation harvest) present in the vendored SKILL.md.
 
-No stray artifacts. No unexpected files.
+**(c) OpenCode is a first-class provider:**
+- `parseResponse()`: NDJSON parser with fixture-based tests.
+- Permissions: `--dangerously-skip-permissions` flag.
+- Install config: `.config/opencode/` paths, `opencode.json` MCP config.
+- Per-member `model_tiers`: wired through `register_member` with validation (at least one model required, fallback fill logic).
+- Agent transform: Claude frontmatter -> OpenCode frontmatter (tools list -> permission map, mode: subagent).
+- Session resume: `--session <id>` / `--continue` support.
 
-## Minor Observations (not blocking)
+**No dead code** observed. No half-wired features. No TODOs/FIXMEs in OpenCode provider or agent-transform code.
 
-1. The `model` field on s9 entries is an extension vs s1-s8 (which don't have it). This is sensible for opencode (needs to specify the Ollama model) but could be documented as a convention.
-2. The fleet validate-sprint.mjs includes a CLI entry block not present in the vendor version -- this is value-add (allows standalone execution from CI), not a fidelity issue.
+**Security:** No secrets committed. Token/password handling is programmatic (encrypted at rest, per existing patterns).
+
+## Criterion 7: Final-Changeset Cleanliness
+
+**Recommendation: (A) -- git rm all 4 process files before the PR**
+
+The net diff includes 4 process files at the repo root:
+- `requirements.md` (216 lines)
+- `design.md` (700 lines)
+- `plan.md` (367 lines)
+- `feedback.md` (93 lines)
+
+**Recommendation: Remove all 4 (option A).** Justification:
+
+1. **A production library PR into main should not carry sprint scaffolding at the repo root.** These files are sprint-internal process artifacts -- they served their purpose during development and are preserved in git history and the beads task DB.
+
+2. **design.md and requirements.md have some lasting documentation value**, but they are not maintained documentation -- they are snapshots of the planning phase. The actual lasting documentation is already captured in README.md, CHANGELOG.md, docs/architecture.md, and docs/opencode-exploration.md, which are accurate and up to date. Keeping design.md/requirements.md at the repo root creates confusion about which docs are authoritative.
+
+3. **plan.md and feedback.md are pure process artifacts** with no lasting value beyond their git history. plan.md is the internal sprint plan (task IDs, model assignments, VERIFY checkpoints). feedback.md is the review verdicts (this very document being overwritten now).
+
+4. The apra-pm validation harness's "final-changeset-clean" gate explicitly flags process files leaking into the net diff -- removing them aligns with the project's own quality standard.
+
+**Specific action:** `git rm requirements.md design.md plan.md feedback.md` and commit before raising the PR. (feedback.md will be this file, so commit this review first, then rm all 4.)
 
 ---
 
-**APPROVED** -- Phase 5 is complete. All VERIFY 5 criteria met. Ready for Phase 6.
+## Summary
+
+All 7 criteria pass. The epic delivers a cohesive, well-tested, fully documented OpenCode provider integration with PM agent installation and submodule-sourced PM skill.
+
+**One non-blocking finding:** install `--help` text omits `opencode` from the provider list (fix recommended before PR).
+
+**One process recommendation:** Remove all 4 sprint scaffolding files (requirements.md, design.md, plan.md, feedback.md) from the branch before raising the PR.
