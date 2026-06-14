@@ -443,11 +443,11 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --force           Stop a running server before installing
-  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
   apra-fleet install --help            Show this help
 
 Options:
-  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy.
+  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy, opencode.
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
                           dispatch — Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
