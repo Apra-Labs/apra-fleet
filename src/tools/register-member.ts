@@ -47,6 +47,11 @@ export const registerMemberSchema = z.object({
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
   unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false (default) = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  model_tiers: z.object({
+    cheap: z.string().optional(),
+    standard: z.string().optional(),
+    premium: z.string().optional(),
+  }).optional().describe('Per-member model tier map. Keys: cheap, standard, premium. Values: model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model recommended for opencode members.'),
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
@@ -104,6 +109,26 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     });
     if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
     preEncryptedPassword = oob.password;
+  }
+
+  // --- model_tiers validation ---
+  let normalizedModelTiers: { cheap?: string; standard?: string; premium?: string } | undefined;
+  if (input.model_tiers) {
+    const values = Object.values(input.model_tiers).filter(Boolean) as string[];
+    if (values.length === 0) {
+      return '[-] model_tiers was provided but contains no models. Supply at least one model. Member was NOT registered.';
+    }
+    if (values.length === 1) {
+      normalizedModelTiers = { cheap: values[0], standard: values[0], premium: values[0] };
+    } else {
+      normalizedModelTiers = { ...input.model_tiers };
+      const fallback = input.model_tiers.standard ?? input.model_tiers.cheap ?? values[0];
+      if (!normalizedModelTiers.cheap) normalizedModelTiers.cheap = fallback;
+      if (!normalizedModelTiers.standard) normalizedModelTiers.standard = fallback;
+      if (!normalizedModelTiers.premium) normalizedModelTiers.premium = normalizedModelTiers.standard;
+    }
+  } else if ((input.llm_provider ?? 'claude') === 'opencode') {
+    warnings.push('No model_tiers provided for opencode member -- adapter defaults will be used. Consider setting model_tiers for correct model resolution.');
   }
 
   // --- Duplicate folder check ---
@@ -182,6 +207,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     modelStandard: input.model_standard,
     modelPremium: input.model_premium,
     unattended: input.unattended ?? false,
+    modelTiers: normalizedModelTiers,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---
@@ -292,6 +318,10 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   if (tempAgent.modelCheap) result += `  Model Cheap: ${tempAgent.modelCheap}\n`;
   if (tempAgent.modelStandard) result += `  Model Standard: ${tempAgent.modelStandard}\n`;
   if (tempAgent.modelPremium) result += `  Model Premium: ${tempAgent.modelPremium}\n`;
+  if (tempAgent.modelTiers) {
+    const mt = tempAgent.modelTiers;
+    result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
+  }
   if (claudeVersion) {
     result += `  CLI:     ${claudeVersion}\n`;
   }

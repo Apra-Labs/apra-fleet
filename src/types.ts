@@ -33,6 +33,7 @@ export interface Agent {
   tokenUsage?: { input: number; output: number };
   unattended?: false | 'auto' | 'dangerous';
   lastLlmActivityAt?: string;  // ISO 8601
+  modelTiers?: { cheap?: string; standard?: string; premium?: string };
 }
 
 export interface GitHubAppConfig {
