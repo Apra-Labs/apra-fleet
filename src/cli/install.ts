@@ -355,8 +355,12 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void 
 
 function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
-  settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers['apra-fleet'] = mcpConfig;
+  settings.mcp = settings.mcp || {};
+  settings.mcp['apra-fleet'] = {
+    type: 'local',
+    command: [mcpConfig.command, ...(mcpConfig.args || [])],
+    enabled: true,
+  };
   writeConfig(paths, settings);
 }
 
@@ -600,17 +604,19 @@ ${killHint}
 
   // --- Step 4: Configure hooks + statusline in settings.json ---
   console.log(`  [4/${totalSteps}] Configuring ${paths.name} settings...`);
-  const installedHooksConfig = JSON.parse(
-    fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
-  );
-  mergeHooksConfig(paths, installedHooksConfig, llm);
+  // OpenCode has a strict config schema -- hooks/statusLine/defaultModel are not valid keys
+  if (llm !== 'opencode') {
+    const installedHooksConfig = JSON.parse(
+      fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
+    );
+    mergeHooksConfig(paths, installedHooksConfig, llm);
 
-  const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
-  configureStatusline(paths, statuslineScript);
+    const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
+    configureStatusline(paths, statuslineScript);
 
-  // Write defaultModel to provider settings so native CLI invocations default to standard tier
-  const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
-  writeDefaultModel(paths, standardModel);
+    const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
+    writeDefaultModel(paths, standardModel);
+  }
 
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
@@ -750,8 +756,11 @@ Then re-run:  apra-fleet install`);
     console.warn('  ⚠ Beads install skipped — npm not available or install failed');
   }
 
-  // Finalize permissions
-  mergePermissions(paths);
+  // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
+  // a top-level "permissions" key is invalid in opencode.json
+  if (llm !== 'opencode') {
+    mergePermissions(paths);
+  }
 
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode);

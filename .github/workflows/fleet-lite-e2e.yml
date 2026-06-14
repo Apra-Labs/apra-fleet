@@ -106,13 +106,13 @@ jobs:
           echo "$out" | grep -q "SUBAGENT-OK"  || { echo "::error::opencode responded but the subagent never returned -- subagent dispatch broken"; exit 1; }
           echo "opencode: subagent dispatch OK"
 
-      - name: Seed PM permissions
+      - name: Seed OpenCode config directory
         shell: bash
         run: |
           RUN_DIR="$(pwd)"
           mkdir -p "$RUN_DIR/.config/opencode"
-          echo '{"permissions":{"allow":["*"]}}' > "$RUN_DIR/.config/opencode/opencode.json"
-          echo "Seeded opencode PM permissions"
+          echo '{}' > "$RUN_DIR/.config/opencode/opencode.json"
+          echo "Seeded empty opencode.json (permissions handled by --dangerously-skip-permissions)"
 
       - name: Run fleet-less e2e
         shell: bash

@@ -841,4 +841,115 @@ describe('runInstall multi-provider', () => {
       expect(agentMkdir).toBeUndefined();
     });
   }
+
+  // ── OpenCode strict-schema regression tests ───────────────────────────
+
+  const OPENCODE_VALID_KEYS = new Set(['$schema', 'provider', 'model', 'mcp', 'permission', 'agent']);
+  const OPENCODE_FORBIDDEN_KEYS = ['hooks', 'statusLine', 'defaultModel', 'mcpServers', 'permissions'];
+
+  it('opencode install produces only valid opencode.json keys (no hooks/statusLine/defaultModel/mcpServers/permissions)', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('agents')) {
+        return [
+          { name: 'doer.md', isDirectory: () => false },
+        ] as any;
+      }
+      if (ps.includes('skills') && ps.includes('pm')) {
+        return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+      }
+      return [];
+    });
+
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps.includes('vendor') && ps.includes('agents')) return true;
+      return false;
+    });
+
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+      if (ps.includes('agents') && ps.endsWith('.md')) {
+        return '---\nname: test\ndescription: Test.\ntools: [Read]\n---\n\nBody';
+      }
+      return '';
+    });
+
+    const fileState = new Map<string, string>();
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
+
+    await runInstall(['--llm', 'opencode']);
+
+    const opencodeSettings = path.join(mockHome, '.config', 'opencode', 'opencode.json');
+    const finalContent = fileState.get(opencodeSettings);
+    expect(finalContent).toBeDefined();
+    const parsed = JSON.parse(finalContent!);
+
+    for (const key of OPENCODE_FORBIDDEN_KEYS) {
+      expect(parsed).not.toHaveProperty(key);
+    }
+    for (const key of Object.keys(parsed)) {
+      expect(OPENCODE_VALID_KEYS).toContain(key);
+    }
+  });
+
+  it('opencode MCP is written under mcp["apra-fleet"] with type:local and command array', async () => {
+    const fileState = new Map<string, string>();
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
+
+    await runInstall(['--llm', 'opencode']);
+
+    const opencodeSettings = path.join(mockHome, '.config', 'opencode', 'opencode.json');
+    const finalContent = fileState.get(opencodeSettings);
+    expect(finalContent).toBeDefined();
+    const parsed = JSON.parse(finalContent!);
+
+    expect(parsed.mcp).toBeDefined();
+    expect(parsed.mcp['apra-fleet']).toBeDefined();
+    expect(parsed.mcp['apra-fleet'].type).toBe('local');
+    expect(Array.isArray(parsed.mcp['apra-fleet'].command)).toBe(true);
+    expect(parsed.mcp['apra-fleet'].enabled).toBe(true);
+  });
+
+  it('claude install still has hooks/statusLine/permissions/mcpServers (no regression)', async () => {
+    const fileState = new Map<string, string>();
+
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (fileState.has(ps)) return true;
+      return false;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (fileState.has(ps)) return fileState.get(ps)!;
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'test', hooks: [] }] } });
+      return '';
+    });
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
+    vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+
+    await runInstall([]);
+
+    const claudeSettings = path.join(mockHome, '.claude', 'settings.json');
+    const finalContent = fileState.get(claudeSettings);
+    expect(finalContent).toBeDefined();
+    const parsed = JSON.parse(finalContent!);
+
+    expect(parsed).toHaveProperty('hooks');
+    expect(parsed).toHaveProperty('statusLine');
+    expect(parsed).toHaveProperty('permissions');
+  });
 });
