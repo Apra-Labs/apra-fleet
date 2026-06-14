@@ -1,122 +1,93 @@
-# OpenCode PM Epic -- Phase 4 Review (Agent Installation System)
+# Phase 5 Review -- VERIFY 5
+
+**Verdict: APPROVED**
 
 **Reviewer:** fleet-rev
-**Date:** 2026-06-14 01:05:00+05:30
-**Verdict:** APPROVED
+**Branch:** feat/opencode-pm-epic
+**Commits reviewed:** f024f8f..39f5acd (T5.1, T5.2, T5.3)
+**Base:** 4957701 (end of Phase 4)
 
 ---
 
 ## 1. Build + Tests
 
-PASS. `npm run build` succeeds (tsc clean). `npm test` passes: 89 test files, 1460 tests passed, 7 skipped (1 file skipped -- auth-terminal-wait platform-conditional). Zero failures.
+- `npm install && npm run build`: succeeds (tsc, no errors)
+- `npm test`: **1502 passed**, 7 skipped, 91 test files (90 passed, 1 skipped)
+- backward-compat.test.ts: **42 tests** all passing
+- Expected ~1495; actual 1502 (7 more than projected -- no regressions)
+
+## 2. T5.1 -- E2E Suite Configuration
+
+**suites.json**: s9/s9.1/s9.2/s9.3 entries present. Schema validated programmatically against existing s1-s8 pattern (pm/doer/reviewer/vcs fields, correct role keys). All have `model: "ollama/qwen3-coder:30b"`. s9 doer.type = "remote" (fleet dispatch), s9.1/s9.2/s9.3 doer.type = "local" (local-only). Matches the established s1/s1.1-s1.3 pattern.
+
+**members.json**: `opencode` member added with `host`, `username`, `work_folder`, `endpoint`, and a `_comment` noting "user-provisioned Ollama endpoint; CI must ensure Ollama is running". Correctly NOT fleet-provisioned.
+
+**fleet-e2e.yml**:
+- Options list includes s9, s9.1, s9.2, s9.3 (line 11)
+- Runner mapping covers all 4 suites (lines 34-37): fleet-opencode, fleet-opencode-win, fleet-opencode-mac
+- "Verify OpenCode + Ollama" step (line 157): conditionally runs for opencode provider, checks CLI + endpoint reachability with fallback URL
+- OpenCode branches in setup phase (lines 324-329), sprint phase (lines 403-408), teardown (line 522), smoke test (lines 200-204), and permission seeding (lines 281-283)
+- **YAML validation**: `python3 yaml.safe_load` parses successfully. Zero tab characters. No indentation errors.
+
+## 3. T5.2 -- Validation Harness
+
+**validate-sprint.mjs**: Core logic (evaluateGates + validateSprint) is identical to vendor/apra-pm/e2e/validate-sprint.mjs. Diff is comments only (fleet version has shorter header, vendor has inline documentation) + fleet version adds CLI entry block for standalone use. All 5 gates verified with mock data:
+
+| Gate | Pass scenario | Fail scenario |
+|------|---------------|---------------|
+| pr-exists | PR with url+number -> PASS | null PR -> FAIL |
+| commits>=10 | 15 commits -> PASS | 5 commits -> FAIL |
+| final-changeset-clean | no scaffold in diff -> PASS | plan.md in diff -> FAIL |
+| process-discipline | all scaffold touched -> PASS | no scaffold touched -> FAIL |
+| beads-closed | 3 of 3 closed -> PASS | 1 of 3 closed -> FAIL |
+
+**extract-results.mjs**: OpenCode NDJSON parsing tested with mock data. Correctly extracts text from `{type:"text", part:{text:...}}` events and accumulates tokens from `{type:"step_finish", part:{tokens:{input,output,cache:{write,read}}}}` events. Token sums verified (3000 input, 600 output, 150 cache_create, 800 cache_read across two step_finish events). Checkpoints extracted from text content via regex. Overall: PASS.
+
+## 4. T5.3 -- Backward Compatibility
+
+42 tests across 6 describe blocks. All check real content from vendor/apra-pm files:
+
+**(a) /pm command equivalents**: All 11 commands (init, pair, plan, start, status, resume, deploy, recover, cleanup, backlog, tasks) verified present in actual SKILL.md + sub-documents. Each command confirmed to exist in at least one skill file via independent grep.
+
+**(b) State-file names**: PLAN.md (3 files), progress.json (3 files), feedback.md (3 files), status.md (1 file), requirements.md (3 files) -- all verified present in the real pm skill docs. Note: the task spec mentioned `planned.json` but this file does not exist anywhere in vendor/apra-pm -- the correct name is `progress.json`, which the test correctly uses. Also confirms tpl-progress.json template file exists.
+
+**(c) Beads lifecycle**: All 6 `bd` commands (create, close, ready, update, list, show) verified in beads.md + SKILL.md. Epic lifecycle reference confirmed.
+
+**(d) Provider context filenames**: Tests call the real `getProvider()` function from src/providers/index.ts and check `instructionFileName` against expected values. opencode -> AGENTS.md confirmed both in the test and in src/providers/opencode.ts:12.
+
+**(e) Agent + sub-document existence**: Verifies 4 agent files and 8 skill sub-documents exist on disk. Not tautological -- these check real filesystem state.
+
+## 5. Dual-Mode Coverage
+
+| Suite | Mode | Doer/Reviewer Type | Coverage |
+|-------|------|--------------------|----------|
+| s9 | Fleet dispatch | remote | Full fleet orchestration with remote OpenCode members |
+| s9.1 | Local-only | local (Windows) | No fleet server needed; PM spawns local subagents |
+| s9.2 | Local-only | local (Linux) | Same as s9.1, different OS |
+| s9.3 | Local-only | local (macOS) | Same as s9.1, different OS |
+
+Coverage is real and meaningful: s9 exercises the fleet member registration + dispatch path (ssh-based remote execution), while s9.1-s9.3 exercise local-only mode (PM runs doer/reviewer as local processes). This matches the existing dual-mode pattern established by s1/s1.1-s1.3 for Claude and s7.1-s7.3 for Gemini.
+
+## 6. File Hygiene
+
+Only 6 files changed (404 insertions, 1 deletion):
+
+| File | Status | Expected |
+|------|--------|----------|
+| .github/e2e/extract-results.mjs | modified (+20) | YES |
+| .github/e2e/members.json | modified (+7) | YES |
+| .github/e2e/suites.json | modified (+28) | YES |
+| .github/e2e/validate-sprint.mjs | new (154 lines) | YES |
+| .github/workflows/fleet-e2e.yml | modified (+41/-1) | YES |
+| tests/backward-compat.test.ts | new (155 lines) | YES |
+
+No stray artifacts. No unexpected files.
+
+## Minor Observations (not blocking)
+
+1. The `model` field on s9 entries is an extension vs s1-s8 (which don't have it). This is sensible for opencode (needs to specify the Ollama model) but could be documented as a convention.
+2. The fleet validate-sprint.mjs includes a CLI entry block not present in the vendor version -- this is value-add (allows standalone execution from CI), not a fidelity issue.
 
 ---
 
-## 2. T4.1: agentsDir in ProviderInstallConfig
-
-PASS. `ProviderInstallConfig` interface extended with `agentsDir: string | undefined` (config.ts:57). `getProviderInstallConfig` returns correct values per provider:
-
-| Provider | agentsDir |
-|----------|-----------|
-| claude | `~/.claude/agents` |
-| gemini | `~/.gemini/agents` |
-| agy | `~/.gemini/antigravity-cli/agents` |
-| opencode | `~/.config/opencode/agents` |
-| codex | `undefined` |
-| copilot | `undefined` |
-
-All match spec exactly.
-
----
-
-## 3. T4.2: Agent Install Step
-
-PASS. install.ts:706-733 adds a conditional agent install step:
-- `installAgents = installPm && paths.agentsDir !== undefined` -- agents install only when PM is installed AND provider supports agents.
-- Step numbering is dynamic: `totalSteps` incremented by 1 when `installAgents` is true; output shows `[8/9]` for agents, `[9/9]` for Beads.
-- Agents sourced from `vendor/apra-pm/agents/` with `dist/agents` fallback (install.ts:722-723).
-- SEA manifest includes agents (gen-sea-config.mjs:49,59,97).
-- Codex/Copilot skip silently: verified by real install -- no agent directories created, no log output about agents.
-- Existing install.test.ts updated correctly: step assertions loosened from `[8/8]` to `Installing Beads task tracker...` to accommodate dynamic step counts.
-
----
-
-## 4. T4.3: Agent Transform (Key Deliverable)
-
-PASS. `transformAgentForOpenCode` (agent-transform.ts:36-74) correctly converts Claude frontmatter to OpenCode format. Verified by real install to temp dir:
-
-| Agent File | edit | write | bash | mode | name | description |
-|------------|------|-------|------|------|------|-------------|
-| doer.md | allow | allow | allow | subagent | DROPPED | Preserved verbatim |
-| planner.md | deny | allow | allow | subagent | DROPPED | Preserved verbatim |
-| plan-reviewer.md | deny | allow | allow | subagent | DROPPED | Preserved verbatim |
-| reviewer.md | deny | allow | allow | subagent | DROPPED | Preserved verbatim |
-
-All match the REQUIRED outputs from the task spec exactly. Markdown body content preserved verbatim across all four agents (verified by real file inspection).
-
-Transform applied ONLY for `llm === 'opencode'` (install.ts:715,728). Confirmed Claude install produces raw Claude-format frontmatter (name, description, tools fields intact, no mode/permission fields).
-
-Design section 6 alignment: transform logic follows the specified pseudocode -- `edit` from `Edit` tool presence, `write` always `allow`, `bash` from `Bash` tool presence, `name` dropped, `mode: subagent` added.
-
-Edge cases handled:
-- Missing `tools` field: falls back to `buildDefaultPermissionMap()` returning `{edit: deny, write: allow, bash: deny}` -- safe defaults.
-- Unknown tool names: ignored (only Edit, Write, Bash inspected; unknown names like `FutureTool` pass through harmlessly).
-- Missing frontmatter: returns content unchanged.
-
-NOTE (not blocking): `buildPermissionMap` line 27 has `write: toolSet.has('Write') ? 'allow' : 'allow'` -- both branches return `'allow'`. This matches the design spec verbatim (`write: <'allow' if 'Write' in tools, else 'allow'>`). The ternary is intentionally always-true to document that write is unconditionally allowed. Acceptable as-is.
-
----
-
-## 5. T4.4: Test Quality
-
-PASS. Two new test files with meaningful assertions:
-
-**agent-transform.test.ts** (8 tests):
-- Tests each of the 4 agent files with specific permission assertions (not just `toContain('allow')` but checking each permission key individually).
-- Verifies `name` field is dropped, `description` preserved, `mode: subagent` present.
-- Verifies body content preserved verbatim (slice comparison at body start).
-- Edge cases: missing tools field, unknown tools, no frontmatter.
-
-**install-multi-provider.test.ts** additions (agent section, 6 tests):
-- Tests `claude`, `gemini`, `agy` each install 4 agent files.
-- Tests `opencode` installs 4 transformed agent files (with `mode: subagent`, no `name` field).
-- Tests `codex`, `copilot` skip agent install (no agents dir created).
-- Assertions check frontmatter content, not just file existence.
-
----
-
-## 6. Critical Consistency Check: Transform vs Phase 3 Permission Config
-
-PASS. Phase 3 `composePermissionConfig` (opencode.ts:166-171):
-- doer: `{ edit: 'allow', write: 'allow', bash: 'allow' }`
-- reviewer: `{ edit: 'deny', write: 'allow', bash: 'allow' }`
-
-Phase 4 transformed agent permissions:
-- doer.md: `edit: allow, write: allow, bash: allow`
-- reviewer.md: `edit: deny, write: allow, bash: allow`
-- plan-reviewer.md: `edit: deny, write: allow, bash: allow`
-
-CONSISTENT. The `write: allow` for reviewer matches the fix applied in 1c24108. No mismatch detected.
-
----
-
-## 7. File Hygiene
-
-PASS. `git diff --stat 1c24108..HEAD` shows exactly 6 files changed:
-
-- `src/cli/agent-transform.ts` (new) -- transform logic
-- `src/cli/config.ts` -- agentsDir addition
-- `src/cli/install.ts` -- agent install step
-- `tests/agent-transform.test.ts` (new) -- transform tests
-- `tests/install-multi-provider.test.ts` -- agent install tests
-- `tests/install.test.ts` -- step numbering fix
-
-No stray artifacts, no config files, no unrelated changes. Clean diff.
-
----
-
-## Summary
-
-All 7 VERIFY 4 criteria pass. The agent installation system is correctly implemented with install-time transform for OpenCode, raw copy for Claude/Gemini/AGY, and silent skip for Codex/Copilot. The transform output is consistent with Phase 3's permission composition. Test coverage is thorough with content-level assertions. File hygiene is clean.
-
-**Verdict: APPROVED**
+**APPROVED** -- Phase 5 is complete. All VERIFY 5 criteria met. Ready for Phase 6.
