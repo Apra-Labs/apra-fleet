@@ -42,11 +42,12 @@ export class OpenCodeProvider implements ProviderAdapter {
     return {
       cheap: 'ollama/qwen3-coder:30b',
       standard: 'ollama/qwen3-coder:30b',
-      premium: 'ollama/qwen3-coder:30b',
+      premium: 'ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M',
     };
   }
 
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+    if (tier === 'premium') return 'ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M';
     if (tier === 'cheap') return 'ollama/qwen3-coder:30b';
     return 'ollama/qwen3-coder:30b';
   }

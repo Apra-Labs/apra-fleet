@@ -98,7 +98,7 @@ describe('resolveModelForTier', () => {
 
     expect(resolveModelForTier(agent, 'cheap', opencode)).toBe('ollama/qwen3-coder:30b');
     expect(resolveModelForTier(agent, 'standard', opencode)).toBe('ollama/qwen3-coder:30b');
-    expect(resolveModelForTier(agent, 'premium', opencode)).toBe('ollama/qwen3-coder:30b');
+    expect(resolveModelForTier(agent, 'premium', opencode)).toBe('ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M');
   });
 
   it('falls back to claude adapter modelForTier when modelTiers is undefined', () => {

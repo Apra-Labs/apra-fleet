@@ -68,13 +68,13 @@ describe('OpenCodeProvider core methods', () => {
     const tiers = p.modelTiers();
     expect(tiers.cheap).toBe('ollama/qwen3-coder:30b');
     expect(tiers.standard).toBe('ollama/qwen3-coder:30b');
-    expect(tiers.premium).toBe('ollama/qwen3-coder:30b');
+    expect(tiers.premium).toBe('ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M');
   });
 
   it('modelForTier returns correct model', () => {
     expect(p.modelForTier('cheap')).toBe('ollama/qwen3-coder:30b');
     expect(p.modelForTier('mid')).toBe('ollama/qwen3-coder:30b');
-    expect(p.modelForTier('premium')).toBe('ollama/qwen3-coder:30b');
+    expect(p.modelForTier('premium')).toBe('ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M');
   });
 
   it('modelFlag', () => {
