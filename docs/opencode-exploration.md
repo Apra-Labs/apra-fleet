@@ -315,7 +315,7 @@ adapter surface to OpenCode, with confidence markers.
 | supportsResume()/resumeFlag()| OpenCode sessions; headless resume mechanism   | [TBD]  |
 | supportsMaxTurns()        | unknown                                           | [TBD]  |
 | authEnvVar / credentialPath| local: none; remote endpoints: key sourcing      | [TBD]  |
-| instructionFileName       | AGENTS.md? (Codex uses AGENTS.md) - verify        | [TBD]  |
+| instructionFileName       | AGENTS.md (verified: opencode.ai/docs/rules/)     | [OK]   |
 | modelTiers()/modelForTier()| map cheap/standard/premium -> local model ids    | [OK-ish] |
 | classifyError()           | map OpenCode error strings -> auth/server/overloaded | [TBD] |
 
@@ -332,7 +332,7 @@ Cross-cutting:
 1. [OK] Headless trust/approval bypass = `--dangerously-skip-permissions` on `opencode run`.
 2. [OK] Structured output = `opencode run --format json` (raw JSON events).
 3. [OK] Session resume = `opencode run -c|--continue` or `-s|--session <id>` (+ `--fork`).
-4. [TBD] Where OpenCode reads project instructions (AGENTS.md vs opencode.md vs config).
+4. [OK] AGENTS.md (primary) at project root, with CLAUDE.md as fallback, plus `instructions` field in opencode.json. Ref: https://opencode.ai/docs/rules/
 5. [OK-partial] Per-tool permission config = agent frontmatter `permission:` map
    (edit/write/bash = allow|deny|ask), verified via the doer/reviewer install (section 6.1).
    Still TBD: full tool-name list + global vs per-agent precedence.

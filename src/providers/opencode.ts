@@ -9,7 +9,6 @@ export class OpenCodeProvider implements ProviderAdapter {
   readonly processName = 'opencode';
   readonly authEnvVar = '';
   readonly credentialPath = '~/.config/opencode/';
-  // TODO: verify OpenCode's real project-instruction filename; AGENTS.md is assumed (same as Codex)
   readonly instructionFileName = 'AGENTS.md';
 
   cliCommand(args: string): string {
