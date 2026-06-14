@@ -15,6 +15,7 @@ import {
   PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
+import { transformAgentForOpenCode } from './agent-transform.js';
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -710,7 +711,10 @@ Then re-run:  apra-fleet install`);
     fs.mkdirSync(agentsDestDir, { recursive: true });
     if (isSea()) {
       for (const [name, assetKey] of Object.entries(manifest.agents)) {
-        const content = extractAsset(assetKey);
+        let content = extractAsset(assetKey);
+        if (llm === 'opencode') {
+          content = transformAgentForOpenCode(content, name);
+        }
         writeAssetFile(path.join(agentsDestDir, name), content);
       }
     } else {
@@ -719,7 +723,10 @@ Then re-run:  apra-fleet install`);
       const agentsSrc = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
       for (const entry of fs.readdirSync(agentsSrc, { withFileTypes: true })) {
         if (entry.isDirectory()) continue;
-        const content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf-8');
+        let content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf-8');
+        if (llm === 'opencode') {
+          content = transformAgentForOpenCode(content, entry.name);
+        }
         writeAssetFile(path.join(agentsDestDir, entry.name), content);
       }
     }
