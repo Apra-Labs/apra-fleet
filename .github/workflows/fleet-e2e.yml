@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Test suite to run. s1.1/s1.2/s1.3 = local-only variants; s7.1/s7.2/s7.3 = all-Gemini.'
+        description: 'Test suite to run. s*.1/.2/.3 = co-located fleet members (local processes, still registered+paired via fleet); s7.x = all-Gemini; fleet-less local-subagent runs are in fleet-lite-e2e (s10).'
         required: true
         type: choice
         options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3, s8.1, s8.2, s8.3, s9, s9.1, s9.2, s9.3]
