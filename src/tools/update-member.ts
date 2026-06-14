@@ -42,7 +42,7 @@ export const updateMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name'),
   cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
   cloud_activity_command: z.string().optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy']).optional().describe('Change the LLM provider for this member.'),
+  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode']).optional().describe('Change the LLM provider for this member.'),
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Change custom cheap model'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Change custom standard model'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Change custom premium model'),

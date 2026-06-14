@@ -46,6 +46,7 @@ export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',
   agy: 'gemini-3.5-flash',
+  opencode: 'ollama/qwen3-coder:30b',
 };
 
 export interface ProviderInstallConfig {
@@ -96,6 +97,14 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
         fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
         name: 'Copilot',
+      };
+    case 'opencode':
+      return {
+        configDir: path.join(home, '.config', 'opencode'),
+        settingsFile: path.join(home, '.config', 'opencode', 'opencode.json'),
+        skillsDir: path.join(home, '.config', 'opencode', 'skills', 'pm'),
+        fleetSkillsDir: path.join(home, '.config', 'opencode', 'skills', 'fleet'),
+        name: 'OpenCode',
       };
     case 'claude':
     default:
