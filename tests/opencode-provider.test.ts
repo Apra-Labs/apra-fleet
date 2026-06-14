@@ -276,6 +276,12 @@ describe('OpenCodeProvider parseResponse', () => {
     expect(parsed.isError).toBe(true);
   });
 
+  it('handles step_finish with stop reason as non-error', () => {
+    const line = '{"type":"step_finish","sessionID":"ses_x","part":{"type":"step-finish","reason":"stop","tokens":{"total":100,"input":90,"output":10,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}';
+    const parsed = p.parseResponse(makeResult(line));
+    expect(parsed.isError).toBe(false);
+  });
+
   it('prefers last error message', () => {
     const lines = [
       '{"type":"error","timestamp":1,"sessionID":"ses_multi","error":{"name":"GenericError","data":{"message":"Unexpected server error"}}}',
@@ -284,5 +290,62 @@ describe('OpenCodeProvider parseResponse', () => {
     const parsed = p.parseResponse(makeResult(lines));
     expect(parsed.isError).toBe(true);
     expect(parsed.result).toContain('Model not found');
+  });
+});
+
+// -- T3.5: Permission and auth methods --
+
+describe('OpenCodeProvider permission and auth methods', () => {
+  it('permissionConfigPaths returns opencode settings path', () => {
+    expect(p.permissionConfigPaths()).toEqual(['.opencode/settings.json']);
+  });
+
+  it('composePermissionConfig doer allows edit, write, bash', () => {
+    const config = p.composePermissionConfig('doer');
+    expect(config).toHaveLength(1);
+    const perm = (config[0] as Record<string, unknown>).permission as Record<string, string>;
+    expect(perm.edit).toBe('allow');
+    expect(perm.write).toBe('allow');
+    expect(perm.bash).toBe('allow');
+  });
+
+  it('composePermissionConfig reviewer denies edit and write, allows bash', () => {
+    const config = p.composePermissionConfig('reviewer');
+    expect(config).toHaveLength(1);
+    const perm = (config[0] as Record<string, unknown>).permission as Record<string, string>;
+    expect(perm.edit).toBe('deny');
+    expect(perm.write).toBe('deny');
+    expect(perm.bash).toBe('allow');
+  });
+
+  it('supportsOAuthCopy returns false', () => {
+    expect(p.supportsOAuthCopy()).toBe(false);
+  });
+
+  it('supportsApiKey returns false', () => {
+    expect(p.supportsApiKey()).toBe(false);
+  });
+
+  it('oauthCredentialFiles returns null', () => {
+    expect(p.oauthCredentialFiles()).toBeNull();
+  });
+
+  it('oauthSettingsMerge returns null', () => {
+    expect(p.oauthSettingsMerge()).toBeNull();
+  });
+
+  it('oauthEnvVarsToUnset returns empty array', () => {
+    expect(p.oauthEnvVarsToUnset()).toEqual([]);
+  });
+
+  it('authEnvVarForToken returns empty string', () => {
+    expect(p.authEnvVarForToken('some-token')).toBe('');
+  });
+
+  it('wrapWindowsPrompt mirrors codex pattern', () => {
+    const result = p.wrapWindowsPrompt('$setup; ', 'opencode', '--args');
+    expect(result).toContain('FLEET_PID:$pid');
+    expect(result).toContain('opencode');
+    expect(result).toContain('--args');
   });
 });

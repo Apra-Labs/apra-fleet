@@ -164,12 +164,10 @@ export class OpenCodeProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(role: 'doer' | 'reviewer', _allow: string[] = []): Array<Record<string, unknown> | string> {
-    const permission: Record<string, string> = {
-      write: 'allow',
-      bash: 'allow',
-    };
-    permission.edit = role === 'doer' ? 'allow' : 'deny';
-    return [{ permission }];
+    if (role === 'doer') {
+      return [{ permission: { edit: 'allow', write: 'allow', bash: 'allow' } }];
+    }
+    return [{ permission: { edit: 'deny', write: 'deny', bash: 'allow' } }];
   }
 
   supportsOAuthCopy(): boolean {
