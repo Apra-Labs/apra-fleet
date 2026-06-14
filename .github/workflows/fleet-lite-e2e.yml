@@ -12,17 +12,20 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Fleet-less / local-subagent suite. s10.1 = Claude, s10.2 = OpenCode+Ollama.'
+        description: 'Fleet-less / local-subagent suite. s10.1 = Claude, s10.2 = OpenCode+Ollama, s10.3 = agy.'
         required: true
         type: choice
-        options: [s10.1, s10.2]
+        options: [s10.1, s10.2, s10.3]
+      runner:
+        description: 'Runner to target. Default "self-hosted" = any available self-hosted runner. Override with a specific label (e.g. fleet-linux, fleet-macos, fleet-windows, fleet-opencode) to pin.'
+        required: false
+        default: 'self-hosted'
+        type: string
 
 jobs:
   e2e:
     name: 'Fleet Lite E2E - ${{ inputs.suite }}'
-    runs-on:
-      - self-hosted
-      - ${{ inputs.suite == 's10.1' && 'fleet-linux' || 'fleet-opencode' }}
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
     env:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
@@ -40,6 +43,7 @@ jobs:
           case "${{ inputs.suite }}" in
             s10.1) P=claude ;;
             s10.2) P=opencode ;;
+            s10.3) P=agy ;;
             *) echo "::error::unknown suite ${{ inputs.suite }}"; exit 1 ;;
           esac
           echo "provider=$P" >> "$GITHUB_OUTPUT"
@@ -56,6 +60,28 @@ jobs:
             || curl -sf "$(echo "$ENDPOINT" | sed 's|/v1$||')/api/tags" > /dev/null 2>&1 \
             || { echo "::error::Ollama endpoint not reachable at $ENDPOINT"; exit 1; }
           echo "OpenCode CLI and Ollama endpoint verified"
+
+      - name: Locate agy CLI if provider is agy
+        if: steps.prov.outputs.provider == 'agy'
+        shell: bash
+        run: |
+          echo "Adding standard agy CLI installation paths to PATH..."
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            AGY_DIR="$LOCALAPPDATA/agy/bin"
+            [ -z "$LOCALAPPDATA" ] && AGY_DIR="$USERPROFILE/AppData/Local/agy/bin"
+            echo "$(cygpath -w "$AGY_DIR")" >> "$GITHUB_PATH"
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            echo "$HOME/.local/share/agy/bin" >> "$GITHUB_PATH"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            echo "$HOME/Library/Application Support/agy/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Verify agy CLI if provider is agy
+        if: steps.prov.outputs.provider == 'agy'
+        shell: bash
+        run: |
+          agy --version || { echo "::error::agy CLI not found; see https://github.com/anthropics/agy for install"; exit 1; }
+          echo "agy CLI verified"
 
       - name: Build and install fleet binary
         shell: bash
@@ -84,12 +110,16 @@ jobs:
             CFG="$HOME/.claude"
           elif [ "$P" = "opencode" ]; then
             CFG="$HOME/.config/opencode"
+          elif [ "$P" = "agy" ]; then
+            CFG="$HOME/.gemini/antigravity-cli"
           fi
           test -f "$CFG/skills/pm/SKILL.md" || { echo "::error::pm skill missing at $CFG/skills/pm/SKILL.md"; exit 1; }
           if [ "$P" = "claude" ]; then
             AGENTS_DIR="$HOME/.claude/agents"
           elif [ "$P" = "opencode" ]; then
             AGENTS_DIR="$HOME/.config/opencode/agents"
+          elif [ "$P" = "agy" ]; then
+            AGENTS_DIR="$HOME/.gemini/antigravity-cli/agents"
           fi
           for a in planner plan-reviewer doer reviewer; do
             test -f "$AGENTS_DIR/$a.md" || { echo "::error::agent $a missing at $AGENTS_DIR/$a.md"; exit 1; }
@@ -105,6 +135,8 @@ jobs:
             cmd=(claude -p "$PROMPT" --dangerously-skip-permissions)
           elif [ "$P" = "opencode" ]; then
             cmd=(opencode run "$PROMPT" --format json --dangerously-skip-permissions)
+          elif [ "$P" = "agy" ]; then
+            cmd=(agy -p "$PROMPT" --dangerously-skip-permissions)
           fi
           TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
           if [ -n "$TIMEOUT_BIN" ]; then
@@ -129,6 +161,9 @@ jobs:
           elif [ "$P" = "opencode" ]; then
             mkdir -p "$RUN_DIR/.config/opencode"
             echo '{"permissions":{"allow":["*"]}}' > "$RUN_DIR/.config/opencode/opencode.json"
+          elif [ "$P" = "agy" ]; then
+            mkdir -p "$RUN_DIR/.gemini/antigravity-cli"
+            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/antigravity-cli/settings.json"
           fi
           echo "Seeded $P PM permissions"
 

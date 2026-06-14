@@ -108,8 +108,8 @@ describe('suite config files', () => {
     for (const s of cfg.suites) {
       expect(s.id).toBeTruthy();
       expect(s.provider).toBeTruthy();
-      expect(s.os).toBeTruthy();
       expect(s.cli).toBeTruthy();
+      expect(s).not.toHaveProperty('os');
     }
   });
 

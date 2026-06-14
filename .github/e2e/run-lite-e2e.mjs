@@ -90,6 +90,10 @@ function main() {
   } else if (suite.provider === 'opencode') {
     cmd = 'opencode';
     args = ['run', prompt, '--format', 'json', '--dangerously-skip-permissions'];
+  } else if (suite.provider === 'agy') {
+    // agy on Windows may write transcript to CONOUT$ (stdout empty); Linux/macOS -p prints normally
+    cmd = 'agy';
+    args = ['-p', prompt, '--dangerously-skip-permissions', '--print-timeout', '45m', '--add-dir', repo];
   } else {
     console.error(`unsupported provider: ${suite.provider}`);
     process.exit(2);
