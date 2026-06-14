@@ -54,6 +54,7 @@ export interface ProviderInstallConfig {
   settingsFile: string;
   skillsDir: string;
   fleetSkillsDir: string;
+  agentsDir: string | undefined;
   name: string;
 }
 
@@ -72,6 +73,7 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         settingsFile: path.join(home, '.gemini', 'antigravity-cli', 'settings.json'),
         skillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'pm'),
         fleetSkillsDir: path.join(home, '.gemini', 'antigravity-cli', 'skills', 'fleet'),
+        agentsDir: path.join(home, '.gemini', 'antigravity-cli', 'agents'),
         name: 'Antigravity',
       };
     case 'gemini':
@@ -80,6 +82,7 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         settingsFile: path.join(home, '.gemini', 'settings.json'),
         skillsDir: path.join(home, '.gemini', 'skills', 'pm'),
         fleetSkillsDir: path.join(home, '.gemini', 'skills', 'fleet'),
+        agentsDir: path.join(home, '.gemini', 'agents'),
         name: 'Gemini',
       };
     case 'codex':
@@ -88,6 +91,7 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         settingsFile: path.join(home, '.codex', 'config.toml'),
         skillsDir: path.join(home, '.codex', 'skills', 'pm'),
         fleetSkillsDir: path.join(home, '.codex', 'skills', 'fleet'),
+        agentsDir: undefined,
         name: 'Codex',
       };
     case 'copilot':
@@ -96,6 +100,7 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         settingsFile: path.join(home, '.copilot', 'settings.json'),
         skillsDir: path.join(home, '.copilot', 'skills', 'pm'),
         fleetSkillsDir: path.join(home, '.copilot', 'skills', 'fleet'),
+        agentsDir: undefined,
         name: 'Copilot',
       };
     case 'opencode':
@@ -104,6 +109,7 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         settingsFile: path.join(home, '.config', 'opencode', 'opencode.json'),
         skillsDir: path.join(home, '.config', 'opencode', 'skills', 'pm'),
         fleetSkillsDir: path.join(home, '.config', 'opencode', 'skills', 'fleet'),
+        agentsDir: path.join(home, '.config', 'opencode', 'agents'),
         name: 'OpenCode',
       };
     case 'claude':
@@ -113,6 +119,7 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
         settingsFile: path.join(home, '.claude', 'settings.json'),
         skillsDir: path.join(home, '.claude', 'skills', 'pm'),
         fleetSkillsDir: path.join(home, '.claude', 'skills', 'fleet'),
+        agentsDir: path.join(home, '.claude', 'agents'),
         name: 'Claude',
       };
   }
