@@ -15,20 +15,19 @@
     {
       "id": "T1.3",
       "title": "Register 4 MCP tools in server",
-      "status": "completed",
-      "notes": "Added codeGraphSchema/codeImpactSchema/codeQuerySchema/codeContextSchema to code-intelligence.ts. Registered code_graph, code_impact, code_query, code_context in src/index.ts, each calling getProvider() and delegating to the provider method. npm run build passes."
+      "status": "pending"
     },
     {
       "id": "T1.4",
       "title": "Write unit tests for code intelligence abstraction",
-      "status": "completed",
-      "notes": "Created tests/code-intelligence.test.ts (per repo convention, tests live in tests/ not src/). 7 tests: 3 for getProvider() (fallback, config read, unknown provider error) + 4 for GitNexusProvider methods (graph/impact/query/context pass-through). All pass. 3 pre-existing unrelated failures in time-utils, gen-llms-full, backward-compat."
+      "status": "pending"
     },
     {
       "id": "VERIFY-1",
       "title": "Verify Phase 1",
       "type": "verify",
-      "status": "pending"
+      "status": "pending",
+      "notes": "Phase 1 CHANGES NEEDED fixes applied in debc4d8. Awaiting reviewer re-review."
     },
     {
       "id": "T2.1",
