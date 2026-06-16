@@ -529,8 +529,9 @@ Options:
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
-  let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  let totalSteps = (installFleet && installPm) ? 9 : installFleet ? 8 : installPm ? 9 : 7;
   if (installAgents) totalSteps++;
+  const beadsStep = totalSteps - 1;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -741,7 +742,7 @@ Then re-run:  apra-fleet install`);
   // --- Beads install step ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
-  console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
+  console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
   try {
     // Check if already installed
     try {
@@ -754,6 +755,39 @@ Then re-run:  apra-fleet install`);
   } catch (err) {
     // non-fatal: warn but don't fail the install
     console.warn('  ⚠ Beads install skipped — npm not available or install failed');
+  }
+
+  // --- Step 9: KB + code intelligence setup ---
+  // Only runs when the installer is invoked from inside a git repository.
+  console.log(`  [${totalSteps}/${totalSteps}] Setting up Knowledge Bank and code intelligence...`);
+  const repoCwd = process.cwd();
+  if (fs.existsSync(path.join(repoCwd, '.git'))) {
+    // Clean up prior installs: remove legacy gitnexus entry from .mcp.json if present
+    try {
+      const mcpJsonPath = path.join(repoCwd, '.mcp.json');
+      if (fs.existsSync(mcpJsonPath)) {
+        const existing = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+        if (existing.mcpServers?.gitnexus) {
+          delete existing.mcpServers.gitnexus;
+          fs.writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2));
+          console.log('    [OK] Removed legacy gitnexus entry from .mcp.json');
+        }
+      }
+    } catch (err) {
+      console.warn('    ⚠ .mcp.json cleanup skipped:', err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    console.log('    Skipped: not in a git repository. Run apra-fleet install from your project root to set up KB.');
+  }
+
+  // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
+  try {
+    const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
+    fs.mkdirSync(ciConfigDir, { recursive: true });
+    fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
+    console.log('    [OK] Code intelligence provider config written');
+  } catch (err) {
+    console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
