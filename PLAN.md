@@ -49,9 +49,25 @@
 - **Done when:** `tsc --noEmit` clean; all 4 tools appear in server tool list;
   calling `code_graph` with a valid symbol name returns a call graph
 
+#### Task 1.4: Write unit tests for code intelligence abstraction
+- **Change:** Add `src/tools/code-intelligence.test.ts` with tests for:
+  - `getProvider()` falls back to `gitnexus` when config file is absent
+  - `getProvider()` reads provider key from config.json
+  - `getProvider()` throws with a clear message when provider key is not in PROVIDERS map
+  - gitnexus provider: each method (graph, impact, query, context) passes params
+    through to the underlying call and returns the response unchanged -- mock the
+    MCP client call so this does not require a live gitnexus server
+  Follow the test file naming and assertion patterns already in the repo (check
+  existing `*.test.ts` files for style).
+- **Files:** `src/tools/code-intelligence.test.ts` (new)
+- **Tier:** standard
+- **Done when:** `npm test` passes; all 6+ assertions above are present and pass;
+  no tests are skipped or marked `.todo`
+- **Blockers:** none
+
 #### VERIFY: Phase 1
 - `npm run build` clean
-- `npm test` passes
+- `npm test` passes -- all new tests in code-intelligence.test.ts included
 - Call `code_graph("handleIPChange")` on a test repo -- confirm result matches
   what `call_graph("handleIPChange")` returns directly from gitnexus
 - Report: test results, any schema mismatches, any provider routing errors
