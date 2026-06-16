@@ -5,6 +5,7 @@ import { GeminiProvider } from './gemini.js';
 import { CodexProvider } from './codex.js';
 import { CopilotProvider } from './copilot.js';
 import { AgyProvider } from './agy.js';
+import { OpenCodeProvider } from './opencode.js';
 
 const providers: Record<LlmProvider, ProviderAdapter> = {
   claude: new ClaudeProvider(),
@@ -12,6 +13,7 @@ const providers: Record<LlmProvider, ProviderAdapter> = {
   codex: new CodexProvider(),
   copilot: new CopilotProvider(),
   agy: new AgyProvider(),
+  opencode: new OpenCodeProvider(),
 };
 
 export function getProvider(llmProvider?: LlmProvider | null): ProviderAdapter {
@@ -31,3 +33,4 @@ export { GeminiProvider } from './gemini.js';
 export { CodexProvider } from './codex.js';
 export { CopilotProvider } from './copilot.js';
 export { AgyProvider } from './agy.js';
+export { OpenCodeProvider } from './opencode.js';

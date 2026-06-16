@@ -125,7 +125,7 @@ describe('install step 8 — Beads task tracker', () => {
     _setManifestOverride(null);
   });
 
-  it('installs Beads when bd not found — step [8/8] appears in output', async () => {
+  it('installs Beads when bd not found — step appears in output', async () => {
     // First call: bd --version throws (not installed); second call: npm install succeeds
     vi.mocked(execFileSync)
       .mockImplementationOnce(() => { throw new Error('bd: command not found'); })
@@ -136,7 +136,7 @@ describe('install step 8 — Beads task tracker', () => {
     await runInstall([]);
 
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(logs).toContain('[8/8] Installing Beads task tracker...');
+    expect(logs).toContain('Installing Beads task tracker...');
 
     logSpy.mockRestore();
   });
@@ -150,7 +150,7 @@ describe('install step 8 — Beads task tracker', () => {
     await runInstall([]);
 
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(logs).toContain('[8/8] Installing Beads task tracker...');
+    expect(logs).toContain('Installing Beads task tracker...');
 
     // npm install -g @beads/bd should NOT have been called
     const npmCall = vi.mocked(execFileSync).mock.calls.find(

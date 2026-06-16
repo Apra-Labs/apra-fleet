@@ -8,7 +8,7 @@
 ### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
 
 Apra Fleet is an open-source **MCP server** that turns AI agents (Claude
-Code, Antigravity, Codex, Copilot, Gemini) into a coordinated team instead of a lone
+Code, Antigravity, Codex, Copilot, Gemini, OpenCode) into a coordinated team instead of a lone
 assistant. Any job that needs more than one agent -- software sprints,
 customer-support triage, cost and operations-efficiency analysis,
 infrastructure surveys -- becomes a fleet you direct in plain conversation.
@@ -51,10 +51,11 @@ You describe the goal, approve the plan once, and Fleet runs the doer-reviewer l
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet install              # Claude Code (default)
-apra-fleet install --llm agy    # Google Antigravity CLI
-apra-fleet install --llm gemini # Gemini CLI
-apra-fleet install --llm codex  # OpenAI Codex CLI
+apra-fleet install                  # Claude Code (default)
+apra-fleet install --llm agy       # Google Antigravity CLI
+apra-fleet install --llm gemini    # Gemini CLI
+apra-fleet install --llm codex     # OpenAI Codex CLI
+apra-fleet install --llm opencode  # OpenCode (local/self-hosted models)
 ```
 
 Run `install` once per provider you want to support. After install, load the
@@ -79,8 +80,8 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
 ```
 
-> Installing for **Antigravity**, Codex, Copilot, or Gemini instead of Claude? Add the
-> `--llm` flag -- see
+> Installing for **Antigravity**, Codex, Copilot, Gemini, or **OpenCode** instead of
+> Claude? Add the `--llm` flag -- see
 > [Install for other providers](docs/install.md#install-for-other-providers-antigravity-codex-copilot-gemini).
 
 Then load it in your favorite LLM CLI (claude, agy, gemini, ...) using `/mcp`.
@@ -233,7 +234,7 @@ review would wave through. Mix by role:
 | Role | Recommended | Why |
 |------|-------------|-----|
 | PM (orchestrator) | Claude Code or Antigravity (agy) | Both plan and orchestrate well - both support planning, background tasks, and premium models (e.g., Opus / premium-tier). |
-| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot, Gemini - mix freely. |
+| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot, Gemini, OpenCode - mix freely. |
 | Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
 
 A fleet that has run in production:
@@ -244,6 +245,17 @@ doer-1    Sonnet 4.6      feature work
 doer-2    Antigravity     large-context tasks
 reviewer  Opus 4.7        final review
 ```
+
+**OpenCode and local models.** OpenCode works with any OpenAI-compatible
+endpoint (Ollama, vLLM, etc.), so it is the provider for self-hosted models.
+The model endpoint is the user's responsibility -- Fleet installs the CLI and
+agents but does not provision or manage the inference server. Configure the
+provider and base URL in `opencode.json`; see
+[docs/opencode-exploration.md](docs/opencode-exploration.md) for details.
+
+Because OpenCode members can run any model, model tiers (cheap / standard /
+premium) are set per member at registration via `model_tiers` in
+`register_member`. A single-model entry fills all three tiers.
 
 Provider strengths, role recommendations, and gotchas:
 [docs/provider-guide.md](docs/provider-guide.md).

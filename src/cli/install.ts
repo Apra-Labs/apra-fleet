@@ -15,6 +15,7 @@ import {
   PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
+import { transformAgentForOpenCode } from './agent-transform.js';
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -76,6 +77,7 @@ interface AssetManifest {
   scripts: Record<string, string>;
   skills: Record<string, string>;
   fleetSkills: Record<string, string>;
+  agents: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -120,10 +122,21 @@ function buildDevManifest(root: string): AssetManifest {
     if (entry.endsWith('.mjs')) continue; // skip build scripts
     scripts[entry] = `scripts/${entry}`;
   }
-  const skills = collectFilesRec(path.join(root, 'skills', 'pm'), 'skills/pm');
+
+  // Source PM skills and agents from vendor/apra-pm submodule (dev mode),
+  // fall back to dist/ for npm global installs where submodule is absent.
+  const vendorPmSkills = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
+  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
+  const pmSkillsDir = fs.existsSync(vendorPmSkills) ? vendorPmSkills : path.join(root, 'dist', 'skills', 'pm');
+  const agentsDir = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
+  const pmBase = fs.existsSync(vendorPmSkills) ? 'vendor/apra-pm/skills/pm' : 'dist/skills/pm';
+  const agentsBase = fs.existsSync(vendorAgents) ? 'vendor/apra-pm/agents' : 'dist/agents';
+
+  const skills = collectFilesRec(pmSkillsDir, pmBase, pmBase);
+  const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
   const fleetSkills = collectFilesRec(path.join(root, 'skills', 'fleet'), 'skills/fleet');
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills, fleetSkills };
+  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents };
 }
 
 let _manifestOverride: AssetManifest | null = null;
@@ -257,6 +270,9 @@ export function buildRequiredPerms(paths: ProviderInstallConfig): string[] {
     `Read(${paths.fleetSkillsDir.replace(/\\/g, '/')}/**)`,
     `Read(${path.join(paths.configDir, 'skills').replace(/\\/g, '/')}/**)`,
   ];
+  if (paths.agentsDir) {
+    perms.push(`Read(${paths.agentsDir.replace(/\\/g, '/')}/**)`);
+  }
   if (paths.name !== 'Claude') {
     perms.push('tracker_*');
   }
@@ -334,6 +350,17 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void 
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = mcpConfig;
 
+  writeConfig(paths, settings);
+}
+
+function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
+  const settings = readConfig(paths);
+  settings.mcp = settings.mcp || {};
+  settings.mcp['apra-fleet'] = {
+    type: 'local',
+    command: [mcpConfig.command, ...(mcpConfig.args || [])],
+    enabled: true,
+  };
   writeConfig(paths, settings);
 }
 
@@ -420,11 +447,11 @@ Usage:
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --force           Stop a running server before installing
-  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
   apra-fleet install --help            Show this help
 
 Options:
-  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy.
+  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy, opencode.
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
                           dispatch — Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
@@ -447,7 +474,7 @@ Options:
     }
   }
 
-  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy'];
+  const supported: LlmProvider[] = ['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode'];
   if (!supported.includes(llm)) {
     console.error(`Error: Unsupported LLM provider "${llm}". Supported: ${supported.join(', ')}`);
     process.exit(1);
@@ -501,7 +528,9 @@ Options:
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
-  const totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  const installAgents = installPm && paths.agentsDir !== undefined;
+  let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
+  if (installAgents) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -575,17 +604,19 @@ ${killHint}
 
   // --- Step 4: Configure hooks + statusline in settings.json ---
   console.log(`  [4/${totalSteps}] Configuring ${paths.name} settings...`);
-  const installedHooksConfig = JSON.parse(
-    fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
-  );
-  mergeHooksConfig(paths, installedHooksConfig, llm);
+  // OpenCode has a strict config schema -- hooks/statusLine/defaultModel are not valid keys
+  if (llm !== 'opencode') {
+    const installedHooksConfig = JSON.parse(
+      fs.readFileSync(path.join(HOOKS_DIR, 'hooks-config.json'), 'utf-8')
+    );
+    mergeHooksConfig(paths, installedHooksConfig, llm);
 
-  const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
-  configureStatusline(paths, statuslineScript);
+    const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
+    configureStatusline(paths, statuslineScript);
 
-  // Write defaultModel to provider settings so native CLI invocations default to standard tier
-  const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
-  writeDefaultModel(paths, standardModel);
+    const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
+    writeDefaultModel(paths, standardModel);
+  }
 
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
@@ -617,6 +648,8 @@ ${killHint}
     mergeCopilotConfig(paths, mcpConfig);
   } else if (llm === 'agy') {
     mergeAgyConfig(paths, mcpConfig);
+  } else if (llm === 'opencode') {
+    mergeOpenCodeConfig(paths, mcpConfig);
   }
 
   // --- Step 6: Install fleet skill (optional) ---
@@ -640,6 +673,20 @@ ${killHint}
   }
 
   // --- Step 7: Install PM skill (optional) ---
+  // Empty-submodule guard: vendor/apra-pm dir exists but was not initialized
+  if (installPm && !isSea()) {
+    const root = findProjectRoot();
+    const vendorDir = path.join(root, 'vendor', 'apra-pm');
+    if (fs.existsSync(vendorDir)) {
+      const skillMarker = path.join(vendorDir, 'skills', 'pm', 'SKILL.md');
+      if (!fs.existsSync(skillMarker)) {
+        console.error(`Error: vendor/apra-pm exists but appears empty (non-recursive clone).
+Run:  git submodule update --init --recursive
+Then re-run:  apra-fleet install`);
+        process.exit(1);
+      }
+    }
+  }
   if (installPm) {
     console.log(`  [7/${totalSteps}] Installing PM skill...`);
     clearDirSync(paths.skillsDir);
@@ -650,8 +697,10 @@ ${killHint}
         writeAssetFile(path.join(paths.skillsDir, name), content);
       }
     } else {
-      // Dev mode: copy from project skills/pm/
-      const pmSrc = path.join(findProjectRoot(), 'skills', 'pm');
+      // Dev/npm mode: prefer vendor/apra-pm submodule, fall back to dist/
+      const root = findProjectRoot();
+      const vendorPm = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
+      const pmSrc = fs.existsSync(vendorPm) ? vendorPm : path.join(root, 'dist', 'skills', 'pm');
       copyDirSync(pmSrc, paths.skillsDir);
     }
   }
@@ -660,7 +709,36 @@ ${killHint}
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
-  // --- Step 8: Install Beads task tracker ---
+  // --- Agent install step (only when agentsDir is defined and PM is installed) ---
+  if (installAgents) {
+    const agentStep = (installFleet && installPm) ? 8 : installPm ? 8 : 7;
+    console.log(`  [${agentStep}/${totalSteps}] Installing PM agents...`);
+    const agentsDestDir = paths.agentsDir!;
+    fs.mkdirSync(agentsDestDir, { recursive: true });
+    if (isSea()) {
+      for (const [name, assetKey] of Object.entries(manifest.agents)) {
+        let content = extractAsset(assetKey);
+        if (llm === 'opencode') {
+          content = transformAgentForOpenCode(content, name);
+        }
+        writeAssetFile(path.join(agentsDestDir, name), content);
+      }
+    } else {
+      const root = findProjectRoot();
+      const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
+      const agentsSrc = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
+      for (const entry of fs.readdirSync(agentsSrc, { withFileTypes: true })) {
+        if (entry.isDirectory()) continue;
+        let content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf-8');
+        if (llm === 'opencode') {
+          content = transformAgentForOpenCode(content, entry.name);
+        }
+        writeAssetFile(path.join(agentsDestDir, entry.name), content);
+      }
+    }
+  }
+
+  // --- Beads install step ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
   console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
@@ -678,8 +756,11 @@ ${killHint}
     console.warn('  ⚠ Beads install skipped — npm not available or install failed');
   }
 
-  // Finalize permissions
-  mergePermissions(paths);
+  // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
+  // a top-level "permissions" key is invalid in opencode.json
+  if (llm !== 'opencode') {
+    mergePermissions(paths);
+  }
 
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode);
@@ -701,7 +782,7 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
-  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}
+  Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
   Beads:       ${beadsVersion}
 
 ${instructions}${forceNote}

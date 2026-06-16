@@ -1,0 +1,14 @@
+{
+  "_comment": "s10 is a THIN install-path smoke that proves `apra-fleet install --llm opencode` yields a working fleet-less pm (local subagents, no fleet); comprehensive per-provider fleet-less coverage lives in the apra-pm submodule's own e2e (pm-e2e.yml: claude/gemini/agy/opencode).",
+  "toy": "https://github.com/Apra-Labs/fleet-e2e-toy",
+  "suites": [
+    {
+      "id": "s10",
+      "provider": "opencode",
+      "cli": "opencode",
+      "model": "ollama/qwen3-coder:30b",
+      "minCommits": 4,
+      "expectedIssues": 3
+    }
+  ]
+}

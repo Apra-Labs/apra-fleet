@@ -1,0 +1,3 @@
+[submodule "vendor/apra-pm"]
+	path = vendor/apra-pm
+	url = https://github.com/Apra-Labs/apra-pm.git

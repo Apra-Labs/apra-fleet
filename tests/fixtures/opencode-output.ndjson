@@ -1,0 +1,4 @@
+{"type":"step_start","sessionID":"ses_01jxb9kz7xfcr1jv79sxmj9b1e","part":{"type":"step-start"}}
+{"type":"text","sessionID":"ses_01jxb9kz7xfcr1jv79sxmj9b1e","part":{"type":"text","text":"hello","time":{"start":1749843100,"end":1749843101}}}
+{"type":"tool_use","sessionID":"ses_01jxb9kz7xfcr1jv79sxmj9b1e","part":{"type":"tool","tool":"write","callID":"call_nxvlfvg2","state":{"status":"completed","input":{"content":"hello","filePath":"/tmp/oc_json2/hi.txt"},"output":"Wrote file successfully.","metadata":{},"time":{"start":1749843102,"end":1749843103}}}}
+{"type":"step_finish","sessionID":"ses_01jxb9kz7xfcr1jv79sxmj9b1e","part":{"type":"step-finish","reason":"tool-calls","tokens":{"total":7167,"input":7165,"output":2,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}
