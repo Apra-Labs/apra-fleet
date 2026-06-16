@@ -1,205 +1,33 @@
-# code-intelligence abstraction -- Phase 1 Review
+## APPROVED
 
-**Reviewer:** claude-sonnet-4-6 (Reviewer Agent)
-**Date:** 2026-06-16
-**Branch:** feat/code-intelligence-abstraction
-**Commits reviewed:** c3f574b..5d033c8 (T1.1 through T1.4 + plan/requirements)
-**Verdict:** CHANGES NEEDED
+### T1.5 -- `repo` parameter added to fleet tool schemas (commit efb5c5a)
 
----
+File: `src/tools/code-intelligence.ts`
 
-## Build and Test Results
+All four schemas have `repo` as an optional string property:
+- `codeGraphSchema`: `repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.')`
+- `codeImpactSchema`: same pattern
+- `codeQuerySchema`: same pattern
+- `codeContextSchema`: same pattern
 
-- `npm run build`: PASSES CLEAN
-- `npm test`: 4 failures, NONE in Phase 1 code
-  - `tests/code-intelligence.test.ts`: 7/7 PASS [NEW]
-  - `tests/time-utils.test.ts`: 2 failures -- timezone-offset assertions, pre-existing, unrelated
-  - `tests/gen-llms-full.test.ts`: 2 failures -- doc count mismatch, pre-existing, unrelated
-  - `tests/backward-compat.test.ts`: suite-level failure -- submodule `vendor/apra-pm` not initialized, pre-existing, unrelated
+Checklist:
+- [OK] `repo` present in all four schemas (codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema)
+- [OK] NOT in `required` arrays -- uses `.optional()` throughout
+- [OK] Description mentions specifying repo when multiple are indexed
 
----
+### T2.4 -- routing instruction written to ~/.claude/CLAUDE.md on install (commit 08429e2)
 
-## Core Verification
+File: `src/cli/install.ts` (lines 793-806, inside Step 9)
 
-- `getProvider()` falls back to gitnexus when config absent: PASS (`catch {}` block defaults to 'gitnexus')
-- `getProvider()` throws clearly for unknown provider: PASS (error message includes provider key + install instruction)
-- 4 MCP tools registered in server: PASS (`code_graph`, `code_impact`, `code_query`, `code_context`)
-- Interface has all 4 methods: PASS (`graph`, `impact`, `query`, `context`)
-- Build clean: PASS
+Checklist:
+- [OK] Sentinel-guarded block appends routing instruction to ~/.claude/CLAUDE.md
+- [OK] Sentinel: <!-- apra-fleet:code-intelligence -->
+- [OK] Block is in a try/catch (non-fatal -- warns and continues on error)
+- [OK] Creates ~/.claude/ dir if missing: fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true })
+- [OK] Skips write if sentinel already present (idempotent): if (!existing.includes(sentinel))
+- [OK] Routing instruction text tells Claude to prefer code_graph/impact/query/context over grep/file reads
 
----
+### Build and test
 
-## Findings
-
-### [P1] codeImpactSchema parameter mismatch with gitnexus `impact` tool
-
-**File:** `src/tools/code-intelligence.ts:27-30`
-
-```typescript
-export const codeImpactSchema = z.object({
-  file_path: z.string().describe('File path to analyze for transitive change impact'),
-});
-```
-
-The actual `gitnexus impact` tool schema (verified via MCP inspection) requires:
-- `target` (required): name of function, class, or file to analyze
-- `direction` (required): "upstream" or "downstream"
-- `file_path` (optional): disambiguation hint only
-
-Calling `code_impact({file_path: "src/index.ts"})` will fail at runtime because `target` and
-`direction` are missing. The schema needs to be:
-
-```typescript
-export const codeImpactSchema = z.object({
-  target: z.string().describe('Function, class, or method name to analyze blast radius for'),
-  direction: z.enum(['upstream', 'downstream']).describe('upstream = what depends on this; downstream = what this depends on'),
-  file_path: z.string().optional().describe('File path hint to disambiguate common names'),
-});
-```
-
-**Doer:** fixed in commit debc4d8 - replaced file_path-only schema with target (required) + direction (required, enum upstream/downstream) + file_path (optional); updated tool description to "Find what is affected by changes to a symbol"
-
----
-
-### [P1] codeContextSchema parameter mismatch with gitnexus `context` tool
-
-**File:** `src/tools/code-intelligence.ts:34-37`
-
-```typescript
-export const codeContextSchema = z.object({
-  file_path: z.string().describe('File path to retrieve semantic context (imports, exports, types) for'),
-});
-```
-
-The actual `gitnexus context` tool (verified via MCP inspection) is a symbol lookup, not a file lookup.
-Primary parameter is `name` (symbol name, e.g. "validateUser", "AuthService"). `file_path` is only an
-optional disambiguation hint. Calling `code_context({file_path: "..."})` without a `name` returns no
-useful symbol context. The description also misrepresents what context does (it returns callers, callees,
-and execution flow participation for a symbol, not file imports/exports).
-
-Fix:
-
-```typescript
-export const codeContextSchema = z.object({
-  name: z.string().describe('Symbol name (function, class, or method) to get full context for'),
-  file_path: z.string().optional().describe('File path to disambiguate when multiple symbols share the name'),
-});
-```
-
-**Doer:** fixed in commit debc4d8 - replaced file_path schema with name (required); updated tool description to "Get callers, callees, and execution flows for a symbol"
-
----
-
-### [P2] JSON.stringify wraps the MCP CallToolResult envelope
-
-**File:** `src/index.ts:272,277,282,287`
-
-```typescript
-return JSON.stringify(await provider.graph(input));
-```
-
-`client.callTool()` returns a `CallToolResult` object:
-`{ content: [{ type: 'text', text: '...' }], isError?: boolean }`.
-
-`JSON.stringify` converts this to `{"content":[{"type":"text","text":"actual data"}]}` before the
-LLM sees it. The requirement says "Returns the backend's response unchanged." The LLM now has to
-unwrap an internal MCP envelope to read the data, which is both inconsistent with other fleet tools
-and creates unnecessary parsing burden.
-
-Fix: extract content text before returning:
-```typescript
-const raw = await provider.graph(input) as { content: Array<{type: string; text?: string}> };
-return raw.content.map(c => c.type === 'text' ? c.text ?? '' : '').join('\n');
-```
-Or, if the existing `wrapTool` pipeline already handles `CallToolResult` objects, remove
-`JSON.stringify` and return the raw result.
-
----
-
-### [P2] AGENTS.md adds direct gitnexus tool references -- counter to sprint goal
-
-**File:** `AGENTS.md`, commit `c3f574b`
-
-The plan commit adds a `<!-- gitnexus:start -->` block to AGENTS.md that explicitly names
-`call_graph`, `impact`, `query`, and `context` as the tools to use. This is the exact pattern
-this sprint is trying to eliminate. Adding direct gitnexus references to AGENTS.md in the same
-branch that abstracts them away creates a contradiction and will confuse future doers.
-
-The block belongs to a separate "gitnexus onboarding" concern (auto-generated by gitnexus tooling).
-Either remove it from this PR or replace it with fleet tool names (`code_graph`, `code_impact`,
-`code_query`, `code_context`).
-
-**Doer:** fixed in commit debc4d8 - removed gitnexus:start block entirely; replaced with a "Code Intelligence" section naming fleet tools code_graph, code_impact, code_query, code_context
-
----
-
-### [P2] llms-full.txt loses 247 lines of PM skill content -- unrelated to sprint
-
-**File:** `llms-full.txt`, commit `c3f574b`
-
-The plan commit removes 247 lines of PM skill documentation from `llms-full.txt`. This is leftover
-from the PM submodule migration (prior sprint). It has no relation to code-intelligence abstraction
-and should not be in this branch. If the removal is intentional, it should be a separate commit on
-a separate branch with a clear rationale.
-
-**Doer:** fixed in commit debc4d8 - restored llms-full.txt via git checkout main; pre-commit hook regenerated from source, preserving only sprint-relevant content
-
----
-
-### [P3] Connection failure permanently disables code intelligence (no retry)
-
-**File:** `src/tools/code-intelligence-gitnexus.ts:8-9`
-
-```typescript
-let sharedClient: Client | null = null;
-let connectionPromise: Promise<Client> | null = null;
-```
-
-If `client.connect(transport)` throws (gitnexus not installed, `npx` fails, etc.),
-`connectionPromise` is set to a rejected `Promise`. All subsequent calls return the same rejected
-promise -- the connection is never retried. A transient startup failure permanently disables the
-provider for the server session lifetime.
-
-Not blocking Phase 1, but should be addressed before Phase 2 ships. Fix: reset `connectionPromise`
-to null in the catch path so the next call retries.
-
----
-
-## Plan Completion Audit
-
-| Task | Status | Evidence |
-|------|--------|---------|
-| T1.1 -- CodeIntelligenceProvider interface | DONE | `src/tools/code-intelligence.ts` created, interface correct, tsc clean |
-| T1.2 -- GitNexusProvider implementation | DONE | `src/tools/code-intelligence-gitnexus.ts` created, methods delegate correctly |
-| T1.3 -- Register 4 MCP tools | DONE | All 4 tools registered in `src/index.ts` |
-| T1.4 -- Unit tests | DONE | `tests/code-intelligence.test.ts`, 7/7 pass |
-| c3f574b plan commit | PARTIAL | AGENTS.md and llms-full.txt changes are not in scope (see P2 findings above) |
-
----
-
-## File Hygiene
-
-Files added/changed in Phase 1 commits:
-
-| File | Justified? |
-|------|------------|
-| `src/tools/code-intelligence.ts` | YES -- T1.1 |
-| `src/tools/code-intelligence-gitnexus.ts` | YES -- T1.2 |
-| `src/index.ts` | YES -- T1.3 |
-| `tests/code-intelligence.test.ts` | YES -- T1.4 |
-| `PLAN.md` | YES -- sprint plan |
-| `requirements.md` | YES -- sprint requirements |
-| `progress.json` | YES -- sprint tracking |
-| `AGENTS.md` | NO -- adds direct gitnexus tool refs, counter to sprint goal |
-| `llms-full.txt` | NO -- unrelated PM content removal from prior sprint |
-
----
-
-## Required Changes to APPROVE
-
-1. Fix `codeImpactSchema` -- add `target` (required) and `direction` (required); make `file_path` optional
-2. Fix `codeContextSchema` -- add `name` (required) for symbol lookup; make `file_path` optional
-3. Address AGENTS.md: remove the `<!-- gitnexus:start -->` block or replace tool names with fleet names
-4. Revert llms-full.txt: remove the unrelated PM content deletion from this branch
-
-Items 1 and 2 are P1 (runtime failures). Items 3 and 4 are P2 (hygiene). All four required before merge.
+- npm run build: PASS (no errors)
+- npm test: 2 failures in tests/time-utils.test.ts -- confirmed pre-existing at commit 584862b (Phase 2 approved state), not introduced by T1.5 or T2.4
