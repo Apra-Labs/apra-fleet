@@ -38,8 +38,8 @@ describe('gen-llms-full: link parser', () => {
   const llmsTxt = readFileSync(join(root, 'llms.txt'), 'utf-8');
   const docs = parseLocalLinks(llmsTxt);
 
-  it('extracts exactly 17 local docs from llms.txt', () => {
-    expect(docs).toHaveLength(17);
+  it('extracts exactly 16 local docs from llms.txt', () => {
+    expect(docs).toHaveLength(16);
   });
 
   it('skips http/https external links', () => {
@@ -67,7 +67,6 @@ describe('gen-llms-full: link parser', () => {
       'docs/provider-guide.md',
       'docs/cloud-compute.md',
       'docs/writing-skills.md',
-      'skills/pm/SKILL.md',
       'docs/beads.md',
       'docs/FAQ.md',
       'docs/troubleshooting.md',

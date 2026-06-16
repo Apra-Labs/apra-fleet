@@ -171,7 +171,7 @@ Usage:
   apra-fleet uninstall --help            Show this help
 
 Options:
-  --llm <provider>   Specific provider to clean up: claude, gemini, codex, copilot, agy.
+  --llm <provider>   Specific provider to clean up: claude, gemini, codex, copilot, agy, opencode.
   --skill <mode>     Skills to remove: fleet, pm, or all (default).
   --dry-run          Preview the uninstall process without modifying anything.
   --force            Automatically stop the running server before uninstalling.

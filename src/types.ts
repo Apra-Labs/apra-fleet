@@ -1,7 +1,7 @@
 export type { CloudConfig } from './services/cloud/types.js';
 import type { CloudConfig } from './services/cloud/types.js';
 
-export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy';
+export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy' | 'opencode';
 
 export interface Agent {
   id: string;
@@ -33,6 +33,7 @@ export interface Agent {
   tokenUsage?: { input: number; output: number };
   unattended?: false | 'auto' | 'dangerous';
   lastLlmActivityAt?: string;  // ISO 8601
+  modelTiers?: { cheap?: string; standard?: string; premium?: string };
 }
 
 export interface GitHubAppConfig {

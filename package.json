@@ -44,7 +44,7 @@
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
     "prepare": "node scripts/install-hooks.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "node scripts/vendor-pm.mjs && npm run build"
   },
   "keywords": [
     "ai-agent",

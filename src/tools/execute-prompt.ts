@@ -89,6 +89,15 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   }
 }
 
+export function resolveModelForTier(agent: Agent, tier: string, provider: ProviderAdapter): string {
+  const memberTiers = agent.modelTiers;
+  if (memberTiers) {
+    const t = tier as keyof typeof memberTiers;
+    return memberTiers[t] ?? memberTiers.standard ?? memberTiers.cheap ?? Object.values(memberTiers).filter(Boolean)[0] as string;
+  }
+  return provider.modelForTier(tier as 'cheap' | 'mid' | 'premium');
+}
+
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
 export const inFlightAgents = new Set<string>();
@@ -161,13 +170,19 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let resolvedTier: 'cheap' | 'standard' | 'premium' | undefined;
   if (resolvedModel === 'cheap') {
     resolvedTier = 'cheap';
-    resolvedModel = agent.modelCheap || getModelOverride(provider.name, 'cheap') || tiers.cheap;
+    resolvedModel = agent.modelTiers
+      ? resolveModelForTier(agent, 'cheap', provider)
+      : agent.modelCheap || getModelOverride(provider.name, 'cheap') || tiers.cheap;
   } else if (resolvedModel === 'standard') {
     resolvedTier = 'standard';
-    resolvedModel = agent.modelStandard || getModelOverride(provider.name, 'standard') || tiers.standard;
+    resolvedModel = agent.modelTiers
+      ? resolveModelForTier(agent, 'standard', provider)
+      : agent.modelStandard || getModelOverride(provider.name, 'standard') || tiers.standard;
   } else if (resolvedModel === 'premium') {
     resolvedTier = 'premium';
-    resolvedModel = agent.modelPremium || getModelOverride(provider.name, 'premium') || tiers.premium;
+    resolvedModel = agent.modelTiers
+      ? resolveModelForTier(agent, 'premium', provider)
+      : agent.modelPremium || getModelOverride(provider.name, 'premium') || tiers.premium;
   } else {
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }

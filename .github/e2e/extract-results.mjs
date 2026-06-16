@@ -66,6 +66,26 @@ function processRawFile(filePath, provider) {
     };
   }
 
+  if (provider === 'opencode') {
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let obj;
+      try { obj = JSON.parse(trimmed); } catch { continue; }
+      if (obj.type === 'text' && obj.part?.text) {
+        assistantText += '\n' + obj.part.text;
+      }
+      if (obj.type === 'step_finish' && obj.part?.tokens) {
+        const t = obj.part.tokens;
+        tokensIn += (t.input ?? 0);
+        tokensOut += (t.output ?? 0);
+        cacheCreate += (t.cache?.write ?? 0);
+        cacheRead += (t.cache?.read ?? 0);
+      }
+    }
+    return { assistantText, tokensIn, tokensOut, cacheCreate, cacheRead };
+  }
+
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
