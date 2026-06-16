@@ -790,6 +790,21 @@ Then re-run:  apra-fleet install`);
     console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
   }
 
+  // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
+  try {
+    const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+    const sentinel = '<!-- apra-fleet:code-intelligence -->';
+    const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
+    const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
+    if (!existing.includes(sentinel)) {
+      fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
+      fs.appendFileSync(claudeMdPath, block);
+      console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
+    }
+  } catch (err) {
+    console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+  }
+
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
   // a top-level "permissions" key is invalid in opencode.json
   if (llm !== 'opencode') {

@@ -27,8 +27,7 @@
     {
       "id": "T1.5",
       "title": "Add repo parameter to all 4 fleet tool schemas",
-      "status": "completed",
-      "notes": "Added optional repo: z.string().optional() to codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema in src/tools/code-intelligence.ts. Build clean, 7/7 code-intelligence tests pass."
+      "status": "pending"
     },
     {
       "id": "VERIFY-1",
@@ -56,8 +55,20 @@
       "notes": "skills/fleet/knowledge-agent.md created with KB Prime/Capture/Harvest workflow using fleet tool names only. 1751 bytes, no gitnexus-specific names."
     },
     {
+      "id": "T2.4",
+      "title": "Write code intelligence routing instruction to ~/.claude/CLAUDE.md on install",
+      "status": "completed",
+      "notes": "Added try/catch block in install.ts Step 9 after config.json write. Appends sentinel-guarded block to ~/.claude/CLAUDE.md instructing use of code_graph/code_impact/code_query/code_context tools. Idempotent via sentinel check. Build clean, 2 pre-existing time-utils failures only."
+    },
+    {
       "id": "VERIFY-2",
       "title": "Verify Phase 2",
+      "type": "verify",
+      "status": "pending"
+    },
+    {
+      "id": "VERIFY-2-OLD",
+      "title": "Verify Phase 2 (first pass -- approved before T2.4)",
       "type": "verify",
       "status": "completed",
       "notes": "APPROVED by ApraFleetRev. All T2 items verified: Step 9 present, templates clean, knowledge-agent.md committed. Build clean, same 3 pre-existing test failures as Phase 1."
