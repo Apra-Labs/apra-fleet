@@ -1941,20 +1941,6 @@ Fixed rules:
   planner only assigns doer-task models.)
 - A user override always wins.
 
-## EXPERIMENT: model override (exp/s1-haiku-doer-sonnet-reviewer)
-
-This branch overrides the model selection rules above for all sprint paths:
-
-- PLANNER: assign `haiku` as the `model` for EVERY work (doer) task in PLAN.md,
-  regardless of task complexity. Do NOT use complexity-matched tiers.
-- ORCHESTRATOR dispatching doer: always use `haiku`, regardless of what PLAN.md says.
-- ORCHESTRATOR dispatching reviewer or plan-reviewer: always use `sonnet`.
-  This OVERRIDES the "always strongest model" rule above.
-- PLANNER's own dispatch model: unchanged (default).
-
-These overrides apply whether the full sprint (sprint.md) or simple sprint
-(simple-sprint.md) path is used.
-
 ## Sprint selection
 
 Before starting, choose the shape that fits:
