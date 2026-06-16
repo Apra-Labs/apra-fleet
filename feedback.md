@@ -1,134 +1,197 @@
-# opencode model_tiers validation -- Code Review
+# code-intelligence abstraction -- Phase 1 Review
 
 **Reviewer:** claude-sonnet-4-6 (Reviewer Agent)
-**Date:** 2026-06-16 00:10:00+00:00
-**Verdict:** APPROVED
-
-> See the recent git history of this file to understand the context of this review.
-> Prior review (commit 317d196) found three blockers: (1) uncommitted files, (2) wrong base branch
-> (worktree was not rebased onto feat/opencode-pm-epic), and (3) build failure from missing enum
-> value and undefined variable. All three are resolved in commit 31f89bc.
+**Date:** 2026-06-16
+**Branch:** feat/code-intelligence-abstraction
+**Commits reviewed:** c3f574b..5d033c8 (T1.1 through T1.4 + plan/requirements)
+**Verdict:** CHANGES NEEDED
 
 ---
 
-## Working Tree State -- PASS
+## Build and Test Results
 
-`git status --porcelain` is clean. The submodule `vendor/apra-pm` was not initialized in the
-worktree (shows as `-a32ad43` in `git submodule status`), which caused `backward-compat.test.ts`
-and `gen-llms-full.test.ts` to fail on first run. After `git submodule update --init vendor/apra-pm`
-all 92 test files pass. This is a worktree environment setup issue, not a code defect -- the
-committed submodule pointer is correct (a32ad43, matching the epic branch pin at f9b194b).
-
----
-
-## Base Branch Alignment -- PASS
-
-The single implementation commit (31f89bc) sits cleanly on top of `feat/opencode-pm-epic`. The
-diff against the base branch contains exactly five files: `feedback.md`, `src/tools/register-member.ts`,
-`src/tools/update-member.ts`, `src/utils/opencode-model-validation.ts`, and
-`tests/opencode-model-validation.test.ts`. The previous issue of the diff re-adding already-present
-model_tiers schema is gone -- the diff in `update-member.ts` now adds only the import and the
-validation block (13 lines total).
+- `npm run build`: PASSES CLEAN
+- `npm test`: 4 failures, NONE in Phase 1 code
+  - `tests/code-intelligence.test.ts`: 7/7 PASS [NEW]
+  - `tests/time-utils.test.ts`: 2 failures -- timezone-offset assertions, pre-existing, unrelated
+  - `tests/gen-llms-full.test.ts`: 2 failures -- doc count mismatch, pre-existing, unrelated
+  - `tests/backward-compat.test.ts`: suite-level failure -- submodule `vendor/apra-pm` not initialized, pre-existing, unrelated
 
 ---
 
-## Build -- PASS
+## Core Verification
 
-`npm run build` (tsc) exits clean with zero errors. The TypeScript errors from the prior review
-(enum overlap, undefined `normalizedModelTiers`) are fully resolved because the base now includes
-`'opencode'` in the `llm_provider` enum and defines `normalizedModelTiers` at the correct scope.
-
----
-
-## Tests -- PASS
-
-Full suite: 92 test files pass, 1 skipped (pre-existing `gen-llms-full.test.ts` skip), 0 failures
-(after submodule init). The new `tests/opencode-model-validation.test.ts` has exactly 6 tests,
-all passing:
-
-1. All models valid -> no warnings
-2. One invalid model -> warning with invalid model listed, available list present, `update_member` hint
-3. All models invalid -> warning with full list of three bad models
-4. Non-zero exit from `opencode models` -> silent skip (no warnings)
-5. `execCommand` throws -> silent skip (no warnings)
-6. Empty model_tiers (all undefined) -> no warnings
-
-Test quality is good: mock is scoped per-test via `vi.clearAllMocks()` in `beforeEach`, the
-`SSHExecResult` type is imported for correct typing of the mock, and the assertions cover both
-the warning count and the content of the warning string.
+- `getProvider()` falls back to gitnexus when config absent: PASS (`catch {}` block defaults to 'gitnexus')
+- `getProvider()` throws clearly for unknown provider: PASS (error message includes provider key + install instruction)
+- 4 MCP tools registered in server: PASS (`code_graph`, `code_impact`, `code_query`, `code_context`)
+- Interface has all 4 methods: PASS (`graph`, `impact`, `query`, `context`)
+- Build clean: PASS
 
 ---
 
-## Implementation Correctness -- PASS
+## Findings
 
-**Utility (`src/utils/opencode-model-validation.ts`):**
-- `getStrategy(agent)` is called correctly and re-uses the existing strategy abstraction.
-- `opencode models 2>&1` with a 15-second timeout is appropriate; stderr is merged into stdout so
-  any provider errors appear in stdout rather than a separate stderr channel.
-- Silent-skip on non-zero exit or empty stdout is correct per spec (opencode may not be installed yet).
-- Line parsing strips whitespace and skips `#`-prefixed comment lines. This is a reasonable
-  heuristic; any non-model text in stdout would only cause false negatives (a user model matching
-  an error string is essentially impossible).
-- Warning message names the invalid tier+model pairs and lists all available models, with a
-  `update_member` hint. Actionable and clear.
+### [P1] codeImpactSchema parameter mismatch with gitnexus `impact` tool
 
-**register-member.ts wiring:**
-- Import added at line 20 (top of imports section, correct placement).
-- Validation fires after `await Promise.all([versionCheck, authCheck, mkdirCheck])` -- correct
-  ordering, reuses the same connection already established for the SSH ops.
-- Guard `!skipSshOps && (input.llm_provider ?? 'claude') === 'opencode' && normalizedModelTiers`
-  is correct: cloud members with stopped instances bypass validation (no SSH available), non-opencode
-  members bypass it, and members without model_tiers bypass it.
-- `tempAgent` at the call site has correct auth fields (host, port, username, keyPath, encryptedPassword)
-  so `getStrategy(tempAgent)` resolves to the right transport.
+**File:** `src/tools/code-intelligence.ts:27-30`
 
-**update-member.ts wiring:**
-- Import added at line 10 (top of imports section, correct placement).
-- Validation fires inside `if (input.model_tiers !== undefined)` after normalization, so it only
-  runs when model_tiers is actually being updated.
-- The inner `if (updates.modelTiers)` guard is always true at that point (set on the line above)
-  but is harmless.
-- `existing` (the current Agent record) is passed to the validation function, which gives the
-  strategy the correct connection details for the target member.
-- `effectiveProvider` correctly falls back through `input.llm_provider ?? existing.llmProvider ?? 'claude'`
-  so a provider-switch-only update (without model_tiers) does not trigger validation, and an
-  update that changes both provider and model_tiers validates against the new provider.
+```typescript
+export const codeImpactSchema = z.object({
+  file_path: z.string().describe('File path to analyze for transitive change impact'),
+});
+```
+
+The actual `gitnexus impact` tool schema (verified via MCP inspection) requires:
+- `target` (required): name of function, class, or file to analyze
+- `direction` (required): "upstream" or "downstream"
+- `file_path` (optional): disambiguation hint only
+
+Calling `code_impact({file_path: "src/index.ts"})` will fail at runtime because `target` and
+`direction` are missing. The schema needs to be:
+
+```typescript
+export const codeImpactSchema = z.object({
+  target: z.string().describe('Function, class, or method name to analyze blast radius for'),
+  direction: z.enum(['upstream', 'downstream']).describe('upstream = what depends on this; downstream = what this depends on'),
+  file_path: z.string().optional().describe('File path hint to disambiguate common names'),
+});
+```
 
 ---
 
-## File Hygiene -- PASS
+### [P1] codeContextSchema parameter mismatch with gitnexus `context` tool
 
-Only source, test, and the active review record are in the diff. No scratch files, no tool config,
-no unrelated documents. The pre-existing untracked files in the worktree root
-(`analyze_transcripts.js`, `apra-labs-apra-fleet-0.2.2.tgz`, `permissions.json`, `results.json`,
-`tpl-plan.md`, `.sprint/`) and the modified submodule pointer remain from earlier sprint cycles and
-are not part of this commit -- noted as non-blocking in prior reviews.
+**File:** `src/tools/code-intelligence.ts:34-37`
 
----
+```typescript
+export const codeContextSchema = z.object({
+  file_path: z.string().describe('File path to retrieve semantic context (imports, exports, types) for'),
+});
+```
 
-## ASCII Compliance -- PASS
+The actual `gitnexus context` tool (verified via MCP inspection) is a symbol lookup, not a file lookup.
+Primary parameter is `name` (symbol name, e.g. "validateUser", "AuthService"). `file_path` is only an
+optional disambiguation hint. Calling `code_context({file_path: "..."})` without a `name` returns no
+useful symbol context. The description also misrepresents what context does (it returns callers, callees,
+and execution flow participation for a symbol, not file imports/exports).
 
-`src/utils/opencode-model-validation.ts` and `tests/opencode-model-validation.test.ts` are fully
-ASCII. The non-ASCII characters in `register-member.ts` (line 28 area) and `update-member.ts`
-(line 28/40 area) are pre-existing in the base branch and were not introduced by this sprint's diff.
+Fix:
 
----
-
-## Requirements Coverage -- PASS
-
-All items from `requirements.md` (as summarized in the task):
-- model_tiers for opencode members validated against `opencode models` output: DONE
-- Invalid models: warn with available list; never fail/reject: DONE (both tools return success)
-- register_member: warn but always succeed: DONE
-- update_member: warn but always succeed: DONE
-- ASCII only in all new files: DONE
-- 6 new tests all passing: DONE (6/6)
-- Build passes: DONE
+```typescript
+export const codeContextSchema = z.object({
+  name: z.string().describe('Symbol name (function, class, or method) to get full context for'),
+  file_path: z.string().optional().describe('File path to disambiguate when multiple symbols share the name'),
+});
+```
 
 ---
 
-## Summary
+### [P2] JSON.stringify wraps the MCP CallToolResult envelope
 
-All three blockers from the prior review are resolved. The implementation is clean, correct, and
-complete. The utility is well-isolated, the wiring in both tools is placed at the right call sites,
-and the test suite covers all specified scenarios. Build and full test suite pass. APPROVED for merge.
+**File:** `src/index.ts:272,277,282,287`
+
+```typescript
+return JSON.stringify(await provider.graph(input));
+```
+
+`client.callTool()` returns a `CallToolResult` object:
+`{ content: [{ type: 'text', text: '...' }], isError?: boolean }`.
+
+`JSON.stringify` converts this to `{"content":[{"type":"text","text":"actual data"}]}` before the
+LLM sees it. The requirement says "Returns the backend's response unchanged." The LLM now has to
+unwrap an internal MCP envelope to read the data, which is both inconsistent with other fleet tools
+and creates unnecessary parsing burden.
+
+Fix: extract content text before returning:
+```typescript
+const raw = await provider.graph(input) as { content: Array<{type: string; text?: string}> };
+return raw.content.map(c => c.type === 'text' ? c.text ?? '' : '').join('\n');
+```
+Or, if the existing `wrapTool` pipeline already handles `CallToolResult` objects, remove
+`JSON.stringify` and return the raw result.
+
+---
+
+### [P2] AGENTS.md adds direct gitnexus tool references -- counter to sprint goal
+
+**File:** `AGENTS.md`, commit `c3f574b`
+
+The plan commit adds a `<!-- gitnexus:start -->` block to AGENTS.md that explicitly names
+`call_graph`, `impact`, `query`, and `context` as the tools to use. This is the exact pattern
+this sprint is trying to eliminate. Adding direct gitnexus references to AGENTS.md in the same
+branch that abstracts them away creates a contradiction and will confuse future doers.
+
+The block belongs to a separate "gitnexus onboarding" concern (auto-generated by gitnexus tooling).
+Either remove it from this PR or replace it with fleet tool names (`code_graph`, `code_impact`,
+`code_query`, `code_context`).
+
+---
+
+### [P2] llms-full.txt loses 247 lines of PM skill content -- unrelated to sprint
+
+**File:** `llms-full.txt`, commit `c3f574b`
+
+The plan commit removes 247 lines of PM skill documentation from `llms-full.txt`. This is leftover
+from the PM submodule migration (prior sprint). It has no relation to code-intelligence abstraction
+and should not be in this branch. If the removal is intentional, it should be a separate commit on
+a separate branch with a clear rationale.
+
+---
+
+### [P3] Connection failure permanently disables code intelligence (no retry)
+
+**File:** `src/tools/code-intelligence-gitnexus.ts:8-9`
+
+```typescript
+let sharedClient: Client | null = null;
+let connectionPromise: Promise<Client> | null = null;
+```
+
+If `client.connect(transport)` throws (gitnexus not installed, `npx` fails, etc.),
+`connectionPromise` is set to a rejected `Promise`. All subsequent calls return the same rejected
+promise -- the connection is never retried. A transient startup failure permanently disables the
+provider for the server session lifetime.
+
+Not blocking Phase 1, but should be addressed before Phase 2 ships. Fix: reset `connectionPromise`
+to null in the catch path so the next call retries.
+
+---
+
+## Plan Completion Audit
+
+| Task | Status | Evidence |
+|------|--------|---------|
+| T1.1 -- CodeIntelligenceProvider interface | DONE | `src/tools/code-intelligence.ts` created, interface correct, tsc clean |
+| T1.2 -- GitNexusProvider implementation | DONE | `src/tools/code-intelligence-gitnexus.ts` created, methods delegate correctly |
+| T1.3 -- Register 4 MCP tools | DONE | All 4 tools registered in `src/index.ts` |
+| T1.4 -- Unit tests | DONE | `tests/code-intelligence.test.ts`, 7/7 pass |
+| c3f574b plan commit | PARTIAL | AGENTS.md and llms-full.txt changes are not in scope (see P2 findings above) |
+
+---
+
+## File Hygiene
+
+Files added/changed in Phase 1 commits:
+
+| File | Justified? |
+|------|------------|
+| `src/tools/code-intelligence.ts` | YES -- T1.1 |
+| `src/tools/code-intelligence-gitnexus.ts` | YES -- T1.2 |
+| `src/index.ts` | YES -- T1.3 |
+| `tests/code-intelligence.test.ts` | YES -- T1.4 |
+| `PLAN.md` | YES -- sprint plan |
+| `requirements.md` | YES -- sprint requirements |
+| `progress.json` | YES -- sprint tracking |
+| `AGENTS.md` | NO -- adds direct gitnexus tool refs, counter to sprint goal |
+| `llms-full.txt` | NO -- unrelated PM content removal from prior sprint |
+
+---
+
+## Required Changes to APPROVE
+
+1. Fix `codeImpactSchema` -- add `target` (required) and `direction` (required); make `file_path` optional
+2. Fix `codeContextSchema` -- add `name` (required) for symbol lookup; make `file_path` optional
+3. Address AGENTS.md: remove the `<!-- gitnexus:start -->` block or replace tool names with fleet names
+4. Revert llms-full.txt: remove the unrelated PM content deletion from this branch
+
+Items 1 and 2 are P1 (runtime failures). Items 3 and 4 are P2 (hygiene). All four required before merge.
