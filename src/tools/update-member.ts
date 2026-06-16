@@ -9,6 +9,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
+import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -142,6 +143,18 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       if (!normalizedModelTiers.premium) normalizedModelTiers.premium = normalizedModelTiers.standard;
     }
     updates.modelTiers = normalizedModelTiers;
+
+    // --- Validate opencode model_tiers against available models ---
+    if (updates.modelTiers) {
+      const effectiveProvider = (input.llm_provider ?? existing.llmProvider ?? 'claude');
+      if (effectiveProvider === 'opencode') {
+        const { warnings: tierWarnings } = await validateOpenCodeModelTiers(
+          existing,
+          updates.modelTiers as { cheap?: string; standard?: string; premium?: string },
+        );
+        warnings.push(...tierWarnings);
+      }
+    }
   }
 
   if (resolvedIcon) updates.icon = resolvedIcon;
