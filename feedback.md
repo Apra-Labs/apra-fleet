@@ -195,3 +195,74 @@ Files added/changed in Phase 1 commits:
 4. Revert llms-full.txt: remove the unrelated PM content deletion from this branch
 
 Items 1 and 2 are P1 (runtime failures). Items 3 and 4 are P2 (hygiene). All four required before merge.
+
+---
+
+# Re-Review: Phase 1 -- After Fixes
+
+**Reviewer:** claude-sonnet-4-6 (Reviewer Agent)
+**Date:** 2026-06-16
+**Fix commit:** 870fdb5
+**Branch tip reviewed:** 7b50372 (origin/feat/code-intelligence-abstraction)
+**Verdict:** APPROVED
+
+---
+
+## Build and Test Results
+
+- `npm run build`: PASSES CLEAN
+- `npm test`: same 4 pre-existing failures, NONE in Phase 1 code
+  - `tests/code-intelligence.test.ts`: 7/7 PASS
+  - `tests/time-utils.test.ts`: 2 failures -- timezone-offset assertions, pre-existing, unrelated
+  - `tests/gen-llms-full.test.ts`: 2 failures -- doc count mismatch, pre-existing, unrelated
+  - `tests/backward-compat.test.ts`: suite-level failure -- submodule `vendor/apra-pm` not initialized, pre-existing, unrelated
+
+---
+
+## Fix Verification
+
+### 1. codeImpactSchema -- FIXED
+
+`src/tools/code-intelligence.ts` now has:
+
+```typescript
+export const codeImpactSchema = z.object({
+  target: z.string().describe('Symbol name to analyze, e.g. "handleIPChange"'),
+  direction: z.enum(['upstream', 'downstream']).describe('"upstream" to find callers, "downstream" to find callees'),
+  file_path: z.string().optional().describe('File path hint for disambiguation'),
+});
+```
+
+`target` required, `direction` required enum, `file_path` optional. Matches gitnexus impact API. PASS.
+
+### 2. codeContextSchema -- FIXED
+
+`src/tools/code-intelligence.ts` now has:
+
+```typescript
+export const codeContextSchema = z.object({
+  name: z.string().describe('Symbol name to retrieve callers, callees, and execution flows for, e.g. "validateUser"'),
+});
+```
+
+`name` required, no `file_path`. Matches gitnexus context API. PASS.
+
+### 3. AGENTS.md -- FIXED
+
+No `<!-- gitnexus:start -->` block present. No gitnexus tool names (`call_graph`, `impact`, `query`, `context`). File references fleet tool names only (`code_graph`, `code_impact`, `code_query`, `code_context`). PASS.
+
+### 4. llms-full.txt -- PASS
+
+`git diff main...origin/feat/code-intelligence-abstraction -- llms-full.txt` shows 1903 insertions and 666 deletions relative to the merge base. Branch llms-full.txt is 2274 lines vs main's 1037 lines (net +1237 lines). The branch has more content than main, not less. PM-related content: 78 references in branch vs 36 in main. The 666 deletions relative to main are old README text replaced with updated content; no unrelated content drop. PASS.
+
+---
+
+## Remaining Open Items (Non-Blocking)
+
+The P2 finding from the original review about `JSON.stringify` wrapping the MCP CallToolResult envelope ([P2] in original review) was not in the required-for-approval list and remains open. The P3 connection retry issue also remains open. Both were noted as non-blocking for Phase 1 approval.
+
+---
+
+## Summary
+
+All 4 required changes from the Phase 1 review are correctly implemented. Build is clean. Phase 1 tests pass. Branch is approved to merge.
