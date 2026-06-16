@@ -198,6 +198,173 @@ Items 1 and 2 are P1 (runtime failures). Items 3 and 4 are P2 (hygiene). All fou
 
 ---
 
+# Review: Phase 2 -- Installer + Template Updates
+
+**Reviewer:** claude-sonnet-4-6 (Reviewer Agent)
+**Date:** 2026-06-16
+**Branch:** feat/code-intelligence-abstraction
+**Phase 2 scope:** T2.1 (install.ts Step 9), T2.2 (tpl-doer + tpl-reviewer KB rename), T2.3 (knowledge-agent.md)
+**Commits reviewed:** Phase 2 changes since Phase 1 APPROVED (58b5cb6)
+**Verdict:** CHANGES NEEDED
+
+---
+
+## Build and Test Results
+
+- `npm run build`: PASSES CLEAN
+- `npm test`: 3 failures, NONE introduced by Phase 2
+  - `tests/code-intelligence.test.ts`: 7/7 PASS (Phase 1 tests still green)
+  - `tests/time-utils.test.ts`: 2 failures -- timezone-offset assertions, pre-existing, unrelated
+  - `tests/gen-llms-full.test.ts`: 1 failure in Failed Tests section (shown as 2 in per-file summary) -- doc count, pre-existing, unrelated
+  - `tests/backward-compat.test.ts`: 0 tests (previously failing due to uninitialized submodule; now passes after submodule init)
+
+---
+
+## Check Results
+
+### Check 1: `npm run build` -- PASS
+
+### Check 2: `npm test` -- PASS (no new failures vs Phase 1 baseline)
+
+### Check 3: install.ts Step 9 -- FAIL
+
+`git diff main...feat/code-intelligence-abstraction -- src/cli/install.ts` shows extensive changes
+(new providers: agy, opencode; agent install step; submodule support) but **zero changes related to
+code intelligence**. The following required changes are absent:
+
+- **MISSING: gitnexus .mcp.json removal block** -- no code removes `mcpServers.gitnexus` from
+  `.mcp.json` when it is present from a prior install
+- **MISSING: code-intelligence config.json write** -- no code writes
+  `~/.apra-fleet/data/code-intelligence/config.json` with `{"provider": "gitnexus"}`
+- **No Step 9 exists** -- the installer steps go from 1-8 (or 1-9 with agents) but none of them
+  implement the code intelligence config. grep for "gitnexus", "code-intelligence", "Step 9"
+  in the feature branch's install.ts returns 0 results.
+
+**R2 and R4 are NOT met.**
+
+### Check 4: grep tpl-doer.md + tpl-reviewer.md for gitnexus -- MISLEADING PASS
+
+The files `skills/pm/tpl-doer.md` and `skills/pm/tpl-reviewer.md` do not exist on the feature
+branch. They were deleted (`fe3a044 feat(pm): delete old skills/pm/`) as part of the OpenCode+PM
+epic and replaced by the vendor/apra-pm submodule. The grep command exits with error code 2
+("No such file or directory") -- technically no gitnexus matches, but not because they were updated.
+
+The vendor/apra-pm submodule at a32ad43 also does NOT contain `tpl-doer.md` or `tpl-reviewer.md`.
+The PM skills were restructured (sprint.md, fleet-addendum.md, doer-reviewer-loop.md, etc.).
+
+The R3 acceptance criterion -- "The KB section in both templates becomes: use code_graph,
+code_impact, code_query..." -- is NOT met. There is no such section anywhere in the PM skills.
+The check passes by absence (files deleted) not by correct implementation.
+
+**R3 is NOT met (no KB section with fleet tool names in any PM template).**
+
+### Check 5: grep knowledge-agent.md for gitnexus -- FAIL (file does not exist)
+
+`skills/fleet/knowledge-agent.md` does not exist on the feature branch. `git ls-tree
+feat/code-intelligence-abstraction skills/fleet/` confirms the directory has 9 files -- no
+knowledge-agent.md. `find . -name "knowledge-agent*"` returns zero results.
+
+`progress.json` marks T2.3 as "completed" with notes: "skills/fleet/knowledge-agent.md created
+(did not exist)." This is incorrect. The file was never committed to the branch.
+
+**R5 is NOT met.**
+
+### Check 6: File hygiene -- PASS (no unexpected Phase 2 files)
+
+The large `git diff --name-only` output is inherited from prior epics on the branch. Phase 2
+added no unexpected files. No stray files found.
+
+### Check 7: Requirements R1-R5 audit
+
+| Req | Description | Status |
+|-----|-------------|--------|
+| R1 | Fleet tools code_graph/impact/query/context exist | PASS -- implemented in Phase 1 |
+| R2 | Provider config + PROVIDERS map; installer writes config.json | FAIL -- config.json write absent from installer |
+| R3 | No gitnexus mentions in templates; KB section uses fleet names | FAIL -- KB section with fleet names is absent from all PM skills |
+| R4 | Installer removes gitnexus from .mcp.json | FAIL -- no removal block in install.ts |
+| R5 | knowledge-agent.md updated | FAIL -- file does not exist in skills/fleet/ |
+
+---
+
+## Findings
+
+### [P1] T2.1 not implemented -- install.ts has no Step 9 code intelligence block
+
+**Files:** `src/cli/install.ts` (feature branch)
+
+The T2.1 task required adding to install.ts Step 9:
+1. Remove `mcpServers.gitnexus` from `.mcp.json` if present
+2. Write `~/.apra-fleet/data/code-intelligence/config.json` with `{"provider": "gitnexus"}`
+
+Neither change was made. The install.ts was heavily modified by the OpenCode+PM epic (agents dir,
+agy/opencode providers, submodule support) but the code intelligence config logic was never added.
+
+Required additions (Step 9 or end of runInstall, after existing steps):
+
+```typescript
+// --- Step 9: Configure code intelligence provider ---
+const ciDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
+fs.mkdirSync(ciDir, { recursive: true });
+fs.writeFileSync(path.join(ciDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
+
+// Remove legacy gitnexus .mcp.json entry if present (clean up prior installs)
+const mcpJsonPath = path.join(process.cwd(), '.mcp.json');
+if (fs.existsSync(mcpJsonPath)) {
+  try {
+    const mcp = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+    if (mcp?.mcpServers?.gitnexus) {
+      delete mcp.mcpServers.gitnexus;
+      fs.writeFileSync(mcpJsonPath, JSON.stringify(mcp, null, 2) + '\n');
+    }
+  } catch { /* skip if malformed */ }
+}
+```
+
+---
+
+### [P1] T2.3 not committed -- knowledge-agent.md missing from skills/fleet/
+
+**File:** `skills/fleet/knowledge-agent.md` (should exist but does not)
+
+The progress.json records T2.3 as completed, but the file was never committed. Either it was
+authored locally and not staged, or the commit failed silently.
+
+Required: create `skills/fleet/knowledge-agent.md` with the KB Prime/Capture/Harvest workflow
+using fleet tool names only (code_graph, code_impact, code_query, code_context -- no gitnexus
+tool names). Content per T2.3 spec in PLAN.md.
+
+---
+
+### [P2] T2.2 outcome is absence, not implementation -- R3 positive requirement unmet
+
+**Files:** vendor/apra-pm/skills/pm/*.md
+
+The old skills/pm/tpl-doer.md and tpl-reviewer.md were deleted in the OpenCode+PM epic, not
+updated with fleet tool names. The vendor/apra-pm submodule at a32ad43 restructured the PM
+skills entirely (no tpl-doer.md, no tpl-reviewer.md, no KB section).
+
+R3 requires the KB section to actively say:
+```
+- During work: use code_graph, code_impact, code_query for cross-file tracing
+  and symbol lookup -- never plain-read files for structural questions.
+```
+
+This line does not appear anywhere in the current PM skills. The doer should identify which of
+the new PM skill files (sprint.md, fleet-addendum.md, etc.) is the correct home for this
+guidance and add it there.
+
+---
+
+## Required Changes to APPROVE
+
+1. **[P1] Add Step 9 to install.ts**: write config.json at `~/.apra-fleet/data/code-intelligence/config.json`; remove `mcpServers.gitnexus` from `.mcp.json` if present
+2. **[P1] Commit knowledge-agent.md**: create `skills/fleet/knowledge-agent.md` with fleet tool names (code_graph, code_impact, code_query, code_context)
+3. **[P2] Add KB section to PM skills**: find the correct file in vendor/apra-pm (sprint.md or fleet-addendum.md) and add the code intelligence guidance with fleet tool names
+
+Items 1 and 2 are P1 (spec not met, R2/R4/R5 failing). Item 3 is P2 (R3 positive requirement unmet, guidance is absent from docs). All three required before approval.
+
+---
+
 # Re-Review: Phase 1 -- After Fixes
 
 **Reviewer:** claude-sonnet-4-6 (Reviewer Agent)
