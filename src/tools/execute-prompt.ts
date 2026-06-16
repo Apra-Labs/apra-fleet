@@ -19,7 +19,7 @@ import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
-import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -319,6 +319,16 @@ Tokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}`
 
 ---
 session: ${parsed.sessionId}`;
+
+    // Auto-harvest learnings from session output (fire-and-forget)
+    if (parsed.result) {
+      void import('./kb-harvest.js')
+        .then(({ kbHarvest }) =>
+          kbHarvest({ session_transcript: parsed.result, session_id: parsed.sessionId })
+        )
+        .catch((err: Error) => logWarn('kb_harvest', `auto-harvest failed: ${err.message}`));
+    }
+
     return output;
   } catch (err: any) {
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
