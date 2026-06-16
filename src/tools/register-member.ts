@@ -17,6 +17,7 @@ import { classifySshError } from '../utils/ssh-error-messages.js';
 import { logLine } from '../utils/log-helpers.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { writeAgyWorkspaceOverlays } from '../cli/install.js';
+import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -278,6 +279,12 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
           .catch(() => { warnings.push(`Could not create folder "${input.work_folder}"`); });
 
     await Promise.all([versionCheck, authCheck, mkdirCheck]);
+
+    // --- Validate opencode model_tiers against available models ---
+    if (!skipSshOps && (input.llm_provider ?? 'claude') === 'opencode' && normalizedModelTiers) {
+      const { warnings: tierWarnings } = await validateOpenCodeModelTiers(tempAgent, normalizedModelTiers);
+      warnings.push(...tierWarnings);
+    }
   } else {
     tempAgent.os = detectedOS;
     if (isCloud) {
