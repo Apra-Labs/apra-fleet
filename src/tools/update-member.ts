@@ -46,6 +46,11 @@ export const updateMemberSchema = z.object({
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Change custom cheap model'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Change custom standard model'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Change custom premium model'),
+  model_tiers: z.object({
+    cheap: z.string().optional(),
+    standard: z.string().optional(),
+    premium: z.string().optional(),
+  }).optional().describe('Per-member model tier map with free-form model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model required.'),
   unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
 });
 
@@ -120,6 +125,25 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   const updates: Record<string, unknown> = {};
   const warnings: string[] = [];
 
+  // --- model_tiers normalization ---
+  if (input.model_tiers !== undefined) {
+    const values = Object.values(input.model_tiers).filter(Boolean) as string[];
+    if (values.length === 0) {
+      return '[-] model_tiers was provided but contains no models. Supply at least one model. Member was NOT updated.';
+    }
+    let normalizedModelTiers: { cheap?: string; standard?: string; premium?: string };
+    if (values.length === 1) {
+      normalizedModelTiers = { cheap: values[0], standard: values[0], premium: values[0] };
+    } else {
+      normalizedModelTiers = { ...input.model_tiers };
+      const fallback = input.model_tiers.standard ?? input.model_tiers.cheap ?? values[0];
+      if (!normalizedModelTiers.cheap) normalizedModelTiers.cheap = fallback;
+      if (!normalizedModelTiers.standard) normalizedModelTiers.standard = fallback;
+      if (!normalizedModelTiers.premium) normalizedModelTiers.premium = normalizedModelTiers.standard;
+    }
+    updates.modelTiers = normalizedModelTiers;
+  }
+
   if (resolvedIcon) updates.icon = resolvedIcon;
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
@@ -183,6 +207,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (updated.modelCheap) result += `  Model Cheap: ${updated.modelCheap}\n`;
   if (updated.modelStandard) result += `  Model Standard: ${updated.modelStandard}\n`;
   if (updated.modelPremium) result += `  Model Premium: ${updated.modelPremium}\n`;
+  if (updated.modelTiers) {
+    const mt = updated.modelTiers;
+    result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
+  }
 
   if (warnings.length > 0) {
     result += '\n';

@@ -81,9 +81,10 @@ describe('OpenCodeProvider core methods', () => {
     expect(p.modelFlag('ollama/qwen3-coder:30b')).toBe('-m "ollama/qwen3-coder:30b"');
   });
 
-  it('classifyError: auth', () => {
-    expect(p.classifyError('command not found')).toBe('auth');
-    expect(p.classifyError('opencode: not found')).toBe('auth');
+  it('classifyError: unknown for missing binary', () => {
+    expect(p.classifyError('command not found')).toBe('unknown');
+    expect(p.classifyError('opencode is not recognized as an internal or external command')).toBe('unknown');
+    expect(p.classifyError('opencode: not found')).toBe('unknown');
   });
 
   it('classifyError: server', () => {

@@ -57,7 +57,7 @@ export class OpenCodeProvider implements ProviderAdapter {
   }
 
   classifyError(output: string): PromptErrorCategory {
-    if (/not.*found|command not found/i.test(output)) return 'auth';
+    if (/command not found|is not recognized as an internal or external command/i.test(output)) return 'unknown';
     if (/connection refused|ECONNREFUSED/i.test(output)) return 'server';
     if (/timeout|ETIMEDOUT/i.test(output)) return 'server';
     if (/rate limit|\b429\b/i.test(output)) return 'overloaded';

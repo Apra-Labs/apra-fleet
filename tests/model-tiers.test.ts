@@ -4,6 +4,7 @@ import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-h
 import { addAgent, getAgent, getAllAgents } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import { registerMember } from '../src/tools/register-member.js';
+import { updateMember } from '../src/tools/update-member.js';
 import { OpenCodeProvider } from '../src/providers/opencode.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -313,5 +314,113 @@ describe('register_member model_tiers normalization', () => {
 
     expect(result).toContain('registered successfully');
     expect(result).toContain('adapter defaults');
+  });
+});
+
+// -- update_member model_tiers normalization --
+
+describe('update_member model_tiers normalization', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('single model fills all three tiers', async () => {
+    await registerMember({
+      friendly_name: 'upd-mt-single',
+      member_type: 'local',
+      work_folder: `/tmp/upd-mt-single-${Date.now()}`,
+      llm_provider: 'opencode',
+    });
+    const created = getAllAgents().find(a => a.friendlyName === 'upd-mt-single')!;
+
+    await updateMember({ member_id: created.id, model_tiers: { standard: 'ollama/qwen3-coder:30b' } });
+
+    const updated = getAgent(created.id)!;
+    expect(updated.modelTiers).toEqual({
+      cheap: 'ollama/qwen3-coder:30b',
+      standard: 'ollama/qwen3-coder:30b',
+      premium: 'ollama/qwen3-coder:30b',
+    });
+  });
+
+  it('rejects empty model_tiers', async () => {
+    await registerMember({
+      friendly_name: 'upd-mt-empty',
+      member_type: 'local',
+      work_folder: `/tmp/upd-mt-empty-${Date.now()}`,
+      llm_provider: 'opencode',
+    });
+    const created = getAllAgents().find(a => a.friendlyName === 'upd-mt-empty')!;
+
+    const result = await updateMember({ member_id: created.id, model_tiers: {} });
+
+    expect(result).toContain('no models');
+    expect(result).toContain('NOT updated');
+  });
+
+  it('fills missing tiers with fallback from standard', async () => {
+    await registerMember({
+      friendly_name: 'upd-mt-partial',
+      member_type: 'local',
+      work_folder: `/tmp/upd-mt-partial-${Date.now()}`,
+      llm_provider: 'opencode',
+    });
+    const created = getAllAgents().find(a => a.friendlyName === 'upd-mt-partial')!;
+
+    await updateMember({ member_id: created.id, model_tiers: { cheap: 'ollama/small:7b', standard: 'ollama/medium:14b' } });
+
+    const updated = getAgent(created.id)!;
+    expect(updated.modelTiers!.cheap).toBe('ollama/small:7b');
+    expect(updated.modelTiers!.standard).toBe('ollama/medium:14b');
+    expect(updated.modelTiers!.premium).toBe('ollama/medium:14b');
+  });
+
+  it('stores full model_tiers map on member record', async () => {
+    await registerMember({
+      friendly_name: 'upd-mt-full',
+      member_type: 'local',
+      work_folder: `/tmp/upd-mt-full-${Date.now()}`,
+      llm_provider: 'opencode',
+    });
+    const created = getAllAgents().find(a => a.friendlyName === 'upd-mt-full')!;
+
+    const result = await updateMember({
+      member_id: created.id,
+      model_tiers: { cheap: 'ollama/small:7b', standard: 'ollama/medium:14b', premium: 'ollama/large:70b' },
+    });
+
+    expect(result).toContain('Model Tiers');
+    const updated = getAgent(created.id)!;
+    expect(updated.modelTiers).toEqual({
+      cheap: 'ollama/small:7b',
+      standard: 'ollama/medium:14b',
+      premium: 'ollama/large:70b',
+    });
+  });
+
+  it('output displays model tiers correctly', async () => {
+    await registerMember({
+      friendly_name: 'upd-mt-display',
+      member_type: 'local',
+      work_folder: `/tmp/upd-mt-display-${Date.now()}`,
+      llm_provider: 'opencode',
+    });
+    const created = getAllAgents().find(a => a.friendlyName === 'upd-mt-display')!;
+
+    const result = await updateMember({
+      member_id: created.id,
+      model_tiers: { cheap: 'ollama/small:7b', standard: 'ollama/medium:14b', premium: 'ollama/large:70b' },
+    });
+
+    expect(result).toContain('cheap=ollama/small:7b');
+    expect(result).toContain('standard=ollama/medium:14b');
+    expect(result).toContain('premium=ollama/large:70b');
   });
 });
