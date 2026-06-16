@@ -22,7 +22,9 @@ export const codeGraphSchema = z.object({
 });
 
 export const codeImpactSchema = z.object({
-  file_path: z.string().describe('File path to analyze for transitive change impact'),
+  target: z.string().describe('Symbol name to analyze, e.g. "handleIPChange"'),
+  direction: z.enum(['upstream', 'downstream']).describe('"upstream" to find callers, "downstream" to find callees'),
+  file_path: z.string().optional().describe('File path hint for disambiguation'),
 });
 
 export const codeQuerySchema = z.object({
@@ -30,7 +32,7 @@ export const codeQuerySchema = z.object({
 });
 
 export const codeContextSchema = z.object({
-  file_path: z.string().describe('File path to retrieve semantic context (imports, exports, types) for'),
+  name: z.string().describe('Symbol name to retrieve callers, callees, and execution flows for, e.g. "validateUser"'),
 });
 
 export async function getProvider(): Promise<CodeIntelligenceProvider> {

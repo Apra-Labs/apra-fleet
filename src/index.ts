@@ -274,7 +274,7 @@ async function startServer() {
     const provider = await getProvider();
     return JSON.stringify(await provider.graph(input));
   }));
-  server.tool('code_impact', 'Analyze which files and symbols are transitively affected by changes to a file.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
+  server.tool('code_impact', 'Find what is affected by changes to a symbol.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
     const provider = await getProvider();
     return JSON.stringify(await provider.impact(input));
   }));
@@ -282,7 +282,7 @@ async function startServer() {
     const provider = await getProvider();
     return JSON.stringify(await provider.query(input));
   }));
-  server.tool('code_context', 'Get semantic context (imports, exports, types, usages) for a file.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
+  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
     const provider = await getProvider();
     return JSON.stringify(await provider.context(input));
   }));
