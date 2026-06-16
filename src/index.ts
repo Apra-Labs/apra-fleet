@@ -136,6 +136,7 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const { getProvider, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema } = await import('./tools/code-intelligence.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -267,6 +268,24 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- Code Intelligence ---
+  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase.', codeGraphSchema.shape, wrapTool('code_graph', async (input) => {
+    const provider = await getProvider();
+    return JSON.stringify(await provider.graph(input));
+  }));
+  server.tool('code_impact', 'Analyze which files and symbols are transitively affected by changes to a file.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
+    const provider = await getProvider();
+    return JSON.stringify(await provider.impact(input));
+  }));
+  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns.', codeQuerySchema.shape, wrapTool('code_query', async (input) => {
+    const provider = await getProvider();
+    return JSON.stringify(await provider.query(input));
+  }));
+  server.tool('code_context', 'Get semantic context (imports, exports, types, usages) for a file.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
+    const provider = await getProvider();
+    return JSON.stringify(await provider.context(input));
+  }));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
