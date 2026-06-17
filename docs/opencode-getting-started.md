@@ -72,9 +72,9 @@ For local Ollama (same machine), use `http://localhost:11434/v1`.
 
 ### Option B -- Google Gemini via OAuth (tested and working)
 
-Best for: users with Google AI Ultra subscription ($20/month), no per-token billing.
+Best for: users with Google AI Ultra subscription ($129/month), no per-token billing.
 
-**1. Add the auth plugin:**
+**1. Add the auth plugin to `~/.config/opencode/opencode.json`:**
 
 ```json
 {
@@ -163,38 +163,38 @@ Google for premium).
 
 ## Using OpenCode as an Orchestrator
 
-To use OpenCode as the PM agent that dispatches tasks to fleet members, the fleet
-MCP server must be registered inside OpenCode's own config:
+To use OpenCode as the PM agent that dispatches tasks to fleet members, install
+fleet with `--llm opencode` and it will register the MCP server inside OpenCode
+automatically.
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "apra-fleet": {
-      "type": "local",
-      "command": ["node", "/path/to/apra-fleet/dist/index.js"]
-    }
-  }
-}
+### Method 1 -- npm (requires Node.js 22+)
+
+```bash
+npm install -g @apralabs/apra-fleet
+apra-fleet install --llm opencode
 ```
 
-Or using the installed binary:
+### Method 2 -- standalone binary (no Node.js required)
 
-```json
-{
-  "mcp": {
-    "apra-fleet": {
-      "type": "local",
-      "command": ["/path/to/.apra-fleet/bin/apra-fleet"]
-    }
-  }
-}
+**macOS (Apple Silicon)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install --llm opencode
 ```
 
-Once registered, all fleet MCP tools (`register_member`, `execute_prompt`,
-`fleet_status`, etc.) are available inside OpenCode sessions. OpenCode can then
-act as an orchestrator, dispatching work to Claude Code, Gemini, or other OpenCode
-members.
+**Linux (x64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install --llm opencode
+```
+
+**Windows (x64)** -- run in PowerShell:
+```powershell
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install --llm opencode
+```
+
+After install, restart OpenCode to load the MCP server. All fleet tools
+(`register_member`, `execute_prompt`, `fleet_status`, etc.) will be available
+inside OpenCode sessions, and OpenCode can dispatch work to Claude Code, Gemini,
+or other fleet members.
 
 **Note on Gemini compatibility:** If OpenCode is used as orchestrator with a Google
 model, the fleet MCP schema is fully compatible. Earlier `anyOf` schema issues have
