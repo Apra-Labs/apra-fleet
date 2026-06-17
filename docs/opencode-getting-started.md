@@ -60,11 +60,11 @@ Add your Ollama server to `~/.config/opencode/opencode.json`:
 
 **Tested and verified models (via Ollama):**
 
-| Model ID | Notes |
-|---|---|
-| `ollama/qwen3-coder:30b` | Solid coding model, good instruction following |
-| `ollama/qwen3-coder-next` | Faster variant, recommended for standard tier |
-| `ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M` | Good for premium tasks, larger context |
+| Model ID | Size | Min VRAM | Notes |
+|---|---|---|---|
+| `ollama/qwen3-coder:30b` | 18 GB | ~20 GB | Solid coding model, fits on a single 24 GB GPU (e.g. RTX 4090) |
+| `ollama/qwen3-coder-next` | 51 GB | ~55 GB | Recommended for standard tier; needs A100 80 GB or multi-GPU |
+| `ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M` | 72 GB | ~80 GB | Good for premium tasks; requires A100 80 GB or equivalent |
 
 For local Ollama (same machine), use `http://localhost:11434/v1`.
 
