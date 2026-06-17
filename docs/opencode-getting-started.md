@@ -116,11 +116,29 @@ Best for: quick testing, zero setup, no API key required.
 OpenCode bundles access to free-tier models from OpenRouter out of the box. No
 configuration needed -- they appear in the model picker labeled "Free".
 
-**Tested and verified:**
+**Tested and verified -- all confirmed to understand fleet tool schemas, PM skill, and fleet skill:**
 
-| Model ID | Notes |
-|---|---|
-| `DeepSeek V4 Flash Free` | Works out of the box, ~20-50 req/day free limit |
+| Model ID | Underlying model | Params (total / active) | SWE-Bench Verified | Best for |
+|---|---|---|---|---|
+| `opencode/nemotron-3-ultra-free` | NVIDIA Nemotron 3 Ultra (June 2026) | 550B / 55B MoE | 65-70.4% | Premium: strongest verified agentic coding performance |
+| `opencode/north-mini-code-free` | Cohere North Mini Code (June 2026) | 30B / 3B MoE | 67.6% | Cheap: only 3B active params = fastest throughput, remarkable coding accuracy |
+| `opencode/deepseek-v4-flash-free` | DeepSeek V4 Flash (April 2026) | 284B / 13B MoE | - | Standard: ~101 t/s, MIT-licensed, well-balanced for interactive coding |
+| `opencode/mimo-v2.5-free` | Xiaomi MiMo V2.5 Pro (April 2026) | 1.02T / 42B MoE | - | Wildcard: 1M context window; latency unverified for interactive use |
+| `opencode/big-pickle` | Unknown | - | - | Not recommended as a default; underlying model unidentified |
+
+> These are the model IDs to use in fleet `model_tiers`. Run `opencode models` on
+> your member machine to confirm the full list available to you.
+
+**Default tier assignment in fleet** (used when you register an opencode member without
+specifying `model_tiers`):
+
+- `cheap`: `opencode/north-mini-code-free` -- fastest (3B active params), strong SWE-bench
+- `standard`: `opencode/deepseek-v4-flash-free` -- balanced speed and capability
+- `premium`: `opencode/nemotron-3-ultra-free` -- best agentic coding, no auth required
+
+All three defaults are zero-setup: no API key, no subscription, no local GPU needed.
+Override any tier via `update_member model_tiers: { premium: "google/gemini-2.5-pro" }`
+once you have Google auth configured (see Option B above).
 
 **Rate limits:** Free models are rate-limited per IP (typically 20-50 requests/day).
 Fine for testing; for production use, subscribe to OpenCode Go ($10/month) to unlock
@@ -137,9 +155,9 @@ register_member
   work_folder: "/path/to/work"
   llm_provider: opencode
   model_tiers: {
-    cheap: "ollama/qwen3-coder:30b",
-    standard: "ollama/qwen3-coder-next",
-    premium: "ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M"
+    cheap: "opencode/north-mini-code-free",
+    standard: "opencode/deepseek-v4-flash-free",
+    premium: "opencode/nemotron-3-ultra-free"
   }
 ```
 
