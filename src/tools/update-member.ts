@@ -52,7 +52,10 @@ export const updateMemberSchema = z.object({
     standard: z.string().optional(),
     premium: z.string().optional(),
   }).optional().describe('Per-member model tier map with free-form model IDs (e.g. "ollama/qwen3-coder:30b"). A single model fills all tiers. At least one model required.'),
-  unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  unattended: z.preprocess(
+    (v) => v === false ? 'false' : v,
+    z.enum(['false', 'auto', 'dangerous'])
+  ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -163,7 +166,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
   if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;
-  if (input.unattended !== undefined) updates.unattended = input.unattended;
+  if (input.unattended !== undefined) updates.unattended = input.unattended === 'false' ? false : input.unattended;
   if (input.host) updates.host = input.host;
   if (input.port) updates.port = input.port;
   if (input.username) updates.username = input.username;

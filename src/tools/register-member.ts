@@ -47,7 +47,10 @@ export const registerMemberSchema = z.object({
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Custom cheap model choice from a curated list'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
-  unattended: z.union([z.literal(false), z.literal('auto'), z.literal('dangerous')]).optional().describe('Permission mode for unattended execution. false (default) = interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  unattended: z.preprocess(
+    (v) => v === false ? 'false' : v,
+    z.enum(['false', 'auto', 'dangerous'])
+  ).optional().describe('Permission mode for unattended execution. Omit or pass "false" for interactive prompts (default); "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
   model_tiers: z.object({
     cheap: z.string().optional(),
     standard: z.string().optional(),
@@ -207,7 +210,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     modelCheap: input.model_cheap,
     modelStandard: input.model_standard,
     modelPremium: input.model_premium,
-    unattended: input.unattended ?? false,
+    unattended: (input.unattended === 'false' ? false : input.unattended) ?? false,
     modelTiers: normalizedModelTiers,
   };
 
