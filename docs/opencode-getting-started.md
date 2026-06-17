@@ -70,11 +70,11 @@ For local Ollama (same machine), use `http://localhost:11434/v1`.
 
 ---
 
-### Option B -- Google Gemini via OAuth (tested and working)
+### Option B -- Google Gemini (tested and working)
 
-Best for: users with Google AI Ultra subscription ($129/month), no per-token billing.
+**If you have a Google AI subscription**, use OAuth via the auth plugin:
 
-**1. Add the auth plugin to `~/.config/opencode/opencode.json`:**
+1. Add the plugin to `~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -83,26 +83,29 @@ Best for: users with Google AI Ultra subscription ($129/month), no per-token bil
 }
 ```
 
-**2. Authenticate:**
+2. Authenticate:
 
 ```bash
 opencode auth login
 # Select Google -> complete browser OAuth flow
 ```
 
-**3. Use Google models** by selecting them in the OpenCode TUI or setting them in
-fleet model_tiers (see below).
+**If you have a Google API key**, set it as an environment variable before launching
+OpenCode:
+
+```bash
+export GOOGLE_GENERATIVE_AI_API_KEY=your-key-here
+```
+
+Note: OpenCode uses `GOOGLE_GENERATIVE_AI_API_KEY` specifically -- not `GEMINI_API_KEY`
+or `GOOGLE_API_KEY`.
 
 **Tested and verified Google models:**
 
 | Model ID | Notes |
 |---|---|
-| `google/gemini-2.5-flash` | Fast, cost-efficient, good for most tasks |
+| `google/gemini-2.5-flash` | Fast, good for most tasks |
 | `google/gemini-2.5-pro` | Higher reasoning, use for complex planning |
-
-**Note on auth:** The `GOOGLE_GENERATIVE_AI_API_KEY` environment variable is the
-exact key name OpenCode uses (not `GEMINI_API_KEY` or `GOOGLE_API_KEY`). If you
-prefer API key auth over OAuth, set this variable before launching OpenCode.
 
 ---
 
