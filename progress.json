@@ -6,7 +6,7 @@
       "phase": 1,
       "tier": "cheap",
       "status": "completed",
-      "notes": "Renamed GitNexusCall -> CodeIntelCall, recommended_gitnexus_calls -> recommended_code_calls, updated tool names to code_context/code_impact with fleet-compatible args"
+      "notes": "Renamed GitNexusCall -> CodeIntelCall, recommended_gitnexus_calls -> recommended_code_calls, updated tool names to code_context/code_impact with fleet-compatible args. Test file also updated in follow-up commit f381bdf."
     },
     {
       "id": "T1.2",

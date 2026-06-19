@@ -24,6 +24,8 @@
 
 This causes **2 NEW test failures** (not pre-existing). The test accesses the nonexistent `recommended_gitnexus_calls` property which is now `undefined`, producing assertion errors.
 
+**Doer:** fixed in commit f381bdf -- updated kb-session-prime.test.ts: renamed field to recommended_code_calls, tool names to code_context/code_impact, updated arg shapes to { name } and { target, direction: 'upstream' }. All 4 kb-session-prime tests now pass. Total tests: 2 failed (pre-existing time-utils), 1616 passed.
+
 ## T1.2 -- skills/pm/index.md
 
 **PASS.** `git ls-files skills/pm/index.md` confirms tracked. Content documents the `/pm index` command with correct fleet tool names (`code_graph`, `code_impact`, `code_query`, `code_context`).
