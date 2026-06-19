@@ -45,7 +45,7 @@ If this task requires secrets, API keys, or tokens (e.g., external API calls, pr
 ## Knowledge Bank
 
 - Start of session: run `kb_session_prime` and read any stale files it returns.
-  After priming, dispatch all recommended code intelligence calls using
+  After priming, dispatch all recommended_code_calls using
   the fleet code intelligence tools (code_graph, code_impact, code_query, code_context).
 - During work: use fleet code intelligence tools for cross-file tracing and symbol lookup -- never
   plain-read files for structural questions. Run `kb_capture` after significant
