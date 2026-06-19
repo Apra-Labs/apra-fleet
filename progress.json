@@ -29,8 +29,8 @@
       "title": "Build, install, verify deployed templates use fleet tool names",
       "phase": 1,
       "tier": "cheap",
-      "status": "in_progress",
-      "notes": "Awaiting approval for npm run build"
+      "status": "completed",
+      "notes": "npm run build: success, npm test: 1632 tests (4 pre-existing failures in time-utils), npm install: success with overlay, all 3 verification checks passed"
     },
     {
       "id": "VERIFY-1",
@@ -38,7 +38,8 @@
       "phase": 1,
       "tier": "premium",
       "type": "verify",
-      "status": "pending"
+      "status": "ready_for_review",
+      "notes": "All 4 tasks completed and pushed. Awaiting PM review."
     }
   ]
 }
