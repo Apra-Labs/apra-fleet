@@ -92,32 +92,32 @@ describe('kb_session_prime', () => {
     expect(result.fresh_summaries).toHaveLength(1);
   });
 
-  it('recommended_gitnexus_calls is array of objects with tool+args keys', async () => {
+  it('recommended_code_calls is array of objects with tool+args keys', async () => {
     const result = await provider.prime({
       session_files: ['src/registry.ts'],
       hint_symbols: ['initRegistry'],
     });
 
-    expect(Array.isArray(result.recommended_gitnexus_calls)).toBe(true);
-    for (const call of result.recommended_gitnexus_calls) {
+    expect(Array.isArray(result.recommended_code_calls)).toBe(true);
+    for (const call of result.recommended_code_calls) {
       expect(call).toHaveProperty('tool');
       expect(call).toHaveProperty('args');
       expect(typeof call.tool).toBe('string');
       expect(typeof call.args).toBe('object');
     }
 
-    const symbolCall = result.recommended_gitnexus_calls.find(c => c.tool === 'context');
+    const symbolCall = result.recommended_code_calls.find(c => c.tool === 'code_context');
     expect(symbolCall).toBeDefined();
-    expect(symbolCall!.args).toEqual({ symbol: 'initRegistry' });
+    expect(symbolCall!.args).toEqual({ name: 'initRegistry' });
 
-    const impactCall = result.recommended_gitnexus_calls.find(c => c.tool === 'impact');
+    const impactCall = result.recommended_code_calls.find(c => c.tool === 'code_impact');
     expect(impactCall).toBeDefined();
-    expect(impactCall!.args).toEqual({ file: 'src/registry.ts' });
+    expect(impactCall!.args).toEqual({ target: 'src/registry.ts', direction: 'upstream' });
   });
 
-  it('no hints: recommended_gitnexus_calls is empty array', async () => {
+  it('no hints: recommended_code_calls is empty array', async () => {
     const result = await provider.prime({});
-    expect(result.recommended_gitnexus_calls).toEqual([]);
+    expect(result.recommended_code_calls).toEqual([]);
     expect(result.session_warm).toBe(true);
   });
 });
