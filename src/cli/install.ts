@@ -697,12 +697,25 @@ Then re-run:  apra-fleet install`);
         const content = extractAsset(assetKey);
         writeAssetFile(path.join(paths.skillsDir, name), content);
       }
+      // Overlay apra-fleet-owned PM skill additions/overrides from skills/pm/ in repo root
+      const root = findProjectRoot();
+      const repoSkillsPm = path.join(root, 'skills', 'pm');
+      if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
+        copyDirSync(repoSkillsPm, paths.skillsDir);
+        console.log('    [OK] Overlaid apra-fleet PM skill overrides from skills/pm/');
+      }
     } else {
       // Dev/npm mode: prefer vendor/apra-pm submodule, fall back to dist/
       const root = findProjectRoot();
       const vendorPm = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
       const pmSrc = fs.existsSync(vendorPm) ? vendorPm : path.join(root, 'dist', 'skills', 'pm');
       copyDirSync(pmSrc, paths.skillsDir);
+      // Overlay apra-fleet-owned PM skill additions/overrides from skills/pm/ in repo root
+      const repoSkillsPm = path.join(root, 'skills', 'pm');
+      if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
+        copyDirSync(repoSkillsPm, paths.skillsDir);
+        console.log('    [OK] Overlaid apra-fleet PM skill overrides from skills/pm/');
+      }
     }
   }
 
