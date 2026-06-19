@@ -2,76 +2,43 @@
   "tasks": [
     {
       "id": "T1.1",
-      "title": "Define CodeIntelligenceProvider interface",
+      "title": "Fix kb_session_prime -- rename type/field, update tool names to fleet names",
+      "phase": 1,
+      "tier": "cheap",
       "status": "completed",
-      "notes": "Created src/tools/code-intelligence.ts with interface, PROVIDERS map, getProvider(). tsc --noEmit passes."
+      "notes": "Renamed GitNexusCall -> CodeIntelCall, recommended_gitnexus_calls -> recommended_code_calls, updated tool names to code_context/code_impact with fleet-compatible args"
     },
     {
       "id": "T1.2",
-      "title": "Implement gitnexus provider",
+      "title": "Add skills/pm/index.md to repo source control",
+      "phase": 1,
+      "tier": "cheap",
       "status": "completed",
-      "notes": "Created src/tools/code-intelligence-gitnexus.ts. GitNexusProvider uses StdioClientTransport singleton to npx gitnexus mcp. Each method delegates to call_graph/impact/query/context. Registered in PROVIDERS map."
+      "notes": "Copied exact content from ~/.claude/skills/pm/index.md to repo at skills/pm/index.md"
     },
     {
       "id": "T1.3",
-      "title": "Register 4 MCP tools in server",
+      "title": "Fix installer dev-mode PM skills overlay (skills/pm/ fallback)",
+      "phase": 1,
+      "tier": "standard",
       "status": "completed",
-      "notes": "Registered code_graph, code_impact, code_query, code_context in src/index.ts. Each calls getProvider() and delegates."
+      "notes": "Added overlay logic to both SEA and non-SEA blocks in install.ts to copy skills/pm/ from repo root on top of installed PM skills"
     },
     {
       "id": "T1.4",
-      "title": "Write unit tests for code intelligence abstraction",
-      "status": "completed",
-      "notes": "7 tests in tests/code-intelligence.test.ts. All pass. MCP client mocked -- no live gitnexus needed."
-    },
-    {
-      "id": "T1.5",
-      "title": "Add repo parameter to all 4 fleet tool schemas",
-      "status": "pending"
+      "title": "Build, install, verify deployed templates use fleet tool names",
+      "phase": 1,
+      "tier": "cheap",
+      "status": "in_progress",
+      "notes": "Awaiting approval for npm run build"
     },
     {
       "id": "VERIFY-1",
-      "title": "Verify Phase 1",
-      "type": "verify",
-      "status": "completed",
-      "notes": "APPROVED by ApraFleetRev after one CHANGES NEEDED cycle. Schema fixes for code_impact and code_context, AGENTS.md cleanup, llms-full.txt restored. Build clean, 7/7 new tests pass."
-    },
-    {
-      "id": "T2.1",
-      "title": "Update install.ts Step 9",
-      "status": "completed",
-      "notes": "Removed gitnexus .mcp.json write block. Added cleanup to remove mcpServers.gitnexus if present. Writes ~/.apra-fleet/data/code-intelligence/config.json with provider=gitnexus."
-    },
-    {
-      "id": "T2.2",
-      "title": "Update tpl-doer + tpl-reviewer",
-      "status": "completed",
-      "notes": "KB sections in tpl-doer.md and tpl-reviewer.md use fleet code intelligence tools only. No gitnexus-by-name references. Em dashes fixed to ASCII."
-    },
-    {
-      "id": "T2.3",
-      "title": "Update knowledge-agent.md",
-      "status": "completed",
-      "notes": "skills/fleet/knowledge-agent.md created with KB Prime/Capture/Harvest workflow using fleet tool names only. 1751 bytes, no gitnexus-specific names."
-    },
-    {
-      "id": "T2.4",
-      "title": "Write code intelligence routing instruction to ~/.claude/CLAUDE.md on install",
-      "status": "completed",
-      "notes": "Added try/catch block in install.ts Step 9 after config.json write. Appends sentinel-guarded block to ~/.claude/CLAUDE.md instructing use of code_graph/code_impact/code_query/code_context tools. Idempotent via sentinel check. Build clean, 2 pre-existing time-utils failures only."
-    },
-    {
-      "id": "VERIFY-2",
-      "title": "Verify Phase 2",
+      "title": "Reviewer -- build, tests, field naming, installed templates",
+      "phase": 1,
+      "tier": "premium",
       "type": "verify",
       "status": "pending"
-    },
-    {
-      "id": "VERIFY-2-OLD",
-      "title": "Verify Phase 2 (first pass -- approved before T2.4)",
-      "type": "verify",
-      "status": "completed",
-      "notes": "APPROVED by ApraFleetRev. All T2 items verified: Step 9 present, templates clean, knowledge-agent.md committed. Build clean, same 3 pre-existing test failures as Phase 1."
     }
   ]
 }
