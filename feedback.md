@@ -2,7 +2,7 @@
 
 **Reviewer:** ApraFleetRev
 **Date:** 2026-06-19 19:45:00+05:30
-**Verdict:** CHANGES NEEDED
+**Verdict:** APPROVED
 
 ---
 
@@ -40,9 +40,9 @@ Both copy `skills/pm/` from repo root on top of the installed PM skills director
 
 ## T1.4 -- Build + install verification
 
-**PARTIAL PASS.**
+**PASS (after re-review).**
 - `npm run build`: clean (exit 0)
-- `npm test`: 1632 tests, **4 failures** -- 2 pre-existing in `time-utils.test.ts`, **2 NEW** in `kb-session-prime.test.ts` (see T1.1 above)
+- `npm test`: 1632 tests, **2 failures** -- pre-existing in `time-utils.test.ts` only, **1616 passed**
 - Installed `~/.claude/skills/pm/tpl-doer.md`: contains `recommended_code_calls` -- correct
 - Installed `~/.claude/skills/pm/tpl-reviewer.md`: contains `recommended_code_calls` -- correct
 - Installed `~/.claude/skills/pm/index.md`: exists -- correct
@@ -63,6 +63,4 @@ All files justified. CLAUDE.md is modified in working copy only (review instruct
 
 ## Summary
 
-T1.2, T1.3 are clean. T1.1 source rename in `src/` is correct, but the test file `tests/knowledge/kb-session-prime.test.ts` was not updated, causing 2 new test failures. The test must be updated to use `recommended_code_calls`, tool names `code_context`/`code_impact`, and the new arg shapes (`{ name: ... }` / `{ target: ..., direction: 'upstream' }`). Once the test is fixed, T1.4 verification will also pass.
-
-**Required fix:** Update `tests/knowledge/kb-session-prime.test.ts` lines 95-122 to match the renamed field and new tool/arg shapes from `sqlite-provider.ts`.
+All Phase 1 tasks (T1.1-T1.4) pass. T1.1 test gap flagged in initial review was fixed in commit 6543411 -- verified: all 5 issues (field name, tool names, arg shapes) corrected. Build clean, 1616 tests pass (2 pre-existing time-utils failures only). Templates installed correctly with fleet tool names. File hygiene clean.
