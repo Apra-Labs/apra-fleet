@@ -25,7 +25,7 @@ import type {
   SyncResult,
   AudnDecision,
   Confidence,
-  GitNexusCall,
+  CodeIntelCall,
 } from './types.js';
 
 const CONTENT_CAP = 4000;
@@ -528,15 +528,15 @@ export class SqliteProvider implements MemoryProvider {
       }
     }
 
-    const recommended_gitnexus_calls: GitNexusCall[] = [];
+    const recommended_code_calls: CodeIntelCall[] = [];
     if (opts.hint_symbols?.length) {
       for (const symbol of opts.hint_symbols) {
-        recommended_gitnexus_calls.push({ tool: 'context', args: { symbol } });
+        recommended_code_calls.push({ tool: 'code_context', args: { name: symbol } });
       }
     }
     if (opts.session_files?.length) {
       for (const file of opts.session_files) {
-        recommended_gitnexus_calls.push({ tool: 'impact', args: { file } });
+        recommended_code_calls.push({ tool: 'code_impact', args: { target: file, direction: 'upstream' } });
       }
     }
 
@@ -553,7 +553,7 @@ export class SqliteProvider implements MemoryProvider {
       stale_files,
       top_entries,
       fresh_summaries,
-      recommended_gitnexus_calls,
+      recommended_code_calls,
       token_estimate,
     };
   }

@@ -6,7 +6,7 @@ export type CaptureSource = 'doer' | 'reviewer' | 'user_interrupt' | 'kb_agent_h
 
 export type AudnDecision = 'add' | 'update' | 'flagged' | 'none';
 
-export interface GitNexusCall {
+export interface CodeIntelCall {
   tool: string;
   args: Record<string, string>;
 }
@@ -78,7 +78,7 @@ export interface PrimedContext {
   stale_files: string[];
   top_entries: KBEntry[];
   fresh_summaries: FileContextResult[];
-  recommended_gitnexus_calls: GitNexusCall[];
+  recommended_code_calls: CodeIntelCall[];
   token_estimate: number;
 }
 
