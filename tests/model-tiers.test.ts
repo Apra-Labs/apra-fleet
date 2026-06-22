@@ -97,9 +97,9 @@ describe('resolveModelForTier', () => {
   it('falls back to adapter defaults when modelTiers is undefined', () => {
     const agent = makeTestAgent({ modelTiers: undefined });
 
-    expect(resolveModelForTier(agent, 'cheap', opencode)).toBe('ollama/qwen3-coder:30b');
-    expect(resolveModelForTier(agent, 'standard', opencode)).toBe('ollama/qwen3-coder:30b');
-    expect(resolveModelForTier(agent, 'premium', opencode)).toBe('ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M');
+    expect(resolveModelForTier(agent, 'cheap', opencode)).toBe('opencode/north-mini-code-free');
+    expect(resolveModelForTier(agent, 'standard', opencode)).toBe('opencode/deepseek-v4-flash-free');
+    expect(resolveModelForTier(agent, 'premium', opencode)).toBe('opencode/nemotron-3-ultra-free');
   });
 
   it('falls back to claude adapter modelForTier when modelTiers is undefined', () => {
@@ -210,7 +210,7 @@ describe('executePrompt model_tiers dispatch', () => {
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'standard' });
 
     const cmd = mockExecCommand.mock.calls[1][0];
-    expect(cmd).toContain('ollama/qwen3-coder:30b');
+    expect(cmd).toContain('opencode/deepseek-v4-flash-free');
   });
 });
 
