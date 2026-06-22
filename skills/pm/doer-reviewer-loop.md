@@ -127,11 +127,18 @@ local-only => "This is a local-only worktree -- commit every turn and skip pushi
 ```
 You are planning a track. Your worktree is <abs worktree path> on branch <branch>
 (base <base>). cd there first; use absolute paths. Read requirements.md (and
-design.md if present). Follow your planner instructions: explore, draft, front-load
-foundations, self-critique, refine. Assign every work task the exact model to run
-it on (a weaker/faster model for mechanical tasks, the strongest for hard design),
-chosen from the models available in this environment, and write it as the task's
-Model in PLAN.md. Commit PLAN.md to <branch> as identity pm-planner
+design.md if present).
+Knowledge bank: before exploring the codebase call kb_session_prime with
+hint_symbols and hint_modules derived from the requirements. Read every entry in
+top_entries -- prior sprint knowledge informs model assignment and task descriptions.
+For symbol lookups and call graph questions use code intelligence tools
+(code_graph, code_impact, code_query, code_context) -- never Glob/Grep for
+structural queries.
+Explore, draft, front-load risk (riskiest task first), self-critique, refine.
+Assign every work task the exact model to run it on (claude-haiku-4-5-20251001 for
+mechanical, claude-sonnet-4-6 for typical, claude-opus-4-8 for hard design),
+chosen from the models actually available in this environment, and write it as the
+task's Model in PLAN.md. Commit PLAN.md to <branch> as identity pm-planner
 (git -c user.name='pm-planner' -c user.email='planner@pm.local' commit).
 <transport line>. The worktree and branch already exist -- do not create or switch
 branches.
