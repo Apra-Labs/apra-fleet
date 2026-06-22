@@ -2,15 +2,13 @@
   "mcpServers": {
     "apra-fleet": {
       "command": "node",
-      "args": ["dist/index.js"],
+      "args": [
+        "dist/index.js"
+      ],
       "cwd": ".",
       "env": {
         "NODE_ENV": "development"
       }
-    },
-    "gitnexus": {
-      "command": "npx",
-      "args": ["-y", "gitnexus", "mcp"]
     }
   }
 }

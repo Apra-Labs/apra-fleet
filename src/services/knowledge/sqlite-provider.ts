@@ -280,6 +280,19 @@ export class SqliteProvider implements MemoryProvider {
     return null;
   }
 
+  private decayConceptEntries(db: Database.Database, days: number): void {
+    const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
+    db.prepare(`
+      UPDATE entries
+      SET confidence = 'UNVERIFIED'
+      WHERE confidence = 'INFERRED'
+        AND superseded_at IS NULL
+        AND (source_files = '[]' OR source_files IS NULL OR source_files = '')
+        AND (last_accessed IS NULL OR last_accessed < ?)
+        AND (promoted_at IS NULL OR promoted_at < ?)
+    `).run(cutoff, cutoff);
+  }
+
   private wireLinks(db: Database.Database, newId: string, input: KBEntryInput): void {
     const symbols = input.symbols ?? [];
     const files = input.source_files ?? [];
@@ -353,6 +366,9 @@ export class SqliteProvider implements MemoryProvider {
     if (opts.type) {
       conditions.push('e.type = ?');
       params.push(opts.type);
+    }
+    if (opts.flagged_only) {
+      conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
     }
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
@@ -493,6 +509,8 @@ export class SqliteProvider implements MemoryProvider {
   }
 
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
+    this.decayConceptEntries(this.getDb(), opts.decay_after_days ?? 30);
+
     const fileResults = opts.session_files?.length
       ? await this.context(opts.session_files)
       : [];

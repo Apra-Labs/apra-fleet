@@ -47,6 +47,7 @@ export interface QueryOptions {
   tags?: string[];
   include_stale?: boolean;
   include_superseded?: boolean;
+  flagged_only?: boolean;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
@@ -71,6 +72,7 @@ export interface PrimeOptions {
   session_files?: string[];
   hint_symbols?: string[];
   hint_modules?: string[];
+  decay_after_days?: number;
 }
 
 export interface PrimedContext {

@@ -23,10 +23,11 @@ code_graph, code_impact, code_query, and code_context tools.
 
 ## When to run
 
-- After `/pm init` on a new project
+- **Automatically inside `/pm init`** -- runs as the final step of project initialization.
+  The worktree must exist before indexing (gitnexus needs files on disk to analyze).
 - After a large merge or rebase that changes many files
 - When `kb_session_prime` returns many stale entries
-- Any time the user asks to re-index
+- Any time the user asks to re-index (run `/pm index` explicitly)
 
 ## Notes
 

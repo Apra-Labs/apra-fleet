@@ -44,10 +44,20 @@ If this task requires secrets, API keys, or tokens (e.g., external API calls, pr
 
 ## Knowledge Bank
 
-- Start of session: run `kb_session_prime` and read any stale files it returns.
-  After priming, dispatch all recommended_code_calls using
-  the fleet code intelligence tools (code_graph, code_impact, code_query, code_context).
-- During work: use fleet code intelligence tools for cross-file tracing and symbol lookup -- never
-  plain-read files for structural questions. Run `kb_capture` after significant
-  decisions or architectural choices.
-- End of session: run `kb_harvest` to save learnings before stopping.
+- Start of session: run `kb_session_prime` with the files and symbols from your first task.
+  Read every entry in `top_entries` -- these are prior learnings about this codebase from
+  previous sprints. Read stale files it returns. Dispatch all `recommended_code_calls`.
+
+- Retrieve first, then read source: before reading an unfamiliar file or function,
+  run `kb_query({ query: "<name>" })` first. If the KB returns a CONFIRMED or INFERRED
+  entry, trust it and work from it -- skip the full source read. Only read source if KB
+  is cold (no entry), stale, or the entry says "see source for details."
+  This avoids re-reading files that prior agents have already summarized.
+
+- During work: use fleet code intelligence tools (code_graph, code_impact, code_query,
+  code_context) for structural questions -- never plain-read files for call graph or
+  symbol lookup. Do NOT call kb_capture yourself -- the KB Agent handles all capturing
+  after your session ends. Your KB role is retrieval only.
+
+- End of session: run `kb_harvest` to make your session output available to the KB Agent.
+  The KB Agent runs after the reviewer and processes your transcript into structured entries.
