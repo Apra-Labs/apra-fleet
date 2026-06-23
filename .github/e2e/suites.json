@@ -94,28 +94,28 @@
       "pm":       { "os": "linux",   "provider": "opencode", "runner": "fleet-opencode" },
       "doer":     { "os": "linux",   "provider": "opencode", "type": "remote" },
       "reviewer": { "os": "linux",   "provider": "opencode", "type": "remote" },
-      "model": "ollama/qwen3-coder:30b",
+      "model": "opencode/deepseek-v4-flash-free",
       "vcs": "github"
     },
     "s9.1": {
       "pm":       { "os": "windows", "provider": "opencode", "runner": "fleet-opencode-win" },
       "doer":     { "os": "local_doer_windows",     "provider": "opencode", "type": "local" },
       "reviewer": { "os": "local_reviewer_windows", "provider": "opencode", "type": "local" },
-      "model": "ollama/qwen3-coder:30b",
+      "model": "opencode/deepseek-v4-flash-free",
       "vcs": "github"
     },
     "s9.2": {
       "pm":       { "os": "linux",   "provider": "opencode", "runner": "fleet-opencode" },
       "doer":     { "os": "local_doer_linux",     "provider": "opencode", "type": "local" },
       "reviewer": { "os": "local_reviewer_linux", "provider": "opencode", "type": "local" },
-      "model": "ollama/qwen3-coder:30b",
+      "model": "opencode/deepseek-v4-flash-free",
       "vcs": "github"
     },
     "s9.3": {
       "pm":       { "os": "macos",   "provider": "opencode", "runner": "fleet-opencode-mac" },
       "doer":     { "os": "local_doer_macos",     "provider": "opencode", "type": "local" },
       "reviewer": { "os": "local_reviewer_macos", "provider": "opencode", "type": "local" },
-      "model": "ollama/qwen3-coder:30b",
+      "model": "opencode/deepseek-v4-flash-free",
       "vcs": "github"
     }
   }

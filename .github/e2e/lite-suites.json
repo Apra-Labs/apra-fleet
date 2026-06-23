@@ -6,7 +6,7 @@
       "id": "s10",
       "provider": "opencode",
       "cli": "opencode",
-      "model": "ollama/qwen3-coder:30b",
+      "model": "opencode/deepseek-v4-flash-free",
       "minCommits": 4,
       "expectedIssues": 3
     }

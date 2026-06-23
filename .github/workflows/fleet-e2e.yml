@@ -31,10 +31,10 @@ jobs:
          || inputs.suite == 's8.1' && 'fleet-windows'
          || inputs.suite == 's8.2' && 'fleet-linux'
          || inputs.suite == 's8.3' && 'fleet-macos'
-         || inputs.suite == 's9'   && 'fleet-opencode'
-         || inputs.suite == 's9.1' && 'fleet-opencode-win'
-         || inputs.suite == 's9.2' && 'fleet-opencode'
-         || inputs.suite == 's9.3' && 'fleet-opencode-mac'
+         || inputs.suite == 's9'   && 'ubuntu-latest'
+         || inputs.suite == 's9.1' && 'windows-latest'
+         || inputs.suite == 's9.2' && 'ubuntu-latest'
+         || inputs.suite == 's9.3' && 'macos-latest'
          || 'fleet-macos' }}
 
     steps:
@@ -154,19 +154,15 @@ jobs:
             fi
           fi
 
-      - name: Verify OpenCode + Ollama if PM provider is opencode
+      - name: Install OpenCode CLI if not present
         if: steps.suite.outputs.pm_provider == 'opencode'
         shell: bash
         run: |
-          echo "Verifying OpenCode CLI is installed..."
-          opencode --version || { echo "::error::opencode CLI not found; install with: npm install -g opencode-ai"; exit 1; }
-          MEMBERS=$(cat .github/e2e/members.json)
-          ENDPOINT=$(echo "$MEMBERS" | jq -r '.opencode.endpoint // "http://localhost:11434/v1"')
-          echo "Verifying Ollama endpoint at $ENDPOINT ..."
-          curl -sf "$ENDPOINT/models" > /dev/null 2>&1 \
-            || curl -sf "$(echo "$ENDPOINT" | sed 's|/v1$||')/api/tags" > /dev/null 2>&1 \
-            || { echo "::error::Ollama endpoint not reachable at $ENDPOINT"; exit 1; }
-          echo "OpenCode CLI and Ollama endpoint verified"
+          if ! command -v opencode &> /dev/null; then
+            echo "OpenCode not found -- installing via npm..."
+            npm install -g opencode-ai
+          fi
+          opencode --version || { echo "::error::opencode CLI install failed"; exit 1; }
 
       - name: Prepare clean PM environment
         shell: bash
