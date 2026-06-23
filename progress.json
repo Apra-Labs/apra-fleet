@@ -1,0 +1,255 @@
+{
+  "_schema": {
+    "type": "work | verify",
+    "status": "pending | completed | blocked"
+  },
+  "project": "knowledge-bank",
+  "plan_file": "PLAN.md",
+  "created": "2026-06-11",
+  "tasks": [
+    {
+      "id": 0,
+      "phase": 0,
+      "step": "Task 0: Foundation ADRs + GitNexus Spike",
+      "type": "work",
+      "tier": "cheap",
+      "status": "completed",
+      "commit": "15f9dd3",
+      "notes": "ADR-003 completed with Go verdict. Validated codebase structure amenable to GitNexus AST analysis."
+    },
+    {
+      "id": "0-verify",
+      "phase": 0,
+      "step": "VERIFY: Phase 0",
+      "type": "verify",
+      "status": "completed",
+      "commit": "current",
+      "notes": "ADR-001, ADR-002, ADR-003 all written with explicit decisions. npm run build succeeded. npm test: 1314 passed, 14 skipped, 2 pre-existing failures in time-utils (unrelated to KB). No regressions."
+    },
+    {
+      "id": 1,
+      "phase": 1,
+      "step": "Task 1: GitNexus Integration",
+      "type": "work",
+      "tier": "cheap",
+      "status": "completed",
+      "commit": "55c376d",
+      "notes": "Added gitnexus MCP server to .mcp.json (npx -y gitnexus mcp). Created docs/knowledge-layer.md stub."
+    },
+    {
+      "id": 2,
+      "phase": 1,
+      "step": "Task 2: MemoryProvider Interface + KBEntry Types",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "0134ccf",
+      "notes": "Created src/services/knowledge/types.ts. All types exported: KBEntry, KBEntryInput, MemoryProvider, AudnDecision ('add'|'update'|'flagged'|'none'), GitNexusCall, PrimedContext. Compiles with zero errors."
+    },
+    {
+      "id": 3,
+      "phase": 1,
+      "step": "Task 3: SQLiteProvider - Schema, FTS5, Init",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "e99ce0a",
+      "notes": "Created sqlite-provider.ts and kb-service.ts. better-sqlite3 installed. WAL mode set. FTS5 virtual table with DELETE+INSERT triggers. Content cap 4000 chars. FLEET_DIR path from paths.ts. All 8 stub methods present. npm run build passes."
+    },
+    {
+      "id": 4,
+      "phase": 1,
+      "step": "Task 4: computeFileHash + Staleness Logic",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "4e7b45b",
+      "notes": "computeFileHash (git primary via execFile, sha256 fallback), computeFileHashBatch (single git call for N files), checkStaleness (invalidated/file_missing/unreadable/hash compare). 10 unit tests (all pass): git hash, null for missing file, sha256 fallback, batch single call, stale=false match, stale=true mismatch, file_missing, EACCES unreadable, invalidated immediate stale, non-context-cache skip."
+    },
+    {
+      "id": "1-verify",
+      "phase": 1,
+      "step": "VERIFY: Phase 1 - Foundation",
+      "type": "verify",
+      "status": "completed",
+      "commit": "4e7b45b",
+      "notes": "npm run build: PASS. npm test: 1324 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged from Phase 0). DB initialized at ~/.apra-fleet/data/knowledge/kb.sqlite (57344 bytes). FTS5 table entries_fts created via triggers. 10 new KB unit tests all green. No regressions. GitNexus added to .mcp.json."
+    },
+    {
+      "id": 5,
+      "phase": 2,
+      "step": "Task 5: kb_capture MCP Tool",
+      "type": "work",
+      "tier": "cheap",
+      "status": "completed",
+      "commit": "ce085eb",
+      "notes": "kb_capture MCP tool created. SqliteProvider.capture() fully implemented with AUDN evaluation: FTS search finds candidates, AND-logic (symbol+file overlap required), flagged/none/update/add decisions. insertEntry/evaluateAudn/wireLinks/findAudnCandidates as private helpers. KBEntryInput now omits created_at. 4 unit tests all green."
+    },
+    {
+      "id": 6,
+      "phase": 2,
+      "step": "Task 6: kb_invalidate MCP Tool + Git Hook",
+      "type": "work",
+      "tier": "cheap",
+      "status": "completed",
+      "commit": "511474e",
+      "notes": "kb_invalidate MCP tool. SqliteProvider.invalidate() already implemented. CLI shim: apra-fleet kb invalidate <files...>. installKbPostCommitHook() writes .git/hooks/post-commit using while IFS= read -r f loop. KB_POST_COMMIT_HOOK template exported. 4 unit tests: invalidate by file, skip other files, skip non-context-cache, zero for missing file."
+    },
+    {
+      "id": 7,
+      "phase": 2,
+      "step": "Task 7: AUDN Logic",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "7f4ed9d",
+      "notes": "AUDN logic extracted to src/services/knowledge/audn.ts. makeAudnDecision() is pure function (no DB). sqlite-provider.ts uses makeAudnDecision via evaluateAudn(). getLinked(id) added to SqliteProvider and MemoryProvider interface. 14 tests in audn.test.ts: pure helpers + 5 makeAudnDecision cases + self-wiring test (two entries sharing registry.ts linked in links table)."
+    },
+    {
+      "id": "2-verify",
+      "phase": 2,
+      "step": "VERIFY: Phase 2 - Write Path",
+      "type": "verify",
+      "status": "completed",
+      "commit": "7f4ed9d",
+      "notes": "npm run build: PASS. npm test: 1346 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged from Phase 1, +22 new KB tests). kb_capture: add/none/update/flagged all tested. kb_invalidate: marks context-cache stale, non-context-cache unaffected. AUDN AND-logic verified (symbol-only match -> add). Self-wiring: entries sharing registry.ts linked. .mcp.json fix: both apra-fleet and gitnexus entries restored."
+    },
+    {
+      "id": 8,
+      "phase": 3,
+      "step": "Task 8: kb_context MCP Tool",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "92e5076",
+      "notes": "Extracted hash functions to file-hash.ts (circular dep fix). SqliteProvider.context() implemented with computeFileHashBatch (single git call). query() updated with stale/ids filtering. PrimedContext/PrimeOptions types updated. kb_context registered in index.ts. 4 tests: fresh, stale, missing, batch (1 subprocess verified)."
+    },
+    {
+      "id": 9,
+      "phase": 3,
+      "step": "Task 9: kb_session_prime MCP Tool",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "8796949",
+      "notes": "SqliteProvider.prime() implemented. session_warm boolean, stale_files detection, L1 scan for top entries (non-context-cache), recommended_gitnexus_calls as GitNexusCall[] ({tool, args} objects). Token estimation. 4 tests: cold, warm, gitnexus call shape, empty hints."
+    },
+    {
+      "id": 10,
+      "phase": 3,
+      "step": "Task 10: kb_query MCP Tool",
+      "type": "work",
+      "tier": "premium",
+      "status": "completed",
+      "commit": "a8f9a65",
+      "notes": "kb_query: FTS5 L1 search (title+summary, up to 20), L2 expand top 5 (800 tokens cap). Stale/superseded excluded by default, BM25 ranking. kb-vs-no-kb.test.ts comparison: cold->capture->warm proves 0 re-reads on warm session. 7 tests: basic query, type filter, stale exclusion, superseded exclusion, L2 expansion, no-KB baseline, with-KB warm."
+    },
+    {
+      "id": "3-verify",
+      "phase": 3,
+      "step": "VERIFY: Phase 3 - Read Path",
+      "type": "verify",
+      "status": "completed",
+      "commit": "a8f9a65",
+      "notes": "npm run build: PASS. npm test: 1361 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged, +15 new KB tests). Warm-hit ratio: cold prime = 3 files stale (3 reads needed), warm prime after capture = 0 files stale (0 reads). Warm/cold ratio = 0/3 = 0% (target was <50%). Token reduction: warm session loads summaries only (est ~60 tokens for 3 files) vs cold session requiring full file reads. kb-vs-no-kb.test.ts proves the value: WITH KB warm session has stale_files=[] and session_warm=true."
+    },
+    {
+      "id": 11,
+      "phase": "4a",
+      "step": "Task 11: KB Agent Role + kb_harvest",
+      "type": "work",
+      "tier": "cheap",
+      "status": "completed",
+      "commit": "5b27f4f",
+      "notes": "kb_harvest MCP tool: scans session transcripts for learning patterns (I found that/Note:/Warning:/Bug:/Gotcha:/This means), extracts file paths and symbols, captures via AUDN as UNVERIFIED. 3 tests."
+    },
+    {
+      "id": 12,
+      "phase": "4a",
+      "step": "Task 12: kb_promote MCP Tool",
+      "type": "work",
+      "tier": "cheap",
+      "status": "completed",
+      "commit": "bfce04b",
+      "notes": "kb_promote: UNVERIFIED->INFERRED->CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED is no-op. SqliteProvider.promote() implemented. 3 tests."
+    },
+    {
+      "id": 13,
+      "phase": "4a",
+      "step": "Task 13: KB Harvest Auto-Wire",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "8bf5c01",
+      "notes": "kb_harvest fires automatically (void fire-and-forget) when execute_prompt completes successfully. Errors caught and logged via logWarn. 3 tests verify wiring."
+    },
+    {
+      "id": 14,
+      "phase": "4a",
+      "step": "Task 14: kb_setup MCP Tool",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "d466c47",
+      "notes": "kb_setup: installs git post-commit hook (reuses installKbPostCommitHook), writes provider config, stores remote token encrypted via AES-256-GCM. Config at FLEET_DIR/knowledge/config.json mode 0o600. 3 tests."
+    },
+    {
+      "id": 15,
+      "phase": "4a",
+      "step": "Task 15: Security Audit",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "8b4e308",
+      "notes": "Audit: SQL injection PASS (all prepared statements), command injection PASS (execFile not exec), path traversal FIXED (added validateFilePaths to all KB tools), plaintext credentials PASS (AES-256-GCM), non-ASCII PASS. SECURITY.md written."
+    },
+    {
+      "id": 17,
+      "phase": "4a",
+      "step": "Task 17: KB Server (HTTP REST)",
+      "type": "work",
+      "tier": "premium",
+      "status": "completed",
+      "commit": "6f9c7d6",
+      "notes": "kb-server: node:http on port 7878 (--port configurable). Routes: GET /health, POST /api/kb/capture, GET /api/kb/query, POST /api/kb/invalidate, GET /api/kb/context, POST /api/kb/prime. Bearer token auth (encrypted via credential store). Rate limit 100 req/min per IP. 1MB body limit (413). Path traversal validation (400). EADDRINUSE actionable message. 6 tests."
+    },
+    {
+      "id": "4a-verify",
+      "phase": "4a",
+      "step": "VERIFY: Phase 4a - KB Agent + Security + Server",
+      "type": "verify",
+      "status": "completed",
+      "commit": "6f9c7d6",
+      "notes": "npm run build: PASS. npm test: 1379 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged from Phase 3). +18 new KB tests (65 total KB tests across 13 files). kb_harvest extracts learnings. kb_promote UNVERIFIED->INFERRED->CONFIRMED. Auto-wire fires on execute_prompt completion. kb_setup installs hook + encrypts token. Security audit: path traversal fixed. kb-server: /health 200, 401 no/wrong token, 201 capture, 400 path traversal, 429 rate limit."
+    },
+    {
+      "id": 18,
+      "phase": "4b",
+      "step": "Task 18: HttpKbProvider",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "20147a9",
+      "notes": "http-provider.ts: proxies all 8 MemoryProvider methods to kb-server. READS (query/context/prime) fall back to SqliteProvider on ECONNREFUSED. WRITES (capture/invalidate) queued in memory (max 1000, drops oldest with warning). tryFlushQueue on each request handles reconnect. process.on('beforeExit') warns if queue non-empty. KBService.getProvider() instantiates HttpKbProvider when config.provider='http'. kb_setup auto-sets provider='http' when --remote provided. SqliteProvider.init() made idempotent (guard on this.db). 6 tests: proxy success, offline read fallback, write queue, queue flush, queue overflow, beforeExit warning."
+    },
+    {
+      "id": 16,
+      "phase": "4b",
+      "step": "Task 16: Documentation",
+      "type": "work",
+      "tier": "standard",
+      "status": "completed",
+      "commit": "b143264",
+      "notes": "docs/knowledge-layer.md: architecture two-plane diagram, setup guide (SQLite/HTTP/GitNexus/git hook), usage guide (session prime, capture, promote, dream cycle), provider swap table (SQLite/HTTP/Postgres), KB Agent dispatch, troubleshooting (stale graph, SQLITE_BUSY, hook not firing, offline queue warning, 401). docs/architecture.md: Knowledge Layer section with two-plane diagram, MemoryProvider abstraction, FTS5 two-phase retrieval, staleness tracking, AUDN, HTTP offline mode. All box-drawing and em-dash replaced with ASCII. README.md: Knowledge Layer row in Workflows table, Knowledge Layer section with 8-tool reference table, knowledge-layer.md link in Documentation table."
+    },
+    {
+      "id": "4b-verify",
+      "phase": "4b",
+      "step": "VERIFY: Phase 4b - Full System",
+      "type": "verify",
+      "status": "completed",
+      "commit": "b143264",
+      "notes": "npm run build: PASS. npm run build:binary: PASS (dist/apra-fleet-installer-win-x64.exe). npm test: 1385 passed, 14 skipped, 2 pre-existing failures in time-utils (unchanged from Phase 4a). E2E smoke: cold prime 3 stale_files, 3x kb_capture (add), warm prime session_warm=true stale_files=[]. kb-server: /health 200, unauthenticated 401. HttpKbProvider: 6 tests (proxy, fallback, queue, flush, overflow, beforeExit). Total KB tests: 77 across 14 files. Docs: knowledge-layer.md complete (architecture, setup, usage, provider swap, KB Agent, troubleshooting), architecture.md Knowledge Layer section, README.md Knowledge Layer section + 8-tool table."
+    }
+  ]
+}
