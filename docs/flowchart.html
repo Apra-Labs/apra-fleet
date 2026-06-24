@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apra Fleet -- System Flowchart</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    padding: 24px 16px 60px;
+  }
+  h1 { font-size: 20px; font-weight: 700; text-align: center; margin-bottom: 6px; }
+  .subtitle { text-align: center; color: #7d8590; font-size: 13px; margin-bottom: 32px; }
+
+  .chart-wrap {
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+
+  svg text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: center;
+    margin-top: 28px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: #7d8590;
+  }
+  .legend-box {
+    width: 18px;
+    height: 12px;
+    border-radius: 3px;
+    border: 1.5px solid;
+    flex-shrink: 0;
+  }
+  .legend-diamond {
+    width: 14px;
+    height: 14px;
+    transform: rotate(45deg);
+    border-radius: 2px;
+    border: 1.5px solid;
+    flex-shrink: 0;
+  }
+  .legend-cylinder {
+    width: 18px;
+    height: 12px;
+    border-radius: 6px;
+    border: 1.5px solid;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<h1>Apra Fleet -- System Flowchart</h1>
+<p class="subtitle">Complete sprint cycle: PM orchestration, agent dispatch, KB reads and writes, code indexing</p>
+
+<div class="chart-wrap">
+<svg viewBox="0 0 1060 1844" width="1060" style="max-width:100%;display:block;margin:0 auto;">
+  <defs>
+    <!-- Arrow markers -->
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#484f58"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3fb950"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#bc8cff"/>
+    </marker>
+    <marker id="arr-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#f0883e"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#f85149"/>
+    </marker>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#39d353"/>
+    </marker>
+  </defs>
+
+  <!-- ========== BACKGROUND LANES ========== -->
+  <!-- Left lane: PM -->
+  <rect x="10" y="60" width="200" height="1764" rx="8" fill="#f0883e08" stroke="#f0883e22" stroke-width="1"/>
+  <text x="110" y="82" text-anchor="middle" fill="#f0883e55" font-size="11" font-weight="600" letter-spacing="1">PM ORCHESTRATOR</text>
+
+  <!-- Center lane: Agents -->
+  <rect x="220" y="60" width="440" height="1764" rx="8" fill="#58a6ff06" stroke="#58a6ff18" stroke-width="1"/>
+  <text x="440" y="82" text-anchor="middle" fill="#58a6ff44" font-size="11" font-weight="600" letter-spacing="1">AGENTS (DISPATCHED)</text>
+
+  <!-- Right lane: Storage -->
+  <rect x="670" y="60" width="380" height="1764" rx="8" fill="#39d35306" stroke="#39d35318" stroke-width="1"/>
+  <text x="860" y="82" text-anchor="middle" fill="#39d35344" font-size="11" font-weight="600" letter-spacing="1">STORAGE / CHANNELS</text>
+
+  <!-- ===================== ROW 1: START ===================== -->
+  <ellipse cx="110" cy="130" rx="70" ry="26" fill="#161b22" stroke="#484f58" stroke-width="1.5"/>
+  <text x="110" y="134" text-anchor="middle" fill="#7d8590" font-size="12" font-weight="600">START</text>
+  <!-- Arrow down -->
+  <line x1="110" y1="156" x2="110" y2="184" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 2: PM INIT ===================== -->
+  <rect x="28" y="186" width="164" height="64" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="206" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">/pm init</text>
+  <text x="110" y="221" text-anchor="middle" fill="#7d8590" font-size="10">Write requirements.md</text>
+  <text x="110" y="234" text-anchor="middle" fill="#7d8590" font-size="10">bd create epic + worktree</text>
+  <text x="110" y="246" text-anchor="middle" fill="#39d353" font-size="9" font-weight="600">+ npx gitnexus analyze</text>
+
+  <!-- -> beads -->
+  <line x1="192" y1="208" x2="700" y2="208" stroke="#d2992244" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <text x="470" y="204" text-anchor="middle" fill="#d29922" font-size="9">bd create epic</text>
+
+  <!-- Beads storage -->
+  <rect x="700" y="186" width="140" height="48" rx="20" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+  <text x="770" y="207" text-anchor="middle" fill="#d29922" font-size="11" font-weight="700">Beads (bd)</text>
+  <text x="770" y="222" text-anchor="middle" fill="#7d8590" font-size="9">epic, tasks, status</text>
+  <text x="770" y="234" text-anchor="middle" fill="#7d8590" font-size="9">~/pm/.beads/*.db</text>
+
+  <!-- Git storage -->
+  <rect x="860" y="186" width="170" height="48" rx="20" fill="#1c2128" stroke="#484f58" stroke-width="1.5"/>
+  <text x="945" y="205" text-anchor="middle" fill="#adbac7" font-size="11" font-weight="700">Git Branch / Worktree</text>
+  <text x="945" y="220" text-anchor="middle" fill="#7d8590" font-size="9">requirements.md, PLAN.md</text>
+  <text x="945" y="232" text-anchor="middle" fill="#7d8590" font-size="9">branch-scoped -- per-worktree index</text>
+
+  <!-- -> git -->
+  <line x1="192" y1="222" x2="858" y2="218" stroke="#48505844" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <text x="600" y="215" text-anchor="middle" fill="#7d8590" font-size="9">requirements.md</text>
+
+  <!-- -> GitNexus (short labeled arrow from init right side) -->
+  <line x1="192" y1="242" x2="868" y2="242" stroke="#39d35333" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-cyan)"/>
+  <text x="600" y="238" text-anchor="middle" fill="#39d353" font-size="9">gitnexus analyze</text>
+
+  <!-- Arrow down from init -->
+  <line x1="110" y1="250" x2="110" y2="266" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 3: PLANNER ===================== -->
+  <rect x="240" y="268" width="190" height="90" rx="7" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="335" y="286" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">Planner</text>
+  <text x="335" y="299" text-anchor="middle" fill="#7d8590" font-size="10">local subagent, strongest model</text>
+
+  <!-- Step 1: kb_session_prime sub-box (NEW) -->
+  <rect x="252" y="306" width="166" height="28" rx="4" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="335" y="318" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">1. kb_session_prime (NEW)</text>
+  <text x="335" y="330" text-anchor="middle" fill="#7d8590" font-size="9">informs model choice + task descriptions</text>
+
+  <!-- Step 2: plan text (inside outer box) -->
+  <text x="335" y="350" text-anchor="middle" fill="#58a6ff" font-size="10">2. reads requirements -> PLAN.md</text>
+
+  <!-- kb_session_prime -> KB storage (dashed purple, exits box right side) -->
+  <line x1="418" y1="320" x2="698" y2="728" stroke="#bc8cff55" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+  <text x="590" y="308" text-anchor="middle" fill="#bc8cff" font-size="9">read</text>
+
+  <!-- Planner -> git (commit PLAN.md, exits box right side) -->
+  <line x1="430" y1="345" x2="858" y2="240" stroke="#58a6ff44" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr-blue)"/>
+  <text x="680" y="278" text-anchor="middle" fill="#58a6ff" font-size="9">commit PLAN.md</text>
+
+  <!-- PM dispatch arrow -->
+  <line x1="192" y1="310" x2="238" y2="310" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+  <text x="216" y="306" text-anchor="middle" fill="#f0883e" font-size="9">dispatch</text>
+
+  <!-- Arrow down from planner to plan-reviewer -->
+  <line x1="335" y1="358" x2="335" y2="372" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 4: PLAN-REVIEWER ===================== -->
+  <rect x="240" y="374" width="190" height="52" rx="7" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="335" y="395" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">Plan-Reviewer</text>
+  <text x="335" y="410" text-anchor="middle" fill="#7d8590" font-size="10">local subagent, strongest model</text>
+  <text x="335" y="423" text-anchor="middle" fill="#7d8590" font-size="10">reads PLAN.md -> writes feedback.md</text>
+
+  <!-- PM dispatch arrow -->
+  <line x1="192" y1="380" x2="238" y2="384" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+
+  <!-- Arrow down to diamond -->
+  <line x1="335" y1="426" x2="335" y2="454" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 5: PLAN APPROVED DIAMOND ===================== -->
+  <polygon points="335,456 385,486 335,516 285,486" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="335" y="482" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">Plan</text>
+  <text x="335" y="497" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">APPROVED?</text>
+
+  <!-- YES -> down -->
+  <line x1="335" y1="516" x2="335" y2="544" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="350" y="534" fill="#3fb950" font-size="10" font-weight="600">YES</text>
+
+  <!-- NO -> left loop back to planner (revision) -->
+  <line x1="285" y1="486" x2="246" y2="486" stroke="#f85149" stroke-width="1.5"/>
+  <line x1="246" y1="486" x2="246" y2="294" stroke="#f85149" stroke-width="1.5"/>
+  <line x1="246" y1="294" x2="238" y2="294" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr-red)"/>
+  <text x="228" y="402" text-anchor="middle" fill="#f85149" font-size="9">CHANGES</text>
+  <text x="228" y="414" text-anchor="middle" fill="#f85149" font-size="9">NEEDED</text>
+  <text x="228" y="426" text-anchor="middle" fill="#f85149" font-size="9">revise</text>
+
+  <!-- ===================== ROW 6: PM CREATES TASKS ===================== -->
+  <rect x="28" y="546" width="164" height="52" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="567" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">PM: Create Tasks</text>
+  <text x="110" y="582" text-anchor="middle" fill="#7d8590" font-size="10">bd create tasks from PLAN.md</text>
+  <text x="110" y="595" text-anchor="middle" fill="#7d8590" font-size="10">write progress.json</text>
+
+  <!-- Arrow from diamond YES to pm -->
+  <line x1="335" y1="544" x2="194" y2="572" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr-green)"/>
+
+  <!-- PM -> beads -->
+  <line x1="192" y1="572" x2="700" y2="210" stroke="#d2992244" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+
+  <!-- Arrow down from PM -->
+  <line x1="110" y1="598" x2="110" y2="626" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 7: DOER DISPATCH ===================== -->
+  <rect x="28" y="628" width="164" height="52" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="649" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">PM: Dispatch Doer</text>
+  <text x="110" y="664" text-anchor="middle" fill="#7d8590" font-size="10">send_files CLAUDE.md (tpl-doer)</text>
+  <text x="110" y="677" text-anchor="middle" fill="#7d8590" font-size="10">compose_permissions, execute_prompt</text>
+
+  <!-- Arrow down -->
+  <line x1="110" y1="680" x2="110" y2="708" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 8: DOER ===================== -->
+  <rect x="240" y="710" width="400" height="220" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="2"/>
+  <text x="440" y="731" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">Doer  (fleet member, plan-assigned model)</text>
+
+  <!-- Step 1: kb_session_prime -->
+  <rect x="255" y="740" width="170" height="32" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="340" y="754" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">1. kb_session_prime</text>
+  <text x="340" y="767" text-anchor="middle" fill="#7d8590" font-size="9">get top KB entries + stale files</text>
+
+  <!-- kb_session_prime -> KB -->
+  <line x1="425" y1="756" x2="698" y2="732" stroke="#bc8cff44" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+  <text x="562" y="745" text-anchor="middle" fill="#bc8cff" font-size="9">read</text>
+
+  <!-- Step 2: retrieve-first -->
+  <rect x="255" y="781" width="170" height="32" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="340" y="795" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">2. kb_query (retrieve-first)</text>
+  <text x="340" y="808" text-anchor="middle" fill="#7d8590" font-size="9">query before reading any file</text>
+
+  <!-- kb_query -> KB -->
+  <line x1="425" y1="797" x2="698" y2="770" stroke="#bc8cff44" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+  <text x="562" y="788" text-anchor="middle" fill="#bc8cff" font-size="9">read</text>
+
+  <!-- Step 3: implement -->
+  <rect x="255" y="822" width="170" height="32" rx="5" fill="#21262d" stroke="#3fb950" stroke-width="1"/>
+  <text x="340" y="836" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">3. Implement Tasks</text>
+  <text x="340" y="849" text-anchor="middle" fill="#7d8590" font-size="9">T1, T2 ... commit each, push</text>
+
+  <!-- implement -> git -->
+  <line x1="425" y1="838" x2="858" y2="240" stroke="#3fb95044" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-green)"/>
+
+  <!-- Step 4: code intelligence (right column) -->
+  <rect x="435" y="740" width="190" height="32" rx="5" fill="#21262d" stroke="#39d353" stroke-width="1"/>
+  <text x="530" y="754" text-anchor="middle" fill="#39d353" font-size="10" font-weight="600">code_graph / code_impact</text>
+  <text x="530" y="767" text-anchor="middle" fill="#7d8590" font-size="9">structural questions only</text>
+
+  <!-- code intel -> gitnexus -->
+  <line x1="625" y1="756" x2="698" y2="750" stroke="#39d35344" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-cyan)"/>
+
+  <!-- Step 5: VERIFY (right column) -->
+  <rect x="435" y="781" width="190" height="32" rx="5" fill="#21262d" stroke="#f0883e" stroke-width="1"/>
+  <text x="530" y="795" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">4. VERIFY checkpoint</text>
+  <text x="530" y="808" text-anchor="middle" fill="#7d8590" font-size="9">npm lint + npm test, update progress.json</text>
+
+  <!-- Step 6: kb_harvest (right column) -->
+  <rect x="435" y="822" width="190" height="32" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="530" y="836" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">5. kb_harvest</text>
+  <text x="530" y="849" text-anchor="middle" fill="#7d8590" font-size="9">regex-scan session output</text>
+
+  <!-- kb_harvest -> KB -->
+  <line x1="625" y1="838" x2="698" y2="810" stroke="#bc8cff44" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+  <text x="662" y="826" text-anchor="middle" fill="#bc8cff" font-size="9">write UNVERIFIED</text>
+
+  <!-- STOP label -->
+  <text x="440" y="886" text-anchor="middle" fill="#f85149" font-size="11" font-weight="700">STOP -- push branch, report to PM</text>
+
+  <!-- PM -> dispatch arrow -->
+  <line x1="192" y1="654" x2="238" y2="784" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+
+  <!-- Arrow down from doer -->
+  <line x1="440" y1="930" x2="440" y2="958" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== STORAGE: KB + GitNexus ===================== -->
+  <!-- KB storage -->
+  <rect x="700" y="714" width="160" height="76" rx="20" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="780" y="735" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">KB (SQLite)</text>
+  <text x="780" y="749" text-anchor="middle" fill="#7d8590" font-size="9">knowledge, context-cache</text>
+  <text x="780" y="762" text-anchor="middle" fill="#bc8cff99" font-size="9" font-weight="600">per-repo  (shared across branches)</text>
+  <text x="780" y="776" text-anchor="middle" fill="#7d8590" font-size="9">contradictions flagged by AUDN</text>
+
+  <!-- GitNexus storage -->
+  <rect x="870" y="714" width="160" height="76" rx="20" fill="#1c2128" stroke="#39d353" stroke-width="1.5"/>
+  <text x="950" y="735" text-anchor="middle" fill="#39d353" font-size="11" font-weight="700">GitNexus</text>
+  <text x="950" y="749" text-anchor="middle" fill="#7d8590" font-size="9">call graph, symbols, import maps</text>
+  <text x="950" y="762" text-anchor="middle" fill="#39d35399" font-size="9" font-weight="600">per-worktree  (branch-scoped)</text>
+  <text x="950" y="776" text-anchor="middle" fill="#7d8590" font-size="9">.gitnexus/ per worktree dir</text>
+
+  <!-- /pm index re-index annotation -->
+  <rect x="870" y="798" width="160" height="38" rx="6" fill="#39d35310" stroke="#39d35344" stroke-width="1" stroke-dasharray="4,2"/>
+  <text x="950" y="813" text-anchor="middle" fill="#39d353" font-size="9" font-weight="600">/pm index (re-index)</text>
+  <text x="950" y="826" text-anchor="middle" fill="#7d8590" font-size="9">after large merge / rebase</text>
+  <text x="950" y="836" text-anchor="middle" fill="#7d8590" font-size="8">auto-runs at /pm init</text>
+
+  <!-- ===================== ROW 9: PM CHECK DOER ===================== -->
+  <rect x="28" y="960" width="164" height="52" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="981" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">PM: Read State</text>
+  <text x="110" y="996" text-anchor="middle" fill="#7d8590" font-size="10">read progress.json from git</text>
+  <text x="110" y="1009" text-anchor="middle" fill="#7d8590" font-size="10">update beads in_progress -> closed</text>
+
+  <line x1="440" y1="958" x2="194" y2="986" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="110" y1="1012" x2="110" y2="1040" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 10: REVIEWER DISPATCH ===================== -->
+  <rect x="28" y="1042" width="164" height="52" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="1063" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">PM: Dispatch Reviewer</text>
+  <text x="110" y="1078" text-anchor="middle" fill="#7d8590" font-size="10">send CLAUDE.md (tpl-reviewer)</text>
+  <text x="110" y="1091" text-anchor="middle" fill="#7d8590" font-size="10">execute_prompt, premium model</text>
+
+  <line x1="110" y1="1094" x2="110" y2="1122" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 11: REVIEWER ===================== -->
+  <rect x="240" y="1124" width="400" height="178" rx="7" fill="#1c2128" stroke="#f778ba" stroke-width="2"/>
+  <text x="440" y="1145" text-anchor="middle" fill="#f778ba" font-size="13" font-weight="700">Reviewer  (fleet member, premium model)</text>
+
+  <!-- Step 1: prime -->
+  <rect x="255" y="1154" width="170" height="30" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="340" y="1168" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">1. kb_session_prime</text>
+  <text x="340" y="1180" text-anchor="middle" fill="#7d8590" font-size="9">get top KB entries</text>
+  <line x1="425" y1="1169" x2="698" y2="752" stroke="#bc8cff33" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+
+  <!-- Step 2: review -->
+  <rect x="255" y="1192" width="170" height="30" rx="5" fill="#21262d" stroke="#f778ba" stroke-width="1"/>
+  <text x="340" y="1206" text-anchor="middle" fill="#f778ba" font-size="10" font-weight="600">2. Review diff + tests</text>
+  <text x="340" y="1218" text-anchor="middle" fill="#7d8590" font-size="9">git diff, npm lint, npm test</text>
+
+  <!-- Step 3: write feedback -->
+  <rect x="255" y="1230" width="170" height="30" rx="5" fill="#21262d" stroke="#f778ba" stroke-width="1"/>
+  <text x="340" y="1244" text-anchor="middle" fill="#f778ba" font-size="10" font-weight="600">3. Write feedback.md</text>
+  <text x="340" y="1256" text-anchor="middle" fill="#7d8590" font-size="9">APPROVED | CHANGES NEEDED</text>
+  <!-- -> git -->
+  <line x1="425" y1="1244" x2="858" y2="240" stroke="#f778ba33" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+
+  <!-- Step 4: kb_harvest -->
+  <rect x="435" y="1154" width="190" height="30" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="530" y="1168" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">4. kb_harvest</text>
+  <text x="530" y="1180" text-anchor="middle" fill="#7d8590" font-size="9">session output -> UNVERIFIED entries</text>
+  <line x1="625" y1="1169" x2="698" y2="770" stroke="#bc8cff33" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+
+  <text x="440" y="1292" text-anchor="middle" fill="#f85149" font-size="11" font-weight="700">STOP -- push feedback.md</text>
+
+  <!-- PM -> dispatcher arrow -->
+  <line x1="192" y1="1068" x2="238" y2="1194" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+
+  <!-- Arrow down from reviewer -->
+  <line x1="440" y1="1302" x2="440" y2="1332" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 12: PM RECEIVE + VERDICT DIAMOND ===================== -->
+  <rect x="28" y="1122" width="164" height="52" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="1143" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="700">PM: receive_files</text>
+  <text x="110" y="1158" text-anchor="middle" fill="#7d8590" font-size="10">pull feedback.md</text>
+  <text x="110" y="1171" text-anchor="middle" fill="#7d8590" font-size="10">read verdict</text>
+
+  <polygon points="110,1334 165,1366 110,1398 55,1366" fill="#1c2128" stroke="#f778ba" stroke-width="1.5"/>
+  <text x="110" y="1361" text-anchor="middle" fill="#f778ba" font-size="11" font-weight="700">Verdict?</text>
+  <text x="110" y="1375" text-anchor="middle" fill="#f778ba" font-size="11" font-weight="700">APPROVED?</text>
+
+  <!-- Arrow from reviewer result to diamond -->
+  <line x1="440" y1="1332" x2="167" y2="1366" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- CHANGES NEEDED path -> left loop back to doer -->
+  <line x1="55" y1="1366" x2="26" y2="1366" stroke="#f85149" stroke-width="1.5"/>
+  <line x1="26" y1="1366" x2="26" y2="874" stroke="#f85149" stroke-width="1.5"/>
+  <line x1="26" y1="874" x2="238" y2="824" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr-red)"/>
+  <text x="14" y="1120" text-anchor="middle" fill="#f85149" font-size="9" transform="rotate(-90,14,1120)">CHANGES NEEDED -- doer fixes</text>
+
+  <!-- APPROVED -> KB Agent dispatch -->
+  <line x1="110" y1="1398" x2="110" y2="1426" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="126" y="1417" fill="#3fb950" font-size="10" font-weight="600">APPROVED</text>
+
+  <!-- ===================== ROW 13: KB AGENT DISPATCH ===================== -->
+  <rect x="28" y="1428" width="164" height="52" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="1446" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">PM: Dispatch KB Agent</text>
+  <text x="110" y="1461" text-anchor="middle" fill="#7d8590" font-size="10">send tpl-kb-agent as CLAUDE.md</text>
+  <text x="110" y="1474" text-anchor="middle" fill="#7d8590" font-size="10">execute_prompt, cheap model, resume=false</text>
+
+  <line x1="110" y1="1480" x2="110" y2="1508" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 14: KB AGENT ===================== -->
+  <rect x="240" y="1510" width="400" height="220" rx="7" fill="#1c2128" stroke="#bc8cff" stroke-width="2"/>
+  <text x="440" y="1531" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="700">KB Agent  (doer member, cheap model, fresh session)</text>
+
+  <!-- Step 1: scope -->
+  <rect x="255" y="1540" width="170" height="30" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="340" y="1554" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">1. Scope sprint</text>
+  <text x="340" y="1566" text-anchor="middle" fill="#7d8590" font-size="9">git diff --name-only, list symbols</text>
+
+  <!-- Step 2: kb_query dedup -->
+  <rect x="255" y="1578" width="170" height="30" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="340" y="1592" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">2. kb_query (dedup check)</text>
+  <text x="340" y="1604" text-anchor="middle" fill="#7d8590" font-size="9">check existing, flagged_only</text>
+  <line x1="425" y1="1593" x2="698" y2="752" stroke="#bc8cff44" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-purple)"/>
+  <text x="562" y="1588" text-anchor="middle" fill="#bc8cff" font-size="9">read</text>
+
+  <!-- Step 3: kb_context -->
+  <rect x="255" y="1616" width="170" height="30" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1"/>
+  <text x="340" y="1630" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="600">3. kb_context check</text>
+  <text x="340" y="1642" text-anchor="middle" fill="#7d8590" font-size="9">stale file summaries?</text>
+
+  <!-- Step 4: kb_capture (right column) -->
+  <rect x="435" y="1540" width="190" height="30" rx="5" fill="#21262d" stroke="#3fb950" stroke-width="1"/>
+  <text x="530" y="1554" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">4. kb_capture</text>
+  <text x="530" y="1566" text-anchor="middle" fill="#7d8590" font-size="9">knowledge / context-cache / runbook</text>
+  <line x1="530" y1="1570" x2="698" y2="752" stroke="#3fb95044" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-green)"/>
+  <text x="614" y="1564" text-anchor="middle" fill="#3fb950" font-size="9">write</text>
+
+  <!-- Step 5: kb_promote (right column) -->
+  <rect x="435" y="1578" width="190" height="30" rx="5" fill="#21262d" stroke="#3fb950" stroke-width="1"/>
+  <text x="530" y="1592" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">5. kb_promote (APPROVED)</text>
+  <text x="530" y="1604" text-anchor="middle" fill="#7d8590" font-size="9">INFERRED -> CONFIRMED</text>
+  <line x1="530" y1="1608" x2="698" y2="770" stroke="#3fb95044" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr-green)"/>
+
+  <!-- Step 6: resolve contradictions (right column) -->
+  <rect x="435" y="1616" width="190" height="30" rx="5" fill="#21262d" stroke="#f0883e" stroke-width="1"/>
+  <text x="530" y="1630" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">6. Resolve contradictions</text>
+  <text x="530" y="1642" text-anchor="middle" fill="#7d8590" font-size="9">flagged pairs, keep correct entry</text>
+
+  <!-- NO COMMITS label -->
+  <text x="440" y="1672" text-anchor="middle" fill="#7d8590" font-size="10">No git commits. No code writes.</text>
+  <text x="440" y="1687" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">7. Report inline to PM</text>
+  <text x="440" y="1702" text-anchor="middle" fill="#7d8590" font-size="9">N captured, M promoted, K updated</text>
+
+  <!-- PM -> dispatch arrow -->
+  <line x1="192" y1="1454" x2="238" y2="1594" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+
+  <!-- Arrow down from KB agent -->
+  <line x1="440" y1="1730" x2="440" y2="1758" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== ROW 15: CLOSE VERIFY ===================== -->
+  <rect x="28" y="1760" width="164" height="52" rx="7" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="110" y="1778" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">PM: Close VERIFY</text>
+  <text x="110" y="1793" text-anchor="middle" fill="#7d8590" font-size="10">bd close VERIFY task</text>
+  <text x="110" y="1806" text-anchor="middle" fill="#7d8590" font-size="10">record KB summary in status.md</text>
+
+  <line x1="440" y1="1758" x2="194" y2="1786" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="110" y1="1812" x2="110" y2="1830" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- END -->
+  <ellipse cx="110" cy="1832" rx="70" ry="20" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="110" y="1836" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">SPRINT DONE</text>
+
+  <!-- ===================== WARM KB NOTE ===================== -->
+  <rect x="700" y="1524" width="330" height="100" rx="8" fill="#bc8cff10" stroke="#bc8cff44" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="865" y="1546" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="700">Sprint 2 -- Warm KB</text>
+  <text x="865" y="1564" text-anchor="middle" fill="#7d8590" font-size="10">Doer calls kb_session_prime</text>
+  <text x="865" y="1578" text-anchor="middle" fill="#7d8590" font-size="10">Returns CONFIRMED entries from sprint 1</text>
+  <text x="865" y="1592" text-anchor="middle" fill="#7d8590" font-size="10">Doer trusts them -- skips source reads</text>
+  <text x="865" y="1606" text-anchor="middle" fill="#7d8590" font-size="10">Retrieve-first: kb_query before any file open</text>
+
+  <!-- Dashed line from KB storage down to warm KB note -->
+  <line x1="780" y1="790" x2="780" y2="1522" stroke="#bc8cff33" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#arr-purple)"/>
+
+  <!-- ===================== PLANNER WARM KB NOTE ===================== -->
+  <!-- Positioned below the git/beads storage and above KB storage, aligned with planner row -->
+  <rect x="700" y="248" width="330" height="60" rx="8" fill="#bc8cff08" stroke="#bc8cff33" stroke-width="1" stroke-dasharray="5,3"/>
+  <text x="865" y="268" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">Planner -- Warm KB payoff</text>
+  <text x="865" y="284" text-anchor="middle" fill="#7d8590" font-size="10">CONFIRMED symbols -> lighter model</text>
+  <text x="865" y="298" text-anchor="middle" fill="#7d8590" font-size="10">Unknown symbols -> premium model + front-load</text>
+
+</svg>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-item">
+    <div class="legend-box" style="background:#f0883e22;border-color:#f0883e;"></div>
+    PM Orchestrator
+  </div>
+  <div class="legend-item">
+    <div class="legend-box" style="background:#58a6ff22;border-color:#58a6ff;"></div>
+    Local Subagent
+  </div>
+  <div class="legend-item">
+    <div class="legend-box" style="background:#3fb95022;border-color:#3fb950;"></div>
+    Doer (fleet)
+  </div>
+  <div class="legend-item">
+    <div class="legend-box" style="background:#f778ba22;border-color:#f778ba;"></div>
+    Reviewer (fleet)
+  </div>
+  <div class="legend-item">
+    <div class="legend-box" style="background:#bc8cff22;border-color:#bc8cff;"></div>
+    KB Agent (fleet)
+  </div>
+  <div class="legend-item">
+    <div class="legend-diamond" style="background:#f778ba22;border-color:#f778ba;"></div>
+    Decision
+  </div>
+  <div class="legend-item">
+    <div class="legend-cylinder" style="background:#bc8cff22;border-color:#bc8cff;"></div>
+    KB (SQLite)
+  </div>
+  <div class="legend-item">
+    <div class="legend-cylinder" style="background:#39d35322;border-color:#39d353;"></div>
+    GitNexus
+  </div>
+  <div class="legend-item">
+    <div style="width:24px;height:2px;background:#f85149;border-radius:1px;margin:auto 0;"></div>
+    CHANGES NEEDED loop
+  </div>
+  <div class="legend-item">
+    <div style="width:24px;height:2px;background:#3fb950;border-radius:1px;margin:auto 0;"></div>
+    APPROVED path
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,4 +1,4 @@
-# Apra Fleet — Agent Context
+# Apra Fleet -- Agent Context
 
 Read `README.md` in this repo for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
 
@@ -18,3 +18,7 @@ node dist/index.js install     # Dev-mode install
 - Never push to `main` directly; open a PR
 - See [Architecture](docs/architecture.md) for internal structure
 - ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.
+
+## Code Intelligence
+
+Fleet exposes four code intelligence tools: `code_graph`, `code_impact`, `code_query`, and `code_context`. Use these to understand code structure, trace call graphs, assess change impact, and retrieve symbol context.
