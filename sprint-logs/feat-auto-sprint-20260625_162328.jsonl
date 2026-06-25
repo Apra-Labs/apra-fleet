@@ -10,3 +10,8 @@
 {"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"doer-c1-i1-standard","model":"standard","context":"tasks apra-fleet-96j, apra-fleet-34m, apra-fleet-a0p, apra-fleet-8rd","outTokens":12666,"costUsd":0.19}
 {"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"reviewer-c1-i2","model":"standard","context":"reviewing tasks apra-fleet-96j, apra-fleet-34m, apra-fleet-a0p, apra-fleet-8rd","outTokens":9026,"costUsd":0.1354}
 {"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"feedback-commit-reviewer-c1-i2","model":"cheap","context":"","outTokens":4121,"costUsd":0.0206}
+{"ts":"2026-06-25T17:11:22-0400","cycle":1,"phase":"Develop","label":"log-append-iter-c1-i2","model":"cheap","context":"5 new entries","outTokens":1355,"costUsd":0.0068}
+{"ts":"2026-06-25T17:11:22-0400","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":1687,"costUsd":0.0084}
+{"ts":"2026-06-25T17:11:22-0400","cycle":1,"phase":"Develop","label":"doer-c1-i2-standard","model":"standard","context":"tasks apra-fleet-96j","outTokens":27669,"costUsd":0.415}
+{"ts":"2026-06-25T17:11:22-0400","cycle":1,"phase":"Develop","label":"reviewer-c1-i3","model":"standard","context":"reviewing tasks apra-fleet-96j","outTokens":4733,"costUsd":0.071}
+{"ts":"2026-06-25T17:11:22-0400","cycle":1,"phase":"Develop","label":"feedback-commit-reviewer-c1-i3","model":"cheap","context":"","outTokens":2671,"costUsd":0.0134}
