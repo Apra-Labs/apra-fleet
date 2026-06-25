@@ -787,4 +787,11 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
 
 ${instructions}${forceNote}
 `);
+
+  if (llm === 'claude' && installPm) {
+    console.log('  /auto-sprint BD-1              (native workflow, current branch)');
+    console.log('  /auto-sprint BD-1 BD-2         (multiple sprint goals)');
+    console.log('  /pm                            (provider-agnostic skill, fleet-ready)');
+    console.log('');
+  }
 }
