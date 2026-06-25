@@ -1,1 +1,7 @@
 {"ts":"2026-06-25T16:23:28Z","type":"meta","branch":"feat/auto-sprint","startedAt":"20260625_162328","roots":["apra-fleet-zbl","apra-fleet-vqe","apra-fleet-b8c","apra-fleet-ano","apra-fleet-96j"],"goal":"P1","transcriptDir":"C:\\Users\\akhil\\.claude\\projects\\C--akhil-git-apra-fleet"}
+{"ts":"2026-06-25T16:37:31-0400","cycle":"setup","phase":"Plan","label":"setup","model":"cheap","context":"","outTokens":4964,"costUsd":0.0248}
+{"ts":"2026-06-25T16:37:31-0400","cycle":"setup","phase":"Plan","label":"sprint-meta","model":"cheap","context":"","outTokens":884,"costUsd":0.0044}
+{"ts":"2026-06-25T16:37:31-0400","cycle":1,"phase":"Plan","label":"cycle-state","model":"cheap","context":"","outTokens":3174,"costUsd":0.0159}
+{"ts":"2026-06-25T16:37:31-0400","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":1495,"costUsd":0.0075}
+{"ts":"2026-06-25T16:37:31-0400","cycle":1,"phase":"Develop","label":"doer-c1-i0-standard","model":"standard","context":"tasks apra-fleet-zbl","outTokens":3165,"costUsd":0.0475}
+{"ts":"2026-06-25T16:37:31-0400","cycle":1,"phase":"Develop","label":"reviewer-c1-i1","model":"standard","context":"reviewing tasks apra-fleet-zbl","outTokens":2459,"costUsd":0.0369}
