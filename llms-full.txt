@@ -291,8 +291,17 @@ what is in flight.
 | `/pm cleanup <project>` | Finish the sprint, close tasks, and raise a PR. |
 | `/pm backlog` | Query and manage deferred items via Beads. |
 | `/pm tasks` | Show the current sprint task tree. |
+| `/auto-sprint` | Run a fully automated sprint loop with cost accounting. |
 
 See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
+
+**Cost accounting.** When PM is installed, the installer also writes `cost.js`
+to the PM skill directory for every provider. `cost.js` exports the seven pure
+cost-computation functions (`computeSprintQuote`, `computeSprintAnalysis`,
+`buildSprintSummary`, etc.) extracted from the `auto-sprint.js` workflow. For
+Claude, the full `auto-sprint.js` is also copied to `~/.claude/workflows/` and
+`Skill(auto-sprint)` / `Workflow(auto-sprint)` are added to the allow-list
+automatically. See [docs/features/auto-sprint-install.md](docs/features/auto-sprint-install.md).
 
 Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/writing-skills.md).
 
@@ -662,6 +671,8 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 inst
 | `~/.apra-fleet/scripts/` | Helper scripts |
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
+| `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
+| `~/.claude/workflows/auto-sprint.js` | Full auto-sprint workflow (Claude only) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
 
