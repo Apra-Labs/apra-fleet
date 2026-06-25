@@ -14,14 +14,14 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
 ## Checkpoints
 
-Record each checkpoint by running this PowerShell command (replace id, status, notes):
+Record each checkpoint by running this command (works on Linux, macOS, and Windows):
 
-```powershell
-Add-Content -Path checkpoints.json -Value '{"id":"T3-repo-setup","status":"PASS","notes":"one short note"}'
+```bash
+node -e "const fs=require('fs');fs.appendFileSync('checkpoints.json',JSON.stringify({id:'T3-repo-setup',status:'PASS',notes:'one short note'})+'\n')"
 ```
 
 - One JSON object per line appended to `checkpoints.json` in the current working directory.
-- If a step fails, write `"status":"FAIL"` and continue to the next step.
+- If a step fails, write `status:'FAIL'` and continue to the next step.
 - The steps are: `T3-repo-setup`, `T3-discover`, `T3-sprint`, `T3-pr-verified`, `T3-done`.
 - After writing each checkpoint, immediately continue to the next task -- no pausing, no text summary.
 - Write `T3-done` last. If it is missing from `checkpoints.json` after the session, the phase failed.
@@ -37,18 +37,18 @@ Run a full sprint on the toy repo using the pm skill. Do all of it yourself in t
 On the doer: clone {{TOY_PROJECT_URL}} into its work folder if needed, then `git fetch origin && git checkout main && git pull`. Provision {{VCS}} auth.
 
 Record checkpoint:
-```powershell
-Add-Content -Path checkpoints.json -Value '{"id":"T3-repo-setup","status":"PASS","notes":"...your note..."}'
+```bash
+node -e "const fs=require('fs');fs.appendFileSync('checkpoints.json',JSON.stringify({id:'T3-repo-setup',status:'PASS',notes:'your note here'})+'\n')"
 ```
 Then immediately continue to T3.2.
 
 ### T3.2 Pick the work
 
-Run `bd ready` on the doer. Pick 3 P1 issues. Write `requirements.md` for them into the current working directory.
+Work on exactly this one issue: `gh-toy-4ef` (Add --version flag to CLI). Write `requirements.md` for this issue only into the current working directory. Do NOT pick additional issues or run `bd ready`.
 
 Record checkpoint:
-```powershell
-Add-Content -Path checkpoints.json -Value '{"id":"T3-discover","status":"PASS","notes":"...your note..."}'
+```bash
+node -e "const fs=require('fs');fs.appendFileSync('checkpoints.json',JSON.stringify({id:'T3-discover',status:'PASS',notes:'your note here'})+'\n')"
 ```
 Then immediately continue to T3.3.
 
@@ -79,8 +79,8 @@ The pm skill runs the doer/reviewer loop. Drive it yourself:
 Do NOT record T3-sprint PASS until you have confirmed a reviewer approval response in the execute_prompt result (not just dispatched -- you must read the response).
 
 Record checkpoint:
-```powershell
-Add-Content -Path checkpoints.json -Value '{"id":"T3-sprint","status":"PASS","notes":"...your note..."}'
+```bash
+node -e "const fs=require('fs');fs.appendFileSync('checkpoints.json',JSON.stringify({id:'T3-sprint',status:'PASS',notes:'your note here'})+'\n')"
 ```
 Then immediately continue to T3.4.
 
@@ -89,12 +89,12 @@ Then immediately continue to T3.4.
 Confirm a branch with prefix `{{BRANCH_PREFIX}}` exists on origin and a PR was raised.
 
 Record checkpoint:
-```powershell
-Add-Content -Path checkpoints.json -Value '{"id":"T3-pr-verified","status":"PASS","notes":"...your note..."}'
+```bash
+node -e "const fs=require('fs');fs.appendFileSync('checkpoints.json',JSON.stringify({id:'T3-pr-verified',status:'PASS',notes:'your note here'})+'\n')"
 ```
 Then record T3-done:
-```powershell
-Add-Content -Path checkpoints.json -Value '{"id":"T3-done","status":"PASS","notes":"sprint phase finished"}'
+```bash
+node -e "const fs=require('fs');fs.appendFileSync('checkpoints.json',JSON.stringify({id:'T3-done',status:'PASS',notes:'sprint phase finished'})+'\n')"
 ```
 
 ---

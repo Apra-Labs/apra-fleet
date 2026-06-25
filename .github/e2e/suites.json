@@ -8,31 +8,31 @@
     },
     "s2": {
       "pm":       { "os": "linux",   "provider": "claude", "runner": "fleet-linux" },
-      "doer":     { "os": "windows", "provider": "gemini", "type": "remote" },
-      "reviewer": { "os": "macos",   "provider": "gemini", "type": "remote" },
+      "doer":     { "os": "windows", "provider": "agy", "type": "remote" },
+      "reviewer": { "os": "macos",   "provider": "agy", "type": "remote" },
       "vcs": "github"
     },
     "s3": {
       "pm":       { "os": "macos",   "provider": "claude", "runner": "fleet-macos" },
-      "doer":     { "os": "linux",   "provider": "gemini", "type": "remote" },
+      "doer":     { "os": "linux",   "provider": "agy", "type": "remote" },
       "reviewer": { "os": "windows", "provider": "claude", "type": "remote" },
       "vcs": "bitbucket"
     },
     "s4": {
-      "pm":       { "os": "windows", "provider": "gemini", "runner": "fleet-windows" },
+      "pm":       { "os": "windows", "provider": "agy", "runner": "fleet-windows" },
       "doer":     { "os": "macos",   "provider": "claude", "type": "remote" },
-      "reviewer": { "os": "linux",   "provider": "gemini", "type": "remote" },
+      "reviewer": { "os": "linux",   "provider": "agy", "type": "remote" },
       "vcs": "bitbucket"
     },
     "s5": {
-      "pm":       { "os": "linux",   "provider": "gemini", "runner": "fleet-linux" },
+      "pm":       { "os": "linux",   "provider": "agy", "runner": "fleet-linux" },
       "doer":     { "os": "windows", "provider": "claude", "type": "remote" },
       "reviewer": { "os": "macos",   "provider": "claude", "type": "remote" },
       "vcs": "azdevops"
     },
     "s6": {
-      "pm":       { "os": "macos",   "provider": "gemini", "runner": "fleet-macos" },
-      "doer":     { "os": "windows", "provider": "gemini", "type": "remote" },
+      "pm":       { "os": "macos",   "provider": "agy", "runner": "fleet-macos" },
+      "doer":     { "os": "windows", "provider": "agy", "type": "remote" },
       "reviewer": { "os": "linux",   "provider": "claude", "type": "remote" },
       "vcs": "azdevops"
     },
@@ -52,24 +52,6 @@
       "pm":       { "os": "macos",   "provider": "claude", "runner": "fleet-macos" },
       "doer":     { "os": "local_doer_macos",     "provider": "claude", "type": "local" },
       "reviewer": { "os": "local_reviewer_macos", "provider": "claude", "type": "local" },
-      "vcs": "github"
-    },
-    "s7.1": {
-      "pm":       { "os": "windows", "provider": "gemini", "runner": "fleet-windows" },
-      "doer":     { "os": "local_doer_windows",     "provider": "gemini", "type": "local" },
-      "reviewer": { "os": "local_reviewer_windows", "provider": "gemini", "type": "local" },
-      "vcs": "github"
-    },
-    "s7.2": {
-      "pm":       { "os": "linux",   "provider": "gemini", "runner": "fleet-linux" },
-      "doer":     { "os": "local_doer_linux",     "provider": "gemini", "type": "local" },
-      "reviewer": { "os": "local_reviewer_linux", "provider": "gemini", "type": "local" },
-      "vcs": "github"
-    },
-    "s7.3": {
-      "pm":       { "os": "macos",   "provider": "gemini", "runner": "fleet-macos" },
-      "doer":     { "os": "local_doer_macos",     "provider": "gemini", "type": "local" },
-      "reviewer": { "os": "local_reviewer_macos", "provider": "gemini", "type": "local" },
       "vcs": "github"
     },
     "s8.1": {

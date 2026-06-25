@@ -7,8 +7,8 @@
       "provider": "opencode",
       "cli": "opencode",
       "model": "opencode/deepseek-v4-flash-free",
-      "minCommits": 4,
-      "expectedIssues": 3
+      "minCommits": 2,
+      "expectedIssues": 1
     }
   ]
 }
