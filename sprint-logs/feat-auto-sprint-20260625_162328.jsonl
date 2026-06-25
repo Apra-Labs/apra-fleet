@@ -24,3 +24,9 @@
 {"ts":"2026-06-25T17:20:58-04:00","cycle":1,"phase":"Develop","label":"push-c1","model":"cheap","context":"","outTokens":284,"costUsd":0.0014}
 {"ts":"2026-06-25T17:20:58-04:00","cycle":1,"phase":"Develop","label":"head-sha-c1","model":"cheap","context":"","outTokens":253,"costUsd":0.0013}
 {"ts":"2026-06-25T17:20:58-04:00","cycle":1,"phase":"Develop","label":"check-blockers","model":"cheap","context":"","outTokens":1908,"costUsd":0.0095}
+{"ts":"2026-06-25T17:25:12-0400","cycle":1,"phase":"Develop","label":"log-append-end-c1","model":"cheap","context":"5 new entries","outTokens":1548,"costUsd":0.0077}
+{"ts":"2026-06-25T17:25:12-0400","cycle":2,"phase":"Plan","label":"cycle-state","model":"cheap","context":"","outTokens":3250,"costUsd":0.0163}
+{"ts":"2026-06-25T17:25:12-0400","cycle":2,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":1805,"costUsd":0.009}
+{"ts":"2026-06-25T17:25:12-0400","cycle":2,"phase":"Develop","label":"push-c2","model":"cheap","context":"","outTokens":372,"costUsd":0.0019}
+{"ts":"2026-06-25T17:25:12-0400","cycle":2,"phase":"Develop","label":"head-sha-c2","model":"cheap","context":"","outTokens":232,"costUsd":0.0012}
+{"ts":"2026-06-25T17:25:12-0400","cycle":2,"phase":"Develop","label":"check-blockers","model":"cheap","context":"","outTokens":1649,"costUsd":0.0082}
