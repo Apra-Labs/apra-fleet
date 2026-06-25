@@ -935,23 +935,164 @@ describe('runInstall multi-provider', () => {
     }
   });
 
-  // ── Phase D1: cost.js, auto-sprint workflow, claude-only perms (todo until B1-B3 land) ──
+  // ── Phase D1: cost.js, auto-sprint workflow, claude-only perms ──────────
 
-  it.todo('cost.js is written to skillsDir for all providers when PM is installed -- requires B1/B2 cost extraction step');
+  // Mock auto-sprint.js content with required PURE_FUNCTIONS markers.
+  // Does NOT contain agent() or phase() calls (pure JS only).
+  const MOCK_AUTO_SPRINT_JS = [
+    '// preamble',
+    '',
+    '// PURE_FUNCTIONS_BEGIN -- extracted by test/sprint-cost.test.mjs via vm; keep this block self-contained',
+    'const DEFAULT_CALIBRATION = { tokensPerDollar: 1000 };',
+    'function computeSprintQuote(tokens) { return tokens * 0.001; }',
+    'function computeSprintAnalysis(data) { return data; }',
+    'function accumulateBucketTokens(bucket, tokens) { return bucket + tokens; }',
+    'function computeUpdatedCalibration(cal, data) { return cal; }',
+    'function buildSprintSummary(data) { return data; }',
+    'function reviewerModelFor(model) { return model; }',
+    '// PURE_FUNCTIONS_END',
+    '',
+    '// workflow orchestration code (no agent() or phase() calls here)',
+  ].join('\n');
 
-  it.todo('cost.js contains computeSprintQuote and has no agent()/phase() calls -- requires B1/B2');
+  // Helper: set up fileState + mocks that expose auto-sprint.js for cost extraction.
+  function setupWorkflowMocks() {
+    const fileState = new Map<string, string>();
 
-  it.todo('auto-sprint.js is copied to ~/.claude/workflows/ after claude+PM install -- requires B2 workflow copy step');
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps.includes('auto-sprint.js')) return true;
+      if (fileState.has(ps)) return true;
+      return false;
+    });
 
-  it.todo('auto-sprint.js is NOT written to ~/.claude/workflows/ for opencode install -- requires B2');
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (fileState.has(ps)) return fileState.get(ps)!;
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+      if (ps.includes('auto-sprint.js')) return MOCK_AUTO_SPRINT_JS;
+      return '';
+    });
 
-  it.todo('auto-sprint.js is NOT written to ~/.claude/workflows/ for gemini install -- requires B2');
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
 
-  it.todo('Skill(auto-sprint) and Workflow(auto-sprint) are in claude settings.json allow list -- requires B3 perms step');
+    return fileState;
+  }
 
-  it.todo('Skill(auto-sprint) and Workflow(auto-sprint) are absent from opencode settings -- requires B3');
+  it('cost.js is written to skillsDir for all providers when PM is installed', async () => {
+    const providerSkillsDirs: Array<[string, string]> = [
+      ['claude',   path.join(mockHome, '.claude', 'skills', 'pm', 'cost.js')],
+      ['gemini',   path.join(mockHome, '.gemini', 'skills', 'pm', 'cost.js')],
+      ['agy',      path.join(mockHome, '.gemini', 'antigravity-cli', 'skills', 'pm', 'cost.js')],
+      ['opencode', path.join(mockHome, '.config', 'opencode', 'skills', 'pm', 'cost.js')],
+    ];
 
-  it.todo('Skill(auto-sprint) and Workflow(auto-sprint) are absent from gemini settings -- requires B3');
+    for (const [llm, expectedCostJsPath] of providerSkillsDirs) {
+      vi.clearAllMocks();
+      vi.mocked(os.homedir).mockReturnValue(mockHome);
+
+      const fileState = setupWorkflowMocks();
+
+      await runInstall(['--llm', llm]);
+
+      expect(fileState.has(expectedCostJsPath), `cost.js missing for ${llm}`).toBe(true);
+    }
+  });
+
+  it('cost.js contains computeSprintQuote and has no agent()/phase() calls', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall([]);
+
+    const costJsPath = path.join(mockHome, '.claude', 'skills', 'pm', 'cost.js');
+    const content = fileState.get(costJsPath);
+    expect(content).toBeDefined();
+    expect(content).toContain('computeSprintQuote');
+    expect(content).not.toMatch(/\bagent\s*\(/);
+    expect(content).not.toMatch(/\bphase\s*\(/);
+  });
+
+  it('auto-sprint.js is copied to ~/.claude/workflows/ after claude+PM install', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall([]);
+
+    const workflowDest = path.join(mockHome, '.claude', 'workflows', 'auto-sprint.js');
+    expect(fileState.has(workflowDest)).toBe(true);
+    expect(fileState.get(workflowDest)).toContain('PURE_FUNCTIONS_BEGIN');
+  });
+
+  it('auto-sprint.js is NOT written to ~/.claude/workflows/ for opencode install', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall(['--llm', 'opencode']);
+
+    const workflowDest = path.join(mockHome, '.claude', 'workflows', 'auto-sprint.js');
+    expect(fileState.has(workflowDest)).toBe(false);
+  });
+
+  it('auto-sprint.js is NOT written to ~/.claude/workflows/ for gemini install', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall(['--llm', 'gemini']);
+
+    const workflowDest = path.join(mockHome, '.claude', 'workflows', 'auto-sprint.js');
+    expect(fileState.has(workflowDest)).toBe(false);
+  });
+
+  it('Skill(auto-sprint) and Workflow(auto-sprint) are in claude settings.json allow list', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall([]);
+
+    const claudeSettings = path.join(mockHome, '.claude', 'settings.json');
+    const content = fileState.get(claudeSettings);
+    expect(content).toBeDefined();
+    const parsed = JSON.parse(content!);
+    const allow: string[] = parsed?.permissions?.allow ?? [];
+    expect(allow).toContain('Skill(auto-sprint)');
+    expect(allow).toContain('Workflow(auto-sprint)');
+  });
+
+  it('Skill(auto-sprint) and Workflow(auto-sprint) are absent from opencode settings', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall(['--llm', 'opencode']);
+
+    const opencodeSettings = path.join(mockHome, '.config', 'opencode', 'opencode.json');
+    const content = fileState.get(opencodeSettings);
+    // opencode.json has no top-level permissions key at all
+    if (content) {
+      const parsed = JSON.parse(content);
+      expect(parsed).not.toHaveProperty('permissions');
+      const allow: string[] = parsed?.permissions?.allow ?? [];
+      expect(allow).not.toContain('Skill(auto-sprint)');
+      expect(allow).not.toContain('Workflow(auto-sprint)');
+    }
+    // No claude workflows written either
+    const workflowDest = path.join(mockHome, '.claude', 'workflows', 'auto-sprint.js');
+    expect(fileState.has(workflowDest)).toBe(false);
+  });
+
+  it('Skill(auto-sprint) and Workflow(auto-sprint) are absent from gemini settings', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall(['--llm', 'gemini']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    const content = fileState.get(geminiSettings);
+    if (content) {
+      const parsed = JSON.parse(content);
+      const allow: string[] = parsed?.permissions?.allow ?? [];
+      expect(allow).not.toContain('Skill(auto-sprint)');
+      expect(allow).not.toContain('Workflow(auto-sprint)');
+    }
+  });
 
   // ── OpenCode strict-schema regression tests ───────────────────────────
 
