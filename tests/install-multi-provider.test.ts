@@ -1094,6 +1094,30 @@ describe('runInstall multi-provider', () => {
     }
   });
 
+  it('auto-sprint.js is NOT written to ~/.claude/workflows/ for agy install', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall(['--llm', 'agy']);
+
+    const workflowDest = path.join(mockHome, '.claude', 'workflows', 'auto-sprint.js');
+    expect(fileState.has(workflowDest)).toBe(false);
+  });
+
+  it('Skill(auto-sprint) and Workflow(auto-sprint) are absent from agy settings', async () => {
+    const fileState = setupWorkflowMocks();
+
+    await runInstall(['--llm', 'agy']);
+
+    const agySettings = path.join(mockHome, '.gemini', 'antigravity-cli', 'settings.json');
+    const content = fileState.get(agySettings);
+    if (content) {
+      const parsed = JSON.parse(content);
+      const allow: string[] = parsed?.permissions?.allow ?? [];
+      expect(allow).not.toContain('Skill(auto-sprint)');
+      expect(allow).not.toContain('Workflow(auto-sprint)');
+    }
+  });
+
   // ── OpenCode strict-schema regression tests ───────────────────────────
 
   const OPENCODE_VALID_KEYS = new Set(['$schema', 'provider', 'model', 'mcp', 'permission', 'agent']);
