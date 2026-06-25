@@ -5,3 +5,8 @@
 {"ts":"2026-06-25T16:37:31-0400","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":1495,"costUsd":0.0075}
 {"ts":"2026-06-25T16:37:31-0400","cycle":1,"phase":"Develop","label":"doer-c1-i0-standard","model":"standard","context":"tasks apra-fleet-zbl","outTokens":3165,"costUsd":0.0475}
 {"ts":"2026-06-25T16:37:31-0400","cycle":1,"phase":"Develop","label":"reviewer-c1-i1","model":"standard","context":"reviewing tasks apra-fleet-zbl","outTokens":2459,"costUsd":0.0369}
+{"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"log-append-iter-c1-i1","model":"cheap","context":"6 new entries","outTokens":1020,"costUsd":0.0051}
+{"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":1658,"costUsd":0.0083}
+{"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"doer-c1-i1-standard","model":"standard","context":"tasks apra-fleet-96j, apra-fleet-34m, apra-fleet-a0p, apra-fleet-8rd","outTokens":12666,"costUsd":0.19}
+{"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"reviewer-c1-i2","model":"standard","context":"reviewing tasks apra-fleet-96j, apra-fleet-34m, apra-fleet-a0p, apra-fleet-8rd","outTokens":9026,"costUsd":0.1354}
+{"ts":"2026-06-25T16:53:10-04:00","cycle":1,"phase":"Develop","label":"feedback-commit-reviewer-c1-i2","model":"cheap","context":"","outTokens":4121,"costUsd":0.0206}
