@@ -842,6 +842,117 @@ describe('runInstall multi-provider', () => {
     });
   }
 
+  // ── All 8 agents (deployer/harvester/ci-watcher/integ-test-runner) ──────
+
+  const ALL_8_AGENTS = [
+    'doer.md',
+    'planner.md',
+    'plan-reviewer.md',
+    'reviewer.md',
+    'deployer.md',
+    'harvester.md',
+    'ci-watcher.md',
+    'integ-test-runner.md',
+  ];
+
+  for (const llm of ['claude', 'gemini', 'agy'] as const) {
+    it(`all 8 agents (including deployer/harvester/ci-watcher/integ-test-runner) land for ${llm}`, async () => {
+      vi.mocked(fs.readdirSync).mockImplementation((p: any, opts?: any) => {
+        const ps = p.toString();
+        if (ps.includes('agents')) {
+          return ALL_8_AGENTS.map(name => ({ name, isDirectory: () => false })) as any;
+        }
+        if (ps.includes('skills') && ps.includes('pm')) {
+          return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+        }
+        return [];
+      });
+
+      vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+        const ps = p.toString();
+        if (ps.includes('version.json')) return true;
+        if (ps.includes('hooks-config.json')) return true;
+        if (ps.includes('vendor') && ps.includes('agents')) return true;
+        return false;
+      });
+
+      await runInstall(['--llm', llm]);
+
+      const agentWrites = vi.mocked(fs.writeFileSync).mock.calls
+        .filter(c => c[0].toString().includes('agents') && c[0].toString().endsWith('.md'))
+        .map(c => path.basename(c[0].toString()));
+
+      expect(agentWrites).toHaveLength(8);
+      for (const agentFile of ALL_8_AGENTS) {
+        expect(agentWrites).toContain(agentFile);
+      }
+    });
+  }
+
+  it('all 8 agents land for opencode with mode:subagent frontmatter', async () => {
+    vi.mocked(fs.readdirSync).mockImplementation((p: any, opts?: any) => {
+      const ps = p.toString();
+      if (ps.includes('agents')) {
+        return ALL_8_AGENTS.map(name => ({ name, isDirectory: () => false })) as any;
+      }
+      if (ps.includes('skills') && ps.includes('pm')) {
+        return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
+      }
+      return [];
+    });
+
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps.includes('vendor') && ps.includes('agents')) return true;
+      return false;
+    });
+
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return JSON.stringify({ version: '0.1.3_62ec2e' });
+      if (ps.includes('hooks-config.json')) return JSON.stringify({ hooks: { PostToolUse: [] } });
+      if (ps.includes('agents') && ps.endsWith('.md')) {
+        return '---\nname: test\ndescription: Test agent.\ntools: [Read, Write, Bash]\n---\n\n# Body';
+      }
+      return '';
+    });
+
+    await runInstall(['--llm', 'opencode']);
+
+    const agentWrites = vi.mocked(fs.writeFileSync).mock.calls
+      .filter(c => c[0].toString().includes('agents') && c[0].toString().endsWith('.md'));
+
+    expect(agentWrites).toHaveLength(8);
+    for (const [, content] of agentWrites) {
+      const text = content.toString();
+      expect(text).toContain('mode: subagent');
+    }
+    const agentNames = agentWrites.map(c => path.basename(c[0].toString()));
+    for (const agentFile of ALL_8_AGENTS) {
+      expect(agentNames).toContain(agentFile);
+    }
+  });
+
+  // ── Phase D1: cost.js, auto-sprint workflow, claude-only perms (todo until B1-B3 land) ──
+
+  it.todo('cost.js is written to skillsDir for all providers when PM is installed -- requires B1/B2 cost extraction step');
+
+  it.todo('cost.js contains computeSprintQuote and has no agent()/phase() calls -- requires B1/B2');
+
+  it.todo('auto-sprint.js is copied to ~/.claude/workflows/ after claude+PM install -- requires B2 workflow copy step');
+
+  it.todo('auto-sprint.js is NOT written to ~/.claude/workflows/ for opencode install -- requires B2');
+
+  it.todo('auto-sprint.js is NOT written to ~/.claude/workflows/ for gemini install -- requires B2');
+
+  it.todo('Skill(auto-sprint) and Workflow(auto-sprint) are in claude settings.json allow list -- requires B3 perms step');
+
+  it.todo('Skill(auto-sprint) and Workflow(auto-sprint) are absent from opencode settings -- requires B3');
+
+  it.todo('Skill(auto-sprint) and Workflow(auto-sprint) are absent from gemini settings -- requires B3');
+
   // ── OpenCode strict-schema regression tests ───────────────────────────
 
   const OPENCODE_VALID_KEYS = new Set(['$schema', 'provider', 'model', 'mcp', 'permission', 'agent']);
