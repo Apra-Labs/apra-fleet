@@ -3,6 +3,9 @@
  *
  * Claude frontmatter: name, description, tools (comma/list)
  * OpenCode frontmatter: description, mode: subagent, permission map (no name)
+ *
+ * NOTE: This mirrors apra-pm/install.mjs:transformAgentForOpenCode -- keep both in sync
+ * when adding new tool mappings or frontmatter fields.
  */
 
 interface PermissionMap {

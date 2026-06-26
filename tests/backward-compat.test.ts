@@ -96,8 +96,8 @@ describe('beads lifecycle hooks are preserved', () => {
     });
   }
 
-  it('beads.md references epic lifecycle', () => {
-    expect(beadsMd.toLowerCase()).toContain('epic');
+  it('beads.md references sprint lifecycle', () => {
+    expect(beadsMd.toLowerCase()).toContain('sprint root');
   });
 });
 

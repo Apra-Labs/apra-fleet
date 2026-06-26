@@ -21,13 +21,13 @@ git config user.name "pm-e2e"
 
 ## Pick the work
 
-Run `bd ready` to see available issues. Pick the top 3 ready P1 issues. Write `requirements.md` summarizing them.
+Work on exactly this one issue: `gh-toy-4ef` (Add --version flag to CLI). Write `requirements.md` for this issue only. Do NOT pick additional issues or run `bd ready`.
 
 ## Run the sprint
 
 Run the pm skill commands in order:
 
-1. `/pm plan` -- plan the work for the 3 picked issues. This uses your local planner and plan-reviewer subagents.
+1. `/pm plan` -- plan the work for issue `gh-toy-4ef` only. This uses your local planner and plan-reviewer subagents.
 2. `/pm start` -- execute the plan. This uses your local doer and reviewer subagents.
 3. `/pm cleanup` -- finalize the sprint, push the branch, and raise a PR.
 

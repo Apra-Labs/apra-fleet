@@ -16,9 +16,11 @@ const distDir = join(root, 'dist');
 
 const submoduleSkills = join(root, 'vendor', 'apra-pm', 'skills', 'pm');
 const submoduleAgents = join(root, 'vendor', 'apra-pm', 'agents');
+const submoduleWorkflows = join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
 
 const distSkills = join(distDir, 'skills', 'pm');
 const distAgents = join(distDir, 'agents');
+const distWorkflows = join(distDir, 'workflows');
 
 if (existsSync(submoduleSkills) && existsSync(submoduleAgents)) {
   mkdirSync(distSkills, { recursive: true });
@@ -28,6 +30,12 @@ if (existsSync(submoduleSkills) && existsSync(submoduleAgents)) {
   mkdirSync(distAgents, { recursive: true });
   cpSync(submoduleAgents, distAgents, { recursive: true });
   console.log(`Vendored agents -> dist/agents`);
+
+  if (existsSync(submoduleWorkflows)) {
+    mkdirSync(distWorkflows, { recursive: true });
+    cpSync(submoduleWorkflows, distWorkflows, { recursive: true });
+    console.log(`Vendored .claude/workflows -> dist/workflows`);
+  }
 } else if (existsSync(distSkills) && existsSync(distAgents)) {
   console.log('Submodule not initialized but dist/ already populated -- skipping vendor copy');
 } else {

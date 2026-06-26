@@ -65,6 +65,8 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 inst
 | `~/.apra-fleet/scripts/` | Helper scripts |
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
+| `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
+| `~/.claude/workflows/auto-sprint.js` | Full auto-sprint workflow (Claude only) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
 

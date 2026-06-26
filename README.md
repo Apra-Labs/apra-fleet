@@ -288,8 +288,17 @@ what is in flight.
 | `/pm cleanup <project>` | Finish the sprint, close tasks, and raise a PR. |
 | `/pm backlog` | Query and manage deferred items via Beads. |
 | `/pm tasks` | Show the current sprint task tree. |
+| `/auto-sprint` | Run a fully automated sprint loop with cost accounting. |
 
 See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
+
+**Cost accounting.** When PM is installed, the installer also writes `cost.js`
+to the PM skill directory for every provider. `cost.js` exports the seven pure
+cost-computation functions (`computeSprintQuote`, `computeSprintAnalysis`,
+`buildSprintSummary`, etc.) extracted from the `auto-sprint.js` workflow. For
+Claude, the full `auto-sprint.js` is also copied to `~/.claude/workflows/` and
+`Skill(auto-sprint)` / `Workflow(auto-sprint)` are added to the allow-list
+automatically. See [docs/features/auto-sprint-install.md](docs/features/auto-sprint-install.md).
 
 Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/writing-skills.md).
 

@@ -1,0 +1,146 @@
+{
+  "_doc": "Sprint cost calibration. All estimation constants live here -- nothing is hardcoded in agents. Fields named _doc are documentation strings; skip them when reading values. The historical section is written automatically by the harvester after each sprint; do not edit manually.",
+  "schema_version": 1,
+  "model_prices_per_1m_output_tokens": {
+    "_doc": "USD per 1M output tokens, keyed by tier name (cheap/standard/premium). Source: Anthropic published pricing 2026-06-04. Update when pricing changes. Provider-specific model IDs are resolved from tier names in auto-sprint.js TIER_TO_MODEL -- they never appear in this file.",
+    "cheap": 5,
+    "standard": 15,
+    "premium": 25
+  },
+  "role_models": {
+    "_doc": "Tier name per workflow role. 'doer' and 'reviewer' are NOT here -- the planner sets tier per task in beads metadata; reviewer escalates to max(task_tier, standard). Change an entry here to reroute a role to a different tier.",
+    "setup": "cheap",
+    "planner": "premium",
+    "plan-reviewer": "standard",
+    "deployer": "standard",
+    "integ-test-runner": "standard",
+    "ci-watcher": "cheap",
+    "harvester": "standard",
+    "log-flush": "cheap",
+    "check-blockers": "cheap",
+    "ready-streaks": "cheap"
+  },
+  "doer_model_fallback": {
+    "_doc": "Tier assumed for doer cost estimation when a task has no tier metadata in beads. In practice the planner always sets tier metadata -- this is a safety net only.",
+    "model": "standard"
+  },
+  "reviewer_model_rule": {
+    "_doc": "Reviewer tier is max(doer_task_tier, minimum). If the doer used premium, reviewer uses premium; otherwise reviewer uses standard. This mirrors the reviewerModel selection in auto-sprint.js.",
+    "minimum": "standard"
+  },
+  "complexity_buckets": {
+    "_doc": "Estimated doer output tokens per task by complexity bucket S/M/L. Plan-reviewer assigns a bucket to each task by reading its description. historical.bucket_avg_tokens overrides these defaults once enough sprint data has been collected.",
+    "S": {
+      "_doc": "Small: 1 file, narrow scoped change -- rename, config key, simple wiring, pure boilerplate",
+      "doer_tokens": 600
+    },
+    "M": {
+      "_doc": "Medium: 2-3 files, moderate logic -- new API endpoint, test suite, small focused refactor",
+      "doer_tokens": 1400
+    },
+    "L": {
+      "_doc": "Large: 3+ files or non-trivial design -- new auth flow, data migration, cross-cutting refactor",
+      "doer_tokens": 2800
+    }
+  },
+  "reviewer_ratio": {
+    "_doc": "Reviewer estimated output tokens as a fraction of doer tokens for the same task. 0.4 means reviewer uses ~40% as many output tokens as the doer. Overridden by historical.reviewer_ratio_avg when available.",
+    "value": 0.4
+  },
+  "cycle_assumptions": {
+    "_doc": "Expected number of dev/review cycles. Per-task cost is multiplied by these to produce sprint-level cost scenarios. Update 'expected' if your team consistently lands at a different cycle count.",
+    "optimistic": 1,
+    "expected": 1.5,
+    "pessimistic": 2.5
+  },
+  "fixed_overhead_tokens": {
+    "_doc": "Estimated output tokens for agents that run once per sprint regardless of task count. 'log_flush_per_cycle' is multiplied by the expected cycle count. Keys use underscores; the role lookup strips underscores to match role_models keys.",
+    "setup": 200,
+    "planner": 2000,
+    "plan_reviewer": 1500,
+    "harvester": 3000,
+    "ci_watcher": 300,
+    "log_flush_per_cycle": 100
+  },
+  "input_cost_multiplier": {
+    "_doc": "Multiply output-only USD estimate by this to approximate true cost (input + output). 4.0 is conservative for long-context agents. Replace with an empirical ratio once the workflow harness exposes input token counts.",
+    "value": 4
+  },
+  "outlier_thresholds": {
+    "_doc": "Percentage deviation bands used to classify estimation accuracy in the sprint analysis report.",
+    "notable_pct": 50,
+    "outlier_pct": 200,
+    "calibration_failure_pct": 500
+  },
+  "historical": {
+    "_doc": "Written by harvester after each sprint. Contains actual per-role output token averages from sprint-log JSONL files. Used by auto-sprint.js computeSprintQuote() to improve future estimates. Do not edit manually.",
+    "max_sprints_in_sample": 5,
+    "sprints_sampled": 1,
+    "last_updated": "2026-06-25",
+    "cycle_avg": 2,
+    "reviewer_ratio_avg": 0.421774388501857,
+    "bucket_avg_tokens": {},
+    "roles": {
+      "setup": {
+        "avg_output_tokens": 4964,
+        "sample_n": 1
+      },
+      "sprint-meta": {
+        "avg_output_tokens": 884,
+        "sample_n": 1
+      },
+      "cycle-state": {
+        "avg_output_tokens": 3212,
+        "sample_n": 2
+      },
+      "ready-streaks": {
+        "avg_output_tokens": 1729,
+        "sample_n": 6
+      },
+      "doer": {
+        "avg_output_tokens": 11375.75,
+        "sample_n": 4
+      },
+      "reviewer": {
+        "avg_output_tokens": 4798,
+        "sample_n": 4
+      },
+      "log-append-iter": {
+        "avg_output_tokens": 1235.75,
+        "sample_n": 4
+      },
+      "feedback-commit-reviewer": {
+        "avg_output_tokens": 3396,
+        "sample_n": 2
+      },
+      "push": {
+        "avg_output_tokens": 328,
+        "sample_n": 2
+      },
+      "head-sha": {
+        "avg_output_tokens": 242.5,
+        "sample_n": 2
+      },
+      "check-blockers": {
+        "avg_output_tokens": 1778.5,
+        "sample_n": 2
+      },
+      "log-append-end": {
+        "avg_output_tokens": 1372.5,
+        "sample_n": 2
+      },
+      "ci-watcher": {
+        "avg_output_tokens": 1220,
+        "sample_n": 1
+      },
+      "ci-task-create": {
+        "avg_output_tokens": 461,
+        "sample_n": 1
+      },
+      "final-reviewer": {
+        "avg_output_tokens": 10224,
+        "sample_n": 1
+      }
+    }
+  }
+}
