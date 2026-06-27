@@ -759,6 +759,7 @@ Then re-run:  apra-fleet install`);
           '    accumulateBucketTokens,',
           '    computeUpdatedCalibration,',
           '    buildSprintSummary,',
+          '    buildExecutionSummary,',
           '    reviewerModelFor,',
           '  };',
           '}',
@@ -834,7 +835,7 @@ Then re-run:  apra-fleet install`);
   // a top-level "permissions" key is invalid in opencode.json
   if (llm !== 'opencode') {
     const extraPerms = (llm === 'claude' && installPm)
-      ? ['Skill(auto-sprint)', 'Workflow(auto-sprint)']
+      ? ['Bash(*)', 'Skill(auto-sprint)', 'Workflow(auto-sprint)']
       : [];
     mergePermissions(paths, extraPerms);
   }
