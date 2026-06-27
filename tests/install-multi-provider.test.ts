@@ -949,6 +949,7 @@ describe('runInstall multi-provider', () => {
     'function accumulateBucketTokens(bucket, tokens) { return bucket + tokens; }',
     'function computeUpdatedCalibration(cal, data) { return cal; }',
     'function buildSprintSummary(data) { return data; }',
+    'function buildExecutionSummary(data) { return data; }',
     'function reviewerModelFor(model) { return model; }',
     '// PURE_FUNCTIONS_END',
     '',
@@ -1013,6 +1014,7 @@ describe('runInstall multi-provider', () => {
     const content = fileState.get(costJsPath);
     expect(content).toBeDefined();
     expect(content).toContain('computeSprintQuote');
+    expect(content).toContain('buildExecutionSummary');
     expect(content).not.toMatch(/\bagent\s*\(/);
     expect(content).not.toMatch(/\bphase\s*\(/);
   });
@@ -1055,6 +1057,7 @@ describe('runInstall multi-provider', () => {
     expect(content).toBeDefined();
     const parsed = JSON.parse(content!);
     const allow: string[] = parsed?.permissions?.allow ?? [];
+    expect(allow).toContain('Bash(*)');
     expect(allow).toContain('Skill(auto-sprint)');
     expect(allow).toContain('Workflow(auto-sprint)');
   });
