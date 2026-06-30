@@ -22,6 +22,7 @@ Usage:
   apra-fleet                  Install binary + hooks + statusline + MCP + fleet & PM skills (default)
   apra-fleet run              Start MCP server (stdio) -- used by LLM providers after install
   apra-fleet start            Alias for run
+  apra-fleet --stdio          Alias for run (backward compat for existing MCP configs)
   apra-fleet update           Check for and install latest update
   apra-fleet update --check   Check for update
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills
@@ -93,11 +94,23 @@ Usage:
 } else if (arg === 'run' || arg === 'start' || arg === '--stdio') {
   // Start MCP server -- invoked by LLM providers via their MCP config, or manually
   startServer();
-} else if (arg === undefined) {
-  // Default action: install (same as `apra-fleet install`)
-  import('./cli/install.js')
-    .then(m => m.runInstall(process.argv.slice(3)))
-    .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
+} else if (arg === undefined || arg === '--llm' || arg?.startsWith('--llm=')
+        || arg === '--skill' || arg?.startsWith('--skill=')
+        || arg === '--no-skill' || arg === '--force') {
+  // Default action: install. Flags like --llm/--skill/--force are forwarded directly so
+  // `apra-fleet --llm opencode` works as a short form of `apra-fleet install --llm opencode`.
+  // Use slice(2) (not slice(3)) -- there is no 'install' word to skip in argv here.
+  //
+  // Safety net for old MCP configs that registered the binary with args:[].
+  // When stdin is not a TTY the caller is an LLM provider, not a human -- start the
+  // server instead of running the installer into a JSON-RPC pipe.
+  if (arg === undefined && !process.stdin.isTTY) {
+    startServer();
+  } else {
+    import('./cli/install.js')
+      .then(m => m.runInstall(process.argv.slice(2)))
+      .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
+  }
 } else {
   console.error(`Error: unknown option '${arg}'`);
   console.error(`\nRun 'apra-fleet --help' for usage.`);

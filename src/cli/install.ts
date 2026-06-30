@@ -654,10 +654,8 @@ ${killHint}
 
     // Build the claude MCP command from the actual mcpConfig structure.
     // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
-    const quotedArgs = mcpConfig.args.map((a: string) => `"${a}"`).join(' ');
-    const cmd = mcpConfig.args.length > 0
-      ? `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`
-      : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
+    const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+    const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
     run(cmd);
   } else if (llm === 'gemini') {
     mergeGeminiConfig(paths, mcpConfig);

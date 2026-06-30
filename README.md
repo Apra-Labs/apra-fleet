@@ -337,6 +337,7 @@ Build from source (also the path for Intel Macs):
 
 ```bash
 git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
+git submodule update --init
 npm install && npm run build && npm test
 ```
 
