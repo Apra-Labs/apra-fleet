@@ -204,6 +204,13 @@ jobs:
               echo "::error::Missing or empty auto-sprint workflow: $auto_sprint"
               FAIL=1
             fi
+            for agent in ci-watcher deployer doer harvester integ-test-runner planner plan-reviewer reviewer; do
+              agent_md="$HOME/.claude/agents/$agent.md"
+              if [ ! -s "$agent_md" ]; then
+                echo "::error::Missing or empty agent file: $agent_md"
+                FAIL=1
+              fi
+            done
             [ "$FAIL" -eq 0 ] || exit 1
 
             # Informational only below -- a fresh `-p` call can race the MCP
