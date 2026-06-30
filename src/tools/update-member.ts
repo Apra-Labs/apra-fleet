@@ -57,6 +57,10 @@ export const updateMemberSchema = z.object({
     z.enum(['false', 'auto', 'dangerous'])
   ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
   category: z.string().max(64).optional().describe('Group label for this member (e.g. "doers", "reviewers"). Pass empty string to clear.'),
+  tags: z.array(z.string().max(64, 'Each tag must be 64 characters or fewer'))
+    .max(10, 'At most 10 tags are allowed')
+    .optional()
+    .describe('Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -165,6 +169,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
   if (input.category !== undefined) updates.category = input.category.trim() || undefined;
+  if (input.tags !== undefined) updates.tags = input.tags.length === 0 ? undefined : input.tags;
   if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
   if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;

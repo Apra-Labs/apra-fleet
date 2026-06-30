@@ -35,6 +35,7 @@ export interface Agent {
   lastLlmActivityAt?: string;  // ISO 8601
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
   category?: string;
+  tags?: string[];
 }
 
 export interface GitHubAppConfig {
