@@ -97,20 +97,21 @@ Usage:
 } else if (arg === undefined || arg === '--llm' || arg?.startsWith('--llm=')
         || arg === '--skill' || arg?.startsWith('--skill=')
         || arg === '--no-skill' || arg === '--force') {
-  // Default action: install. Flags like --llm/--skill/--force are forwarded directly so
-  // `apra-fleet --llm opencode` works as a short form of `apra-fleet install --llm opencode`.
-  // Use slice(2) (not slice(3)) -- there is no 'install' word to skip in argv here.
+  // Install flags forwarded directly so `apra-fleet --llm opencode` works as a short
+  // form of `apra-fleet install --llm opencode`. Use slice(2) -- no 'install' to skip.
   //
-  // Safety net for old MCP configs that registered the binary with args:[].
-  // When stdin is not a TTY the caller is an LLM provider, not a human -- start the
-  // server instead of running the installer into a JSON-RPC pipe.
-  if (arg === undefined && !process.stdin.isTTY) {
-    startServer();
-  } else {
-    import('./cli/install.js')
-      .then(m => m.runInstall(process.argv.slice(2)))
-      .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
-  }
+  // Default (no flags) only runs the installer for the SEA binary, where double-clicking
+  // is the expected install UX. In npm/dev mode, no-args defaults to starting the MCP
+  // server (old behavior) -- install.cjs owns the npm install path.
+  import('./cli/install.js').then(({ isSea }) => {
+    if (arg === undefined && !isSea()) {
+      startServer();
+    } else {
+      import('./cli/install.js')
+        .then(m => m.runInstall(process.argv.slice(2)))
+        .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
+    }
+  });
 } else {
   console.error(`Error: unknown option '${arg}'`);
   console.error(`\nRun 'apra-fleet --help' for usage.`);
