@@ -136,6 +136,33 @@ describe('updateMember', () => {
     expect(updated?.category).toBeUndefined();
   });
 
+  it('adds tags to a member', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, tags: ['gpu', 'prod'] });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.tags).toEqual(['gpu', 'prod']);
+  });
+
+  it('clears tags when empty array is passed', async () => {
+    const member = makeTestLocalAgent({ tags: ['gpu', 'prod'] });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, tags: [] });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.tags).toBeUndefined();
+  });
+
+  it('replaces existing tags with new tags', async () => {
+    const member = makeTestLocalAgent({ tags: ['old-tag', 'another-old'] });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, tags: ['new-tag'] });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.tags).toEqual(['new-tag']);
+  });
+
   it('does not warn when updating a cloud member', async () => {
     const member = makeTestAgent({ // A remote member with a cloud property
       cloud: {

@@ -70,6 +70,26 @@ describe('fleet_status -- category grouping', () => {
     expect(result).toContain('[(uncategorized)]');
     expect(result).not.toMatch(/\[\s+\]/);
   });
+
+  it('renders tags in compact output', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'worker-1', tags: ['gpu', 'prod'] }));
+    const result = await fleetStatus({ format: 'compact' });
+    expect(result).toContain('tags=[gpu, prod]');
+  });
+
+  it('includes tags in JSON output', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'worker-1', tags: ['fast'] }));
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.members[0].tags).toEqual(['fast']);
+  });
+
+  it('omits tags key in JSON output when member has no tags', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'worker-1' }));
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.members[0].tags).toBeUndefined();
+  });
 });
 
 describe('list_members -- category grouping', () => {
@@ -108,5 +128,25 @@ describe('list_members -- category grouping', () => {
     const result = await listMembers({ format: 'json' });
     const parsed = JSON.parse(result);
     expect(parsed.members[0].category).toBeNull();
+  });
+
+  it('renders tags in compact output', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'worker-1', tags: ['doer', 'nightly'] }));
+    const result = await listMembers({ format: 'compact' });
+    expect(result).toContain('tags=[doer, nightly]');
+  });
+
+  it('includes tags in JSON output', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'worker-1', tags: ['reviewer'] }));
+    const result = await listMembers({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.members[0].tags).toEqual(['reviewer']);
+  });
+
+  it('has null tags in JSON output when member has no tags', async () => {
+    addAgent(makeTestAgent({ friendlyName: 'worker-1' }));
+    const result = await listMembers({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.members[0].tags).toBeNull();
   });
 });
