@@ -824,7 +824,7 @@ Then re-run:  apra-fleet install`);
       // already installed — skip
     } catch {
       // not installed — install it
-      execFileSync('npm', ['install', '-g', '@beads/bd'], { stdio: 'inherit', shell: true });
+      execFileSync('npm', ['install', '-g', '@beads/bd@1.0.4'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install

@@ -152,9 +152,9 @@ describe('install step 8 — Beads task tracker', () => {
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).toContain('Installing Beads task tracker...');
 
-    // npm install -g @beads/bd should NOT have been called
+    // npm install -g @beads/bd@1.0.4 should NOT have been called
     const npmCall = vi.mocked(execFileSync).mock.calls.find(
-      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes('@beads/bd')
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes('@beads/bd@1.0.4')
     );
     expect(npmCall).toBeUndefined();
 
