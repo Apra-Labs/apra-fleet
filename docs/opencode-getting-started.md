@@ -192,24 +192,24 @@ automatically.
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet install --llm opencode
+apra-fleet --llm opencode
 ```
 
 ### Method 2 -- standalone binary (no Node.js required)
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install --llm opencode
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer --llm opencode
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install --llm opencode
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer --llm opencode
 ```
 
 **Windows (x64)** -- run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install --llm opencode
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe --llm opencode
 ```
 
 After install, restart OpenCode to load the MCP server. All fleet tools
