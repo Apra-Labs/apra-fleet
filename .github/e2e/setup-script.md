@@ -50,7 +50,7 @@ Then confirm both members show online in `fleet_status`.
 
 ### Verify tools on each member
 
-Check `bd` is installed: run `which bd`. If it is missing, run `npm install -g @beads/bd`.
+Check `bd` is installed: run `which bd`. If it is missing, run `npm install -g @beads/bd@1.0.4`.
 
 Check `dolt` is installed: run `which dolt || ~/bin/dolt version`. If it is missing, install it:
 
