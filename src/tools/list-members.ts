@@ -91,6 +91,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         created: a.createdAt,
         lastUsed: a.lastUsed ?? 'never',
         category: a.category ?? null,
+        tags: a.tags ?? null,
       })),
     });
   }
@@ -114,6 +115,9 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         } else if (authStatus === 'offline') {
           t += ` | status=offline`;
         }
+      }
+      if (a.tags && a.tags.length > 0) {
+        t += ` | tags=[${a.tags.join(', ')}]`;
       }
       t += '\n';
     }
