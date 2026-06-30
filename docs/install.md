@@ -12,21 +12,22 @@ which skills are installed, uninstalling, and self-updating.
 
 ## Quick install
 
-Copy-paste the one-liner for your platform.
+Installation is the default action -- just run the binary with no arguments (or double-click it
+on Windows).
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
-**Windows (x64)** -- run in PowerShell:
+**Windows (x64)** -- download `apra-fleet-installer-win-x64.exe` and double-click it, or run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe
 ```
 
 Intel Macs: there is no prebuilt `darwin-x64` binary -- build from source (see
@@ -41,20 +42,23 @@ Download the installer for your platform from
 - `apra-fleet-installer-darwin-arm64` -- macOS (Apple Silicon)
 - `apra-fleet-installer-win-x64.exe` -- Windows
 
-Then run it:
+Double-click the downloaded file, or run it from the terminal. Installation is the default action:
 
 ```bash
-# macOS (Apple Silicon)
-chmod +x apra-fleet-installer-darwin-arm64 && ./apra-fleet-installer-darwin-arm64 install
+# macOS (Apple Silicon) -- no subcommand needed; installation is the default
+chmod +x apra-fleet-installer-darwin-arm64 && ./apra-fleet-installer-darwin-arm64
 
 # Linux (x64)
-chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64 install
+chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 ```
 
 ```powershell
 # Windows
-.\apra-fleet-installer-win-x64.exe install
+.\apra-fleet-installer-win-x64.exe
 ```
+
+> The `install` subcommand is still accepted and does the same thing:
+> `./apra-fleet-installer install` works exactly as before.
 
 ## What `install` writes
 

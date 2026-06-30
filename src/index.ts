@@ -19,13 +19,15 @@ if (arg === '--help' || arg === '-h') {
   console.log(`apra-fleet ${serverVersion}
 
 Usage:
-  apra-fleet                  Start MCP server (stdio)
+  apra-fleet                  Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet run              Start MCP server (stdio) -- used by LLM providers after install
+  apra-fleet start            Alias for run
   apra-fleet update           Check for and install latest update
   apra-fleet update --check   Check for update
-  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill pm        Install PM skill (also installs fleet -- PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
@@ -88,9 +90,14 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
-} else if (arg === undefined || arg === '--stdio') {
-  // Default: start MCP server
+} else if (arg === 'run' || arg === 'start' || arg === '--stdio') {
+  // Start MCP server -- invoked by LLM providers via their MCP config, or manually
   startServer();
+} else if (arg === undefined) {
+  // Default action: install (same as `apra-fleet install`)
+  import('./cli/install.js')
+    .then(m => m.runInstall(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
 } else {
   console.error(`Error: unknown option '${arg}'`);
   console.error(`\nRun 'apra-fleet --help' for usage.`);

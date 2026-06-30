@@ -281,9 +281,11 @@ describe('install MCP config in npm mode', () => {
     const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
     const mcpAdd = calls.find(c => c.includes('claude mcp add'));
     expect(mcpAdd).toBeDefined();
-    // Both segments are quoted so paths with spaces survive; assert the exact registered form.
+    // All segments are quoted so paths with spaces survive; assert the exact registered form.
+    // 'run' is appended as the last arg so the MCP host invokes `node <script> run` and
+    // never accidentally triggers the default install action.
     expect(mcpAdd).toBe(
-      `claude mcp add --scope user apra-fleet -- "${process.execPath}" "${npmPath}"`
+      `claude mcp add --scope user apra-fleet -- "${process.execPath}" "${npmPath}" "run"`
     );
 
     process.argv[1] = origArgv1;
