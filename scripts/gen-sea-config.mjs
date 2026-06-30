@@ -48,6 +48,12 @@ const skills = collectFiles(join(root, 'vendor', 'apra-pm', 'skills', 'pm'), 've
 const fleetSkills = collectFiles(join(root, 'skills', 'fleet'), 'skills/fleet');
 const agents = collectFiles(join(root, 'vendor', 'apra-pm', 'agents'), 'vendor/apra-pm/agents', 'vendor/apra-pm/agents');
 
+if (Object.keys(skills).length === 0 || Object.keys(agents).length === 0) {
+  console.error('Error: vendor/apra-pm submodule is not initialized (skills/pm or agents is empty).');
+  console.error('Run: git submodule update --init');
+  process.exit(1);
+}
+
 // Workflows: vendor source preferred, dist/ fallback (from vendor-pm.mjs copy)
 const workflowsVendorDir = join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
 const workflowsDistDir = join(root, 'dist', 'workflows');
