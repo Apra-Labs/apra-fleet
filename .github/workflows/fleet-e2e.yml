@@ -185,6 +185,28 @@ jobs:
             output=$(claude -p "$PROMPT" --model haiku 2>&1)
             echo "$output"
             echo "PM claude auth OK"
+
+            # Deterministic checks -- the LLM's text answer above is a liveness
+            # check only; it can't be trusted to verify installs (it may not
+            # know to look, and CI must fail loudly on a broken install).
+            FAIL=0
+            if ! claude mcp list 2>&1 | grep -qi "apra-fleet.*connected"; then
+              echo "::error::apra-fleet MCP server not connected (claude mcp list)"
+              FAIL=1
+            fi
+            for skill in fleet pm; do
+              skill_md="$HOME/.claude/skills/$skill/SKILL.md"
+              if [ ! -s "$skill_md" ]; then
+                echo "::error::Missing or empty skill file: $skill_md"
+                FAIL=1
+              fi
+            done
+            auto_sprint="$HOME/.claude/workflows/auto-sprint.js"
+            if [ ! -s "$auto_sprint" ]; then
+              echo "::error::Missing or empty auto-sprint workflow: $auto_sprint"
+              FAIL=1
+            fi
+            [ "$FAIL" -eq 0 ] || exit 1
           elif [ "$PROVIDER" = "gemini" ]; then
             output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1)
             echo "$output"
