@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(docker:*)", "Bash(docker-compose:*)", "Bash(docker buildx:*)", "Bash(nvidia-smi:*)", "Bash(nvidia-docker:*)"],
+  "reviewer": ["Bash(docker:*)", "Bash(nvidia-smi:*)"]
+}
