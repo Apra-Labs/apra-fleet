@@ -82,11 +82,61 @@ Same parameters as register_member. Semantics:
 - `tags: []` clears all tags (stored as undefined)
 - Omitting `tags` entirely leaves the existing tags unchanged
 
+## Tag-Based Permission Composition (Phase 2)
+
+Tags drive `compose_permissions` via the `tags` parameter. The tool maps tags to
+permission profiles stored under `skills/fleet/profiles/tag-<name>.json`.
+
+Key rules:
+- Reserved tags `doer` and `reviewer` determine the primary mode (base-dev or base-reviewer profile).
+- If neither is present, `doer` is the default.
+- All other tags load `tag-<name>.json` and merge additively.
+- Unknown tags (no matching profile file) are silently ignored.
+- When both `role` and `tags` are supplied, `tags` wins.
+
+`composeFromTags(tags, agent, projectFolder)` in `src/tools/compose-permissions.ts` is
+the entry point. It is byte-identical in output to `compose(role, agent, projectFolder)`
+when `tags` contains exactly `["doer"]` or `["reviewer"]` -- full backward compatibility.
+
+Example tag profiles shipped with Fleet:
+- `tag-gpu.json` -- grants GPU-related tool scopes for build/test
+- `tag-devops.json` -- grants CI/CD and container tool scopes
+
+## Tag-Based Member Filtering (Phase 5)
+
+`list_members` accepts a `tags` parameter. Semantics: AND filter -- only members that
+carry ALL of the supplied tags are returned. Single-tag and multi-tag cases are both
+supported. Omitting `tags` returns all members (existing behavior unchanged).
+
+The filter is applied before display grouping, so the output is still grouped by
+category with the same compact/JSON format.
+
+## Skill Matrix Utility (Phase 3)
+
+`src/utils/skill-matrix.ts` exports `getRequiredSkills(tags, vcs, project?)`:
+
+```typescript
+function getRequiredSkills(
+  tags: string[],
+  vcs: VcsProvider,
+  project?: string,
+): string[]
+```
+
+- Returns the deduplicated, sorted list of skill names required for a member.
+- Encodes the rules in `skills/fleet/skill-matrix.md` programmatically.
+- Members with no relevant tags return an empty array (not an error).
+- Currently used in tests and as a documentation companion; not yet wired into the
+  installer's onboarding path (integrate during a later sprint before it drifts).
+
 ## Architecture Invariants
 
-- Tags and category are purely metadata; they do not affect dispatch routing, SSH transport, or session management in Phases 0-1.
-- Tag-based permission composition (Phase 2, apra-fleet-04a) and tag-based member filtering in list_members (Phase 5, apra-fleet-4xe) are planned follow-on work but are NOT yet implemented.
-- The `groupByCategory` utility is generic (`<T>`) and reusable for any item type, not just Agents.
+- Tags and category are purely metadata -- they do not affect dispatch routing, SSH
+  transport, or session management.
+- The `groupByCategory` utility is generic (`<T>`) and reusable for any item type.
+- `getRequiredSkills()` is a pure function with no side effects and no I/O.
+- Permission merges are always additive (Set-based); no permission is ever removed by
+  adding a tag.
 
 ## Phases Implemented vs Planned
 
@@ -94,8 +144,8 @@ Same parameters as register_member. Semantics:
 |-------|----|--------|-------------|
 | 0 | apra-fleet-j23 | Done | category field + groupByCategory + display |
 | 1 | apra-fleet-9iw | Done | tags field + validation + display + tests |
-| 2 | apra-fleet-04a | Planned | Tag-aware permission composition |
-| 3 | apra-fleet-51i | Planned | Tag-aware skill matrix |
-| 4 | apra-fleet-6ky | Planned | Update permissions.md for tag composition |
-| 5 | apra-fleet-4xe | Planned | Tag filter param in list_members |
-| Integration | apra-fleet-2tl | Planned | Full end-to-end integration tests |
+| 2 | apra-fleet-04a | Done | Tag-aware permission composition + composeFromTags() |
+| 3 | apra-fleet-51i | Done | Tag-aware skill matrix (skill-matrix.ts + skill-matrix.md update) |
+| 4 | apra-fleet-6ky | Done | permissions.md updated for tag-based composition |
+| 5 | apra-fleet-4xe | Done | Tag filter param in list_members (AND semantics) |
+| Integration | apra-fleet-2tl | Carried forward | Full end-to-end integration tests |
