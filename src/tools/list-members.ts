@@ -10,6 +10,7 @@ import type { Agent } from '../types.js';
 
 export const listMembersSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
+  tags: z.array(z.string()).optional().describe('Filter members by tags (AND semantics): only return members that have ALL specified tags. Omit to return all members.'),
 });
 
 export type ListMembersInput = z.infer<typeof listMembersSchema>;
@@ -64,7 +65,12 @@ async function getAuthStatus(agent: Agent): Promise<string> {
 
 export async function listMembers(input?: ListMembersInput): Promise<string> {
   const format = input?.format ?? 'compact';
-  const agents = getAllAgents();
+  const filterTags = input?.tags;
+  let agents = getAllAgents();
+
+  if (filterTags && filterTags.length > 0) {
+    agents = agents.filter(a => filterTags.every(tag => a.tags?.includes(tag)));
+  }
 
   if (agents.length === 0) return 'No members registered.';
 
