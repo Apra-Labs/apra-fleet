@@ -6,7 +6,7 @@
  * embed skills/pm and agents into the package before npm pack.
  */
 
-import { existsSync, mkdirSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, cpSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,7 +22,9 @@ const distSkills = join(distDir, 'skills', 'pm');
 const distAgents = join(distDir, 'agents');
 const distWorkflows = join(distDir, 'workflows');
 
-if (existsSync(submoduleSkills) && existsSync(submoduleAgents)) {
+const isNonEmptyDir = (dir) => existsSync(dir) && readdirSync(dir).length > 0;
+
+if (isNonEmptyDir(submoduleSkills) && isNonEmptyDir(submoduleAgents)) {
   mkdirSync(distSkills, { recursive: true });
   cpSync(submoduleSkills, distSkills, { recursive: true });
   console.log(`Vendored skills/pm -> dist/skills/pm`);
@@ -36,10 +38,10 @@ if (existsSync(submoduleSkills) && existsSync(submoduleAgents)) {
     cpSync(submoduleWorkflows, distWorkflows, { recursive: true });
     console.log(`Vendored .claude/workflows -> dist/workflows`);
   }
-} else if (existsSync(distSkills) && existsSync(distAgents)) {
+} else if (isNonEmptyDir(distSkills) && isNonEmptyDir(distAgents)) {
   console.log('Submodule not initialized but dist/ already populated -- skipping vendor copy');
 } else {
-  console.error('Error: vendor/apra-pm submodule not initialized and dist/ not pre-populated.');
+  console.error('Error: vendor/apra-pm submodule not initialized (or empty) and dist/ not pre-populated.');
   console.error('Run: git submodule update --init');
   process.exit(1);
 }

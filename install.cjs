@@ -104,7 +104,7 @@ try {
   // ignore if not registered
 }
 const indexJs = path.join(installDir, "dist", "index.js");
-run(`claude mcp add --scope user fleet -- node "${indexJs}"`);
+run(`claude mcp add --scope user fleet -- node "${indexJs}" run`);
 
 // --- Step 7: Print version ---
 const version = JSON.parse(

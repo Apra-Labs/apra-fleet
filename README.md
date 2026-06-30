@@ -51,33 +51,35 @@ You describe the goal, approve the plan once, and Fleet runs the doer-reviewer l
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet install                  # Claude Code (default)
-apra-fleet install --llm agy       # Google Antigravity CLI
-apra-fleet install --llm gemini    # Gemini CLI
-apra-fleet install --llm codex     # OpenAI Codex CLI
-apra-fleet install --llm opencode  # OpenCode (local/self-hosted models)
+apra-fleet                          # Claude Code (default) -- install is the default action
+apra-fleet --llm agy               # Google Antigravity CLI
+apra-fleet --llm gemini            # Gemini CLI
+apra-fleet --llm codex             # OpenAI Codex CLI
+apra-fleet --llm opencode          # OpenCode (local/self-hosted models)
 ```
 
-Run `install` once per provider you want to support. After install, load the
+Run once per provider you want to support. After install, load the
 server in Claude Code using `/mcp`, or restart your CLI for other providers.
 
 ### Option B -- standalone binary (no Node.js required)
 
-Copy-paste the one-liner for your platform:
+Download the installer for your platform from
+[GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
+**double-click it** (or run it from the terminal) -- installation is the default action.
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
-**Windows (x64)** -- run in PowerShell:
+**Windows (x64)** -- download `apra-fleet-installer-win-x64.exe` and double-click, or run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe
 ```
 
 > Installing for **Antigravity**, Codex, Copilot, Gemini, or **OpenCode** instead of
@@ -335,6 +337,7 @@ Build from source (also the path for Intel Macs):
 
 ```bash
 git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
+git submodule update --init
 npm install && npm run build && npm test
 ```
 

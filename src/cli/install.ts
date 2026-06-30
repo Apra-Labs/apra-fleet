@@ -638,24 +638,24 @@ ${killHint}
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
 
+  // 'run' is the subcommand that starts the MCP server; it is passed as the last arg so
+  // LLM providers invoke `apra-fleet run` (or `node dist/index.js run`) and the no-arg
+  // default (installation) is never accidentally triggered by the MCP host.
   const mcpConfig = isSea()
-    ? { command: binaryPath, args: [] }
+    ? { command: binaryPath, args: ['run'] }
     : isNpmGlobalInstall()
-    ? { command: process.execPath, args: [process.argv[1]] }
-    : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
+    ? { command: process.execPath, args: [process.argv[1], 'run'] }
+    : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run'] };
 
   if (llm === 'claude') {
     try {
       run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
     } catch { /* not registered */ }
-    
+
     // Build the claude MCP command from the actual mcpConfig structure.
-    // SEA mode: { command: binaryPath, args: [] } -> register the binary alone.
-    // npm/dev mode: { command: <node>, args: [<script>] } -> register node + script path.
-    // Quote both segments so paths with spaces (e.g. Windows "Program Files") work.
-    const cmd = mcpConfig.args.length > 0
-      ? `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" "${mcpConfig.args[0]}"`
-      : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
+    // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
+    const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+    const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
     run(cmd);
   } else if (llm === 'gemini') {
     mergeGeminiConfig(paths, mcpConfig);

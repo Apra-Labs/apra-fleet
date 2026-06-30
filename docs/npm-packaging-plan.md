@@ -48,7 +48,8 @@ standard ESM `.js` files. This is the **dev mode** path, used for development an
 - `--version` / `-v` (lines 10-13)
 - `--help` / `-h` (lines 15-47)
 - CLI dispatch via dynamic imports (lines 49-128): install, secret, uninstall, auth, update, start, stop, restart, status
-- Default (no args or `--transport`): starts MCP server in stdio or HTTP mode (lines 111-287)
+- Default (no args, SEA binary only): runs the installer. In npm/dev mode, no-args defaults to starting the MCP server (install.cjs owns the npm install path).
+- `run` / `start` / `--stdio`: starts MCP server in stdio mode (lines 94-96)
 
 `src/index.ts` line 1: `#!/usr/bin/env node` (confirmed by reading the file). `tsc` preserves
 shebang lines in compiled output, so `dist/index.js` will also start with
@@ -138,7 +139,7 @@ extended with a PID).
 
 | Feature | CLI Command(s) | npx/global-install parity | Changes needed |
 |---|---|---|---|
-| MCP server -- stdio | (default, no args) | YES | Shebang + bin field |
+| MCP server -- stdio | `run` / `start` / `--stdio` | YES | Shebang + bin field |
 | MCP server -- HTTP/SSE | `--transport http` | YES | Shebang + bin field |
 | Install (binary + hooks + MCP + skills + service) | `install` | PARTIAL -- see below | Fix isSea() gates |
 | OS service register | `install` (step 9) | NO -- skipped when !isSea() | Remove isSea() gate; detect npm path |

@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.3.3] -- feat/install-default
+
+### Breaking change -- MCP server start command changed
+
+> **Action required for users who manually manage their MCP config.**
+>
+> The binary no longer starts the MCP server when invoked with no arguments.
+> The new default action is **installation**. The MCP server is now started
+> with the explicit `apra-fleet run` subcommand.
+>
+> **Who is affected:** only users who edited their MCP config by hand and
+> registered the binary with no arguments (e.g. `command: apra-fleet`,
+> `args: []`). Users who installed via `apra-fleet install` or
+> `apra-fleet update` are updated automatically -- the installer re-registers
+> the MCP server with the correct `run` argument.
+>
+> **How to fix (manual config only):** change `args: []` to `args: ["run"]`
+> in your provider's MCP config, then reload the MCP server.
+>
+> `--stdio` is kept as a backward-compat alias and still starts the server,
+> so `args: ["--stdio"]` also works without any code change.
+
+### Added
+
+- **Install as default action** -- invoking the standalone binary with no
+  arguments (including double-clicking `apra-fleet-installer-win-x64.exe` on
+  Windows) now runs the installer instead of silently starting an MCP stdio
+  server. This is the expected behavior for users who download the binary from
+  the GitHub Releases page.
+
+- **`apra-fleet run` / `apra-fleet start`** -- new subcommands that
+  explicitly start the MCP server (stdio mode). All provider MCP configs
+  written by the installer are updated to use `run` as the last argument.
+  `--stdio` continues to work as a backward-compat alias.
+
+### Changed
+
+- **MCP config updated for all providers** -- the MCP server command
+  registered during `apra-fleet install` now includes `run` as an explicit
+  argument for every provider (claude, gemini, agy, codex, copilot, opencode).
+  Example SEA mode: `{ "command": "/path/apra-fleet", "args": ["run"] }`.
+
+- **Claude `mcp add` command handles all args** -- the `claude mcp add`
+  command builder now quotes and joins all args (not just `args[0]`), which
+  is required for npm/dev mode where both a script path and `run` must be
+  passed.
+
 ## [Unreleased] -- feat/auto-sprint (auto-sprint pipeline)
 
 Sprint goal: implement the full auto-sprint.js install pipeline -- submodule pin
