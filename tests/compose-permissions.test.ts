@@ -439,6 +439,299 @@ describe('deliverConfigFile — Windows BOM-free write (T4)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tag-aware permission composition
+// ---------------------------------------------------------------------------
+
+/** Extract the JSON/TOML content written via the heredoc write command (Linux).
+ *  The write command format is: cat > <path> << 'FLEET_PERMS_EOF'\n<content>\nFLEET_PERMS_EOF
+ *  The opening delimiter has a trailing single-quote; the closing one does not. */
+function extractWrittenContent(cmd: string): string {
+  // Match the content between << 'FLEET_PERMS_EOF'\n ... \nFLEET_PERMS_EOF
+  const match = cmd.match(/'FLEET_PERMS_EOF'\n([\s\S]+)\nFLEET_PERMS_EOF/);
+  return match ? match[1] : '';
+}
+
+describe('composePermissions -- tag-aware: tags:[doer] == role:doer (backward compat)', () => {
+  it('produces byte-identical settings.local.json content for tags:[doer] vs role:doer', async () => {
+    const memberRole = makeTestAgent({ friendlyName: 'claude-role-doer', llmProvider: 'claude', os: 'linux' });
+    const memberTags = makeTestAgent({ friendlyName: 'claude-tags-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(memberRole);
+    addAgent(memberTags);
+
+    // Run role:'doer'
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberRole.id, role: 'doer' });
+    const roleCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const roleWrite = roleCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const roleContent = extractWrittenContent(roleWrite);
+
+    vi.clearAllMocks();
+
+    // Run tags:['doer']
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberTags.id, tags: ['doer'] });
+    const tagCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const tagWrite = tagCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const tagContent = extractWrittenContent(tagWrite);
+
+    expect(tagContent).toBeTruthy();
+    expect(roleContent).toBeTruthy();
+    // Both should produce the same allow list (same JSON structure)
+    const rolePerms = JSON.parse(roleContent).permissions.allow.sort();
+    const tagPerms = JSON.parse(tagContent).permissions.allow.sort();
+    expect(tagPerms).toEqual(rolePerms);
+  });
+});
+
+describe('composePermissions -- tag-aware: tags:[reviewer] == role:reviewer (backward compat)', () => {
+  it('produces byte-identical settings.local.json content for tags:[reviewer] vs role:reviewer', async () => {
+    const memberRole = makeTestAgent({ friendlyName: 'claude-role-reviewer', llmProvider: 'claude', os: 'linux' });
+    const memberTags = makeTestAgent({ friendlyName: 'claude-tags-reviewer', llmProvider: 'claude', os: 'linux' });
+    addAgent(memberRole);
+    addAgent(memberTags);
+
+    // Run role:'reviewer'
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberRole.id, role: 'reviewer' });
+    const roleCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const roleWrite = roleCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const roleContent = extractWrittenContent(roleWrite);
+
+    vi.clearAllMocks();
+
+    // Run tags:['reviewer']
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberTags.id, tags: ['reviewer'] });
+    const tagCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const tagWrite = tagCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const tagContent = extractWrittenContent(tagWrite);
+
+    expect(tagContent).toBeTruthy();
+    expect(roleContent).toBeTruthy();
+    const rolePerms = JSON.parse(roleContent).permissions.allow.sort();
+    const tagPerms = JSON.parse(tagContent).permissions.allow.sort();
+    expect(tagPerms).toEqual(rolePerms);
+  });
+});
+
+describe('composePermissions -- tag-aware: tags:[doer,gpu] merges doer+gpu profiles', () => {
+  it('includes gpu-specific permissions in the allow list', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer-gpu', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const result = await composePermissions({ member_id: member.id, tags: ['doer', 'gpu'] });
+
+    expect(result).toContain('claude-doer-gpu');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    expect(writeCmd).toBeDefined();
+    const content = extractWrittenContent(writeCmd);
+    const allow: string[] = JSON.parse(content).permissions.allow;
+
+    // GPU tag-specific permissions should be present
+    expect(allow).toContain('Bash(nvidia-smi:*)');
+    expect(allow).toContain('Bash(docker:*)');
+    // Base doer permissions should also be present
+    expect(allow).toContain('Read');
+    expect(allow).toContain('Bash(git:*)');
+  });
+
+  it('gpu-merged allow list is a strict superset of doer-only allow list', async () => {
+    const memberDoer = makeTestAgent({ friendlyName: 'claude-just-doer', llmProvider: 'claude', os: 'linux' });
+    const memberGpu = makeTestAgent({ friendlyName: 'claude-doer-gpu2', llmProvider: 'claude', os: 'linux' });
+    addAgent(memberDoer);
+    addAgent(memberGpu);
+
+    // Doer-only
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberDoer.id, tags: ['doer'] });
+    const doerCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const doerWrite = doerCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const doerAllow: string[] = JSON.parse(extractWrittenContent(doerWrite)).permissions.allow;
+
+    vi.clearAllMocks();
+
+    // Doer + gpu
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberGpu.id, tags: ['doer', 'gpu'] });
+    const gpuCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const gpuWrite = gpuCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const gpuAllow: string[] = JSON.parse(extractWrittenContent(gpuWrite)).permissions.allow;
+
+    // gpu allow should contain everything from doer-only
+    for (const perm of doerAllow) {
+      expect(gpuAllow).toContain(perm);
+    }
+    // gpu allow should have more permissions than doer-only
+    expect(gpuAllow.length).toBeGreaterThan(doerAllow.length);
+  });
+});
+
+describe('composePermissions -- tag-aware: role:doer backward compat', () => {
+  it('still works with role-only (no tags) for doer', async () => {
+    const member = makeTestAgent({ friendlyName: 'role-compat-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('role-compat-doer');
+    expect(result).toContain('doer');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+    expect(writeCmd).toContain('"permissions"');
+    expect(writeCmd).toContain('"allow"');
+  });
+});
+
+describe('composePermissions -- tag-aware: both role and tags -> tags wins', () => {
+  it('when role=reviewer and tags=[doer], output uses doer mode', async () => {
+    const memberTagsWin = makeTestAgent({ friendlyName: 'tags-win-doer', llmProvider: 'claude', os: 'linux' });
+    const memberRoleDoer = makeTestAgent({ friendlyName: 'role-doer-ref', llmProvider: 'claude', os: 'linux' });
+    addAgent(memberTagsWin);
+    addAgent(memberRoleDoer);
+
+    // tags:[doer] + role:reviewer -> tags wins -> mode=doer
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberTagsWin.id, role: 'reviewer', tags: ['doer'] });
+    const tagsWinCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const tagsWinWrite = tagsWinCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const tagsWinAllow: string[] = JSON.parse(extractWrittenContent(tagsWinWrite)).permissions.allow;
+
+    vi.clearAllMocks();
+
+    // role:doer alone for reference
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberRoleDoer.id, role: 'doer' });
+    const roleDoerCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const roleDoerWrite = roleDoerCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const roleDoerAllow: string[] = JSON.parse(extractWrittenContent(roleDoerWrite)).permissions.allow;
+
+    // tags:['doer'] with role:reviewer should yield same as role:'doer'
+    expect(tagsWinAllow.sort()).toEqual(roleDoerAllow.sort());
+  });
+
+  it('when role=doer and tags=[reviewer], output uses reviewer mode (tags win)', async () => {
+    const member = makeTestAgent({ friendlyName: 'tags-reviewer-over-role', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    // tags:['reviewer'] + role:'doer' -> tags win -> reviewer mode
+    await composePermissions({ member_id: member.id, role: 'doer', tags: ['reviewer'] });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const allow: string[] = JSON.parse(extractWrittenContent(writeCmd)).permissions.allow;
+
+    // Reviewer mode: should have reviewer-scoped Write (not unrestricted Write)
+    expect(allow).not.toContain('Write');
+    expect(allow.some(p => p.startsWith('Write('))).toBe(true);
+  });
+});
+
+describe('composePermissions -- tag-aware: unknown tag -> no error, no extra perms', () => {
+  it('silently ignores unknown tags and still succeeds', async () => {
+    const memberUnknown = makeTestAgent({ friendlyName: 'claude-unknown-tag', llmProvider: 'claude', os: 'linux' });
+    const memberBase = makeTestAgent({ friendlyName: 'claude-base-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(memberUnknown);
+    addAgent(memberBase);
+
+    // tags with unknown tag
+    mockExecCommand.mockResolvedValue(OK);
+    const result = await composePermissions({ member_id: memberUnknown.id, tags: ['doer', 'nonexistent-tag-xyz'] });
+
+    // Should succeed (not throw, not return error)
+    expect(result).toContain('claude-unknown-tag');
+    expect(result).not.toContain('error');
+    expect(result).not.toContain('Error');
+
+    const unknownCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const unknownWrite = unknownCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const unknownAllow: string[] = JSON.parse(extractWrittenContent(unknownWrite)).permissions.allow;
+
+    vi.clearAllMocks();
+
+    // Same as just doer
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberBase.id, tags: ['doer'] });
+    const baseCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const baseWrite = baseCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const baseAllow: string[] = JSON.parse(extractWrittenContent(baseWrite)).permissions.allow;
+
+    // No extra permissions from an unknown tag
+    expect(unknownAllow.sort()).toEqual(baseAllow.sort());
+  });
+});
+
+describe('composePermissions -- tag-aware: tags with no mode tag defaults to doer', () => {
+  it('uses doer mode when tags contain only non-mode tags (e.g. gpu only)', async () => {
+    const memberGpuOnly = makeTestAgent({ friendlyName: 'gpu-no-mode', llmProvider: 'claude', os: 'linux' });
+    const memberDoerGpu = makeTestAgent({ friendlyName: 'doer-gpu-explicit', llmProvider: 'claude', os: 'linux' });
+    addAgent(memberGpuOnly);
+    addAgent(memberDoerGpu);
+
+    // tags=['gpu'] with no mode tag -> should default to doer
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberGpuOnly.id, tags: ['gpu'] });
+    const noModeCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const noModeWrite = noModeCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    expect(noModeWrite).toBeDefined();
+    const noModeAllow: string[] = JSON.parse(extractWrittenContent(noModeWrite)).permissions.allow;
+
+    vi.clearAllMocks();
+
+    // tags=['doer','gpu'] -> explicit doer+gpu
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberDoerGpu.id, tags: ['doer', 'gpu'] });
+    const doerGpuCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const doerGpuWrite = doerGpuCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const doerGpuAllow: string[] = JSON.parse(extractWrittenContent(doerGpuWrite)).permissions.allow;
+
+    // Both should yield the same permissions (doer as default mode + gpu extras)
+    expect(noModeAllow.sort()).toEqual(doerGpuAllow.sort());
+  });
+});
+
+describe('composePermissions -- tag-aware: primary mode = first mode tag', () => {
+  it('uses reviewer mode when reviewer appears before doer in tags', async () => {
+    const memberReviewerFirst = makeTestAgent({ friendlyName: 'reviewer-first', llmProvider: 'claude', os: 'linux' });
+    const memberDoerFirst = makeTestAgent({ friendlyName: 'doer-first', llmProvider: 'claude', os: 'linux' });
+    addAgent(memberReviewerFirst);
+    addAgent(memberDoerFirst);
+
+    // reviewer first -> reviewer mode
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberReviewerFirst.id, tags: ['reviewer', 'doer'] });
+    const reviewerFirstCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const reviewerFirstWrite = reviewerFirstCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const reviewerFirstAllow: string[] = JSON.parse(extractWrittenContent(reviewerFirstWrite)).permissions.allow;
+
+    vi.clearAllMocks();
+
+    // doer first -> doer mode
+    mockExecCommand.mockResolvedValue(OK);
+    await composePermissions({ member_id: memberDoerFirst.id, tags: ['doer', 'reviewer'] });
+    const doerFirstCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const doerFirstWrite = doerFirstCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
+    const doerFirstAllow: string[] = JSON.parse(extractWrittenContent(doerFirstWrite)).permissions.allow;
+
+    // The two should be different modes -> different permission sets
+    expect(reviewerFirstAllow.sort()).not.toEqual(doerFirstAllow.sort());
+
+    // reviewer-first: should have reviewer-restricted Write, not full Write
+    expect(reviewerFirstAllow).not.toContain('Write');
+    expect(reviewerFirstAllow.some(p => p.startsWith('Write('))).toBe(true);
+
+    // doer-first: should have unrestricted Write
+    expect(doerFirstAllow).toContain('Write');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Fresh/empty permissions.json — no crash (#88)
 // ---------------------------------------------------------------------------
 
