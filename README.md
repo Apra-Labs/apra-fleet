@@ -98,9 +98,10 @@ Verify it worked:
 > "Show me fleet status."
 
 You should see both members listed with status online or idle, grouped by
-category if any have been assigned one. Members can also carry keyword `tags`
-(up to 10, 64 chars each) used for filtering and future skill-matrix matching.
-See [docs/features/member-tags.md](docs/features/member-tags.md).
+category if any have been assigned one. Members carry keyword `tags` (up to 10,
+64 chars each) used for filtering in `list_members`, driving tag-aware permission
+profile composition in `compose_permissions`, and skill-matrix matching during
+onboarding. See [docs/features/member-tags.md](docs/features/member-tags.md).
 
 Add remote machines whenever you are ready:
 
