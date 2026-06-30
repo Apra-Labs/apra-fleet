@@ -81,39 +81,39 @@
   "historical": {
     "_doc": "Written by harvester after each sprint. Contains actual per-role output token averages from sprint-log JSONL files. Used by auto-sprint.js computeSprintQuote() to improve future estimates. Do not edit manually.",
     "max_sprints_in_sample": 5,
-    "sprints_sampled": 2,
-    "last_updated": "2026-06-29",
+    "sprints_sampled": 3,
+    "last_updated": "2026-06-30",
     "cycle_avg": 2,
-    "reviewer_ratio_avg": 0.421774388501857,
+    "reviewer_ratio_avg": 0.4157036813589812,
     "bucket_avg_tokens": {},
     "roles": {
       "setup": {
-        "avg_output_tokens": 4964,
-        "sample_n": 1
+        "avg_output_tokens": 4418,
+        "sample_n": 2
       },
       "sprint-meta": {
-        "avg_output_tokens": 884,
-        "sample_n": 1
+        "avg_output_tokens": 794,
+        "sample_n": 2
       },
       "cycle-state": {
-        "avg_output_tokens": 3293.75,
-        "sample_n": 4
+        "avg_output_tokens": 4964,
+        "sample_n": 6
       },
       "ready-streaks": {
-        "avg_output_tokens": 2051.5,
-        "sample_n": 9
+        "avg_output_tokens": 2347,
+        "sample_n": 14
       },
       "doer": {
-        "avg_output_tokens": 11375.75,
-        "sample_n": 4
+        "avg_output_tokens": 9305.583333333334,
+        "sample_n": 8
       },
       "reviewer": {
-        "avg_output_tokens": 4798,
-        "sample_n": 4
+        "avg_output_tokens": 4125.111111111111,
+        "sample_n": 7
       },
       "log-append-iter": {
-        "avg_output_tokens": 2061.375,
-        "sample_n": 5
+        "avg_output_tokens": 2500.805555555555,
+        "sample_n": 8
       },
       "feedback-commit-reviewer": {
         "avg_output_tokens": 3396,
@@ -132,8 +132,8 @@
         "sample_n": 2
       },
       "log-append-end": {
-        "avg_output_tokens": 1821.25,
-        "sample_n": 4
+        "avg_output_tokens": 1924.8333333333333,
+        "sample_n": 6
       },
       "ci-watcher": {
         "avg_output_tokens": 1220,
@@ -144,20 +144,24 @@
         "sample_n": 1
       },
       "final-reviewer": {
-        "avg_output_tokens": 9556.5,
-        "sample_n": 2
+        "avg_output_tokens": 10054.666666666666,
+        "sample_n": 3
       },
       "cycle-meta": {
-        "avg_output_tokens": 365,
-        "sample_n": 2
+        "avg_output_tokens": 969.3333333333334,
+        "sample_n": 4
       },
       "push-sha": {
-        "avg_output_tokens": 459,
-        "sample_n": 2
+        "avg_output_tokens": 467.1666666666667,
+        "sample_n": 4
       },
       "exit-check": {
-        "avg_output_tokens": 2795.5,
-        "sample_n": 2
+        "avg_output_tokens": 2458.5,
+        "sample_n": 4
+      },
+      "setup-shell": {
+        "avg_output_tokens": 1077,
+        "sample_n": 1
       }
     }
   }
