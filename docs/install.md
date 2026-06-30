@@ -105,12 +105,15 @@ By default, `install` configures Apra Fleet for **Claude Code**. Use the `--llm`
 flag to install for a different provider instead:
 
 ```bash
-apra-fleet install --llm agy         # Google Antigravity CLI
-apra-fleet install --llm codex       # OpenAI Codex CLI
-apra-fleet install --llm copilot     # GitHub Copilot CLI
-apra-fleet install --llm gemini      # Gemini CLI
-apra-fleet install --llm claude      # Claude Code (the default)
+apra-fleet --llm agy         # Google Antigravity CLI
+apra-fleet --llm codex       # OpenAI Codex CLI
+apra-fleet --llm copilot     # GitHub Copilot CLI
+apra-fleet --llm gemini      # Gemini CLI
+apra-fleet --llm claude      # Claude Code (the default)
 ```
+
+The `install` subcommand is also accepted and does the same thing:
+`apra-fleet install --llm agy` works exactly as before.
 
 `--llm` decides which provider's configuration the installer writes to. The MCP
 server registration, hooks, statusline, permissions, and skills all go into that
