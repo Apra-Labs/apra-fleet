@@ -182,13 +182,11 @@ jobs:
           PROMPT="What is the version of the apra-fleet MCP server installed? If the tool is not available reply with: not installed. Also print names of your custom skills separated by comma."
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
-            output=$(claude -p "$PROMPT" --model haiku 2>&1)
-            echo "$output"
-            echo "PM claude auth OK"
-
-            # Deterministic checks -- the LLM's text answer above is a liveness
-            # check only; it can't be trusted to verify installs (it may not
-            # know to look, and CI must fail loudly on a broken install).
+            # Deterministic checks run first and are the actual pass/fail gate.
+            # `claude mcp list` waits out the MCP stdio handshake properly, so
+            # it doesn't race a fresh server spawn the way a single fast `-p`
+            # turn can (that turn may answer before it has even looked, since
+            # apra-fleet tools are deferred behind ToolSearch).
             FAIL=0
             if ! claude mcp list 2>&1 | grep -qi "apra-fleet.*connected"; then
               echo "::error::apra-fleet MCP server not connected (claude mcp list)"
@@ -207,6 +205,13 @@ jobs:
               FAIL=1
             fi
             [ "$FAIL" -eq 0 ] || exit 1
+
+            # Informational only below -- a fresh `-p` call can race the MCP
+            # handshake and report "not installed" even when the deterministic
+            # checks above just confirmed it is. Do not gate on this text.
+            output=$(claude -p "$PROMPT" --model haiku 2>&1)
+            echo "$output"
+            echo "PM claude auth OK"
           elif [ "$PROVIDER" = "gemini" ]; then
             output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1)
             echo "$output"
