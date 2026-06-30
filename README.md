@@ -97,7 +97,10 @@ Verify it worked:
 
 > "Show me fleet status."
 
-You should see both members listed with status online or idle.
+You should see both members listed with status online or idle, grouped by
+category if any have been assigned one. Members can also carry keyword `tags`
+(up to 10, 64 chars each) used for filtering and future skill-matrix matching.
+See [docs/features/member-tags.md](docs/features/member-tags.md).
 
 Add remote machines whenever you are ready:
 
@@ -315,6 +318,7 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
 | Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
+| Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
