@@ -3,7 +3,7 @@ import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { formatAgentHost, getAgentOS } from '../utils/agent-helpers.js';
+import { formatAgentHost, getAgentOS, groupByCategory } from '../utils/agent-helpers.js';
 import { serverVersion } from '../version.js';
 import { DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
@@ -38,6 +38,7 @@ interface AgentStatusRow {
   branch?: string;
   cloudInfo?: CloudInfo;
   tokenUsage?: { input: number; output: number };
+  category: string | null;
 }
 
 /**
@@ -81,6 +82,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     lastLlmActivityAt: agent.lastLlmActivityAt,
     branch: agent.lastBranch,
     tokenUsage: agent.tokenUsage,
+    category: agent.category?.trim() || null,
   };
 
   const strategy = getStrategy(agent);
@@ -204,15 +206,17 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
 
   const rows: AgentStatusRow[] = results.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
-    const hostLabel = formatAgentHost(agents[i]);
+    const agent = agents[i];
+    const hostLabel = formatAgentHost(agent);
     return {
-      icon: agents[i].icon ?? DEFAULT_ICON,
-      name: agents[i].friendlyName,
+      icon: agent.icon ?? DEFAULT_ICON,
+      name: agent.friendlyName,
       host: hostLabel,
       status: 'OFFLINE' as const,
       busy: '-',
-      session: agents[i].sessionId ? agents[i].sessionId.substring(0, 8) + '...' : '(none)',
-      lastActivity: formatTimeAgo(agents[i].lastUsed),
+      session: agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : '(none)',
+      lastActivity: formatTimeAgo(agent.lastUsed),
+      category: agent.category?.trim() || null,
     };
   });
 
@@ -254,33 +258,47 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     return JSON.stringify(payload);
   }
 
+  // Group rows by category (category is already attached to each row)
+  const combined = rows.map((row, i) => ({ row, agent: agents[i] }));
+  const { grouped, sortedKeys } = groupByCategory(combined, ({ row }) => row.category);
+
   // Compact: 1 summary line + 1 line per member, multiple fields per line
   let t = updateNotice ? `${updateNotice}\n` : '';
-  t += `Fleet ${serverVersion}: ${online}/${rows.length} online | `;
-  if (logFile) t += `log=${logFile} | `;
-  t += rows.map(r => {
-    const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
-    return `${r.icon} ${r.name}(${st})`;
-  }).join(', ');
+  t += `Fleet ${serverVersion}: ${online}/${rows.length} online`;
+  if (logFile) t += ` | log=${logFile}`;
+  for (const category of sortedKeys) {
+    const members = grouped.get(category)!;
+    const chips = members.map(({ row: r }) => {
+      const st = r.status === 'online' ? r.busy : (r.busy === 'OFF(cloud)' ? 'OFF(cloud)' : 'OFF');
+      return `${r.icon} ${r.name}(${st})`;
+    }).join(', ');
+    t += ` | [${category}]: ${chips}`;
+  }
   t += '\n';
-  for (const r of rows) {
-    const branchStr = r.branch ? ` | branch=${r.branch}` : '';
-    const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
-      ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
-    let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}${tokenStr}`;
-    if (r.cloudInfo) {
-      const ci = r.cloudInfo;
-      const uptimeHrs = uptimeHoursFromLaunch(ci.launchTime);
-      const uptime = ci.launchTime ? formatUptimeDuration(uptimeHrs) : '-';
-      const cost = estimateCost(ci.instanceType, uptimeHrs);
-      const rate = hourlyRate(ci.instanceType);
-      const warn = costWarning(ci.instanceType, uptimeHrs);
-      const gpuStr = ci.gpuUtil !== undefined ? ` GPU:${ci.gpuUtil}%` : '';
-      const typeStr = ci.instanceType ? ` ${ci.instanceType}` : '';
-      const warnStr = warn ? ' ⚠' : '';
-      line += ` | [cloud:${ci.state}${typeStr} ${uptime} ${cost} @${rate}${gpuStr}${warnStr}]`;
+
+  // Detail lines grouped by category
+  for (const category of sortedKeys) {
+    const members = grouped.get(category)!;
+    t += `\n[${category}]\n`;
+    for (const { row: r } of members) {
+      const branchStr = r.branch ? ` | branch=${r.branch}` : '';
+      const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
+        ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
+      let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}${tokenStr}`;
+      if (r.cloudInfo) {
+        const ci = r.cloudInfo;
+        const uptimeHrs = uptimeHoursFromLaunch(ci.launchTime);
+        const uptime = ci.launchTime ? formatUptimeDuration(uptimeHrs) : '-';
+        const cost = estimateCost(ci.instanceType, uptimeHrs);
+        const rate = hourlyRate(ci.instanceType);
+        const warn = costWarning(ci.instanceType, uptimeHrs);
+        const gpuStr = ci.gpuUtil !== undefined ? ` GPU:${ci.gpuUtil}%` : '';
+        const typeStr = ci.instanceType ? ` ${ci.instanceType}` : '';
+        const warnStr = warn ? ' ⚠' : '';
+        line += ` | [cloud:${ci.state}${typeStr} ${uptime} ${cost} @${rate}${gpuStr}${warnStr}]`;
+      }
+      t += line + '\n';
     }
-    t += line + '\n';
   }
   return t;
 }

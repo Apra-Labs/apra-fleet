@@ -56,6 +56,7 @@ export const updateMemberSchema = z.object({
     (v) => v === false ? 'false' : v,
     z.enum(['false', 'auto', 'dangerous'])
   ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  category: z.string().max(64).optional().describe('Group label for this member (e.g. "doers", "reviewers"). Pass empty string to clear.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -163,6 +164,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (resolvedIcon) updates.icon = resolvedIcon;
   if (input.friendly_name) updates.friendlyName = input.friendly_name;
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
+  if (input.category !== undefined) updates.category = input.category.trim() || undefined;
   if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
   if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;

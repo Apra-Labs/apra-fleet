@@ -51,6 +51,7 @@ export const registerMemberSchema = z.object({
     (v) => v === false ? 'false' : v,
     z.enum(['false', 'auto', 'dangerous'])
   ).optional().describe('Permission mode for unattended execution. Omit or pass "false" for interactive prompts (default); "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  category: z.string().max(64).optional().describe('Optional group label for this member (e.g. "doers", "reviewers", "cloud"). Used to group devices in fleet status output.'),
   model_tiers: z.object({
     cheap: z.string().optional(),
     standard: z.string().optional(),
@@ -212,6 +213,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     modelPremium: input.model_premium,
     unattended: (input.unattended === 'false' ? false : input.unattended) ?? false,
     modelTiers: normalizedModelTiers,
+    category: input.category,
   };
 
   // --- SSH-dependent steps (skipped for stopped cloud instances) ---
@@ -325,6 +327,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.workFolder}\n`;
   result += `  Provider: ${tempAgent.llmProvider ?? 'claude'}\n`;
+  if (tempAgent.category) {
+    result += `  Category: ${tempAgent.category}\n`;
+  }
   if (tempAgent.modelCheap) result += `  Model Cheap: ${tempAgent.modelCheap}\n`;
   if (tempAgent.modelStandard) result += `  Model Standard: ${tempAgent.modelStandard}\n`;
   if (tempAgent.modelPremium) result += `  Model Premium: ${tempAgent.modelPremium}\n`;
