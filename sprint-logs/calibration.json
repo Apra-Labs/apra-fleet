@@ -72,11 +72,17 @@
     "outlier_pct": 200,
     "calibration_failure_pct": 500
   },
+  "doer_token_ceiling": {
+    "_doc": "Maximum output tokens for a single doer streak, keyed by tier name. Streaks that exceed this token budget are split and re-queued.",
+    "cheap": 40000,
+    "standard": 80000,
+    "premium": 150000
+  },
   "historical": {
     "_doc": "Written by harvester after each sprint. Contains actual per-role output token averages from sprint-log JSONL files. Used by auto-sprint.js computeSprintQuote() to improve future estimates. Do not edit manually.",
     "max_sprints_in_sample": 5,
-    "sprints_sampled": 1,
-    "last_updated": "2026-06-25",
+    "sprints_sampled": 2,
+    "last_updated": "2026-06-29",
     "cycle_avg": 2,
     "reviewer_ratio_avg": 0.421774388501857,
     "bucket_avg_tokens": {},
@@ -90,12 +96,12 @@
         "sample_n": 1
       },
       "cycle-state": {
-        "avg_output_tokens": 3212,
-        "sample_n": 2
+        "avg_output_tokens": 3293.75,
+        "sample_n": 4
       },
       "ready-streaks": {
-        "avg_output_tokens": 1729,
-        "sample_n": 6
+        "avg_output_tokens": 2051.5,
+        "sample_n": 9
       },
       "doer": {
         "avg_output_tokens": 11375.75,
@@ -106,8 +112,8 @@
         "sample_n": 4
       },
       "log-append-iter": {
-        "avg_output_tokens": 1235.75,
-        "sample_n": 4
+        "avg_output_tokens": 2061.375,
+        "sample_n": 5
       },
       "feedback-commit-reviewer": {
         "avg_output_tokens": 3396,
@@ -126,8 +132,8 @@
         "sample_n": 2
       },
       "log-append-end": {
-        "avg_output_tokens": 1372.5,
-        "sample_n": 2
+        "avg_output_tokens": 1821.25,
+        "sample_n": 4
       },
       "ci-watcher": {
         "avg_output_tokens": 1220,
@@ -138,8 +144,20 @@
         "sample_n": 1
       },
       "final-reviewer": {
-        "avg_output_tokens": 10224,
-        "sample_n": 1
+        "avg_output_tokens": 9556.5,
+        "sample_n": 2
+      },
+      "cycle-meta": {
+        "avg_output_tokens": 365,
+        "sample_n": 2
+      },
+      "push-sha": {
+        "avg_output_tokens": 459,
+        "sample_n": 2
+      },
+      "exit-check": {
+        "avg_output_tokens": 2795.5,
+        "sample_n": 2
       }
     }
   }
