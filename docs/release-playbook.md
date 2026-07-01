@@ -2,30 +2,61 @@
 
 How to cut a release. That's it.
 
-## 1. Bump the version
+## 0. Check the vendor/apra-pm submodule
 
-Edit `package.json` (source of truth for the version number):
+apra-fleet vendors the apra-pm skill at `vendor/apra-pm`. Before releasing,
+make sure it points at a real, merged commit on apra-pm's `main` -- not a
+feature-branch tip or a leftover detached-HEAD commit from development.
+
+```bash
+cd vendor/apra-pm
+git fetch origin
+git checkout main && git pull origin main   # move to latest merged apra-pm
+cd ../..
+git add vendor/apra-pm
+git commit -m "chore(vendor): repoint apra-pm submodule to main"
+```
+
+If apra-pm has unreleased fixes sitting on a feature branch, merge that
+branch to apra-pm's own `main` first (PR + merge in the apra-pm repo), then
+repoint the submodule as above. Never release apra-fleet with the submodule
+pinned to an unmerged commit.
+
+## 1. Bump the version -- in both package.json AND version.json
+
+Both files must be bumped together, in the same commit. This is not
+optional: CI does NOT commit a version bump back to git for you. It only
+injects the tag value into these files transiently, inside the release
+runner, for the artifact it's building at that moment (see
+`.github/workflows/ci.yml`, the "Inject version from tag" steps in the
+`build-binary` and `npm-publish` jobs) -- that injected value is never
+pushed back to the repo. If you skip this step, the committed
+`version.json`/`package.json` stay stale for anyone building from source at
+that commit.
 
 ```json
+// package.json
 "version": "0.3.6"
 ```
 
-Leave `version.json` alone -- CI overwrites it automatically from the git tag
-during the release build. You don't need to touch it.
+```json
+// version.json
+{ "version": "0.3.6" }
+```
 
 Commit the bump:
 
 ```bash
-git add package.json package-lock.json
+git add package.json package-lock.json version.json
 git commit -m "chore: bump version to 0.3.6"
 git push
 ```
 
 ## 2. Tag and push
 
-Releases are tag-triggered. Pushing a `v*` tag to the repo kicks off the
-`release` job in `.github/workflows/ci.yml`, which builds the binaries and
-creates the GitHub release.
+Releases are tag-triggered. Pushing a `v*` tag kicks off the `release` job
+in `.github/workflows/ci.yml`, which builds the binaries and creates the
+GitHub release.
 
 ```bash
 git tag v0.3.6
