@@ -14,6 +14,7 @@ import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 
@@ -38,17 +39,24 @@ function mkdirCalls(calls: string[][]): string[] {
 beforeEach(() => {
   backupAndResetRegistry();
   vi.clearAllMocks();
+  // findProfilesDir() prefers an installed ~/.claude/skills/fleet/profiles over the
+  // repo's own skills/fleet/profiles -- on a dev machine with apra-fleet installed,
+  // that installed copy can be stale (e.g. missing a newly-added tag profile) and
+  // silently produce wrong results. Point homedir at a path that can't have an
+  // installed skills dir, forcing resolution to fall through to the repo checkout.
+  vi.spyOn(os, 'homedir').mockReturnValue('/nonexistent-test-home');
 });
 
 afterEach(() => {
   restoreRegistry();
+  vi.restoreAllMocks();
 });
 
 // ---------------------------------------------------------------------------
 // Claude proactive compose
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — Claude proactive', () => {
+describe('composePermissions -- Claude proactive', () => {
   it('delivers settings.local.json with JSON allow list', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
@@ -95,7 +103,7 @@ describe('composePermissions — Claude proactive', () => {
 // Gemini proactive compose
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — Gemini proactive', () => {
+describe('composePermissions -- Gemini proactive', () => {
   it('delivers settings.json + fleet.toml for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
     addAgent(member);
@@ -150,7 +158,7 @@ describe('composePermissions — Gemini proactive', () => {
 // Codex proactive compose
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — Codex proactive', () => {
+describe('composePermissions -- Codex proactive', () => {
   it('delivers config.toml with full-auto for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'codex-doer', llmProvider: 'codex', os: 'linux' });
     addAgent(member);
@@ -190,7 +198,7 @@ describe('composePermissions — Codex proactive', () => {
 // Copilot proactive compose
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — Copilot proactive', () => {
+describe('composePermissions -- Copilot proactive', () => {
   it('delivers settings.local.json with allow-all-tools for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'copilot-doer', llmProvider: 'copilot', os: 'linux' });
     addAgent(member);
@@ -224,10 +232,10 @@ describe('composePermissions — Copilot proactive', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Reactive grant: Claude — merges existing allow list
+// Reactive grant: Claude -- merges existing allow list
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — Claude reactive grant', () => {
+describe('composePermissions -- Claude reactive grant', () => {
   it('reads existing settings.local.json and merges new grants', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
@@ -277,10 +285,10 @@ describe('composePermissions — Claude reactive grant', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Reactive grant: Gemini — TOML policy updated with grants
+// Reactive grant: Gemini -- TOML policy updated with grants
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — Gemini reactive grant', () => {
+describe('composePermissions -- Gemini reactive grant', () => {
   it('delivers updated TOML policy with granted tools', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
     addAgent(member);
@@ -326,7 +334,7 @@ describe('composePermissions — Gemini reactive grant', () => {
 // No llmProvider → defaults to Claude
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — no llmProvider defaults to Claude', () => {
+describe('composePermissions -- no llmProvider defaults to Claude', () => {
   it('treats member with no llmProvider as Claude', async () => {
     // makeTestAgent without llmProvider → undefined
     const member = makeTestAgent({ friendlyName: 'legacy-member', os: 'linux' });
@@ -346,10 +354,10 @@ describe('composePermissions — no llmProvider defaults to Claude', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #151 — fleet-mcp disabled in member config
+// Issue #151 -- fleet-mcp disabled in member config
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — fleet-mcp disabled in member config (#151)', () => {
+describe('composePermissions -- fleet-mcp disabled in member config (#151)', () => {
   it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (proactive)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
@@ -387,7 +395,7 @@ describe('composePermissions — fleet-mcp disabled in member config (#151)', ()
 // Task T4: deliverConfigFile() BOM-free Windows write (#219)
 // ---------------------------------------------------------------------------
 
-describe('deliverConfigFile — Windows BOM-free write (T4)', () => {
+describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
   it('uses WriteAllText with UTF8Encoding($false) on Windows, not Set-Content', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-win', llmProvider: 'gemini', os: 'windows' });
     addAgent(member);
@@ -423,7 +431,7 @@ describe('deliverConfigFile — Windows BOM-free write (T4)', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue(OK);
 
-    // Grant a permission containing a single quote — it must be double-escaped in the PowerShell write command
+    // Grant a permission containing a single quote -- it must be double-escaped in the PowerShell write command
     await composePermissions({
       member_id: member.id,
       role: 'doer',
@@ -732,10 +740,10 @@ describe('composePermissions -- tag-aware: primary mode = first mode tag', () =>
 });
 
 // ---------------------------------------------------------------------------
-// Fresh/empty permissions.json — no crash (#88)
+// Fresh/empty permissions.json -- no crash (#88)
 // ---------------------------------------------------------------------------
 
-describe('composePermissions — fresh/empty permissions.json', () => {
+describe('composePermissions -- fresh/empty permissions.json', () => {
   it('does not crash when permissions.json exists but contains only {}', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);

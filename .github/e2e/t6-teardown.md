@@ -2,7 +2,7 @@
 
 You are running the teardown phase of an apra-fleet E2E test suite.
 
-Remove only the members registered during this test run: **alice** (tags: `doer`) and **bella** (tags: `reviewer`).
+Remove only the members registered during this test run: **alice** and **bella**.
 Do not remove any other members -- they belong to other projects.
 
 1. For each name in `["alice", "bella"]`: call `remove_member` if that member exists (ignore "not found" errors).

@@ -6,10 +6,8 @@ PM: {{PM_OS}} / {{PM_PROVIDER}} | VCS: {{VCS}} | Toy: {{TOY_PROJECT_URL}}
 
 ## Members
 
-Member names are arbitrary and carry no role information by design -- role comes from each member's `tags` (set at registration), not from its name.
-
-- **alice** (name: `alice`, tags: `["doer"]`, provider: {{DOER_PROVIDER}}) -- plays the doer role
-- **bella** (name: `bella`, tags: `["reviewer"]`, provider: {{REVIEWER_PROVIDER}}) -- plays the reviewer role
+- **alice** (tags: `["doer"]`, provider: {{DOER_PROVIDER}})
+- **bella** (tags: `["reviewer"]`, provider: {{REVIEWER_PROVIDER}})
 
 > [!IMPORTANT]
 > Do NOT print CHECKPOINT lines as plain text -- that causes agy to exit. Instead, record each checkpoint by running a command (see below). After recording, immediately continue to the next task without any text-only response.
@@ -36,7 +34,7 @@ Run a full sprint on the toy repo using the pm skill. Do all of it yourself in t
 
 ### T3.1 Set up the repo
 
-On alice (the doer-tagged member): clone {{TOY_PROJECT_URL}} into its work folder if needed, then `git fetch origin && git checkout main && git pull`. Provision {{VCS}} auth.
+On alice: clone {{TOY_PROJECT_URL}} into its work folder if needed, then `git fetch origin && git checkout main && git pull`. Provision {{VCS}} auth.
 
 Record checkpoint:
 ```bash
@@ -71,14 +69,14 @@ Before running any `/pm` commands, read `projects.md` in the current directory:
 
 Branch prefix: `{{BRANCH_PREFIX}}`.
 
-The pm skill runs the doer/reviewer loop, played here by alice (doer) and bella (reviewer). Drive it yourself:
+The pm skill runs the doer/reviewer loop: alice is the doer, bella is the reviewer. Drive it yourself:
 1. Dispatch alice with `execute_prompt`. Wait for its response.
 2. Read alice's response (it will be in the `execute_prompt` result). If it says VERIFY or requests review, dispatch bella.
 3. Read bella's response. If bella requests changes, dispatch alice again. Repeat until bella explicitly approves.
 4. A bella approval means her response contains words like "approved", "LGTM", or "no changes needed". If `execute_prompt` returns empty or an error, re-dispatch.
 5. Once approved, run `/pm cleanup fleet-e2e-toy`.
 
-Do NOT record T3-sprint PASS until you have confirmed a bella (reviewer) approval response in the execute_prompt result (not just dispatched -- you must read the response).
+Do NOT record T3-sprint PASS until you have confirmed bella's approval response in the execute_prompt result (not just dispatched -- you must read the response).
 
 Record checkpoint:
 ```bash
@@ -132,8 +130,8 @@ cp <transcript-path> <work-folder>/<session-id>.jsonl
 Copy-Item "<transcript-path>" "<work-folder>\<session-id>.jsonl"
 ```
 
-Receive into (these are role folders, keyed by tag -- not by member name):
-- alice's (doer-tagged) sessions -> `logs/doer/<session-id>.jsonl`
-- bella's (reviewer-tagged) sessions -> `logs/reviewer/<session-id>.jsonl`
+Receive into:
+- alice's sessions -> `logs/alice/<session-id>.jsonl`
+- bella's sessions -> `logs/bella/<session-id>.jsonl`
 
 Skip any session whose file does not exist on the member.

@@ -39,6 +39,7 @@
     "build:binary": "npm run build && npm run build:sea && npm run build:sea-config && npm run build:sea-package",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
+    "pretest": "git submodule update --init --recursive",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
