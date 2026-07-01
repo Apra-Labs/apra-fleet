@@ -334,7 +334,7 @@ describe('runInstall multi-provider', () => {
     }
   });
 
-  it('writes defaultModel for Claude (claude-sonnet-4-6) to settings.json', async () => {
+  it('writes defaultModel for Claude (bare "sonnet" alias) to settings.json', async () => {
     await runInstall([]);
 
     const claudeSettings = path.join(mockHome, '.claude', 'settings.json');
@@ -346,7 +346,9 @@ describe('runInstall multi-provider', () => {
     const defaultModelWrite = writes.find(c => c[1].toString().includes('"defaultModel"'));
     expect(defaultModelWrite).toBeDefined();
     const parsed = JSON.parse(defaultModelWrite![1].toString());
-    expect(parsed.defaultModel).toBe('claude-sonnet-4-6');
+    // "sonnet" auto-resolves to the current generation (confirmed via `claude --settings`
+    // and `claude --help`) instead of a pinned dated ID that goes stale on each release.
+    expect(parsed.defaultModel).toBe('sonnet');
   });
 
   it('writes defaultModel for Gemini (gemini-3.5-flash) to settings.json', async () => {

@@ -159,16 +159,16 @@ describe('ClaudeProvider', () => {
   });
 
   it('maps model tiers', () => {
-    expect(p.modelForTier('cheap')).toBe('claude-haiku-4-5');
-    expect(p.modelForTier('mid')).toBe('claude-sonnet-4-6');
-    expect(p.modelForTier('premium')).toBe('claude-opus-4-6');
+    expect(p.modelForTier('cheap')).toBe('haiku');
+    expect(p.modelForTier('mid')).toBe('sonnet');
+    expect(p.modelForTier('premium')).toBe('opus');
   });
 
   it('modelTiers() returns cheap/standard/premium mapping', () => {
     const tiers = p.modelTiers();
-    expect(tiers.cheap).toBe('claude-haiku-4-5');
-    expect(tiers.standard).toBe('claude-sonnet-4-6');
-    expect(tiers.premium).toBe('claude-opus-4-6');
+    expect(tiers.cheap).toBe('haiku');
+    expect(tiers.standard).toBe('sonnet');
+    expect(tiers.premium).toBe('opus');
   });
 
   it('modelFlag wraps model in --model flag', () => {
