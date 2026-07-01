@@ -458,7 +458,7 @@ jobs:
               agy --dangerously-skip-permissions \
                 --print-timeout 45m \
                 -c \
-                -p "Continue the sprint. Read projects.md and checkpoints.json to see current state. Do NOT re-run /pm init or /pm plan if the project is already active. Continue with /pm start doer or drive the reviewer loop as needed." \
+                -p "Continue the sprint. Read projects.md and checkpoints.json to see current state. Do NOT re-run /pm init or /pm plan if the project is already active. Continue with /pm start alice or drive the bella (reviewer) loop as needed." \
                 > /dev/null 2>&1 || true
               node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-sprint.txt" 2>&1 || true
             done

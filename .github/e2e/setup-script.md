@@ -27,15 +27,18 @@ When you finish a step, print one line, exactly like this, as plain text (no cod
 for local members skip Host, Username and password details
 for remote members use {{secure.E2E_ACRED}} as password first and then `setup_ssh_key`
 
-### doer
-/pm register a {{DOER_TYPE}} member doer. Details:
+> [!IMPORTANT]
+> Member names below (`alice`, `bella`) are deliberately arbitrary and carry no role information -- this suite exercises apra-fleet's tag-based role model, so role assignment (doer/reviewer) MUST come entirely from the `category`/`tags` fields at registration, not from the member's name. When calling `register_member`, pass `category` and `tags` exactly as specified below.
+
+### alice (doer)
+/pm register a {{DOER_TYPE}} member alice with category "doers" and tags ["doer"]. Details:
 - Provider: {{DOER_PROVIDER}}
 - Host: {{DOER_HOST}}
 - Username: {{DOER_USER}}
 - Work folder: {{DOER_FOLDER}}
 
-### reviewer
-/pm register a {{REVIEWER_TYPE}} member named reviewer. Details:
+### bella (reviewer)
+/pm register a {{REVIEWER_TYPE}} member named bella with category "reviewers" and tags ["reviewer"]. Details:
 - Provider: {{REVIEWER_PROVIDER}}
 - Host: {{REVIEWER_HOST}}
 - Username: {{REVIEWER_USER}}
