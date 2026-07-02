@@ -5,11 +5,12 @@ import { serverVersion } from '../version.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, groupByCategory } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
 export const listMembersSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
+  tags: z.array(z.string()).optional().describe('Filter members by tags (AND semantics): only return members that have ALL specified tags. Omit to return all members.'),
 });
 
 export type ListMembersInput = z.infer<typeof listMembersSchema>;
@@ -64,7 +65,12 @@ async function getAuthStatus(agent: Agent): Promise<string> {
 
 export async function listMembers(input?: ListMembersInput): Promise<string> {
   const format = input?.format ?? 'compact';
-  const agents = getAllAgents();
+  const filterTags = input?.tags;
+  let agents = getAllAgents();
+
+  if (filterTags && filterTags.length > 0) {
+    agents = agents.filter(a => filterTags.every(tag => a.tags?.includes(tag)));
+  }
 
   if (agents.length === 0) return 'No members registered.';
 
@@ -90,27 +96,37 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         session: a.sessionId ?? null,
         created: a.createdAt,
         lastUsed: a.lastUsed ?? 'never',
+        category: a.category ?? null,
+        tags: a.tags ?? null,
       })),
     });
   }
 
-  // Compact: 1 line per member with key fields packed together
+  // Compact: group members by category, one group per row block
+  const combined = agents.map((agent, i) => ({ agent, authStatus: authStatuses[i] }));
+  const { grouped, sortedKeys } = groupByCategory(combined, ({ agent: a }) => a.category?.trim());
+
   let t = `${agents.length} member(s)\n`;
-  for (const [i, a] of agents.entries()) {
-    const icon = a.icon ?? DEFAULT_ICON;
-    const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
-    const authStatus = authStatuses[i];
-    
-    t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'} | provider=${a.llmProvider ?? 'claude'}`;
-    if (a.agentType !== 'local') {
-      t += ` | user=${a.username} | ssh=${a.authType}`;
-      if (authStatus !== 'offline' && authStatus !== 'N/A') {
-        t += ` | llm-auth=${authStatus}`;
-      } else if (authStatus === 'offline') {
-        t += ` | status=offline`;
+  for (const category of sortedKeys) {
+    const members = grouped.get(category)!;
+    t += `\n[${category}]\n`;
+    for (const { agent: a, authStatus } of members) {
+      const icon = a.icon ?? DEFAULT_ICON;
+      const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
+      t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'} | provider=${a.llmProvider ?? 'claude'}`;
+      if (a.agentType !== 'local') {
+        t += ` | user=${a.username} | ssh=${a.authType}`;
+        if (authStatus !== 'offline' && authStatus !== 'N/A') {
+          t += ` | llm-auth=${authStatus}`;
+        } else if (authStatus === 'offline') {
+          t += ` | status=offline`;
+        }
       }
+      if (a.tags && a.tags.length > 0) {
+        t += ` | tags=[${a.tags.join(', ')}]`;
+      }
+      t += '\n';
     }
-    t += '\n';
   }
   return t;
 }

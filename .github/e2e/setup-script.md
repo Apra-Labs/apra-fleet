@@ -27,15 +27,15 @@ When you finish a step, print one line, exactly like this, as plain text (no cod
 for local members skip Host, Username and password details
 for remote members use {{secure.E2E_ACRED}} as password first and then `setup_ssh_key`
 
-### doer
-/pm register a {{DOER_TYPE}} member doer. Details:
+### alice
+/pm register a {{DOER_TYPE}} member alice with tags ["doer"]. Details:
 - Provider: {{DOER_PROVIDER}}
 - Host: {{DOER_HOST}}
 - Username: {{DOER_USER}}
 - Work folder: {{DOER_FOLDER}}
 
-### reviewer
-/pm register a {{REVIEWER_TYPE}} member named reviewer. Details:
+### bella
+/pm register a {{REVIEWER_TYPE}} member named bella with tags ["reviewer"]. Details:
 - Provider: {{REVIEWER_PROVIDER}}
 - Host: {{REVIEWER_HOST}}
 - Username: {{REVIEWER_USER}}

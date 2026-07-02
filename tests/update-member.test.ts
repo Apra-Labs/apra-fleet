@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent } from '../src/services/registry.js';
+import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 
@@ -107,6 +107,60 @@ describe('updateMember', () => {
     });
     expect(result).toContain('❌ Credential "nonexistent_cred" not found.');
     expect(result).toContain('Member was NOT updated.');
+  });
+
+  it('stores a valid category', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.category).toBe('doers');
+  });
+
+  it('clears category when empty string is passed', async () => {
+    const member = makeTestLocalAgent({ category: 'doers' });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: '' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.category).toBeUndefined();
+  });
+
+  it('clears category when whitespace-only string is passed', async () => {
+    const member = makeTestLocalAgent({ category: 'doers' });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: '   ' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.category).toBeUndefined();
+  });
+
+  it('adds tags to a member', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, tags: ['gpu', 'prod'] });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.tags).toEqual(['gpu', 'prod']);
+  });
+
+  it('clears tags when empty array is passed', async () => {
+    const member = makeTestLocalAgent({ tags: ['gpu', 'prod'] });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, tags: [] });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.tags).toBeUndefined();
+  });
+
+  it('replaces existing tags with new tags', async () => {
+    const member = makeTestLocalAgent({ tags: ['old-tag', 'another-old'] });
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, tags: ['new-tag'] });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.tags).toEqual(['new-tag']);
   });
 
   it('does not warn when updating a cloud member', async () => {

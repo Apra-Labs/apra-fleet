@@ -34,6 +34,8 @@ export interface Agent {
   unattended?: false | 'auto' | 'dangerous';
   lastLlmActivityAt?: string;  // ISO 8601
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
+  category?: string;
+  tags?: string[];
 }
 
 export interface GitHubAppConfig {

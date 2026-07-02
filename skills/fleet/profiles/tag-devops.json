@@ -1,0 +1,4 @@
+{
+  "dev": ["Bash(terraform:*)", "Bash(terragrunt:*)", "Bash(kubectl:*)", "Bash(helm:*)", "Bash(ansible:*)", "Bash(ansible-playbook:*)"],
+  "reviewer": ["Bash(terraform:*)", "Bash(kubectl:*)", "Bash(helm:*)"]
+}
