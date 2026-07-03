@@ -28,14 +28,23 @@ genuinely caused by this branch and 9 are pre-existing order-dependent flakiness
   /shutdown with SIGTERM fallback. Tests pass. Install integration
   (install-service.test.ts) passes.
 - **Event bus** (`src/services/event-bus.ts`) and the `credential:stored` SSE event.
-  Tests pass.
+  Tests pass. SCOPE CAVEAT (added after the Q5 decision, see section 4): the
+  event bus itself is fine, but http-transport's broadcast of fleet events to
+  ALL connected sessions is a single-project assumption -- under Phase 1
+  multi-project scope it leaks events across project boundaries and must
+  become project-scoped routing. Downgraded from "stays as-is" to "needs a
+  scoping layer".
 - **JWT service** (`src/services/jwt.ts`). HS256 via node:crypto, no external
   dependency, key persisted at ~/.apra-fleet/fleet.key (0600), 7-day expiry,
   claim-shape validation on verify. Adequate for Phase 1 local single-tenant use.
 - **Session registry** (`src/services/session-registry.ts`). Simple in-memory map;
-  fine as the Phase 1 volatile layer.
+  fine as the Phase 1 volatile layer. SCOPE CAVEAT (Q5 decision): keying and
+  accessors must become project-aware -- see revised 2.3.11. Data shape is fine;
+  access paths are not.
 - **send_message tool skeleton** (`src/tools/send-message.ts`) and its registration
   in tool-registry. POC-validated delivery via `notifications/claude/channel`.
+  SCOPE CAVEAT (Q5 decision): must enforce sender-project == target-project
+  before delivery (promoted into Phase 1; see section 4 Q5).
 
 ## 2. What is broken or incomplete, and why
 
@@ -70,9 +79,19 @@ The earlier characterization of 9 branch failures + 21 main-baseline failures as
   - Runs 2 and 3 (cwd inside the checkout): **1593 passed / 0 failed**, twice.
   There is no non-determinism and no order-dependence when a single test run
   owns the machine.
-- **The actual cause of the earlier failures: two concurrent agent sessions ran
-  the test suite simultaneously in this checkout** (documented with fingerprints
-  in RECOVERY.md). The shared mutable state they fought over:
+- **The actual cause of the earlier failures: two OVERLAPPING agent processes
+  from a SINGLE orchestrator ran test suites simultaneously in this checkout.**
+  (Corrected attribution, confirmed by the orchestrator 2026-07-02: there was no
+  second human or independent session. A prior dispatch hit the orchestrator's
+  600-second inactivity timeout and was reported "failed" -- but that timeout
+  only meant the watcher gave up, NOT that the spawned claude process on this
+  machine was killed. The next dispatch, resuming the same session, started a
+  second process against the same working directory while the first was still
+  alive mid-work. One orchestrator, two overlapping process trees, one
+  directory. The orchestrator verified post-incident that no stray processes
+  remain: no orphaned claude.exe, nothing bound to port 7523, nothing else
+  touching this directory.) The shared mutable state the two process trees
+  fought over:
   - `tests/setup.ts` points every run at the SAME fixed directory
     `os.tmpdir()/apra-fleet-test-data` (never cleaned between runs).
     vitest.config.ts sets `fileParallelism: false` precisely because "tests
@@ -93,11 +112,12 @@ The earlier characterization of 9 branch failures + 21 main-baseline failures as
     in these particular failures, but it is the same class of hazard as the
     stale-skills bug already fixed once this session.
 - **Conclusion:** there is no evidence of intrinsic test flakiness on main.
-  The hard rule going forward: never run two test sessions concurrently in the
-  same checkout, and never dispatch two agents into one checkout (see
-  RECOVERY.md for what else that caused). Hardening (per-run unique
-  APRA_FLEET_DATA_DIR via `os.tmpdir()` + PID/random suffix, cleaned in
-  teardown) remains worthwhile -- kept as step 10 in section 5.
+  The operational lesson for the orchestrator: a dispatch-watcher timeout is
+  not proof the dispatched process died -- before re-dispatching (especially
+  with resume) into the same working directory, verify the previous process is
+  actually gone (see RECOVERY.md for what else the overlap caused). Hardening
+  (per-run unique APRA_FLEET_DATA_DIR via `os.tmpdir()` + PID/random suffix,
+  cleaned in teardown) remains worthwhile -- kept as step 10 in section 5.
 
 ### 2.3 Feature-level gaps and bugs (found by code reading)
 
@@ -133,12 +153,15 @@ The earlier characterization of 9 branch failures + 21 main-baseline failures as
 7. **Zero test coverage for the new pieces.** No tests exist for jwt.ts,
    session-registry.ts, send-message.ts, or the JWT/member-param paths in
    http-transport.
-8. **JWT design drift vs architecture doc.** Role is claimed by the registrar
-   (hardcoded 'doer'), not looked up from a registry (doc Section 9, R10 requires
-   registry-derived roles). project_id is fixed 'default'. 7-day expiry has no
-   refresh path -- a long-lived member session dies silently; the token is only
-   re-minted on re-register. Acceptable for Phase 1, must be revisited before any
-   multi-tenant exposure.
+8. **JWT design drift vs architecture doc -- now partially IN scope for Phase 1
+   (per Q4/Q5 decisions, section 4).** Role is claimed by the registrar
+   (hardcoded 'doer') -- DECIDED: derive from member tags at token-mint time.
+   project_id is fixed 'default' -- DECIDED: real project identity becomes
+   first-class in Phase 1 (multi-project on one machine). 7-day expiry still
+   has no refresh path -- a long-lived member session dies silently; the token
+   is only re-minted on re-register; still acceptable for Phase 1, revisit for
+   multi-machine. The claim SHAPE {member_id, project_id, role, work_folder}
+   is location-agnostic and needs no breaking change for multi-machine later.
 9. **`--dangerously-load-development-channels`** is a dev-channel flag; the whole
    claude/channel injection path is experimental and version-dependent. Fine for
    POC; needs a fallback story (or a minimum-version check) before it is relied on.
@@ -146,10 +169,19 @@ The earlier characterization of 9 branch failures + 21 main-baseline failures as
     architecture doc call for execute_prompt to internally route via send_message +
     wait-for-response for connected Claude members. Not started; execute_prompt is
     subprocess-only today.
-11. **Session registry is volatile.** Server restart loses all sessions (and PIDs);
-    there is no announce_self / reconnect rebuild, no offline grace period. Members
-    reconnect only because the MCP client retries; registry state after a fleet
-    restart depends entirely on clients re-initializing.
+11. **Session registry is volatile AND single-project-keyed.** Server restart
+    loses all sessions (and PIDs); there is no announce_self / reconnect
+    rebuild, no offline grace period. Members reconnect only because the MCP
+    client retries; registry state after a fleet restart depends entirely on
+    clients re-initializing. Volatility stays acceptable for Phase 1. What is
+    NOT acceptable under the decided Phase 1 scope (multi-project, section 4
+    Q5): the registry is keyed by bare member id with project_id as a passive
+    field -- keying/accessors must become project-aware ((project_id, uuid)
+    composite or project-filtered views), and list()/send_message consumers
+    must never see cross-project sessions. The SessionState shape already
+    carries project_id, so this is an access-path change, not a data-model
+    break -- and the same structure extends to multi-machine later without
+    redesign (a machine/endpoint field can be added additively).
 
 ## 3. How much main has moved (context for the fixes)
 
@@ -185,13 +217,47 @@ Still open, awaiting a human decision (asked verbatim, not yet answered):
    unvalidated) vs .mcp.json vs `claude mcp add --scope project`. Must be resolved
    by testing against current Claude Code; determines fix shape for 2.3.5 and how
    compose_permissions must merge (2.3.1).
-4. **Roles and the tags/category system.** Main now has tags (doer/reviewer as
-   mode tags). Should the JWT role come from member tags instead of a hardcoded
-   'doer'? Recommendation: yes -- derive from tags at token-mint time.
-5. **Scope of Phase 1.** Is the goal only local single-tenant (localhost, one
-   project) for now? If yes, items 2.3.8/2.3.11 stay as documented limitations and
-   the plan below is sufficient. If multi-tenant work starts, jwt/session-registry
-   need the tenant-registry layer from architecture Sections 3 and 9 first.
+4. **Roles and the tags/category system: DECIDED (2026-07-02) -- derive the JWT
+   role from member tags at token-mint time**, exactly as recommended. No
+   hardcoded 'doer'.
+5. **Scope of Phase 1: DECIDED (2026-07-02) -- single machine (localhost), but
+   MULTI-project.** One MCP instance / one session registry serves multiple
+   projects/repos concurrently on the same machine. Additionally, the
+   underlying architecture (JWT claims, session-registry keying, HTTP
+   transport) must NOT bake in single-machine or single-client assumptions
+   that would force a breaking redesign for a FUTURE phase where multiple
+   clients connect to one MCP instance from separate devices/machines. Phase 1
+   does not implement multi-machine support, but the data model (session keys,
+   JWT claims such as project_id, registry keying) must be forward-compatible.
+   Concrete implications:
+   - **project_id becomes first-class NOW.** JWT claims already carry
+     project_id (good), but register-member mints it as the literal 'default'
+     and nothing validates or scopes by it. Token minting must bind a real
+     project identity (derivable from the work_folder/repo), and every
+     consumer (session registry views, send_message routing) must respect it.
+   - **Session-registry key: (project_id, member_id-UUID) composite**, or
+     member-UUID key with mandatory project_id field + project-filtered
+     accessors. Plain member-name/UUID-only keying is a single-project
+     assumption -- eliminate it in step 3 of section 5 (identity unification),
+     which now includes project scoping in its scope.
+   - **send_message must enforce project boundaries.** With multiple projects
+     on one instance, an unscoped send_message lets project A's PM message
+     project B's members. Sender project (from the caller's session/JWT) must
+     match the target member's project. Promoted from "later" to Phase 1.
+   - **Event broadcast must be project-scoped.** http-transport currently
+     broadcasts fleet events (credential:stored, task:completed, ...) to ALL
+     connected sessions -- a cross-project information leak under Phase 1
+     scope. Needs per-project routing (see revised solidity note, section 1).
+   - **Known single-MACHINE assumptions that are acceptable for Phase 1 but
+     flagged for the multi-machine future** (no breaking data-model change
+     expected): 127.0.0.1-only bind in http-transport (future: configurable
+     bind + TLS); HS256 shared-secret fleet.key readable only on this machine
+     (future: per-member tokens minted by the server it connects to, or an
+     asymmetric keypair -- claim SHAPE stays the same, so not breaking);
+     localhost URL written into member settings (future: server URL comes from
+     member registration). The JWT claim set {member_id(UUID), project_id,
+     role, work_folder} is already location-agnostic and survives multi-machine
+     unchanged.
 
 ## 5. Sequenced next steps
 
@@ -199,7 +265,7 @@ Still open, awaiting a human decision (asked verbatim, not yet answered):
 |---|------|-------|------|
 | 1 | DONE -- Q1 decided (HTTP default) and the 4 install tests were fixed in-tree (Addendum A1); suite green | - | - |
 | 2 | Fix compose_permissions to deep-merge settings.local.json (preserve mcpServers entries and skillOverrides it does not own) | S-M (compose-permissions.ts + claude provider + tests) | Med -- touches permission delivery for all Claude members |
-| 3 | Unify identity keying on agent UUID (JWT claims, URL param, registry key, send_message resolution via resolveMember); preserve PID across registry re-registration (merge, not replace) | M (4 files + new tests) | Med |
+| 3 | Unify identity keying on agent UUID (JWT claims, URL param, registry key, send_message resolution via resolveMember); preserve PID across registry re-registration (merge, not replace); make registry keying/accessors project-aware, bind real project_id at token mint, derive role from tags (Q2/Q4/Q5 decisions), enforce project match in send_message, project-scope the event broadcast | M-L (6 files + new tests) | Med |
 | 4 | De-hardcode port: register-member resolves the live server URL from singleton/server.json; single source of truth for the member-facing URL | S | Low |
 | 5 | Gate the register-member bootstrap behind an explicit flag (e.g. `interactive: true` input or env), so unit tests and non-interactive registrations never health-check/spawn; inject http+spawn for testability | S-M | Low |
 | 6 | Validate the Claude Code config surface (Q3) with a live check; adjust where the member MCP entry is written; document the finding in docs/cloud-fleet-architecture.md | M (investigation + possible rewrite of the settings write) | Med -- external dependency on Claude Code behavior |
@@ -232,9 +298,11 @@ first, in any order. Step 6 gates steps 8-9. Step 10 can proceed in parallel.
 
 ## Addendum (second analysis pass, 2026-07-02 evening)
 
-A second agent session independently performed the same rebase+review in this
-checkout (the two sessions ran concurrently without knowing about each other;
-see RECOVERY.md for the fallout). Findings that extend the plan above:
+A second agent process performed the same rebase+review in this checkout,
+overlapping the first (corrected attribution: both were dispatched by the SAME
+orchestrator -- a watcher timeout on the first dispatch was mistaken for
+process death, and the follow-up dispatch overlapped the still-running first
+process; see 2.2 and RECOVERY.md). Findings that extend the plan above:
 
 ### A1. The 4 branch-caused install-test failures are FIXED in the tree
 
@@ -292,9 +360,13 @@ a design decision -- option (b) would flip these tests again.
 
 Shortly after the rebase and the green test run, this checkout's .git
 directory (plus .gitignore/.gitattributes/.gitmodules/.github/.claude/
-.fleet-task.md) was destroyed by an external event while two agent sessions
-shared the directory. The full rebased TREE survived and is verified green;
-the rebased commit HISTORY was lost. origin/enhancement/skill-reorg
-(pre-rebase) is untouched. See RECOVERY.md at repo root for evidence and
-step-by-step re-commit instructions. Until recovery is done, treat this
-working tree as the single source of truth for the rebase result.
+.fleet-task.md) was destroyed by an external event while two overlapping
+agent processes (same orchestrator; see 2.2) shared the directory. The full
+rebased TREE survived and was verified green; the rebased commit HISTORY was
+lost. RECOVERY EXECUTED 2026-07-02 (human-approved): git re-initialized in
+this directory only, dotfiles restored from origin/main, the tree committed
+as 24a6a2a (+ 9dff057 for README/llms-full.txt) on branch
+enhancement/skill-reorg-rebased atop origin/main 5526fe7, submodule
+re-vendored at the pinned SHA, and the suite re-verified at 1772 passed /
+0 failed. origin was never touched; nothing pushed.
+origin/enhancement/skill-reorg (pre-rebase) remains as it was.
