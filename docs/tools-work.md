@@ -42,8 +42,8 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 | `resume` | boolean | no | Default: `true`. Continue the previous session if one exists |
 | `timeout_s` | number | no | Default: 300 (5 min). **Inactivity timeout** -- resets on every output chunk; kills the session only when silent for this many seconds |
 | `max_total_s` | number | no | Default: none. **Hard ceiling** -- kills the session after this total elapsed time in seconds regardless of activity |
-| `dangerously_skip_permissions` | boolean | no | Default: `false`. Passes the provider's skip-permissions flag so the agent can execute tools without interactive approval |
 | `model` | string | no | Model to use. Pass a tier name (`premium`, `standard`, `cheap`) or a provider-specific model ID. Defaults to `standard` tier when omitted. |
+| `substitutions` | object | no | Map of token name to replacement value. Replaces `{{name}}` patterns in the prompt before staging on the member. Keys must match `[A-Za-z_][A-Za-z0-9_]*`. See fleet SKILL.md Substitutions section. |
 
 **Provider-specific behavior:**
 
@@ -55,14 +55,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 | Skip permissions | `--dangerously-skip-permissions` | `--yolo` | `--sandbox danger-full-access --ask-for-approval never` | `--allow-all-tools` |
 | Session resume | `--resume <session_id>` | `-r` (most recent) | positional `resume` | `--continue` |
 
-**When to use `dangerously_skip_permissions`:**
-
-This flag is intended for specific unattended workflows where no human is present at the remote terminal to approve tool calls:
-- Installing software or dependencies on a remote member
-- Running build/test scripts that require shell access
-- Automated CI/CD-style tasks dispatched across the fleet
-
-Do NOT enable this for open-ended prompts on members with access to sensitive data or production systems. The remote agent will execute any tool call -- file edits, shell commands, network requests -- without confirmation.
+**Unattended execution:** Use `update_member(unattended='auto')` or `update_member(unattended='dangerous')` to control permission bypass. The schema is strict -- passing unknown fields returns a validation error.
 
 **What it does:**
 

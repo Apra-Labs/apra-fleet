@@ -30,3 +30,6 @@ CLAUDE.md
 GEMINI.md
 AGENTS.md
 COPILOT-INSTRUCTIONS.md
+
+# local compose_permissions ledger artifact
+/permissions.json

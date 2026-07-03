@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { isPidAlive } from '../utils/process-utils.js';
 
 const FLEET_TASKS_DIR = path.join(os.homedir(), '.fleet-tasks');
 
@@ -10,15 +11,6 @@ function retentionHoursSuccess(): number {
 
 function retentionHoursFailed(): number {
   return parseInt(process.env.FLEET_TASK_RETENTION_HOURS ?? '168', 10);
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export async function cleanupStaleTasks(tasksDir = FLEET_TASKS_DIR): Promise<void> {

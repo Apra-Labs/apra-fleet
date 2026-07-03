@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import http from 'node:http';
+import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
@@ -319,6 +322,83 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // Block global apra-fleet MCP + skills inside local agy member workspaces
   if (isLocal && (input.llm_provider ?? 'claude') === 'agy') {
     writeAgyWorkspaceOverlays(input.work_folder);
+  }
+
+  // Interactive session bootstrap for local Claude members
+  const name = input.friendly_name;
+  const memberProvider = input.llm_provider ?? 'claude';
+  if (isLocal && memberProvider === 'claude') {
+    // HIGH-1: Verify fleet server is running before spawning
+    const serverReady = await new Promise<boolean>((resolve) => {
+      const req = http.get('http://127.0.0.1:7523/health', (res) => {
+        resolve(res.statusCode === 200);
+        res.resume();
+      });
+      req.on('error', () => resolve(false));
+      req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+    });
+    if (!serverReady) {
+      return `❌ Fleet server not running on port 7523. Start it first with apra-fleet start, then re-run register_member.`;
+    }
+
+    const { sign } = await import('../services/jwt.js');
+    const token = sign({
+      member_id: tempAgent.id,
+      project_id: 'default',
+      role: 'doer',
+      work_folder: input.work_folder,
+    });
+
+    const settingsPath = `${input.work_folder}/.claude/settings.local.json`;
+    let settings: any = {};
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    } catch {
+      // file missing or invalid -- start fresh
+    }
+    settings.mcpServers = settings.mcpServers ?? {};
+    settings.mcpServers['apra-fleet-member'] = {
+      type: 'http',
+      url: 'http://127.0.0.1:7523/mcp?member=' + input.friendly_name,
+      headers: { Authorization: 'Bearer ' + token },
+    };
+    try {
+      fs.mkdirSync(`${input.work_folder}/.claude`, { recursive: true });
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    } catch (e: any) {
+      warnings.push(`Could not write settings.local.json: ${e.message}`);
+    }
+
+    // CRITICAL-2: Kill existing claude process for this member before re-spawning
+    const { sessionRegistry } = await import('../services/session-registry.js');
+    const existingSession = sessionRegistry.get(tempAgent.id);
+    if (existingSession?.pid) {
+      try {
+        process.kill(existingSession.pid);
+        logLine('register_member', `Killed existing claude pid=${existingSession.pid} for member ${name}`);
+      } catch {
+        // Process already gone -- ignore
+      }
+    }
+
+    try {
+      const proc = spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
+      proc.unref();
+      if (proc.pid) {
+        sessionRegistry.register(tempAgent.id, {
+          member_id: tempAgent.id,
+          project_id: 'default',
+          role: 'doer',
+          work_folder: input.work_folder,
+          server: null,
+          pid: proc.pid,
+          status: 'idle',
+        });
+      }
+      logLine('register_member', `Launched claude for member ${name}, pid ${proc.pid}`);
+    } catch (e: any) {
+      warnings.push(`Could not launch claude: ${e.message}`);
+    }
   }
 
   let result = `✅ Member registered successfully!\n\n`;

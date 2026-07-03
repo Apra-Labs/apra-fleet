@@ -81,7 +81,7 @@ Known limitations when using non-Claude providers in a fleet.
 | **Copilot 64K context limit** | Copilot | Smallest context window -- may struggle with large PLAN.md + codebase | Recommend Copilot for smaller, focused tasks. Auto-compaction helps but summarization loses detail. |
 | **Copilot requires paid subscription** | Copilot | Not free-tier friendly | Copilot requires GitHub Copilot Pro/Business/Enterprise. No free API key path. |
 | **Codex message quotas** | Codex | Rolling 5-hour message windows instead of token budgets | Long sprints may hit quota limits. Spread work across time or use API key tier. |
-| **Permission model differences** | All | Claude uses `settings.local.json`. Others use CLI flags only. | For Claude members: continue using `compose_permissions` + `settings.local.json`. For others: `dangerously_skip_permissions=true` in `execute_prompt` (maps to provider's skip-permissions flag). No fine-grained per-tool permissions outside Claude. |
+| **Permission model differences** | All | Claude uses `settings.local.json`. Others use CLI flags only. | For Claude members: continue using `compose_permissions` + `settings.local.json`. For others: use `update_member(unattended='dangerous')` to pass the provider's skip-permissions flag. No fine-grained per-tool permissions outside Claude. |
 
 ---
 

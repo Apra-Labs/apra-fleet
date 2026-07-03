@@ -33,14 +33,18 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
+    let cmd = `cd "${escapedFolder}" && claude`;
+    if (agentName) {
+      cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
+    }
+    cmd += ` -p "${instruction}" --output-format json --max-turns ${turns}`;
     if (resuming && sessionId) {
       cmd += ` ${buildResumeFlag(sessionId)}`;
     } else if (sessionId) {

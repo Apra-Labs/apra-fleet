@@ -4,6 +4,8 @@ import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
+import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
+import { getServiceManager } from '../services/service-manager/index.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -372,21 +374,27 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void 
 function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp = settings.mcp || {};
-  settings.mcp['apra-fleet'] = {
-    type: 'local',
-    command: [mcpConfig.command, ...(mcpConfig.args || [])],
-    enabled: true,
-  };
+  settings.mcp['apra-fleet'] = mcpConfig.url
+    ? { type: 'remote', url: mcpConfig.url, enabled: true }
+    : {
+        type: 'local',
+        command: [mcpConfig.command, ...(mcpConfig.args || [])],
+        enabled: true,
+      };
   writeConfig(paths, settings);
 }
 
 function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp_servers = settings.mcp_servers || {};
-  settings.mcp_servers['apra-fleet'] = {
-    command: mcpConfig.command.replace(/\\/g, '/'),
-    args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
-  };
+  if (mcpConfig.url) {
+    settings.mcp_servers['apra-fleet'] = { url: mcpConfig.url };
+  } else {
+    settings.mcp_servers['apra-fleet'] = {
+      command: mcpConfig.command.replace(/\\/g, '/'),
+      args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
+    };
+  }
 
   writeConfig(paths, settings);
 }
@@ -464,6 +472,8 @@ Usage:
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --force           Stop a running server before installing
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
+  apra-fleet install --transport http  Register MCP server with HTTP transport (default)
+  apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
   apra-fleet install --help            Show this help
 
 Options:
@@ -471,6 +481,8 @@ Options:
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
                           dispatch — Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
+  --transport <mode>      MCP transport to use: http (default) or stdio. HTTP uses the singleton
+                          fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
   --no-skill              Alias for --skill none.
   --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
@@ -531,9 +543,34 @@ Options:
   // Parse --force flag
   const force = args.includes('--force');
 
+  // Parse --transport flag (default: http)
+  type TransportMode = 'http' | 'stdio';
+  let transport: TransportMode = 'http';
+  const transportEqualArg = args.find(a => a.startsWith('--transport='));
+  if (transportEqualArg) {
+    const val = transportEqualArg.split('=')[1];
+    if (val === 'http' || val === 'stdio') {
+      transport = val;
+    } else {
+      console.error(`Error: --transport value must be one of: http, stdio (got "${val}")`);
+      process.exit(1);
+    }
+  } else {
+    const transportIdx = args.indexOf('--transport');
+    if (transportIdx >= 0 && transportIdx < args.length - 1) {
+      const val = args[transportIdx + 1];
+      if (val === 'http' || val === 'stdio') {
+        transport = val;
+      } else {
+        console.error(`Error: --transport value must be one of: http, stdio (got "${val}")`);
+        process.exit(1);
+      }
+    }
+  }
+
   // Reject unknown flags to catch typos early
-  const knownFlagPrefixes = ['--llm=', '--skill='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--transport', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -545,9 +582,11 @@ Options:
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
+  const serviceStep = isSea() && transport === 'http';
   let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
   if (installAgents) totalSteps++;
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
+  if (serviceStep) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -638,35 +677,57 @@ ${killHint}
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
 
-  // 'run' is the subcommand that starts the MCP server; it is passed as the last arg so
-  // LLM providers invoke `apra-fleet run` (or `node dist/index.js run`) and the no-arg
-  // default (installation) is never accidentally triggered by the MCP host.
-  const mcpConfig = isSea()
-    ? { command: binaryPath, args: ['run'] }
-    : isNpmGlobalInstall()
-    ? { command: process.execPath, args: [process.argv[1], 'run'] }
-    : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run'] };
+  const fleetPort = DEFAULT_PORT;
+  const fleetUrl = `http://localhost:${fleetPort}/mcp`;
 
-  if (llm === 'claude') {
-    try {
-      run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-    } catch { /* not registered */ }
+  if (transport === 'http') {
+    if (llm === 'claude') {
+      try {
+        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+      } catch { /* not registered */ }
+      run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+    } else if (llm === 'gemini') {
+      mergeGeminiConfig(paths, { httpUrl: fleetUrl });
+    } else if (llm === 'codex') {
+      mergeCodexConfig(paths, { url: fleetUrl });
+    } else if (llm === 'copilot') {
+      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http' });
+    } else if (llm === 'agy') {
+      mergeAgyConfig(paths, { url: fleetUrl });
+    } else if (llm === 'opencode') {
+      mergeOpenCodeConfig(paths, { url: fleetUrl });
+    }
+  } else {
+    // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
+    // LLM providers invoke `apra-fleet run` (or `node dist/index.js run`) and the no-arg
+    // default (installation) is never accidentally triggered by the MCP host.
+    const mcpConfig = isSea()
+      ? { command: binaryPath, args: ['run', '--transport', 'stdio'] }
+      : isNpmGlobalInstall()
+      ? { command: process.execPath, args: [process.argv[1], 'run', '--transport', 'stdio'] }
+      : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run', '--transport', 'stdio'] };
 
-    // Build the claude MCP command from the actual mcpConfig structure.
-    // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
-    const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
-    const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
-    run(cmd);
-  } else if (llm === 'gemini') {
-    mergeGeminiConfig(paths, mcpConfig);
-  } else if (llm === 'codex') {
-    mergeCodexConfig(paths, mcpConfig);
-  } else if (llm === 'copilot') {
-    mergeCopilotConfig(paths, mcpConfig);
-  } else if (llm === 'agy') {
-    mergeAgyConfig(paths, mcpConfig);
-  } else if (llm === 'opencode') {
-    mergeOpenCodeConfig(paths, mcpConfig);
+    if (llm === 'claude') {
+      try {
+        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+      } catch { /* not registered */ }
+
+      // Build the claude MCP command from the actual mcpConfig structure.
+      // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
+      const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+      const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
+      run(cmd);
+    } else if (llm === 'gemini') {
+      mergeGeminiConfig(paths, mcpConfig);
+    } else if (llm === 'codex') {
+      mergeCodexConfig(paths, mcpConfig);
+    } else if (llm === 'copilot') {
+      mergeCopilotConfig(paths, mcpConfig);
+    } else if (llm === 'agy') {
+      mergeAgyConfig(paths, mcpConfig);
+    } else if (llm === 'opencode') {
+      mergeOpenCodeConfig(paths, mcpConfig);
+    }
   }
 
   // --- Step 6: Install fleet skill (optional) ---
@@ -816,7 +877,8 @@ Then re-run:  apra-fleet install`);
   // --- Beads install step ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
-  console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
+  const beadsStep = serviceStep ? totalSteps - 1 : totalSteps;
+  console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
   try {
     // Check if already installed
     try {
@@ -843,6 +905,25 @@ Then re-run:  apra-fleet install`);
   // Write install-config.json (merge provider entry)
   writeInstallConfig(llm, skillMode);
 
+  // --- Step N: Register and start service (SEA + HTTP mode only) ---
+  let serviceRegistered = false;
+  if (serviceStep) {
+    console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
+    const svcMgr = await getServiceManager();
+    try {
+      await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      try {
+        await svcMgr.start();
+        serviceRegistered = true;
+      } catch (startErr) {
+        try { await svcMgr.unregister(); } catch {}
+        throw startErr;
+      }
+    } catch (err) {
+      console.warn(`    Service registration skipped: ${(err as Error).message}`);
+    }
+  }
+
   // --- Done ---
   let beadsVersion = 'installed';
   try {
@@ -855,13 +936,14 @@ Then re-run:  apra-fleet install`);
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? 'registered and running' : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
-  Beads:       ${beadsVersion}
+  Beads:       ${beadsVersion}${serviceLine}
 
 ${instructions}${forceNote}
 `);
