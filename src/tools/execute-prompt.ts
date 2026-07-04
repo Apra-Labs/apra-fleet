@@ -21,6 +21,10 @@ import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
+import { sessionRegistry } from '../services/session-registry.js';
+import { getTokenIssuer } from '../services/token-issuer.js';
+import { sendMessage } from './send-message.js';
+import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -129,6 +133,42 @@ export const inFlightAgents = new Set<string>();
 // (f) server overload retry -> retried after delay; finally clears on success or failure
 // (g) early returns before inFlightAgents.add: busy state never entered
 
+/**
+ * Interactive routing (apra-fleet-2xs.8): pushes the prompt to a connected
+ * member's live session via send_message and waits for that member to call
+ * respond_to_message with the matching reply_to. No subprocess, no SSH, no
+ * prompt file, no stall detector on a log file -- the session is a
+ * long-lived interactive process, not something this call spawns or owns.
+ */
+async function executePromptInteractive(
+  agent: Agent,
+  renderedPrompt: string,
+  input: ExecutePromptInput,
+  workspaceId: string,
+  heuristicWarningSuffix: string,
+): Promise<string> {
+  const timeoutS = input.timeout_s ?? 300;
+  const scope = new LogScope('execute_prompt', `[interactive] timeout=${timeoutS}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
+
+  const sendResult = await sendMessage({ member_id: agent.id, content: renderedPrompt }, workspaceId);
+  const parsed = JSON.parse(sendResult);
+  if (parsed.error) {
+    scope.abort(`send failed: ${parsed.error}`);
+    return `❌ Failed to deliver prompt to "${agent.friendlyName}" (interactive session): ${parsed.error}`;
+  }
+
+  try {
+    const response = await registerPending(parsed.msgid, timeoutS * 1000);
+    scope.ok('interactive response received');
+    let output = `📋 Response from ${agent.friendlyName}:\n\n${response}`;
+    if (heuristicWarningSuffix) output += heuristicWarningSuffix;
+    return output;
+  } catch (err: any) {
+    scope.abort(`interactive timeout: ${err.message}`);
+    return `❌ Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
+  }
+}
+
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
@@ -169,6 +209,30 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   if (inFlightAgents.has(agent.id)) {
     return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
   }
+
+  // Interactive routing (apra-fleet-2xs.8, docs/cloud-fleet-architecture.md
+  // section 6): if this member has a live MCP session connected right now,
+  // route via send_message + wait-for-response instead of spawning a
+  // subprocess. Decided tier-2-locally against THIS machine's session
+  // registry only (never caller/hub-side state, per apra-fleet-2xs.8's own
+  // scope note) -- so behavior is unaffected by whether execute_prompt is
+  // invoked directly (Phase 1) or relayed through a future hub. Falls
+  // through to the unchanged subprocess/SSH path below for every member
+  // without a live session (the common case today, and always for members
+  // that never opt into an interactive session).
+  const workspaceId = getTokenIssuer().workspaceId();
+  const interactiveSession = sessionRegistry.get(workspaceId, agent.id);
+  if (interactiveSession?.server) {
+    inFlightAgents.add(agent.id);
+    writeStatusline(new Map([[agent.id, 'busy']]));
+    try {
+      return await executePromptInteractive(agent, renderedPrompt, input, workspaceId, heuristicWarningSuffix);
+    } finally {
+      inFlightAgents.delete(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+    }
+  }
+
   inFlightAgents.add(agent.id);
   const stallDetector = getStallDetector();
   let clearedByStall = false;

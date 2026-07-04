@@ -33,6 +33,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('../tools/credential-store-update.js');
   const { sendMessageSchema, sendMessage } = await import('../tools/send-message.js');
   const { reportStatusSchema, reportStatus } = await import('../tools/report-status.js');
+  const { respondToMessageSchema, respondToMessage } = await import('../tools/respond-to-message.js');
 
   // Onboarding helpers
   async function sendOnboardingNotification(srv: typeof server, text: string): Promise<void> {
@@ -133,4 +134,5 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   // Interactive Session Messaging
   server.tool('send_message', 'Send a task message to a connected interactive member session via SSE. Returns the message ID.', sendMessageSchema.shape, wrapTool('send_message', (input) => sendMessage(input as any)));
   server.tool('report_status', 'Called by a connected interactive member session (not the orchestrator) to report it is done responding to a send_message notification and available again ("online") or still connected but not actively engaged ("idle"). Closes the busy->online/idle status loop send_message opens.', reportStatusSchema.shape, wrapTool('report_status', (input, extra) => reportStatus(input as any, extra)));
+  server.tool('respond_to_message', 'Called by a connected interactive member session to respond to a prompt delivered via execute_prompt or send_message. Pass reply_to as the msgid from the original notification\'s meta. If execute_prompt is waiting on this reply_to, its call resolves with this content; otherwise this is a no-op response with a clear "no pending call" result.', respondToMessageSchema.shape, wrapTool('respond_to_message', (input) => respondToMessage(input as any)));
 }
