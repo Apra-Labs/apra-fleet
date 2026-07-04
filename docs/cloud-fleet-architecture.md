@@ -2,6 +2,16 @@
 <!-- keywords: cloud fleet, fleets.apralabs.com, interactive sessions, multi-tenant, SSE, MCP, hooks, credential vault, behavioral contract, no-LLM members, migration path -->
 <!-- see-also: architecture.md (current local model), provider-guide.md (provider strengths and gotchas) -->
 
+> **Revision note (apra-fleet-us9.13):** `docs/hub-spoke-master-plan.md` supersedes
+> this document's **2-tier direct-CLI-to-hub model** (this doc assumed the member's
+> LLM CLI talks to `fleets.apralabs.com` directly) with a **3-tier** topology
+> (`LLM-CLI -> apra-fleet.exe (local spoke) -> fleet.apralabs.com`), and reverses
+> this doc's **"SSH as permanent control plane"** stance -- SSH is being migrated to
+> hub-relayed `execute_command` (`apra-fleet-us9.7`). Sections 6 ("How Interactive
+> Sessions Complement claude -p") and 11 ("No-LLM Members") still hold and were the
+> basis for `apra-fleet-2xs.7/.8/us9.8` and `apra-fleet-us9.14` respectively. Where
+> the two disagree, `hub-spoke-master-plan.md` wins (see that document's own header).
+
 # Cloud Fleet Architecture
 
 ## 1. Why This Architecture Exists

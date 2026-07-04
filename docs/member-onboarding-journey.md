@@ -5,6 +5,16 @@
      starts single-machine but extends to LAN and eventually WAN without a breaking
      redesign. This is a discussion document, not yet an implementation. -->
 
+> **Revision note (apra-fleet-us9.13):** `docs/hub-spoke-master-plan.md` supersedes
+> Journey B's **LAN mDNS/broadcast discovery** proposal (section 4, "Enrollment
+> token transport for Journey B/C", open question 1) with hub-brokered enrollment --
+> cheap to supersede, since mDNS/broadcast discovery was never built
+> (`apra-fleet-fnz.4`, the LAN enrollment-token flow, remains open and unimplemented
+> as of this writing; it will use whatever transport the master plan settles on, not
+> LAN broadcast). Journeys A (same-machine) and C's WAN-readiness framing (section 4,
+> and `apra-fleet-fnz.5`) both still hold. Where this document and the master plan
+> disagree elsewhere, `hub-spoke-master-plan.md` wins (see that document's own header).
+
 # Member Onboarding: User Journey Design Brainstorm
 
 ## 0. Where this comes from
