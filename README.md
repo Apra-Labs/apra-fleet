@@ -424,6 +424,8 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Hub-spoke cloud migration plan (in progress) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
+| Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
 
 ## Community
 
