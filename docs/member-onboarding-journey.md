@@ -98,6 +98,54 @@ registerMcpEndpoint(opts: {
 This turns 3b from "which file" into "one investigation task per provider," each
 producing a concrete adapter implementation, converging on the same interface.
 
+### 3a. Validation findings (apra-fleet-2xs.5)
+
+Live-verified against the actual CLIs installed on this machine (not guessed from
+docs). These are the mechanisms each provider's `registerMcpEndpoint()` should use:
+
+- **Claude** -- confirmed via `claude mcp add --transport http --scope project
+  <name> <url> --header "Authorization: Bearer <token>"`. Verified end-to-end: ran
+  the exact command against a scratch project and inspected the resulting
+  `.mcp.json`; the bearer token round-trips intact:
+  ```json
+  { "mcpServers": { "test-endpoint": {
+      "type": "http", "url": "http://127.0.0.1:7523/mcp?member=test",
+      "headers": { "Authorization": "Bearer testtoken123" } } } }
+  ```
+  Important: `.mcp.json` is Claude's *own* project-scope output file, written by
+  the `claude` CLI itself -- the adapter should shell out to `claude mcp add`
+  (like every other provider-native mechanism here) rather than hand-writing
+  `.mcp.json`, which is exactly the "not .mcp.json" framing this task corrects.
+  `--scope user` is available too, for the non-project-local registration case.
+
+- **AGY** -- no `agy mcp` subcommand exists (`agy help` subcommand list: changelog,
+  help, install, models, plugin(s), update -- no mcp verb). Per
+  `docs/agy-safety-rationalization.md`, AGY reads MCP server config from a single
+  centralized, non-project-scoped file: `~/.gemini/config/mcp_config.json`
+  (`{ "mcpServers": { "<name>": { ... } } }`, same shape Claude uses inline).
+  AGY's `registerMcpEndpoint()` mechanism is therefore: read-modify-write that
+  JSON file directly (merge under `mcpServers.<name>`, do not clobber sibling
+  entries -- mirrors the existing uninstall-time precision-cleanup pattern in
+  `src/cli/uninstall.ts`). There is no "user" vs "project" scope distinction for
+  AGY today; every registration is effectively machine-global. Follow-up ticket
+  `apra-fleet-fnz.2` should implement this.
+
+- **OpenCode** -- confirmed via `docs/opencode-exploration.md`: remote MCP servers
+  are configured under `"mcp"` in `opencode.json` with
+  `{ "type": "remote", "url": "...", "headers": { "Authorization": "Bearer ..." } }`,
+  which already covers bearer-token auth headers natively -- no gap to close.
+  OpenCode also exposes a native CLI verb, `opencode mcp auth <server>`, for
+  interactive credential entry, but for apra-fleet's case (token minted by the
+  hub/local server, not interactively typed) the adapter should read-modify-write
+  `opencode.json` directly, same shape as AGY. Follow-up ticket `apra-fleet-fnz.3`
+  should implement and confirm this against a live `opencode` install.
+
+Net: all three providers can express `registerMcpEndpoint()` in terms of the
+provider's own native mechanism (CLI verb for Claude, config-file merge for AGY
+and OpenCode) with no protocol gaps for bearer-token auth. Implementation is
+split into per-provider follow-ups (`fnz.1` wires the interface + Claude,
+`fnz.2` AGY, `fnz.3` OpenCode) since each needs its own live-verification pass.
+
 ## 4. Target user journeys (phased, same data model throughout)
 
 ### Journey A -- same machine (today, hardening in flight)
