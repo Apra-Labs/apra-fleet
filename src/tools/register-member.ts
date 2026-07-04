@@ -68,6 +68,45 @@ export const registerMemberSchema = z.object({
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
 
+// --- Interactive-session bootstrap: injectable deps + explicit gate ---
+//
+// The local-Claude bootstrap below does a REAL HTTP GET (via checkRunningInstance)
+// and, if a fleet server happens to be running on the machine, writes
+// settings.local.json and spawns a REAL `claude` process. That is correct
+// behavior in production but dangerous to run unconditionally from unit tests
+// (a dev machine with `apra-fleet start` running in the background would have
+// tests silently spawn real claude processes). Two safeguards:
+//
+// 1. Dependency injection: bootstrapDeps.checkRunningInstance / .spawn default to
+//    the real implementations but can be swapped for fakes in tests.
+// 2. Explicit gate: in NODE_ENV=test (set globally by tests/setup.ts), the whole
+//    block is skipped UNLESS APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP=1 is also
+//    set -- an explicit, opt-in escape hatch for tests that specifically want to
+//    exercise this path (and are expected to inject fakes via
+//    __setInteractiveBootstrapDeps when they do).
+export interface InteractiveBootstrapDeps {
+  checkRunningInstance: typeof checkRunningInstance;
+  spawn: typeof spawn;
+}
+
+const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn };
+let interactiveBootstrapDeps: InteractiveBootstrapDeps = realInteractiveBootstrapDeps;
+
+/** Test-only: inject fakes for the interactive-session bootstrap's HTTP check and process spawn. */
+export function __setInteractiveBootstrapDeps(overrides: Partial<InteractiveBootstrapDeps>): void {
+  interactiveBootstrapDeps = { ...realInteractiveBootstrapDeps, ...overrides };
+}
+
+/** Test-only: restore the real (non-mocked) bootstrap dependencies. */
+export function __resetInteractiveBootstrapDeps(): void {
+  interactiveBootstrapDeps = realInteractiveBootstrapDeps;
+}
+
+function interactiveBootstrapEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP === '1';
+}
+
 export async function registerMember(input: RegisterMemberInput): Promise<string> {
   const warnings: string[] = [];
   const isLocal = input.member_type === 'local';
@@ -327,11 +366,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // Interactive session bootstrap for local Claude members
   const name = input.friendly_name;
   const memberProvider = input.llm_provider ?? 'claude';
-  if (isLocal && memberProvider === 'claude') {
+  if (isLocal && memberProvider === 'claude' && interactiveBootstrapEnabled()) {
     // HIGH-1: Verify fleet server is running before spawning.
     // Resolve the ACTUAL running instance (server.json, singleton-managed) instead of
     // assuming DEFAULT_PORT -- this respects APRA_FLEET_PORT and EADDRINUSE fallback.
-    const instance = await checkRunningInstance();
+    const instance = await interactiveBootstrapDeps.checkRunningInstance();
     if (!instance.running) {
       return `❌ Fleet server not running. Start it first with apra-fleet start, then re-run register_member.`;
     }
@@ -378,7 +417,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
 
     try {
-      const proc = spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
+      const proc = interactiveBootstrapDeps.spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
       proc.unref();
       if (proc.pid) {
         sessionRegistry.register(tempAgent.id, {
