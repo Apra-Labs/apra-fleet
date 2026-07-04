@@ -25,6 +25,7 @@ Usage:
   apra-fleet --stdio          Alias for run (backward compat for existing MCP configs)
   apra-fleet update           Check for and install latest update
   apra-fleet update --check   Check for update
+  apra-fleet watch            Stream live member logs (see 'watch --help')
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
@@ -91,6 +92,10 @@ Usage:
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
   }
+} else if (arg === 'watch') {
+  import('./cli/watch.js')
+    .then(m => m.runWatch(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Watch failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'run' || arg === 'start' || arg === '--stdio') {
   // Start MCP server -- invoked by LLM providers via their MCP config, or manually
   startServer();
