@@ -12,6 +12,9 @@
     "url": "https://github.com/Apra-Labs/apra-fleet/issues"
   },
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "main": "dist/index.js",
   "bin": {
     "apra-fleet": "dist/index.js"
@@ -33,6 +36,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
+    "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
     "build:sea": "node scripts/build-sea.mjs",
     "build:sea-config": "node scripts/gen-sea-config.mjs",
     "build:sea-package": "node scripts/package-sea.mjs",
@@ -73,6 +78,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@apralabs/fleet-api-contract": "^0.1.0",
     "@types/node": "^22.0.0",
     "@types/ssh2": "^1.15.0",
     "@types/uuid": "^10.0.0",
