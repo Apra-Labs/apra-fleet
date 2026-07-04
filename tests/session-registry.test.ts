@@ -117,4 +117,25 @@ describe('sessionRegistry', () => {
     expect(current?.sessionId).toBe('sid-new');
     expect(current?.status).toBe('busy');
   });
+
+  describe('findBySessionId (apra-fleet-2xs.7)', () => {
+    it('finds the session owning a given MCP transport sessionId', () => {
+      register(makeState({ member_id: 'm-find', workspace_id: 'ws-find', sessionId: 'sid-find-1' }));
+      const found = sessionRegistry.findBySessionId('sid-find-1');
+      expect(found?.member_id).toBe('m-find');
+      expect(found?.workspace_id).toBe('ws-find');
+    });
+
+    it('returns undefined for a sessionId that matches no registered session', () => {
+      expect(sessionRegistry.findBySessionId('no-such-sid')).toBeUndefined();
+    });
+
+    it('distinguishes between two different members\' sessionIds', () => {
+      register(makeState({ member_id: 'm-x', workspace_id: 'ws-find', sessionId: 'sid-x' }));
+      register(makeState({ member_id: 'm-y', workspace_id: 'ws-find', sessionId: 'sid-y' }));
+
+      expect(sessionRegistry.findBySessionId('sid-x')?.member_id).toBe('m-x');
+      expect(sessionRegistry.findBySessionId('sid-y')?.member_id).toBe('m-y');
+    });
+  });
 });

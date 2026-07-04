@@ -12,6 +12,7 @@ import { getTokenIssuer } from '../src/services/token-issuer.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { addAgent } from '../src/services/registry.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { reportStatus, reportStatusSchema } from '../src/tools/report-status.js';
 
 function noop(_server: McpServer): void {
   // no tools registered in these tests
@@ -418,5 +419,63 @@ describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', (
     expect(sessionRegistry.get(issuer.workspaceId(), 'legacy-friendly-name')).toBeUndefined();
 
     sessionRegistry.unregister(issuer.workspaceId(), agent.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (k) report_status closes the busy->online/idle loop end-to-end (apra-fleet-2xs.7)
+// ---------------------------------------------------------------------------
+function registerReportStatusOnly(server: McpServer): void {
+  server.tool(
+    'report_status',
+    'test-only registration of the real report_status handler',
+    reportStatusSchema.shape,
+    async (input: any, extra: any) => {
+      const text = await reportStatus(input, extra);
+      return { content: [{ type: 'text' as const, text }] };
+    },
+  );
+}
+
+describe('(k) report_status closes the busy->online/idle loop over the real MCP wire', () => {
+  const memberId = 'report-status-e2e-member';
+
+  afterEach(() => {
+    const issuer = getTokenIssuer();
+    sessionRegistry.unregister(issuer.workspaceId(), memberId);
+  });
+
+  it('a member calling report_status on its OWN connection flips its OWN status via the real extra.sessionId correlation', async () => {
+    const handle = await createHttpTransport({ registerTools: registerReportStatusOnly, preferredPort: 0 });
+    handles.push(handle);
+
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({ member_id: memberId, role: 'doer', work_folder: '/tmp/rs-work' });
+
+    const client = new Client({ name: 'report-status-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    );
+    await client.connect(transport);
+
+    // Simulate send_message having flipped this member busy already.
+    sessionRegistry.setStatus(issuer.workspaceId(), memberId, 'busy');
+    expect(sessionRegistry.get(issuer.workspaceId(), memberId)?.status).toBe('busy');
+
+    // The member's OWN session -- the same connection, not a second one --
+    // reports it's done, with no member_id parameter at all (there is none
+    // in the schema): identity comes entirely from the live MCP session.
+    const result = await client.callTool({ name: 'report_status', arguments: { status: 'online' } });
+    const text = (result.content as Array<{ type: string; text?: string }>)[0]?.text ?? '';
+    const parsed = JSON.parse(text);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.member_id).toBe(memberId);
+    expect(sessionRegistry.get(issuer.workspaceId(), memberId)?.status).toBe('online');
   });
 });

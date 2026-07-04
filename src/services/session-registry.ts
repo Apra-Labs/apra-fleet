@@ -67,6 +67,15 @@ class SessionRegistry {
     const s = this.get(workspace_id, member_id);
     if (s) s.pid = pid;
   }
+
+  /** Finds the session owning a given MCP transport sessionId. Used by tools a
+   *  connected member calls on ITS OWN session (e.g. report_status), where the
+   *  caller has no member_id/workspace_id to pass explicitly -- only the MCP
+   *  session it's already talking on. Diagnostics-tier linear scan, same
+   *  tradeoff as list() with no workspace filter. */
+  findBySessionId(sessionId: string): SessionState | undefined {
+    return Array.from(this.sessions.values()).find(s => s.sessionId === sessionId);
+  }
 }
 
 export const sessionRegistry = new SessionRegistry();

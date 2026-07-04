@@ -32,6 +32,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('../tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('../tools/credential-store-update.js');
   const { sendMessageSchema, sendMessage } = await import('../tools/send-message.js');
+  const { reportStatusSchema, reportStatus } = await import('../tools/report-status.js');
 
   // Onboarding helpers
   async function sendOnboardingNotification(srv: typeof server, text: string): Promise<void> {
@@ -131,4 +132,5 @@ export async function registerAllTools(server: McpServer): Promise<void> {
 
   // Interactive Session Messaging
   server.tool('send_message', 'Send a task message to a connected interactive member session via SSE. Returns the message ID.', sendMessageSchema.shape, wrapTool('send_message', (input) => sendMessage(input as any)));
+  server.tool('report_status', 'Called by a connected interactive member session (not the orchestrator) to report it is done responding to a send_message notification and available again ("online") or still connected but not actively engaged ("idle"). Closes the busy->online/idle status loop send_message opens.', reportStatusSchema.shape, wrapTool('report_status', (input, extra) => reportStatus(input as any, extra)));
 }
