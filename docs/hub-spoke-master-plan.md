@@ -10,10 +10,26 @@
 
 # Hub-and-Spoke Master Plan
 
-Status: planning document, 2026-07-03. No code in this repo implements the cloud hub
-yet (verified: `grep -r "apralabs.com\|workspace_id" src/` returns nothing; the only
-hits are documentation). This plan supersedes the topology described in
-docs/cloud-fleet-architecture.md where the two conflict (see section 5).
+Status: planning document, 2026-07-03, partially implemented as of 2026-07-04. This
+plan supersedes the topology described in docs/cloud-fleet-architecture.md where the
+two conflict (see section 5).
+
+**Implementation status (2026-07-04):** The `workspace_id` hard-scope claim (item 4)
+is live: `src/services/jwt.ts` requires `workspace_id` on every claim, `project_id`
+survives only as an optional non-security grouping label, and `src/services/
+token-issuer.ts` mints IDs behind a pluggable `TokenIssuer` seam (Phase 1: one
+machine == one implicit workspace, derived from the install's signing-key identity;
+a future cloud-dashboard issuer can replace the local dev issuer with no token
+migration). `session-registry.ts`, `send-message.ts`, and `http-transport.ts` are
+workspace-scoped end to end -- cross-workspace sends/broadcasts are indistinguishable
+from "not connected" (see `tests/workspace-isolation.test.ts`). The wire contract
+between hub and dashboard (Zod schemas + generated OpenAPI 3.1) now lives in the
+`@apralabs/fleet-api-contract` workspace package -- see
+`packages/fleet-api-contract/README.md`. `registerMcpEndpoint()` (item 7's
+same-machine onboarding path) is implemented and live-verified for AGY and OpenCode
+(`src/providers/agy.ts`, `src/providers/opencode.ts`). The cloud hub service itself
+(fleet.apralabs.com, tier 3) is not yet built -- everything above is local-machine
+(tier 1/2) groundwork that the hub will consume without breaking changes.
 
 ---
 

@@ -33,3 +33,6 @@ COPILOT-INSTRUCTIONS.md
 
 # local compose_permissions ledger artifact
 /permissions.json
+
+# Beads / Dolt files (added by bd init)
+.beads/proxieddb/

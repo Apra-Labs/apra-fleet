@@ -321,14 +321,22 @@ a design decision -- option (b) would flip these tests again.
 
 ### A2. Additional defects found (add to section 2.3)
 
-12. **Stale-close unregister race in http-transport.** onsessionclosed
-    unregisters by the member_id captured at initialize time. If a member
-    reconnects (new sid) and the OLD session closes afterwards, the close
-    handler unregisters the NEW session's registry entry. Guard with
-    `sessionRegistry.get(member_id)?.sessionId === sid` before unregister.
-13. **/shutdown is unauthenticated.** Any local process can POST /shutdown
-    and kill the fleet server. Require the JWT or drop the endpoint in favor
-    of the service manager.
+12. **Stale-close unregister race in http-transport.** [RESOLVED
+    2026-07-04, apra-fleet-2xs.10] onsessionclosed unregisters by the
+    member_id captured at initialize time. If a member reconnects (new sid)
+    and the OLD session closes afterwards, the close handler unregisters the
+    NEW session's registry entry. Fixed by guarding both the JWT and
+    URL-param fallback unregister paths with
+    `sessionRegistry.get(workspace_id, member_id)?.sessionId === sid` before
+    unregistering -- see `src/services/http-transport.ts`. This is a general
+    invariant for any future session-keyed cleanup: never unregister a
+    registry entry from a close/timeout handler without first confirming the
+    entry still points at the session that is closing.
+13. **/shutdown is unauthenticated.** [RESOLVED 2026-07-04,
+    apra-fleet-2xs.11] Any local process could POST /shutdown and kill the
+    fleet server. Now requires the local admin key (same guard used for
+    other privileged local-only endpoints) -- see
+    `src/services/http-transport.ts` and `src/tools/shutdown-server.ts`.
 14. **Sprint-process files at repo root** (PLAN.md, feedback.md,
     progress.json, requirements.md) ride along from early branch history;
     main's convention removes them from final changesets. Drop before PR.
