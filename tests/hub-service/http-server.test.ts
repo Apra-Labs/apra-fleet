@@ -118,7 +118,9 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     const listed = await requestJson(port, 'GET', '/ws/ws-a/members', { token });
     expect(listed.status).toBe(200);
     expect(listed.body).toHaveLength(1);
-    expect(listed.body[0].name).toBe('alice');
+    // GET returns the joined dashboard view-model (member-view.ts), not the
+    // raw CRUD row -- status/lastSeen only exist on the assembled view.
+    expect(listed.body[0]).toMatchObject({ name: 'alice', provider: 'claude', status: 'awaiting-connect', lastSeen: null });
   });
 
   it('a member created in workspace A is invisible when listing workspace B (cross-tenant isolation)', async () => {

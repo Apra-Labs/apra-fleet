@@ -1,9 +1,9 @@
 /**
  * Hub HTTP server (apra-fleet-us9.4): wires the already-tested data layer
- * (members.ts, machines.ts, workspaces.ts) into the routes from
- * packages/fleet-api-contract's Endpoints map that don't require human-user
- * OAuth (apra-fleet-us9.16, not yet built) -- currently GET/POST
- * /ws/:id/members and GET /installers.
+ * (members.ts, machines.ts, workspaces.ts, member-view.ts) into the routes
+ * from packages/fleet-api-contract's Endpoints map that don't require
+ * human-user OAuth (apra-fleet-us9.16, not yet built) -- currently
+ * GET/POST /ws/:id/members and GET /installers.
  *
  * Auth: a Bearer JWT (hub-jwt.ts -- an MVP stopgap; apra-fleet-us9.5 owns
  * the real cloud-issuance design) whose `workspace_id` claim must match the
@@ -13,15 +13,16 @@
  * indistinguishable from "not authorized" -- it never leaks whether the
  * target workspace exists.
  *
- * Deliberately NOT the full dashboard-facing Member view-model (computed
- * status/lastSeen/jwtExp fields) -- these routes return the raw CRUD row
- * shape from members.ts. Assembling the full view-model (joining
- * presence.ts/relay_queue.ts) is separate follow-on work.
+ * GET returns the full dashboard-facing Member view-model (member-view.ts,
+ * validated against @apralabs/fleet-api-contract's MemberSchema); POST
+ * returns the raw created row (creation doesn't need the joined view --
+ * there's no presence/machine state to join yet for a brand-new member).
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { verify as verifyHubJwt } from './hub-jwt.js';
-import { createMember, listMembers, type MemberRow } from './members.js';
+import { createMember, type MemberRow } from './members.js';
+import { listMemberViews } from './member-view.js';
 import { getInstallersHandler } from './handlers/installers.js';
 
 export interface HttpServerHandle {
@@ -84,7 +85,7 @@ export function createHttpServer(): HttpServerHandle {
       }
 
       if (req.method === 'GET') {
-        const members = await listMembers(workspaceId);
+        const members = await listMemberViews(workspaceId);
         sendJson(res, 200, members);
         return;
       }
