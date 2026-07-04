@@ -10,6 +10,8 @@ import { fleetEvents } from '../src/services/event-bus.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
 import { getTokenIssuer } from '../src/services/token-issuer.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
+import { addAgent } from '../src/services/registry.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
 function noop(_server: McpServer): void {
   // no tools registered in these tests
@@ -279,5 +281,142 @@ describe('(g) /shutdown requires the local admin key', () => {
     handles.push(handle);
     const status = await postShutdownRaw(handle.port, `Bearer ${getOrCreateKey()}`);
     expect(status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (i) JWT auth and ?member= URL-param fallback on /mcp initialize (apra-fleet-2xs.6)
+// ---------------------------------------------------------------------------
+function postMcpInitializeRaw(
+  port: number,
+  opts: { authHeader?: string; memberParam?: string } = {},
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const qs = opts.memberParam ? `?member=${encodeURIComponent(opts.memberParam)}` : '';
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'raw-test-client', version: '1.0.0' } },
+    });
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: `/mcp${qs}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'Content-Length': Buffer.byteLength(body),
+          ...(opts.authHeader ? { Authorization: opts.authHeader } : {}),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+describe('(i) JWT auth on /mcp initialize', () => {
+  const memberId = 'jwt-auth-test-member';
+
+  afterEach(() => {
+    const issuer = getTokenIssuer();
+    sessionRegistry.unregister(issuer.workspaceId(), memberId);
+  });
+
+  it('rejects an invalid/malformed bearer token with 401 "invalid token"', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+
+    const { status, body } = await postMcpInitializeRaw(handle.port, { authHeader: 'Bearer not-a-real-jwt' });
+    expect(status).toBe(401);
+    expect(JSON.parse(body)).toEqual({ error: 'invalid token' });
+  });
+
+  it('registers the member in sessionRegistry with the workspace_id/role/work_folder carried by a VALID JWT', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({ member_id: memberId, role: 'reviewer', work_folder: '/tmp/jwt-work' });
+
+    const client = new Client({ name: 'jwt-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    );
+    await client.connect(transport);
+
+    const registered = sessionRegistry.get(issuer.workspaceId(), memberId);
+    expect(registered).toBeDefined();
+    expect(registered?.role).toBe('reviewer');
+    expect(registered?.work_folder).toBe('/tmp/jwt-work');
+    expect(registered?.status).toBe('online');
+    expect(registered?.sessionId).toBeDefined();
+  });
+});
+
+describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', () => {
+  afterEach(() => {
+    backupAndResetRegistry(); // also clears any agent added by a test below
+    restoreRegistry();
+  });
+
+  it('registers a member via the URL param with role "doer" under the local workspace when no JWT is present', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const issuer = getTokenIssuer();
+
+    const client = new Client({ name: 'param-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp?member=url-param-member-id`),
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } },
+    );
+    await client.connect(transport);
+
+    const registered = sessionRegistry.get(issuer.workspaceId(), 'url-param-member-id');
+    expect(registered).toBeDefined();
+    expect(registered?.role).toBe('doer');
+    expect(registered?.status).toBe('online');
+
+    sessionRegistry.unregister(issuer.workspaceId(), 'url-param-member-id');
+  });
+
+  it('resolves a legacy friendly-name ?member= param to the registered agent\'s UUID', async () => {
+    backupAndResetRegistry();
+    const agent = makeTestAgent({ friendlyName: 'legacy-friendly-name', workFolder: '/tmp/legacy-work' });
+    addAgent(agent);
+
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const issuer = getTokenIssuer();
+
+    const client = new Client({ name: 'legacy-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp?member=legacy-friendly-name`),
+      { reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 } },
+    );
+    await client.connect(transport);
+
+    // Registered under the agent's UUID, not the friendly name from the URL.
+    const registered = sessionRegistry.get(issuer.workspaceId(), agent.id);
+    expect(registered).toBeDefined();
+    expect(registered?.work_folder).toBe('/tmp/legacy-work');
+    expect(sessionRegistry.get(issuer.workspaceId(), 'legacy-friendly-name')).toBeUndefined();
+
+    sessionRegistry.unregister(issuer.workspaceId(), agent.id);
   });
 });
