@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { fleetEvents, FleetEventMap } from './event-bus.js';
-import { verify as verifyJwt, type JwtClaims } from './jwt.js';
+import { verify as verifyJwt, getOrCreateKey, type JwtClaims } from './jwt.js';
 import { sessionRegistry } from './session-registry.js';
 import { DEFAULT_PORT } from '../paths.js';
 import { serverVersion } from '../version.js';
@@ -108,6 +108,17 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     }
 
     if (url === '/shutdown' && req.method === 'POST') {
+      // Admin-only endpoint: require the local signing key (~/.apra-fleet/fleet.key,
+      // mode 0o600) as a bearer token. This is not a member JWT -- it's proof the
+      // caller can read a file only the same OS user can read, matching this
+      // server's existing 127.0.0.1-only trust boundary. See apra-fleet-2xs.11.
+      const rawToken = extractBearer(req);
+      if (rawToken === null || rawToken !== getOrCreateKey()) {
+        logLine('session', 'unauthorized /shutdown attempt rejected');
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
       const body = JSON.stringify({ status: 'shutting-down' });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);

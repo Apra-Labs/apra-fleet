@@ -4,8 +4,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import http from 'node:http';
 import { createHttpTransport, HttpTransportHandle } from '../src/services/http-transport.js';
 import { fleetEvents } from '../src/services/event-bus.js';
+import { getOrCreateKey } from '../src/services/jwt.js';
 
 function noop(_server: McpServer): void {
   // no tools registered in these tests
@@ -173,5 +175,51 @@ describe('(e) port fallback when preferred port is busy', () => {
     } finally {
       await new Promise<void>(resolve => blocker.close(() => resolve()));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) /shutdown requires the local admin key
+// ---------------------------------------------------------------------------
+function postShutdownRaw(port: number, authHeader?: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: '/shutdown',
+        method: 'POST',
+        headers: authHeader ? { Authorization: authHeader } : {},
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+describe('(g) /shutdown requires the local admin key', () => {
+  it('rejects requests with no Authorization header', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const status = await postShutdownRaw(handle.port);
+    expect(status).toBe(401);
+  });
+
+  it('rejects requests with a wrong bearer token', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const status = await postShutdownRaw(handle.port, 'Bearer not-the-real-key');
+    expect(status).toBe(401);
+  });
+
+  it('accepts requests bearing the local admin key', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const status = await postShutdownRaw(handle.port, `Bearer ${getOrCreateKey()}`);
+    expect(status).toBe(200);
   });
 });
