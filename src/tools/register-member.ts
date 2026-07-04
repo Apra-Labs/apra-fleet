@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
@@ -21,6 +20,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
+import { checkRunningInstance } from '../services/singleton.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -328,18 +328,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   const name = input.friendly_name;
   const memberProvider = input.llm_provider ?? 'claude';
   if (isLocal && memberProvider === 'claude') {
-    // HIGH-1: Verify fleet server is running before spawning
-    const serverReady = await new Promise<boolean>((resolve) => {
-      const req = http.get('http://127.0.0.1:7523/health', (res) => {
-        resolve(res.statusCode === 200);
-        res.resume();
-      });
-      req.on('error', () => resolve(false));
-      req.setTimeout(2000, () => { req.destroy(); resolve(false); });
-    });
-    if (!serverReady) {
-      return `❌ Fleet server not running on port 7523. Start it first with apra-fleet start, then re-run register_member.`;
+    // HIGH-1: Verify fleet server is running before spawning.
+    // Resolve the ACTUAL running instance (server.json, singleton-managed) instead of
+    // assuming DEFAULT_PORT -- this respects APRA_FLEET_PORT and EADDRINUSE fallback.
+    const instance = await checkRunningInstance();
+    if (!instance.running) {
+      return `❌ Fleet server not running. Start it first with apra-fleet start, then re-run register_member.`;
     }
+    const mcpUrl = instance.url; // e.g. http://127.0.0.1:<actual-port>/mcp
 
     const { sign } = await import('../services/jwt.js');
     const token = sign({
@@ -359,7 +355,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     settings.mcpServers = settings.mcpServers ?? {};
     settings.mcpServers['apra-fleet-member'] = {
       type: 'http',
-      url: 'http://127.0.0.1:7523/mcp?member=' + input.friendly_name,
+      url: mcpUrl + '?member=' + input.friendly_name,
       headers: { Authorization: 'Bearer ' + token },
     };
     try {
