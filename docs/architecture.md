@@ -70,6 +70,19 @@ The codebase follows a strict layering:
 
 Each layer only depends on the layers below it. Tools never import other tools. Services don't know about the MCP protocol.
 
+## HTTP Transport & Interactive Sessions
+
+Alongside the stdio MCP transport, the server exposes a `StreamableHTTPServerTransport` on `POST/GET/DELETE /mcp` (`src/services/http-transport.ts`), bound to `127.0.0.1` only. This is what lets a member's own `apra-fleet` MCP server connect back interactively -- distinct from the subprocess/SSH-driven `execute_prompt` path, which stays subprocess-only. See `docs/hub-spoke-wire-protocol.md` for the full wire-level design.
+
+Each `/mcp` connection carries one of two identities:
+
+- **JWT-authenticated** -- a `Bearer` token (`src/services/jwt.ts`, HS256, signed with `~/.apra-fleet/fleet.key`) verified via the pluggable `TokenIssuer` (`src/services/token-issuer.ts`). The token's `workspace_id` claim is the hard security boundary (never `project_id`, which is an optional non-security label) -- Phase 1 uses a local dev-mode issuer (one machine == one implicit workspace); a hub-era issuer swaps in behind the same interface with no token-shape change.
+- **Unauthenticated URL-param fallback** -- a `?member=<id>` query param, trusted only because the server binds to loopback. Legacy friendly-name params are resolved to the member's UUID via the agent registry.
+
+A connected member is tracked in the in-memory `sessionRegistry` (`src/services/session-registry.ts`), keyed on the composite `(workspace_id, member_id)` -- every lookup is workspace-scoped, so a member connected under a different workspace is indistinguishable from "not connected" (existence is never leaked across the boundary). `send_message` (`src/tools/send-message.ts`) uses this registry to push a `notifications/claude/channel` MCP notification to a connected member's live session.
+
+Fleet events (`credential:stored`, `task:completed`, `member:status-changed`, `stall:detected`) broadcast only to sessions in the same workspace as the local orchestrator -- never across a workspace wall.
+
 ## Provider Abstraction
 
 Fleet supports six LLM providers: Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, Gemini CLI, and OpenCode. Members can mix providers within a single fleet.
