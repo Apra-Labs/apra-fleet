@@ -8,6 +8,8 @@ import http from 'node:http';
 import { createHttpTransport, HttpTransportHandle } from '../src/services/http-transport.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { getOrCreateKey } from '../src/services/jwt.js';
+import { getTokenIssuer } from '../src/services/token-issuer.js';
+import { sessionRegistry } from '../src/services/session-registry.js';
 
 function noop(_server: McpServer): void {
   // no tools registered in these tests
@@ -200,6 +202,62 @@ function postShutdownRaw(port: number, authHeader?: string): Promise<number> {
     req.end();
   });
 }
+
+// ---------------------------------------------------------------------------
+// (h) Stale-close unregister race (apra-fleet-2xs.10)
+// ---------------------------------------------------------------------------
+describe('(h) stale-close does not clobber a reconnected session', () => {
+  const memberId = 'race-member-uuid';
+
+  afterEach(() => {
+    const issuer = getTokenIssuer();
+    sessionRegistry.unregister(issuer.workspaceId(), memberId);
+  });
+
+  it('leaves the newer registry entry intact when the old session closes late', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({ member_id: memberId, role: 'doer', work_folder: '/tmp/w' });
+
+    const client = new Client({ name: 'race-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    );
+    await client.connect(transport);
+
+    const oldSid = sessionRegistry.get(issuer.workspaceId(), memberId)?.sessionId;
+    expect(oldSid).toBeDefined();
+
+    // Simulate the member reconnecting under a NEW session before the old
+    // session's close event fires -- the registry now points at the new sid.
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: issuer.workspaceId(),
+      role: 'doer',
+      work_folder: '/tmp/w',
+      server: null,
+      sessionId: 'reconnected-sid',
+      status: 'online',
+    });
+
+    // Now the OLD session closes (arrives late).
+    await transport.terminateSession();
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    // The registry entry must still be the reconnected session, not deleted
+    // by the stale close of the old one.
+    const current = sessionRegistry.get(issuer.workspaceId(), memberId);
+    expect(current).toBeDefined();
+    expect(current?.sessionId).toBe('reconnected-sid');
+  });
+});
 
 describe('(g) /shutdown requires the local admin key', () => {
   it('rejects requests with no Authorization header', async () => {

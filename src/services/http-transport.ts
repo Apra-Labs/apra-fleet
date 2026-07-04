@@ -239,13 +239,27 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               (s.server as any).server?.close().catch(() => {});
             }
             sessions.delete(sid);
-            // Unregister interactive member session
+            // Unregister interactive member session -- but only if the registry
+            // entry still points at THIS session. If the member reconnected
+            // (new sid) before this stale session's close event fired, the
+            // registry now holds the NEW session's sessionId and must not be
+            // clobbered by the old one closing late (apra-fleet-2xs.10).
             if (postClaims) {
-              sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
-              logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${sid}`);
+              const current = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id);
+              if (current?.sessionId === sid) {
+                sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
+                logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${sid}`);
+              } else {
+                logLine('session', `skipped stale unregister member_id=${postClaims.member_id} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
+              }
             } else if (fallbackMemberId) {
-              sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
-              logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${sid}`);
+              const current = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId);
+              if (current?.sessionId === sid) {
+                sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
+                logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${sid}`);
+              } else {
+                logLine('session', `skipped stale unregister member_id=${fallbackMemberId} sid=${sid} (superseded by sid=${current?.sessionId ?? 'none'})`);
+              }
             }
           },
         });
