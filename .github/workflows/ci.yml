@@ -43,6 +43,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify vendor/apra-pm submodule pin is intact
+        run: npm run verify:submodule
+
       - name: Build
         run: npm run build
 

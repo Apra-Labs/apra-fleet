@@ -44,6 +44,7 @@
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
+    "verify:submodule": "node scripts/check-vendor-submodule.mjs",
     "prepare": "node scripts/install-hooks.mjs",
     "prepublishOnly": "node scripts/vendor-pm.mjs && npm run build"
   },
