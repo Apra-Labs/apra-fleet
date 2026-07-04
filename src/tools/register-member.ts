@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
@@ -87,9 +86,10 @@ export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
 export interface InteractiveBootstrapDeps {
   checkRunningInstance: typeof checkRunningInstance;
   spawn: typeof spawn;
+  getProvider: typeof getProvider;
 }
 
-const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn };
+const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn, getProvider };
 let interactiveBootstrapDeps: InteractiveBootstrapDeps = realInteractiveBootstrapDeps;
 
 /** Test-only: inject fakes for the interactive-session bootstrap's HTTP check and process spawn. */
@@ -388,26 +388,28 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       work_folder: input.work_folder,
     });
 
-    const settingsPath = `${input.work_folder}/.claude/settings.local.json`;
-    let settings: any = {};
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    } catch {
-      // file missing or invalid -- start fresh
-    }
-    settings.mcpServers = settings.mcpServers ?? {};
-    settings.mcpServers['apra-fleet-member'] = {
-      type: 'http',
-      // Identity is keyed on the member UUID everywhere -- the URL fallback
-      // param carries the UUID, matching the JWT's member_id claim.
-      url: mcpUrl + '?member=' + tempAgent.id,
-      headers: { Authorization: 'Bearer ' + token },
-    };
-    try {
-      fs.mkdirSync(`${input.work_folder}/.claude`, { recursive: true });
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    } catch (e: any) {
-      warnings.push(`Could not write settings.local.json: ${e.message}`);
+    // Registration uses the provider's OWN native mechanism (apra-fleet-fnz.1,
+    // docs/member-onboarding-journey.md section 3/4 Journey A) rather than
+    // hand-writing a config file -- this is also what makes the mechanism
+    // provider-agnostic (AGY/OpenCode implement the same interface method with
+    // their own native paths) and avoids fighting compose_permissions' own
+    // writes to the same provider config (apra-fleet-2xs.1).
+    const memberProviderAdapter = interactiveBootstrapDeps.getProvider(tempAgent.llmProvider);
+    if (memberProviderAdapter.registerMcpEndpoint) {
+      try {
+        await memberProviderAdapter.registerMcpEndpoint({
+          // Identity is keyed on the member UUID everywhere -- the URL fallback
+          // param carries the UUID, matching the JWT's member_id claim.
+          url: mcpUrl + '?member=' + tempAgent.id,
+          token,
+          workFolder: input.work_folder,
+          scope: 'project',
+        });
+      } catch (e: any) {
+        warnings.push(`Could not register MCP endpoint: ${e.message}`);
+      }
+    } else {
+      warnings.push(`Provider "${memberProviderAdapter.name}" has no registerMcpEndpoint() -- interactive session bootstrap skipped.`);
     }
 
     // CRITICAL-2: Kill existing claude process for this member before re-spawning

@@ -79,7 +79,7 @@ export async function fetchDeliverable(
      RETURNING *`,
     [targetMemberId],
   );
-  return result.rows.sort((a, b) => a.id - b.id);
+  return result.rows.sort((a: RelayEnvelope, b: RelayEnvelope) => a.id - b.id);
 }
 
 /**

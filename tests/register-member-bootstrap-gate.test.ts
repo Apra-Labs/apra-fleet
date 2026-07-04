@@ -62,7 +62,7 @@ describe('register-member interactive bootstrap gate', () => {
     }
   });
 
-  it('uses injected fakes (no real network/spawn) when explicitly opted in via env', async () => {
+  it('uses injected fakes (no real network/spawn/CLI call) when explicitly opted in via env', async () => {
     process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP = '1';
 
     const { registerMember, __setInteractiveBootstrapDeps, __resetInteractiveBootstrapDeps } =
@@ -75,7 +75,13 @@ describe('register-member interactive bootstrap gate', () => {
     });
     const fakeProc = { pid: 424242, unref: vi.fn() };
     const spawn = vi.fn().mockReturnValue(fakeProc);
-    __setInteractiveBootstrapDeps({ checkRunningInstance, spawn } as any);
+    // apra-fleet-fnz.1: registration now goes through the provider's own
+    // registerMcpEndpoint() (real Claude implementation shells out to
+    // `claude mcp add`) instead of hand-writing settings.local.json -- inject
+    // a fake provider so this test never spawns a real `claude` CLI process.
+    const registerMcpEndpoint = vi.fn().mockResolvedValue({ mechanism: 'cli-verb', detail: 'fake' });
+    const getProvider = vi.fn().mockReturnValue({ name: 'claude', registerMcpEndpoint });
+    __setInteractiveBootstrapDeps({ checkRunningInstance, spawn, getProvider } as any);
 
     try {
       const result = await registerMember({
@@ -89,11 +95,12 @@ describe('register-member interactive bootstrap gate', () => {
       expect(checkRunningInstance).toHaveBeenCalledTimes(1);
       expect(spawn).toHaveBeenCalledTimes(1);
       expect(spawn.mock.calls[0][0]).toBe('claude');
+      expect(registerMcpEndpoint).toHaveBeenCalledTimes(1);
 
-      const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
-      expect(fs.existsSync(settingsPath)).toBe(true);
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      expect(settings.mcpServers['apra-fleet-member'].url).toContain('19999');
+      const call = registerMcpEndpoint.mock.calls[0][0];
+      expect(call.url).toContain('19999');
+      expect(call.scope).toBe('project');
+      expect(call.workFolder).toBe(workFolder);
 
       // apra-fleet-2xs.2: identity is keyed on the member UUID -- the URL
       // fallback param must be the UUID, not the friendly name, and the JWT
@@ -101,16 +108,19 @@ describe('register-member interactive bootstrap gate', () => {
       const { findAgentByName } = await import('../src/services/registry.js');
       const agent = findAgentByName('gate-enabled-test');
       expect(agent).toBeDefined();
-      expect(settings.mcpServers['apra-fleet-member'].url)
-        .toBe(`http://127.0.0.1:19999/mcp?member=${agent!.id}`);
+      expect(call.url).toBe(`http://127.0.0.1:19999/mcp?member=${agent!.id}`);
 
       const { verify } = await import('../src/services/jwt.js');
       const { localWorkspaceId } = await import('../src/services/token-issuer.js');
-      const token = settings.mcpServers['apra-fleet-member'].headers.Authorization.slice('Bearer '.length);
-      const claims = verify(token);
+      const claims = verify(call.token);
       expect(claims).not.toBeNull();
       expect(claims!.member_id).toBe(agent!.id);
       expect(claims!.workspace_id).toBe(localWorkspaceId());
+
+      // settings.local.json must NOT be hand-written anymore -- registration
+      // now goes exclusively through the provider adapter.
+      const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
+      expect(fs.existsSync(settingsPath)).toBe(false);
     } finally {
       __resetInteractiveBootstrapDeps();
     }
