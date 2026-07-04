@@ -718,6 +718,39 @@ describe('busy-state clear on all exit paths (T5)', () => {
   });
 });
 
+describe('concurrency guard: rejects a second dispatch while one is in flight (apra-fleet-kwx)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) inFlightAgents.delete(memberId);
+  });
+
+  it('rejects a second execute_prompt against a member with an already in-flight session, with a clear error, not a silent hang or double-run', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-concurrent' });
+    memberId = member.id;
+    addAgent(member);
+
+    // Simulate a first execute_prompt still running against this member.
+    inFlightAgents.add(memberId);
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'second dispatch', resume: false, timeout_s: 5 });
+
+    expect(result).toContain('already running');
+    expect(result).toContain(member.friendlyName);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    // The guard must not have cleared the ORIGINAL in-flight session's state.
+    expect(inFlightAgents.has(memberId)).toBe(true);
+  });
+});
+
 describe('MCP disconnect cleanup (T10)', () => {
   let memberId: string;
 

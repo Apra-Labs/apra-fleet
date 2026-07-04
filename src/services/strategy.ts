@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,6 +74,27 @@ class LocalStrategy implements AgentStrategy {
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
 
+      // child.kill() only signals the immediate spawned process (the shell
+      // wrapper -- powershell.exe / sh). The actual provider CLI runs as a
+      // CHILD of that shell, so killing just the shell can leave the CLI
+      // (and anything it's mid-editing, e.g. a git rebase) running as an
+      // orphan -- this was the root cause of the apra-fleet-kwx data-loss
+      // incident. Always tree-kill via child.pid, which recurses to every
+      // descendant (taskkill /T on Windows, kill -9 on the process itself
+      // on POSIX where the shell typically execs into the real command).
+      function killTree() {
+        if (child.pid === undefined) return;
+        // Synchronous and BEFORE the immediate child.kill() below: taskkill
+        // needs the wrapper's PID to still be alive to recurse from it.
+        // exec() (async) loses this race -- by the time its spawned cmd.exe
+        // gets around to running taskkill, child.kill('SIGKILL') has often
+        // already terminated the wrapper, and taskkill can't traverse from
+        // an already-dead PID, silently leaving descendants running.
+        try {
+          execSync(cmds.killPid(child.pid), { stdio: 'ignore' });
+        } catch { /* best-effort; process may already be dead */ }
+      }
+
       let settled = false;
       function settle(fn: () => void) {
         if (settled) return;
@@ -88,7 +109,8 @@ class LocalStrategy implements AgentStrategy {
       function resetInactivityTimer() {
         clearTimeout(inactivityTimer);
         inactivityTimer = setTimeout(() => {
-          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
+          killTree();
+          child.kill('SIGKILL'); // belt-and-suspenders signal to the shell itself
           settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
         }, timeoutMs);
         inactivityTimer.unref();
@@ -99,7 +121,8 @@ class LocalStrategy implements AgentStrategy {
       let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
       if (maxTotalMs !== undefined) {
         maxTotalTimer = setTimeout(() => {
-          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
+          killTree();
+          child.kill('SIGKILL'); // belt-and-suspenders signal to the shell itself
           settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
         }, maxTotalMs);
         maxTotalTimer.unref();
@@ -177,6 +200,7 @@ class LocalStrategy implements AgentStrategy {
 
       if (abortSignal) {
         const onAbort = () => {
+          killTree();
           child.kill('SIGKILL');
           settle(() => reject(new Error('Command aborted by client')));
         };
