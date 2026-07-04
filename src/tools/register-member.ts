@@ -376,10 +376,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
     const mcpUrl = instance.url; // e.g. http://127.0.0.1:<actual-port>/mcp
 
-    const { sign } = await import('../services/jwt.js');
-    const token = sign({
+    // Mint through the pluggable issuer: workspace_id is the hard security
+    // boundary (docs/hub-spoke-master-plan.md section 3); the local dev-mode
+    // issuer derives it from this install's identity (one machine == one
+    // workspace). A hub-era issuer swaps in behind the same interface.
+    const { getTokenIssuer } = await import('../services/token-issuer.js');
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({
       member_id: tempAgent.id,
-      project_id: 'default',
       role: 'doer',
       work_folder: input.work_folder,
     });
@@ -394,7 +398,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     settings.mcpServers = settings.mcpServers ?? {};
     settings.mcpServers['apra-fleet-member'] = {
       type: 'http',
-      url: mcpUrl + '?member=' + input.friendly_name,
+      // Identity is keyed on the member UUID everywhere -- the URL fallback
+      // param carries the UUID, matching the JWT's member_id claim.
+      url: mcpUrl + '?member=' + tempAgent.id,
       headers: { Authorization: 'Bearer ' + token },
     };
     try {
@@ -406,7 +412,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
     // CRITICAL-2: Kill existing claude process for this member before re-spawning
     const { sessionRegistry } = await import('../services/session-registry.js');
-    const existingSession = sessionRegistry.get(tempAgent.id);
+    const existingSession = sessionRegistry.get(issuer.workspaceId(), tempAgent.id);
     if (existingSession?.pid) {
       try {
         process.kill(existingSession.pid);
@@ -420,9 +426,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       const proc = interactiveBootstrapDeps.spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
       proc.unref();
       if (proc.pid) {
-        sessionRegistry.register(tempAgent.id, {
+        sessionRegistry.register({
           member_id: tempAgent.id,
-          project_id: 'default',
+          workspace_id: issuer.workspaceId(),
           role: 'doer',
           work_folder: input.work_folder,
           server: null,

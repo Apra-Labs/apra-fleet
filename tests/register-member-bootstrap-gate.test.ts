@@ -94,6 +94,23 @@ describe('register-member interactive bootstrap gate', () => {
       expect(fs.existsSync(settingsPath)).toBe(true);
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
       expect(settings.mcpServers['apra-fleet-member'].url).toContain('19999');
+
+      // apra-fleet-2xs.2: identity is keyed on the member UUID -- the URL
+      // fallback param must be the UUID, not the friendly name, and the JWT
+      // must carry the workspace_id hard boundary minted by the local issuer.
+      const { findAgentByName } = await import('../src/services/registry.js');
+      const agent = findAgentByName('gate-enabled-test');
+      expect(agent).toBeDefined();
+      expect(settings.mcpServers['apra-fleet-member'].url)
+        .toBe(`http://127.0.0.1:19999/mcp?member=${agent!.id}`);
+
+      const { verify } = await import('../src/services/jwt.js');
+      const { localWorkspaceId } = await import('../src/services/token-issuer.js');
+      const token = settings.mcpServers['apra-fleet-member'].headers.Authorization.slice('Bearer '.length);
+      const claims = verify(token);
+      expect(claims).not.toBeNull();
+      expect(claims!.member_id).toBe(agent!.id);
+      expect(claims!.workspace_id).toBe(localWorkspaceId());
     } finally {
       __resetInteractiveBootstrapDeps();
     }

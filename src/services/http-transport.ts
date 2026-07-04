@@ -3,8 +3,10 @@ import crypto from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { fleetEvents, FleetEventMap } from './event-bus.js';
-import { verify as verifyJwt, getOrCreateKey, type JwtClaims } from './jwt.js';
+import { getOrCreateKey, type JwtClaims } from './jwt.js';
+import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
 import { sessionRegistry } from './session-registry.js';
+import { getAgent, findAgentByName } from './registry.js';
 import { DEFAULT_PORT } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
@@ -12,6 +14,10 @@ import { logLine } from '../utils/log-helpers.js';
 interface Session {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
+  /** Workspace this session belongs to: from the JWT claim when authenticated,
+   *  else the local workspace (127.0.0.1-only trust boundary). Event broadcast
+   *  is scoped by this -- events never cross a workspace wall. */
+  workspaceId: string;
 }
 
 export interface HttpTransportOptions {
@@ -141,7 +147,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
       const memberParam = parsedUrl.searchParams.get('member');
       let postClaims: JwtClaims | null = null;
       if (rawToken !== null) {
-        postClaims = verifyJwt(rawToken);
+        postClaims = getTokenIssuer().verify(rawToken);
         if (!postClaims) {
           logLine('session', `jwt verify failed for member_param=${memberParam ?? 'none'} url=${req.url}`);
           res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -174,6 +180,24 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         const clientCaps = body?.params?.capabilities ?? {};
         const capKeys = Object.keys(clientCaps).join(',');
 
+        // Identity keying is unified on the member UUID. The URL ?member= param
+        // (unauthenticated local fallback) historically carried the friendly
+        // name; new URLs carry the UUID, and legacy friendly names are resolved
+        // to the UUID via the agent registry here.
+        let fallbackMemberId: string | null = null;
+        let fallbackWorkFolder = '';
+        if (postClaims === null && memberParam !== null) {
+          const agent = getAgent(memberParam) ?? findAgentByName(memberParam);
+          fallbackMemberId = agent?.id ?? memberParam;
+          fallbackWorkFolder = agent?.workFolder ?? '';
+          if (agent && agent.id !== memberParam) {
+            logLine('session', `resolved URL member param '${memberParam}' to member_id=${agent.id}`);
+          }
+        }
+        // Unauthenticated sessions (PM/tools, URL-param fallback) can only come
+        // from this machine (server binds 127.0.0.1), so they belong to the
+        // local workspace. Authenticated sessions use the JWT's workspace_id.
+        const sessionWorkspaceId = postClaims?.workspace_id ?? localWorkspaceId();
 
         const sessionServer = new McpServer(
           { name: `apra fleet server ${serverVersion}`, version: serverVersion },
@@ -182,29 +206,29 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         const sessionTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport: sessionTransport });
-            const hasMember = !!(postClaims || memberParam);
+            sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId });
+            const hasMember = !!(postClaims || fallbackMemberId);
             logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember}`);
             // Register interactive member session when JWT claims are present
             if (postClaims) {
-              sessionRegistry.register(postClaims.member_id, {
+              sessionRegistry.register({
                 ...postClaims,
                 server: sessionServer,
                 sessionId: sid,
                 status: 'online',
               });
-              logLine('session', `registered member member_id=${postClaims.member_id} via JWT sid=${sid}`);
-            } else if (memberParam) {
-              sessionRegistry.register(memberParam, {
-                member_id: memberParam,
-                project_id: 'default',
+              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid}`);
+            } else if (fallbackMemberId) {
+              sessionRegistry.register({
+                member_id: fallbackMemberId,
+                workspace_id: sessionWorkspaceId,
                 role: 'doer',
-                work_folder: '',
+                work_folder: fallbackWorkFolder,
                 server: sessionServer,
                 sessionId: sid,
                 status: 'online',
               });
-              logLine('session', `registered member member_id=${memberParam} via URL param sid=${sid}`);
+              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid}`);
             }
           },
           onsessionclosed: (sid) => {
@@ -217,11 +241,11 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             sessions.delete(sid);
             // Unregister interactive member session
             if (postClaims) {
-              sessionRegistry.unregister(postClaims.member_id);
+              sessionRegistry.unregister(postClaims.workspace_id, postClaims.member_id);
               logLine('session', `unregistered member member_id=${postClaims.member_id} sid=${sid}`);
-            } else if (memberParam) {
-              sessionRegistry.unregister(memberParam);
-              logLine('session', `unregistered member member_id=${memberParam} sid=${sid}`);
+            } else if (fallbackMemberId) {
+              sessionRegistry.unregister(sessionWorkspaceId, fallbackMemberId);
+              logLine('session', `unregistered member member_id=${fallbackMemberId} sid=${sid}`);
             }
           },
         });
@@ -257,7 +281,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     res.end('Method not allowed');
   });
 
-  // Subscribe to fleet events and broadcast to all connected sessions
+  // Subscribe to fleet events and broadcast to connected sessions in the SAME
+  // workspace only. All events on this bus originate from the local
+  // orchestrator, i.e. from the local workspace -- a session authenticated
+  // with a foreign workspace_id must never see them.
   const fleetEventTypes: (keyof FleetEventMap)[] = [
     'credential:stored',
     'task:completed',
@@ -268,7 +295,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
   for (const eventType of fleetEventTypes) {
     const handler = (payload: FleetEventMap[typeof eventType]) => {
       const data = { event: eventType, ...(payload as object) };
+      const eventWorkspaceId = localWorkspaceId();
       for (const [, session] of sessions) {
+        if (session.workspaceId !== eventWorkspaceId) continue;
         session.server.sendLoggingMessage({
           level: 'info',
           logger: 'apra-fleet-events',

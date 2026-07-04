@@ -20,9 +20,16 @@ export function getOrCreateKey(): string {
 
 export interface JwtClaims {
   member_id: string;
-  project_id: string;
+  /** HARD security boundary (docs/hub-spoke-master-plan.md section 3).
+   *  Phase 1: one machine == one implicit workspace, minted by the local
+   *  issuer (src/services/token-issuer.ts); hub-era: minted by the dashboard.
+   *  Same claim shape either way -- no token migration needed. */
+  workspace_id: string;
   role: string;
   work_folder: string;
+  /** Optional grouping label inside a workspace. Carries ZERO security
+   *  weight -- no enforcement check may rely on it. */
+  project_id?: string;
 }
 
 function b64url(buf: Buffer | string): string {
@@ -60,7 +67,7 @@ export function verify(token: string): JwtClaims | null {
     if (decoded.exp && decoded.exp < now) return null;
     if (
       typeof decoded.member_id !== 'string' ||
-      typeof decoded.project_id !== 'string' ||
+      typeof decoded.workspace_id !== 'string' ||
       typeof decoded.role !== 'string' ||
       typeof decoded.work_folder !== 'string'
     ) {
@@ -68,9 +75,10 @@ export function verify(token: string): JwtClaims | null {
     }
     return {
       member_id: decoded.member_id,
-      project_id: decoded.project_id,
+      workspace_id: decoded.workspace_id,
       role: decoded.role,
       work_folder: decoded.work_folder,
+      ...(typeof decoded.project_id === 'string' ? { project_id: decoded.project_id } : {}),
     };
   } catch {
     return null;

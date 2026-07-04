@@ -48,7 +48,7 @@ export interface ParsedResponse {
 }
 
 export interface RegisterMcpEndpointOptions {
-  /** e.g. http://<host>:<port>/mcp?member=<name> */
+  /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
   url: string;
   /** JWT bearer token for the member's fleet MCP session. */
   token: string;
