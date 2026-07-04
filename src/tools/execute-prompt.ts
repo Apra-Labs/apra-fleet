@@ -210,6 +210,15 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
   }
 
+  // No-LLM members (apra-fleet-us9.14) are plain command executors -- neither
+  // execute_prompt mode applies (there is no LLM to prompt in either a
+  // subprocess or an interactive session). Rejected here, before any busy
+  // state is entered, rather than relying on NoneProvider's methods to throw
+  // deeper in either dispatch path.
+  if (agent.llmProvider === 'none') {
+    return `❌ "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+  }
+
   // Interactive routing (apra-fleet-2xs.8/us9.8, docs/cloud-fleet-architecture.md
   // section 6): if this member has a live MCP session connected right now,
   // route via send_message + wait-for-response instead of spawning a

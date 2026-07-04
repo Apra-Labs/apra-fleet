@@ -751,6 +751,35 @@ describe('concurrency guard: rejects a second dispatch while one is in flight (a
   });
 });
 
+describe('no-LLM members are rejected, never dispatched (apra-fleet-us9.14)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) inFlightAgents.delete(memberId);
+  });
+
+  it('rejects execute_prompt for a member with llm_provider "none", with a clear error pointing to execute_command, without ever entering busy state', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-llm-member', llmProvider: 'none' });
+    memberId = member.id;
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'do something', resume: false, timeout_s: 5 });
+
+    expect(result).toContain('no-llm-member');
+    expect(result).toContain('execute_command');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(inFlightAgents.has(memberId)).toBe(false);
+  });
+});
+
 describe('MCP disconnect cleanup (T10)', () => {
   let memberId: string;
 

@@ -1,7 +1,7 @@
 export type { CloudConfig } from './services/cloud/types.js';
 import type { CloudConfig } from './services/cloud/types.js';
 
-export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy' | 'opencode';
+export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy' | 'opencode' | 'none';
 
 export interface Agent {
   id: string;

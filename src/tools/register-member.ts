@@ -45,7 +45,7 @@ export const registerMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
+  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode', 'none']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli. Use "none" for a plain command executor with no LLM at all -- execute_prompt is rejected for these members; use execute_command instead.'),
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Custom cheap model choice from a curated list'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
@@ -308,8 +308,12 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     const cmds = getOsCommands(detectedOS);
     const provider = getProvider(input.llm_provider ?? 'claude');
     const providerName = provider.name;
+    // No-LLM members (apra-fleet-us9.14) have no CLI to verify or authenticate --
+    // NoneProvider.versionCommand() throws by design (see providers/none.ts), so
+    // this must be skipped entirely rather than merely tolerating a rejection.
+    const isNoLlm = providerName === 'none';
 
-    const versionCheck = strategy.execCommand(cmds.agentVersion(provider), 15000)
+    const versionCheck = isNoLlm ? Promise.resolve() : strategy.execCommand(cmds.agentVersion(provider), 15000)
       .then(r => {
         r.code === 0
           ? (claudeVersion = r.stdout.trim())
@@ -317,11 +321,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       })
       .catch(() => { warnings.push(`Could not verify ${providerName} CLI availability`); });
 
-    const authCheck = !isLocal
+    const authCheck = isNoLlm ? Promise.resolve() : (!isLocal
       ? strategy.execCommand(cmds.agentVersion(provider), 60000)
           .then(r => { r.code !== 0 && warnings.push(`${providerName} CLI not available — you may need to run provision_llm_auth`); })
           .catch(() => { warnings.push(`${providerName} CLI check timed out or failed — run provision_llm_auth to set up authentication`); })
-      : Promise.resolve();
+      : Promise.resolve());
 
     const mkdirCheck = isLocal
       ? import('node:fs').then(({ mkdirSync }) => {
@@ -339,7 +343,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
   } else {
     tempAgent.os = detectedOS;
-    if (isCloud) {
+    if (isCloud && (input.llm_provider ?? 'claude') !== 'none') {
       warnings.push(`${input.llm_provider ?? 'claude'} CLI and auth not verified — run provision_llm_auth after the instance starts.`);
     }
   }
