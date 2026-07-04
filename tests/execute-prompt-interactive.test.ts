@@ -170,4 +170,32 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     expect(result).toContain('subprocess-only-member');
     expect(result).toContain('ok');
   });
+
+  it('falls through to the subprocess path even WITH a live session, for a non-Claude provider (apra-fleet-us9.9: mode b is Claude-only)', async () => {
+    const member = makeTestAgent({ friendlyName: 'gemini-with-live-session', llmProvider: 'gemini' });
+    memberId = member.id;
+    addAgent(member);
+
+    // This member DOES have a live sessionRegistry entry -- registerMcpEndpoint
+    // gives Gemini/Codex/OpenCode basic MCP tool access (apra-fleet-fnz.1-3),
+    // but docs/interactive-injection-provider-survey.md confirms none of them
+    // can receive/act on a server-push mid-session prompt injection the way
+    // Claude can. Routing to it anyway would silently burn the whole timeout.
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      status: 'online',
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(mockExecCommand).toHaveBeenCalled();
+    expect(notification).not.toHaveBeenCalled();
+    expect(result).toContain('gemini-with-live-session');
+  });
 });

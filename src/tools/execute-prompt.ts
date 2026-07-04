@@ -210,7 +210,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
   }
 
-  // Interactive routing (apra-fleet-2xs.8, docs/cloud-fleet-architecture.md
+  // Interactive routing (apra-fleet-2xs.8/us9.8, docs/cloud-fleet-architecture.md
   // section 6): if this member has a live MCP session connected right now,
   // route via send_message + wait-for-response instead of spawning a
   // subprocess. Decided tier-2-locally against THIS machine's session
@@ -220,8 +220,20 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // through to the unchanged subprocess/SSH path below for every member
   // without a live session (the common case today, and always for members
   // that never opt into an interactive session).
+  //
+  // Gated to Claude only (apra-fleet-us9.9's survey,
+  // docs/interactive-injection-provider-survey.md): mode (b) -- server-push
+  // mid-session prompt injection -- is POC-proven on Claude alone via the
+  // provider-branded `notifications/claude/channel` capability.
+  // Gemini/Codex are confirmed [FAIL] (no equivalent push mechanism);
+  // Copilot/AGY/OpenCode are [TBD], not confirmed. A non-Claude member CAN
+  // still have a live sessionRegistry entry (registerMcpEndpoint gives it
+  // basic MCP tool access, apra-fleet-fnz.1-3) without that meaning it can
+  // receive or act on this push -- routing to it anyway would silently
+  // spend the full timeout_s waiting for a response that can never arrive.
+  const isClaudeMember = (agent.llmProvider ?? 'claude') === 'claude';
   const workspaceId = getTokenIssuer().workspaceId();
-  const interactiveSession = sessionRegistry.get(workspaceId, agent.id);
+  const interactiveSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
   if (interactiveSession?.server) {
     inFlightAgents.add(agent.id);
     writeStatusline(new Map([[agent.id, 'busy']]));
