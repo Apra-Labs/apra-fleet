@@ -34,10 +34,9 @@ describe('formatFleetLogLine', () => {
     expect(r?.events[0]).toMatchObject({ detail: true, kind: 'del' });
   });
 
-  it('hides pid lines unless verbose', () => {
+  it('always hides pid lines (internal detail, not useful to watch)', () => {
     expect(formatFleetLogLine(line({ tag: 'execute_command', mem: 'm', msg: 'pid=953032' }))).toBeNull();
-    const v = formatFleetLogLine(line({ tag: 'execute_command', mem: 'm', msg: 'pid=953032' }), true);
-    expect(v?.events[0]).toMatchObject({ detail: true, text: '-> pid=953032' });
+    expect(formatFleetLogLine(line({ tag: 'execute_command', mem: 'm', msg: 'pid=953032' }), true)).toBeNull();
   });
 
   it('renders an execute_prompt entry with a > marker and LLM prefix', () => {

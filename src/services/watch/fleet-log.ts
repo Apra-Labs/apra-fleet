@@ -81,7 +81,7 @@ export function formatFleetLogLine(raw: string, verbose = false): FleetLogEntry 
   const events: FormattedEvent[] = [];
 
   const lifecycleDetail = (): void => {
-    if (/^pid=/.test(msg) && !verbose) return; // pid is noise unless verbose
+    if (/^pid=/.test(msg)) return; // pid is an internal process detail -- never useful to watch
     events.push({ time: null, marker: '', kind: isErr ? 'del' : 'dim', detail: true, text: `-> ${msg}` });
   };
 
