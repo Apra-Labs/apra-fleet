@@ -115,8 +115,6 @@ shell-completion helper.
 
 ## Known gotchas
 
-- Fleet-log `msg` is truncated (~80 chars) by the server's logger, so long
-  commands/prompts appear clipped in the stream.
 - Output volume: a broad scope with many active members interleaves a lot;
   narrow by feature/member. Thinking is verbose-only.
 - The fleet log rolls over on server restart (new pid); `watch` re-resolves the

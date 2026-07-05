@@ -11,7 +11,7 @@ import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
-import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, singleLineForLog } from '../utils/log-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import type { Agent } from '../types.js';
 
@@ -122,7 +122,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   const strategy = getStrategy(agent);
-    const scope = new LogScope('execute_command', `${truncateForLog(maskSecrets(input.command))}`, agent);
+    const scope = new LogScope('execute_command', `${singleLineForLog(maskSecrets(input.command))}`, agent);
     const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
 
   const cmds = getOsCommands(getAgentOS(agent));
