@@ -55,7 +55,7 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
   it('a briefly-offline target does not lose a queued envelope, and receives it on reconnect', async () => {
     await enqueue('ws-test', 'member-a', 'env-1', 'execute_command', { cmd: 'echo hi' }, 60_000, pool);
 
-    const delivered = await fetchDeliverable('member-a', pool);
+    const delivered = await fetchDeliverable('ws-test', 'member-a', pool);
     expect(delivered).toHaveLength(1);
     expect(delivered[0].envelope_id).toBe('env-1');
     expect(delivered[0].status).toBe('delivered');
@@ -64,26 +64,26 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
   it('does NOT re-serve an already-delivered-but-unacked envelope before ack_timeout_ms elapses (apra-fleet-b55: redeliver-on-timeout, not redeliver-on-every-poll)', async () => {
     await enqueue('ws-test', 'member-b', 'env-2', 'execute_command', { cmd: 'echo redeliver' }, 60_000, pool);
 
-    const firstFetch = await fetchDeliverable('member-b', pool);
+    const firstFetch = await fetchDeliverable('ws-test', 'member-b', pool);
     expect(firstFetch).toHaveLength(1);
 
-    const immediateRefetch = await fetchDeliverable('member-b', pool);
+    const immediateRefetch = await fetchDeliverable('ws-test', 'member-b', pool);
     expect(immediateRefetch).toHaveLength(0);
   });
 
   it('redelivers an already-delivered-but-unacked envelope once ack_timeout_ms has elapsed (no silent loss before ack)', async () => {
     await enqueue('ws-test', 'member-b', 'env-2', 'execute_command', { cmd: 'echo redeliver' }, 60_000, pool);
 
-    const firstFetch = await fetchDeliverable('member-b', pool, 1);
+    const firstFetch = await fetchDeliverable('ws-test', 'member-b', pool, 1);
     expect(firstFetch).toHaveLength(1);
     await new Promise(r => setTimeout(r, 20));
 
-    const secondFetch = await fetchDeliverable('member-b', pool, 1);
+    const secondFetch = await fetchDeliverable('ws-test', 'member-b', pool, 1);
     expect(secondFetch).toHaveLength(1);
     expect(secondFetch[0].envelope_id).toBe('env-2');
 
     await ack('ws-test', 'member-b', 'env-2', pool);
-    const thirdFetch = await fetchDeliverable('member-b', pool, 1);
+    const thirdFetch = await fetchDeliverable('ws-test', 'member-b', pool, 1);
     expect(thirdFetch).toHaveLength(0);
   });
 
@@ -91,7 +91,7 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     await enqueue('ws-test', 'member-c', 'env-3', 'send_message', { text: 'hi' }, 60_000, pool);
     await enqueue('ws-test', 'member-c', 'env-3', 'send_message', { text: 'hi' }, 60_000, pool);
 
-    const delivered = await fetchDeliverable('member-c', pool);
+    const delivered = await fetchDeliverable('ws-test', 'member-c', pool);
     expect(delivered).toHaveLength(1);
   });
 
@@ -99,7 +99,7 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     await enqueue('ws-test', 'member-d', 'env-4a', 'send_message', { text: 'first' }, 60_000, pool);
     await enqueue('ws-test', 'member-d', 'env-4b', 'send_message', { text: 'second' }, 60_000, pool);
 
-    const delivered = await fetchDeliverable('member-d', pool);
+    const delivered = await fetchDeliverable('ws-test', 'member-d', pool);
     expect(delivered).toHaveLength(2);
     expect(delivered.map(d => d.envelope_id).sort()).toEqual(['env-4a', 'env-4b']);
   });
@@ -111,27 +111,30 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     const sweptCount = await sweepExpired(pool);
     expect(sweptCount).toBeGreaterThanOrEqual(1);
 
-    const delivered = await fetchDeliverable('member-e', pool);
+    const delivered = await fetchDeliverable('ws-test', 'member-e', pool);
     expect(delivered).toHaveLength(0);
   });
 
-  it('cross-workspace isolation: fetchDeliverable for a member never returns another workspace\'s envelope with a colliding member id', async () => {
+  it('cross-workspace isolation (apra-fleet-us9.11 iron wall): fetchDeliverable for a member never returns another workspace\'s envelope with a colliding member id', async () => {
     await pool.query(`INSERT INTO workspaces (id, name) VALUES ('ws-other', 'other')`);
-    // Same member_id string reused across two workspaces on purpose --
-    // relay delivery keys on target_member_id alone at this layer, so the
-    // caller (send_message / the hub route handler) is responsible for
-    // workspace-scoping which member_id it even asks for. This test
-    // documents that boundary rather than assuming it's enforced here.
+    // Same member_id string reused across two workspaces on purpose -- a
+    // colliding (or attacker-injected) member_id must NOT bridge tenants.
+    // fetchDeliverable now scopes by workspace_id + target_member_id (matching
+    // the write side, enqueue/ack), so the iron wall is enforced inside this
+    // function, not merely assumed to be applied by the caller.
     await enqueue('ws-test', 'shared-name', 'env-6', 'send_message', { text: 'a' }, 60_000, pool);
     await enqueue('ws-other', 'shared-name', 'env-7', 'send_message', { text: 'b' }, 60_000, pool);
 
-    const delivered = await fetchDeliverable('shared-name', pool);
-    // Both come back at this layer -- workspace enforcement for relay
-    // happens at the route/handler level (reusing the pattern from
-    // apra-fleet-2xs.2's session-registry/send_message scoping), not
-    // inside fetchDeliverable itself. Documented explicitly so nobody
-    // assumes this function alone enforces the iron wall.
-    expect(delivered).toHaveLength(2);
+    // Asking as ws-test gets ONLY ws-test's envelope; ws-other's is invisible.
+    const deliveredTest = await fetchDeliverable('ws-test', 'shared-name', pool);
+    expect(deliveredTest).toHaveLength(1);
+    expect(deliveredTest[0].envelope_id).toBe('env-6');
+
+    // And ws-other, asking for the same member_id, sees only its own envelope,
+    // never ws-test's.
+    const deliveredOther = await fetchDeliverable('ws-other', 'shared-name', pool);
+    expect(deliveredOther).toHaveLength(1);
+    expect(deliveredOther[0].envelope_id).toBe('env-7');
   });
 
   it('rejects the newest admission once a target member\'s queue hits the depth cap (never silently drops an older item)', async () => {
@@ -143,7 +146,7 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     expect(rejected).toEqual({ ok: false, reason: 'queue_full' });
 
     // The oldest item is still there -- rejecting the newest, not evicting an older one.
-    const delivered = await fetchDeliverable('member-full', pool);
+    const delivered = await fetchDeliverable('ws-test', 'member-full', pool);
     expect(delivered.some(d => d.envelope_id === 'env-0')).toBe(true);
     expect(delivered.some(d => d.envelope_id === 'env-overflow')).toBe(false);
   }, 20000);
@@ -156,11 +159,11 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     expect(expiredCount).toBeGreaterThanOrEqual(1);
 
     // The original request is gone from the target's deliverable set...
-    const targetDeliverable = await fetchDeliverable('target-member', pool);
+    const targetDeliverable = await fetchDeliverable('ws-test', 'target-member', pool);
     expect(targetDeliverable.some(d => d.envelope_id === 'req-1')).toBe(false);
 
     // ...and a synthetic execute_command.result is now queued for the ORIGINATOR.
-    const originDeliverable = await fetchDeliverable('origin-member', pool);
+    const originDeliverable = await fetchDeliverable('ws-test', 'origin-member', pool);
     const failure = originDeliverable.find(d => d.kind === 'execute_command.result');
     expect(failure).toBeDefined();
     expect(failure?.payload).toEqual({ status: 'target_offline_ttl_expired', correlation_id: 'req-1' });
@@ -172,7 +175,7 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
 
     await sweepExpiredToFailures(pool);
 
-    const originDeliverable = await fetchDeliverable('origin-member', pool);
+    const originDeliverable = await fetchDeliverable('ws-test', 'origin-member', pool);
     expect(originDeliverable).toHaveLength(0);
   });
 });

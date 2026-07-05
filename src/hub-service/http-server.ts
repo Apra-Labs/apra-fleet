@@ -216,6 +216,11 @@ export function createHttpServer(): HttpServerHandle {
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       });
+      // Flush the 200 + SSE headers to the client on connect, before any event
+      // exists to deliver -- otherwise Node buffers the headers until the first
+      // res.write(), so a client (or reverse proxy) cannot confirm the stream
+      // actually opened for a member that currently has nothing queued.
+      res.flushHeaders();
 
       const pool = getPool();
       let closed = false;
@@ -223,7 +228,13 @@ export function createHttpServer(): HttpServerHandle {
         if (closed) return;
         const members = await listForMachine(machineId, pool);
         for (const m of members) {
-          const deliverable = await fetchDeliverable(m.member_id, pool);
+          // Iron wall (apra-fleet-us9.11): scope the deliverable read by the
+          // JWT-verified workspaceId, NOT by presence membership alone -- a
+          // spoke can announce an arbitrary member_id, so presence is not a
+          // trust boundary. fetchDeliverable's workspace_id filter guarantees
+          // a spoke authenticated for workspace A can never drain another
+          // tenant's queue even if it injects a foreign member_id.
+          const deliverable = await fetchDeliverable(workspaceId, m.member_id, pool);
           for (const envelope of deliverable) {
             if (closed) return;
             res.write(`data: ${JSON.stringify(envelope)}\n\n`);
@@ -692,6 +703,11 @@ export function createHttpServer(): HttpServerHandle {
     close(): Promise<void> {
       return new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
+        // /ws/:id/stream holds a long-lived keep-alive SSE socket open
+        // indefinitely; without force-closing live connections here, a
+        // graceful shutdown (or a test teardown) would hang forever waiting
+        // for streams that never end on their own.
+        server.closeAllConnections();
       });
     },
   };

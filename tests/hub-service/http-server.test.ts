@@ -13,6 +13,7 @@ import { setPool, closePool } from '../../src/hub-service/db/pool.js';
 import { createWorkspace } from '../../src/hub-service/workspaces.js';
 import { createHttpServer, listen, type HttpServerHandle } from '../../src/hub-service/http-server.js';
 import { sign } from '../../src/hub-service/hub-jwt.js';
+import { fetchDeliverable } from '../../src/hub-service/relay-queue.js';
 
 const SECRET = 'test-hub-secret';
 
@@ -382,4 +383,45 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     const noAuth = await requestJson(port, 'GET', '/ws/ws-a/stream');
     expect(noAuth.status).toBe(401);
   });
+
+  it('IRON WALL (apra-fleet-us9.11): a spoke in workspace A cannot drain workspace B\'s queue by announcing B\'s member_id into its own presence', async () => {
+    // --- Victim setup in workspace B: a member with a queued envelope. ---
+    const { token: bMachineToken } = sign({ member_id: 'mach-b', workspace_id: 'ws-b', role: 'spoke' }, SECRET);
+    const victim = await requestJson(port, 'POST', '/ws/ws-b/members', { token: bMachineToken, body: { name: 'victim', provider: 'claude' } });
+    const victimMemberId = victim.body.member.id;
+    const queued = await requestJson(port, 'POST', '/ws/ws-b/envelopes', {
+      token: bMachineToken,
+      body: {
+        envelope_id: 'b-secret', workspace_id: 'ws-b', kind: 'execute_command.request',
+        from: { machine_id: 'mach-b', member_id: null }, to: { machine_id: null, member_id: victimMemberId },
+        payload: { cmd: 'cat /etc/secrets' },
+      },
+    });
+    expect(queued.status).toBe(202);
+
+    // --- Attacker in workspace A injects the victim's member_id into its own
+    //     machine's presence snapshot (handlePresence trusts the announce). ---
+    const { token: aMachineToken } = sign({ member_id: 'mach-a', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+    const announce = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
+      token: aMachineToken,
+      body: {
+        envelope_id: 'a-announce', workspace_id: 'ws-a', kind: 'presence.announce',
+        from: { machine_id: 'mach-a', member_id: null }, to: {},
+        payload: { members: [{ member_id: victimMemberId, status: 'online' }] },
+      },
+    });
+    expect(announce.status).toBe(200);
+
+    // --- The attacker's stream must NOT surface workspace B's envelope, even
+    //     across a full poll cycle (STREAM_POLL_INTERVAL_MS = 1000): the wait
+    //     for a first frame times out because none is ever delivered. ---
+    await expect(readSseFrames(port, '/ws/ws-a/stream', aMachineToken, 1, 2500))
+      .rejects.toThrow(/timed out/);
+
+    // Sanity: the fix isolates tenants, it does not lose the message -- the
+    // envelope is still deliverable within its OWN workspace. (A direct read
+    // rather than a second live stream keeps teardown simple.)
+    const bDeliverable = await fetchDeliverable('ws-b', victimMemberId, pool);
+    expect(bDeliverable.map((e: any) => e.envelope_id)).toContain('b-secret');
+  }, 15000);
 });

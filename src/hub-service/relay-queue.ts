@@ -105,8 +105,20 @@ export const DEFAULT_ACK_TIMEOUT_MS = 10000;
  * 'delivered'-but-unacked row is not re-served again until another
  * ack_timeout_ms window passes (section 5 step 5's redeliver-on-timeout,
  * not redeliver-on-every-poll).
+ *
+ * WORKSPACE IRON WALL (apra-fleet-us9.11): the read is scoped by
+ * `workspaceId` as well as `target_member_id`. target_member_id alone is NOT
+ * a workspace boundary -- a compromised spoke can announce an arbitrary
+ * member_id (envelope-routes.ts's handlePresence trusts the announced
+ * snapshot), so the /ws/:id/stream route MUST NOT rely on presence membership
+ * to keep workspaces apart. Scoping here means even a foreign member_id that
+ * lands in this machine's presence view can only ever surface envelopes
+ * queued under THIS workspace, never another tenant's queue. This mirrors the
+ * write side (enqueue/ack both key on workspace_id + target_member_id) so the
+ * wall is symmetric on both read and write.
  */
 export async function fetchDeliverable(
+  workspaceId: string,
   targetMemberId: string,
   pool: Pool = getPool(),
   ackTimeoutMs: number = DEFAULT_ACK_TIMEOUT_MS,
@@ -114,14 +126,15 @@ export async function fetchDeliverable(
   const result = await pool.query<RelayEnvelope>(
     `UPDATE relay_queue
      SET status = 'delivered', delivered_at = now()
-     WHERE target_member_id = $1
+     WHERE workspace_id = $1
+       AND target_member_id = $2
        AND created_at + (ttl_ms::text || ' milliseconds')::interval > now()
        AND (
          status = 'pending'
-         OR (status = 'delivered' AND delivered_at + ($2::text || ' milliseconds')::interval <= now())
+         OR (status = 'delivered' AND delivered_at + ($3::text || ' milliseconds')::interval <= now())
        )
      RETURNING *`,
-    [targetMemberId, ackTimeoutMs],
+    [workspaceId, targetMemberId, ackTimeoutMs],
   );
   return result.rows.sort((a: RelayEnvelope, b: RelayEnvelope) => a.id - b.id);
 }

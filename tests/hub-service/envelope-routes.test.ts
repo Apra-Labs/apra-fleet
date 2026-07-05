@@ -115,7 +115,7 @@ describe('submitEnvelope (apra-fleet-us9.6 slice 1)', () => {
     const result = await submitEnvelope(claims('ws-1', 'mach-1'), env, pool);
     expect(result.status).toBe(202);
 
-    const deliverable = await fetchDeliverable('mem-1', pool);
+    const deliverable = await fetchDeliverable('ws-1', 'mem-1', pool);
     expect(deliverable).toHaveLength(1);
     expect(deliverable[0].kind).toBe('execute_command.request');
     expect(deliverable[0].payload).toEqual({ cmd: 'ls' });
@@ -151,7 +151,7 @@ describe('submitEnvelope (apra-fleet-us9.6 slice 1)', () => {
     };
     await submitEnvelope(claims('ws-1', 'mach-1'), env, pool);
     await submitEnvelope(claims('ws-1', 'mach-1'), env, pool);
-    const deliverable = await fetchDeliverable('mem-1', pool);
+    const deliverable = await fetchDeliverable('ws-1', 'mem-1', pool);
     expect(deliverable).toHaveLength(1);
   });
 });

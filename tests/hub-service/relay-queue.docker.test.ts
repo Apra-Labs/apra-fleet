@@ -77,7 +77,7 @@ describe.skipIf(!dockerAvailable)('relay-queue: at-least-once delivery (real Pos
     await enqueue(ws, member, 'env-1', 'execute_command', { cmd: 'echo hi' }, 60_000);
 
     // "Reconnect": the target's spoke connects and fetches.
-    const delivered = await fetchDeliverable(member);
+    const delivered = await fetchDeliverable(ws, member);
     expect(delivered).toHaveLength(1);
     expect(delivered[0].envelope_id).toBe('env-1');
     expect(delivered[0].status).toBe('delivered');
@@ -89,18 +89,18 @@ describe.skipIf(!dockerAvailable)('relay-queue: at-least-once delivery (real Pos
     await pool.query(`INSERT INTO workspaces (id, name) VALUES ($1, 'test') ON CONFLICT DO NOTHING`, [ws]);
     await enqueue(ws, member, 'env-2', 'execute_command', { cmd: 'echo redeliver' }, 60_000);
 
-    const firstFetch = await fetchDeliverable(member);
+    const firstFetch = await fetchDeliverable(ws, member);
     expect(firstFetch).toHaveLength(1);
 
     // Simulate the spoke dropping before it acked -- a second reconnect
     // must still see the envelope, proving delivery alone never retires it.
-    const secondFetch = await fetchDeliverable(member);
+    const secondFetch = await fetchDeliverable(ws, member);
     expect(secondFetch).toHaveLength(1);
     expect(secondFetch[0].envelope_id).toBe('env-2');
 
     // Only ack retires it.
     await ack(ws, member, 'env-2');
-    const thirdFetch = await fetchDeliverable(member);
+    const thirdFetch = await fetchDeliverable(ws, member);
     expect(thirdFetch).toHaveLength(0);
   });
 
@@ -113,7 +113,7 @@ describe.skipIf(!dockerAvailable)('relay-queue: at-least-once delivery (real Pos
     // Simulate the spoke retrying admission after a dropped ack-of-admission.
     await enqueue(ws, member, 'env-3', 'send_message', { text: 'hi' }, 60_000);
 
-    const delivered = await fetchDeliverable(member);
+    const delivered = await fetchDeliverable(ws, member);
     expect(delivered).toHaveLength(1); // not 2
   });
 
@@ -129,7 +129,7 @@ describe.skipIf(!dockerAvailable)('relay-queue: at-least-once delivery (real Pos
     const sweptCount = await sweepExpired();
     expect(sweptCount).toBeGreaterThanOrEqual(1);
 
-    const delivered = await fetchDeliverable(member);
+    const delivered = await fetchDeliverable(ws, member);
     expect(delivered).toHaveLength(0);
   });
 });
