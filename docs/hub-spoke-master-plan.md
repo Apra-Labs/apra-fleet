@@ -115,6 +115,19 @@ role but becomes, additionally, a **relay client of the hub**:
   dev-mode / offline-mode fallback. In hub mode, tokens come from the dashboard and
   tier 2 merely verifies them (against the hub's public key) and passes them
   through. This is the single biggest authority shift in the plan -- see 3.3.
+- **Data ownership constraint (explicit user decision, apra-fleet-us9.6 scope
+  note):** the hub's Postgres (tier 3, `src/hub-service/db/`) is the sole master
+  record for workspace/machine/member/project data -- a local Postgres (or any
+  other local SQL database) on a tier-2 machine is explicitly NOT an acceptable
+  design. Tier 2 fetches this data from the hub's REST endpoints
+  (`GET /ws/:id/members`, `/ws/:id/projects`, etc. -- already built,
+  `src/hub-service/http-server.ts`) and caches it locally as plain JSON, extending
+  the *existing* local file-based registry (`~/.apra-fleet/data/registry.json`,
+  `src/services/registry.ts`, docs/architecture.md "File-Based Registry") rather
+  than introducing a second, competing persistence layer on the device. Whoever
+  implements the outbound hub client (this issue) should treat "REST fetch +
+  local JSON cache" as a hard constraint, not an implementation detail to
+  re-derive.
 
 **Tier 3 (fleet.apralabs.com).** Holds: workspace/member registry (durable),
 cross-machine session presence (volatile), the message relay for send_message /
