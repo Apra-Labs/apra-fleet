@@ -10,11 +10,15 @@ import {
   type MemberContext,
 } from '../services/watch/project-resolver.js';
 import { formatTranscriptLine, type FormattedEvent, type LineKind } from '../services/watch/transcript-formatter.js';
+import {
+  resolveFleetLogFile,
+  formatFleetLogLine,
+  readRecentActivity,
+  type RecentActivity,
+} from '../services/watch/fleet-log.js';
 import type { Agent } from '../types.js';
 
-// A member is considered "active" if its newest transcript file was written
-// within this window. Standalone proxy for busy state (no server round-trip).
-const ACTIVE_WINDOW_MS = 90_000;
+const ACTIVE_WINDOW_MS = 90_000; // a member is "active" if it produced activity within this window
 const POLL_INTERVAL_MS = 700;
 
 const COLORS = ['\x1b[36m', '\x1b[32m', '\x1b[33m', '\x1b[35m', '\x1b[34m', '\x1b[31m', '\x1b[96m', '\x1b[92m'];
@@ -27,11 +31,31 @@ const YELLOW = '\x1b[33m';
 
 const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO_COLOR;
 
-interface Activity {
-  supported: boolean;
+// ---------------------------------------------------------------------------
+// Sources. Two kinds of activity are merged per member:
+//   1. Fleet activity log (universal spine) -- every dispatch the server makes,
+//      for local AND remote members, tailed once from the local fleet log.
+//   2. Provider transcript (local members only) -- the LLM session's rich
+//      reasoning/edits/output, tailed per local member.
+// ---------------------------------------------------------------------------
+
+interface Follower {
+  agent: Agent;
+  provider: string;
+  color: string;
+  // transcript state (local members with a resolvable provider log dir; else null)
+  txDir: string | null;
+  txFile: string | null;
+  txOffset: number;
+  txLeftover: string;
+  txBackfilled: boolean;
+}
+
+interface FleetLogState {
   file: string | null;
-  active: boolean;
-  lastText: string | null;
+  offset: number;
+  leftover: string;
+  backfilled: boolean;
 }
 
 /** Newest *.jsonl in a directory, or null. */
@@ -48,51 +72,61 @@ function newestTranscript(dir: string): string | null {
     const full = path.join(dir, f);
     try {
       const m = fs.statSync(full).mtimeMs;
-      if (m > bestM) {
-        bestM = m;
-        best = full;
-      }
-    } catch {
-      /* ignore */
-    }
+      if (m > bestM) { bestM = m; best = full; }
+    } catch { /* ignore */ }
   }
   return best;
 }
 
-/** Read the last non-empty formatted event of a transcript, for overview status. */
-function lastEventText(provider: string, file: string): string | null {
+function mtimeOf(file: string): number {
+  try { return fs.statSync(file).mtimeMs; } catch { return 0; }
+}
+
+/** Read the last non-empty formatted transcript event, for overview status. */
+function lastTranscriptText(provider: string, file: string): { ms: number; text: string } | null {
   let content: string;
-  try {
-    content = fs.readFileSync(file, 'utf-8');
-  } catch {
-    return null;
-  }
+  try { content = fs.readFileSync(file, 'utf-8'); } catch { return null; }
   const lines = content.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const events = formatTranscriptLine(provider, lines[i]);
-    if (events.length > 0) return events[events.length - 1].text;
+    if (events.length > 0) return { ms: mtimeOf(file), text: events[events.length - 1].text };
   }
   return null;
 }
 
-function activityOf(agent: Agent): Activity {
-  const dir = resolveSessionLogDir((agent.llmProvider ?? 'claude') as any, agent.workFolder);
-  if (!dir) return { supported: false, file: null, active: false, lastText: null };
-  const file = newestTranscript(dir);
-  if (!file) return { supported: true, file: null, active: false, lastText: null };
-  let mtime = 0;
-  try {
-    mtime = fs.statSync(file).mtimeMs;
-  } catch {
-    /* ignore */
+interface Activity { active: boolean; lastText: string | null; txDir: string | null; txFile: string | null; }
+
+/**
+ * Overview status for a member. Activity is universal (from the fleet log);
+ * the transcript adds a richer "last did" snippet for local members.
+ */
+function activityOf(agent: Agent, recent: Map<string, RecentActivity>): Activity {
+  const isLocal = agent.agentType !== 'remote';
+  const provider = agent.llmProvider ?? 'claude';
+
+  let txDir: string | null = null;
+  let txFile: string | null = null;
+  let txMs = 0;
+  let txText: string | null = null;
+  if (isLocal) {
+    txDir = resolveSessionLogDir(provider as any, agent.workFolder);
+    if (txDir) {
+      txFile = newestTranscript(txDir);
+      if (txFile) {
+        const last = lastTranscriptText(provider, txFile);
+        if (last) { txMs = last.ms; txText = last.text; }
+      }
+    }
   }
-  const active = Date.now() - mtime < ACTIVE_WINDOW_MS;
-  return {
-    supported: true,
-    file,
-    active,
-    lastText: lastEventText(agent.llmProvider ?? 'claude', file),
-  };
+
+  const rec = recent.get(agent.id) ?? recent.get(agent.friendlyName.toLowerCase());
+  const flMs = rec?.ms ?? 0;
+  const flText = rec?.text ?? null;
+
+  const lastMs = Math.max(txMs, flMs);
+  const active = lastMs > 0 && Date.now() - lastMs < ACTIVE_WINDOW_MS;
+  const lastText = txMs >= flMs ? (txText ?? flText) : (flText ?? txText);
+  return { active, lastText, txDir, txFile };
 }
 
 function parseFlagValue(args: string[], flag: string): string | undefined {
@@ -101,12 +135,8 @@ function parseFlagValue(args: string[], flag: string): string | undefined {
 }
 
 export async function runWatch(args: string[]): Promise<void> {
-  if (args.includes('--help') || args.includes('-h')) {
-    printUsage();
-    process.exit(0);
-  }
+  if (args.includes('--help') || args.includes('-h')) { printUsage(); process.exit(0); }
 
-  // Hidden helper for shell completion: print member names, one per line.
   if (args.includes('--complete')) {
     for (const a of getAllAgents()) console.log(a.friendlyName);
     process.exit(0);
@@ -122,10 +152,7 @@ export async function runWatch(args: string[]): Promise<void> {
   const names: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a.startsWith('-')) {
-      if (flagsWithValues.has(a)) i++; // skip its value
-      continue;
-    }
+    if (a.startsWith('-')) { if (flagsWithValues.has(a)) i++; continue; }
     names.push(a);
   }
 
@@ -155,13 +182,9 @@ export async function runWatch(args: string[]): Promise<void> {
     scope = contexts.filter((c) => projectKey(c) === key);
     scopeLabel = path.basename(path.resolve(projectDir));
   } else {
-    // Infer from cwd: if it is a repo we recognize, narrow to it; else whole fleet.
     const cwdKey = projectKeyForDir(process.cwd());
     const inCwd = contexts.filter((c) => projectKey(c) === cwdKey);
-    if (inCwd.length > 0) {
-      scope = inCwd;
-      scopeLabel = path.basename(process.cwd());
-    }
+    if (inCwd.length > 0) { scope = inCwd; scopeLabel = path.basename(process.cwd()); }
   }
 
   if (feature) {
@@ -174,144 +197,144 @@ export async function runWatch(args: string[]): Promise<void> {
     process.exit(0);
   }
 
-  // --- Overview ---
-  printOverview(scope, scopeLabel);
+  const fleetLogFile = resolveFleetLogFile();
+  const recent = fleetLogFile ? readRecentActivity(fleetLogFile) : new Map<string, RecentActivity>();
 
+  // --- Overview ---
+  printOverview(scope, recent);
   if (listOnly) process.exit(0);
 
-  // --- Build follow set ---
+  // --- Build follow set: every member in scope (fleet log covers all) ---
   const followers: Follower[] = [];
+  const byKey = new Map<string, Follower>();
   let colorIdx = 0;
-  // Follow every supported member in scope -- like `docker compose logs -f`.
-  // Idle members are followed silently and stream as soon as they produce output;
-  // there is no activity gate. (activityOf still feeds the overview status column.)
   for (const ctx of scope) {
-    const act = activityOf(ctx.agent);
-    if (!act.supported) continue;
-    followers.push({
+    const isLocal = ctx.agent.agentType !== 'remote';
+    const provider = ctx.agent.llmProvider ?? 'claude';
+    const txDir = isLocal ? resolveSessionLogDir(provider as any, ctx.agent.workFolder) : null;
+    const f: Follower = {
       agent: ctx.agent,
-      provider: ctx.agent.llmProvider ?? 'claude',
-      dir: resolveSessionLogDir((ctx.agent.llmProvider ?? 'claude') as any, ctx.agent.workFolder)!,
-      file: act.file,
-      offset: 0,
-      leftover: '',
+      provider,
       color: COLORS[colorIdx++ % COLORS.length],
-      backfilled: false,
-    });
-  }
-
-  if (followers.length === 0) {
-    console.log('');
-    console.log('No members in scope have a live-viewable provider (Claude/Gemini).');
-    process.exit(0);
+      txDir,
+      txFile: txDir ? newestTranscript(txDir) : null,
+      txOffset: 0,
+      txLeftover: '',
+      txBackfilled: false,
+    };
+    followers.push(f);
+    byKey.set(ctx.agent.friendlyName.toLowerCase(), f);
+    byKey.set(ctx.agent.id, f);
   }
 
   const single = followers.length === 1;
   console.log('');
   console.log(`${DIM}Following ${followers.length} member(s); idle ones stream when they start. Press Ctrl-C to stop.${RESET}`);
+  if (!fleetLogFile) console.log(`${DIM}(no fleet server log found -- command activity will not show until the server logs one)${RESET}`);
   console.log('');
 
-  // Prime offsets (with optional backfill), then poll.
-  for (const f of followers) pump(f, single, tailN, verbose);
+  const fl: FleetLogState = { file: fleetLogFile, offset: 0, leftover: '', backfilled: false };
+
+  // Prime (with optional backfill), then poll.
+  pumpFleetLog(fl, byKey, single, tailN, verbose);
+  for (const f of followers) pumpTranscript(f, single, tailN, verbose);
 
   const timer = setInterval(() => {
+    // Fleet log may roll over to a new server pid.
+    const newestLog = resolveFleetLogFile();
+    if (newestLog && newestLog !== fl.file) {
+      fl.file = newestLog; fl.offset = 0; fl.leftover = ''; fl.backfilled = true;
+    }
+    pumpFleetLog(fl, byKey, single, 0, verbose);
+
     for (const f of followers) {
-      // Roll over to a newer session file if one appeared.
-      const newest = newestTranscript(f.dir);
-      if (newest && newest !== f.file) {
-        f.file = newest;
-        f.offset = 0;
-        f.leftover = '';
-        f.backfilled = true; // do not backfill a freshly rolled file
+      if (!f.txDir) continue;
+      const newest = newestTranscript(f.txDir);
+      if (newest && newest !== f.txFile) {
+        f.txFile = newest; f.txOffset = 0; f.txLeftover = ''; f.txBackfilled = true;
       }
-      pump(f, single, tailN, verbose);
+      pumpTranscript(f, single, 0, verbose);
     }
   }, POLL_INTERVAL_MS);
 
-  const stop = () => {
-    clearInterval(timer);
-    console.log('');
-    process.exit(0);
-  };
+  const stop = () => { clearInterval(timer); console.log(''); process.exit(0); };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 }
 
-interface Follower {
-  agent: Agent;
-  provider: string;
-  dir: string;
-  file: string | null;
-  offset: number;
-  leftover: string;
-  color: string;
-  backfilled: boolean;
-}
-
-/** Read new bytes from a follower's file, format them, and print. */
-function pump(f: Follower, single: boolean, tailN: number, verbose: boolean): void {
-  if (!f.file) {
-    const newest = newestTranscript(f.dir);
-    if (!newest) return;
-    f.file = newest;
-    f.offset = 0;
-  }
-
+/** Read appended bytes of a file since `offset`; returns new complete lines. */
+function readNewLines(
+  file: string,
+  state: { offset: number; leftover: string; backfilled: boolean },
+  tailN: number,
+): string[] | null {
   let size = 0;
-  try {
-    size = fs.statSync(f.file).size;
-  } catch {
-    return;
-  }
-  if (size < f.offset) {
-    // File truncated/replaced; restart from the beginning.
-    f.offset = 0;
-    f.leftover = '';
-  }
+  try { size = fs.statSync(file).size; } catch { return null; }
+  if (size < state.offset) { state.offset = 0; state.leftover = ''; }
 
-  // First read of a file: honor --tail backfill, else jump to EOF.
-  if (!f.backfilled) {
-    f.backfilled = true;
-    if (tailN <= 0) {
-      f.offset = size;
-      return;
-    }
+  if (!state.backfilled) {
+    state.backfilled = true;
+    if (tailN <= 0) { state.offset = size; return null; } // no backfill: jump to EOF
   }
-
-  if (size <= f.offset) return;
+  if (size <= state.offset) return null;
 
   let chunk = '';
   try {
-    const fd = fs.openSync(f.file, 'r');
-    const buf = Buffer.alloc(size - f.offset);
-    fs.readSync(fd, buf, 0, buf.length, f.offset);
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(size - state.offset);
+    fs.readSync(fd, buf, 0, buf.length, state.offset);
     fs.closeSync(fd);
     chunk = buf.toString('utf-8');
   } catch {
-    return;
+    return null;
   }
-  f.offset = size;
+  state.offset = size;
+  const parts = (state.leftover + chunk).split('\n');
+  state.leftover = parts.pop() ?? '';
+  return parts;
+}
 
-  const text = f.leftover + chunk;
-  const parts = text.split('\n');
-  f.leftover = parts.pop() ?? '';
+/** Tail the fleet activity log; dispatch each line to the matching follower. */
+function pumpFleetLog(fl: FleetLogState, byKey: Map<string, Follower>, single: boolean, tailN: number, verbose: boolean): void {
+  if (!fl.file) { fl.file = resolveFleetLogFile(); if (!fl.file) return; fl.offset = 0; }
+  const lines = readNewLines(fl.file, fl, tailN);
+  if (!lines) return;
+
+  const collected: { f: Follower; ev: FormattedEvent }[] = [];
+  for (const line of lines) {
+    const entry = formatFleetLogLine(line, verbose);
+    if (!entry) continue;
+    const f = (entry.mem && byKey.get(entry.mem.toLowerCase())) || (entry.mid ? byKey.get(entry.mid) : undefined);
+    if (!f) continue;
+    for (const ev of entry.events) collected.push({ f, ev });
+  }
+  const toPrint = tailN > 0 && collected.length > tailN ? collected.slice(-tailN) : collected;
+  for (const { f, ev } of toPrint) emit(f, ev, single);
+}
+
+/** Tail one local member's provider transcript for LLM-session detail. */
+function pumpTranscript(f: Follower, single: boolean, tailN: number, verbose: boolean): void {
+  if (!f.txDir) return;
+  if (!f.txFile) {
+    const newest = newestTranscript(f.txDir);
+    if (!newest) return;
+    f.txFile = newest; f.txOffset = 0;
+  }
+  const state = { offset: f.txOffset, leftover: f.txLeftover, backfilled: f.txBackfilled };
+  const lines = readNewLines(f.txFile, state, tailN);
+  f.txOffset = state.offset; f.txLeftover = state.leftover; f.txBackfilled = state.backfilled;
+  if (!lines) return;
 
   const collected: FormattedEvent[] = [];
-  for (const line of parts) {
+  for (const line of lines) {
     for (const ev of formatTranscriptLine(f.provider, line, verbose)) collected.push(ev);
   }
-
   const toPrint = tailN > 0 && collected.length > tailN ? collected.slice(-tailN) : collected;
-  for (const ev of toPrint) {
-    emit(f, ev, single);
-  }
-  // --tail only backfills the first read.
-  tailN = 0;
+  for (const ev of toPrint) emit(f, ev, single);
 }
 
 const TIME_W = 8; // "HH:MM:SS"
 
-/** Color for a line body based on its kind (no-op for 'info'). */
 function paintBody(kind: LineKind | undefined, text: string): string {
   switch (kind) {
     case 'add': return `${GREEN}${text}${RESET}`;
@@ -322,7 +345,6 @@ function paintBody(kind: LineKind | undefined, text: string): string {
   }
 }
 
-/** Color for an action marker: '>' cyan (read), '*' yellow (edit), '$' green (bash). */
 function paintMarker(marker: string): string {
   switch (marker) {
     case '>': return `${CYAN}>${RESET}`;
@@ -336,7 +358,6 @@ function emit(f: Follower, ev: FormattedEvent, single: boolean): void {
   const color = useColor();
 
   if (!color) {
-    // Plain text: keep it parseable and attributable.
     const who = single ? '' : `${f.agent.friendlyName} | `;
     if (ev.detail) { console.log(`${' '.repeat(single ? 6 : 0)}${who}  ${ev.text}`); return; }
     const mk = ev.marker ? `${ev.marker} ` : '  ';
@@ -349,7 +370,6 @@ function emit(f: Follower, ev: FormattedEvent, single: boolean): void {
   const label = single ? '' : ` ${f.color}${(f.agent.icon ?? '')} ${f.agent.friendlyName}${RESET}`;
 
   if (ev.detail) {
-    // Indented continuation: blank time, no marker, colored body.
     const indent = ' '.repeat(TIME_W);
     console.log(`${indent}${label}    ${paintBody(ev.kind, ev.text)}`);
     return;
@@ -357,27 +377,22 @@ function emit(f: Follower, ev: FormattedEvent, single: boolean): void {
   console.log(`${tsCell}${label}  ${paintMarker(ev.marker)} ${paintBody(ev.kind, ev.text)}`);
 }
 
-function printOverview(scope: MemberContext[], scopeLabel: string): void {
+function printOverview(scope: MemberContext[], recent: Map<string, RecentActivity>): void {
   const projects = groupByProject(scope);
-  const single = projects.length === 1;
-  if (!single) {
+  if (projects.length > 1) {
     console.log(`Fleet -- ${projects.length} project(s) in scope`);
     console.log('');
   }
   for (const proj of projects) {
-    const featureCount = proj.features.length;
-    console.log(`${proj.project} -- ${featureCount} feature(s)`);
+    console.log(`${proj.project} -- ${proj.features.length} feature(s)`);
     for (const feat of proj.features) {
       console.log(`  ${feat.feature}`);
       for (const ctx of feat.members) {
-        const act = activityOf(ctx.agent);
+        const act = activityOf(ctx.agent, recent);
         const icon = ctx.agent.icon ?? '';
-        const name = ctx.agent.friendlyName;
-        let status: string;
-        if (!act.supported) status = `(live view not supported for ${ctx.agent.llmProvider})`;
-        else if (act.active) status = act.lastText ? `working: ${act.lastText}` : 'working';
-        else status = 'idle';
-        console.log(`    ${icon} ${name}  ${status}`);
+        const kind = ctx.agent.agentType === 'remote' ? ' (remote)' : '';
+        const status = act.active ? (act.lastText ? `working: ${act.lastText}` : 'working') : 'idle';
+        console.log(`    ${icon} ${ctx.agent.friendlyName}${kind}  ${status}`);
       }
     }
     console.log('');
@@ -385,7 +400,7 @@ function printOverview(scope: MemberContext[], scopeLabel: string): void {
 }
 
 function printUsage(): void {
-  console.log(`apra-fleet watch -- stream live member logs
+  console.log(`apra-fleet watch -- stream live member activity
 
 Usage:
   apra-fleet watch                     Follow members (scope inferred from cwd)
@@ -397,7 +412,7 @@ Usage:
   apra-fleet watch --tail <n>          Backfill the last n events per member
   apra-fleet watch --verbose | -v      Show edit diffs, file contents, commands + output, thinking
 
-Scope: project = git origin (folders cloned from the same repo group together),
-feature = git branch. Live view supports Claude members; other providers are
-listed in the overview but not tailed in this version.`);
+Sources: the fleet activity log (all shell commands + prompt dispatches, for
+local AND remote members) plus, for local members, the LLM session transcript
+(reasoning, edits, output). Scope: project = git origin, feature = git branch.`);
 }
