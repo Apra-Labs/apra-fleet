@@ -46,6 +46,7 @@ Usage:
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
   apra-fleet join <token> [--hub-url <url>]  Exchange a hub enrollment token for a machine JWT (apra-fleet-us9.5/fnz.4)
+  apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke (apra-fleet-jfn); requires apra-fleet join first
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
   process.exit(0);
@@ -72,6 +73,10 @@ if (arg === 'install') {
   import('./cli/join.js')
     .then(m => m.runJoin(process.argv.slice(3)))
     .catch(err => { logError('cli', `Join failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'spoke') {
+  import('./cli/spoke.js')
+    .then(m => m.runSpokeCli(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Spoke failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'update') {
   const rest = process.argv.slice(3);
   if (rest.includes('--help') || rest.includes('-h')) {

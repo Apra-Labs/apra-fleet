@@ -50,7 +50,8 @@ function requestEnvelope(overrides: Partial<InboundRelayEnvelope> = {}): Inbound
     envelope_id: 'e-req-1',
     kind: 'execute_command.request',
     payload: { memberId: 'mem-1', command: successCommand },
-    to: { machine_id: null, member_id: 'mem-1' },
+    target_member_id: 'mem-1',
+    origin_member_id: 'origin-mem-1',
     ...overrides,
   };
 }
@@ -68,6 +69,12 @@ describe('createRelayExecutor', () => {
     expect(result.correlation_id).toBe('e-req-1');
     expect(result.workspace_id).toBe('ws-1');
     expect(result.from).toEqual({ machine_id: 'mach-1', member_id: 'mem-1' });
+    // apra-fleet-jfn regression: the result MUST be addressed back to the
+    // ORIGINATOR (envelope.origin_member_id), or the real hub's admission
+    // check (envelope-routes.ts) rejects it outright (400) for lacking
+    // to.member_id -- this was a real bug, only masked by earlier tests
+    // never checking `to` at all.
+    expect(result.to).toEqual({ machine_id: null, member_id: 'origin-mem-1' });
     expect((result.payload as any).status).toBe('ok');
     expect((result.payload as any).stdout).toContain('hello-relay');
     expect((result.payload as any).code).toBe(0);

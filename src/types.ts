@@ -6,7 +6,13 @@ export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy' | 'o
 export interface Agent {
   id: string;
   friendlyName: string;
-  agentType: 'local' | 'remote';
+  agentType: 'local' | 'remote' | 'relay';
+  /** Hub-side member id this agent is addressed by over the relay (only
+   *  set/used for agentType: 'relay' -- apra-fleet-jfn). Maps a local
+   *  registry entry to the hub's member record, which relay-executor.ts's
+   *  getAgentForMember (the reverse direction) and RelayStrategy (this
+   *  direction) both key on. */
+  relayMemberId?: string;
   cloud?: CloudConfig;
   host?: string;
   port?: number;

@@ -59,13 +59,22 @@ export interface RelayExecutorDeps {
   getStrategy?(agent: Agent): RelayExecStrategy;
 }
 
-function baseEnvelope(deps: RelayExecutorDeps, kind: string, correlationId: string, memberId: string | null): OutboundRelayEnvelope {
+/**
+ * `originMemberId` is who this result/update is addressed BACK to --
+ * the ORIGINATING member of the request being fulfilled (the inbound
+ * envelope's own `origin_member_id`, a flat field on the delivered
+ * relay_queue row -- see hub-client.ts's InboundRelayEnvelope). Without
+ * this, envelope-routes.ts's handleRelay rejects the submission outright
+ * (400: "relay envelope requires to.member_id") -- a real bug this
+ * fixes, found while wiring apra-fleet-jfn's end-to-end spoke test.
+ */
+function baseEnvelope(deps: RelayExecutorDeps, kind: string, correlationId: string, memberId: string | null, originMemberId: string | null): OutboundRelayEnvelope {
   return {
     envelope_id: deps.generateEnvelopeId(),
     workspace_id: deps.workspaceId,
     kind,
     from: { machine_id: deps.machineId, member_id: memberId },
-    to: { machine_id: null, member_id: null },
+    to: { machine_id: null, member_id: originMemberId },
     ts: new Date(deps.now()).toISOString(),
     correlation_id: correlationId,
     payload: {},
@@ -81,9 +90,10 @@ export function createRelayExecutor(deps: RelayExecutorDeps) {
   return async function onEnvelope(envelope: InboundRelayEnvelope): Promise<void> {
     if (envelope.kind !== 'execute_command.request') return;
 
+    const originMemberId = envelope.origin_member_id ?? null;
     const payload = envelope.payload as Partial<ExecuteCommandRequestPayload> | undefined;
     if (!payload?.memberId || typeof payload.command !== 'string') {
-      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, null);
+      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, null, originMemberId);
       result.payload = { status: 'invalid_request', error: 'memberId and command are required' };
       await deps.submitEnvelope(result);
       return;
@@ -91,7 +101,7 @@ export function createRelayExecutor(deps: RelayExecutorDeps) {
 
     const agent = deps.getAgentForMember(payload.memberId);
     if (!agent) {
-      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, payload.memberId);
+      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, payload.memberId, originMemberId);
       result.payload = { status: 'member_not_found' };
       await deps.submitEnvelope(result);
       return;
@@ -108,16 +118,16 @@ export function createRelayExecutor(deps: RelayExecutorDeps) {
         (pid) => {
           if (pidReported) return;
           pidReported = true;
-          const update = baseEnvelope(deps, 'execute_command.long_running_update', envelope.envelope_id, memberId);
+          const update = baseEnvelope(deps, 'execute_command.long_running_update', envelope.envelope_id, memberId, originMemberId);
           update.payload = { status: 'started', pid };
           void deps.submitEnvelope(update);
         },
       );
-      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, memberId);
+      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, memberId, originMemberId);
       result.payload = { status: 'ok', stdout: execResult.stdout, stderr: execResult.stderr, code: execResult.code };
       await deps.submitEnvelope(result);
     } catch (err) {
-      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, memberId);
+      const result = baseEnvelope(deps, 'execute_command.result', envelope.envelope_id, memberId, originMemberId);
       result.payload = { status: 'error', error: (err as Error).message };
       await deps.submitEnvelope(result);
     }

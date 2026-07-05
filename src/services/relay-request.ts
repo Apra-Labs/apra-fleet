@@ -155,10 +155,10 @@ export async function submitAndAwaitResult(
  * envelope: a correlation_id match is consumed here first (it's a result
  * this spoke is waiting on), otherwise it falls through to the fulfiller.
  */
-export function composeEnvelopeHandler(
+export function composeEnvelopeHandler<T extends { correlation_id?: string | null; payload?: unknown }>(
   registry: PendingRelayRequests,
-  fallback: (envelope: { correlation_id?: string | null; payload?: unknown }) => void | Promise<void>,
-): (envelope: { correlation_id?: string | null; payload?: unknown }) => void | Promise<void> {
+  fallback: (envelope: T) => void | Promise<void>,
+): (envelope: T) => void | Promise<void> {
   return async (envelope) => {
     if (registry.resolveFromEnvelope(envelope)) return;
     await fallback(envelope);

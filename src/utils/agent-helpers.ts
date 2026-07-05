@@ -27,10 +27,13 @@ export function getAgentOS(agent: Agent): RemoteOS {
 
 /**
  * Format a host label for display.
- * Local agents show "(local)", remote agents show "host:port".
+ * Local agents show "(local)", relay agents show "(relay)", remote agents
+ * show "host:port".
  */
 export function formatAgentHost(agent: Agent): string {
-  return agent.agentType === 'local' ? '(local)' : `${agent.host}:${agent.port}`;
+  if (agent.agentType === 'local') return '(local)';
+  if (agent.agentType === 'relay') return '(relay)';
+  return `${agent.host}:${agent.port}`;
 }
 
 // T7: idle manager hook — registered by IdleManager.start() via setIdleTouchHook().

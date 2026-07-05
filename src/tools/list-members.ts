@@ -5,7 +5,7 @@ import { serverVersion } from '../version.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, groupByCategory } from '../utils/agent-helpers.js';
+import { getAgentOS, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 
 export const listMembersSchema = z.object({
@@ -16,7 +16,10 @@ export const listMembersSchema = z.object({
 export type ListMembersInput = z.infer<typeof listMembersSchema>;
 
 async function getAuthStatus(agent: Agent): Promise<string> {
-  if (agent.agentType === 'local') return 'N/A';
+  // Relay agents authenticate via the hub machine JWT, not per-command SSH
+  // auth/credential-file checks below (which assume RemoteStrategy) --
+  // there's no equivalent status to report yet (apra-fleet-jfn).
+  if (agent.agentType === 'local' || agent.agentType === 'relay') return 'N/A';
 
   const os = getAgentOS(agent);
   const cmds = getOsCommands(os);
@@ -86,13 +89,13 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         name: a.friendlyName,
         icon: a.icon ?? DEFAULT_ICON,
         type: a.agentType,
-        host: a.agentType === 'local' ? '(local)' : `${a.host}:${a.port}`,
+        host: formatAgentHost(a),
         username: a.username ?? undefined,
         os: a.os ?? 'unknown',
         folder: a.workFolder,
         llmProvider: a.llmProvider ?? 'claude',
         llm_auth: authStatuses[i],
-        ssh_auth: a.agentType === 'local' ? undefined : a.authType,
+        ssh_auth: a.agentType === 'remote' ? a.authType : undefined,
         session: a.sessionId ?? null,
         created: a.createdAt,
         lastUsed: a.lastUsed ?? 'never',
@@ -112,9 +115,9 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
     t += `\n[${category}]\n`;
     for (const { agent: a, authStatus } of members) {
       const icon = a.icon ?? DEFAULT_ICON;
-      const host = a.agentType === 'local' ? 'local' : `${a.host}:${a.port}`;
+      const host = a.agentType === 'local' ? 'local' : a.agentType === 'relay' ? 'relay' : `${a.host}:${a.port}`;
       t += `  ${icon} ${a.friendlyName}: ${a.id} | ${host} | ${a.os ?? '?'} | provider=${a.llmProvider ?? 'claude'}`;
-      if (a.agentType !== 'local') {
+      if (a.agentType === 'remote') {
         t += ` | user=${a.username} | ssh=${a.authType}`;
         if (authStatus !== 'offline' && authStatus !== 'N/A') {
           t += ` | llm-auth=${authStatus}`;

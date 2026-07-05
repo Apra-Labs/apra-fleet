@@ -12,6 +12,7 @@ import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles, downloadFiles } from './file-transfer.js';
+import { RelayStrategy } from './relay-strategy.js';
 
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult>;
@@ -280,6 +281,9 @@ class LocalStrategy implements AgentStrategy {
 export function getStrategy(agent: Agent): AgentStrategy {
   if (agent.agentType === 'local') {
     return new LocalStrategy(agent);
+  }
+  if (agent.agentType === 'relay') {
+    return new RelayStrategy(agent);
   }
   return new RemoteStrategy(agent);
 }
