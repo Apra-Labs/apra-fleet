@@ -27,6 +27,7 @@ import { createMember, type MemberRow } from './members.js';
 import { listMemberViews } from './member-view.js';
 import { createProject, updateProject, deleteProject, addProjectMember, type ProjectRow } from './projects.js';
 import { listProjectViews } from './project-view.js';
+import { getCostResponse } from './usage.js';
 import { getInstallersHandler } from './handlers/installers.js';
 
 function authorize(req: http.IncomingMessage, workspaceId: string): HubJwtClaims | null {
@@ -228,6 +229,17 @@ export function createHttpServer(): HttpServerHandle {
       }
       const view = await listProjectViews(workspaceId);
       sendJson(res, 200, view.find(p => p.id === projectId));
+      return;
+    }
+
+    // /ws/:id/cost
+    if (segments[0] === 'ws' && segments[2] === 'cost' && segments.length === 3 && req.method === 'GET') {
+      const workspaceId = segments[1];
+      if (!authorize(req, workspaceId)) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      sendJson(res, 200, await getCostResponse(workspaceId));
       return;
     }
 

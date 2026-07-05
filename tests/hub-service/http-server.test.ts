@@ -199,4 +199,16 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     const { status } = await requestJson(port, 'POST', '/ws/ws-a/projects/no-such-project/members', { token, body: { memberId: 'm-x' } });
     expect(status).toBe(404);
   });
+
+  it('GET /ws/:id/cost returns a session-scoped, workspace-isolated rollup', async () => {
+    const tokenA = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const tokenB = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+
+    const noUsage = await requestJson(port, 'GET', '/ws/ws-a/cost', { token: tokenA });
+    expect(noUsage.status).toBe(200);
+    expect(noUsage.body).toEqual({ window: 'session', workspaceTotal: 0, usage: [] });
+
+    const crossWorkspace = await requestJson(port, 'GET', '/ws/ws-b/cost', { token: tokenA });
+    expect(crossWorkspace.status).toBe(401);
+  });
 });
