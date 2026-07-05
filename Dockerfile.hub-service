@@ -1,0 +1,34 @@
+# Hub service (apra-fleet-us9.4, fleet.apralabs.com) -- self-hostable,
+# no cloud-vendor lock-in. Point HUB_DATABASE_URL at any Postgres
+# (managed, self-hosted, or the docker-compose.hub-service.yml service
+# alongside this image) and HUB_JWT_SECRET at your own signing secret.
+#
+# Build:  docker build -f Dockerfile.hub-service -t apra-fleet-hub .
+# Run:    docker run -p 8080:8080 -e HUB_DATABASE_URL=... -e HUB_JWT_SECRET=... apra-fleet-hub
+
+FROM node:22-alpine AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY packages/fleet-api-contract/package.json packages/fleet-api-contract/package.json
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src ./src
+COPY packages ./packages
+RUN npm run build:contract && npm run build
+
+FROM node:22-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+COPY packages/fleet-api-contract/package.json packages/fleet-api-contract/package.json
+RUN npm ci --omit=dev
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/packages/fleet-api-contract/dist ./packages/fleet-api-contract/dist
+COPY db ./db
+
+EXPOSE 8080
+CMD ["node", "dist/hub-service/main.js"]
