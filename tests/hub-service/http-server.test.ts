@@ -103,32 +103,70 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('rejects /ws/:id/members when the token\'s workspace_id does not match the path (the iron wall)', async () => {
-    const tokenForB = sign({ member_id: 'm-1', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenForB } = sign({ member_id: 'm-1', workspace_id: 'ws-b', role: 'doer' }, SECRET);
     const { status } = await requestJson(port, 'GET', '/ws/ws-a/members', { token: tokenForB });
     expect(status).toBe(401);
   });
 
   it('creates and lists members for the correctly-scoped workspace', async () => {
-    const token = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: adminToken } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
 
     const created = await requestJson(port, 'POST', '/ws/ws-a/members', {
-      token,
+      token: adminToken,
       body: { name: 'alice', provider: 'claude', folder: '/srv/alice' },
     });
     expect(created.status).toBe(201);
-    expect(created.body).toMatchObject({ workspace_id: 'ws-a', name: 'alice', provider: 'claude' });
+    // Matches MemberTokenResponseSchema: {member, jwt} -- the jwt is shown
+    // exactly once at issuance, never re-returned by any GET.
+    expect(created.body.member).toMatchObject({ name: 'alice', provider: 'claude' });
+    expect(typeof created.body.jwt).toBe('string');
+    const memberToken = created.body.jwt;
 
-    const listed = await requestJson(port, 'GET', '/ws/ws-a/members', { token });
+    const listed = await requestJson(port, 'GET', '/ws/ws-a/members', { token: adminToken });
     expect(listed.status).toBe(200);
     expect(listed.body).toHaveLength(1);
     // GET returns the joined dashboard view-model (member-view.ts), not the
     // raw CRUD row -- status/lastSeen only exist on the assembled view.
     expect(listed.body[0]).toMatchObject({ name: 'alice', provider: 'claude', status: 'awaiting-connect', lastSeen: null });
+    expect(listed.body[0]).not.toHaveProperty('jwt');
+
+    // The newly-issued member token itself authenticates fine (it's a real,
+    // valid, non-revoked token for ws-a).
+    const selfList = await requestJson(port, 'GET', '/ws/ws-a/members', { token: memberToken });
+    expect(selfList.status).toBe(200);
+  });
+
+  it('POST /ws/:id/members/:mid/rotate revokes the old token and issues a new one that authenticates', async () => {
+    const { token: adminToken } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+
+    const created = await requestJson(port, 'POST', '/ws/ws-a/members', { token: adminToken, body: { name: 'bella', provider: 'gemini' } });
+    const memberId = created.body.member.id;
+    const oldToken = created.body.jwt;
+
+    const rotated = await requestJson(port, 'POST', `/ws/ws-a/members/${memberId}/rotate`, { token: adminToken });
+    expect(rotated.status).toBe(200);
+    expect(rotated.body.member).toMatchObject({ id: memberId, name: 'bella' });
+    const newToken = rotated.body.jwt;
+    expect(newToken).not.toBe(oldToken);
+
+    // Old token is now revoked -- rejected immediately, not just eventually.
+    const withOldToken = await requestJson(port, 'GET', '/ws/ws-a/members', { token: oldToken });
+    expect(withOldToken.status).toBe(401);
+
+    // New token works.
+    const withNewToken = await requestJson(port, 'GET', '/ws/ws-a/members', { token: newToken });
+    expect(withNewToken.status).toBe(200);
+  });
+
+  it('POST /ws/:id/members/:mid/rotate returns 404 for a non-existent member', async () => {
+    const { token: adminToken } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { status } = await requestJson(port, 'POST', '/ws/ws-a/members/no-such-member/rotate', { token: adminToken });
+    expect(status).toBe(404);
   });
 
   it('a member created in workspace A is invisible when listing workspace B (cross-tenant isolation)', async () => {
-    const tokenA = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const tokenB = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
 
     await requestJson(port, 'POST', '/ws/ws-a/members', { token: tokenA, body: { name: 'alice', provider: 'claude' } });
 
@@ -137,7 +175,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('rejects a POST with missing required fields', async () => {
-    const token = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: token } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
     const { status, body } = await requestJson(port, 'POST', '/ws/ws-a/members', { token, body: { name: 'alice' } });
     expect(status).toBe(400);
     expect(body.error).toBeDefined();
@@ -149,8 +187,8 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('creates, lists, updates, and deletes a project, and rejects cross-workspace access', async () => {
-    const tokenA = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const tokenB = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
 
     const created = await requestJson(port, 'POST', '/ws/ws-a/projects', { token: tokenA, body: { name: 'Fleet Dashboard' } });
     expect(created.status).toBe(201);
@@ -182,10 +220,10 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('adds a member to a project via POST /ws/:id/projects/:pid/members', async () => {
-    const token = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: token } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
 
     const memberCreated = await requestJson(port, 'POST', '/ws/ws-a/members', { token, body: { name: 'alice', provider: 'claude' } });
-    const memberId = memberCreated.body.id;
+    const memberId = memberCreated.body.member.id;
     const projectCreated = await requestJson(port, 'POST', '/ws/ws-a/projects', { token, body: { name: 'Team Project' } });
     const projectId = projectCreated.body.id;
 
@@ -195,14 +233,14 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('returns 404 when adding a member to a non-existent project', async () => {
-    const token = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: token } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
     const { status } = await requestJson(port, 'POST', '/ws/ws-a/projects/no-such-project/members', { token, body: { memberId: 'm-x' } });
     expect(status).toBe(404);
   });
 
   it('GET /ws/:id/cost returns a session-scoped, workspace-isolated rollup', async () => {
-    const tokenA = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const tokenB = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
 
     const noUsage = await requestJson(port, 'GET', '/ws/ws-a/cost', { token: tokenA });
     expect(noUsage.status).toBe(200);
@@ -213,8 +251,8 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('GET /ws/:id/activity returns an empty feed with no auth leakage across workspaces', async () => {
-    const tokenA = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const tokenB = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
 
     const feed = await requestJson(port, 'GET', '/ws/ws-a/activity', { token: tokenA });
     expect(feed.status).toBe(200);

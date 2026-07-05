@@ -24,17 +24,24 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { verify as verifyHubJwt, type HubJwtClaims } from './hub-jwt.js';
 import { createMember, type MemberRow } from './members.js';
-import { listMemberViews } from './member-view.js';
+import { listMemberViews, getMemberView } from './member-view.js';
 import { createProject, updateProject, deleteProject, addProjectMember, type ProjectRow } from './projects.js';
 import { listProjectViews } from './project-view.js';
 import { getCostResponse } from './usage.js';
 import { getActivityFeed } from './activity.js';
+import { issueMemberToken, rotateMemberToken } from './member-tokens.js';
+import { isRevoked } from './jwt-revocation.js';
 import { getInstallersHandler } from './handlers/installers.js';
 
-function authorize(req: http.IncomingMessage, workspaceId: string): HubJwtClaims | null {
+/** Verifies the bearer token, its workspace match, AND that its jti hasn't
+ *  been revoked (apra-fleet-us9.5: rotation revokes the prior token's jti,
+ *  so a caller still holding it must be rejected immediately, not just
+ *  once it naturally expires). */
+async function authorize(req: http.IncomingMessage, workspaceId: string): Promise<HubJwtClaims | null> {
   const token = extractBearer(req);
   const claims = token ? verifyHubJwt(token) : null;
   if (!claims || claims.workspace_id !== workspaceId) return null;
+  if (await isRevoked(claims.jti)) return null;
   return claims;
 }
 
@@ -90,7 +97,7 @@ export function createHttpServer(): HttpServerHandle {
     // /ws/:id/members
     if (segments[0] === 'ws' && segments[2] === 'members' && segments.length === 3) {
       const workspaceId = segments[1];
-      if (!authorize(req, workspaceId)) {
+      if (!(await authorize(req, workspaceId))) {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
@@ -119,15 +126,38 @@ export function createHttpServer(): HttpServerHandle {
           provider: input.provider,
           workFolder: typeof input.folder === 'string' ? input.folder : null,
         });
-        sendJson(res, 201, created);
+        // Matches MemberTokenResponseSchema: {member, jwt} -- the jwt is
+        // shown exactly once at issuance, never re-returned by any GET.
+        const jwt = await issueMemberToken(workspaceId, created.id);
+        const memberView = await getMemberView(workspaceId, created.id);
+        sendJson(res, 201, { member: memberView, jwt });
         return;
       }
+    }
+
+    // /ws/:id/members/:mid/rotate
+    if (segments[0] === 'ws' && segments[2] === 'members' && segments[4] === 'rotate' && segments.length === 5 && req.method === 'POST') {
+      const workspaceId = segments[1];
+      const memberId = segments[3];
+      if (!(await authorize(req, workspaceId))) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+
+      const jwt = await rotateMemberToken(workspaceId, memberId);
+      if (!jwt) {
+        sendJson(res, 404, { error: 'member not found' });
+        return;
+      }
+      const memberView = await getMemberView(workspaceId, memberId);
+      sendJson(res, 200, { member: memberView, jwt });
+      return;
     }
 
     // /ws/:id/projects
     if (segments[0] === 'ws' && segments[2] === 'projects' && segments.length === 3) {
       const workspaceId = segments[1];
-      if (!authorize(req, workspaceId)) {
+      if (!(await authorize(req, workspaceId))) {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
@@ -164,7 +194,7 @@ export function createHttpServer(): HttpServerHandle {
     if (segments[0] === 'ws' && segments[2] === 'projects' && segments.length === 4) {
       const workspaceId = segments[1];
       const projectId = segments[3];
-      if (!authorize(req, workspaceId)) {
+      if (!(await authorize(req, workspaceId))) {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
@@ -206,7 +236,7 @@ export function createHttpServer(): HttpServerHandle {
     if (segments[0] === 'ws' && segments[2] === 'projects' && segments[4] === 'members' && segments.length === 5 && req.method === 'POST') {
       const workspaceId = segments[1];
       const projectId = segments[3];
-      if (!authorize(req, workspaceId)) {
+      if (!(await authorize(req, workspaceId))) {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
@@ -236,7 +266,7 @@ export function createHttpServer(): HttpServerHandle {
     // /ws/:id/cost
     if (segments[0] === 'ws' && segments[2] === 'cost' && segments.length === 3 && req.method === 'GET') {
       const workspaceId = segments[1];
-      if (!authorize(req, workspaceId)) {
+      if (!(await authorize(req, workspaceId))) {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
@@ -247,7 +277,7 @@ export function createHttpServer(): HttpServerHandle {
     // /ws/:id/activity
     if (segments[0] === 'ws' && segments[2] === 'activity' && segments.length === 3 && req.method === 'GET') {
       const workspaceId = segments[1];
-      if (!authorize(req, workspaceId)) {
+      if (!(await authorize(req, workspaceId))) {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }

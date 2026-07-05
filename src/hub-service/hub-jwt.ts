@@ -1,16 +1,19 @@
 /**
- * Hub-side JWT sign/verify (apra-fleet-us9.4), an MVP stopgap distinct from
- * apra-fleet.exe's own local jwt.ts (~/.apra-fleet/fleet.key, per-install
- * HS256 key). The hub is a separate, already-network-facing service
- * (fleet.apralabs.com) with its own signing authority -- HS256 keyed on the
- * HUB_JWT_SECRET env var here, NOT a local file (the hub has no single
- * "local machine" to derive one from).
+ * Hub-side JWT sign/verify (apra-fleet-us9.4/us9.5), an MVP stopgap distinct
+ * from apra-fleet.exe's own local jwt.ts (~/.apra-fleet/fleet.key,
+ * per-install HS256 key). The hub is a separate, already-network-facing
+ * service (fleet.apralabs.com) with its own signing authority -- HS256
+ * keyed on the HUB_JWT_SECRET env var here, NOT a local file (the hub has
+ * no single "local machine" to derive one from).
  *
- * This is explicitly a stopgap: apra-fleet-us9.5 (Cloud JWT issuance) owns
- * the real design (asymmetric signing, revocation, enrollment exchange).
- * The shape mirrors src/services/jwt.ts deliberately so the eventual
- * migration is a drop-in swap of the signing mechanism, not a claim-shape
- * change -- same pattern as token-issuer.ts's swappable TokenIssuer seam.
+ * The SIGNING MECHANISM is explicitly a stopgap: apra-fleet-us9.5's real
+ * design (asymmetric signing, hub-brokered enrollment exchange) will
+ * replace HS256 wholesale. The `jti` claim and revocation story
+ * (src/hub-service/jwt-revocation.ts, src/hub-service/member-tokens.ts),
+ * however, are NOT stopgaps -- per-token identity for revocation is
+ * orthogonal to the signing algorithm and carries over unchanged once
+ * us9.5's asymmetric signer lands, same as apra-fleet.exe's own local
+ * jwt.ts's shape is deliberately mirrored here.
  */
 import crypto from 'node:crypto';
 
@@ -18,6 +21,8 @@ export interface HubJwtClaims {
   member_id: string;
   workspace_id: string;
   role: string;
+  /** Unique per issuance -- the identity revoke()/isRevoked() key on. */
+  jti: string;
 }
 
 function b64url(buf: Buffer | string): string {
@@ -40,13 +45,16 @@ function getSecret(): string {
   return secret;
 }
 
-export function sign(payload: HubJwtClaims, secret: string = getSecret()): string {
+/** Mints a fresh jti for every call -- the caller (member-tokens.ts) persists
+ *  it so a later rotation knows what to revoke. */
+export function sign(payload: Omit<HubJwtClaims, 'jti'>, secret: string = getSecret()): { token: string; jti: string } {
+  const jti = crypto.randomUUID();
   const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const now = Math.floor(Date.now() / 1000);
-  const body = b64url(JSON.stringify({ ...payload, iat: now, exp: now + SEVEN_DAYS_S }));
+  const body = b64url(JSON.stringify({ ...payload, jti, iat: now, exp: now + SEVEN_DAYS_S }));
   const signing = header + '.' + body;
   const sig = b64url(crypto.createHmac('sha256', secret).update(signing).digest());
-  return signing + '.' + sig;
+  return { token: signing + '.' + sig, jti };
 }
 
 export function verify(token: string, secret: string = getSecret()): HubJwtClaims | null {
@@ -64,11 +72,12 @@ export function verify(token: string, secret: string = getSecret()): HubJwtClaim
     if (
       typeof decoded.member_id !== 'string' ||
       typeof decoded.workspace_id !== 'string' ||
-      typeof decoded.role !== 'string'
+      typeof decoded.role !== 'string' ||
+      typeof decoded.jti !== 'string'
     ) {
       return null;
     }
-    return { member_id: decoded.member_id, workspace_id: decoded.workspace_id, role: decoded.role };
+    return { member_id: decoded.member_id, workspace_id: decoded.workspace_id, role: decoded.role, jti: decoded.jti };
   } catch {
     return null;
   }

@@ -26,6 +26,9 @@ export interface MemberRow {
   provider: string;
   work_folder: string | null;
   created_at: string;
+  /** apra-fleet-us9.5: the jti of this member's current live token, if any
+   *  has been issued -- see member-tokens.ts. */
+  current_jti: string | null;
 }
 
 export interface CreateMemberInput {
@@ -80,4 +83,18 @@ export async function deleteMember(
     [workspaceId, id],
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+/** apra-fleet-us9.5: records which jti this member's current live token
+ *  carries, so a later rotation knows what to revoke. */
+export async function setCurrentJti(
+  workspaceId: string,
+  id: string,
+  jti: string | null,
+  pool: Pool = getPool(),
+): Promise<void> {
+  await pool.query(
+    `UPDATE members SET current_jti = $3 WHERE workspace_id = $1 AND id = $2`,
+    [workspaceId, id, jti],
+  );
 }
