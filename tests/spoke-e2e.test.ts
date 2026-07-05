@@ -108,6 +108,7 @@ describe('spoke-to-spoke relayed execute_command (real HTTP + real pg-mem + real
       getAgentForMember: (memberId) => (memberId === 'target-member' ? localAgentOnB : null),
       getMemberSnapshot: () => [{ memberId: 'target-member', status: 'online' }],
       onLog: () => {},
+      writeFile: async () => {},
     };
     const spokeB = runSpoke('target-member', depsB);
     expect(spokeB).not.toBeNull();
@@ -123,6 +124,7 @@ describe('spoke-to-spoke relayed execute_command (real HTTP + real pg-mem + real
       getAgentForMember: () => null,
       getMemberSnapshot: () => [{ memberId: 'origin-member', status: 'online' }],
       onLog: () => {},
+      writeFile: async () => {},
     };
     // Started LAST: relay-context.ts is a process-wide singleton, and
     // RelayStrategy (used next) reads whichever context was set most

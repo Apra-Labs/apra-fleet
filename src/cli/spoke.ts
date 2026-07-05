@@ -22,13 +22,16 @@
  */
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import crypto from 'node:crypto';
 import { HUB_CREDENTIALS_PATH, type HubCredentials } from './join.js';
-import { createHubClient, type HubClientDeps, type HubClientHandle, type MemberSnapshotEntry } from '../services/hub-client.js';
+import { createHubClient, type HubClientDeps, type HubClientHandle, type MemberSnapshotEntry, type InboundRelayEnvelope } from '../services/hub-client.js';
 import { createRelayExecutor, type RelayExecutorDeps } from '../services/relay-executor.js';
 import { PendingRelayRequests, composeEnvelopeHandler, type RelayRequestDeps } from '../services/relay-request.js';
+import { createFileTransferReceiver, type FileTransferReceiverDeps } from '../services/file-transfer-relay.js';
 import { setRelayContext } from '../services/relay-context.js';
 import { getAllAgents } from '../services/registry.js';
+import { FLEET_DIR } from '../paths.js';
 import type { Agent } from '../types.js';
 
 export interface SpokeDeps {
@@ -42,6 +45,35 @@ export interface SpokeDeps {
   getAgentForMember(memberId: string): Agent | null;
   getMemberSnapshot(): MemberSnapshotEntry[];
   onLog(message: string): void;
+  /** Persists an incoming relayed file transfer (apra-fleet-us9.12).
+   *  Default sandboxes every write under FLEET_DIR/received-files,
+   *  rejecting any destPath that would escape it (the sender's chunk
+   *  payload controls destPath, so this is the untrusted-input boundary,
+   *  not file-transfer-relay.ts's job -- see its own docstring). */
+  writeFile(destPath: string, data: Buffer): Promise<void>;
+}
+
+export const RECEIVED_FILES_DIR = path.join(FLEET_DIR, 'received-files');
+
+export function sandboxedWriteFile(destPath: string, data: Buffer): void {
+  // Reject an absolute destPath outright: path.resolve(root, './' + destPath)
+  // below does NOT reliably neutralize one on every platform -- on Windows,
+  // a drive-letter path (e.g. "C:\Users\...") embedded after a "./" prefix
+  // is treated as a literal relative segment rather than recognized as
+  // absolute, so it would silently fail with a confusing ENOENT instead of
+  // being rejected. Check isAbsolute() explicitly first, on both the raw
+  // destPath and (POSIX-style callers on any platform) a leading slash.
+  if (path.isAbsolute(destPath) || destPath.startsWith('/') || destPath.startsWith('\\')) {
+    throw new Error(`Refusing to write outside the received-files sandbox: ${destPath}`);
+  }
+  fs.mkdirSync(RECEIVED_FILES_DIR, { recursive: true, mode: 0o700 });
+  const root = path.resolve(RECEIVED_FILES_DIR);
+  const resolved = path.resolve(root, destPath);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw new Error(`Refusing to write outside the received-files sandbox: ${destPath}`);
+  }
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(resolved, data, { mode: 0o600 });
 }
 
 const realDeps: SpokeDeps = {
@@ -70,6 +102,7 @@ const realDeps: SpokeDeps = {
       .map((a) => ({ memberId: a.relayMemberId!, status: 'online' }));
   },
   onLog: (msg) => process.stderr.write(`[spoke] ${msg}\n`),
+  writeFile: async (destPath, data) => sandboxedWriteFile(destPath, data),
 };
 
 export interface SpokeHandle {
@@ -119,8 +152,34 @@ export function runSpoke(originMemberId: string, deps: SpokeDeps = realDeps): Sp
     now: deps.now,
     generateEnvelopeId: () => crypto.randomUUID(),
   };
-  const fulfiller = createRelayExecutor(executorDeps);
-  const onEnvelope = composeEnvelopeHandler(registry, fulfiller);
+  const commandFulfiller = createRelayExecutor(executorDeps);
+
+  const fileTransferDeps: FileTransferReceiverDeps = {
+    workspaceId: credentials.workspaceId,
+    originMemberId,
+    submitEnvelope: async (envelope) => {
+      const res = await deps.fetch(`${credentials.hubUrl}/ws/${credentials.workspaceId}/envelopes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${credentials.jwt}` },
+        body: JSON.stringify(envelope),
+      });
+      return { ok: res.ok, status: res.status };
+    },
+    now: deps.now,
+    generateEnvelopeId: () => crypto.randomUUID(),
+    writeFile: deps.writeFile,
+  };
+  const fileTransferFulfiller = createFileTransferReceiver(fileTransferDeps);
+
+  // Both fulfillers are documented no-ops for kinds they don't own
+  // (execute_command.request / file_transfer.chunk respectively), so
+  // running both unconditionally is safe -- a spoke fulfills both request
+  // families over the same single hub-client connection.
+  const combinedFulfiller = async (envelope: InboundRelayEnvelope): Promise<void> => {
+    await commandFulfiller(envelope);
+    await fileTransferFulfiller(envelope);
+  };
+  const onEnvelope = composeEnvelopeHandler(registry, combinedFulfiller);
 
   const hubClientDeps: HubClientDeps = {
     fetch: deps.fetch,
