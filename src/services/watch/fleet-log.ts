@@ -94,6 +94,19 @@ export function formatFleetLogLine(raw: string, verbose = false): FleetLogEntry 
       if (isLifecycle(msg)) lifecycleDetail();
       else events.push({ time, marker: '>', kind: 'info', text: `LLM ${msg}` });
       break;
+    case 'command_output': {
+      // Multiline command stdout/stderr, logged by execute_command. Render as
+      // dim output detail lines beneath the command.
+      const lines = msg.split('\n');
+      const CAP = 20;
+      for (const l of lines.slice(0, CAP)) {
+        events.push({ time: null, marker: '', kind: 'out', detail: true, text: l });
+      }
+      if (lines.length > CAP) {
+        events.push({ time: null, marker: '', kind: 'dim', detail: true, text: `... (${lines.length - CAP} more lines)` });
+      }
+      break;
+    }
     case 'send_files':
     case 'receive_files':
       events.push({ time, marker: '>', kind: 'info', text: `${tag}: ${msg}` });

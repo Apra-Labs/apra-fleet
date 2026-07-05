@@ -53,6 +53,19 @@ describe('formatFleetLogLine', () => {
     expect(r?.events[0].text).toContain('send_files');
   });
 
+  it('renders command_output as dim out detail lines', () => {
+    const r = formatFleetLogLine(line({ tag: 'command_output', mem: 'm', msg: 'line one\nline two' }));
+    expect(r?.events).toHaveLength(2);
+    expect(r?.events[0]).toMatchObject({ detail: true, kind: 'out', text: 'line one' });
+    expect(r?.events[1]).toMatchObject({ detail: true, kind: 'out', text: 'line two' });
+  });
+
+  it('caps command_output and notes hidden lines', () => {
+    const msg = Array.from({ length: 25 }, (_, i) => `l${i}`).join('\n');
+    const r = formatFleetLogLine(line({ tag: 'command_output', mem: 'm', msg }));
+    expect(r?.events.some((e) => e.text.includes('more lines'))).toBe(true);
+  });
+
   it('renders config events (update_member) dimmed with no marker', () => {
     const r = formatFleetLogLine(line({ tag: 'update_member', mem: 'm', msg: 'unattended=auto' }));
     expect(r?.events[0]).toMatchObject({ marker: '', kind: 'dim' });

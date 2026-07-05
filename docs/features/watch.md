@@ -28,7 +28,7 @@ So `watch` merges two sources:
 
 | Source | Captures | Location | Members |
 |--------|----------|----------|---------|
-| Fleet activity log | every dispatch: shell commands, prompt invocations, file transfers, + exit status | local (`FLEET_DIR/logs/fleet-*.log`) | **all** (local + remote) |
+| Fleet activity log | every dispatch: shell commands (+ their output) with exit status, prompt invocations, file transfers | local (`FLEET_DIR/logs/fleet-*.log`) | **all** (local + remote) |
 | Provider transcript (`~/.claude/projects/*.jsonl`) | the LLM session's reasoning, edits, tool output | local disk only | **local** members running an LLM |
 
 The fleet log is the **universal spine**; the transcript is **local-only
@@ -106,10 +106,6 @@ shell-completion helper.
 **Deferred:**
 - Gemini/other-provider transcript parsing (fleet-log activity still works for
   them; only the rich LLM detail is Claude-only).
-- Short-command *stdout*: the fleet log records the command + exit status but not
-  a short command's output (only long-running commands persist output to
-  `~/.fleet-tasks/<id>/task.log`). Surfacing short-command output would require
-  the server to log it (or a server-side stream tap).
 - Push-based SSE/WebSocket sink and a multi-pane web/TUI.
 - PM `status.md` feature-name labeling (branch names shown in the interim).
 
