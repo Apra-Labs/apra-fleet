@@ -45,6 +45,7 @@ Usage:
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
+  apra-fleet join <token> [--hub-url <url>]  Exchange a hub enrollment token for a machine JWT (apra-fleet-us9.5/fnz.4)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
   process.exit(0);
@@ -67,6 +68,10 @@ if (arg === 'install') {
   import('./cli/auth.js')
     .then(m => m.runAuth(process.argv.slice(3)))
     .catch(err => { logError('cli', `Auth failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'join') {
+  import('./cli/join.js')
+    .then(m => m.runJoin(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Join failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'update') {
   const rest = process.argv.slice(3);
   if (rest.includes('--help') || rest.includes('-h')) {
