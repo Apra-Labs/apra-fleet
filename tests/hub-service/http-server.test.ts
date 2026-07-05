@@ -211,4 +211,16 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     const crossWorkspace = await requestJson(port, 'GET', '/ws/ws-b/cost', { token: tokenA });
     expect(crossWorkspace.status).toBe(401);
   });
+
+  it('GET /ws/:id/activity returns an empty feed with no auth leakage across workspaces', async () => {
+    const tokenA = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const tokenB = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+
+    const feed = await requestJson(port, 'GET', '/ws/ws-a/activity', { token: tokenA });
+    expect(feed.status).toBe(200);
+    expect(feed.body).toEqual([]);
+
+    const crossWorkspace = await requestJson(port, 'GET', '/ws/ws-a/activity', { token: tokenB });
+    expect(crossWorkspace.status).toBe(401);
+  });
 });
