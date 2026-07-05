@@ -100,6 +100,13 @@ describe('dashboard OAuth + RBAC (apra-fleet-us9.16)', () => {
     return body;
   }
 
+  async function bootstrapPlatformAdmin(email: string): Promise<string> {
+    const { jwt } = await login(email, 'Admin');
+    const id = (await pool.query(`SELECT id FROM users WHERE email = $1`, [email])).rows[0].id;
+    await makePlatformAdmin(id);
+    return jwt;
+  }
+
   it('POST /auth/oauth/google creates a pending user and returns a session token', async () => {
     const { jwt } = await login('alice@example.com', 'Alice');
     expect(typeof jwt).toBe('string');
@@ -182,13 +189,6 @@ describe('dashboard OAuth + RBAC (apra-fleet-us9.16)', () => {
   });
 
   describe('privilege-escalation risks (design doc section 4)', () => {
-    async function bootstrapPlatformAdmin(email: string): Promise<string> {
-      const { jwt } = await login(email, 'Admin');
-      const id = (await pool.query(`SELECT id FROM users WHERE email = $1`, [email])).rows[0].id;
-      await makePlatformAdmin(id);
-      return jwt;
-    }
-
     it('a member-role (non-platform-admin) user cannot call PUT /admin/users/:id/role at all, regardless of their own role', async () => {
       const adminSession = await bootstrapPlatformAdmin('admin3@example.com');
       const { jwt: memberSession } = await login('carol@example.com', 'Carol');
@@ -265,6 +265,54 @@ describe('dashboard OAuth + RBAC (apra-fleet-us9.16)', () => {
 
       const badApprove = await requestJson(port, 'PUT', `/admin/users/${graceId}/approve`, { token: adminSession, body: { role: 'super-mega-admin', workspaces: [] } });
       expect(badApprove.status).toBe(400);
+    });
+  });
+
+  describe('machine enrollment (apra-fleet-us9.5/fnz.4, hub-mediated -- docs/hub-spoke-master-plan.md section 4)', () => {
+    it('a workspace member can generate an enrollment token, and a new machine can exchange it (no Bearer auth on exchange -- the token itself is the credential)', async () => {
+      const adminSession = await bootstrapPlatformAdmin('admin8@example.com');
+      const { jwt: memberSession } = await login('henry@example.com', 'Henry');
+      const henryId = (await pool.query(`SELECT id FROM users WHERE email = 'henry@example.com'`)).rows[0].id;
+      await requestJson(port, 'PUT', `/admin/users/${henryId}/approve`, { token: adminSession, body: { role: 'member', workspaces: ['ws-a'] } });
+
+      const generated = await requestJson(port, 'POST', '/ws/ws-a/enrollment-tokens', { token: memberSession });
+      expect(generated.status).toBe(201);
+      expect(typeof generated.body.token).toBe('string');
+
+      const exchanged = await requestJson(port, 'POST', '/join/exchange', { body: { token: generated.body.token, hostname: 'new-laptop' } });
+      expect(exchanged.status).toBe(200);
+      expect(exchanged.body.workspaceId).toBe('ws-a');
+      expect(typeof exchanged.body.jwt).toBe('string');
+
+      // The exchanged machine JWT actually authenticates against the
+      // already-built /ws/:id/... routes.
+      const members = await requestJson(port, 'GET', '/ws/ws-a/members', { token: exchanged.body.jwt });
+      expect(members.status).toBe(200);
+    });
+
+    it('a user with no access to the workspace cannot generate an enrollment token for it', async () => {
+      const { jwt: outsiderSession } = await login('ivy@example.com', 'Ivy');
+      const result = await requestJson(port, 'POST', '/ws/ws-a/enrollment-tokens', { token: outsiderSession });
+      expect(result.status).toBe(401);
+    });
+
+    it('exchange rejects an invalid token', async () => {
+      const result = await requestJson(port, 'POST', '/join/exchange', { body: { token: 'not-a-real-token', hostname: 'x' } });
+      expect(result.status).toBe(401);
+    });
+
+    it('exchange is single-use over HTTP: a second exchange for the same token is rejected', async () => {
+      const adminSession = await bootstrapPlatformAdmin('admin9@example.com');
+      const { jwt: memberSession } = await login('jack@example.com', 'Jack');
+      const jackId = (await pool.query(`SELECT id FROM users WHERE email = 'jack@example.com'`)).rows[0].id;
+      await requestJson(port, 'PUT', `/admin/users/${jackId}/approve`, { token: adminSession, body: { role: 'member', workspaces: ['ws-a'] } });
+
+      const generated = await requestJson(port, 'POST', '/ws/ws-a/enrollment-tokens', { token: memberSession });
+      const first = await requestJson(port, 'POST', '/join/exchange', { body: { token: generated.body.token, hostname: 'machine-1' } });
+      expect(first.status).toBe(200);
+
+      const second = await requestJson(port, 'POST', '/join/exchange', { body: { token: generated.body.token, hostname: 'machine-2' } });
+      expect(second.status).toBe(401);
     });
   });
 });

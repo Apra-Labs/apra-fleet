@@ -22,7 +22,7 @@
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { verify as verifyHubJwt, type HubJwtClaims } from './hub-jwt.js';
+import { verify as verifyHubJwt, sign as signHubJwt, type HubJwtClaims } from './hub-jwt.js';
 import { createMember, listMembers, type MemberRow } from './members.js';
 import { listMemberViews, getMemberView } from './member-view.js';
 import { createProject, updateProject, deleteProject, addProjectMember, listProjects, type ProjectRow } from './projects.js';
@@ -32,7 +32,6 @@ import { getActivityFeed } from './activity.js';
 import { issueMemberToken, rotateMemberToken } from './member-tokens.js';
 import { isRevoked } from './jwt-revocation.js';
 import { getInstallersHandler } from './handlers/installers.js';
-import { sign as signHubJwt } from './hub-jwt.js';
 import { signSession, verifySession } from './session-jwt.js';
 import {
   findOrCreateUser, getUser, listUsers, approveUser,
@@ -40,6 +39,7 @@ import {
   type UserRow,
 } from './users.js';
 import { getWorkspace } from './workspaces.js';
+import { generateEnrollmentToken, exchangeEnrollmentToken } from './enrollment.js';
 
 /** Verifies the bearer token, its workspace match, AND that its jti hasn't
  *  been revoked (apra-fleet-us9.5: rotation revokes the prior token's jti,
@@ -518,6 +518,56 @@ export function createHttpServer(): HttpServerHandle {
         return;
       }
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    // POST /ws/:id/enrollment-tokens (apra-fleet-us9.5/fnz.4, re-scoped per
+    // docs/hub-spoke-master-plan.md section 4): a dashboard user assigned to
+    // this workspace generates a short-lived, single-use token for a new
+    // machine's `apra-fleet join <token>`. Not in the strict Endpoints
+    // contract map (a pragmatic addition, same as /workspaces/:id/select).
+    if (segments[0] === 'ws' && segments[2] === 'enrollment-tokens' && segments.length === 3 && req.method === 'POST') {
+      const workspaceId = segments[1];
+      const session = await authorizeSession(req);
+      if (!session) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const user = await getUser(session.sub);
+      if (!user || user.status !== 'approved' || !(await hasWorkspaceAccess(user.id, workspaceId))) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const { token, expiresAt } = await generateEnrollmentToken(workspaceId);
+      sendJson(res, 201, { token, expiresAt });
+      return;
+    }
+
+    // POST /join/exchange (apra-fleet-us9.5/fnz.4): the hub-mediated half of
+    // `apra-fleet join <token>` -- called OUTBOUND by the new machine, no
+    // inbound exposure required on any existing spoke. The token itself is
+    // the credential (short-lived, single-use, atomically claimed) --
+    // no Bearer auth on this route, by design; that's what would make
+    // enrollment circular (a new machine has no token yet to present).
+    if (segments[0] === 'join' && segments[1] === 'exchange' && segments.length === 2 && req.method === 'POST') {
+      let body: unknown;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+      const input = body as { token?: unknown; hostname?: unknown };
+      if (typeof input?.token !== 'string' || typeof input?.hostname !== 'string') {
+        sendJson(res, 400, { error: 'token and hostname are required' });
+        return;
+      }
+      const result = await exchangeEnrollmentToken(input.token, input.hostname);
+      if (!result) {
+        sendJson(res, 401, { error: 'invalid, expired, or already-used token' });
+        return;
+      }
+      sendJson(res, 200, { machineId: result.machineId, workspaceId: result.workspaceId, jwt: result.jwt });
       return;
     }
 
