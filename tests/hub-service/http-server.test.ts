@@ -21,10 +21,13 @@ async function freshPool() {
   db.public.registerFunction({ name: 'now', returns: 'timestamptz' as any, implementation: () => new Date() });
   const { Pool } = db.adapters.createPg();
   const p = new Pool();
-  const migrationPath = path.join(process.cwd(), 'db', 'migrations', '001_hub_service_schema.sql');
-  const rawSql = fs.readFileSync(migrationPath, 'utf8');
-  const sql = rawSql.replace(/CREATE UNLOGGED TABLE/gi, 'CREATE TABLE');
-  await p.query(sql);
+  const migrationsDir = path.join(process.cwd(), 'db', 'migrations');
+  const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+  for (const file of files) {
+    const rawSql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const sql = rawSql.replace(/CREATE UNLOGGED TABLE/gi, 'CREATE TABLE');
+    await p.query(sql);
+  }
   return p;
 }
 
@@ -142,6 +145,58 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
 
   it('returns 404 for an unknown route', async () => {
     const { status } = await requestJson(port, 'GET', '/not-a-real-route');
+    expect(status).toBe(404);
+  });
+
+  it('creates, lists, updates, and deletes a project, and rejects cross-workspace access', async () => {
+    const tokenA = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const tokenB = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+
+    const created = await requestJson(port, 'POST', '/ws/ws-a/projects', { token: tokenA, body: { name: 'Fleet Dashboard' } });
+    expect(created.status).toBe(201);
+    const projectId = created.body.id;
+
+    const listed = await requestJson(port, 'GET', '/ws/ws-a/projects', { token: tokenA });
+    expect(listed.status).toBe(200);
+    expect(listed.body).toHaveLength(1);
+    expect(listed.body[0]).toMatchObject({ name: 'Fleet Dashboard', status: 'active', members: [] });
+
+    // Cross-workspace: ws-b's token cannot see ws-a's project, and can't
+    // reach it even via its own (valid-for-ws-b) token, since the resource
+    // genuinely doesn't exist under ws-b -- 404, not a leaked 200.
+    const listedCross = await requestJson(port, 'GET', '/ws/ws-b/projects', { token: tokenB });
+    expect(listedCross.body).toEqual([]);
+    const patchCrossOwnWorkspace = await requestJson(port, 'PATCH', `/ws/ws-b/projects/${projectId}`, { token: tokenB, body: { status: 'paused' } });
+    expect(patchCrossOwnWorkspace.status).toBe(404);
+    // ws-a's own project cannot be touched with a token minted for ws-b at all.
+    const patchWrongToken = await requestJson(port, 'PATCH', `/ws/ws-a/projects/${projectId}`, { token: tokenB, body: { status: 'paused' } });
+    expect(patchWrongToken.status).toBe(401);
+
+    const patched = await requestJson(port, 'PATCH', `/ws/ws-a/projects/${projectId}`, { token: tokenA, body: { status: 'paused' } });
+    expect(patched.status).toBe(200);
+    expect(patched.body.status).toBe('paused');
+
+    const deleted = await requestJson(port, 'DELETE', `/ws/ws-a/projects/${projectId}`, { token: tokenA });
+    expect(deleted.status).toBe(200);
+    expect((await requestJson(port, 'GET', '/ws/ws-a/projects', { token: tokenA })).body).toEqual([]);
+  });
+
+  it('adds a member to a project via POST /ws/:id/projects/:pid/members', async () => {
+    const token = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+
+    const memberCreated = await requestJson(port, 'POST', '/ws/ws-a/members', { token, body: { name: 'alice', provider: 'claude' } });
+    const memberId = memberCreated.body.id;
+    const projectCreated = await requestJson(port, 'POST', '/ws/ws-a/projects', { token, body: { name: 'Team Project' } });
+    const projectId = projectCreated.body.id;
+
+    const result = await requestJson(port, 'POST', `/ws/ws-a/projects/${projectId}/members`, { token, body: { memberId } });
+    expect(result.status).toBe(200);
+    expect(result.body.members).toEqual([memberId]);
+  });
+
+  it('returns 404 when adding a member to a non-existent project', async () => {
+    const token = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { status } = await requestJson(port, 'POST', '/ws/ws-a/projects/no-such-project/members', { token, body: { memberId: 'm-x' } });
     expect(status).toBe(404);
   });
 });
