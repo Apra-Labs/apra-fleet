@@ -66,6 +66,8 @@ describe('submitEnvelope (apra-fleet-us9.6 slice 1)', () => {
   });
 
   it('presence.announce replaces the machine snapshot and returns a presence.ack', async () => {
+    await createMember('mem-1', 'ws-1', { name: 'Alice', provider: 'anthropic' }, pool);
+    await createMember('mem-2', 'ws-1', { name: 'Bob', provider: 'anthropic' }, pool);
     const env: InboundEnvelope = {
       envelope_id: 'e1', workspace_id: 'ws-1', kind: 'presence.announce',
       from: { machine_id: 'mach-1', member_id: null }, to: { machine_id: null, member_id: null },
@@ -87,7 +89,23 @@ describe('submitEnvelope (apra-fleet-us9.6 slice 1)', () => {
     expect(rows2.map((r) => r.member_id)).toEqual(['mem-1']);
   });
 
+  it('presence.announce (apra-fleet-us9.11.1) silently drops a member_id that does not resolve in the caller\'s workspace, without rejecting the rest of the snapshot', async () => {
+    await createMember('mem-1', 'ws-1', { name: 'Alice', provider: 'anthropic' }, pool);
+    await createMember('mem-x', 'ws-2', { name: 'Eve', provider: 'anthropic' }, pool);
+    const env: InboundEnvelope = {
+      envelope_id: 'e1', workspace_id: 'ws-1', kind: 'presence.announce',
+      from: { machine_id: 'mach-1', member_id: null }, to: { machine_id: null, member_id: null },
+      payload: { members: [{ member_id: 'mem-1', status: 'online' }, { member_id: 'mem-x', status: 'online' }, { member_id: 'no-such-member', status: 'online' }] },
+    };
+    const result = await submitEnvelope(claims('ws-1', 'mach-1'), env, pool);
+    expect(result.status).toBe(200);
+
+    const rows = await listForMachine('mach-1', pool);
+    expect(rows.map((r) => r.member_id)).toEqual(['mem-1']);
+  });
+
   it('presence.heartbeat renews last_seen for an already-announced member without dropping others', async () => {
+    await createMember('mem-1', 'ws-1', { name: 'Alice', provider: 'anthropic' }, pool);
     const announceEnv: InboundEnvelope = {
       envelope_id: 'e1', workspace_id: 'ws-1', kind: 'presence.announce',
       from: { machine_id: 'mach-1', member_id: null }, to: { machine_id: null, member_id: null },
@@ -103,6 +121,17 @@ describe('submitEnvelope (apra-fleet-us9.6 slice 1)', () => {
     expect(result.status).toBe(200);
     const rows = await listForMachine('mach-1', pool);
     expect(rows).toHaveLength(1);
+  });
+
+  it('presence.heartbeat (apra-fleet-us9.11.1) is a no-op for a member_id that does not resolve in the caller\'s workspace', async () => {
+    const hbEnv: InboundEnvelope = {
+      envelope_id: 'e1', workspace_id: 'ws-1', kind: 'presence.heartbeat',
+      from: { machine_id: 'mach-1', member_id: 'no-such-member' }, to: { machine_id: null, member_id: null },
+    };
+    const result = await submitEnvelope(claims('ws-1', 'mach-1'), hbEnv, pool);
+    expect(result.status).toBe(200);
+    const rows = await listForMachine('mach-1', pool);
+    expect(rows).toHaveLength(0);
   });
 
   it('enqueues a relay-kind envelope addressed to a member that resolves in the same workspace', async () => {

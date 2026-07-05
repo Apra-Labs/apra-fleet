@@ -92,12 +92,30 @@ async function handlePresence(claims: HubJwtClaims, env: InboundEnvelope, pool: 
   const machineId = claims.member_id;
   if (env.kind === 'presence.announce') {
     const members = (env.payload as { members?: Array<{ member_id: string; status: string }> } | undefined)?.members ?? [];
-    await announceSnapshot(machineId, members.map((m) => ({ memberId: m.member_id, status: m.status })), pool);
+    // apra-fleet-us9.11.1: each announced member_id must actually resolve
+    // as a member CRUD row in the CALLER's workspace before being trusted
+    // into the presence snapshot -- otherwise a spoke could announce an
+    // arbitrary (or another same-workspace member's) member_id and cause
+    // this machine to receive/ack relay traffic addressed to a member it
+    // does not host. Silently drop, don't reject the whole announce: a
+    // stale/typo'd member_id in an otherwise-valid snapshot shouldn't
+    // block the rest of the machine's real members from being announced.
+    const verified: Array<{ memberId: string; status: string }> = [];
+    for (const m of members) {
+      if (await getMember(claims.workspace_id, m.member_id, pool)) {
+        verified.push({ memberId: m.member_id, status: m.status });
+      }
+    }
+    await announceSnapshot(machineId, verified, pool);
   } else {
     // presence.heartbeat: cheap liveness ping, no member snapshot -- only
-    // renews last_seen for members already known via a prior announce.
+    // renews last_seen for members already known via a prior announce, and
+    // only if that member_id actually resolves in this workspace (same
+    // trust boundary as presence.announce above).
     const memberId = env.from.member_id;
-    if (memberId) await announce(machineId, memberId, 'online', pool);
+    if (memberId && (await getMember(claims.workspace_id, memberId, pool))) {
+      await announce(machineId, memberId, 'online', pool);
+    }
   }
   return { status: 200, body: { kind: 'presence.ack', payload: { next_heartbeat_due_ms: NEXT_HEARTBEAT_DUE_MS } } };
 }

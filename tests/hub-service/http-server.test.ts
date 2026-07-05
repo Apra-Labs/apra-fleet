@@ -315,21 +315,21 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   it('POST /ws/:id/envelopes accepts a presence.announce and POST /ws/:id/ack retires a relayed envelope end-to-end', async () => {
     const { token: machineToken } = sign({ member_id: 'mach-1', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
 
+    const created = await requestJson(port, 'POST', '/ws/ws-a/members', {
+      token: machineToken, body: { name: 'bob', provider: 'claude' },
+    });
+    const targetMemberId = created.body.member.id;
+
     const announce = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
       token: machineToken,
       body: {
         envelope_id: 'e-announce', workspace_id: 'ws-a', kind: 'presence.announce',
         from: { machine_id: 'mach-1', member_id: null }, to: {},
-        payload: { members: [{ member_id: 'mem-1', status: 'online' }] },
+        payload: { members: [{ member_id: targetMemberId, status: 'online' }] },
       },
     });
     expect(announce.status).toBe(200);
     expect(announce.body.kind).toBe('presence.ack');
-
-    const created = await requestJson(port, 'POST', '/ws/ws-a/members', {
-      token: machineToken, body: { name: 'bob', provider: 'claude' },
-    });
-    const targetMemberId = created.body.member.id;
 
     const submitted = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
       token: machineToken,
@@ -347,6 +347,21 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     });
     expect(acked.status).toBe(200);
     expect(acked.body).toEqual({ acked: true });
+  });
+
+  it('POST /ws/:id/ack (apra-fleet-us9.11.1) rejects acking a member_id not hosted on the calling machine, even within the same workspace', async () => {
+    const { token: machineToken } = sign({ member_id: 'mach-2', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+
+    // A real member exists in this workspace, but this machine has never
+    // announced presence for it -- it belongs to some OTHER machine.
+    const created = await requestJson(port, 'POST', '/ws/ws-a/members', { token: machineToken, body: { name: 'dave', provider: 'claude' } });
+    const neverAnnouncedMemberId = created.body.member.id;
+
+    const rejected = await requestJson(port, 'POST', '/ws/ws-a/ack', {
+      token: machineToken,
+      body: { envelope_id: 'whatever', member_id: neverAnnouncedMemberId },
+    });
+    expect(rejected.status).toBe(403);
   });
 
   it('GET /ws/:id/stream (apra-fleet-b55) pushes a relayed envelope to the correct machine, workspace-scoped', async () => {

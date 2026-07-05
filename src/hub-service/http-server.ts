@@ -305,6 +305,16 @@ export function createHttpServer(): HttpServerHandle {
         sendJson(res, 400, { error: 'envelope_id and member_id are required' });
         return;
       }
+      // apra-fleet-us9.11.1: verify memberId is actually hosted on the
+      // CALLING machine before acking -- otherwise a spoke could retire
+      // (suppress delivery of) an envelope addressed to a different
+      // member in the same workspace, one it doesn't host, by just
+      // guessing/knowing that member's id.
+      const hostedMembers = await listForMachine(claims.member_id, getPool());
+      if (!hostedMembers.some((m) => m.member_id === memberId)) {
+        sendJson(res, 403, { error: 'member_id is not hosted on the calling machine' });
+        return;
+      }
       await ackRelay(workspaceId, memberId, envelopeId, getPool());
       sendJson(res, 200, { acked: true });
       return;
