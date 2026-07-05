@@ -113,6 +113,10 @@ async function handleRelay(claims: HubJwtClaims, env: InboundEnvelope, pool: Poo
   }
 
   const ttlMs = env.ttl_ms ?? DEFAULT_TTL_MS[env.kind];
-  const row = await enqueue(claims.workspace_id, env.to.member_id, env.envelope_id, env.kind, env.payload, ttlMs, pool);
-  return { status: 202, body: { envelope_id: row.envelope_id, status: row.status } };
+  const originMemberId = env.from.member_id ?? claims.member_id;
+  const result = await enqueue(claims.workspace_id, env.to.member_id, env.envelope_id, env.kind, env.payload, ttlMs, pool, originMemberId);
+  if (!result.ok) {
+    return { status: 429, body: { error: `target queue full for ${env.to.member_id}` } };
+  }
+  return { status: 202, body: { envelope_id: result.envelope.envelope_id, status: result.envelope.status } };
 }

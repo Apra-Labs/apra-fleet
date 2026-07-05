@@ -41,8 +41,13 @@ import {
 import { getWorkspace } from './workspaces.js';
 import { generateEnrollmentToken, exchangeEnrollmentToken } from './enrollment.js';
 import { submitEnvelope, type InboundEnvelope } from './envelope-routes.js';
-import { ack as ackRelay } from './relay-queue.js';
+import { ack as ackRelay, fetchDeliverable } from './relay-queue.js';
+import { listForMachine } from './presence.js';
 import { getPool } from './db/pool.js';
+
+/** apra-fleet-b55: how often the SSE stream route polls relay_queue for
+ *  anything newly deliverable to a member on this machine. */
+const STREAM_POLL_INTERVAL_MS = 1000;
 
 /** Verifies the bearer token, its workspace match, AND that its jti hasn't
  *  been revoked (apra-fleet-us9.5: rotation revokes the prior token's jti,
@@ -190,6 +195,47 @@ export function createHttpServer(): HttpServerHandle {
       }
       const memberView = await getMemberView(workspaceId, memberId);
       sendJson(res, 200, { member: memberView, jwt });
+      return;
+    }
+
+    // /ws/:id/stream (apra-fleet-b55: hub -> spoke SSE delivery push,
+    // docs/hub-spoke-wire-protocol.md section 5 step 4). One stream per
+    // machine JWT; polls every POLL_INTERVAL_MS for anything deliverable to
+    // any member currently announced (presence.ts) on this machine.
+    if (segments[0] === 'ws' && segments[2] === 'stream' && segments.length === 3 && req.method === 'GET') {
+      const workspaceId = segments[1];
+      const claims = await authorize(req, workspaceId);
+      if (!claims) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const machineId = claims.member_id;
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      const pool = getPool();
+      let closed = false;
+      const poll = async () => {
+        if (closed) return;
+        const members = await listForMachine(machineId, pool);
+        for (const m of members) {
+          const deliverable = await fetchDeliverable(m.member_id, pool);
+          for (const envelope of deliverable) {
+            if (closed) return;
+            res.write(`data: ${JSON.stringify(envelope)}\n\n`);
+          }
+        }
+      };
+      const timer = setInterval(() => { poll().catch(() => {}); }, STREAM_POLL_INTERVAL_MS);
+      req.on('close', () => {
+        closed = true;
+        clearInterval(timer);
+      });
+      await poll();
       return;
     }
 

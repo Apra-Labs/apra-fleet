@@ -14,7 +14,7 @@ import { newDb } from 'pg-mem';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setPool, closePool } from '../../src/hub-service/db/pool.js';
-import { enqueue, fetchDeliverable, ack, sweepExpired } from '../../src/hub-service/relay-queue.js';
+import { enqueue, fetchDeliverable, ack, sweepExpired, sweepExpiredToFailures, MAX_QUEUE_DEPTH } from '../../src/hub-service/relay-queue.js';
 
 let pool: any;
 
@@ -27,14 +27,17 @@ async function freshPool() {
   });
   const { Pool } = db.adapters.createPg();
   const p = new Pool();
-  const migrationPath = path.join(process.cwd(), 'db', 'migrations', '001_hub_service_schema.sql');
-  const rawSql = fs.readFileSync(migrationPath, 'utf8');
-  // pg-mem compatibility shim ONLY: it doesn't parse UNLOGGED (a real-Postgres
-  // performance-only modifier with no semantic effect on query results). The
-  // real migration file is untouched -- this strips the keyword from the SQL
-  // text in-memory for this test harness alone.
-  const sql = rawSql.replace(/CREATE UNLOGGED TABLE/gi, 'CREATE TABLE');
-  await p.query(sql);
+  const migrationsDir = path.join(process.cwd(), 'db', 'migrations');
+  const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
+  for (const file of files) {
+    const rawSql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    // pg-mem compatibility shim ONLY: it doesn't parse UNLOGGED (a real-Postgres
+    // performance-only modifier with no semantic effect on query results). The
+    // real migration file is untouched -- this strips the keyword from the SQL
+    // text in-memory for this test harness alone.
+    const sql = rawSql.replace(/CREATE UNLOGGED TABLE/gi, 'CREATE TABLE');
+    await p.query(sql);
+  }
   return p;
 }
 
@@ -58,18 +61,29 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     expect(delivered[0].status).toBe('delivered');
   });
 
-  it('redelivers an already-delivered-but-unacked envelope on a second reconnect (no silent loss before ack)', async () => {
+  it('does NOT re-serve an already-delivered-but-unacked envelope before ack_timeout_ms elapses (apra-fleet-b55: redeliver-on-timeout, not redeliver-on-every-poll)', async () => {
     await enqueue('ws-test', 'member-b', 'env-2', 'execute_command', { cmd: 'echo redeliver' }, 60_000, pool);
 
     const firstFetch = await fetchDeliverable('member-b', pool);
     expect(firstFetch).toHaveLength(1);
 
-    const secondFetch = await fetchDeliverable('member-b', pool);
+    const immediateRefetch = await fetchDeliverable('member-b', pool);
+    expect(immediateRefetch).toHaveLength(0);
+  });
+
+  it('redelivers an already-delivered-but-unacked envelope once ack_timeout_ms has elapsed (no silent loss before ack)', async () => {
+    await enqueue('ws-test', 'member-b', 'env-2', 'execute_command', { cmd: 'echo redeliver' }, 60_000, pool);
+
+    const firstFetch = await fetchDeliverable('member-b', pool, 1);
+    expect(firstFetch).toHaveLength(1);
+    await new Promise(r => setTimeout(r, 20));
+
+    const secondFetch = await fetchDeliverable('member-b', pool, 1);
     expect(secondFetch).toHaveLength(1);
     expect(secondFetch[0].envelope_id).toBe('env-2');
 
     await ack('ws-test', 'member-b', 'env-2', pool);
-    const thirdFetch = await fetchDeliverable('member-b', pool);
+    const thirdFetch = await fetchDeliverable('member-b', pool, 1);
     expect(thirdFetch).toHaveLength(0);
   });
 
@@ -118,5 +132,47 @@ describe('relay-queue: at-least-once delivery (pg-mem, real SQL engine, no Docke
     // inside fetchDeliverable itself. Documented explicitly so nobody
     // assumes this function alone enforces the iron wall.
     expect(delivered).toHaveLength(2);
+  });
+
+  it('rejects the newest admission once a target member\'s queue hits the depth cap (never silently drops an older item)', async () => {
+    for (let i = 0; i < MAX_QUEUE_DEPTH; i++) {
+      const result = await enqueue('ws-test', 'member-full', `env-${i}`, 'execute_command', { i }, 60_000, pool);
+      expect(result.ok).toBe(true);
+    }
+    const rejected = await enqueue('ws-test', 'member-full', 'env-overflow', 'execute_command', { i: 'overflow' }, 60_000, pool);
+    expect(rejected).toEqual({ ok: false, reason: 'queue_full' });
+
+    // The oldest item is still there -- rejecting the newest, not evicting an older one.
+    const delivered = await fetchDeliverable('member-full', pool);
+    expect(delivered.some(d => d.envelope_id === 'env-0')).toBe(true);
+    expect(delivered.some(d => d.envelope_id === 'env-overflow')).toBe(false);
+  }, 20000);
+
+  it('apra-fleet-b55: TTL-expiring an execute_command.request generates a synthetic failed result back to the originator', async () => {
+    await enqueue('ws-test', 'target-member', 'req-1', 'execute_command.request', { cmd: 'too late' }, 1, pool, 'origin-member');
+    await new Promise(r => setTimeout(r, 20));
+
+    const expiredCount = await sweepExpiredToFailures(pool);
+    expect(expiredCount).toBeGreaterThanOrEqual(1);
+
+    // The original request is gone from the target's deliverable set...
+    const targetDeliverable = await fetchDeliverable('target-member', pool);
+    expect(targetDeliverable.some(d => d.envelope_id === 'req-1')).toBe(false);
+
+    // ...and a synthetic execute_command.result is now queued for the ORIGINATOR.
+    const originDeliverable = await fetchDeliverable('origin-member', pool);
+    const failure = originDeliverable.find(d => d.kind === 'execute_command.result');
+    expect(failure).toBeDefined();
+    expect(failure?.payload).toEqual({ status: 'target_offline_ttl_expired', correlation_id: 'req-1' });
+  });
+
+  it('apra-fleet-b55: TTL-expiring a kind with no FAILURE_RESULT_KIND mapping (event.broadcast) generates no synthetic follow-up', async () => {
+    await enqueue('ws-test', 'target-member', 'evt-1', 'event.broadcast', { text: 'hi' }, 1, pool, 'origin-member');
+    await new Promise(r => setTimeout(r, 20));
+
+    await sweepExpiredToFailures(pool);
+
+    const originDeliverable = await fetchDeliverable('origin-member', pool);
+    expect(originDeliverable).toHaveLength(0);
   });
 });

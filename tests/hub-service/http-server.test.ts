@@ -59,6 +59,41 @@ function requestJson(port: number, method: string, path: string, opts: { token?:
   });
 }
 
+/** Connects to an SSE endpoint, collects `data:` frames as they arrive,
+ *  and destroys the connection once `count` frames have been seen
+ *  (apra-fleet-b55's stream is a long-lived push, not a request/response --
+ *  requestJson's wait-for-'end' would hang forever on it). */
+function readSseFrames(port: number, path: string, token: string, count: number, timeoutMs = 5000): Promise<unknown[]> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: '127.0.0.1', port, path, method: 'GET', headers: { Authorization: `Bearer ${token}` } },
+      (res) => {
+        let buffer = '';
+        const frames: unknown[] = [];
+        const timer = setTimeout(() => { req.destroy(); reject(new Error(`readSseFrames timed out with ${frames.length}/${count} frames`)); }, timeoutMs);
+        res.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString('utf8');
+          let idx: number;
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const dataLines = raw.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim());
+            if (dataLines.length) frames.push(JSON.parse(dataLines.join('')));
+            if (frames.length >= count) {
+              clearTimeout(timer);
+              req.destroy();
+              resolve(frames);
+              return;
+            }
+          }
+        });
+      },
+    );
+    req.on('error', (err) => { if ((err as NodeJS.ErrnoException).code !== 'ECONNRESET') reject(err); });
+    req.end();
+  });
+}
+
 describe('hub http-server (apra-fleet-us9.4)', () => {
   let pool: any;
   let handle: HttpServerHandle;
@@ -311,5 +346,40 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     });
     expect(acked.status).toBe(200);
     expect(acked.body).toEqual({ acked: true });
+  });
+
+  it('GET /ws/:id/stream (apra-fleet-b55) pushes a relayed envelope to the correct machine, workspace-scoped', async () => {
+    const { token: machineToken } = sign({ member_id: 'mach-1', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+
+    const created = await requestJson(port, 'POST', '/ws/ws-a/members', { token: machineToken, body: { name: 'carol', provider: 'claude' } });
+    const targetMemberId = created.body.member.id;
+
+    await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
+      token: machineToken,
+      body: {
+        envelope_id: 'e-announce', workspace_id: 'ws-a', kind: 'presence.announce',
+        from: { machine_id: 'mach-1', member_id: null }, to: {},
+        payload: { members: [{ member_id: targetMemberId, status: 'online' }] },
+      },
+    });
+
+    await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
+      token: machineToken,
+      body: {
+        envelope_id: 'e-cmd-2', workspace_id: 'ws-a', kind: 'execute_command.request',
+        from: { machine_id: 'mach-1', member_id: null }, to: { machine_id: null, member_id: targetMemberId },
+        payload: { cmd: 'echo streamed' },
+      },
+    });
+
+    const frames = await readSseFrames(port, '/ws/ws-a/stream', machineToken, 1);
+    expect(frames).toHaveLength(1);
+    expect((frames[0] as any).envelope_id).toBe('e-cmd-2');
+    expect((frames[0] as any).payload).toEqual({ cmd: 'echo streamed' });
+  }, 10000);
+
+  it('rejects GET /ws/:id/stream with no token', async () => {
+    const noAuth = await requestJson(port, 'GET', '/ws/ws-a/stream');
+    expect(noAuth.status).toBe(401);
   });
 });
