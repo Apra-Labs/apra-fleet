@@ -22,6 +22,8 @@ const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
+const CYAN = '\x1b[36m';
+const YELLOW = '\x1b[33m';
 
 const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO_COLOR;
 
@@ -307,8 +309,10 @@ function pump(f: Follower, single: boolean, tailN: number, verbose: boolean): vo
   tailN = 0;
 }
 
-/** Wrap body text in the color for its line kind (no-op when color is off). */
-function paint(kind: LineKind | undefined, text: string): string {
+const TIME_W = 8; // "HH:MM:SS"
+
+/** Color for a line body based on its kind (no-op for 'info'). */
+function paintBody(kind: LineKind | undefined, text: string): string {
   switch (kind) {
     case 'add': return `${GREEN}${text}${RESET}`;
     case 'del': return `${RED}${text}${RESET}`;
@@ -318,21 +322,39 @@ function paint(kind: LineKind | undefined, text: string): string {
   }
 }
 
+/** Color for an action marker: '>' cyan (read), '*' yellow (edit), '$' green (bash). */
+function paintMarker(marker: string): string {
+  switch (marker) {
+    case '>': return `${CYAN}>${RESET}`;
+    case '*': return `${YELLOW}*${RESET}`;
+    case '$': return `${GREEN}$${RESET}`;
+    default: return ' ';
+  }
+}
+
 function emit(f: Follower, ev: FormattedEvent, single: boolean): void {
   const color = useColor();
-  const ts = ev.time ? `${ev.time} ` : '';
-  const body = color ? paint(ev.kind, ev.text) : ev.text;
-  if (single) {
-    const tsStr = color ? `${DIM}${ts}${RESET}` : ts;
-    console.log(`${tsStr}${body}`);
+
+  if (!color) {
+    // Plain text: keep it parseable and attributable.
+    const who = single ? '' : `${f.agent.friendlyName} | `;
+    if (ev.detail) { console.log(`${' '.repeat(single ? 6 : 0)}${who}  ${ev.text}`); return; }
+    const mk = ev.marker ? `${ev.marker} ` : '  ';
+    const ts = ev.time ? `${ev.time} ` : ' '.repeat(TIME_W + 1);
+    console.log(`${ts}${who}${mk}${ev.text}`);
     return;
   }
-  const label = `${f.agent.icon ?? ''} ${f.agent.friendlyName}`.trim();
-  if (color) {
-    console.log(`${DIM}${ts}${RESET}${f.color}${label}${RESET} ${body}`);
-  } else {
-    console.log(`${ts}${label} | ${ev.text}`);
+
+  const tsCell = `${DIM}${(ev.time ?? '').padEnd(TIME_W)}${RESET}`;
+  const label = single ? '' : ` ${f.color}${(f.agent.icon ?? '')} ${f.agent.friendlyName}${RESET}`;
+
+  if (ev.detail) {
+    // Indented continuation: blank time, no marker, colored body.
+    const indent = ' '.repeat(TIME_W);
+    console.log(`${indent}${label}    ${paintBody(ev.kind, ev.text)}`);
+    return;
   }
+  console.log(`${tsCell}${label}  ${paintMarker(ev.marker)} ${paintBody(ev.kind, ev.text)}`);
 }
 
 function printOverview(scope: MemberContext[], scopeLabel: string): void {

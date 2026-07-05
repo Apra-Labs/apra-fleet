@@ -125,14 +125,20 @@ the member is busy in a new one.
 
 ## Display
 
-- Each line is prefixed with the member's icon and name and colored per member,
-  so interleaved parallel streams stay legible (the `docker compose logs -f` model).
-- Layout adapts: a single followed member prints full-width without prefixes;
-  multiple members interleave with prefixes.
-- A normalizer collapses verbose transcript events into one-line summaries:
-  `> Read requirements.md`, `> Bash: run tests`, `assistant: Done, committed ...`.
-  Thinking blocks and tool results are suppressed by default to keep the stream
-  readable.
+- **Marker-forward lines.** Each event carries a colored ASCII action marker
+  (source is ASCII-only per repo convention, so no box-drawing glyphs):
+  - `>` (cyan) -- read-only tools (Read, Grep, Glob, ...)
+  - `*` (yellow) -- edits/writes (Edit, Write, NotebookEdit)
+  - `$` (green) -- Bash, with the command itself as the body
+  - no marker -- assistant prose (shown plain, no "assistant:" label)
+  Diff/output detail lines are indented under their action and colored by kind
+  (green added, red removed, dim for output/thinking).
+- Layout adapts: a single followed member prints full-width without a name
+  prefix; multiple members interleave, each line tagged with the member's colored
+  icon + name so parallel streams stay attributable (the `docker compose logs -f`
+  model).
+- A dim `HH:MM:SS` timestamp leads each event line; detail lines align beneath
+  without a timestamp.
 
 ## Architecture
 

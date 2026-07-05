@@ -7,7 +7,7 @@ function assistant(content: any[]): string {
   return JSON.stringify({ type: 'assistant', timestamp: ts, message: { role: 'assistant', content } });
 }
 
-describe('formatTranscriptLine (claude)', () => {
+describe('formatTranscriptLine (claude, compact)', () => {
   it('returns [] for invalid JSON', () => {
     expect(formatTranscriptLine('claude', 'not json')).toEqual([]);
   });
@@ -16,35 +16,39 @@ describe('formatTranscriptLine (claude)', () => {
     expect(formatTranscriptLine('claude', '   ')).toEqual([]);
   });
 
-  it('suppresses user/tool_result events', () => {
+  it('suppresses user/tool_result events in compact mode', () => {
     const line = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result' }] } });
     expect(formatTranscriptLine('claude', line)).toEqual([]);
   });
 
-  it('suppresses thinking blocks', () => {
-    expect(formatTranscriptLine('claude', assistant([{ type: 'thinking', text: 'hmm' }]))).toEqual([]);
+  it('suppresses thinking blocks in compact mode', () => {
+    expect(formatTranscriptLine('claude', assistant([{ type: 'thinking', thinking: 'hmm' }]))).toEqual([]);
   });
 
-  it('formats an assistant text block, truncated and prefixed', () => {
+  it('renders assistant prose with no marker and no "assistant:" label', () => {
     const out = formatTranscriptLine('claude', assistant([{ type: 'text', text: 'Now I will implement the change.' }]));
     expect(out).toHaveLength(1);
-    expect(out[0].text).toBe('assistant: Now I will implement the change.');
-    // time is rendered in local tz, so assert format not value
+    expect(out[0].marker).toBe('');
+    expect(out[0].text).toBe('Now I will implement the change.');
     expect(out[0].time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
   });
 
-  it('formats Read/Edit/Write tool_use as tool + basename', () => {
-    const out = formatTranscriptLine('claude', assistant([
-      { type: 'tool_use', name: 'Edit', input: { file_path: '/a/b/add.js' } },
-    ]));
-    expect(out[0].text).toBe('> Edit add.js');
+  it('marks edits with * and reads with >', () => {
+    const edit = formatTranscriptLine('claude', assistant([{ type: 'tool_use', name: 'Edit', input: { file_path: '/a/b/add.js' } }]));
+    expect(edit[0].marker).toBe('*');
+    expect(edit[0].text).toBe('Edit add.js');
+
+    const read = formatTranscriptLine('claude', assistant([{ type: 'tool_use', name: 'Read', input: { file_path: '/a/b/add.js' } }]));
+    expect(read[0].marker).toBe('>');
+    expect(read[0].text).toBe('Read add.js');
   });
 
-  it('formats Bash tool_use using description when present', () => {
+  it('marks Bash with $ and shows the command (not the description) as the body', () => {
     const out = formatTranscriptLine('claude', assistant([
-      { type: 'tool_use', name: 'Bash', input: { command: 'cd /x && node t.js', description: 'Run the test file' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'node t.js', description: 'Run the test file' } },
     ]));
-    expect(out[0].text).toBe('> Bash: Run the test file');
+    expect(out[0].marker).toBe('$');
+    expect(out[0].text).toBe('node t.js');
   });
 
   it('emits one line per block for multi-block messages', () => {
@@ -52,7 +56,7 @@ describe('formatTranscriptLine (claude)', () => {
       { type: 'text', text: 'Doing two things' },
       { type: 'tool_use', name: 'Read', input: { file_path: '/a/requirements.md' } },
     ]));
-    expect(out.map((e) => e.text)).toEqual(['assistant: Doing two things', '> Read requirements.md']);
+    expect(out.map((e) => `${e.marker}|${e.text}`)).toEqual(['|Doing two things', '>|Read requirements.md']);
   });
 
   it('unknown provider falls back to a compact preview', () => {
@@ -63,35 +67,36 @@ describe('formatTranscriptLine (claude)', () => {
 });
 
 describe('formatTranscriptLine (claude, verbose)', () => {
-  it('renders an Edit as a header plus a - / + diff', () => {
+  it('renders an Edit as a header plus a - / + diff, marked as detail', () => {
     const line = assistant([
       { type: 'tool_use', name: 'Edit', input: { file_path: '/a/cart.js', old_string: 'const X = 1;', new_string: 'const X = 2;' } },
     ]);
     const out = formatTranscriptLine('claude', line, true);
-    expect(out[0].text).toBe('> Edit cart.js');
+    expect(out[0]).toMatchObject({ marker: '*', text: 'Edit cart.js' });
     const del = out.find((e) => e.kind === 'del');
     const add = out.find((e) => e.kind === 'add');
-    expect(del?.text).toContain('- const X = 1;');
-    expect(add?.text).toContain('+ const X = 2;');
+    expect(del).toMatchObject({ detail: true, text: '- const X = 1;' });
+    expect(add).toMatchObject({ detail: true, text: '+ const X = 2;' });
   });
 
-  it('renders Write content as added lines', () => {
+  it('renders Write content as added detail lines', () => {
     const line = assistant([
       { type: 'tool_use', name: 'Write', input: { file_path: '/a/n.md', content: 'line1\nline2' } },
     ]);
     const out = formatTranscriptLine('claude', line, true);
-    expect(out[0].text).toBe('> Write n.md');
-    expect(out.filter((e) => e.kind === 'add').map((e) => e.text)).toEqual(['    + line1', '    + line2']);
+    expect(out[0]).toMatchObject({ marker: '*', text: 'Write n.md' });
+    expect(out.filter((e) => e.kind === 'add').map((e) => e.text)).toEqual(['+ line1', '+ line2']);
   });
 
-  it('shows the full Bash command in verbose but only description in compact', () => {
+  it('shows Bash continuation lines only in verbose', () => {
     const line = assistant([
-      { type: 'tool_use', name: 'Bash', input: { command: 'node test.js', description: 'Run tests' } },
+      { type: 'tool_use', name: 'Bash', input: { command: 'echo one\necho two', description: 'x' } },
     ]);
-    expect(formatTranscriptLine('claude', line, false).map((e) => e.text)).toEqual(['> Bash: Run tests']);
+    const compact = formatTranscriptLine('claude', line, false);
+    expect(compact).toHaveLength(1);
+    expect(compact[0].text).toBe('echo one'); // header = first line
     const v = formatTranscriptLine('claude', line, true);
-    expect(v[0].text).toBe('> Bash: Run tests');
-    expect(v.some((e) => e.text.includes('$ node test.js'))).toBe(true);
+    expect(v.some((e) => e.detail && e.text === 'echo two')).toBe(true);
   });
 
   it('renders tool_result output only in verbose', () => {
@@ -101,16 +106,16 @@ describe('formatTranscriptLine (claude, verbose)', () => {
     });
     expect(formatTranscriptLine('claude', line, false)).toEqual([]);
     const v = formatTranscriptLine('claude', line, true);
-    expect(v.some((e) => e.kind === 'out' && e.text.includes('All tests passed'))).toBe(true);
+    expect(v.some((e) => e.kind === 'out' && e.detail && e.text.includes('All tests passed'))).toBe(true);
   });
 
-  it('marks error tool_results as del kind', () => {
+  it('marks error tool_results as del kind with a ! prefix', () => {
     const line = JSON.stringify({
       type: 'user',
       message: { content: [{ type: 'tool_result', content: 'boom', is_error: true }] },
     });
     const v = formatTranscriptLine('claude', line, true);
-    expect(v.some((e) => e.kind === 'del' && e.text.includes('boom'))).toBe(true);
+    expect(v.some((e) => e.kind === 'del' && e.text === '! boom')).toBe(true);
   });
 
   it('caps long content and notes how many lines were hidden', () => {
@@ -118,5 +123,13 @@ describe('formatTranscriptLine (claude, verbose)', () => {
     const line = assistant([{ type: 'tool_use', name: 'Write', input: { file_path: '/a/big.txt', content } }]);
     const v = formatTranscriptLine('claude', line, true);
     expect(v.some((e) => e.text.includes('more lines'))).toBe(true);
+  });
+
+  it('includes thinking (dimmed) only in verbose', () => {
+    const line = assistant([{ type: 'thinking', thinking: 'let me consider the options' }]);
+    expect(formatTranscriptLine('claude', line, false)).toEqual([]);
+    const v = formatTranscriptLine('claude', line, true);
+    expect(v[0]).toMatchObject({ kind: 'dim', marker: '' });
+    expect(v[0].text).toContain('thinking:');
   });
 });

@@ -1,21 +1,28 @@
 import path from 'node:path';
 
-/** Visual class of a line, so the renderer can color it. */
+/** Visual class of a line body, so the renderer can color it. */
 export type LineKind = 'info' | 'add' | 'del' | 'dim' | 'out';
+
+/** Action marker shown before a line: read-only tool, edit/write, bash, or none. */
+export type Marker = '' | '>' | '*' | '$';
 
 /** One human-readable line derived from a transcript event. */
 export interface FormattedEvent {
-  /** HH:MM:SS from the event timestamp, or null (detail lines have no time). */
+  /** HH:MM:SS from the event timestamp, or null (detail lines carry no time). */
   time: string | null;
-  /** The summary text, without member prefix or color. */
+  /** Action marker; '' for prose and detail lines. */
+  marker: Marker;
+  /** The body text -- no marker, no leading indent (the renderer adds those). */
   text: string;
-  /** Visual class; defaults to 'info'. */
-  kind?: LineKind;
+  /** Body color class; defaults to 'info'. */
+  kind: LineKind;
+  /** Detail line (diff/content/output) -- rendered indented, without a timestamp. */
+  detail?: boolean;
 }
 
 const MAX_DETAIL_LINES = 20; // cap per edit/write/result block in verbose mode
 
-/** Collapse whitespace and cap length -- for summary lines (prose). */
+/** Collapse whitespace and cap length -- for prose. */
 function truncate(s: string, n: number): string {
   const oneLine = s.replace(/\s+/g, ' ').trim();
   return oneLine.length > n ? oneLine.slice(0, n - 3) + '...' : oneLine;
@@ -33,30 +40,49 @@ function timeOf(ev: any): string | null {
   return d.toTimeString().slice(0, 8);
 }
 
-/** Render a block of text as capped, prefixed detail lines of a given kind. */
+/** Render a block of text as capped detail lines of a given kind, with an optional per-line prefix. */
 function detailLines(text: string, prefix: string, kind: LineKind): FormattedEvent[] {
   const lines = text.split('\n');
   const out: FormattedEvent[] = [];
   for (const line of lines.slice(0, MAX_DETAIL_LINES)) {
-    out.push({ time: null, kind, text: '    ' + prefix + clip(line, 200) });
+    out.push({ time: null, marker: '', kind, detail: true, text: prefix + clip(line, 200) });
   }
   if (lines.length > MAX_DETAIL_LINES) {
-    out.push({ time: null, kind: 'dim', text: `    ... (${lines.length - MAX_DETAIL_LINES} more lines)` });
+    out.push({ time: null, marker: '', kind: 'dim', detail: true, text: `... (${lines.length - MAX_DETAIL_LINES} more lines)` });
   }
   return out;
 }
 
-/** Short detail string for a tool_use block, e.g. the file or command it acts on. */
-function toolDetail(tool: string, input: any): string {
+/** Marker for a tool: '*' mutating, '$' bash, '>' everything else (read-only). */
+function toolMarker(tool: string): Marker {
+  switch (tool) {
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Write':
+    case 'NotebookEdit':
+      return '*';
+    case 'Bash':
+      return '$';
+    default:
+      return '>';
+  }
+}
+
+/** Header body for a tool_use block (marker rendered separately). */
+function toolHeader(tool: string, input: any): string {
   if (!input || typeof input !== 'object') return tool;
   switch (tool) {
     case 'Read':
     case 'Edit':
+    case 'MultiEdit':
     case 'Write':
     case 'NotebookEdit':
       return input.file_path ? `${tool} ${path.basename(String(input.file_path))}` : tool;
-    case 'Bash':
-      return `Bash: ${truncate(String(input.description || input.command || ''), 60)}`;
+    case 'Bash': {
+      // Body after the '$' marker is the command itself (first line).
+      const cmd = typeof input.command === 'string' ? input.command.split('\n')[0] : '';
+      return cmd ? clip(cmd, 100) : truncate(String(input.description || 'Bash'), 60);
+    }
     case 'Grep':
     case 'Glob':
       return input.pattern ? `${tool} ${truncate(String(input.pattern), 40)}` : tool;
@@ -68,11 +94,12 @@ function toolDetail(tool: string, input: any): string {
   }
 }
 
-/** In verbose mode, the detail lines that follow a tool_use header. */
+/** Verbose detail lines that follow a tool_use header. */
 function toolVerboseDetail(tool: string, input: any): FormattedEvent[] {
   if (!input || typeof input !== 'object') return [];
   switch (tool) {
     case 'Edit':
+    case 'MultiEdit':
     case 'NotebookEdit': {
       const out: FormattedEvent[] = [];
       if (typeof input.old_string === 'string' && input.old_string.length > 0) {
@@ -85,8 +112,12 @@ function toolVerboseDetail(tool: string, input: any): FormattedEvent[] {
     }
     case 'Write':
       return typeof input.content === 'string' ? detailLines(input.content, '+ ', 'add') : [];
-    case 'Bash':
-      return typeof input.command === 'string' ? detailLines(input.command, '$ ', 'dim') : [];
+    case 'Bash': {
+      // Header already shows line 1; show any continuation lines dimmed.
+      if (typeof input.command !== 'string') return [];
+      const rest = input.command.split('\n').slice(1);
+      return rest.length > 0 ? detailLines(rest.join('\n'), '', 'dim') : [];
+    }
     default:
       return [];
   }
@@ -103,31 +134,28 @@ function toolResultText(content: any): string {
   return '';
 }
 
-/** Format a Claude transcript event into zero or more display lines. */
 function formatClaude(ev: any, verbose: boolean): FormattedEvent[] {
   const time = timeOf(ev);
   const content = ev.message?.content;
 
-  // Assistant turns: text, tool calls, and (verbose) thinking.
   if (ev.type === 'assistant') {
     if (!Array.isArray(content)) return [];
     const out: FormattedEvent[] = [];
     for (const block of content) {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-        out.push({ time, text: `assistant: ${truncate(block.text, verbose ? 400 : 100)}` });
+        // Prose: no label, no marker.
+        out.push({ time, marker: '', kind: 'info', text: truncate(block.text, verbose ? 400 : 100) });
       } else if (block.type === 'tool_use' && typeof block.name === 'string') {
-        out.push({ time, text: `> ${toolDetail(block.name, block.input)}` });
+        out.push({ time, marker: toolMarker(block.name), kind: 'info', text: toolHeader(block.name, block.input) });
         if (verbose) out.push(...toolVerboseDetail(block.name, block.input));
       } else if (block.type === 'thinking' && verbose && typeof block.thinking === 'string' && block.thinking.trim()) {
-        out.push({ time, kind: 'dim', text: `(thinking) ${truncate(block.thinking, 240)}` });
+        out.push({ time, marker: '', kind: 'dim', text: `thinking: ${truncate(block.thinking, 240)}` });
       }
     }
     return out;
   }
 
-  // User turns: only tool results, and only in verbose mode (the initial prompt
-  // and non-result user content are skipped).
   if (ev.type === 'user' && verbose && Array.isArray(content)) {
     const out: FormattedEvent[] = [];
     for (const block of content) {
@@ -162,5 +190,5 @@ export function formatTranscriptLine(provider: string, raw: string, verbose = fa
   if (provider === 'claude') return formatClaude(ev, verbose);
 
   const preview = truncate(typeof ev === 'string' ? ev : JSON.stringify(ev), 100);
-  return preview ? [{ time: timeOf(ev), text: preview }] : [];
+  return preview ? [{ time: timeOf(ev), marker: '', kind: 'info', text: preview }] : [];
 }
