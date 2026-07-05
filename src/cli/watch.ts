@@ -56,6 +56,7 @@ interface FleetLogState {
   offset: number;
   leftover: string;
   backfilled: boolean;
+  mtime: number;
 }
 
 /** Newest *.jsonl in a directory, or null. */
@@ -233,17 +234,29 @@ export async function runWatch(args: string[]): Promise<void> {
   if (!fleetLogFile) console.log(`${DIM}(no fleet server log found -- command activity will not show until the server logs one)${RESET}`);
   console.log('');
 
-  const fl: FleetLogState = { file: fleetLogFile, offset: 0, leftover: '', backfilled: false };
+  const fl: FleetLogState = {
+    file: fleetLogFile, offset: 0, leftover: '', backfilled: false,
+    mtime: fleetLogFile ? mtimeOf(fleetLogFile) : 0,
+  };
 
   // Prime (with optional backfill), then poll.
   pumpFleetLog(fl, byKey, single, tailN, verbose);
   for (const f of followers) pumpTranscript(f, single, tailN, verbose);
 
   const timer = setInterval(() => {
-    // Fleet log may roll over to a new server pid.
+    // The server rolls its log on restart (new pid). Follow a STRICTLY newer log
+    // (not just any different one -- short-lived servers create noise logs with
+    // fresh mtimes), and jump to its END rather than replaying its history.
     const newestLog = resolveFleetLogFile();
     if (newestLog && newestLog !== fl.file) {
-      fl.file = newestLog; fl.offset = 0; fl.leftover = ''; fl.backfilled = true;
+      const m = mtimeOf(newestLog);
+      if (m > fl.mtime) {
+        fl.file = newestLog;
+        fl.mtime = m;
+        try { fl.offset = fs.statSync(newestLog).size; } catch { fl.offset = 0; }
+        fl.leftover = '';
+        fl.backfilled = true;
+      }
     }
     pumpFleetLog(fl, byKey, single, 0, verbose);
 
