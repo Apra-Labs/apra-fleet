@@ -23,15 +23,23 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { verify as verifyHubJwt, type HubJwtClaims } from './hub-jwt.js';
-import { createMember, type MemberRow } from './members.js';
+import { createMember, listMembers, type MemberRow } from './members.js';
 import { listMemberViews, getMemberView } from './member-view.js';
-import { createProject, updateProject, deleteProject, addProjectMember, type ProjectRow } from './projects.js';
+import { createProject, updateProject, deleteProject, addProjectMember, listProjects, type ProjectRow } from './projects.js';
 import { listProjectViews } from './project-view.js';
 import { getCostResponse } from './usage.js';
 import { getActivityFeed } from './activity.js';
 import { issueMemberToken, rotateMemberToken } from './member-tokens.js';
 import { isRevoked } from './jwt-revocation.js';
 import { getInstallersHandler } from './handlers/installers.js';
+import { sign as signHubJwt } from './hub-jwt.js';
+import { signSession, verifySession } from './session-jwt.js';
+import {
+  findOrCreateUser, getUser, listUsers, approveUser,
+  updateUserRole, deleteUser, listUserWorkspaceIds, hasWorkspaceAccess,
+  type UserRow,
+} from './users.js';
+import { getWorkspace } from './workspaces.js';
 
 /** Verifies the bearer token, its workspace match, AND that its jti hasn't
  *  been revoked (apra-fleet-us9.5: rotation revokes the prior token's jti,
@@ -43,6 +51,34 @@ async function authorize(req: http.IncomingMessage, workspaceId: string): Promis
   if (!claims || claims.workspace_id !== workspaceId) return null;
   if (await isRevoked(claims.jti)) return null;
   return claims;
+}
+
+/** Verifies a dashboard OAuth session token (apra-fleet-us9.16) and its
+ *  revocation status. Identity-only -- no workspace_id, see session-jwt.ts. */
+async function authorizeSession(req: http.IncomingMessage): Promise<{ sub: string } | null> {
+  const token = extractBearer(req);
+  const claims = token ? verifySession(token) : null;
+  if (!claims) return null;
+  if (await isRevoked(claims.jti)) return null;
+  return claims;
+}
+
+/**
+ * A session token's user must be status='approved' AND is_platform_admin
+ * to reach /admin/users/* -- both checked here, not just token validity.
+ * A pending/rejected user must never reach a real route just because a
+ * session token exists (docs/dashboard-oauth-rbac-design.md section 3).
+ */
+async function requirePlatformAdmin(req: http.IncomingMessage): Promise<UserRow | null> {
+  const session = await authorizeSession(req);
+  if (!session) return null;
+  const user = await getUser(session.sub);
+  if (!user || user.status !== 'approved' || !user.is_platform_admin) return null;
+  return user;
+}
+
+function secondsSince(iso: string): number {
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
 }
 
 export interface HttpServerHandle {
@@ -282,6 +318,206 @@ export function createHttpServer(): HttpServerHandle {
         return;
       }
       sendJson(res, 200, await getActivityFeed(workspaceId));
+      return;
+    }
+
+    // POST /auth/oauth/:provider (apra-fleet-us9.16)
+    // Stub identity resolution: the actual Google/Microsoft OAuth token
+    // exchange (redirect handling, CSRF/state, library choice) is
+    // deliberately out of scope here -- see
+    // docs/dashboard-oauth-rbac-design.md section 5 ("well-trodden ground").
+    // The body is treated as an ALREADY-VERIFIED identity from that
+    // exchange ({oauthSubject, email, name}); wiring in a real OAuth
+    // library replaces only this body-parsing step, not the RBAC state
+    // machine below it.
+    if (segments[0] === 'auth' && segments[1] === 'oauth' && segments.length === 3 && req.method === 'POST') {
+      const provider = segments[2];
+      if (provider !== 'google' && provider !== 'microsoft') {
+        sendJson(res, 400, { error: 'unsupported provider' });
+        return;
+      }
+      let body: unknown;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+      const input = body as { oauthSubject?: unknown; email?: unknown; name?: unknown };
+      if (typeof input?.oauthSubject !== 'string' || typeof input?.email !== 'string' || typeof input?.name !== 'string') {
+        sendJson(res, 400, { error: 'oauthSubject, email, and name are required' });
+        return;
+      }
+      const user = await findOrCreateUser(crypto.randomUUID(), provider, input.oauthSubject, input.email, input.name);
+      const { token } = signSession(user.id);
+      sendJson(res, 200, { jwt: token });
+      return;
+    }
+
+    // GET /workspaces (apra-fleet-us9.16): session token only, no :id --
+    // lists every workspace this user has access to. A pending/unassigned
+    // user gets an empty array, not an error (a legitimate, non-error
+    // state per the design doc).
+    if (segments[0] === 'workspaces' && segments.length === 1 && req.method === 'GET') {
+      const session = await authorizeSession(req);
+      if (!session) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const user = await getUser(session.sub);
+      if (!user || user.status !== 'approved') {
+        sendJson(res, 200, []);
+        return;
+      }
+      const workspaceIds = await listUserWorkspaceIds(user.id);
+      const result = [];
+      for (const id of workspaceIds) {
+        const ws = await getWorkspace(id);
+        if (!ws) continue;
+        const [members, projects] = await Promise.all([listMembers(id), listProjects(id)]);
+        result.push({ id: ws.id, name: ws.name, role: user.role, members: members.length, projects: projects.length });
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
+    // POST /workspaces/:id/select (apra-fleet-us9.16 addition, not in the
+    // strict Endpoints contract map -- a pragmatic bridge the design doc's
+    // flow needed but the contract didn't name): exchanges a session token
+    // + workspace access for a workspace-scoped token that authenticates
+    // every /ws/:id/... route already built. Reuses hub-jwt.ts's existing
+    // shape (member_id/workspace_id/role) rather than inventing a third
+    // claim shape -- see session-jwt.ts's header comment on the
+    // not-yet-reconciled claim-shape family.
+    if (segments[0] === 'workspaces' && segments.length === 3 && segments[2] === 'select' && req.method === 'POST') {
+      const workspaceId = segments[1];
+      const session = await authorizeSession(req);
+      if (!session) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const user = await getUser(session.sub);
+      if (!user || user.status !== 'approved' || !user.role) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      if (!(await hasWorkspaceAccess(user.id, workspaceId))) {
+        // Same non-leaking shape as every other auth mismatch in this file:
+        // "not assigned to this workspace" is indistinguishable from
+        // "workspace doesn't exist" or "wrong token".
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const { token } = signHubJwt({ member_id: user.id, workspace_id: workspaceId, role: user.role });
+      sendJson(res, 200, { jwt: token });
+      return;
+    }
+
+    // /admin/users (apra-fleet-us9.16): platform-admin only. A non-
+    // platform-admin (including a superadmin of just one workspace) gets
+    // the exact same 401 as an invalid token -- never leaks that the
+    // route exists or that other users do.
+    if (segments[0] === 'admin' && segments[1] === 'users' && segments.length === 2 && req.method === 'GET') {
+      if (!(await requirePlatformAdmin(req))) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const users = await listUsers();
+      const result = await Promise.all(users.map(async (u) => ({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        provider: u.oauth_provider,
+        status: u.status,
+        role: u.role ?? undefined,
+        workspaces: await listUserWorkspaceIds(u.id),
+        signedUpAt: secondsSince(u.created_at),
+        lastLoginAt: u.last_login_at ? secondsSince(u.last_login_at) : null,
+      })));
+      sendJson(res, 200, result);
+      return;
+    }
+
+    // PUT /admin/users/:id/approve
+    if (segments[0] === 'admin' && segments[1] === 'users' && segments[3] === 'approve' && segments.length === 4 && req.method === 'PUT') {
+      if (!(await requirePlatformAdmin(req))) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const targetUserId = segments[2];
+      let body: unknown;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+      const input = body as { role?: unknown; workspaces?: unknown };
+      if (input?.role !== 'member' && input?.role !== 'admin' && input?.role !== 'superadmin') {
+        sendJson(res, 400, { error: 'role must be one of member, admin, superadmin' });
+        return;
+      }
+      const workspaceIds = Array.isArray(input.workspaces) ? input.workspaces.filter((w): w is string => typeof w === 'string') : [];
+      const updated = await approveUser(targetUserId, input.role, workspaceIds);
+      if (!updated) {
+        sendJson(res, 404, { error: 'user not found' });
+        return;
+      }
+      sendJson(res, 200, {
+        id: updated.id, name: updated.name, email: updated.email, provider: updated.oauth_provider,
+        status: updated.status, role: updated.role, workspaces: await listUserWorkspaceIds(updated.id),
+        signedUpAt: secondsSince(updated.created_at), lastLoginAt: updated.last_login_at ? secondsSince(updated.last_login_at) : null,
+      });
+      return;
+    }
+
+    // PUT /admin/users/:id/role -- a platform-admin gate independent of any
+    // per-workspace role (a member-role user cannot reach this route at
+    // all, regardless of what role they hold anywhere).
+    if (segments[0] === 'admin' && segments[1] === 'users' && segments[3] === 'role' && segments.length === 4 && req.method === 'PUT') {
+      if (!(await requirePlatformAdmin(req))) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const targetUserId = segments[2];
+      let body: unknown;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+      const input = body as { role?: unknown };
+      if (input?.role !== 'member' && input?.role !== 'admin' && input?.role !== 'superadmin') {
+        sendJson(res, 400, { error: 'role must be one of member, admin, superadmin' });
+        return;
+      }
+      const updated = await updateUserRole(targetUserId, input.role);
+      if (!updated) {
+        sendJson(res, 404, { error: 'user not found' });
+        return;
+      }
+      sendJson(res, 200, {
+        id: updated.id, name: updated.name, email: updated.email, provider: updated.oauth_provider,
+        status: updated.status, role: updated.role, workspaces: await listUserWorkspaceIds(updated.id),
+        signedUpAt: secondsSince(updated.created_at), lastLoginAt: updated.last_login_at ? secondsSince(updated.last_login_at) : null,
+      });
+      return;
+    }
+
+    // DELETE /admin/users/:id
+    if (segments[0] === 'admin' && segments[1] === 'users' && segments.length === 3 && req.method === 'DELETE') {
+      if (!(await requirePlatformAdmin(req))) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const targetUserId = segments[2];
+      const deleted = await deleteUser(targetUserId);
+      if (!deleted) {
+        sendJson(res, 404, { error: 'user not found' });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
       return;
     }
 
