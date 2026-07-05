@@ -31,7 +31,7 @@ export async function issueMemberToken(
   memberId: string,
   pool: Pool = getPool(),
 ): Promise<string> {
-  const { token, jti } = sign({ member_id: memberId, workspace_id: workspaceId, role: 'doer' });
+  const { token, jti } = sign({ sub: memberId, ws: workspaceId, role: 'doer' });
   await setCurrentJti(workspaceId, memberId, jti, pool);
   return token;
 }

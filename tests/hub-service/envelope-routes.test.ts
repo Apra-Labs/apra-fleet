@@ -33,7 +33,7 @@ async function freshPool() {
   return p;
 }
 
-const claims = (workspaceId: string, machineId: string) => ({ member_id: machineId, workspace_id: workspaceId, role: 'spoke', jti: 'jti-1' });
+const claims = (workspaceId: string, machineId: string) => ({ sub: machineId, ws: workspaceId, iss: 'hub', exp: Math.floor(Date.now() / 1000) + 3600, role: 'spoke', jti: 'jti-1' });
 
 describe('submitEnvelope (apra-fleet-us9.6 slice 1)', () => {
   beforeEach(async () => {

@@ -8,17 +8,14 @@
  * workspace-scoped token authenticates every /ws/:id/... route (see
  * http-server.ts's mintWorkspaceToken, which reuses hub-jwt.ts).
  *
- * Known, documented drift (not fixed here -- see http-server.ts's own
- * comment on this): this deliberately does NOT reuse hub-jwt.ts's
- * HubJwtClaims shape (member_id/workspace_id/role), since a human dashboard
- * user's session identity is a genuinely different concept from a
- * member/spoke token. It also does not yet match the published
- * JWTClaimsSchema's exact field names (iss/ws/sub/exp/role) -- that schema
- * assumes a workspace is already selected (`ws` is required), which a
- * session token by definition has not. Reconciling the full claim-shape
- * family (member tokens, session tokens, workspace-selection tokens) is a
- * legitimate follow-up, not silently resolved by picking new field names
- * with no scrutiny.
+ * hub-jwt.ts's HubJwtClaims now matches JWTClaimsSchema's field names
+ * (iss/ws/sub/exp/role, fixed 2026-07-05 -- see hub-jwt.ts's own header
+ * comment), but this session token still deliberately does NOT reuse that
+ * shape wholesale: JWTClaimsSchema's `ws` is required, and a session token
+ * by definition has no workspace yet (that's the whole point -- "list all
+ * MY workspaces" must be answerable before one is selected). SessionClaims
+ * is intentionally a strict subset (sub, jti), not a workspace-shaped
+ * claims object with a fake/empty `ws`.
  */
 import crypto from 'node:crypto';
 

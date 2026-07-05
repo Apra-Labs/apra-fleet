@@ -54,9 +54,9 @@ export interface ExchangeResult {
  * and unused (atomically claiming it in the same statement -- a second
  * concurrent exchange attempt for the same token loses the race and gets
  * null, never a second valid machine/JWT pair). Registers the machine and
- * mints its JWT (hub-jwt.ts's existing shape, member_id slot repurposed to
- * hold machine_id -- see session-jwt.ts's header comment on the
- * not-yet-reconciled claim-shape family).
+ * mints its JWT (hub-jwt.ts's `sub` claim slot repurposed to hold
+ * machine_id for a machine-level token -- there is no separate machine_id
+ * claim; see hub-jwt.ts's own header comment).
  */
 export async function exchangeEnrollmentToken(
   token: string,
@@ -75,7 +75,7 @@ export async function exchangeEnrollmentToken(
 
   const machineId = crypto.randomUUID();
   await registerMachine(machineId, row.workspace_id, hostname, pool);
-  const { token: jwt } = signHubJwt({ member_id: machineId, workspace_id: row.workspace_id, role: row.role });
+  const { token: jwt } = signHubJwt({ sub: machineId, ws: row.workspace_id, role: row.role });
 
   return { machineId, workspaceId: row.workspace_id, jwt };
 }

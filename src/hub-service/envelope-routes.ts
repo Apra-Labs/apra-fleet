@@ -72,7 +72,7 @@ export async function submitEnvelope(
   env: InboundEnvelope,
   pool: Pool = getPool(),
 ): Promise<SubmitResult> {
-  if (env.workspace_id !== claims.workspace_id) {
+  if (env.workspace_id !== claims.ws) {
     return { status: 400, body: { error: 'workspace_id does not match bearer token' } };
   }
 
@@ -92,7 +92,7 @@ async function handlePresence(claims: HubJwtClaims, env: InboundEnvelope, pool: 
   // machine tokens are minted via enrollment.ts's exchangeEnrollmentToken
   // with member_id set to the new machine's id -- there is no separate
   // machine_id claim).
-  const machineId = claims.member_id;
+  const machineId = claims.sub;
   if (env.kind === 'presence.announce') {
     const members = (env.payload as { members?: Array<{ member_id: string; status: string }> } | undefined)?.members ?? [];
     // apra-fleet-us9.11.1: each announced member_id must actually resolve
@@ -105,7 +105,7 @@ async function handlePresence(claims: HubJwtClaims, env: InboundEnvelope, pool: 
     // block the rest of the machine's real members from being announced.
     const verified: Array<{ memberId: string; status: string }> = [];
     for (const m of members) {
-      if (await getMember(claims.workspace_id, m.member_id, pool)) {
+      if (await getMember(claims.ws, m.member_id, pool)) {
         verified.push({ memberId: m.member_id, status: m.status });
       }
     }
@@ -116,7 +116,7 @@ async function handlePresence(claims: HubJwtClaims, env: InboundEnvelope, pool: 
     // only if that member_id actually resolves in this workspace (same
     // trust boundary as presence.announce above).
     const memberId = env.from.member_id;
-    if (memberId && (await getMember(claims.workspace_id, memberId, pool))) {
+    if (memberId && (await getMember(claims.ws, memberId, pool))) {
       await announce(machineId, memberId, 'online', pool);
     }
   }
@@ -125,7 +125,7 @@ async function handlePresence(claims: HubJwtClaims, env: InboundEnvelope, pool: 
 
 async function handleRelay(claims: HubJwtClaims, env: InboundEnvelope, pool: Pool): Promise<SubmitResult> {
   if (env.to.member_id) {
-    const target = await getMember(claims.workspace_id, env.to.member_id, pool);
+    const target = await getMember(claims.ws, env.to.member_id, pool);
     if (!target) {
       return { status: 403, body: { error: 'target member does not resolve in this workspace' } };
     }
@@ -134,8 +134,8 @@ async function handleRelay(claims: HubJwtClaims, env: InboundEnvelope, pool: Poo
   }
 
   const ttlMs = env.ttl_ms ?? DEFAULT_TTL_MS[env.kind];
-  const originMemberId = env.from.member_id ?? claims.member_id;
-  const result = await enqueue(claims.workspace_id, env.to.member_id, env.envelope_id, env.kind, env.payload, ttlMs, pool, originMemberId, env.correlation_id ?? null);
+  const originMemberId = env.from.member_id ?? claims.sub;
+  const result = await enqueue(claims.ws, env.to.member_id, env.envelope_id, env.kind, env.payload, ttlMs, pool, originMemberId, env.correlation_id ?? null);
   if (!result.ok) {
     return { status: 429, body: { error: `target queue full for ${env.to.member_id}` } };
   }

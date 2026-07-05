@@ -139,13 +139,13 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('rejects /ws/:id/members when the token\'s workspace_id does not match the path (the iron wall)', async () => {
-    const { token: tokenForB } = sign({ member_id: 'm-1', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenForB } = sign({ sub: 'm-1', ws: 'ws-b', role: 'doer' }, SECRET);
     const { status } = await requestJson(port, 'GET', '/ws/ws-a/members', { token: tokenForB });
     expect(status).toBe(401);
   });
 
   it('creates and lists members for the correctly-scoped workspace', async () => {
-    const { token: adminToken } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: adminToken } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
 
     const created = await requestJson(port, 'POST', '/ws/ws-a/members', {
       token: adminToken,
@@ -173,7 +173,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('POST /ws/:id/members/:mid/rotate revokes the old token and issues a new one that authenticates', async () => {
-    const { token: adminToken } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: adminToken } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
 
     const created = await requestJson(port, 'POST', '/ws/ws-a/members', { token: adminToken, body: { name: 'bella', provider: 'gemini' } });
     const memberId = created.body.member.id;
@@ -195,14 +195,14 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('POST /ws/:id/members/:mid/rotate returns 404 for a non-existent member', async () => {
-    const { token: adminToken } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: adminToken } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
     const { status } = await requestJson(port, 'POST', '/ws/ws-a/members/no-such-member/rotate', { token: adminToken });
     expect(status).toBe(404);
   });
 
   it('a member created in workspace A is invisible when listing workspace B (cross-tenant isolation)', async () => {
-    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'm-2', ws: 'ws-b', role: 'doer' }, SECRET);
 
     await requestJson(port, 'POST', '/ws/ws-a/members', { token: tokenA, body: { name: 'alice', provider: 'claude' } });
 
@@ -211,7 +211,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('rejects a POST with missing required fields', async () => {
-    const { token: token } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: token } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
     const { status, body } = await requestJson(port, 'POST', '/ws/ws-a/members', { token, body: { name: 'alice' } });
     expect(status).toBe(400);
     expect(body.error).toBeDefined();
@@ -223,8 +223,8 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('creates, lists, updates, and deletes a project, and rejects cross-workspace access', async () => {
-    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'm-2', ws: 'ws-b', role: 'doer' }, SECRET);
 
     const created = await requestJson(port, 'POST', '/ws/ws-a/projects', { token: tokenA, body: { name: 'Fleet Dashboard' } });
     expect(created.status).toBe(201);
@@ -256,7 +256,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('adds a member to a project via POST /ws/:id/projects/:pid/members', async () => {
-    const { token: token } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: token } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
 
     const memberCreated = await requestJson(port, 'POST', '/ws/ws-a/members', { token, body: { name: 'alice', provider: 'claude' } });
     const memberId = memberCreated.body.member.id;
@@ -269,14 +269,14 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('returns 404 when adding a member to a non-existent project', async () => {
-    const { token: token } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
+    const { token: token } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
     const { status } = await requestJson(port, 'POST', '/ws/ws-a/projects/no-such-project/members', { token, body: { memberId: 'm-x' } });
     expect(status).toBe(404);
   });
 
   it('GET /ws/:id/cost returns a session-scoped, workspace-isolated rollup', async () => {
-    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'm-2', ws: 'ws-b', role: 'doer' }, SECRET);
 
     const noUsage = await requestJson(port, 'GET', '/ws/ws-a/cost', { token: tokenA });
     expect(noUsage.status).toBe(200);
@@ -287,8 +287,8 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('GET /ws/:id/activity returns an empty feed with no auth leakage across workspaces', async () => {
-    const { token: tokenA } = sign({ member_id: 'm-1', workspace_id: 'ws-a', role: 'doer' }, SECRET);
-    const { token: tokenB } = sign({ member_id: 'm-2', workspace_id: 'ws-b', role: 'doer' }, SECRET);
+    const { token: tokenA } = sign({ sub: 'm-1', ws: 'ws-a', role: 'doer' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'm-2', ws: 'ws-b', role: 'doer' }, SECRET);
 
     const feed = await requestJson(port, 'GET', '/ws/ws-a/activity', { token: tokenA });
     expect(feed.status).toBe(200);
@@ -304,7 +304,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     });
     expect(noAuth.status).toBe(401);
 
-    const { token: tokenB } = sign({ member_id: 'mach-1', workspace_id: 'ws-b', role: 'spoke' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'mach-1', ws: 'ws-b', role: 'spoke' }, SECRET);
     const crossWorkspace = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
       token: tokenB,
       body: { envelope_id: 'e1', workspace_id: 'ws-a', kind: 'presence.heartbeat', from: { machine_id: 'mach-1', member_id: null }, to: {} },
@@ -313,7 +313,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('POST /ws/:id/envelopes accepts a presence.announce and POST /ws/:id/ack retires a relayed envelope end-to-end', async () => {
-    const { token: machineToken } = sign({ member_id: 'mach-1', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: machineToken } = sign({ sub: 'mach-1', ws: 'ws-a', role: 'spoke' }, SECRET);
 
     const created = await requestJson(port, 'POST', '/ws/ws-a/members', {
       token: machineToken, body: { name: 'bob', provider: 'claude' },
@@ -350,7 +350,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('POST /ws/:id/ack (apra-fleet-us9.11.1) rejects acking a member_id not hosted on the calling machine, even within the same workspace', async () => {
-    const { token: machineToken } = sign({ member_id: 'mach-2', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: machineToken } = sign({ sub: 'mach-2', ws: 'ws-a', role: 'spoke' }, SECRET);
 
     // A real member exists in this workspace, but this machine has never
     // announced presence for it -- it belongs to some OTHER machine.
@@ -365,7 +365,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
   });
 
   it('GET /ws/:id/stream (apra-fleet-b55) pushes a relayed envelope to the correct machine, workspace-scoped', async () => {
-    const { token: machineToken } = sign({ member_id: 'mach-1', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: machineToken } = sign({ sub: 'mach-1', ws: 'ws-a', role: 'spoke' }, SECRET);
 
     const created = await requestJson(port, 'POST', '/ws/ws-a/members', { token: machineToken, body: { name: 'carol', provider: 'claude' } });
     const targetMemberId = created.body.member.id;
@@ -401,7 +401,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
 
   it('IRON WALL (apra-fleet-us9.11): a spoke in workspace A cannot drain workspace B\'s queue by announcing B\'s member_id into its own presence', async () => {
     // --- Victim setup in workspace B: a member with a queued envelope. ---
-    const { token: bMachineToken } = sign({ member_id: 'mach-b', workspace_id: 'ws-b', role: 'spoke' }, SECRET);
+    const { token: bMachineToken } = sign({ sub: 'mach-b', ws: 'ws-b', role: 'spoke' }, SECRET);
     const victim = await requestJson(port, 'POST', '/ws/ws-b/members', { token: bMachineToken, body: { name: 'victim', provider: 'claude' } });
     const victimMemberId = victim.body.member.id;
     const queued = await requestJson(port, 'POST', '/ws/ws-b/envelopes', {
@@ -416,7 +416,7 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
 
     // --- Attacker in workspace A injects the victim's member_id into its own
     //     machine's presence snapshot (handlePresence trusts the announce). ---
-    const { token: aMachineToken } = sign({ member_id: 'mach-a', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: aMachineToken } = sign({ sub: 'mach-a', ws: 'ws-a', role: 'spoke' }, SECRET);
     const announce = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
       token: aMachineToken,
       body: {

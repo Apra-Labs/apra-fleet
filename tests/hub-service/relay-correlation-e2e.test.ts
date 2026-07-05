@@ -86,7 +86,7 @@ describe('relay envelope correlation_id round-trip (real HTTP + real pg-mem, apr
   });
 
   it('a submitted correlation_id survives admission and is present on the row fetchDeliverable/the SSE stream would push', async () => {
-    const { token } = sign({ member_id: 'mach-1', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+    const { token } = sign({ sub: 'mach-1', ws: 'ws-a', role: 'spoke' }, SECRET);
     await createMember('origin-member', 'ws-a', { name: 'origin', provider: 'claude' }, pool);
     await createMember('target-member', 'ws-a', { name: 'target', provider: 'claude' }, pool);
 

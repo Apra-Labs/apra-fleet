@@ -63,7 +63,7 @@ describe('enrollment (pg-mem, real SQL engine, no Docker required)', () => {
     expect(result!.workspaceId).toBe('ws-test');
 
     const claims = verify(result!.jwt, SECRET);
-    expect(claims).toMatchObject({ member_id: result!.machineId, workspace_id: 'ws-test', role: 'spoke' });
+    expect(claims).toMatchObject({ sub: result!.machineId, ws: 'ws-test', role: 'spoke' });
 
     const machine = await getMachine('ws-test', result!.machineId, pool);
     expect(machine?.hostname).toBe('new-laptop');

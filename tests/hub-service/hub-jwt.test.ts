@@ -2,14 +2,15 @@ import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { sign, verify } from '../../src/hub-service/hub-jwt.js';
 
-const PAYLOAD = { member_id: 'm-1', workspace_id: 'ws-1', role: 'doer' };
+const PAYLOAD = { sub: 'm-1', ws: 'ws-1', role: 'doer' };
 const SECRET = 'test-secret-do-not-use-in-prod';
 
 describe('hub-jwt (apra-fleet-us9.4/us9.5)', () => {
-  it('sign/verify roundtrip returns the original claims plus a minted jti', () => {
+  it('sign/verify roundtrip returns the original claims plus a minted jti/iss/exp', () => {
     const { token, jti } = sign(PAYLOAD, SECRET);
     const claims = verify(token, SECRET);
-    expect(claims).toEqual({ ...PAYLOAD, jti });
+    expect(claims).toMatchObject({ ...PAYLOAD, jti, iss: 'hub' });
+    expect(typeof claims?.exp).toBe('number');
   });
 
   it('mints a different jti on every call, even for identical payloads', () => {

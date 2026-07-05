@@ -56,7 +56,7 @@ const STREAM_POLL_INTERVAL_MS = 1000;
 async function authorize(req: http.IncomingMessage, workspaceId: string): Promise<HubJwtClaims | null> {
   const token = extractBearer(req);
   const claims = token ? verifyHubJwt(token) : null;
-  if (!claims || claims.workspace_id !== workspaceId) return null;
+  if (!claims || claims.ws !== workspaceId) return null;
   if (await isRevoked(claims.jti)) return null;
   return claims;
 }
@@ -209,7 +209,7 @@ export function createHttpServer(): HttpServerHandle {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
-      const machineId = claims.member_id;
+      const machineId = claims.sub;
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -298,7 +298,7 @@ export function createHttpServer(): HttpServerHandle {
       // member_id is required explicitly: the JWT is per-machine, not
       // per-member (wire-protocol.md section 2 -- "one long-lived channel
       // per spoke... multiplexed by member_id inside the envelope"), so the
-      // machine's own claims.member_id is not necessarily the envelope's
+      // machine's own claims.sub is not necessarily the envelope's
       // target member.
       const { envelope_id: envelopeId, member_id: memberId } = (body as { envelope_id?: unknown; member_id?: unknown }) ?? {};
       if (typeof envelopeId !== 'string' || typeof memberId !== 'string') {
@@ -310,7 +310,7 @@ export function createHttpServer(): HttpServerHandle {
       // (suppress delivery of) an envelope addressed to a different
       // member in the same workspace, one it doesn't host, by just
       // guessing/knowing that member's id.
-      const hostedMembers = await listForMachine(claims.member_id, getPool());
+      const hostedMembers = await listForMachine(claims.sub, getPool());
       if (!hostedMembers.some((m) => m.member_id === memberId)) {
         sendJson(res, 403, { error: 'member_id is not hosted on the calling machine' });
         return;
@@ -538,7 +538,7 @@ export function createHttpServer(): HttpServerHandle {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
-      const { token } = signHubJwt({ member_id: user.id, workspace_id: workspaceId, role: user.role });
+      const { token } = signHubJwt({ sub: user.id, ws: workspaceId, role: user.role });
       sendJson(res, 200, { jwt: token });
       return;
     }

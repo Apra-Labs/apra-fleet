@@ -52,7 +52,7 @@ describe('member-tokens (pg-mem, real SQL engine, no Docker required)', () => {
   it('issueMemberToken mints a valid token and persists its jti on the member row', async () => {
     const token = await issueMemberToken('ws-test', 'mem-1', pool);
     const claims = verify(token, SECRET);
-    expect(claims).toMatchObject({ member_id: 'mem-1', workspace_id: 'ws-test' });
+    expect(claims).toMatchObject({ sub: 'mem-1', ws: 'ws-test' });
 
     const member = await getMember('ws-test', 'mem-1', pool);
     expect(member?.current_jti).toBe(claims!.jti);
@@ -81,7 +81,7 @@ describe('member-tokens (pg-mem, real SQL engine, no Docker required)', () => {
   it('rotateMemberToken on a member with no prior token just issues one (nothing to revoke)', async () => {
     const token = await rotateMemberToken('ws-test', 'mem-1', pool);
     expect(token).not.toBeNull();
-    expect(verify(token!, SECRET)).toMatchObject({ member_id: 'mem-1' });
+    expect(verify(token!, SECRET)).toMatchObject({ sub: 'mem-1' });
   });
 
   it('rotateMemberToken returns null for a non-existent member', async () => {

@@ -86,8 +86,8 @@ describe('spoke-to-spoke relayed execute_command (real HTTP + real pg-mem + real
     await createMember('origin-member', 'ws-a', { name: 'origin', provider: 'claude' }, pool);
     await createMember('target-member', 'ws-a', { name: 'target', provider: 'claude' }, pool);
 
-    const { token: tokenA } = sign({ member_id: 'mach-a', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
-    const { token: tokenB } = sign({ member_id: 'mach-b', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: tokenA } = sign({ sub: 'mach-a', ws: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'mach-b', ws: 'ws-a', role: 'spoke' }, SECRET);
 
     // B hosts target-member as a REAL local agent -- relay-executor.ts's
     // real LocalStrategy path, exercised through the full spoke wiring
