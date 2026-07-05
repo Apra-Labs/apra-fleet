@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import net from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -58,6 +58,56 @@ describe('(a) server binds to 127.0.0.1', () => {
     const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
     handles.push(handle);
     expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (l) APRA_FLEET_HOST makes the bind address configurable (apra-fleet-fnz.4/us9.6)
+// ---------------------------------------------------------------------------
+describe('(l) APRA_FLEET_HOST configures the bind address', () => {
+  // src/paths.ts reads process.env.APRA_FLEET_HOST ONCE at module load time
+  // (same eager-evaluation shape as jwt.ts's KEY_PATH) -- vi.resetModules()
+  // + a dynamic re-import is required for the env var to actually take
+  // effect, a plain env var set after import would silently no-op.
+  afterEach(() => {
+    delete process.env.APRA_FLEET_HOST;
+    vi.resetModules();
+  });
+
+  it('binds to 0.0.0.0 when APRA_FLEET_HOST=0.0.0.0 is set before the module loads', async () => {
+    process.env.APRA_FLEET_HOST = '0.0.0.0';
+    vi.resetModules();
+    const { createHttpTransport: createHttpTransportFresh } = await import('../src/services/http-transport.js');
+
+    const handle = await createHttpTransportFresh({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const addr = handle.httpServer.address() as net.AddressInfo;
+    expect(addr.address).toBe('0.0.0.0');
+    // Same-machine callers still use loopback regardless of bind host --
+    // 0.0.0.0 accepts loopback connections too.
+    expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+  });
+
+  it('defaults to 127.0.0.1 when APRA_FLEET_HOST is unset', async () => {
+    delete process.env.APRA_FLEET_HOST;
+    vi.resetModules();
+    const { createHttpTransport: createHttpTransportFresh } = await import('../src/services/http-transport.js');
+
+    const handle = await createHttpTransportFresh({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const addr = handle.httpServer.address() as net.AddressInfo;
+    expect(addr.address).toBe('127.0.0.1');
+  });
+
+  it('treats an empty/whitespace-only APRA_FLEET_HOST as unset (falls back to 127.0.0.1)', async () => {
+    process.env.APRA_FLEET_HOST = '   ';
+    vi.resetModules();
+    const { createHttpTransport: createHttpTransportFresh } = await import('../src/services/http-transport.js');
+
+    const handle = await createHttpTransportFresh({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+    const addr = handle.httpServer.address() as net.AddressInfo;
+    expect(addr.address).toBe('127.0.0.1');
   });
 });
 

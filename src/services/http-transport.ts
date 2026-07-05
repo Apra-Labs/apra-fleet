@@ -7,7 +7,7 @@ import { getOrCreateKey, type JwtClaims } from './jwt.js';
 import { getTokenIssuer, localWorkspaceId } from './token-issuer.js';
 import { sessionRegistry } from './session-registry.js';
 import { getAgent, findAgentByName } from './registry.js';
-import { DEFAULT_PORT } from '../paths.js';
+import { DEFAULT_PORT, DEFAULT_HOST } from '../paths.js';
 import { serverVersion } from '../version.js';
 import { logLine } from '../utils/log-helpers.js';
 
@@ -324,19 +324,33 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
     eventCleanups.push(() => fleetEvents.off(eventType, handler));
   }
 
-  // Start listening: try preferred port, fall back to OS-assigned port
+  // Start listening: try preferred port, fall back to OS-assigned port.
+  // Bind host is configurable (APRA_FLEET_HOST, default 127.0.0.1) --
+  // apra-fleet-fnz.4/us9.6. Binding beyond loopback is an explicit,
+  // logged opt-in: several unauthenticated code paths in this file (the
+  // ?member= URL-param fallback, /shutdown's admin-key check) were
+  // written assuming only same-machine callers can reach this server.
   const targetPort = preferredPort ?? DEFAULT_PORT;
+  const bindHost = DEFAULT_HOST;
+  if (bindHost !== '127.0.0.1') {
+    logLine('session', `WARNING: binding to ${bindHost} (not loopback-only) -- unauthenticated requests (the ?member= URL-param fallback, /shutdown) are now reachable from any host that can route to this address, not just this machine. Set APRA_FLEET_HOST=127.0.0.1 (or unset it) to restore the loopback-only default.`);
+  }
   let port: number;
   try {
-    port = await listenOnPort(httpServer, targetPort, '127.0.0.1');
+    port = await listenOnPort(httpServer, targetPort, bindHost);
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      port = await listenOnPort(httpServer, 0, '127.0.0.1');
+      port = await listenOnPort(httpServer, 0, bindHost);
     } else {
       throw err;
     }
   }
 
+  // Same-machine callers (register_member's own local MCP connection) always
+  // use loopback -- valid regardless of bindHost, since binding to 0.0.0.0
+  // still accepts loopback connections. This is not "the LAN address";
+  // fnz.4's enrollment flow is responsible for advertising a reachable
+  // LAN/host address to the JOINING machine separately.
   const url = `http://127.0.0.1:${port}/mcp`;
 
   return {
