@@ -109,7 +109,6 @@ export async function runWatch(args: string[]): Promise<void> {
   }
 
   const listOnly = args.includes('--list');
-  const includeIdle = args.includes('--all');
   const projectDir = parseFlagValue(args, '--project');
   const feature = parseFlagValue(args, '--feature') ?? parseFlagValue(args, '--branch');
   const tailN = parseInt(parseFlagValue(args, '--tail') ?? '0', 10) || 0;
@@ -178,11 +177,12 @@ export async function runWatch(args: string[]): Promise<void> {
   // --- Build follow set ---
   const followers: Follower[] = [];
   let colorIdx = 0;
+  // Follow every supported member in scope -- like `docker compose logs -f`.
+  // Idle members are followed silently and stream as soon as they produce output;
+  // there is no activity gate. (activityOf still feeds the overview status column.)
   for (const ctx of scope) {
     const act = activityOf(ctx.agent);
     if (!act.supported) continue;
-    const named = names.some((n) => n.toLowerCase() === ctx.agent.friendlyName.toLowerCase());
-    if (!act.active && !includeIdle && !named) continue;
     followers.push({
       agent: ctx.agent,
       provider: ctx.agent.llmProvider ?? 'claude',
@@ -197,14 +197,13 @@ export async function runWatch(args: string[]): Promise<void> {
 
   if (followers.length === 0) {
     console.log('');
-    console.log('No members are currently working.');
-    console.log('Re-run with --all to follow idle members too, or wait for a dispatch.');
+    console.log('No members in scope have a live-viewable provider (Claude/Gemini).');
     process.exit(0);
   }
 
   const single = followers.length === 1;
   console.log('');
-  console.log(`${DIM}Following ${followers.length} member(s). Press Ctrl-C to stop.${RESET}`);
+  console.log(`${DIM}Following ${followers.length} member(s); idle ones stream when they start. Press Ctrl-C to stop.${RESET}`);
   console.log('');
 
   // Prime offsets (with optional backfill), then poll.
@@ -357,7 +356,6 @@ Usage:
   apra-fleet watch --project <dir>     Follow members working on the repo at <dir>
   apra-fleet watch --feature <name>    Follow members on one feature (branch match)
   apra-fleet watch --branch <ref>      Follow members on an exact branch
-  apra-fleet watch --all               Include idle members (default: active only)
   apra-fleet watch --list              Print the overview and exit (no follow)
   apra-fleet watch --tail <n>          Backfill the last n events per member
 

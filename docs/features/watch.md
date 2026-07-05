@@ -33,13 +33,22 @@ apra-fleet watch <name> [<name>...]  Follow specific members by name
 apra-fleet watch --project <dir>     Follow members working on the repo at <dir>
 apra-fleet watch --feature <name>    Follow members on one feature (branch)
 apra-fleet watch --branch <ref>      Alias of --feature by exact branch name
-apra-fleet watch --all               Include idle members (default: active only)
 apra-fleet watch --list              Print the overview and exit (no follow)
 apra-fleet watch --tail <n>          Backfill the last n transcript events (default: 0)
 ```
 
 The bare command opens with an **overview** (see below), which doubles as the
 discovery menu, then follows the in-scope members.
+
+## Follow model: everything in scope, present and future
+
+Like `docker compose logs -f`, `watch` attaches to **every supported member in
+scope** and streams whatever each one produces -- now and later. There is no
+"active" gate: an idle member is followed silently (its transcript simply does
+not grow) and its output appears the moment a dispatch starts. This means a
+member that is idle when you launch `watch` is still picked up when it later
+begins working -- no flag required. Activity ("working" vs "idle") is computed
+only to label the overview, never to decide what gets streamed.
 
 ## Three zoom levels
 
@@ -146,8 +155,9 @@ member C transcript --poll--/     (per provider)
 ## Known gotchas
 
 - Provider coverage is Claude-only for rich formatting in v1.
-- Output volume: a chatty member can flood; narrow by feature/member and rely on
-  the default active-only, thinking-suppressed stream.
+- Output volume: since every member in scope is followed, a broad scope with many
+  simultaneously-active members can produce a lot of interleaved output; narrow by
+  feature/member. Thinking blocks are suppressed to reduce noise.
 - Startup race: a transcript file may not exist for the first moments of a
   dispatch; the poller tolerates a missing file and picks it up when it appears.
 - Remote members are listed in the overview but their live stream is not tailed
