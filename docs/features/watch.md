@@ -35,7 +35,26 @@ apra-fleet watch --feature <name>    Follow members on one feature (branch)
 apra-fleet watch --branch <ref>      Alias of --feature by exact branch name
 apra-fleet watch --list              Print the overview and exit (no follow)
 apra-fleet watch --tail <n>          Backfill the last n transcript events (default: 0)
+apra-fleet watch --verbose | -v      Show full detail (edit diffs, file contents,
+                                     commands + output, thinking)
 ```
+
+## Compact vs verbose
+
+By default the stream is a compact action log -- one line per assistant message
+or tool call (`> Edit cart.js`, `assistant: ...`), with thinking and tool
+results suppressed for readability. `--verbose` (`-v`) expands each event the way
+Claude's own UI does:
+
+- **Edit / NotebookEdit** -> a `-`/`+` diff of old vs new (red/removed, green/added).
+- **Write** -> the file content as `+` lines.
+- **Bash** -> the full command (`$ ...`) followed by its output.
+- **tool results** -> the actual output (file reads, command stdout); errors are
+  marked with `!`.
+- **thinking** -> the model's reasoning, dimmed.
+
+Detail blocks are capped (20 lines each) with a `... (N more lines)` note so a
+single large edit or file dump cannot flood the stream.
 
 The bare command opens with an **overview** (see below), which doubles as the
 discovery menu, then follows the in-scope members.

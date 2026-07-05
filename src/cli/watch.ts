@@ -9,7 +9,7 @@ import {
   projectKeyForDir,
   type MemberContext,
 } from '../services/watch/project-resolver.js';
-import { formatTranscriptLine } from '../services/watch/transcript-formatter.js';
+import { formatTranscriptLine, type FormattedEvent, type LineKind } from '../services/watch/transcript-formatter.js';
 import type { Agent } from '../types.js';
 
 // A member is considered "active" if its newest transcript file was written
@@ -20,6 +20,8 @@ const POLL_INTERVAL_MS = 700;
 const COLORS = ['\x1b[36m', '\x1b[32m', '\x1b[33m', '\x1b[35m', '\x1b[34m', '\x1b[31m', '\x1b[96m', '\x1b[92m'];
 const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
+const GREEN = '\x1b[32m';
+const RED = '\x1b[31m';
 
 const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO_COLOR;
 
@@ -109,6 +111,7 @@ export async function runWatch(args: string[]): Promise<void> {
   }
 
   const listOnly = args.includes('--list');
+  const verbose = args.includes('--verbose') || args.includes('-v');
   const projectDir = parseFlagValue(args, '--project');
   const feature = parseFlagValue(args, '--feature') ?? parseFlagValue(args, '--branch');
   const tailN = parseInt(parseFlagValue(args, '--tail') ?? '0', 10) || 0;
@@ -207,7 +210,7 @@ export async function runWatch(args: string[]): Promise<void> {
   console.log('');
 
   // Prime offsets (with optional backfill), then poll.
-  for (const f of followers) pump(f, single, tailN);
+  for (const f of followers) pump(f, single, tailN, verbose);
 
   const timer = setInterval(() => {
     for (const f of followers) {
@@ -219,7 +222,7 @@ export async function runWatch(args: string[]): Promise<void> {
         f.leftover = '';
         f.backfilled = true; // do not backfill a freshly rolled file
       }
-      pump(f, single, tailN);
+      pump(f, single, tailN, verbose);
     }
   }, POLL_INTERVAL_MS);
 
@@ -244,7 +247,7 @@ interface Follower {
 }
 
 /** Read new bytes from a follower's file, format them, and print. */
-function pump(f: Follower, single: boolean, tailN: number): void {
+function pump(f: Follower, single: boolean, tailN: number, verbose: boolean): void {
   if (!f.file) {
     const newest = newestTranscript(f.dir);
     if (!newest) return;
@@ -291,32 +294,44 @@ function pump(f: Follower, single: boolean, tailN: number): void {
   const parts = text.split('\n');
   f.leftover = parts.pop() ?? '';
 
-  const collected: { time: string | null; text: string }[] = [];
+  const collected: FormattedEvent[] = [];
   for (const line of parts) {
-    for (const ev of formatTranscriptLine(f.provider, line)) collected.push(ev);
+    for (const ev of formatTranscriptLine(f.provider, line, verbose)) collected.push(ev);
   }
 
   const toPrint = tailN > 0 && collected.length > tailN ? collected.slice(-tailN) : collected;
   for (const ev of toPrint) {
-    emit(f, ev.time, ev.text, single);
+    emit(f, ev, single);
   }
   // --tail only backfills the first read.
   tailN = 0;
 }
 
-function emit(f: Follower, time: string | null, text: string, single: boolean): void {
+/** Wrap body text in the color for its line kind (no-op when color is off). */
+function paint(kind: LineKind | undefined, text: string): string {
+  switch (kind) {
+    case 'add': return `${GREEN}${text}${RESET}`;
+    case 'del': return `${RED}${text}${RESET}`;
+    case 'dim':
+    case 'out': return `${DIM}${text}${RESET}`;
+    default: return text;
+  }
+}
+
+function emit(f: Follower, ev: FormattedEvent, single: boolean): void {
   const color = useColor();
-  const ts = time ? `${time} ` : '';
+  const ts = ev.time ? `${ev.time} ` : '';
+  const body = color ? paint(ev.kind, ev.text) : ev.text;
   if (single) {
     const tsStr = color ? `${DIM}${ts}${RESET}` : ts;
-    console.log(`${tsStr}${text}`);
+    console.log(`${tsStr}${body}`);
     return;
   }
   const label = `${f.agent.icon ?? ''} ${f.agent.friendlyName}`.trim();
   if (color) {
-    console.log(`${DIM}${ts}${RESET}${f.color}${label}${RESET} ${text}`);
+    console.log(`${DIM}${ts}${RESET}${f.color}${label}${RESET} ${body}`);
   } else {
-    console.log(`${ts}${label} | ${text}`);
+    console.log(`${ts}${label} | ${ev.text}`);
   }
 }
 
@@ -358,6 +373,7 @@ Usage:
   apra-fleet watch --branch <ref>      Follow members on an exact branch
   apra-fleet watch --list              Print the overview and exit (no follow)
   apra-fleet watch --tail <n>          Backfill the last n events per member
+  apra-fleet watch --verbose | -v      Show edit diffs, file contents, commands + output, thinking
 
 Scope: project = git origin (folders cloned from the same repo group together),
 feature = git branch. Live view supports Claude members; other providers are
