@@ -105,7 +105,7 @@ describe('createHubClient orchestration', () => {
       envelope_id: 'e-1',
       kind: 'execute_command.request',
       payload: { cmd: 'ls' },
-      to: { machine_id: null, member_id: 'mem-1' },
+      target_member_id: 'mem-1',
     };
 
     const fetchMock = vi.fn(async (url: string, opts?: any) => {
@@ -157,7 +157,7 @@ describe('createHubClient orchestration', () => {
       envelope_id: 'e-dup',
       kind: 'execute_command.request',
       payload: {},
-      to: { machine_id: null, member_id: 'mem-1' },
+      target_member_id: 'mem-1',
     };
 
     let streamCallCount = 0;

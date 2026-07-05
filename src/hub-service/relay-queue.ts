@@ -29,6 +29,7 @@ export interface RelayEnvelope {
   acked_at: string | null;
   origin_member_id: string | null;
   delivered_at: string | null;
+  correlation_id: string | null;
 }
 
 /** Defensive per-(workspace_id, target_member_id) queue depth cap
@@ -49,6 +50,13 @@ export type EnqueueResult =
  * `originMemberId` (nullable) is whoever submitted this envelope --
  * recorded so a TTL expiry (see sweepExpiredToFailures) can address a
  * synthetic failure result back to them.
+ *
+ * `correlationId` (nullable) is the wire-protocol envelope's own
+ * `correlation_id` field (docs/hub-spoke-wire-protocol.md section 3): set
+ * on a response/result envelope to the envelope_id of the request it
+ * answers. MUST be persisted and forwarded on delivery -- an originating
+ * spoke (relay-request.ts, file-transfer-relay.ts) matches a delivered
+ * result back to its pending request by this field alone.
  */
 export async function enqueue(
   workspaceId: string,
@@ -59,6 +67,7 @@ export async function enqueue(
   ttlMs: number,
   pool: Pool = getPool(),
   originMemberId: string | null = null,
+  correlationId: string | null = null,
 ): Promise<EnqueueResult> {
   const payloadJson = JSON.stringify(payload);
   // Byte total computed in JS, not SQL (octet_length/length aren't
@@ -78,11 +87,11 @@ export async function enqueue(
   }
 
   const inserted = await pool.query<RelayEnvelope>(
-    `INSERT INTO relay_queue (workspace_id, target_member_id, envelope_id, kind, payload, ttl_ms, origin_member_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO relay_queue (workspace_id, target_member_id, envelope_id, kind, payload, ttl_ms, origin_member_id, correlation_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (workspace_id, target_member_id, envelope_id) DO NOTHING
      RETURNING *`,
-    [workspaceId, targetMemberId, envelopeId, kind, payloadJson, ttlMs, originMemberId],
+    [workspaceId, targetMemberId, envelopeId, kind, payloadJson, ttlMs, originMemberId, correlationId],
   );
   if (inserted.rows[0]) return { ok: true, envelope: inserted.rows[0] };
   const existing = await pool.query<RelayEnvelope>(
@@ -224,6 +233,7 @@ export async function sweepExpiredToFailures(pool: Pool = getPool()): Promise<nu
       FAILURE_TTL_MS[failureKind] ?? 60000,
       pool,
       null,
+      row.envelope_id,
     );
   }
   return result.rowCount ?? 0;

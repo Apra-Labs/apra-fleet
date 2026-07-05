@@ -18,12 +18,22 @@ export interface MemberSnapshotEntry {
   status: string;
 }
 
+/**
+ * Shape actually delivered over the SSE stream: the raw relay_queue row
+ * (src/hub-service/relay-queue.ts's RelayEnvelope), NOT the nested
+ * from/to envelope shape used on SUBMISSION (POST /ws/:id/envelopes). The
+ * hub stores and forwards a flat row -- target_member_id and
+ * origin_member_id, not a nested `to`/`from` object -- so this type (and
+ * every reader of it) must match that flat shape, not the wire-protocol
+ * doc's submission-side JSON example.
+ */
 export interface InboundRelayEnvelope {
   envelope_id: string;
   kind: string;
   payload: unknown;
   correlation_id?: string | null;
-  to?: { machine_id: string | null; member_id: string | null };
+  target_member_id: string;
+  origin_member_id?: string | null;
 }
 
 export interface HubClientDeps {
@@ -202,7 +212,7 @@ export function createHubClient(deps: HubClientDeps): HubClientHandle {
           if (seen.hasSeen(envelope.envelope_id)) continue;
           seen.markSeen(envelope.envelope_id);
           await deps.onEnvelope(envelope);
-          if (envelope.to?.member_id) await ackEnvelope(envelope.envelope_id, envelope.to.member_id);
+          if (envelope.target_member_id) await ackEnvelope(envelope.envelope_id, envelope.target_member_id);
         }
       }
     } finally {

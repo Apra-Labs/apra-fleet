@@ -31,6 +31,8 @@ export const DEFAULT_TTL_MS: Record<string, number> = {
   'execute_prompt.request': 30000,
   'execute_prompt.result': 120000,
   'event.broadcast': 5000,
+  'file_transfer.chunk': 30000,
+  'file_transfer.result': 60000,
 };
 
 const PRESENCE_KINDS = new Set(['presence.announce', 'presence.heartbeat']);
@@ -50,6 +52,7 @@ export interface InboundEnvelope {
   from: EnvelopeFromTo;
   to: EnvelopeFromTo;
   ttl_ms?: number | null;
+  correlation_id?: string | null;
   payload?: unknown;
 }
 
@@ -132,7 +135,7 @@ async function handleRelay(claims: HubJwtClaims, env: InboundEnvelope, pool: Poo
 
   const ttlMs = env.ttl_ms ?? DEFAULT_TTL_MS[env.kind];
   const originMemberId = env.from.member_id ?? claims.member_id;
-  const result = await enqueue(claims.workspace_id, env.to.member_id, env.envelope_id, env.kind, env.payload, ttlMs, pool, originMemberId);
+  const result = await enqueue(claims.workspace_id, env.to.member_id, env.envelope_id, env.kind, env.payload, ttlMs, pool, originMemberId, env.correlation_id ?? null);
   if (!result.ok) {
     return { status: 429, body: { error: `target queue full for ${env.to.member_id}` } };
   }
