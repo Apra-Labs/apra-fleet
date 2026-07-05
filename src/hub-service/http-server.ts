@@ -40,6 +40,9 @@ import {
 } from './users.js';
 import { getWorkspace } from './workspaces.js';
 import { generateEnrollmentToken, exchangeEnrollmentToken } from './enrollment.js';
+import { submitEnvelope, type InboundEnvelope } from './envelope-routes.js';
+import { ack as ackRelay } from './relay-queue.js';
+import { getPool } from './db/pool.js';
 
 /** Verifies the bearer token, its workspace match, AND that its jti hasn't
  *  been revoked (apra-fleet-us9.5: rotation revokes the prior token's jti,
@@ -187,6 +190,66 @@ export function createHttpServer(): HttpServerHandle {
       }
       const memberView = await getMemberView(workspaceId, memberId);
       sendJson(res, 200, { member: memberView, jwt });
+      return;
+    }
+
+    // /ws/:id/envelopes (apra-fleet-us9.6 slice 1: wire-protocol envelope
+    // submission -- docs/hub-spoke-wire-protocol.md section 2/5).
+    if (segments[0] === 'ws' && segments[2] === 'envelopes' && segments.length === 3 && req.method === 'POST') {
+      const workspaceId = segments[1];
+      const claims = await authorize(req, workspaceId);
+      if (!claims) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+
+      let body: unknown;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+      const env = body as Partial<InboundEnvelope>;
+      if (typeof env?.envelope_id !== 'string' || typeof env?.workspace_id !== 'string' || typeof env?.kind !== 'string') {
+        sendJson(res, 400, { error: 'envelope_id, workspace_id, and kind are required' });
+        return;
+      }
+      const result = await submitEnvelope(claims, env as InboundEnvelope, getPool());
+      sendJson(res, result.status, result.body);
+      return;
+    }
+
+    // /ws/:id/ack (docs/hub-spoke-wire-protocol.md section 5 step 4 --
+    // a plain ack, not itself an envelope subject to its own delivery
+    // guarantees).
+    if (segments[0] === 'ws' && segments[2] === 'ack' && segments.length === 3 && req.method === 'POST') {
+      const workspaceId = segments[1];
+      const claims = await authorize(req, workspaceId);
+      if (!claims) {
+        sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+
+      let body: unknown;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+      // member_id is required explicitly: the JWT is per-machine, not
+      // per-member (wire-protocol.md section 2 -- "one long-lived channel
+      // per spoke... multiplexed by member_id inside the envelope"), so the
+      // machine's own claims.member_id is not necessarily the envelope's
+      // target member.
+      const { envelope_id: envelopeId, member_id: memberId } = (body as { envelope_id?: unknown; member_id?: unknown }) ?? {};
+      if (typeof envelopeId !== 'string' || typeof memberId !== 'string') {
+        sendJson(res, 400, { error: 'envelope_id and member_id are required' });
+        return;
+      }
+      await ackRelay(workspaceId, memberId, envelopeId, getPool());
+      sendJson(res, 200, { acked: true });
       return;
     }
 

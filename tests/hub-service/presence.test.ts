@@ -8,7 +8,7 @@ import { newDb } from 'pg-mem';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setPool, closePool } from '../../src/hub-service/db/pool.js';
-import { announce, listForMachine, isStale } from '../../src/hub-service/presence.js';
+import { announce, announceSnapshot, listForMachine, isStale } from '../../src/hub-service/presence.js';
 
 let pool: any;
 
@@ -67,5 +67,29 @@ describe('presence (pg-mem, real SQL engine, no Docker required)', () => {
     await announce('machine-1', 'member-a', 'online', pool);
     const stale = await isStale('machine-1', 'member-a', 60_000, pool);
     expect(stale).toBe(false);
+  });
+
+  it('announceSnapshot (apra-fleet-us9.6) replaces, not merges: a member absent from a later snapshot is dropped', async () => {
+    await announceSnapshot('machine-1', [{ memberId: 'member-a', status: 'online' }, { memberId: 'member-b', status: 'busy' }], pool);
+    await announceSnapshot('machine-1', [{ memberId: 'member-a', status: 'online' }], pool);
+
+    const rows = await listForMachine('machine-1', pool);
+    expect(rows.map(r => r.member_id)).toEqual(['member-a']);
+  });
+
+  it('announceSnapshot with an empty list clears every member for that machine (e.g. clean shutdown re-announce)', async () => {
+    await announceSnapshot('machine-1', [{ memberId: 'member-a', status: 'online' }], pool);
+    await announceSnapshot('machine-1', [], pool);
+
+    const rows = await listForMachine('machine-1', pool);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('announceSnapshot never touches presence rows for a DIFFERENT machine', async () => {
+    await announce('machine-2', 'member-z', 'online', pool);
+    await announceSnapshot('machine-1', [{ memberId: 'member-a', status: 'online' }], pool);
+
+    const rows = await listForMachine('machine-2', pool);
+    expect(rows.map(r => r.member_id)).toEqual(['member-z']);
   });
 });

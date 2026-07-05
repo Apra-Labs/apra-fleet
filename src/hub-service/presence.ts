@@ -34,6 +34,29 @@ export async function announce(
   );
 }
 
+/**
+ * Replaces a machine's entire presence view with a fresh snapshot
+ * (docs/hub-spoke-wire-protocol.md section 4: `presence.announce` is a full
+ * snapshot, not a diff -- whatever the spoke reports NOW is truth, so a
+ * stale member row from a crashed-and-restarted spoke cannot survive past
+ * its next announce). Deletes any row for this machine whose member_id is
+ * not in the new snapshot, then upserts every member in the snapshot.
+ */
+export async function announceSnapshot(
+  machineId: string,
+  members: Array<{ memberId: string; status: string }>,
+  pool: Pool = getPool(),
+): Promise<void> {
+  const memberIds = members.map((m) => m.memberId);
+  await pool.query(
+    `DELETE FROM presence WHERE machine_id = $1 AND NOT (member_id = ANY($2::text[]))`,
+    [machineId, memberIds],
+  );
+  for (const m of members) {
+    await announce(machineId, m.memberId, m.status, pool);
+  }
+}
+
 /** Reads current presence for every member on a machine. */
 export async function listForMachine(
   machineId: string,

@@ -261,4 +261,55 @@ describe('hub http-server (apra-fleet-us9.4)', () => {
     const crossWorkspace = await requestJson(port, 'GET', '/ws/ws-a/activity', { token: tokenB });
     expect(crossWorkspace.status).toBe(401);
   });
+
+  it('POST /ws/:id/envelopes rejects with no token, and enforces the workspace iron wall', async () => {
+    const noAuth = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
+      body: { envelope_id: 'e1', workspace_id: 'ws-a', kind: 'presence.heartbeat', from: { machine_id: 'mach-1', member_id: null }, to: {} },
+    });
+    expect(noAuth.status).toBe(401);
+
+    const { token: tokenB } = sign({ member_id: 'mach-1', workspace_id: 'ws-b', role: 'spoke' }, SECRET);
+    const crossWorkspace = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
+      token: tokenB,
+      body: { envelope_id: 'e1', workspace_id: 'ws-a', kind: 'presence.heartbeat', from: { machine_id: 'mach-1', member_id: null }, to: {} },
+    });
+    expect(crossWorkspace.status).toBe(401);
+  });
+
+  it('POST /ws/:id/envelopes accepts a presence.announce and POST /ws/:id/ack retires a relayed envelope end-to-end', async () => {
+    const { token: machineToken } = sign({ member_id: 'mach-1', workspace_id: 'ws-a', role: 'spoke' }, SECRET);
+
+    const announce = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
+      token: machineToken,
+      body: {
+        envelope_id: 'e-announce', workspace_id: 'ws-a', kind: 'presence.announce',
+        from: { machine_id: 'mach-1', member_id: null }, to: {},
+        payload: { members: [{ member_id: 'mem-1', status: 'online' }] },
+      },
+    });
+    expect(announce.status).toBe(200);
+    expect(announce.body.kind).toBe('presence.ack');
+
+    const created = await requestJson(port, 'POST', '/ws/ws-a/members', {
+      token: machineToken, body: { name: 'bob', provider: 'claude' },
+    });
+    const targetMemberId = created.body.member.id;
+
+    const submitted = await requestJson(port, 'POST', '/ws/ws-a/envelopes', {
+      token: machineToken,
+      body: {
+        envelope_id: 'e-cmd', workspace_id: 'ws-a', kind: 'execute_command.request',
+        from: { machine_id: 'mach-1', member_id: null }, to: { machine_id: null, member_id: targetMemberId },
+        payload: { cmd: 'echo hi' },
+      },
+    });
+    expect(submitted.status).toBe(202);
+
+    const acked = await requestJson(port, 'POST', '/ws/ws-a/ack', {
+      token: machineToken,
+      body: { envelope_id: 'e-cmd', member_id: targetMemberId },
+    });
+    expect(acked.status).toBe(200);
+    expect(acked.body).toEqual({ acked: true });
+  });
 });
