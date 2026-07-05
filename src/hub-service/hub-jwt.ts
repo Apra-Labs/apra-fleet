@@ -16,13 +16,32 @@
  * jwt.ts's shape is deliberately mirrored here.
  *
  * CLAIMS SHAPE (fixed 2026-07-05, closing a previously-acknowledged
- * contract-shape drift): matches packages/fleet-api-contract's
+ * contract-shape drift): FIELD NAMES match packages/fleet-api-contract's
  * JWTClaimsSchema field-for-field (iss/ws/sub/exp/role) plus `jti`, which
  * the contract doesn't need but revocation does. This used to be an
  * ad-hoc member_id/workspace_id shape, fixed once the full hub-relay
  * stack (apra-fleet-us9.6/us9.7/us9.12/jfn) was built and tested,
  * providing a real safety net (tsc + the full test suite) for a rename
  * that touches every hub-jwt.ts consumer.
+ *
+ * `role`'s VALUE DOMAIN (apra-fleet-y2f) is deliberately NOT one uniform
+ * enum across every caller, because sign()/verify() here are reused for
+ * THREE conceptually different token families with different role
+ * vocabularies:
+ *   - Dashboard workspace-selection tokens (http-server.ts's
+ *     `POST /workspaces/:id/select`): `role` really is the contract's
+ *     RoleSchema ('member'|'admin'|'superadmin', a human user's RBAC
+ *     level) -- that ONE call site validates against RoleSchema
+ *     explicitly (defense-in-depth; `UserRole` is already type-identical).
+ *   - Member/agent tokens (member-tokens.ts): `role: 'doer'` -- an
+ *     execution-capability tag for a regular fleet member, not an RBAC
+ *     level. Not contract-bound.
+ *   - Machine/spoke tokens (enrollment.ts): `role` defaults to `'spoke'`
+ *     (enrollment_tokens.role column) -- identifies a machine-level relay
+ *     identity, again not an RBAC level. Not contract-bound.
+ * `HubJwtClaims.role` is therefore typed as a bare `string` here
+ * deliberately, not `Role` from the contract -- constraining it to
+ * RoleSchema would be a category error for the latter two families.
  */
 import crypto from 'node:crypto';
 
@@ -35,6 +54,9 @@ export interface HubJwtClaims {
   sub: string;
   /** Expiry, unix seconds (JWTClaimsSchema's `exp`). */
   exp: number;
+  /** See this file's header comment: value domain varies by token family
+   *  (dashboard RBAC role / member 'doer' / machine 'spoke'), only the
+   *  first of which is contract-bound. */
   role: string;
   /** Unique per issuance -- the identity revoke()/isRevoked() key on.
    *  Not part of JWTClaimsSchema (dashboard/contract clients don't need

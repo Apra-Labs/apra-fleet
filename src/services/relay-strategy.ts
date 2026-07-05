@@ -7,21 +7,29 @@
  * submitAndAwaitResult() against THIS machine's own outbound hub
  * connection (relay-context.ts), addressed to `agent.relayMemberId`.
  *
- * Deliberately narrow: only execCommand and a best-effort testConnection
- * (a trivial relayed command, reusing execCommand) are implemented and
- * tested here. transferFiles/receiveFiles/deleteFiles throw a clear
- * "not yet supported over relay" error rather than fabricating success --
- * file-transfer-relay.ts's sendFileOverRelay exists and could wire into
- * transferFiles's send (push) direction as a small follow-on, but
- * receiveFiles has no pull-direction wire-protocol kind designed yet
- * (file-transfer-relay.ts is push-only), so leaving all three unsupported
- * keeps the interface's behavior symmetric and honest rather than
- * partially working in a way that's easy to miss.
+ * transferFiles (apra-fleet-8yn) sends each local file via
+ * file-transfer-relay.ts's sendFileOverRelay -- the push (send) direction,
+ * proven end-to-end in tests/hub-service/file-transfer-e2e.test.ts.
+ * receiveFiles/deleteFiles still throw "not yet supported over relay":
+ * there is no pull-direction wire-protocol kind designed yet (
+ * file-transfer-relay.ts is push-only), and deletion has no relay kind at
+ * all -- honest gaps, not fabricated success.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import type { AgentStrategy } from './strategy.js';
 import { submitAndAwaitResult } from './relay-request.js';
 import { getRelayContext } from './relay-context.js';
+import { sendFileOverRelay, type FileTransferDeps } from './file-transfer-relay.js';
+
+const DEFAULT_FILE_TRANSFER_TIMEOUT_MS = 60000;
+
+interface FileTransferResultPayload {
+  status: 'ok' | 'corrupt' | 'incomplete' | 'error';
+  error?: string;
+}
 
 const DEFAULT_EXEC_TTL_MS = 30000;
 
@@ -74,12 +82,43 @@ export class RelayStrategy implements AgentStrategy {
     throw new Error(`Relayed command failed (${result.status}): ${result.error ?? result.status}`);
   }
 
-  async transferFiles(): Promise<TransferResult> {
-    throw new Error('File transfer over relay is not yet supported (apra-fleet-jfn follow-on; see src/services/file-transfer-relay.ts).');
+  async transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult> {
+    const targetMemberId = this.requireRelayMemberId();
+    const ctx = this.requireRelayContext();
+    const fileTransferDeps: FileTransferDeps = {
+      workspaceId: ctx.deps.workspaceId,
+      originMemberId: ctx.deps.originMemberId,
+      submitEnvelope: (envelope) => ctx.deps.submitEnvelope(envelope as unknown as Record<string, unknown>),
+      now: ctx.deps.now,
+      generateEnvelopeId: () => crypto.randomUUID(),
+    };
+
+    const success: string[] = [];
+    const failed: { path: string; error: string }[] = [];
+    for (const localPath of localPaths) {
+      if (abortSignal?.aborted) throw new Error('Aborted by client');
+      const fileName = path.basename(localPath);
+      // destPath is interpreted by the RECEIVING spoke's sandboxedWriteFile
+      // (src/cli/spoke.ts), relative to ITS OWN received-files sandbox --
+      // not this machine's workFolder concept, which has no meaning on a
+      // relay-addressed agent.
+      const destPath = destinationPath ? `${destinationPath.replace(/[/\\]+$/, '')}/${fileName}` : fileName;
+      try {
+        const data = fs.readFileSync(localPath);
+        const result = await sendFileOverRelay(
+          fileTransferDeps, ctx.registry, data, targetMemberId, destPath, DEFAULT_FILE_TRANSFER_TIMEOUT_MS,
+        ) as FileTransferResultPayload;
+        if (result.status !== 'ok') throw new Error(result.error ?? result.status);
+        success.push(fileName);
+      } catch (err) {
+        failed.push({ path: fileName, error: (err as Error).message });
+      }
+    }
+    return { success, failed };
   }
 
   async receiveFiles(): Promise<TransferResult> {
-    throw new Error('File transfer over relay is not yet supported (apra-fleet-jfn follow-on; see src/services/file-transfer-relay.ts).');
+    throw new Error('File transfer over relay is not yet supported (apra-fleet-jfn follow-on; see src/services/file-transfer-relay.ts). No pull-direction wire-protocol kind exists yet -- sendFileOverRelay is push-only.');
   }
 
   async deleteFiles(): Promise<void> {

@@ -22,6 +22,7 @@
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { RoleSchema } from '@apralabs/fleet-api-contract';
 import { verify as verifyHubJwt, sign as signHubJwt, type HubJwtClaims } from './hub-jwt.js';
 import { createMember, listMembers, type MemberRow } from './members.js';
 import { listMemberViews, getMemberView } from './member-view.js';
@@ -515,10 +516,17 @@ export function createHttpServer(): HttpServerHandle {
     // strict Endpoints contract map -- a pragmatic bridge the design doc's
     // flow needed but the contract didn't name): exchanges a session token
     // + workspace access for a workspace-scoped token that authenticates
-    // every /ws/:id/... route already built. Reuses hub-jwt.ts's existing
-    // shape (member_id/workspace_id/role) rather than inventing a third
-    // claim shape -- see session-jwt.ts's header comment on the
-    // not-yet-reconciled claim-shape family.
+    // every /ws/:id/... route already built. Reuses hub-jwt.ts's now-
+    // reconciled claim shape (sub/ws/role, matching JWTClaimsSchema
+    // field-for-field -- see hub-jwt.ts's header comment). This is the ONE
+    // hub-jwt sign() call site whose `role` value is actually a dashboard
+    // RBAC role (apra-fleet-y2f): `user.role` is typed `UserRole`
+    // ('member'|'admin'|'superadmin', identical to the contract's
+    // RoleSchema), so it's already contract-valid by construction, but the
+    // explicit RoleSchema.parse below is defense-in-depth against that
+    // constraint ever loosening silently -- member-tokens.ts's 'doer' and
+    // enrollment.ts's 'spoke' are a DIFFERENT, deliberately-not-contract-
+    // bound vocabulary for agent/machine tokens, not a drift bug.
     if (segments[0] === 'workspaces' && segments.length === 3 && segments[2] === 'select' && req.method === 'POST') {
       const workspaceId = segments[1];
       const session = await authorizeSession(req);
@@ -538,7 +546,12 @@ export function createHttpServer(): HttpServerHandle {
         sendJson(res, 401, { error: 'unauthorized' });
         return;
       }
-      const { token } = signHubJwt({ sub: user.id, ws: workspaceId, role: user.role });
+      const roleCheck = RoleSchema.safeParse(user.role);
+      if (!roleCheck.success) {
+        sendJson(res, 500, { error: 'user role does not match the published contract' });
+        return;
+      }
+      const { token } = signHubJwt({ sub: user.id, ws: workspaceId, role: roleCheck.data });
       sendJson(res, 200, { jwt: token });
       return;
     }

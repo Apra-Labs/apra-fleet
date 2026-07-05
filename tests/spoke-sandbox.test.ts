@@ -42,4 +42,42 @@ describe('sandboxedWriteFile', () => {
     expect(() => sandboxedWriteFile(outsideAbs, Buffer.from('pwned'))).toThrow(/outside the received-files sandbox/);
     expect(fs.existsSync(outsideAbs)).toBe(false);
   });
+
+  it('apra-fleet-36x: rejects a destPath whose containing directory is a pre-planted symlink pointing outside the sandbox', () => {
+    fs.mkdirSync(RECEIVED_FILES_DIR, { recursive: true });
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-symlink-target-'));
+    const linkPath = path.join(RECEIVED_FILES_DIR, 'escape-link');
+    try {
+      fs.symlinkSync(outsideDir, linkPath, 'dir');
+    } catch (err) {
+      // Creating a symlink can require elevated privileges on some Windows
+      // configurations (no Developer Mode). Skip rather than fail the
+      // suite on an environment where the attack vector itself can't even
+      // be set up -- the guard is still exercised on any environment that
+      // CAN create one (Linux/macOS CI, or Windows with Developer Mode).
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw err;
+    }
+
+    expect(() => sandboxedWriteFile('escape-link/pwned.txt', Buffer.from('pwned'))).toThrow(/symlink escape detected/);
+    expect(fs.existsSync(path.join(outsideDir, 'pwned.txt'))).toBe(false);
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it('apra-fleet-36x: rejects writing to a destPath that is itself a pre-planted symlink pointing outside the sandbox', () => {
+    fs.mkdirSync(RECEIVED_FILES_DIR, { recursive: true });
+    const outsideFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-symlink-file-'), ), 'target.txt');
+    fs.writeFileSync(outsideFile, 'original');
+    const linkPath = path.join(RECEIVED_FILES_DIR, 'file-link.txt');
+    try {
+      fs.symlinkSync(outsideFile, linkPath, 'file');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw err;
+    }
+
+    expect(() => sandboxedWriteFile('file-link.txt', Buffer.from('pwned'))).toThrow(/symlink escape detected/);
+    expect(fs.readFileSync(outsideFile, 'utf-8')).toBe('original');
+    fs.rmSync(path.dirname(outsideFile), { recursive: true, force: true });
+  });
 });

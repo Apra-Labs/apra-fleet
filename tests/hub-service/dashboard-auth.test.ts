@@ -186,6 +186,35 @@ describe('dashboard OAuth + RBAC (apra-fleet-us9.16)', () => {
       const selectUnassigned = await requestJson(port, 'POST', '/workspaces/ws-b/select', { token: sessionToken });
       expect(selectUnassigned.status).toBe(401);
     });
+
+    it('apra-fleet-y2f: the users table itself rejects a role outside member/admin/superadmin at the DB layer (a role value invalid for /workspaces/:id/select to ever mint a token from)', async () => {
+      const { jwt: sessionToken } = await login('dave@example.com', 'Dave');
+      const { jwt: adminSession } = await login('admin4@example.com', 'Admin4');
+      const adminId = (await pool.query(`SELECT id FROM users WHERE email = 'admin4@example.com'`)).rows[0].id;
+      await makePlatformAdmin(adminId);
+      const daveId = (await pool.query(`SELECT id FROM users WHERE email = 'dave@example.com'`)).rows[0].id;
+      await requestJson(port, 'PUT', `/admin/users/${daveId}/approve`, { token: adminSession, body: { role: 'member', workspaces: ['ws-a'] } });
+
+      // Three independent layers now guard the contract's RoleSchema
+      // ('member'|'admin'|'superadmin') for this token family: the
+      // /approve route's own inline check (see 'rejects an approve/
+      // role-change body with an invalid role value' above), the `users`
+      // table's own CHECK constraint (proven here -- a direct SQL UPDATE
+      // to an invalid role is rejected by Postgres itself, not just
+      // application code), and /workspaces/:id/select's RoleSchema.safeParse
+      // defense-in-depth (http-server.ts) for the case neither of the
+      // other two ever applies (e.g. a future direct-DB migration bug).
+      // This test cannot reach that THIRD layer through a real HTTP+DB
+      // path, precisely because the first two already make an invalid
+      // role unreachable in practice -- which is the point.
+      await expect(pool.query(`UPDATE users SET role = 'bogus-role' WHERE id = $1`, [daveId]))
+        .rejects.toThrow(/check constraint/i);
+
+      // The user's real (valid) role is untouched -- select still works normally.
+      const selected = await requestJson(port, 'POST', '/workspaces/ws-a/select', { token: sessionToken });
+      expect(selected.status).toBe(200);
+      expect(typeof selected.body.jwt).toBe('string');
+    });
   });
 
   describe('privilege-escalation risks (design doc section 4)', () => {

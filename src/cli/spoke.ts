@@ -72,7 +72,29 @@ export function sandboxedWriteFile(destPath: string, data: Buffer): void {
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
     throw new Error(`Refusing to write outside the received-files sandbox: ${destPath}`);
   }
-  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+
+  const destDir = path.dirname(resolved);
+  fs.mkdirSync(destDir, { recursive: true });
+
+  // apra-fleet-36x: the lexical check above cannot catch a PRE-PLANTED
+  // symlink somewhere inside the sandbox pointing outside it -- destPath
+  // is entirely sender-controlled untrusted input, so re-validate against
+  // the REAL (symlink-resolved) path of the containing directory before
+  // writing. This does not defend against this write API planting its own
+  // symlink (it never creates one), only against one already present.
+  const realRoot = fs.realpathSync(root);
+  const realDestDir = fs.realpathSync(destDir);
+  if (realDestDir !== realRoot && !realDestDir.startsWith(realRoot + path.sep)) {
+    throw new Error(`Refusing to write outside the received-files sandbox (symlink escape detected): ${destPath}`);
+  }
+  // Also refuse if the destination FILE itself already exists as a
+  // symlink -- writeFileSync follows symlinks by default, which would
+  // silently write through a pre-planted link even if its containing
+  // directory is legitimately inside the sandbox.
+  if (fs.existsSync(resolved) && fs.lstatSync(resolved).isSymbolicLink()) {
+    throw new Error(`Refusing to write outside the received-files sandbox (symlink escape detected): ${destPath}`);
+  }
+
   fs.writeFileSync(resolved, data, { mode: 0o600 });
 }
 

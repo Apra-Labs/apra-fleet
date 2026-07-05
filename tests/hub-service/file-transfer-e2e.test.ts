@@ -18,12 +18,14 @@
  * correlated file_transfer.result back; A receives it over its own
  * stream.
  *
- * NOTE: RelayStrategy.transferFiles/receiveFiles still throw "not yet
- * supported" (an honest, separately-tracked gap -- see relay-strategy.ts)
- * -- this test exercises sendFileOverRelay directly, the same way a
- * future RelayStrategy.transferFiles implementation would, rather than
- * going through AgentStrategy. That remaining wiring gap is real and not
- * hidden by this test.
+ * apra-fleet-8yn wired RelayStrategy.transferFiles to sendFileOverRelay
+ * (the push/send direction) -- see the dedicated "RelayStrategy.transferFiles"
+ * describe block below for the real end-to-end proof of THAT path, through
+ * getStrategy()/AgentStrategy rather than calling sendFileOverRelay
+ * directly. receiveFiles/deleteFiles still throw "not yet supported": no
+ * pull-direction wire-protocol kind exists yet (sendFileOverRelay is
+ * push-only), and deletion has no relay kind at all -- honest gaps, not
+ * hidden.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
@@ -39,6 +41,8 @@ import { sign } from '../../src/hub-service/hub-jwt.js';
 import { runSpoke, type SpokeDeps } from '../../src/cli/spoke.js';
 import { setRelayContext, getRelayContext } from '../../src/services/relay-context.js';
 import { sendFileOverRelay } from '../../src/services/file-transfer-relay.js';
+import { RelayStrategy } from '../../src/services/relay-strategy.js';
+import type { Agent } from '../../src/types.js';
 
 const SECRET = 'test-hub-secret';
 
@@ -236,6 +240,165 @@ describe('file transfer over relay: sender -> real hub -> receiver (real HTTP + 
 
       expect(result.status).toBe('corrupt');
       expect(writeCalled).toBe(false);
+    } finally {
+      spokeA?.stop();
+      spokeB?.stop();
+    }
+  }, 20000);
+});
+
+describe('RelayStrategy.transferFiles (apra-fleet-8yn): real end-to-end through AgentStrategy, not sendFileOverRelay directly', () => {
+  let pool: any;
+  let handle: HttpServerHandle;
+  let port: number;
+  let receivedDir: string;
+  let localSrcDir: string;
+  const originalSecret = process.env.HUB_JWT_SECRET;
+
+  beforeEach(async () => {
+    process.env.HUB_JWT_SECRET = SECRET;
+    pool = await freshPool();
+    setPool(pool);
+    await createWorkspace('ws-a', 'Workspace A', pool);
+    handle = createHttpServer();
+    port = await listen(handle, 0, '127.0.0.1');
+    receivedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-transfer-e2e-received-'));
+    localSrcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-transfer-e2e-src-'));
+  });
+
+  afterEach(async () => {
+    setRelayContext(null);
+    await handle.close();
+    await closePool();
+    fs.rmSync(receivedDir, { recursive: true, force: true });
+    fs.rmSync(localSrcDir, { recursive: true, force: true });
+    if (originalSecret !== undefined) process.env.HUB_JWT_SECRET = originalSecret;
+    else delete process.env.HUB_JWT_SECRET;
+  });
+
+  it('sends real local files through getStrategy()/RelayStrategy to a member on a different spoke, and reports success per file', async () => {
+    const hubUrl = `http://127.0.0.1:${port}`;
+    await createMember('origin-member', 'ws-a', { name: 'origin', provider: 'claude' }, pool);
+    await createMember('target-member', 'ws-a', { name: 'target', provider: 'claude' }, pool);
+    const { token: tokenA } = sign({ sub: 'mach-a', ws: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'mach-b', ws: 'ws-a', role: 'spoke' }, SECRET);
+
+    const depsB: SpokeDeps = {
+      fetch: (...a) => globalThis.fetch(...a),
+      hostname: () => 'machine-b',
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as any),
+      random: () => 0,
+      readCredentials: () => ({ hubUrl, machineId: 'mach-b', workspaceId: 'ws-a', jwt: tokenB }),
+      getAgentForMember: () => null,
+      getMemberSnapshot: () => [{ memberId: 'target-member', status: 'online' }],
+      onLog: () => {},
+      writeFile: async (destPath, data) => {
+        const abs = path.join(receivedDir, path.basename(destPath));
+        fs.writeFileSync(abs, data);
+      },
+    };
+    const spokeB = runSpoke('target-member', depsB);
+
+    const depsA: SpokeDeps = {
+      fetch: (...a) => globalThis.fetch(...a),
+      hostname: () => 'machine-a',
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as any),
+      random: () => 0,
+      readCredentials: () => ({ hubUrl, machineId: 'mach-a', workspaceId: 'ws-a', jwt: tokenA }),
+      getAgentForMember: () => null,
+      getMemberSnapshot: () => [{ memberId: 'origin-member', status: 'online' }],
+      onLog: () => {},
+      writeFile: async () => {},
+    };
+    // Started LAST: relay-context.ts is a process-wide singleton (see
+    // spoke-e2e.test.ts) -- A must own it since A is the one sending.
+    const spokeA = runSpoke('origin-member', depsA);
+
+    try {
+      await new Promise((r) => setTimeout(r, 200));
+
+      const file1 = path.join(localSrcDir, 'report.txt');
+      const file2 = path.join(localSrcDir, 'notes.md');
+      fs.writeFileSync(file1, 'quarterly report contents');
+      fs.writeFileSync(file2, 'meeting notes');
+
+      const relayAgent: Agent = {
+        id: 'relay-agent', friendlyName: 'via-relay', agentType: 'relay', relayMemberId: 'target-member',
+        workFolder: '/tmp', createdAt: new Date().toISOString(),
+      };
+      const strategy = new RelayStrategy(relayAgent);
+      const result = await strategy.transferFiles([file1, file2]);
+
+      expect(result.success.sort()).toEqual(['notes.md', 'report.txt']);
+      expect(result.failed).toEqual([]);
+      expect(fs.readFileSync(path.join(receivedDir, 'report.txt'), 'utf-8')).toBe('quarterly report contents');
+      expect(fs.readFileSync(path.join(receivedDir, 'notes.md'), 'utf-8')).toBe('meeting notes');
+    } finally {
+      spokeA?.stop();
+      spokeB?.stop();
+    }
+  }, 20000);
+
+  it('reports a per-file failure without throwing when one local file does not exist', async () => {
+    const hubUrl = `http://127.0.0.1:${port}`;
+    await createMember('origin-member', 'ws-a', { name: 'origin', provider: 'claude' }, pool);
+    await createMember('target-member', 'ws-a', { name: 'target', provider: 'claude' }, pool);
+    const { token: tokenA } = sign({ sub: 'mach-a', ws: 'ws-a', role: 'spoke' }, SECRET);
+    const { token: tokenB } = sign({ sub: 'mach-b', ws: 'ws-a', role: 'spoke' }, SECRET);
+
+    const depsB: SpokeDeps = {
+      fetch: (...a) => globalThis.fetch(...a),
+      hostname: () => 'machine-b',
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as any),
+      random: () => 0,
+      readCredentials: () => ({ hubUrl, machineId: 'mach-b', workspaceId: 'ws-a', jwt: tokenB }),
+      getAgentForMember: () => null,
+      getMemberSnapshot: () => [{ memberId: 'target-member', status: 'online' }],
+      onLog: () => {},
+      writeFile: async (destPath, data) => {
+        fs.writeFileSync(path.join(receivedDir, path.basename(destPath)), data);
+      },
+    };
+    const spokeB = runSpoke('target-member', depsB);
+
+    const depsA: SpokeDeps = {
+      fetch: (...a) => globalThis.fetch(...a),
+      hostname: () => 'machine-a',
+      now: () => Date.now(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as any),
+      random: () => 0,
+      readCredentials: () => ({ hubUrl, machineId: 'mach-a', workspaceId: 'ws-a', jwt: tokenA }),
+      getAgentForMember: () => null,
+      getMemberSnapshot: () => [{ memberId: 'origin-member', status: 'online' }],
+      onLog: () => {},
+      writeFile: async () => {},
+    };
+    const spokeA = runSpoke('origin-member', depsA);
+
+    try {
+      await new Promise((r) => setTimeout(r, 200));
+
+      const goodFile = path.join(localSrcDir, 'exists.txt');
+      fs.writeFileSync(goodFile, 'real content');
+      const missingFile = path.join(localSrcDir, 'does-not-exist.txt');
+
+      const relayAgent: Agent = {
+        id: 'relay-agent', friendlyName: 'via-relay', agentType: 'relay', relayMemberId: 'target-member',
+        workFolder: '/tmp', createdAt: new Date().toISOString(),
+      };
+      const strategy = new RelayStrategy(relayAgent);
+      const result = await strategy.transferFiles([goodFile, missingFile]);
+
+      expect(result.success).toEqual(['exists.txt']);
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0].path).toBe('does-not-exist.txt');
     } finally {
       spokeA?.stop();
       spokeB?.stop();
