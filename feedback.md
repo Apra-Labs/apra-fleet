@@ -1,135 +1,142 @@
-# Plan Review -- Code Intelligence Power Sprint (PLAN.md @ 6671ec6)
+# Phase 1 Review -- Code Intelligence Power Sprint
 
-Reviewer: pm-plan-reviewer
-Sources: requirements.md, design.md (D1-D9), PLAN.md, KB (kb_session_prime +
-kb_query for callGitNexus / fleet_status), source spot-checks.
+Reviewer: pm-reviewer
+Scope: Phase 1 commits 5e29169 (T1.1 spike), b01bd97 (T1.2 spike),
+495a676 (T1.3 P4b). Focus: T1.3 code (src/tools/kb-session-prime.ts +
+tests/knowledge/kb-session-prime.test.ts). Spikes sanity-checked for presence
+and internal consistency.
+Sources: PLAN.md (T1.1-T1.4), requirements.md (P4b), design.md (D1, D4),
+progress.json, code_impact/code_context on the changed wrapper.
 
 ## Verdict: APPROVED
 
-All findings below are LOW; none blocks execution. The plan is complete,
-design-compliant, correctly risk-ordered, and self-contained.
+T1.3 meets every binding item of design D4 and the review checklist. The key
+safety property (prime never throws and never returns degraded output when the
+graph/CI side fails) holds on every code path I traced. Build clean; full suite
+1667 passed with only the 2 known pre-existing timezone failures
+(tests/time-utils.test.ts, yashr-302). One MEDIUM finding is a plan-inherited
+effectiveness limitation, not a safety or correctness regression; it does not
+block Phase 1.
+
+Counts: 0 HIGH, 1 MEDIUM, 3 LOW.
 
 ## Findings
 
-1. LOW -- Telemetry tie behavior is claimed as a recorded resolution but the
-   rule is never stated. T4.2 requires tests for "top-N aggregation (ties,
-   fewer than 5 targets)" yet the task text only says "take top 5 by count";
-   a doer cannot write a deterministic tie assertion without a rule. Suggest
-   adding one line to T4.2 (e.g. "ties broken deterministically:
-   lexicographic by target"). Non-blocking: any deterministic choice the doer
-   documents satisfies D8.
+1. MEDIUM -- Multi-neighbor batch query uses FTS5 implicit-AND, so expansion
+   rarely surfaces entries once there are 2+ distinct neighbors.
+   SqliteProvider.query() (src/services/knowledge/sqlite-provider.ts:379-388)
+   passes opts.query verbatim into `entries_fts MATCH ?` with no OR rewrite.
+   ftsSafeTerm produces quoted phrases (`"nbrA"`) and the neighbors are joined
+   with a single space (kb-session-prime.ts:138-141), so the batch becomes
+   `"nbrA" "nbrB" ...`, which FTS5 treats as AND -- an entry must contain ALL
+   neighbor tokens to match. In the common case (2+ unrelated neighbor names)
+   the batch returns nothing and no entries are ever appended, so the feature
+   under-delivers on its P4b intent ("surface additional relevant entries").
+   This is plan-specified (PLAN.md T1.3 step 3 says `neighbors.join(' ')`) and
+   is fully SAFE -- it only ever yields fewer additions, never a throw or
+   degraded output -- so it is non-blocking. Recommended follow-up (backlog):
+   OR-join the sanitized terms (e.g. `.join(' OR ')`) so the batch surfaces
+   entries relevant to ANY neighbor. Single-neighbor and shared-token cases
+   already work today.
 
-2. LOW -- The FTS-sensitivity resolution is only implicit. SqliteProvider
-   itself notes FTS "may fail on unusual tokens" (sqlite-provider.ts line
-   545, catch in prime()). In T1.3 the single batch query
-   `neighbors.join(' ')` means one FTS-hostile symbol name (dots, parens,
-   dashes are common in symbol output) fails the WHOLE batch and the
-   try/catch silently skips the entire expansion; T3.3 queries by raw symbol
-   name with the same exposure. This degrade is design-compliant (D4:
-   degrade to current behavior), but the plan should state it explicitly so
-   doers/testers know batch-loss-on-bad-token is intentional, and so a test
-   can cover an FTS-error neighbor name. One sentence in T1.3 and T3.3 fixes
-   it.
+2. LOW -- Embeddings doc line-3 wording is internally inconsistent with its own
+   evidence. docs/code-intelligence-embeddings.md line 3 parenthetical calls the
+   model "bundled", but Evidence section 3 (lines 73-87) states "The model is
+   NOT bundled in the package; it is fetched from HuggingFace on first use"
+   (~87 MB one-time download). The LOCAL classification itself is correct and
+   well-evidenced (local ONNX, no API key, offline after first fetch, --embeddings
+   flag exists on 1.6.7); only the "bundled" adjective is loose. Cosmetic; does
+   not mislead T2.3, which reads the flag + download caveat correctly.
 
-3. LOW -- T1.2 (embeddings spike) is assigned claude-sonnet-4-6 while the
-   review bar asks for strong models on spikes. Acceptable here: T1.2 is a
-   narrow, timeboxed CLI/docs investigation gating only T2.3, and the
-   high-leverage spike (T1.1, gating T2.1/T2.2/T4.4) correctly gets
-   claude-opus-4-8. Recorded for PM awareness, no change required.
+3. LOW -- parseContextNeighbors harvests BOTH incoming.calls and outgoing.calls
+   (kb-session-prime.ts:46). Requirements P4b says "depth 1"; taking callers and
+   callees is depth-1 in both directions, which is a reasonable and generous
+   reading (the T1.1 surface doc lines 90-92 confirm both arrays carry parseable
+   names). Recording it only so the choice is explicit; matches the plan's
+   "impact/context, depth 1" latitude. No change required.
 
-4. LOW -- Minor anchor drift: PLAN.md cites HttpKbProvider.prime at
-   src/services/knowledge/http-provider.ts lines 233-243; actual span is
-   234-244. Off by one, cannot mislead a doer. All other cited anchors are
-   exact (see verification below).
+4. LOW -- Minor: the neighbor-expansion merge does not filter appended entries by
+   type, unlike the global-append block just above it (which filters
+   `type === 'knowledge'`, line 93). This is plan-compliant (PLAN.md T1.3 step 4
+   specifies only id-dedupe + via marker + cap, no type filter) and dedupe/cap
+   keep the output bounded, so it is not a defect -- noted only for symmetry
+   awareness if a type filter is later desired.
 
-## Checklist verification
+## Checklist verification (T1.3, design D4 binding)
 
-1. Coverage -- PASS. P1 -> T1.1 + T2.1 + T2.2; P2 -> T1.2 + T2.3; P3 ->
-   T3.1 + T3.2; P4a -> T3.3; P4b -> T1.3; P8 -> T4.1 + T4.2; P9 -> T4.3 +
-   T4.4. Every investigation-gated task (T2.1, T2.2, T2.3, T4.4) states its
-   decision rule inline (proxy / compose / descope+docs+backlog per D1
-   ladder; LOCAL/EXTERNAL/UNSUPPORTED per D2), and all state that silent
-   omission is unacceptable. Done criteria are testable (finding 1 is the
-   one soft spot).
+1. Expansion location -- PASS. `git diff 6671ec6..495a676 -- src/services/knowledge/`
+   is empty: SqliteProvider.prime and HttpKbProvider.prime are byte-unchanged.
+   All expansion lives in src/tools/kb-session-prime.ts, one layer up (D4).
 
-2. Design compliance -- PASS.
-   - D1: map/flow/tests are provider-interface methods routed through
-     callGitNexus; registration mirrors src/index.ts lines 310-325; "do NOT
-     parse ladybugdb (lbug)" repeated in T2.1/T2.2/T4.4 and sprint-wide
-     constraints.
-   - D2: T2.3 three-branch rule, default OFF, config only in
-     ~/.apra-fleet/data/code-intelligence/config.json.
-   - D3: T3.1 in-memory Map, pure shouldStartReindex(entry, now, cooldownMs)
-     (unit-testable without timers), 120000 ms default + config override,
-     detached spawn off the call path with stderr tail to log helpers,
-     enabled default true.
-   - D4: T3.3 enrichment lives in code-intelligence-kb-enrich.ts imported
-     only by the handler (provider never imports KB service); T1.3 expansion
-     lives in the kb-session-prime wrapper via getProvider(), with
-     NEIGHBOR_CAP = 10 and ADDED_ENTRY_CAP = 5 exported; both joins
-     read-only + hard-skip on error.
-   - D8: JSONL {ts, tool, target, repo}, 5MB rotate to .1, recording in
-     handlers only (provider stays pure proxy), fire-and-forget try/catch,
-     read path single-pass over .jsonl + .1 with 30d filter.
-   - D9: T4.3 isTestPath spec matches design verbatim (segment
-     test/tests/spec case-insensitive, /\.(test|spec)\.[^.]+$/ filename,
-     both separators); T4.4 fixes depth at 2.
+2. CI surface + defensive parse -- PASS. Uses `getProvider().context({ name })`
+   (kb-session-prime.ts:112,123), NOT provider.graph (T1.1 doc confirms
+   graph -> call_graph is broken on gitnexus 1.6.7). parseContextNeighbors
+   returns [] on isError, non-object result, missing/non-array content, no text
+   block, unparseable JSON, and ambiguous-candidate responses (verified against
+   a live context call: `incoming` can be `{}` and is handled). Never throws.
 
-3. Risk order -- PASS. Phase 1 = T1.1 spike + T1.2 spike + T1.3 (P4b,
-   riskiest pure-code) per design phasing guidance. All spike-gated build
-   tasks (T2.1, T2.2, T2.3, T4.4) are in later phases than their spikes.
-   T1.3's reference to T1.1's surface doc is satisfied by in-phase task
-   ordering and carries its own defensive fallback (context or impact,
-   isError/unparseable treated as no neighbors).
+3. Caps -- PASS. NEIGHBOR_CAP=10 and ADDED_ENTRY_CAP=5 are exported consts
+   (lines 17,19). Guards use `>=` BEFORE push in both loops (lines 120,128,156),
+   so no off-by-one. Tests assert exactly 10 quoted terms from 11 neighbors and
+   exactly 5 additions from 8 candidates.
 
-4. Models -- PASS. Every work/spike task has an exact model (2x
-   claude-opus-4-8, 9x claude-sonnet-4-6, 2x claude-haiku-4-5; summary table
-   matches task-by-task assignments). All four VERIFY tasks are modelless
-   and each includes build + test + gitnexus analyze + the non-ASCII
-   AGENTS.md/CLAUDE.md revert (KB constraint 2 verbatim) + push, and each
-   names the 2 known timezone failures (tests/time-utils.test.ts, beads
-   yashr-302) as the only allowed failures. See finding 3 on T1.2's tier.
+4. Merge -- PASS. existingIds seeded from `result.top_entries` (line 153), which
+   at that point already includes both prime's direct hits AND the appended
+   globals -> dedupe covers both. Each addition gets `via: 'graph-neighbor'`
+   (line 159); additions are appended AFTER direct hits (line 162), so they rank
+   strictly below; capped at ADDED_ENTRY_CAP. Tests confirm order [direct...,
+   neighbors...], via marker only on neighbors, and dedupe against direct hits.
 
-5. Self-containedness -- PASS. Factual anchors verified against source:
-   - src/tools/code-intelligence.ts: interface lines 7-12, PROVIDERS line
-     16, getProvider lines 42-59, CONFIG_PATH line 14 -- all exact.
-   - src/index.ts lines 310-325: four code_* registrations, handler pattern
-     and routing sentence exactly as quoted in the plan.
-   - src/tools/kb-session-prime.ts: wrapper flow (prime -> global append)
-     and query call shape {query, l1_only, limit, include_stale} match.
-   - SqliteProvider.prime lines 511-577 -- exact. HttpKbProvider.prime --
-     off by one (finding 4).
-   - .gitnexus/meta.json stats {380/4051/10976/214/300/0} and vectorSearch
-     exact-scan/unavailable -- exact.
-   - logError confirmed in src/utils/log-helpers.ts (via code_query).
-   - tests/time-utils.test.ts, tests/knowledge/kb-session-prime.test.ts,
-     tests/fleet-status-code-intelligence.test.ts,
-     src/services/knowledge/kb-providers.ts all exist.
-   - KB CONFIRMED entries corroborate the callGitNexus resilience/freshness
-     claims, the freshness-module circular-import rule, the check-status
-     degraded-safe pattern, and both KB constraints copied verbatim into the
-     plan. A doer with only PLAN.md + repo can execute each task.
+5. Graceful skip (KEY SAFETY PROPERTY) -- PASS. The entire expansion is inside
+   one try/catch (lines 111-168) whose catch is a no-op, leaving `result`
+   exactly as prime returned it. getProvider() is inside the try, so a provider
+   throw is caught. Per-symbol context() calls have their own inner try/catch
+   (continue on throw). The KB neighbor query and merge are inside the outer try.
+   Skips entirely when hint_symbols is empty/absent (line 110 guard). I could
+   find no path that makes prime throw or emit error text when the CI/graph side
+   fails. Tests cover getProvider-throws and context-throws-for-every-symbol,
+   both yielding output identical to non-expanded prime.
 
-6. Repo rules -- PASS. ASCII-only stated sprint-wide and per task; "never
-   push main" and "NO PR" in every VERIFY task and sprint constraints,
-   consistent with standing user rules (no PR until asked, no merges).
+6. FTS-safety -- PASS. ftsSafeTerm tokenizes on [A-Za-z0-9_]+ and quotes each
+   token; names with no usable token return null and are filtered out
+   (lines 138-141), so one FTS-hostile neighbor degrades to skipping that
+   neighbor, not killing the batch. Test "FTS-hostile neighbor is skipped"
+   confirms `((` drops out while `goodName` survives as `"goodName"`. (See
+   finding 1 for the separate AND-semantics effectiveness note.)
 
-7. Ambiguity resolutions -- 3 of 5 explicit, 2 partial (findings 1-2):
-   - P4b at tool-wrapper layer: reflected (T1.3 "do NOT modify
-     SqliteProvider.prime or HttpKbProvider.prime -- the join lives one
-     layer up"); reasonable -- works for both project providers, including
-     the HTTP provider whose prime executes remotely.
-   - P4a exact symbol match: reflected (T3.3 "exact match on the symbols
-     field"); reasonable -- query-then-filter-exact handles FTS looseness.
-   - Telemetry tie behavior: NOT stated in task text (finding 1).
-   - Suffix only on newly-started reindex: reflected (T3.2 "When
-     maybeScheduleReindex returned true ... exact suffix"; done criterion
-     "suffix only when scheduled"); reasonable.
-   - FTS sensitivity note: behaviorally covered by try/catch graceful skip
-     in T1.3/T3.3 but not called out (finding 2).
+7. Tests meaningful -- PASS. 13 tests, all green. Real over-limit inputs for
+   both caps, dedupe against direct hits, via marker + below-direct ranking,
+   both graceful-skip paths (getProvider throws; context throws), isError
+   result, FTS-hostile neighbor, and hint_symbols-absent skip. KB constraint 1
+   honored: vi.hoisted() mock fns, vi.mock factories, vi.resetModules() +
+   dynamic import at the start of each expansion test.
+
+8. Build + tests -- PASS. `npm run build` (tsc) exit 0.
+   `npx vitest run tests/knowledge/kb-session-prime.test.ts` 13/13 pass. Full
+   `npx vitest run`: 1667 passed, 2 failed, 14 skipped -- the 2 failures are
+   ONLY the known pre-existing timezone tests in tests/time-utils.test.ts
+   (yashr-302). Matches T1.4 progress.json note.
+
+9. ASCII -- PASS. No non-ASCII bytes in kb-session-prime.ts,
+   kb-session-prime.test.ts, or either spike doc.
+
+## Spike sanity check
+
+- T1.1 (docs/code-intelligence-child-surface.md): present, internally
+  consistent. 13-tool inventory, three capability sections each ending in an
+  explicit ladder rung, and a Decisions table whose rungs match the section
+  conclusions (communities -> rung 2 compose via cypher; flows -> rung 2 compose
+  via cypher; upstream-for-tests -> rung 1/2 direct impact + isTestPath filter).
+  Documents the call_graph-broken-on-1.6.7 finding that justifies T1.3 using
+  context. Consistent with progress.json T1.1 note.
+- T1.2 (docs/code-intelligence-embeddings.md): present. Classification LOCAL on
+  line 1, evidence + cost sections complete, consistent with progress.json T1.2
+  note. One cosmetic wording inconsistency (finding 2).
 
 ## Summary
 
-APPROVED. 0 HIGH, 0 MEDIUM, 4 LOW. The LOW items are one-line clarifications
-the planner may fold in at dispatch time; none requires a plan revision
-cycle.
+APPROVED. 0 HIGH, 1 MEDIUM, 3 LOW. The MEDIUM is a plan-inherited FTS AND-vs-OR
+effectiveness limitation that never compromises safety or correctness and is a
+clean backlog follow-up. The load-bearing safety property is airtight, tests are
+substantive and green, providers are untouched, and both spikes are present and
+self-consistent.
