@@ -18,6 +18,7 @@ import {
   readRecentActivity,
   type RecentActivity,
 } from '../services/watch/fleet-log.js';
+import { escapeShellArg } from '../utils/shell-escape.js';
 import type { Agent } from '../types.js';
 
 const ACTIVE_WINDOW_MS = 90_000; // a member is "active" if it produced activity within this window
@@ -379,9 +380,13 @@ function pumpTranscript(f: Follower, single: boolean, tailN: number, verbose: bo
   for (const ev of toPrint) emit(f, ev, single);
 }
 
-/** Single-quote a string for safe interpolation into a bash command. */
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+/**
+ * Build the `tail -F` command for a remote transcript file. `file` is untrusted
+ * (it comes from `ls -t` on the member's disk), so it is shell-escaped before
+ * interpolation. `startFlag` is caller-controlled (`-n0` / `-n +1`).
+ */
+export function buildTailCommand(startFlag: string, file: string): string {
+  return `tail ${startFlag} -F ${escapeShellArg(file)}`;
 }
 
 // A remote tail is re-checked every this-many poll ticks (~POLL_INTERVAL_MS each)
@@ -428,7 +433,7 @@ async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean):
     const onEnd = () => { if (f.rtStream === stream) f.rtStream = null; }; // channel died -> next check reopens
     stream = await execStream(
       f.agent,
-      `tail ${startFlag} -F ${shq(newest)}`,
+      buildTailCommand(startFlag, newest),
       (chunk) => processRemoteChunk(f, chunk, single, verbose),
       onEnd,
     );
