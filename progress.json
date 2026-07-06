@@ -69,10 +69,10 @@
       "title": "Re-index at VERIFY checkpoints in PM docs (F2.1)",
       "model": "claude-haiku-4-5",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.6",
-      "commit": null,
-      "notes": ""
+      "commit": "56e27f6",
+      "notes": "Extended VERIFY checkpoint sentence in doer template (skills/pm/doer-reviewer-loop.md lines 166-168) to include npx gitnexus analyze after build, linter, full test suite, explicitly stating non-fatal (if fails, record and continue). Added new bullet to skills/pm/index.md 'When to run' section documenting that VERIFY checkpoints automatically re-run gitnexus analyze incrementally to keep mid-sprint symbols visible to later phases. Both files touched only; no unrelated text reflowed. ASCII only."
     },
     {
       "id": "T2.3",
@@ -80,10 +80,10 @@
       "title": "VERIFY Phase 2 -- build, tests, gitnexus analyze, push",
       "model": null,
       "type": "verify",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.7",
       "commit": null,
-      "notes": ""
+      "notes": "build: npm run build (tsc) clean, no errors. lint: not configured in package.json -- skipped as expected. test: npm test full suite -- 1658 passed, 2 failed, 14 skipped across 116 test files; the 2 failures are the known pre-existing tests/time-utils.test.ts timezone-dependent failures (IST machine, beads yashr-302), unrelated to this sprint -- treated as green per instructions. gitnexus analyze: npx gitnexus analyze ran after tests passed and succeeded (non-fatal step regardless) -- incremental update (changed=6 added=2 deleted=0), 4051 nodes / 10976 edges / 214 clusters / 300 flows, 46s. Reverted gitnexus-injected non-ASCII blocks from AGENTS.md and CLAUDE.md. Pushed feat/code-intelligence-abstraction to origin. No PR opened; never pushed to main."
     },
     {
       "id": "T3.1",
