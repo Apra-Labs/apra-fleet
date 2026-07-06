@@ -6,7 +6,7 @@
   "worktree": "C:\\ws_yash\\Repos\\apra-fleet-main\\apra-fleet",
   "transport": "remote",
   "epic": "yashr-43h",
-  "lastDispatchedPhase": 2,
+  "lastDispatchedPhase": 3,
   "tasks": [
     {
       "id": "T1.1",
@@ -91,10 +91,10 @@
       "title": "Routing guidance in tool descriptions (F1.1)",
       "model": "claude-haiku-4-5",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.8",
-      "commit": null,
-      "notes": ""
+      "commit": "0e008da",
+      "notes": "Appended routing sentence to all four code_* tool descriptions in src/index.ts (lines 310-325): code_graph, code_impact, code_query, code_context. Each description now includes: 'Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.' All descriptions updated with identical appended text. Build clean (no build run yet; T3.4 will verify)."
     },
     {
       "id": "T3.2",
@@ -102,10 +102,10 @@
       "title": "CI+KB paragraph in reviewer dispatch template (F1.2)",
       "model": "claude-haiku-4-5",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.9",
-      "commit": null,
-      "notes": ""
+      "commit": "cbd943d",
+      "notes": "Added knowledge bank + code intelligence paragraph to reviewer template in skills/pm/doer-reviewer-loop.md. Paragraph includes: kb_session_prime call at session start with hints from diff; kb_query for unfamiliar files with CONFIRMED/INFERRED trust; code_impact for impact questions; guidance to use code_graph/code_impact/code_query/code_context for structural questions, never Glob/Grep. Adapted from doer template style for review work. Other templates byte-identical."
     },
     {
       "id": "T3.3",
@@ -113,10 +113,10 @@
       "title": "Fill tpl-planner CI gap + confirm templates (F1.3)",
       "model": "claude-haiku-4-5",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.10",
-      "commit": null,
-      "notes": ""
+      "commit": "9df9d89",
+      "notes": "tpl-planner.md: inserted '## Code Intelligence (use while planning)' section verbatim after Knowledge Bank section (line 21) and before Planning Model. tpl-doer.md CONFIRMED: line 47 'kb_session_prime' instruction present, lines 57-60 code intelligence guidance (code_graph/code_impact/code_query/code_context, never Glob/Grep). tpl-reviewer.md CONFIRMED: line 76 'kb_session_prime' instruction present, lines 78-80 code intelligence guidance (code_graph/code_impact/code_query/code_context). All three templates byte-identical to requirements where not touched. ASCII only."
     },
     {
       "id": "T3.4",
@@ -124,10 +124,10 @@
       "title": "VERIFY Phase 3 -- sprint-final checks, ASCII sweep, push",
       "model": null,
       "type": "verify",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.11",
       "commit": null,
-      "notes": ""
+      "notes": "build: npm run build (tsc) clean, no errors. lint: not configured in package.json -- skipped as expected. test: npm test full suite -- 1658 passed, 2 failed, 14 skipped; the 2 failures are the known pre-existing tests/time-utils.test.ts timezone-dependent failures (IST machine, beads yashr-302), unrelated to this sprint -- treated as green per instructions. ASCII sweep: git diff main...feat/code-intelligence-abstraction -- our modified files (src/index.ts, skills/pm/doer-reviewer-loop.md, skills/pm/tpl-planner.md, progress.json) contain zero non-ASCII bytes; broader diff has pre-existing non-ASCII from main branch (unrelated to this sprint). gitnexus analyze: npx gitnexus analyze succeeded (non-fatal step) -- incremental update (changed=5 added=0 deleted=0), 4051 nodes / 10976 edges / 214 clusters / 300 flows, 14.3s. No AGENTS.md/CLAUDE.md modifications needed (not touched locally). Pushed feat/code-intelligence-abstraction to origin. No PR opened; never pushed to main."
     }
   ],
   "dispatches": [
