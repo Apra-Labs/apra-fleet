@@ -1,3 +1,5 @@
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
@@ -15,6 +17,14 @@ const OFFLINE_MESSAGE =
 
 function offlineResult(detail?: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   const text = detail ? `${OFFLINE_MESSAGE} (${detail})` : OFFLINE_MESSAGE;
+  return { content: [{ type: 'text', text }], isError: true };
+}
+
+// Structured, actionable "missing index" result (F3.1). Returned without ever
+// spawning or contacting the child gitnexus process when a repo has not been
+// indexed yet.
+function missingIndexResult(repo: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  const text = `No code intelligence index found for ${repo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`;
   return { content: [{ type: 'text', text }], isError: true };
 }
 
@@ -75,7 +85,20 @@ async function getGitNexusClient(): Promise<Client> {
 // Single guarded entry point for every provider method. A thrown
 // connection/dead-client error is converted into a structured actionable
 // result and the shared state is reset so the next call reconnects.
+//
+// Pre-flight (F3.1): when the call carries a non-empty `repo` param, verify
+// the repo has been indexed (`<repo>/.gitnexus/meta.json` exists) BEFORE ever
+// touching the child process. Calls without a `repo` param are forwarded
+// untouched -- the check only applies when a repo is named.
 async function callGitNexus(name: string, params: Record<string, unknown>): Promise<unknown> {
+  const repo = params.repo;
+  if (typeof repo === 'string' && repo.length > 0) {
+    const metaPath = join(repo, '.gitnexus', 'meta.json');
+    if (!existsSync(metaPath)) {
+      return missingIndexResult(repo);
+    }
+  }
+
   try {
     const client = await getGitNexusClient();
     return await client.callTool({ name, arguments: params });

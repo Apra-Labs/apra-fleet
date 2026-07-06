@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // ---------------------------------------------------------------------------
 // Hoist mock references so they are available inside vi.mock factories, which
@@ -205,5 +208,98 @@ describe('GitNexusProvider connection resilience', () => {
     const second = await provider.impact({ file_path: 'src/index.ts' });
     expect(mockConnect).toHaveBeenCalledTimes(2);
     expect(second).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitNexusProvider pre-flight index check (F3.1)
+//
+// When a call carries a `repo` param, the provider must check
+// `<repo>/.gitnexus/meta.json` with fs.existsSync BEFORE ever touching the
+// child process. Missing index -> structured error, no connect, no callTool.
+// Calls without `repo` are forwarded untouched.
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider pre-flight index check (F3.1)', () => {
+  let tempRepo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    tempRepo = mkdtempSync(join(tmpdir(), 'code-intel-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempRepo, { recursive: true, force: true });
+  });
+
+  it('graph() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+    const provider = new GitNexusProvider();
+    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('impact() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+    const provider = new GitNexusProvider();
+    const result = (await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('query() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+    const provider = new GitNexusProvider();
+    const result = (await provider.query({ query: 'find exports', repo: tempRepo })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('context() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+    const provider = new GitNexusProvider();
+    const result = (await provider.context({ name: 'x', repo: tempRepo })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('forwards to callTool untouched when the repo param is absent', async () => {
+    const provider = new GitNexusProvider();
+    const expected = { content: [{ type: 'text', text: 'ok' }] };
+    mockCallTool.mockResolvedValueOnce(expected);
+
+    const result = await provider.graph({ symbol: 'x' });
+
+    expect(mockCallTool).toHaveBeenCalledWith({ name: 'call_graph', arguments: { symbol: 'x' } });
+    expect(result).toBe(expected);
   });
 });
