@@ -7,6 +7,7 @@ import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
+import { syncCloudCache } from '../services/cloud-sync.js';
 
 export const listMembersSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -80,10 +81,25 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
   const authStatusPromises = agents.map(getAuthStatus);
   const authStatuses = await Promise.all(authStatusPromises);
 
+  // SaaS-connected devices (apra-fleet-aho) additionally surface the
+  // cloud workspace's own member/project list -- a fleet-dashboard
+  // "workspace member" is a distinct concept from this file's local
+  // SSH/relay Agent registry above, so it's reported as its own section
+  // rather than merged into `agents`. A standalone (no hub-credentials.json)
+  // instance gets `status: 'not-connected'` and this adds nothing to the
+  // output, so existing standalone behavior/tests are unaffected.
+  const cloudSync = await syncCloudCache();
+
   if (format === 'json') {
     return JSON.stringify({
       server_version: serverVersion,
       total: agents.length,
+      cloud: cloudSync.status === 'not-connected' ? undefined : {
+        status: cloudSync.status,
+        members: cloudSync.status === 'synced' ? cloudSync.cache.members : cloudSync.status === 'offline' ? (cloudSync.cache?.members ?? []) : [],
+        projects: cloudSync.status === 'synced' ? cloudSync.cache.projects : cloudSync.status === 'offline' ? (cloudSync.cache?.projects ?? []) : [],
+        lastSyncedAt: cloudSync.status === 'synced' ? cloudSync.cache.lastSyncedAt : cloudSync.status === 'offline' ? (cloudSync.cache?.lastSyncedAt ?? null) : null,
+      },
       members: agents.map((a, i) => ({
         id: a.id,
         name: a.friendlyName,
@@ -109,7 +125,15 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
   const combined = agents.map((agent, i) => ({ agent, authStatus: authStatuses[i] }));
   const { grouped, sortedKeys } = groupByCategory(combined, ({ agent: a }) => a.category?.trim());
 
-  let t = `${agents.length} member(s)\n`;
+  let t = '';
+  if (cloudSync.status === 'synced') {
+    t += `[cloud] ${cloudSync.cache.members.length} workspace member(s), ${cloudSync.cache.projects.length} project(s)\n`;
+  } else if (cloudSync.status === 'offline') {
+    t += `[cloud] fleet-dashboard unreachable -- showing last synced data (${cloudSync.cache?.members.length ?? 0} member(s), ${cloudSync.cache?.projects.length ?? 0} project(s))\n`;
+  } else if (cloudSync.status === 'credential-expired') {
+    t += `[cloud] credential expired or revoked -- run \`apra-fleet join <member-jwt>\` again\n`;
+  }
+  t += `${agents.length} member(s)\n`;
   for (const category of sortedKeys) {
     const members = grouped.get(category)!;
     t += `\n[${category}]\n`;
