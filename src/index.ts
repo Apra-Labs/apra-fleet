@@ -166,6 +166,7 @@ async function startServer() {
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
   const { getProvider, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema } = await import('./tools/code-intelligence.js');
+  const { enrichContextWithKb } = await import('./tools/code-intelligence-kb-enrich.js');
   const { kbCaptureSchema, kbCapture } = await import('./tools/kb-capture.js');
   const { kbInvalidateSchema, kbInvalidate } = await import('./tools/kb-invalidate.js');
   const { kbContextSchema, kbContext } = await import('./tools/kb-context.js');
@@ -321,7 +322,12 @@ async function startServer() {
   }));
   server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
     const provider = await getProvider();
-    return JSON.stringify(await provider.context(input));
+    const result = await provider.context(input);
+    // P4a (design D4): KB enrichment lives one layer up from the provider --
+    // the gitnexus provider file must not import the KB service. Only this
+    // handler calls the helper, then merges.
+    const enriched = await enrichContextWithKb(input.name, result);
+    return JSON.stringify(enriched);
   }));
   server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapTool('code_map', async (input) => {
     const provider = await getProvider();
