@@ -6,6 +6,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
 import { maybeScheduleReindex } from './code-intelligence-reindex.js';
+import { isTestPath } from './code-intelligence-tests.js';
 import { logError } from '../utils/log-helpers.js';
 
 let sharedClient: Client | null = null;
@@ -325,6 +326,61 @@ async function mapFlowResult(listResult: unknown, repo: string | undefined): Pro
   return textResult({ processes, row_count: payload.row_count });
 }
 
+// ---------------------------------------------------------------------------
+// Rung-1/2 compose support (T4.4 code_tests): the upstream traversal itself
+// is a direct `impact` capability (confirmed in
+// docs/code-intelligence-child-surface.md, Decisions table, "Upstream
+// traversal depth 2" row); code_tests composes it with the isTestPath filter
+// over byDepth filePaths. Do NOT parse ladybugdb directly.
+// ---------------------------------------------------------------------------
+
+interface ImpactByDepthItem {
+  name?: string;
+  filePath?: string;
+  [key: string]: unknown;
+}
+
+interface ImpactPayload {
+  byDepth?: Record<string, ImpactByDepthItem[]>;
+  [key: string]: unknown;
+}
+
+// The child's `impact` tool result is an MCP content array whose text is
+// JSON (per the confirmed shape in docs/code-intelligence-child-surface.md).
+// Some child tools (cypher) append a "\n\n---\n**Next:**..." hint suffix
+// after the JSON payload; strip it defensively here too in case impact does
+// the same, mirroring extractCypherPayload's approach.
+function extractImpactPayload(result: unknown): ImpactPayload | null {
+  if (!result || typeof result !== 'object' || !('content' in result)) return null;
+  const content = (result as { content: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0] as { text?: unknown } | undefined;
+  if (!first || typeof first.text !== 'string') return null;
+
+  const jsonPart = first.text.split('\n\n---\n')[0];
+  try {
+    const parsed = JSON.parse(jsonPart) as ImpactPayload;
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {
+    // Not the expected shape -- caller falls back to the raw result.
+  }
+  return null;
+}
+
+function mapTestsResult(result: unknown): unknown {
+  if (isErrorResult(result)) return result;
+  const payload = extractImpactPayload(result);
+  if (!payload) return result;
+
+  const byDepth = payload.byDepth ?? {};
+  const candidates = [...(byDepth['1'] ?? []), ...(byDepth['2'] ?? [])];
+  const tests = candidates
+    .filter((item) => typeof item.filePath === 'string' && isTestPath(item.filePath))
+    .map((item) => ({ name: item.name ?? '', filePath: item.filePath ?? '' }));
+
+  return textResult({ tests, count: tests.length });
+}
+
 export class GitNexusProvider implements CodeIntelligenceProvider {
   async graph(params: Record<string, unknown>): Promise<unknown> {
     return callGitNexus('call_graph', params);
@@ -391,5 +447,23 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
       ...(repo ? { repo } : {}),
     });
     return mapFlowResult(listResult, repo);
+  }
+
+  // T4.4: test-to-symbol mapping via the `impact` upstream traversal (rung
+  // 1/2 -- direct tool, composed filter; see Decisions table in
+  // docs/code-intelligence-child-surface.md, "Upstream traversal depth 2"
+  // row). Depth is fixed at 2 per design D9. includeTests: true so test
+  // files are not filtered out by the child before isTestPath ever sees
+  // them.
+  async tests(params: Record<string, unknown>): Promise<unknown> {
+    const repo = params.repo;
+    const result = await callGitNexus('impact', {
+      target: params.symbol,
+      direction: 'upstream',
+      maxDepth: 2,
+      includeTests: true,
+      ...(typeof repo === 'string' ? { repo } : {}),
+    });
+    return mapTestsResult(result);
   }
 }

@@ -56,7 +56,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, codeMapSchema, codeFlowSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 
 // ---------------------------------------------------------------------------
@@ -817,6 +817,154 @@ describe('GitNexusProvider.flow() pre-flight index check', () => {
   it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     const result = (await provider.flow({ name: 'x', repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('codeTestsSchema validation', () => {
+  it('rejects an empty object (symbol is required)', () => {
+    const result = codeTestsSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts symbol with optional repo', () => {
+    const result = codeTestsSchema.safeParse({ symbol: 'handleIPChange', repo: '/a/b' });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts symbol alone (repo omitted)', () => {
+    const result = codeTestsSchema.safeParse({ symbol: 'handleIPChange' });
+    expect(result.success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitNexusProvider.tests() (T4.4 code_tests -- test-to-symbol mapping)
+//
+// Composes the child's `impact` tool (direction: upstream, maxDepth: 2,
+// includeTests: true -- direct capability per the Decisions table in
+// docs/code-intelligence-child-surface.md) and filters byDepth["1"] +
+// byDepth["2"] items down to those whose filePath passes isTestPath (T4.3).
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider.tests()', () => {
+  let provider: GitNexusProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    provider = new GitNexusProvider();
+  });
+
+  it('calls impact with direction upstream, maxDepth 2, includeTests true, and the symbol as target', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ byDepth: {} }) }],
+    });
+
+    await provider.tests({ symbol: 'handleIPChange' });
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'impact',
+      arguments: expect.objectContaining({
+        target: 'handleIPChange',
+        direction: 'upstream',
+        maxDepth: 2,
+        includeTests: true,
+      }),
+    });
+  });
+
+  it('filters mixed test/product callers across depth 1 and depth 2 down to only test paths', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          byDepth: {
+            '1': [
+              { name: 'callerA', filePath: 'src/foo.ts' },
+              { name: 'testCallerA', filePath: 'tests/foo.test.ts' },
+            ],
+            '2': [
+              { name: 'callerB', filePath: 'src/bar.ts' },
+              { name: 'testCallerB', filePath: 'src/lib/bar.spec.ts' },
+            ],
+          },
+        }),
+      }],
+    });
+
+    const result = (await provider.tests({ symbol: 'x' })) as { content: { text: string }[] };
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed).toEqual({
+      tests: [
+        { name: 'testCallerA', filePath: 'tests/foo.test.ts' },
+        { name: 'testCallerB', filePath: 'src/lib/bar.spec.ts' },
+      ],
+      count: 2,
+    });
+  });
+
+  it('returns an empty tests array when no byDepth caller is a test path', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ byDepth: { '1': [{ name: 'callerA', filePath: 'src/foo.ts' }] } }),
+      }],
+    });
+
+    const result = (await provider.tests({ symbol: 'x' })) as { content: { text: string }[] };
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed).toEqual({ tests: [], count: 0 });
+  });
+
+  it('strips a trailing hint suffix before parsing, like cypher payloads', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ byDepth: { '1': [{ name: 't', filePath: 'tests/x.test.ts' }] } }) +
+          '\n\n---\n**Next:** do something else',
+      }],
+    });
+
+    const result = (await provider.tests({ symbol: 'x' })) as { content: { text: string }[] };
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed.tests).toEqual([{ name: 't', filePath: 'tests/x.test.ts' }]);
+  });
+
+  it('passes through an error result unchanged', async () => {
+    const errorResult = { isError: true, content: [{ type: 'text', text: 'boom' }] };
+    mockCallTool.mockResolvedValueOnce(errorResult);
+
+    const result = await provider.tests({ symbol: 'x' });
+
+    expect(result).toEqual(errorResult);
+  });
+});
+
+describe('GitNexusProvider.tests() pre-flight index check', () => {
+  let tempRepo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    tempRepo = mkdtempSync(join(tmpdir(), 'code-intel-tests-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempRepo, { recursive: true, force: true });
+  });
+
+  it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+    const provider = new GitNexusProvider();
+    const result = (await provider.tests({ symbol: 'x', repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe(

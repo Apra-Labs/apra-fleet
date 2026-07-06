@@ -165,7 +165,7 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
-  const { getProvider, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema } = await import('./tools/code-intelligence.js');
+  const { getProvider, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema } = await import('./tools/code-intelligence.js');
   const { enrichContextWithKb } = await import('./tools/code-intelligence-kb-enrich.js');
   const { recordUsage } = await import('./tools/code-intelligence-telemetry.js');
   const { kbCaptureSchema, kbCapture } = await import('./tools/kb-capture.js');
@@ -346,6 +346,11 @@ async function startServer() {
     recordUsage('code_flow', input.name ?? input.from ?? input.to ?? '', input.repo ?? null);
     const provider = await getProvider();
     return JSON.stringify(await provider.flow(input));
+  }));
+  server.tool('code_tests', 'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.', codeTestsSchema.shape, wrapTool('code_tests', async (input) => {
+    recordUsage('code_tests', input.symbol, input.repo ?? null);
+    const provider = await getProvider();
+    return JSON.stringify(await provider.tests(input));
   }));
 
   // --- Knowledge Bank ---

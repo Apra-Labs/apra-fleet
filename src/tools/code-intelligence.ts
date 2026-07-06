@@ -11,6 +11,7 @@ export interface CodeIntelligenceProvider {
   context(params: Record<string, unknown>): Promise<unknown>;
   map(params: Record<string, unknown>): Promise<unknown>;
   flow(params: Record<string, unknown>): Promise<unknown>;
+  tests(params: Record<string, unknown>): Promise<unknown>;
 }
 
 const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
@@ -50,6 +51,11 @@ export const codeFlowSchema = z.object({
   from: z.string().optional().describe('Entry-point symbol or label fragment the flow must start from'),
   to: z.string().optional().describe('Terminal symbol or label fragment the flow must end at'),
   name: z.string().optional().describe('Process name or label fragment to match, e.g. "RemoveMember"'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+});
+
+export const codeTestsSchema = z.object({
+  symbol: z.string().describe('Function, class, or method name to find transitive test callers for'),
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
