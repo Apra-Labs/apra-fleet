@@ -1,0 +1,33 @@
+{
+  "sprint": "kb-integrity",
+  "track": "single",
+  "branch": "feat/code-intelligence-abstraction",
+  "base": "main",
+  "worktree": "C:\\ws_yash\\Repos\\apra-fleet-main\\apra-fleet",
+  "transport": "remote",
+  "epic": "yashr-oaf",
+  "lastDispatchedPhase": null,
+  "tasks": [
+    { "id": "T1.1", "phase": 1, "title": "Enforce CONFIRMED gate -- kb_capture caps at INFERRED (F1)", "model": "claude-opus-4-8", "type": "work", "status": "pending", "bead": "yashr-oaf.1", "commit": null, "notes": "" },
+    { "id": "T1.2", "phase": 1, "title": "Trust-model docs + tpl-kb-agent update (F1)", "model": "claude-haiku-4-5", "type": "work", "status": "pending", "bead": "yashr-oaf.2", "commit": null, "notes": "" },
+    { "id": "T1.3", "phase": 1, "title": "Supersede for real -- superseded_at + stale=1 on update (F2)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.3", "commit": null, "notes": "" },
+    { "id": "T1.4", "phase": 1, "title": "Loosen contradiction flagging + cross-type candidate discovery (F2)", "model": "claude-opus-4-8", "type": "work", "status": "pending", "bead": "yashr-oaf.4", "commit": null, "notes": "" },
+    { "id": "T1.5", "phase": 1, "title": "VERIFY Phase 1", "model": null, "type": "verify", "status": "pending", "bead": "yashr-oaf.5", "commit": null, "notes": "" },
+    { "id": "T2.1", "phase": 2, "title": "FTS OR-join across 4 sites + F2 cross-type contradiction e2e (F4)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.6", "commit": null, "notes": "" },
+    { "id": "T2.2", "phase": 2, "title": "Auto-staleness at prime -- capture hash basis + checkFreshness (F3)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.7", "commit": null, "notes": "" },
+    { "id": "T2.3", "phase": 2, "title": "Provenance enums stamped by tool layer + harvest provenance (F5)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.8", "commit": null, "notes": "" },
+    { "id": "T2.4", "phase": 2, "title": "VERIFY Phase 2", "model": null, "type": "verify", "status": "pending", "bead": "yashr-oaf.9", "commit": null, "notes": "" },
+    { "id": "T3.1", "phase": 3, "title": "user-directive entry type at highest trust tier (F6)", "model": "claude-opus-4-8", "type": "work", "status": "pending", "bead": "yashr-oaf.10", "commit": null, "notes": "" },
+    { "id": "T3.2", "phase": 3, "title": "Keep kb_harvest autowired, make it honest + low-trust (F7)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.11", "commit": null, "notes": "" },
+    { "id": "T3.3", "phase": 3, "title": "kb_list tool (F8)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.12", "commit": null, "notes": "" },
+    { "id": "T3.4", "phase": 3, "title": "Canonical export .fleet/kb-canonical.json (F8)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.13", "commit": null, "notes": "" },
+    { "id": "T3.5", "phase": 3, "title": "kb_session_prime cold-seed from canonical bible (F8)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-oaf.14", "commit": null, "notes": "" },
+    { "id": "T3.6", "phase": 3, "title": "VERIFY Phase 3 (sprint close)", "model": null, "type": "verify", "status": "pending", "bead": "yashr-oaf.15", "commit": null, "notes": "" }
+  ],
+  "dispatches": [
+    { "seq": 1, "role": "planner", "model": "claude-fable-5", "phase": 0, "tasks": [], "tokens": 118594, "toolUses": 30, "ms": 425709 },
+    { "seq": 2, "role": "plan-reviewer", "model": "claude-fable-5", "phase": 0, "tasks": [], "tokens": 94952, "toolUses": 24, "ms": 366370 },
+    { "seq": 3, "role": "planner", "model": "claude-fable-5", "phase": 0, "tasks": [], "tokens": null, "toolUses": null, "ms": null },
+    { "seq": 4, "role": "plan-reviewer", "model": "claude-fable-5", "phase": 0, "tasks": [], "tokens": null, "toolUses": null, "ms": null }
+  ]
+}
