@@ -17,8 +17,9 @@ two conflict (see section 5).
 > **2026-07-05 update -- superseded on tier-3 ownership and SSH/relay scope
 > (apra-fleet-yp3/qaz, epic apra-fleet-yeb):** the `src/hub-service/` implementation
 > described throughout this plan as "the hub" is now reference-only. The product
-> owner's authoritative directive (docs/api-contract-reconciliation.md section 1.5,
-> cross-checked against fleet-dashboard's own `docs/architecture.md`) makes
+> owner's authoritative directive (docs/api-contract-reconciliation.md section 1.5;
+> see that section's sourcing note -- this repo has not independently verified
+> fleet-dashboard's private implementation, only its published contract) makes
 > fleet-dashboard the sole tier-3 persistence layer for all workspace/project/
 > member/secret configuration; `apra-fleet.exe` is either a SaaS-connected client of
 > fleet-dashboard's contract (JWT issued by fleet-dashboard) or standalone with

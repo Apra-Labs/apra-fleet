@@ -18,8 +18,9 @@
 **Authors:** Azure Pipeline (doer) + human founder input via hub-spoke-master-plan.md
 
 > **2026-07-05 update (apra-fleet-yp3/qaz, epic apra-fleet-yeb):** the product
-> owner's authoritative directive (docs/api-contract-reconciliation.md section 1.5,
-> cross-checked against fleet-dashboard's own `docs/architecture.md`) makes
+> owner's authoritative directive (docs/api-contract-reconciliation.md section 1.5;
+> see that section's sourcing note -- this repo has not independently verified
+> fleet-dashboard's private implementation, only its published contract) makes
 > fleet-dashboard the sole tier-3 persistence layer for workspace/project/member/
 > secret configuration; `apra-fleet.exe` never owns a Postgres database of its own.
 > That supersedes this ADR's premise that `src/hub-service/` (Postgres-only,
