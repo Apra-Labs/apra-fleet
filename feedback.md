@@ -1,64 +1,110 @@
-# Plan Re-Review -- Code Intelligence Hardening (PLAN.md vs requirements.md)
+# Phase 1 Review -- Code Intelligence Hardening (T1.1-T1.4)
 
-Reviewer: pm-plan-reviewer
+Reviewer: pm-reviewer
 Date: 2026-07-06
+Scope: commits ec3c81e (T1.1, F3.2), 9a19e7d (T1.2, F3.1), 118164b (T1.3, F3.3);
+diff 21f3a63..HEAD limited to src/ and tests/.
 Verdict: **APPROVED**
 
-## Re-review scope
+## Checklist results
 
-First review (commit 91f07aa) returned CHANGES NEEDED with one MEDIUM finding:
-T3.3 falsely claimed all three fleet-mode templates carried code intelligence
-guidance, and primed the haiku doer with "expected outcome is confirmation with
-NO edits", risking a silent F1.3 miss (tpl-planner.md in fact lacks CI tool
-guidance entirely).
+### 1. F3.2 -- connection resilience (src/tools/code-intelligence-gitnexus.ts)
 
-The planner revised T3.3 in commit 240703b. This re-review verifies that
-revision; all other tasks were approved as-is in the first review and are
-unchanged (diff 91f07aa..240703b touches only the T3.3 section and its task
-summary row).
+- [OK] Failed connect clears `connectionPromise` inside the IIFE catch before
+  the rejection propagates, so the next call retries a fresh connection. The
+  clear cannot clobber a newer promise: no waiter can create a replacement
+  before the catch runs (the variable still holds the pending promise until
+  then), and waiters hold the promise object itself, so nulling the variable
+  cannot null-deref a concurrent awaiter.
+- [OK] Transport/client death reset: `onDeath` is registered on
+  transport.onclose/onerror and client.onclose/onerror with an identity guard
+  (`sharedClient === client`) so a late handler for a replaced client cannot
+  clobber a newer connection. Verified against the installed MCP SDK
+  (node_modules/.../shared/protocol.js, connect()): the SDK CHAINS pre-set
+  transport onclose/onerror handlers rather than discarding them, and
+  `_onclose`/`_onerror` invoke client.onclose/onerror -- so the wiring fires
+  in production, and the double-fire (transport handler + client handler) is
+  idempotent thanks to the guard.
+- [OK] All four provider methods (graph/impact/query/context) route through
+  the single guarded `callGitNexus` helper.
+- [OK] Dead-client errors return a structured `isError` text result naming
+  'npx gitnexus analyze' and /pm index, with the underlying error message
+  appended as detail. Never an unhandled throw, never a silent empty.
+- [OK] `resetConnection()` runs in the catch, so the call after a caught
+  error reconnects (verified by test (c): second call triggers a second
+  connect).
+- [OK] Concurrent first calls: single-flight `connectionPromise` semantics
+  preserved (cached promise returned to the second caller).
 
-## Finding 1 resolution -- VERIFIED FIXED
+### 2. F3.1 -- pre-flight index check
 
-- **Correct verified reality stated:** revised T3.3 now records that
-  tpl-doer.md (lines 47, 57) and tpl-reviewer.md (lines 76-79) carry both
-  elements, while tpl-planner.md carries ONLY kb_session_prime (line 8) with
-  zero CI guidance hits -- matching what this reviewer verified against source.
-- **Expected outcome corrected:** the task is now "fill the gap, then confirm",
-  not "confirm with no edits". No misleading priming remains.
-- **Verbatim insert text present:** a complete "## Code Intelligence (use while
-  planning)" section is given inline in the plan, so the doer needs no drafting
-  judgment -- keeping claude-haiku-4-5 is appropriate.
-- **Insert anchor accurate:** checked against `skills/pm/tpl-planner.md` --
-  "If the KB is empty (first sprint on this repo), skip and proceed normally."
-  is line 21 and "## Planning Model" is line 23, exactly as the task states.
-- **Style consistent with siblings:** the insert's phrasing ("use the fleet
-  code intelligence tools (code_graph, code_impact, code_query, code_context)"
-  and "Never use Glob/Grep ... for structural questions") mirrors
-  tpl-doer.md line 57 and tpl-reviewer.md lines 76-79, and the `##` heading
-  matches tpl-planner.md's existing section style ("## Knowledge Bank ...").
-- **ASCII only:** the insert uses `--` dashes; no non-ASCII characters in the
-  revised section.
-- **Done criteria testable:** exact-text presence in tpl-planner.md,
-  byte-identical siblings unless a genuine gap is found, per-file confirmation
-  in progress.json, commit message specified
-  (`docs(pm): fill code intelligence gaps in fleet-mode templates`).
+- [OK] `existsSync(<repo>/.gitnexus/meta.json)` runs at the top of
+  `callGitNexus`, before `getGitNexusClient()` is awaited -- a missing index
+  never spawns the child (tests assert mockConnect not called).
+- [OK] Error text matches requirements.md verbatim, character for character:
+  `No code intelligence index found for <repo>. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`
+- [OK] Calls without `repo` (or with empty-string `repo`) forward untouched.
+- [OK] Nonexistent repo directory yields the missing-index error via the same
+  existsSync path.
 
-## Carry-over from first review (unchanged, still valid)
+### 3. F3.3 -- fleet_status health section (src/tools/check-status.ts)
 
-- Coverage: F3.1->T1.2, F3.2->T1.1, F3.3->T1.3, F2.1->T2.2, F2.2->T2.1,
-  F1.1->T3.1, F1.2->T3.2, F1.3->T3.3 (revised); done criteria precise and
-  testable.
-- Risk front-loading: F3.2 is Task 1 (T1.1, claude-opus-4-8).
-- Every work task has an exact model; T1.4/T2.3/T3.4 VERIFY tasks end each
-  phase with build + test + push; no PR; never main.
-- Required tests planned: F3.1 missing-index (T1.2), F3.2 connection-promise
-  reset (T1.1), F2.2 freshness pure function (T2.1).
-- All other factual anchors spot-checked and verified in the first review
-  (code-intelligence-gitnexus.ts structure, index.ts registration lines,
-  check-status.ts fleetStatus, test mock pattern, no lint script,
-  doer-reviewer-loop.md template line ranges).
+- [OK] Read-only and fast: existsSync/readFileSync plus `git rev-parse` /
+  `git rev-list --count` via execFileSync with 3s timeouts (git subprocess is
+  explicitly prescribed by the plan); no MCP child spawn, no network.
+- [OK] Never throws: every IO/git path is individually try/caught, meta parse
+  failure degrades to present:false, unknown lastCommit (rev-list failure)
+  degrades to headStatus 'unavailable' with the
+  `indexed <sha:8>, HEAD comparison unavailable` fragment, and fleetStatus()
+  wraps the whole section in a defensive catch besides.
+- [OK] Both formats: `codeIntelligence` key in the json payload; one extra
+  compact line matching the planned shape, including the
+  `code-intel: no index (run 'npx gitnexus analyze' or /pm index)` absent case.
 
-## Decision
+### 4. Tests
 
-APPROVED -- the sole finding is fully addressed; the plan is ready for
-execution starting at T1.1.
+- [OK] F3.2: three resilience tests per PLAN (a/b/c), each using
+  vi.resetModules() + dynamic import for cold module-singleton state; they
+  assert connect attempt counts and error shape, not trivial mock echoes.
+- [OK] F3.1: per-method missing-index tests (temp dir via mkdtempSync)
+  asserting the exact error text and that neither connect nor callTool ran,
+  plus the no-repo forwarding test. Note: these reuse the statically imported
+  module whose client was cached by the earlier describe block -- order-
+  dependent but deterministic under vitest's in-file ordering.
+- [OK] F3.3: 9 tests covering absent index, git-unavailable degradation,
+  stats/indexedAt/lastCommit parsing, invalid JSON, nonexistent dir, and all
+  four compact-line renderings.
+
+### 5. Build and tests (run by reviewer)
+
+- `npm run build`: clean, no tsc errors.
+- `npm test`: 1647 passed, 14 skipped, 2 failed -- the two failures are
+  exactly the known pre-existing timezone-dependent tests in
+  tests/time-utils.test.ts (beads yashr-302). No other failures.
+
+### 6. ASCII
+
+- `git diff 21f3a63..HEAD -- src/ tests/` contains no non-ASCII bytes.
+
+## Advisory notes (non-blocking, LOW)
+
+1. LOW -- `callGitNexus`'s catch calls `resetConnection()` without closing the
+   abandoned client. When `callTool` throws while the child is still alive
+   (e.g. an MCP request timeout or a protocol-level McpError rather than a
+   dead transport), the still-running `npx gitnexus mcp` child is orphaned and
+   the next call spawns a new one; repeated occurrences on a long-lived server
+   accumulate orphaned children. A `void client.close().catch(() => {})` in
+   the reset path (or an identity-guarded reset that closes the old client)
+   would tidy this. Behavior otherwise matches the F3.2 spec, which mandates
+   reset-on-caught-error; not a blocker.
+2. LOW -- cosmetic: the compact line renders `1 commits behind HEAD`
+   (singular/plural), and an index AHEAD of HEAD (e.g. after a reset) would
+   render `0 commits behind HEAD`. Harmless; fix opportunistically if the line
+   format is ever revisited.
+
+## Verdict
+
+APPROVED. All F3.1/F3.2/F3.3 contracts are met, the required tests exist and
+are meaningful, build and full suite pass (modulo the two known pre-existing
+timezone failures), and the diff is ASCII-only. The two LOW notes above are
+advisory and do not require rework this phase.
