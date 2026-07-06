@@ -347,4 +347,51 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     expect(passedQuery).toBe('"goodName"');
     expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['c']);
   });
+
+  // -- T2.1 / D4: shared OR-join helper proofs. MUST FAIL on today's code
+  // (both sites use a plain join(' '), implicit AND across terms), PASS after.
+
+  it('neighbor batch OR-joins multiple terms (not implicit AND)', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockContext.mockResolvedValue(contextResult(['alpha', 'beta']));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ hint_symbols: ['root'] });
+
+    expect(mockProjectQuery).toHaveBeenCalledTimes(1);
+    const passedQuery = mockProjectQuery.mock.calls[0][0].query as string;
+    expect(passedQuery).toBe('"alpha" OR "beta"');
+  });
+
+  it('global-append OR-joins multiple hint_symbols (not implicit AND)', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockContext.mockResolvedValue(contextResult([]));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ hint_symbols: ['alpha', 'beta'] });
+
+    expect(mockGlobalQuery).toHaveBeenCalledTimes(1);
+    const passedQuery = mockGlobalQuery.mock.calls[0][0].query as string;
+    expect(passedQuery).toBe('"alpha" OR "beta"');
+  });
+
+  it('global-append sanitizes FTS-hostile raw session_files and OR-joins them', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ session_files: ['src/tools/kb-capture.ts', 'src/services/knowledge/audn.ts'] });
+
+    expect(mockGlobalQuery).toHaveBeenCalledTimes(1);
+    const passedQuery = mockGlobalQuery.mock.calls[0][0].query as string;
+    // Slashes/dots are stripped (FTS5-hostile raw path chars), tokens are
+    // quoted, and the two file paths are OR-joined rather than AND-joined.
+    expect(passedQuery).not.toContain('/');
+    expect(passedQuery).toContain(' OR ');
+    expect(passedQuery).toContain('"kb"');
+    expect(passedQuery).toContain('"audn"');
+  });
 });

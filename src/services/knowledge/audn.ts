@@ -45,9 +45,43 @@ export function filesOverlap(a: string[], b: string[]): boolean {
   return a.some(f => b.includes(f));
 }
 
+// Turn a single search term into an FTS5-safe query fragment, or null when
+// nothing usable remains. Each alphanumeric/underscore token is wrapped as a
+// quoted phrase so FTS-hostile characters (quotes, parens, colons, hyphens,
+// slashes, dots) and reserved operators (AND/OR/NOT/NEAR) cannot break the
+// query. Tokens WITHIN one term stay space-joined (AND semantics within a
+// single term, e.g. a multi-word symbol); orJoinFtsTerms OR-joins ACROSS
+// terms. Shared by every FTS query-building site (D4).
+export function ftsSafeTerm(term: string): string | null {
+  const tokens = term.match(/[A-Za-z0-9_]+/g);
+  if (!tokens || tokens.length === 0) return null;
+  return tokens.map(t => `"${t}"`).join(' ');
+}
+
+// Shared OR-join helper (D4, closes yashr-5n2, yashr-17i): sanitizes each term
+// via ftsSafeTerm and joins the results with ' OR ' so FTS5 MATCH surfaces
+// entries containing ANY term rather than requiring ALL terms (the previous
+// implicit-AND behavior of a plain join(' ')). A term that sanitizes to
+// nothing (e.g. all punctuation) is dropped rather than breaking the whole
+// query. Ranking (bm25/ORDER BY rank) is unaffected -- more relevant entries
+// still surface first even under OR semantics. Single-term callers get
+// unchanged behavior (no ' OR ' to join).
+export function orJoinFtsTerms(terms: string[]): string {
+  return terms
+    .map(ftsSafeTerm)
+    .filter((t): t is string => t !== null)
+    .join(' OR ');
+}
+
+// D4 (T2.1): CHANGED to OR-join. makeFtsQuery feeds findAudnCandidates, which
+// in turn feeds makeAudnDecision's contradiction path -- an AND-join here
+// made cross-type contradiction discovery unreachable end-to-end (a "code_graph
+// now works" title would need the OLD "broken" entry to also contain every
+// token of the new title). OR-joining the title's tokens makes the old entry
+// a candidate whenever it shares ANY token, e.g. "code_graph".
 export function makeFtsQuery(title: string): string {
   const tokens = title.match(/\b[a-zA-Z0-9_]{3,}\b/g) ?? [];
-  return tokens.join(' ');
+  return orJoinFtsTerms(tokens);
 }
 
 export interface AudnResult {

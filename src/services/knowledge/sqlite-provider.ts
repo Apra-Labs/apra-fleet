@@ -10,6 +10,7 @@ import {
   filesOverlap,
   makeFtsQuery,
   makeAudnDecision,
+  orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
 import type {
@@ -542,8 +543,12 @@ export class SqliteProvider implements MemoryProvider {
     let top_entries: KBEntry[] = [];
     if (searchTerms.length > 0) {
       try {
+        // D4 (T2.1): OR-join across hint terms via the shared helper -- each
+        // term is still ftsSafeTerm-quoted (tokens WITHIN one term stay
+        // AND-joined), but terms are OR-joined so an entry matching ANY hint
+        // symbol/module surfaces instead of requiring ALL of them.
         const l1 = await this.query({
-          query: searchTerms.join(' '),
+          query: orJoinFtsTerms(searchTerms),
           l1_only: true,
           limit: 10,
           include_stale: false,

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
+import { orJoinFtsTerms } from '../services/knowledge/audn.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 
 export const kbSessionPrimeSchema = z.object({
@@ -56,18 +57,6 @@ function parseContextNeighbors(result: unknown): string[] {
   }
 }
 
-// Turn a single neighbor symbol name into an FTS5-safe query fragment, or null
-// when nothing usable remains. Each alphanumeric/underscore token is wrapped as
-// a quoted phrase so FTS-hostile characters (quotes, parens, colons, hyphens)
-// and reserved operators (AND/OR/NOT/NEAR) cannot break the batch query. This
-// makes a bad neighbor name degrade to "skip this neighbor" rather than kill the
-// whole expansion (plan-review correctness note).
-function ftsSafeTerm(name: string): string | null {
-  const tokens = name.match(/[A-Za-z0-9_]+/g);
-  if (!tokens || tokens.length === 0) return null;
-  return tokens.map(t => `"${t}"`).join(' ');
-}
-
 export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string> {
   if (input.session_files?.length) validateFilePaths(input.session_files);
 
@@ -79,8 +68,14 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
     hint_modules: input.hint_modules,
   });
 
-  // Append up to 3 global knowledge entries
-  const searchTerm = input.session_files?.join(' ') ?? input.hint_symbols?.join(' ') ?? '';
+  // Append up to 3 global knowledge entries. D4 (T2.1): OR-join via the
+  // shared helper -- each term (a raw session file path or a hint symbol) is
+  // sanitized through ftsSafeTerm before joining, so FTS-hostile characters
+  // in a raw file path ('/', '.') cannot throw into the catch below, and
+  // multiple terms surface entries matching ANY of them instead of requiring
+  // ALL of them (implicit AND, KB finding 83726d75 / feedback.md finding 3).
+  const searchTerms = input.session_files?.length ? input.session_files : (input.hint_symbols ?? []);
+  const searchTerm = orJoinFtsTerms(searchTerms);
   if (searchTerm) {
     try {
       const globalResult = await providers.global.query({
@@ -133,12 +128,12 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
       }
 
       if (neighbors.length > 0) {
-        // Sanitize per-neighbor so a single FTS-hostile name degrades to
-        // skipping that neighbor rather than killing the whole batch query.
-        const query = neighbors
-          .map(ftsSafeTerm)
-          .filter((t): t is string => t !== null)
-          .join(' ');
+        // D4 (T2.1): shared OR-join helper -- sanitizes per-neighbor (a
+        // single FTS-hostile name degrades to skipping that neighbor rather
+        // than killing the whole batch query) AND OR-joins across neighbors
+        // so an entry matching ANY neighbor surfaces instead of requiring ALL
+        // of them (implicit AND).
+        const query = orJoinFtsTerms(neighbors);
 
         if (query) {
           const neighborResult = await providers.project.query({
