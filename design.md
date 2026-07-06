@@ -51,17 +51,37 @@ Relevant code (verified 2026-07-06):
   refinements; only widen the CONTRADICTION path. Add a test using the
   code_graph broken-vs-fixed shape (same symbol code_graph/call_graph, no shared
   file necessarily) -> expect flagged.
+- CANDIDATE-DISCOVERY FIX (plan review, MEDIUM): findAudnCandidates currently
+  filters candidates by `AND e.type = ?`, so a contradiction across entry types
+  (e.g. a 'knowledge' "code_graph broken" vs a later 'knowledge' fix, or across
+  knowledge/learning) is never even considered. The code_graph pair in the live
+  KB is exactly this. For the CONTRADICTION path, candidate discovery must match
+  on symbol overlap WITHOUT the same-type restriction (dedup/update may keep the
+  type filter). Without this fix the loosened contradiction logic is unreachable
+  end-to-end, and the e2e flag test cannot pass. This is required for F2, not
+  optional.
 - Reconciling the existing live code_graph pair is OUT of scope (live data). The
   new logic proving it WOULD flag going forward (via test) is IN scope.
 
 ## D3 -- Auto-staleness at prime
 
 - kb_session_prime, before returning, runs the file-hash staleness check for the
-  source_files of the entries it is about to surface (reuse the sync path in
-  sqlite-provider.ts -- extract a narrower checkFreshness(files) if needed;
-  HttpKbProvider has no local files -> skip there). Entries whose files changed
-  are marked stale=1 and excluded from top_entries (prime already filters
-  include_stale:false).
+  source_files of the entries it is about to surface (build a checkFreshness(files)
+  helper using computeFileHashBatch from file-hash.js; sync() at
+  sqlite-provider.ts:610 is a STUB, do not use it; HttpKbProvider has no local
+  files -> skip there). Entries whose files changed are marked stale=1 and
+  excluded from top_entries (prime already filters include_stale:false).
+- CONTENT-HASH SCOPE FIX (plan review, MEDIUM): today only context-cache entries
+  carry a content_hash, and prime already excludes context-cache from top_entries,
+  so a naive "compare content_hash" staleness check would near-no-op. Instead key
+  the freshness check off source_files presence, not content_hash: for ANY entry
+  in the primed set that has source_files, hash those files now (computeFileHashBatch)
+  and compare against a stored per-file basis. If entries lack a stored file-hash
+  basis, this sprint must ALSO persist one at capture time (store file hashes for
+  source_files on capture, for all types, not just context-cache) so staleness is
+  computable. State the storage approach in the task; keep it a small additive
+  column/side-table, no migration of existing rows (they simply have no basis ->
+  treated as fresh/unknown, never falsely stale).
 - Fast + non-fatal: wrap in try/catch; any error -> prime behaves as today. Bound
   the work (only the files in the primed set, not the whole KB).
 - Tests: an entry whose source file is modified after capture is marked stale and
@@ -76,6 +96,14 @@ Relevant code (verified 2026-07-06):
   relevant entries surface first even with OR.
 - This fixes kb_session_prime multi-symbol primes AND the P4b neighbor batch
   (yashr-5n2, yashr-17i). Keep include_stale/l1_only filters intact.
+- ALL implicit-AND SITES (plan review, MEDIUM -- fix every one via one shared
+  helper): (1) SqliteProvider.prime searchTerms.join(' ') at
+  sqlite-provider.ts:536; (2) the P4b neighbor batch .join(' ') at
+  kb-session-prime.ts:141; (3) the additional term-join at kb-session-prime.ts:83
+  flagged in review. makeFtsQuery (audn.ts:20) is only used by
+  findAudnCandidates -- decide whether the shared OR-join helper also replaces it
+  or leave the AUDN dedup query as-is (state the choice; dedup semantics differ
+  from retrieval, so leaving AUDN's join alone is acceptable if justified).
 - Tests: a two-term query where no single entry contains both terms returns the
   entries containing either (today: returns nothing); single-term unchanged.
 
@@ -106,14 +134,34 @@ Relevant code (verified 2026-07-06):
 - Tests: a user-directive is retrievable at top rank, survives decay, and an
   agent capture with contradicting content does NOT supersede it (only flags).
 
-## D7 -- Retire kb_harvest
+## D7 -- Fix kb_harvest provenance (CORRECTED -- harvest is auto-wired, not dead)
 
-- Keep the tool registered but mark deprecated in its description and make it a
-  documented no-op-ish path (it may keep its current behavior, but nothing
-  dispatches it). Remove kb_harvest instructions from tpl-doer.md,
-  tpl-kb-agent.md, and doer-reviewer-loop.md; the KB-Agent direct-capture flow is
-  the sole documented path. Update any docs that reference harvest as active.
-- No test churn beyond confirming the tool still imports/registers (no crash).
+CORRECTION (plan review, verified): kb_harvest is NOT vestigial. It is
+auto-dispatched by src/tools/execute-prompt.ts (lines ~323-330) on every
+successful execute_prompt, with the session transcript passed in;
+tests/knowledge/kb-harvest-autowire.test.ts asserts this wiring. The 14
+kb_agent_harvest-sourced entries in the apra-fleet KB came from this path. So
+harvest DOES produce entries -- via the autowire, which has the transcript the
+agent itself lacks.
+
+Revised decision: do NOT rip harvest out. Instead:
+- Keep the autowire. Harvested entries MUST be low-trust: force confidence
+  UNVERIFIED (they are regex-extracted, unreviewed) -- this is consistent with
+  the D1 gate (harvest can never mint CONFIRMED). Confirm kb-harvest.ts already
+  captures at UNVERIFIED (it does, per audit) and that the D1 clamp covers it.
+- Canonicalize harvest provenance under D5: author='kb-agent' is wrong for the
+  autowire; stamp author='kb-agent' only for real KB-Agent captures. Harvested
+  entries get source='harvest' and a distinct author (e.g. 'harvest') so the two
+  paths are distinguishable in queries.
+- Do NOT strip harvest from templates blindly: the KB-Agent direct-capture flow
+  and the execute_prompt autowire are DIFFERENT paths. Keep the autowire; only
+  remove any redundant "call kb_harvest yourself at session end" instruction from
+  tpl-doer.md if present (the agent calling it manually with no transcript is the
+  useless path; the autowire is the useful one). Update docs to describe harvest
+  accurately (autowired, UNVERIFIED, regex-extracted) rather than calling it dead.
+- Tests: kb-harvest-autowire.test.ts must still pass; add/adjust a test asserting
+  harvested entries are UNVERIFIED and carry source='harvest'. Do not break the
+  autowire.
 
 ## D8 -- kb_list + canonical git bible
 
