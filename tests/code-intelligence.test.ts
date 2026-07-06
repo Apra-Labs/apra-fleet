@@ -123,3 +123,87 @@ describe('GitNexusProvider', () => {
     expect(result).toBe(expected);
   });
 });
+
+// ---------------------------------------------------------------------------
+// GitNexusProvider connection resilience (F3.2)
+//
+// These tests need COLD module state per test because getGitNexusClient()
+// holds module-level sharedClient / connectionPromise singletons. We use
+// vi.resetModules() + a dynamic import so each test starts with a fresh module
+// (the vi.mock factories above are re-applied, reusing the same hoisted mock
+// fns).
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider connection resilience', () => {
+  it('(a) first connect failure errors actionably; next call retries a fresh connection', async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    // First connect attempt rejects; later attempts succeed.
+    mockConnect.mockRejectedValueOnce(new Error('spawn npx ENOENT'));
+    mockConnect.mockResolvedValue(undefined);
+
+    const { GitNexusProvider } = await import('../src/tools/code-intelligence-gitnexus.js');
+    const provider = new GitNexusProvider();
+
+    const first = (await provider.graph({ symbol: 'x' })) as { isError?: boolean; content: { text: string }[] };
+    expect(first.isError).toBe(true);
+    expect(first.content[0].text).toContain('offline');
+    expect(first.content[0].text).toContain('npx gitnexus analyze');
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+
+    // Second call must attempt a brand-new connection (not await the poisoned promise).
+    const expected = { content: [{ type: 'text', text: 'ok' }] };
+    mockCallTool.mockResolvedValueOnce(expected);
+    const second = await provider.graph({ symbol: 'x' });
+    expect(mockConnect).toHaveBeenCalledTimes(2);
+    expect(second).toBe(expected);
+  });
+
+  it('(b) transport close resets the client so the next call reconnects', async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+
+    const { GitNexusProvider } = await import('../src/tools/code-intelligence-gitnexus.js');
+    const stdio = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const provider = new GitNexusProvider();
+
+    mockCallTool.mockResolvedValueOnce({ content: [] });
+    await provider.graph({ symbol: 'x' });
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+
+    // Simulate the child process dying: fire the transport close handler.
+    const transportInstance = (stdio.StdioClientTransport as unknown as { mock: { instances: { onclose?: () => void }[] } })
+      .mock.instances[0];
+    expect(typeof transportInstance.onclose).toBe('function');
+    transportInstance.onclose!();
+
+    mockCallTool.mockResolvedValueOnce({ content: [] });
+    await provider.graph({ symbol: 'x' });
+    // A brand-new client was constructed and connected.
+    expect(mockConnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('(c) callTool throwing yields the structured error and resets state for reconnect', async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+
+    const { GitNexusProvider } = await import('../src/tools/code-intelligence-gitnexus.js');
+    const provider = new GitNexusProvider();
+
+    mockCallTool.mockRejectedValueOnce(new Error('client closed'));
+    const result = (await provider.impact({ file_path: 'src/index.ts' })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('offline');
+
+    // State was reset: the next call reconnects (new connect attempt) and succeeds.
+    const expected = { content: [{ type: 'text', text: 'ok' }] };
+    mockCallTool.mockResolvedValueOnce(expected);
+    const second = await provider.impact({ file_path: 'src/index.ts' });
+    expect(mockConnect).toHaveBeenCalledTimes(2);
+    expect(second).toBe(expected);
+  });
+});
