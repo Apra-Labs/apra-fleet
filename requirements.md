@@ -1,103 +1,118 @@
-# apra-fleet -- Code Intelligence Abstraction
+# Requirements -- Code Intelligence Hardening
+
+Sprint epic: yashr-43h. Branch: feat/code-intelligence-abstraction (base: main).
 
 ## Background
 
-Fleet members currently use GitNexus MCP tools directly (`call_graph`, `impact`, `query`,
-`context`). These tool names are provider-specific. If the code intelligence backend
-changes (e.g. replaced by Sourcegraph, a custom AST tool, or a cloud service), every
-template and every member prompt must change.
+The code intelligence pipeline (gitnexus index -> apra-fleet MCP proxy -> code_graph /
+code_impact / code_query / code_context tools) works end to end, but an audit
+(2026-07-06, documented in docs/kb-current-state.html) found three weaknesses.
+This sprint fixes all three.
 
-The user also expects that the `.mcp.json` approach (wiring gitnexus directly into the
-project) is hidden inside fleet -- members and users should never need to know which
-backend is in use.
+The proxy lives in `src/tools/code-intelligence-gitnexus.ts` (spawns `npx gitnexus mcp`
+as a stdio MCP child process, one shared client). Tool schemas and provider selection
+live in `src/tools/code-intelligence.ts`. Tool registration is in `src/index.ts`.
+The gitnexus index lives at `<repo>/.gitnexus/` with `meta.json` holding
+`lastCommit`, `indexedAt`, `stats` (files/nodes/edges), and `fileHashes`.
 
-## Goal
+## Fix 3 (RISKIEST -- must be Phase 1): silent-empty failure mode
 
-Wrap code intelligence behind a fleet-owned abstraction (strategy pattern). Fleet exposes
-stable tool names. The current implementation uses GitNexus. Future providers slot in by
-changing config, not templates.
+Today, when the index is missing or the gitnexus child process fails, the tools
+return empty results. Agents silently degrade to file reads; nobody learns code
+intelligence was offline. This cost a real debugging session on 2026-06-23
+(root-caused wrongly as "missing index.db").
 
-## Requirements
+### F3.1 Pre-flight index check
 
-### R1 -- Fleet-owned code intelligence MCP tools
+In `code-intelligence-gitnexus.ts`, before proxying any call that carries a `repo`
+parameter: check `<repo>/.gitnexus/meta.json` exists. If absent, return a structured,
+actionable error instead of forwarding the call:
+`"No code intelligence index found for <repo>. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry."`
+The check must be cheap (fs.existsSync) and must NOT break calls without a `repo` param.
 
-Add four tools to the apra-fleet MCP server:
+### F3.2 Connection resilience
 
-| Fleet tool | Wraps (gitnexus default) | Purpose |
-|---|---|---|
-| `code_graph` | `call_graph` | Call graph for a symbol (callers + callees) |
-| `code_impact` | `impact` | Blast radius for a symbol (upstream affected) |
-| `code_query` | `query` | Semantic search across codebase |
-| `code_context` | `context` | Full symbol context (callers, callees, flows) |
+`getGitNexusClient()` caches `sharedClient` and `connectionPromise` forever:
+- A FAILED `connectionPromise` is cached, so one bad startup poisons every later call.
+- If the child process dies after connecting, every later call fails opaquely.
 
-Each tool:
-- Accepts the same parameters as the underlying gitnexus tool
-- Reads provider config to route to the correct backend
-- Returns the backend's response unchanged
-- Fails with a clear message if no backend is configured or indexed
+Required behavior:
+- On connection failure, clear `connectionPromise` so the next call retries.
+- Listen for transport close/error; reset `sharedClient`/`connectionPromise` so the
+  next call reconnects.
+- Wrap `callTool` so a dead-client error returns the same actionable message shape
+  as F3.1 (never an unhandled throw, never a silent empty).
 
-### R2 -- Provider config + simple extension path
+### F3.3 Health surfacing in fleet_status
 
-`apra-fleet install` Step 9 writes a code intelligence provider config:
-```
-~/.apra-fleet/data/code-intelligence/config.json
-```
-```json
-{ "provider": "gitnexus" }
-```
+Add a code intelligence section to the `fleet_status` tool output (find its
+implementation via code_query; likely `src/tools/check-status.ts` or similar):
+for the current working repo (process.cwd() if it has .gitnexus/), report:
+index present yes/no, nodes/edges/files from meta.json stats, indexedAt,
+and lastCommit vs current git HEAD (matching / N commits behind).
+Keep it read-only and fast; degrade gracefully when git or meta.json is unavailable.
 
-Implementation uses a single router file (`src/tools/code-intelligence.ts`) with a
-provider map:
-```typescript
-const PROVIDERS = {
-  gitnexus: gitnexusProvider,
-  // future: sourcegraphProvider, customProvider, ...
-};
-```
+## Fix 2: mid-sprint staleness
 
-Adding a new provider = implement the `CodeIntelligenceProvider` interface + add one
-entry to the map. No changes to MCP tool registration, templates, or installer.
+The index reflects the repo at analyze time. Symbols created in sprint phases 1-2
+are invisible to the phase-3 doer.
 
-### R3 -- Remove direct gitnexus dependency from templates
+### F2.1 Re-index at VERIFY checkpoints
 
-Update `tpl-doer.md` and `tpl-reviewer.md`:
-- Replace all `call_graph`, `impact`, `query`, `context` references with
-  `code_graph`, `code_impact`, `code_query`, `code_context`
-- Remove any mention of "GitNexus" from the template body
+In `skills/pm/doer-reviewer-loop.md` (doer template) and `skills/pm/index.md`:
+add `npx gitnexus analyze` to the VERIFY checkpoint sequence (after build/lint/tests
+pass, before push). Indexing is incremental via fileHashes, so this is seconds.
+Non-fatal: an analyze failure must not fail the VERIFY.
 
-The KB section in both templates becomes:
-```
-- During work: use code_graph, code_impact, code_query for cross-file tracing
-  and symbol lookup -- never plain-read files for structural questions.
-```
+### F2.2 Freshness metadata in tool responses
 
-### R4 -- .mcp.json no longer required for code intelligence
+In `code-intelligence-gitnexus.ts`: when a call carries a `repo` param and the index
+exists, compare `meta.json.lastCommit` with the repo's current `git rev-parse HEAD`.
+When they differ, append a freshness note to the tool response (do not block the
+call): `"[code-intelligence] index is behind repo HEAD (indexed <lastCommit:8> vs HEAD <head:8>). Results may miss recent changes; run 'npx gitnexus analyze' to refresh."`
+Extract the comparison into a small pure function so it is unit-testable.
 
-`apra-fleet install` Step 9 must NOT write a gitnexus entry to `.mcp.json`.
-Code intelligence is served through the fleet MCP server -- no separate MCP server
-entry is needed.
+## Fix 1: prompt-dependence of tool routing
 
-For repos that already have a gitnexus entry in `.mcp.json` (from prior installs),
-the installer should remove it during Step 9.
+Agents only use the tools when the dispatch prompt says so. Tool descriptions are
+the only channel present on EVERY dispatch path.
 
-### R5 -- knowledge-agent.md updated
+### F1.1 Routing guidance in tool descriptions
 
-`skills/fleet/knowledge-agent.md` Phase 1 (Prime) section currently mentions
-`call_graph`, `impact`, `query` by name. Update to use fleet tool names:
-`code_graph`, `code_impact`, `code_query`, `code_context`.
+In `src/tools/code-intelligence.ts` and wherever the user-facing tool descriptions
+are registered (check `src/index.ts`), extend each tool description
+(code_graph, code_impact, code_query, code_context) with one sentence:
+"Prefer this over Glob/Grep/file reads for structural questions (symbol lookup,
+call chains, impact) -- the answer is pre-indexed."
 
-## Out of Scope
+### F1.2 Reviewer dispatch template
 
-- Implementing a second provider (Sourcegraph, etc.) -- only gitnexus is wired now
-- Changing the gitnexus CLI invocation or index format
-- Any changes to the KB tools (kb_session_prime, kb_harvest, etc.)
+In `skills/pm/doer-reviewer-loop.md`, the reviewer template has no code
+intelligence / KB instructions (planner and doer templates were patched this week).
+Add the same style paragraph: kb_session_prime at start (hints from the diff),
+code_impact for "who else calls this changed method", kb_query before unfamiliar
+file reads.
 
-## Acceptance Criteria
+### F1.3 Confirm fleet-mode templates
 
-1. `code_graph("handleIPChange")` called on a fleet member returns the same result as
-   `call_graph("handleIPChange")` called directly on gitnexus
-2. tpl-doer.md contains no mention of "gitnexus", "call_graph", "impact", "query", "context"
-   (only `code_graph`, `code_impact`, `code_query`, `code_context`)
-3. A fresh `apra-fleet install` on a clean repo does NOT create a gitnexus entry in `.mcp.json`
-4. `npm test` passes
-5. `npm run build` clean
+Verify `skills/pm/tpl-planner.md`, `skills/pm/tpl-doer.md`, `skills/pm/tpl-reviewer.md`
+all carry the code intelligence + KB instructions (updated earlier on this branch;
+this is a read-and-confirm task, fix only if a gap is found).
+
+## Done criteria (sprint-wide)
+
+- `npm run build` clean (tsc, no errors)
+- `npm test` green (vitest) including NEW unit tests for:
+  - F3.1 missing-index error (temp dir without .gitnexus)
+  - F3.2 connection-promise reset on failure (mockable transport)
+  - F2.2 freshness comparison logic (pure function)
+- ASCII only in all files (repo rule)
+- No PR raised (the user raises PRs explicitly). Work stays on
+  feat/code-intelligence-abstraction; never push to main.
+
+## Design note
+
+No separate design.md: the architecture is fixed by the existing provider
+abstraction; binding decisions (error message shapes, freshness note format) are
+specified inline above. The riskiest work is F3.2 (async lifecycle of the shared
+MCP client) -- front-load it.
