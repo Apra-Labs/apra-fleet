@@ -6,9 +6,9 @@
   "worktree": "C:\\ws_yash\\Repos\\apra-fleet-main\\apra-fleet",
   "transport": "remote",
   "epic": "yashr-8m0",
-  "lastDispatchedPhase": null,
+  "lastDispatchedPhase": 1,
   "tasks": [
-    { "id": "T1.1", "phase": 1, "title": "SPIKE: gitnexus MCP child tool surface investigation", "model": "claude-opus-4-8", "type": "spike", "status": "pending", "bead": "yashr-8m0.1", "commit": null, "notes": "" },
+    { "id": "T1.1", "phase": 1, "title": "SPIKE: gitnexus MCP child tool surface investigation", "model": "claude-opus-4-8", "type": "spike", "status": "completed", "bead": "yashr-8m0.1", "commit": null, "notes": "gitnexus 1.6.7, 13 child tools listed (docs/code-intelligence-child-surface.md). (a) Communities: NO direct tool -> rung 2 compose via cypher over Community/MEMBER_OF (214 communities confirmed). (b) Flows/processes: NO direct tool; query has processes[] but NL-only (not from/to/name filterable) -> rung 2 compose via cypher over Process/STEP_IN_PROCESS (300 processes). (c) Upstream depth-2 callers: DIRECT via impact{direction:upstream,maxDepth:2,includeTests:true} -> rung 1/2, filter byDepth filePaths with isTestPath. SURPRISE: GitNexusProvider.graph() calls non-existent child tool 'call_graph' (Unknown tool error) -> code_graph broken on 1.6.7; backlog retarget to context/cypher. cypher returns markdown table not JSON rows." },
     { "id": "T1.2", "phase": 1, "title": "SPIKE: embeddings population investigation", "model": "claude-sonnet-4-6", "type": "spike", "status": "pending", "bead": "yashr-8m0.2", "commit": null, "notes": "" },
     { "id": "T1.3", "phase": 1, "title": "P4b: kb_session_prime graph-neighbor expansion", "model": "claude-opus-4-8", "type": "work", "status": "pending", "bead": "yashr-8m0.3", "commit": null, "notes": "" },
     { "id": "T1.4", "phase": 1, "title": "VERIFY Phase 1", "model": null, "type": "verify", "status": "pending", "bead": "yashr-8m0.4", "commit": null, "notes": "" },
