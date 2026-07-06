@@ -1,9 +1,12 @@
-# Local dev / self-hosted deployment for the hub service (apra-fleet-us9.4).
-# Usage: docker compose -f docker-compose.hub-service.yml up
+# REFERENCE/DEV-ONLY -- NOT a production deployment target (apra-fleet-yp3,
+# 2026-07-05). src/hub-service/ is not deployed to fleet.apralabs.com;
+# fleet-dashboard is the sole tier-3 persistence layer going forward. See
+# docs/hub-service-deployment.md and docs/api-contract-reconciliation.md
+# section 1.5. This compose file exists only to run the reference
+# implementation's tests/dev loop locally -- never point it at production.
 #
-# For production, point HUB_DATABASE_URL at your own managed Postgres
-# instead of the bundled `db` service, and set a real HUB_JWT_SECRET
-# (this file's default is for local dev only -- never use it in production).
+# Local dev for the hub service (apra-fleet-us9.4).
+# Usage: docker compose -f docker-compose.hub-service.yml up
 services:
   db:
     image: postgres:16-alpine

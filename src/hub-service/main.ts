@@ -1,5 +1,18 @@
 #!/usr/bin/env node
 /**
+ * STATUS: REFERENCE IMPLEMENTATION ONLY -- not deployed to fleet.apralabs.com
+ * and not receiving further production feature work (apra-fleet-yp3, decided
+ * 2026-07-05). This code proved the wire-protocol and workspace-isolation
+ * semantics (2133 passing tests) during the hub-and-spoke migration sprint,
+ * but the product owner has since decided fleet-dashboard is the sole tier-3
+ * persistence layer going forward -- see docs/api-contract-reconciliation.md
+ * section 1.5 for the authoritative directive and
+ * docs/hub-service-deployment.md for what that means for anyone deploying
+ * this. Do not point HUB_DATABASE_URL/HUB_JWT_SECRET at a real environment;
+ * treat this file and its tests purely as a specification of verified
+ * wire-protocol/security behavior for whichever team builds the production
+ * equivalent.
+ *
  * Hub service entry point (apra-fleet-us9.4). Runs pending migrations,
  * then starts the HTTP server. Self-hostable: every configuration value
  * is an env var, no cloud-vendor-specific setup required (see

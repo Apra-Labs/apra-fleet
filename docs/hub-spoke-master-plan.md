@@ -14,6 +14,18 @@ Status: planning document, 2026-07-03, partially implemented as of 2026-07-04. T
 plan supersedes the topology described in docs/cloud-fleet-architecture.md where the
 two conflict (see section 5).
 
+> **2026-07-05 update -- superseded on tier-3 ownership (apra-fleet-yp3/qaz):** the
+> `src/hub-service/` implementation described throughout this plan as "the hub" is
+> now reference-only. The product owner's authoritative directive
+> (docs/api-contract-reconciliation.md section 1.5) makes fleet-dashboard the sole
+> tier-3 persistence layer for all workspace/project/member/secret configuration;
+> `apra-fleet.exe` is either a SaaS-connected client of fleet-dashboard's contract
+> (JWT issued by fleet-dashboard) or standalone with local-JSON state -- it never
+> owns a Postgres database of its own. SSH-to-relay migration, workspace_id JWT
+> scoping, and the wire-protocol/security semantics documented below remain valid
+> local/relay design; only the "hub-service is the deployed tier-3 backend" premise
+> is retired. Read docs/api-contract-reconciliation.md first for current scope.
+
 **Implementation status (2026-07-04):** The `workspace_id` hard-scope claim (item 4)
 is live: `src/services/jwt.ts` requires `workspace_id` on every claim, `project_id`
 survives only as an optional non-security grouping label, and `src/services/

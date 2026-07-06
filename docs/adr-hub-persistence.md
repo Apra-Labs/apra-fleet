@@ -13,9 +13,21 @@
 
 # ADR: Hub Persistence -- Postgres-only vs Postgres+Redis vs Postgres+NATS
 
-**Status:** Proposed
+**Status:** Superseded (2026-07-05) -- see update note below.
 **Date:** 2026-07-04
 **Authors:** Azure Pipeline (doer) + human founder input via hub-spoke-master-plan.md
+
+> **2026-07-05 update (apra-fleet-yp3/qaz):** the product owner's authoritative
+> directive (docs/api-contract-reconciliation.md section 1.5) makes fleet-dashboard
+> the sole tier-3 persistence layer for workspace/project/member/secret
+> configuration; `apra-fleet.exe` never owns a Postgres database of its own. That
+> supersedes this ADR's premise that `src/hub-service/` (Postgres-only, evaluated
+> below) would be *the* deployed persistence backend for fleet.apralabs.com --
+> hub-service is now reference-only. The evaluation below (why plain pub/sub is
+> disqualified, at-least-once/TTL/redelivery requirements, self-host-parity
+> analysis) remains a useful specification of the semantics a real backend must
+> satisfy; it is not a live deployment decision anymore. Read
+> docs/api-contract-reconciliation.md first for current scope.
 
 ## Context
 

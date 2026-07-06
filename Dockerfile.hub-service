@@ -1,3 +1,9 @@
+# REFERENCE/DEV-ONLY -- NOT a production deployment target (apra-fleet-yp3,
+# 2026-07-05). src/hub-service/ is not deployed to fleet.apralabs.com;
+# fleet-dashboard is the sole tier-3 persistence layer going forward. See
+# docs/hub-service-deployment.md and docs/api-contract-reconciliation.md
+# section 1.5. Kept only to build/test the reference implementation locally.
+#
 # Hub service (apra-fleet-us9.4, fleet.apralabs.com) -- self-hostable,
 # no cloud-vendor lock-in. Point HUB_DATABASE_URL at any Postgres
 # (managed, self-hosted, or the docker-compose.hub-service.yml service
