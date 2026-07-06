@@ -381,9 +381,96 @@ function mapTestsResult(result: unknown): unknown {
   return textResult({ tests, count: tests.length });
 }
 
+// ---------------------------------------------------------------------------
+// graph() retarget (yashr-5t9): gitnexus 1.6.7 has NO child tool named
+// `call_graph` -- the previous mapping callGitNexus('call_graph', ...) always
+// returned the child's "Unknown tool: call_graph" isError result, so code_graph
+// was silently broken. Live-verified 2026-07 exactly as the fleet spawns the
+// child (npx -y gitnexus mcp over stdio): listTools() returns 13 tools and
+// `call_graph` is absent; a variable-length CALLS traversal via `cypher`
+// returns the { markdown, row_count } shape (confirmed against this repo's
+// .gitnexus index). See docs/code-intelligence-child-surface.md.
+//
+// Chosen approach: compose two depth-bounded `cypher` traversals over CALLS
+// edges (callers + callees), rung 2 -- same pattern as map()/flow(). This
+// returns a GENUINE multi-hop call graph, which keeps code_graph meaningfully
+// distinct from code_context: `context` (mapped to child 'context') is the
+// depth-1 360-degree view of a single symbol (direct in/out calls, accesses,
+// KB enrichment), whereas code_graph is the transitive caller/callee graph out
+// to GRAPH_MAX_DEPTH hops -- something context does not provide. The `symbol`
+// arg of codeGraphSchema maps to the Cypher `$symbol` param. Routed through
+// callGitNexus so it inherits the pre-flight index check, resilience, and
+// freshness wiring. Reuses parseMarkdownTable/asciiSanitizeLabel/
+// extractCypherPayload. Do NOT parse ladybugdb directly.
+//
+// NOTE on freshness: like map()/flow(), graph() reshapes the child's cypher
+// output into its own envelope, so the per-call freshness note that
+// callGitNexus appends to a passthrough result is not carried through here --
+// this is the same accepted trade-off the other composed tools make.
+
+// Depth 2 gives direct callers/callees plus one transitive hop. Inlined into
+// the query string because Cypher variable-length bounds cannot be
+// parameterized.
+const GRAPH_MAX_DEPTH = 2;
+const GRAPH_ROW_LIMIT = 100;
+
+// Callers: symbols that transitively CALL the target (incoming CALLS edges).
+const GRAPH_CALLERS_QUERY =
+  'MATCH p = (caller)-[:CodeRelation*1..' + GRAPH_MAX_DEPTH + ' {type: "CALLS"}]->(target) ' +
+  'WHERE target.name = $symbol ' +
+  'RETURN DISTINCT caller.name AS name, caller.filePath AS filePath, length(p) AS depth ' +
+  'ORDER BY depth, name LIMIT ' + GRAPH_ROW_LIMIT;
+
+// Callees: symbols the target transitively CALLS (outgoing CALLS edges).
+const GRAPH_CALLEES_QUERY =
+  'MATCH p = (source)-[:CodeRelation*1..' + GRAPH_MAX_DEPTH + ' {type: "CALLS"}]->(callee) ' +
+  'WHERE source.name = $symbol ' +
+  'RETURN DISTINCT callee.name AS name, callee.filePath AS filePath, length(p) AS depth ' +
+  'ORDER BY depth, name LIMIT ' + GRAPH_ROW_LIMIT;
+
+interface CallGraphNode {
+  name: string;
+  filePath: string;
+  depth: number;
+}
+
+function mapGraphRows(result: unknown): CallGraphNode[] {
+  const payload = extractCypherPayload(result);
+  if (!payload) return [];
+  return parseMarkdownTable(payload.markdown).map((row) => ({
+    name: asciiSanitizeLabel(row.name ?? ''),
+    filePath: row.filePath ?? '',
+    depth: Number(row.depth) || 0,
+  }));
+}
+
 export class GitNexusProvider implements CodeIntelligenceProvider {
   async graph(params: Record<string, unknown>): Promise<unknown> {
-    return callGitNexus('call_graph', params);
+    const symbol = params.symbol;
+    const repoArg = typeof params.repo === 'string' ? { repo: params.repo } : {};
+
+    const callersResult = await callGitNexus('cypher', {
+      query: GRAPH_CALLERS_QUERY,
+      params: { symbol },
+      ...repoArg,
+    });
+    // Surface offline / missing-index / unknown-error results unchanged, and
+    // short-circuit the second call so a broken index does not fan out twice.
+    if (isErrorResult(callersResult)) return callersResult;
+
+    const calleesResult = await callGitNexus('cypher', {
+      query: GRAPH_CALLEES_QUERY,
+      params: { symbol },
+      ...repoArg,
+    });
+    if (isErrorResult(calleesResult)) return calleesResult;
+
+    return textResult({
+      symbol: asciiSanitizeLabel(typeof symbol === 'string' ? symbol : String(symbol ?? '')),
+      maxDepth: GRAPH_MAX_DEPTH,
+      callers: mapGraphRows(callersResult),
+      callees: mapGraphRows(calleesResult),
+    });
   }
 
   async impact(params: Record<string, unknown>): Promise<unknown> {

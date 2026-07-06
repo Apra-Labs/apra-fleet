@@ -19,22 +19,42 @@ investigation.
   existing `.gitnexus` index (380 files, 4051 nodes, 214 communities, 300
   processes; `embeddings: 0`).
 
-## CRITICAL pre-existing finding: fleet calls a tool that does not exist
+## RESOLVED (yashr-5t9): graph() retargeted off the non-existent call_graph tool
 
-`GitNexusProvider.graph()` routes to `callGitNexus('call_graph', params)`
-(`code-intelligence-gitnexus.ts` line 157). gitnexus 1.6.7 has NO tool named
+Original finding (T1.1 spike): `GitNexusProvider.graph()` routed to
+`callGitNexus('call_graph', params)`. gitnexus 1.6.7 has NO tool named
 `call_graph`. A live call returns `isError: true`, text `Error: Unknown tool:
-call_graph`. So the fleet's `code_graph` tool is effectively broken against this
-gitnexus version -- it always returns the child's unknown-tool error (the
+call_graph`. So the fleet's `code_graph` tool was effectively broken against
+this gitnexus version -- it always returned the child's unknown-tool error (the
 provider does not throw; the error is surfaced as a normal isError result).
 
 The other three fleet mappings are correct and were confirmed working:
 `impact -> impact`, `query -> query`, `context -> context`.
 
-This is outside T1.1's deliverable (no product code changes here), but it is
-recorded so a follow-up can retarget `graph()` -- the intended call-graph data
-is available today via `context` (returns categorized incoming/outgoing calls)
-or via `cypher` on `CALLS` edges. Backlog bead suggestion below.
+RESOLUTION (fix branch feat/code-intelligence-abstraction): `graph()` was
+retargeted to compose two depth-bounded `cypher` traversals over `CALLS` edges
+-- one for callers, one for callees -- returning a structured multi-hop call
+graph `{ symbol, maxDepth, callers[], callees[] }` (rung 2, same compose
+pattern as `map()`/`flow()`; reuses `extractCypherPayload` +
+`parseMarkdownTable` + `asciiSanitizeLabel`). Routed through `callGitNexus` so
+it inherits the pre-flight index check, connection resilience, and freshness
+wiring. The schema `symbol` arg binds to the Cypher `$symbol` param.
+
+Why cypher over the `context` fallback: `cypher` on `CALLS` gives a genuine
+multi-hop (depth <= 2) traversal, which keeps `code_graph` MEANINGFULLY DISTINCT
+from `code_context`. `code_context` (child `context`) is the depth-1 360-degree
+view of a single symbol (direct in/out calls, accesses, KB enrichment);
+`code_graph` is the transitive caller/callee graph.
+
+Live verification (re-run during the fix, 2026-07, spawning the child exactly
+as the fleet does): `listTools()` returns the same 13 tools below and
+`call_graph` is absent; a variable-length query
+`MATCH p = (a)-[:CodeRelation*1..2 {type: "CALLS"}]->(b) WHERE ...
+RETURN ..., length(p) AS depth` returns the `{ markdown, row_count }` shape and
+correctly surfaces depth-1 and depth-2 neighbors. A regression test
+(`tests/code-intelligence.test.ts`, "child-tool surface guard") now asserts
+every child tool the provider invokes exists in the child surface, so a mapping
+to a non-existent tool can never silently ship again.
 
 ## Complete child tool inventory (gitnexus 1.6.7, 13 tools)
 
@@ -197,10 +217,10 @@ itself is a direct `impact` capability; `code_tests` composes it with the
 | Flows / processes (T2.2 `code_flow`) | 2 -- compose | `callGitNexus('cypher', ...)` on `Process` nodes. name: `WHERE p.heuristicLabel CONTAINS $name`. steps: `MATCH (s)-[r:CodeRelation {type: "STEP_IN_PROCESS"}]->(p:Process) WHERE p.heuristicLabel = $name RETURN s.name, s.filePath, r.step ORDER BY r.step`. from/to: filter on the "Entry -> Terminal" endpoints in `heuristicLabel` (or resolve `entryPointId`/`terminalId`). Parse markdown table; ASCII-sanitize the unicode arrow in labels. `query` tool is a free-text-only fallback (NOT from/to/name filterable). Do NOT parse lbug. |
 | Upstream traversal depth 2 (T4.4 `code_tests`) | 1/2 -- direct tool + composed filter | `callGitNexus('impact', { target: symbol, direction: 'upstream', maxDepth: 2, includeTests: true, repo })`. Collect `byDepth["1"]` + `byDepth["2"]` items, keep those whose `filePath` passes `isTestPath` (T4.3). Optionally add `relationTypes: ['CALLS']` to restrict to call edges. Do NOT parse lbug. |
 
-### Backlog (not part of T1.1)
+### Backlog
 
-- `yashr-8m0.graph-retarget` (suggested): `GitNexusProvider.graph()` calls the
-  non-existent child tool `call_graph` in gitnexus 1.6.7; `code_graph` always
-  returns an unknown-tool error. Retarget to `context` (categorized in/out
-  calls) or `cypher` on `CALLS` edges, or use `impact` with both directions.
-  Add a regression test asserting the child tool name exists in `listTools()`.
+- `yashr-5t9.graph-retarget` DONE: `GitNexusProvider.graph()` no longer calls
+  the non-existent child tool `call_graph`. Retargeted to compose two
+  depth-bounded `cypher` traversals over `CALLS` edges (callers + callees) --
+  see the "RESOLVED (yashr-5t9)" section above. A regression test asserting
+  every invoked child tool exists in the child surface now guards the bug class.

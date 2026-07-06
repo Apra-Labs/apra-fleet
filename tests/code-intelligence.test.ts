@@ -9,6 +9,7 @@ import { join } from 'path';
 // ---------------------------------------------------------------------------
 const mockReadFile = vi.hoisted(() => vi.fn());
 const mockCallTool = vi.hoisted(() => vi.fn());
+const mockListTools = vi.hoisted(() => vi.fn());
 const mockConnect = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockExecFileSync = vi.hoisted(() => vi.fn());
 const mockMaybeScheduleReindex = vi.hoisted(() => vi.fn());
@@ -44,6 +45,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
   class MockClient {
     connect = mockConnect;
     callTool = mockCallTool;
+    listTools = mockListTools;
   }
   return { Client: vi.fn().mockImplementation(MockClient) };
 });
@@ -106,17 +108,6 @@ describe('GitNexusProvider', () => {
     provider = new GitNexusProvider();
   });
 
-  it('graph() delegates to call_graph and returns the response unchanged', async () => {
-    const params = { symbol: 'handleIPChange' };
-    const expected = { content: [{ type: 'text', text: 'call graph result' }] };
-    mockCallTool.mockResolvedValueOnce(expected);
-
-    const result = await provider.graph(params);
-
-    expect(mockCallTool).toHaveBeenCalledWith({ name: 'call_graph', arguments: params });
-    expect(result).toBe(expected);
-  });
-
   it('impact() delegates to impact tool and returns the response unchanged', async () => {
     const params = { file_path: 'src/index.ts' };
     const expected = { content: [{ type: 'text', text: 'impact result' }] };
@@ -152,6 +143,149 @@ describe('GitNexusProvider', () => {
 });
 
 // ---------------------------------------------------------------------------
+// GitNexusProvider.graph() -- retargeted to cypher CALLS traversal (yashr-5t9)
+//
+// gitnexus 1.6.7 has NO `call_graph` child tool (the old mapping always
+// returned an "Unknown tool" isError result). graph() now composes two
+// depth-bounded `cypher` traversals over CALLS edges (callers + callees) into
+// a structured multi-hop call graph, reusing extractCypherPayload +
+// parseMarkdownTable + asciiSanitizeLabel.
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider.graph() (cypher CALLS traversal)', () => {
+  let provider: GitNexusProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    provider = new GitNexusProvider();
+  });
+
+  function mockGraphTable(rows: string[]): void {
+    const markdown = ['| name | filePath | depth |', '| --- | --- | --- |', ...rows].join('\n');
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ markdown, row_count: rows.length }) }],
+    });
+  }
+
+  it('issues a callers cypher then a callees cypher (never the non-existent call_graph tool) and shapes a call graph', async () => {
+    mockGraphTable(['| callerA | src/a.ts | 1 |', '| callerB | src/b.ts | 2 |']); // callers
+    mockGraphTable(['| calleeA | src/c.ts | 1 |']); // callees
+
+    const result = (await provider.graph({ symbol: 'handleIPChange' })) as { content: { text: string }[] };
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed).toEqual({
+      symbol: 'handleIPChange',
+      maxDepth: 2,
+      callers: [
+        { name: 'callerA', filePath: 'src/a.ts', depth: 1 },
+        { name: 'callerB', filePath: 'src/b.ts', depth: 2 },
+      ],
+      callees: [{ name: 'calleeA', filePath: 'src/c.ts', depth: 1 }],
+    });
+
+    expect(mockCallTool).toHaveBeenCalledTimes(2);
+    const callersCall = mockCallTool.mock.calls[0][0];
+    const calleesCall = mockCallTool.mock.calls[1][0];
+    expect(callersCall.name).toBe('cypher');
+    expect(calleesCall.name).toBe('cypher');
+    expect(callersCall.name).not.toBe('call_graph');
+    // Both traversals bind the schema `symbol` arg to the Cypher $symbol param.
+    expect(callersCall.arguments.params).toEqual({ symbol: 'handleIPChange' });
+    expect(calleesCall.arguments.params).toEqual({ symbol: 'handleIPChange' });
+    // Depth-bounded CALLS traversal in both directions.
+    expect(callersCall.arguments.query).toContain(':CodeRelation*1..2 {type: "CALLS"}');
+    expect(callersCall.arguments.query).toContain('target.name = $symbol');
+    expect(calleesCall.arguments.query).toContain('source.name = $symbol');
+  });
+
+  it('ASCII-sanitizes a unicode arrow in returned symbol names', async () => {
+    mockGraphTable(['| Rem→ove | src/a.ts | 1 |']); // callers (unicode arrow)
+    mockGraphTable([]); // callees empty
+
+    const result = (await provider.graph({ symbol: 's' })) as { content: { text: string }[] };
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed.callers).toEqual([{ name: 'Rem->ove', filePath: 'src/a.ts', depth: 1 }]);
+    expect(parsed.callees).toEqual([]);
+  });
+
+  it('returns the error result unchanged and skips the callees call when the callers cypher errors', async () => {
+    const errorResult = { isError: true, content: [{ type: 'text', text: 'boom' }] };
+    mockCallTool.mockResolvedValueOnce(errorResult);
+
+    const result = await provider.graph({ symbol: 's' });
+
+    expect(result).toEqual(errorResult);
+    expect(mockCallTool).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Child-tool surface guard (regression for yashr-5t9)
+//
+// This test guards the whole bug class: it asserts that every child tool name
+// GitNexusProvider actually invokes exists in the gitnexus 1.6.7 child surface.
+// It FAILS on the old graph()->'call_graph' mapping (call_graph is absent from
+// the surface) and PASSES on the retargeted graph()->'cypher' mapping.
+//
+// The surface below was confirmed live via listTools() against the real child
+// (npx -y gitnexus mcp over stdio) during the fix and cross-checked against the
+// package source; see docs/code-intelligence-child-surface.md. We assert
+// against a mocked listTools() with this known surface rather than spawning the
+// child in CI: a live npx spawn is too slow/flaky for unit CI. The scratch
+// probe used during the fix performs the live listTools() check out-of-band.
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider child-tool surface guard (yashr-5t9 regression)', () => {
+  // gitnexus 1.6.7 complete child tool surface (13 tools). call_graph is
+  // deliberately ABSENT -- it never existed on this version.
+  const CHILD_SURFACE_1_6_7 = [
+    'list_repos', 'query', 'cypher', 'context', 'detect_changes', 'rename',
+    'impact', 'route_map', 'tool_map', 'shape_check', 'api_impact',
+    'group_list', 'group_sync',
+  ];
+
+  it('every child tool the provider invokes is present in the child listTools() surface', async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    mockListTools.mockResolvedValue({ tools: CHILD_SURFACE_1_6_7.map((name) => ({ name })) });
+    // Benign shape that satisfies every composed method's parser so each
+    // provider method runs to completion and its child call(s) are recorded.
+    mockCallTool.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ markdown: '', row_count: 0, byDepth: {} }) }],
+    });
+
+    const { GitNexusProvider } = await import('../src/tools/code-intelligence-gitnexus.js');
+    const provider = new GitNexusProvider();
+
+    // Exercise every provider method that reaches the child. No `repo` param so
+    // the pre-flight index check never short-circuits before callTool.
+    await provider.graph({ symbol: 's' });
+    await provider.impact({ target: 's', direction: 'upstream' });
+    await provider.query({ query: 's' });
+    await provider.context({ name: 's' });
+    await provider.map({});
+    await provider.flow({});
+    await provider.tests({ symbol: 's' });
+
+    // The child's advertised surface, as the SDK Client's listTools() returns
+    // it (the mock backs MockClient.listTools()).
+    const listed = (await mockListTools()) as { tools: { name: string }[] };
+    const surface = listed.tools.map((t) => t.name);
+
+    const invokedToolNames = Array.from(new Set(mockCallTool.mock.calls.map((c) => c[0].name as string)));
+    expect(invokedToolNames.length).toBeGreaterThan(0);
+    // The exact bug being guarded: graph() must no longer call 'call_graph'.
+    expect(invokedToolNames).not.toContain('call_graph');
+    // Every tool the provider depends on must exist in the child's surface.
+    for (const name of invokedToolNames) {
+      expect(surface).toContain(name);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GitNexusProvider connection resilience (F3.2)
 //
 // These tests need COLD module state per test because getGitNexusClient()
@@ -171,7 +305,9 @@ describe('GitNexusProvider connection resilience', () => {
     const { GitNexusProvider } = await import('../src/tools/code-intelligence-gitnexus.js');
     const provider = new GitNexusProvider();
 
-    const first = (await provider.graph({ symbol: 'x' })) as { isError?: boolean; content: { text: string }[] };
+    // impact() is a passthrough method, used here as a neutral vehicle to
+    // exercise the generic connection/resilience wiring in callGitNexus.
+    const first = (await provider.impact({ target: 'x', direction: 'upstream' })) as { isError?: boolean; content: { text: string }[] };
     expect(first.isError).toBe(true);
     expect(first.content[0].text).toContain('offline');
     expect(first.content[0].text).toContain('npx gitnexus analyze');
@@ -180,7 +316,7 @@ describe('GitNexusProvider connection resilience', () => {
     // Second call must attempt a brand-new connection (not await the poisoned promise).
     const expected = { content: [{ type: 'text', text: 'ok' }] };
     mockCallTool.mockResolvedValueOnce(expected);
-    const second = await provider.graph({ symbol: 'x' });
+    const second = await provider.impact({ target: 'x', direction: 'upstream' });
     expect(mockConnect).toHaveBeenCalledTimes(2);
     expect(second).toBe(expected);
   });
@@ -195,7 +331,7 @@ describe('GitNexusProvider connection resilience', () => {
     const provider = new GitNexusProvider();
 
     mockCallTool.mockResolvedValueOnce({ content: [] });
-    await provider.graph({ symbol: 'x' });
+    await provider.impact({ target: 'x', direction: 'upstream' });
     expect(mockConnect).toHaveBeenCalledTimes(1);
 
     // Simulate the child process dying: fire the transport close handler.
@@ -205,7 +341,7 @@ describe('GitNexusProvider connection resilience', () => {
     transportInstance.onclose!();
 
     mockCallTool.mockResolvedValueOnce({ content: [] });
-    await provider.graph({ symbol: 'x' });
+    await provider.impact({ target: 'x', direction: 'upstream' });
     // A brand-new client was constructed and connected.
     expect(mockConnect).toHaveBeenCalledTimes(2);
   });
@@ -258,7 +394,7 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
 
   it('graph() returns the missing-index error without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
-    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+    const result = (await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })) as {
       isError?: boolean;
       content: { text: string }[];
     };
@@ -321,9 +457,11 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
     const expected = { content: [{ type: 'text', text: 'ok' }] };
     mockCallTool.mockResolvedValueOnce(expected);
 
-    const result = await provider.graph({ symbol: 'x' });
+    // impact() is a passthrough method: with no repo, callGitNexus skips the
+    // pre-flight index check and forwards straight to the child.
+    const result = await provider.impact({ target: 'x', direction: 'upstream' });
 
-    expect(mockCallTool).toHaveBeenCalledWith({ name: 'call_graph', arguments: { symbol: 'x' } });
+    expect(mockCallTool).toHaveBeenCalledWith({ name: 'impact', arguments: { target: 'x', direction: 'upstream' } });
     expect(result).toBe(expected);
   });
 });
@@ -362,7 +500,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
     mockCallTool.mockResolvedValueOnce(original);
 
-    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+    const result = (await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })) as {
       content: { type: string; text: string }[];
     };
 
@@ -390,7 +528,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
     mockCallTool.mockResolvedValueOnce(original);
 
-    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+    const result = (await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })) as {
       content: { type: string; text: string }[];
     };
 
@@ -419,7 +557,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
     mockCallTool.mockResolvedValueOnce(original);
 
-    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+    const result = (await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo })) as {
       content: { type: string; text: string }[];
     };
 
@@ -448,7 +586,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
     mockCallTool.mockResolvedValueOnce(original);
 
-    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+    const result = await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo });
 
     expect(result).toBe(original);
     expect(mockMaybeScheduleReindex).not.toHaveBeenCalled();
@@ -465,7 +603,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
     mockCallTool.mockResolvedValueOnce(original);
 
-    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+    const result = await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo });
 
     expect(result).toBe(original);
   });
@@ -483,7 +621,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
     mockCallTool.mockResolvedValueOnce(original);
 
-    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+    const result = await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo });
 
     expect(result).toBe(original);
   });
@@ -496,7 +634,7 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
     mockCallTool.mockResolvedValueOnce(original);
 
-    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+    const result = await provider.impact({ target: 'x', direction: 'upstream', repo: tempRepo });
 
     expect(result).toBe(original);
   });
