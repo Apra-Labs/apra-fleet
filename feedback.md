@@ -1,178 +1,133 @@
-# Phase 2 Review -- Code Intelligence Power Sprint
+# Phase 3 Review -- Code Intelligence Power Sprint
 
 Reviewer: pm-reviewer
-Scope: Phase 2 commits bed2318 (T2.1 code_map), 4451d99 (T2.2 code_flow),
-a419268 (T2.3 embeddings wiring). Focus: src/tools/code-intelligence.ts,
-src/tools/code-intelligence-gitnexus.ts, src/index.ts,
-tests/code-intelligence.test.ts, skills/pm/index.md,
-skills/pm/doer-reviewer-loop.md, docs/code-intelligence-embeddings.md.
-Sources: PLAN.md (T2.1-T2.4), requirements.md (P1, P2), design.md (D1, D2),
-docs/code-intelligence-child-surface.md (Decisions table), progress.json.
-KB primed (session_warm) with the CONFIRMED gitnexus 1.6.7 child-surface facts.
+Scope: Phase 3 commits e353104 (T3.1 auto-reindex module), 240a407 (T3.2 wiring +
+note suffix), 31ce483 (T3.3 P4a code_context KB enrichment). Files:
+src/tools/code-intelligence-reindex.ts (new), src/tools/code-intelligence-kb-enrich.ts
+(new), src/tools/code-intelligence-freshness.ts, src/tools/code-intelligence-gitnexus.ts,
+src/index.ts, and tests (code-intelligence-reindex.test.ts, code-intelligence-kb-enrich.test.ts,
+code-intelligence-freshness.test.ts, code-intelligence.test.ts).
+Sources: PLAN.md (T3.1-T3.4), requirements.md (P3, P4a), design.md (D3, D4),
+progress.json. KB primed (session_warm); CONFIRMED entries on callGitNexus
+resilience/freshness, the circular-import rule, and D4 layering trusted.
+Structural checks via code_impact/code_context (not grep).
 
 ## Verdict: APPROVED
 
-Both new tools implement the exact rung-2 compose path the T1.1 Decisions table
-prescribed, route through the shared guarded callGitNexus (so they inherit the
-pre-flight index check, resilience, and freshness note for free), do NOT parse
-ladybugdb, and are registered with routing-guidance descriptions. The embeddings
-task correctly executed the LOCAL branch (docs + flag plumbing, no code, no key).
+All three tasks implement the binding design exactly. The load-bearing safety
+property -- none of reindex-scheduling, freshness-suffix, or KB-enrichment can
+make a code_* call throw, block, or return degraded core content when its
+subsystem fails -- holds on every traced path.
 
-The single load-bearing correctness risk -- whether the child's `cypher` tool
-actually supports `LIMIT $top` parameter substitution (Kuzu historically
-rejected parameterized LIMIT, which would have made code_map DOA the way
-call_graph is DOA for code_graph) -- I verified EMPIRICALLY against the live
-.gitnexus index by spawning `npx -y gitnexus mcp` exactly as the fleet does and
-running the exact map()/flow()/steps queries. All succeeded: `LIMIT $top` binds
-correctly, the markdown format matches parseMarkdownTable byte-for-byte, process
-heuristicLabels carry the unicode arrow (`RemoveMember -> MaskSecrets`) that
-asciiSanitizeLabel converts, and the steps lookup keyed on the RAW pre-sanitize
-label matches the child's stored value and returns ordered steps. code_map and
-code_flow are functionally correct end-to-end, not just in mocked tests.
-
-Build clean (tsc exit 0). Full suite: 1690 passed, 2 failed, 14 skipped -- the 2
-failures are ONLY the known pre-existing timezone tests in
-tests/time-utils.test.ts (yashr-302). code-intelligence.test.ts 42/42 green.
-
-Counts: 0 HIGH, 0 MEDIUM, 6 LOW. No blocking findings.
-
-## Findings (all LOW / non-blocking)
-
-1. LOW -- code_flow output `row_count` can exceed `processes.length`. mapFlowResult
-   returns `row_count` from the LIST query (capped at LIMIT 20) but only pushes
-   the first MAX_FLOW_STEP_LOOKUPS=5 processes into the `processes` array
-   (code-intelligence-gitnexus.ts, rows.slice(0, 5)). So an unfiltered or broad
-   flow() returns row_count up to 20 while processes has at most 5, and rows 6-20
-   are dropped entirely (not merely step-less). The cap is intentional and
-   documented (bounds cypher fan-out), but the mismatch between row_count and the
-   returned array could mislead a consumer. Consider setting row_count to
-   processes.length, or documenting the two-tier cap in the output. map() has no
-   such mismatch. Non-blocking.
-
-2. LOW -- code_flow from/to are non-positional CONTAINS filters. from/to/name each
-   compile to `p.heuristicLabel CONTAINS $param` ANDed together, matching anywhere
-   in the "Entry -> Terminal" label. So `from: 'MaskSecrets'` also matches a
-   process whose TERMINAL is MaskSecrets. This is the approximation the T1.1
-   surface doc explicitly sanctioned ("filter on the endpoints encoded in
-   heuristicLabel ... or resolve entryPointId/terminalId") and the plan permits;
-   it is documented in the method comment. Verified working live
-   (`WHERE p.heuristicLabel CONTAINS $name` returns matches). Noted only so the
-   looseness is explicit; a future refinement could resolve entryPointId/
-   terminalId for strict directional filtering.
-
-3. LOW -- parseMarkdownTable does not handle escaped pipes (`\|`) inside cell
-   values (it splits naively on `|`). This is SAFE in practice because the child's
-   own producer (gitnexus formatCypherAsMarkdown) also does not escape pipes -- it
-   joins cells with ` | ` after `String(v)` / `JSON.stringify(v)` with no escaping,
-   so parser and producer are symmetric, and community labels / keywords (arrays
-   like `[]`) / step names / file paths do not contain literal `|`. Verified the
-   real output format matches the parser exactly. Robustness note only.
-
-4. LOW -- skills/pm/index.md wording: the `--embeddings` section calls the ONNX
-   model "bundled with gitnexus" then states the first run "downloads the model
-   (~87 MB) from HuggingFace". Same loose "bundled" adjective flagged in the
-   Phase 1 review (finding 2) -- the model is fetched on first use, not shipped in
-   the package. The material caveats (local, no API key, ~87 MB one-time download,
-   OFF-by-default/preserved-unless---drop-embeddings, win32 exact-scan) are all
-   correct and clearly stated, so this does not mislead operators. Cosmetic.
-
-5. LOW -- T2.1/T2.2 tests use static imports + vi.clearAllMocks() rather than the
-   literal `vi.resetModules() + dynamic import at the start of each test` from KB
-   constraint 1. They DO use vi.hoisted() mock factories (the other half of the
-   constraint). This is consistent with the file's pre-existing F2.2 convention
-   and is sound here: the compose/parse mapping logic under test is stateless, the
-   MCP client/connect are deterministic hoisted mocks cleared per test, and the
-   missing-index assertions (`mockConnect not called`) hold because the pre-flight
-   .gitnexus check short-circuits before any connect on a fresh temp repo. Ran
-   twice, 42/42 stable. Non-blocking; noted for pattern awareness.
-
-6. LOW -- Non-ASCII characters (unicode arrows in UNICODE_ARROW_PATTERN; a
-   unicode arrow and an accented char in test fixtures) are committed in the .ts
-   source and test files. This is
-   PERMITTED by the repo's enforced pre-commit hook (.git/hooks/pre-commit), which
-   bans non-ASCII only in .yml/.yaml/.sh/.md and explicitly excludes TypeScript/JS
-   ("Node.js handles UTF-8 fine"). The .md docs and skills changed this phase are
-   ASCII-clean (verified). It strictly conflicts with the CLAUDE.md "ASCII only in
-   any file" text; `\uXXXX` escapes in the regex and in fixtures would satisfy
-   both the rule and the hook. Given the enforced policy, non-blocking.
+Counts: 0 HIGH, 0 MEDIUM, 2 LOW. No blocking findings.
 
 ## Checklist verification
 
-1. D1 provider abstraction -- PASS. `map` and `flow` added to the
-   CodeIntelligenceProvider interface (code-intelligence.ts) and implemented on
-   GitNexusProvider. Both bodies route through `callGitNexus('cypher', ...)`
-   (and flow's steps via a second callGitNexus), inheriting the pre-flight index
-   check (verified by the missing-index tests), resilience, and freshness note.
-   Registered in src/index.ts next to the code_* block via
-   `wrapTool('code_map'|'code_flow', ...)` with "Prefer this over ..." routing
-   descriptions. No lbug parsing anywhere -- only cypher.
+1. T3.1 D3 auto-reindex -- PASS. code-intelligence-reindex.ts imports only
+   child_process, fs, os, path, and log-helpers -- NO import from
+   code-intelligence.ts (circular-import rule honored, mirrors the freshness
+   precedent). shouldStartReindex(entry, now, cooldownMs=120000) is a pure
+   exported fn: no timers, no IO; running -> false, within-cooldown -> false,
+   past-cooldown -> true, undefined entry -> true. maybeScheduleReindex spawns
+   `npx gitnexus analyze` detached ({cwd, detached:true, stdio:['ignore',
+   'ignore','pipe'], shell: process.platform==='win32'}), unref'd, never awaited;
+   returns a synchronous boolean. State is set to runningChild on spawn and
+   cleared to { lastFinishedAt } on both 'exit' and 'error'; the prior
+   lastFinishedAt is preserved while a child runs. enabled:false -> no-op;
+   cooldownMs override read from config. Entire body wrapped in try/catch that
+   logs and returns false, plus an inner try/catch around spawn -- never throws.
+   Windows shell flag correct.
 
-2. Markdown parsing + ASCII -- PASS. parseMarkdownTable is a pure, exported
-   function; skips lines[0]=header and lines[1]=separator, data from index 2;
-   returns [] for empty/single-line/header-only input; fills missing trailing
-   cells with ''. Verified against the child's REAL output shape (probe against
-   live index): `| label | symbols | cohesion | keywords |` etc. -- matches
-   exactly. extractCypherPayload correctly strips the `\n\n---\n**Next:**` hint
-   suffix before JSON.parse (safe because JSON.stringify escapes the markdown's
-   own newlines, so the split token cannot appear inside the payload).
-   asciiSanitizeLabel maps 7 unicode arrow codepoints -> '->' and any other
-   non-ASCII -> '?'; the live process labels use a unicode arrow and are
-   handled. Unit tests
-   cover all of the above incl. malformed/empty/truncated rows. (See finding 3
-   for the pipe-escaping robustness note.)
+2. T3.2 wiring + suffix -- PASS. computeFreshnessNote detects divergence via
+   freshnessNote(...) !== null and, only when diverged, calls
+   maybeScheduleReindex(repo) inside its own try/catch (logError on throw,
+   reindexScheduled falls back to false); the whole function is additionally
+   wrapped in try/catch returning null. maybeScheduleReindex is synchronous and
+   non-blocking, so no tool-call latency is added and no failure can reach the
+   result. The exact suffix " A background re-index has been started." (leading
+   space) is appended by freshnessNote only when reindexScheduled is true.
+   freshnessNote stays pure -- reindexScheduled is just a defaulted parameter,
+   no IO. code_impact confirms maybeScheduleReindex has exactly one caller
+   (computeFreshnessNote -> callGitNexus): a single trigger point, fire-and-
+   forget, off the critical path.
 
-3. code_map injection safety -- PASS. `top` is zod-constrained
-   (z.number().int().positive()); the provider re-guards to a positive number or
-   default 20; it is passed as the `$top` bind param, NOT interpolated. `repo` is
-   passed as a param, never string-interpolated into the query. There is no raw
-   string interpolation of any user input into the cypher text. EMPIRICALLY
-   CONFIRMED the child supports `LIMIT $top` (returned 3 rows for {top:3}); this
-   was the highest-risk item and it works.
+3. T3.3 D4 code_context KB enrichment -- PASS. New code-intelligence-kb-enrich.ts
+   imports only getKbProviders; the gitnexus provider file imports neither the KB
+   service nor kb-enrich (no src/tools <-> src/services cycle). enrichContextWithKb
+   is imported ONLY by the code_context handler in src/index.ts; other code_*
+   handlers are untouched. isErrorResult(result) is checked FIRST -- error results
+   are passed through and the KB is never queried. Matches filter to
+   confidence==='CONFIRMED' && Array.isArray(symbols) && symbols.includes(name)
+   (exact match). Block format is exact: "[knowledge-bank] N confirmed entries for
+   <name>:" then one "- <title> -- <summary sliced to 120>" line per entry. Zero
+   matches -> result returned unchanged (no block). The whole body is wrapped in
+   try/catch -> any KB error (getKbProviders or query throwing) returns the result
+   unchanged, never failing the call. appendTextBlock preserves the content-array
+   shape and returns the result unchanged for unexpected shapes.
 
-4. code_flow filters + step cap -- PASS. from/to/name each become
-   `CONTAINS $param` ANDed; WHERE omitted entirely when none given (test asserts
-   params={} and no WHERE). Per-process steps lookup is capped at
-   MAX_FLOW_STEP_LOOKUPS=5 (const + comment explaining fan-out bound); test
-   asserts 8 matched rows -> exactly 1 list + 5 step calls. Step query keyed on
-   the RAW label -- verified live that the raw process label (entry, unicode
-   arrow with surrounding spaces, terminal) matches the stored heuristicLabel and
-   returns ordered
-   steps. (See findings 1, 2.)
+4. Safety property (load-bearing) -- PASS. Reindex: synchronous spawn wrapped in
+   nested try/catch, never awaited, never throws; a spawn failure logs and returns
+   false. Freshness suffix: computeFreshnessNote is doubly guarded and returns
+   null on any error, so a scheduling failure degrades to "no suffix" (or "no
+   note"), never a thrown/error tool result -- verified by the "schedule throws"
+   test asserting the note is still appended without the suffix and logError fires.
+   KB enrichment: try/catch returns the un-enriched provider result on any KB
+   failure, and error provider results skip the KB entirely. No path can corrupt
+   or block the core response.
 
-5. T2.3 embeddings LOCAL branch -- PASS. `--embeddings` wired into
-   skills/pm/index.md step 3 AND skills/pm/doer-reviewer-loop.md's doer VERIFY
-   re-index step. docs/code-intelligence-embeddings.md updated with a "T2.3 wiring
-   done" section. Default behavior unchanged when the flag is absent (additive;
-   preserved unless --drop-embeddings). win32 exact-scan caveat + one-time ~87 MB
-   download both documented. No secret/API key committed (LOCAL path needs none;
-   grep of the diff shows no key/token/config field). No src/ code path builds the
-   analyze command line, so docs-only was the correct scope per the LOCAL rule.
-   (Live re-index during T2.4 populated embeddings 0 -> 2359, meta.json confirms.)
+5. Tests meaningful -- PASS. reindex: shouldStartReindex pure unit across all 5
+   branches (running/within-cooldown/past-cooldown/undefined/custom-cooldownMs);
+   spawn-args correctness incl. platform-dependent shell flag; single-flight (two
+   calls -> one spawn); enabled:false no-op; custom cooldownMs from config blocks
+   a second call after the first finishes; non-zero-exit stderr-tail logWarn;
+   spawn-throws never propagates. freshness: suffix on/off/default and null-when-
+   SHAs-match, all exact-string. code-intelligence.test.ts: divergence+decline ->
+   no suffix + called once with repo; divergence+true -> suffix; schedule throws
+   -> result unaffected + logError; no-divergence -> maybeScheduleReindex never
+   called. kb-enrich: append (N=2, 120-char truncation verified against the
+   untruncated string); no-append x3 (zero results, symbols-not-containing-name,
+   non-CONFIRMED); error x2 (getKbProviders rejects, query rejects) returning the
+   original; error-result pass-through verified to skip the KB query. Module-state
+   suites (reindex, kb-enrich) use vi.resetModules() + dynamic import + vi.hoisted
+   mock factories per KB constraint 1; the gitnexus-wiring suite reuses the file's
+   existing vi.hoisted pattern (stateless mapping under test), consistent with the
+   Phase 2 review note.
 
-6. Tests meaningful -- PASS. codeMapSchema (4) + codeFlowSchema (2) validation;
-   parseMarkdownTable pure-unit (4, incl. empty/single-line/header-only/short
-   rows); asciiSanitizeLabel (3, incl. arrow + stray non-ASCII); map() mapping +
-   default/explicit top + ASCII sanitize (3); map() missing-index reuse (1);
-   flow() name/from+to/no-filter WHERE behavior (3); flow() steps + arrow sanitize
-   (1); flow() step cap at 5 (1); flow() missing-index reuse (1). vi.hoisted mock
-   factories present. (Deviation from the literal resetModules pattern is finding
-   5; not a defect.)
+6. Build + tests -- PASS. `npm run build` (tsc) exit 0. `npm test`: 1715 passed,
+   2 failed, 14 skipped. The 2 failures are ONLY the known pre-existing timezone
+   tests in tests/time-utils.test.ts (yashr-302). The four Phase 3 suites are
+   green (reindex 11, kb-enrich 7, freshness 11, code-intelligence 45).
 
-7. Build + tests -- PASS. `npm run build` (tsc) exit 0. `npx vitest run`: 1690
-   passed, 2 failed (ONLY tests/time-utils.test.ts timezone, yashr-302), 14
-   skipped. code-intelligence.test.ts 42/42.
+7. ASCII sweep -- PASS. All new/changed Phase 3 files are byte-scanned ASCII-clean;
+   the Phase 3 added lines in gitnexus.ts and index.ts introduce no non-ASCII (the
+   pre-existing UNICODE_ARROW_PATTERN and test fixtures predate this phase and are
+   permitted by the enforced pre-commit hook, per the Phase 2 review).
 
-8. ASCII sweep -- PASS with note. docs/code-intelligence-embeddings.md,
-   skills/pm/index.md, skills/pm/doer-reviewer-loop.md are ASCII-clean. Non-ASCII
-   in the two .ts files is permitted by the enforced pre-commit hook (finding 6).
+## Findings (all LOW / non-blocking)
+
+1. LOW -- computeFreshnessNote calls the pure freshnessNote() twice: once as the
+   divergence predicate (`freshnessNote(...) !== null`) and once for the final
+   return with reindexScheduled. freshnessNote is pure and cheap, so this is a
+   readability/redundancy note only, no correctness impact. Could compare
+   meta.lastCommit !== head directly for the predicate.
+
+2. LOW -- KB enrichment appends raw entry.title / entry.summary to the code_context
+   response text without ASCII-sanitizing, whereas the sibling code_map/code_flow
+   paths run asciiSanitizeLabel over gitnexus-sourced label text before emitting it.
+   KB content is authored under the same ASCII-only project convention so the
+   practical risk is low, and this is runtime MCP output (not a file write), but a
+   defensive sanitize would make the code-intelligence response surface uniformly
+   ASCII. Non-blocking.
 
 ## Summary
 
-APPROVED. 0 HIGH, 0 MEDIUM, 6 LOW. Both tools faithfully implement the T1.1
-Decisions table, route through callGitNexus, avoid lbug, and are registered with
-routing guidance. The one query that could have been silently broken
-(`LIMIT $top`) was verified working against the live child, along with the raw-
-label steps lookup and CONTAINS filtering -- code_map and code_flow are correct
-end-to-end. Embeddings correctly took the LOCAL docs+flag branch with no code,
-no key, and unchanged defaults. All six findings are documented approximations,
-cosmetic wording, or enforced-policy-permitted style; none blocks the phase.
+APPROVED. 0 HIGH, 0 MEDIUM, 2 LOW. T3.1's reindex module is correctly isolated
+from code-intelligence.ts, single-flight + cooldown are enforced by a pure
+decision function, and the spawn path never throws. T3.2 wires scheduling into
+the single per-call divergence trigger point, fire-and-forget and doubly guarded,
+with the exact suffix only when a reindex actually started. T3.3 places KB
+enrichment one layer above the provider (no service cycle), enriches only
+successful code_context results with CONFIRMED exact-symbol matches, and degrades
+to the un-enriched result on any KB error. The load-bearing safety property holds
+on every path. Build clean; only the known yashr-302 timezone tests fail. Both
+findings are cosmetic/defensive.
