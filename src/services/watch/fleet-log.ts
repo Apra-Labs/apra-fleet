@@ -59,6 +59,12 @@ export interface FleetLogEntry {
   mid?: string;
   mem?: string;
   events: FormattedEvent[];
+  /**
+   * True when this entry is the execute_prompt preview line. `watch` drops it
+   * for members whose full transcript is tailed, so the prompt is not shown
+   * twice (the transcript owns the prompt display for those members).
+   */
+  promptLine?: boolean;
 }
 
 /**
@@ -79,6 +85,7 @@ export function formatFleetLogLine(raw: string, verbose = false): FleetLogEntry 
   const isErr = ev.level === 'error';
   const attribution = { mid: typeof ev.mid === 'string' ? ev.mid : undefined, mem: typeof ev.mem === 'string' ? ev.mem : undefined };
   const events: FormattedEvent[] = [];
+  let promptLine = false;
 
   const lifecycleDetail = (): void => {
     if (/^pid=/.test(msg)) return; // pid is an internal process detail -- never useful to watch
@@ -92,7 +99,7 @@ export function formatFleetLogLine(raw: string, verbose = false): FleetLogEntry 
       break;
     case 'execute_prompt':
       if (isLifecycle(msg)) lifecycleDetail();
-      else events.push({ time, marker: '>', kind: 'info', text: `LLM ${msg}` });
+      else { events.push({ time, marker: '>', kind: 'info', text: `LLM ${msg}` }); promptLine = true; }
       break;
     case 'command_output': {
       // Multiline command stdout/stderr, logged by execute_command. Render as
@@ -116,7 +123,7 @@ export function formatFleetLogLine(raw: string, verbose = false): FleetLogEntry 
       events.push({ time, marker: '', kind: 'dim', text: `${tag}: ${msg}` });
   }
 
-  return events.length > 0 ? { ...attribution, events } : null;
+  return events.length > 0 ? { ...attribution, events, promptLine } : null;
 }
 
 /** Most-recent activity per member from the tail of the fleet log, for the overview. */

@@ -353,6 +353,10 @@ function pumpFleetLog(fl: FleetLogState, byKey: Map<string, Follower>, single: b
     if (!entry) continue;
     const f = (entry.mem && byKey.get(entry.mem.toLowerCase())) || (entry.mid ? byKey.get(entry.mid) : undefined);
     if (!f) continue;
+    // "Transcript owns the prompt": for members whose full transcript is tailed
+    // (local, or remote Claude), skip the fleet-log prompt preview so the prompt
+    // isn't shown twice. Members with no transcript keep the preview line.
+    if (entry.promptLine && (f.txDir || f.rtEnc)) continue;
     for (const ev of entry.events) collected.push({ f, ev });
   }
   const toPrint = tailN > 0 && collected.length > tailN ? collected.slice(-tailN) : collected;

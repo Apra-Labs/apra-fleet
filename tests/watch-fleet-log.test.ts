@@ -39,11 +39,17 @@ describe('formatFleetLogLine', () => {
     expect(formatFleetLogLine(line({ tag: 'execute_command', mem: 'm', msg: 'pid=953032' }), true)).toBeNull();
   });
 
-  it('renders an execute_prompt entry with a > marker and LLM prefix', () => {
+  it('renders an execute_prompt entry with a > marker and LLM prefix, flagged as the prompt line', () => {
     const r = formatFleetLogLine(line({ tag: 'execute_prompt', mem: 'doer', msg: '[sonnet] resume=false timeout=120s Do the thing' }));
     expect(r?.events[0]).toMatchObject({ marker: '>' });
     expect(r?.events[0].text).toContain('LLM');
     expect(r?.events[0].text).toContain('Do the thing');
+    expect(r?.promptLine).toBe(true); // watch drops this line for transcript-backed members
+  });
+
+  it('does not flag an execute_prompt lifecycle (exit) line as a prompt line', () => {
+    const r = formatFleetLogLine(line({ tag: 'execute_prompt', mem: 'doer', msg: 'done in 12s' }));
+    expect(r?.promptLine).toBeFalsy(); // only the prompt-text line is dropped; lifecycle stays
   });
 
   it('renders send_files with a > marker', () => {

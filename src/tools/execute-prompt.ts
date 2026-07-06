@@ -19,7 +19,8 @@ import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
-import { LogScope, maskSecrets, singleLineForLog } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { getLogPreviewChars } from '../services/user-config.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -191,7 +192,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     ? '⚠️ DEPRECATION: dangerously_skip_permissions is deprecated and ignored. Use update_member(unattended="dangerous") instead.\n\n'
     : '';
 
-  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${singleLineForLog(maskSecrets(input.prompt))}`, agent);
+  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
   const resuming = !!(input.resume && agent.sessionId && provider.supportsResume());
   const mintedId = (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy')

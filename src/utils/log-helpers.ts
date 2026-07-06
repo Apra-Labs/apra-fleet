@@ -126,8 +126,3 @@ export function truncateForLog(text: string, maxLen = 80): string {
   const single = text.replace(/[\n\t]/g, ' ');
   return single.length <= maxLen ? single : single.slice(0, maxLen) + '...';
 }
-
-/** Collapse newlines/tabs to spaces for a one-line log entry, without a length cap. */
-export function singleLineForLog(text: string): string {
-  return text.replace(/[\n\t]/g, ' ');
-}

@@ -174,16 +174,30 @@ function formatClaude(ev: any, verbose: boolean): FormattedEvent[] {
     return out;
   }
 
-  // Tool results (command/tool output) are the "logs" -- always shown.
-  if (ev.type === 'user' && Array.isArray(content)) {
-    const out: FormattedEvent[] = [];
-    for (const block of content) {
-      if (!block || typeof block !== 'object' || block.type !== 'tool_result') continue;
-      const text = toolResultText(block.content).trim();
-      if (!text) continue;
-      out.push(...detailLines(text, block.is_error ? '! ' : '', block.is_error ? 'del' : 'out'));
+  // User turns carry two things: the dispatched prompt (a string or text
+  // block) and tool results (command/tool output sent back to the model). Both
+  // are shown -- the prompt because the fleet log now keeps only a short
+  // preview, so the transcript is where the full prompt surfaces in `watch`.
+  if (ev.type === 'user') {
+    // Prompt length: capped at 400 by default; verbose shows the whole thing.
+    const promptCap = verbose ? Infinity : 400;
+    if (typeof content === 'string' && content.trim()) {
+      return [{ time, marker: '>', kind: 'info', text: truncate(content, promptCap) }];
     }
-    return out;
+    if (Array.isArray(content)) {
+      const out: FormattedEvent[] = [];
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue;
+        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+          out.push({ time, marker: '>', kind: 'info', text: truncate(block.text, promptCap) });
+        } else if (block.type === 'tool_result') {
+          const text = toolResultText(block.content).trim();
+          if (!text) continue;
+          out.push(...detailLines(text, block.is_error ? '! ' : '', block.is_error ? 'del' : 'out'));
+        }
+      }
+      return out;
+    }
   }
 
   return [];

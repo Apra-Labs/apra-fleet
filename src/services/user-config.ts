@@ -9,7 +9,20 @@ export interface UserConfig {
   providers?: Partial<Record<LlmProvider, {
     modelMapping?: Partial<Record<ModelTier, string>>;
   }>>;
+  logging?: {
+    /** How many characters of a command/prompt to keep on its fleet-log line. */
+    previewChars?: number;
+  };
 }
+
+/**
+ * Default length of the command/prompt preview kept on a fleet-log line. The
+ * line exists to identify which dispatch it is, not to preserve the full text
+ * (which would bloat the log and persist unmasked data on disk); `watch` reads
+ * the full prompt from the session transcript instead. Override via
+ * `logging.previewChars` in config.json.
+ */
+export const DEFAULT_LOG_PREVIEW_CHARS = 256;
 
 const VALID_PROVIDERS = new Set<string>(['claude', 'gemini', 'codex', 'copilot', 'agy']);
 const VALID_TIERS = new Set<string>(['cheap', 'standard', 'premium']);
@@ -77,6 +90,16 @@ export function loadUserConfig(): UserConfig {
     }
   }
 
+  if (obj.logging && typeof obj.logging === 'object' && !Array.isArray(obj.logging)) {
+    const logging = obj.logging as Record<string, unknown>;
+    const preview = logging.previewChars;
+    if (typeof preview === 'number' && Number.isFinite(preview) && preview >= 0) {
+      result.logging = { previewChars: Math.floor(preview) };
+    } else if (preview !== undefined) {
+      console.error('[fleet] user config: logging.previewChars must be a non-negative number, ignoring');
+    }
+  }
+
   cached = result;
   return cached;
 }
@@ -84,6 +107,11 @@ export function loadUserConfig(): UserConfig {
 export function getModelOverride(provider: LlmProvider, tier: ModelTier): string | undefined {
   const config = loadUserConfig();
   return config.providers?.[provider]?.modelMapping?.[tier];
+}
+
+/** Characters of command/prompt text to keep on a fleet-log line (config-driven). */
+export function getLogPreviewChars(): number {
+  return loadUserConfig().logging?.previewChars ?? DEFAULT_LOG_PREVIEW_CHARS;
 }
 
 /** Reset the cached config -- for testing only. */
