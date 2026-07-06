@@ -2,6 +2,17 @@ import type { LlmProvider } from '../../types.js';
 import { homedir } from 'os';
 import { join, basename } from 'path';
 
+/**
+ * Claude Code stores each project's sessions under a single directory named
+ * after the project's absolute path, with EVERY non-alphanumeric character
+ * replaced by '-' (slashes, backslashes, colons, dots, underscores, spaces...).
+ * e.g. /home/ecs_user/vbv_nyk/app -> -home-ecs-user-vbv-nyk-app
+ * This must match Claude's own encoding exactly, or the transcript is not found.
+ */
+export function encodeClaudeProjectDir(workFolder: string): string {
+  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
 export function resolveSessionLogDir(
   provider: LlmProvider,
   workFolder: string,
@@ -10,8 +21,7 @@ export function resolveSessionLogDir(
   const home = homeDir ?? homedir();
 
   if (provider === 'claude') {
-    const projectPathEncoded = workFolder.replace(/[\/\\:]/g, '-');
-    return join(home, '.claude', 'projects', projectPathEncoded);
+    return join(home, '.claude', 'projects', encodeClaudeProjectDir(workFolder));
   }
 
   if (provider === 'gemini') {
@@ -32,8 +42,7 @@ export function resolveSessionLogPath(
 
   if (provider === 'claude') {
     // Claude: ~/.claude/projects/<project-path-encoded>/<sessionId>.jsonl
-    const projectPathEncoded = workFolder.replace(/[\/\\:]/g, '-');
-    return join(home, '.claude', 'projects', projectPathEncoded, `${sessionId}.jsonl`);
+    return join(home, '.claude', 'projects', encodeClaudeProjectDir(workFolder), `${sessionId}.jsonl`);
   }
 
   if (provider === 'gemini') {
