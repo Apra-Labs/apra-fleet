@@ -1,361 +1,560 @@
-# apra-fleet -- Code Intelligence Hardening Sprint Plan
+# apra-fleet -- Code Intelligence Power Sprint Plan
 
-Sprint epic: yashr-43h. Branch: `feat/code-intelligence-abstraction` (base: `main`).
-Source of truth: `requirements.md` (design decisions inline; no design.md).
+Sprint epic: yashr-8m0. Branch: `feat/code-intelligence-abstraction` (base: `main`).
+Sources of truth: `requirements.md` (features P1, P2, P3, P4, P8, P9) and
+`design.md` (binding decisions D1-D9; deviations need a recorded reason in
+progress.json notes).
 
-> Harden the code intelligence pipeline against three audited weaknesses:
-> Fix 3 -- silent-empty failure mode (Phase 1, riskiest first),
-> Fix 2 -- mid-sprint index staleness (Phase 2),
-> Fix 1 -- prompt-dependence of tool routing (Phase 3).
+> Raise the capability ceiling of the code intelligence stack: new tools
+> (code_map, code_flow, code_tests), semantic search investigation, self-healing
+> freshness, KB/graph cross-linking, and usage telemetry.
 
-## Planning context
+## Planning context (KB-informed)
 
-- KB was cold at planning time (kb_session_prime returned zero top_entries; kb_query
-  found nothing for gitnexus/client/fleet_status). All symbols in this plan are
-  unexplored territory for the KB, so model assignments lean stronger where the
-  work is non-mechanical.
-- The gitnexus index itself was stale during planning (getGitNexusClient not found
-  by code_context) -- a live demonstration of the Fix 2/Fix 3 problem. Facts below
-  come from direct source reads and are anchored to current line numbers.
-- Verified codebase facts every doer must know:
-  - `src/tools/code-intelligence-gitnexus.ts` (53 lines): module-level
-    `let sharedClient: Client | null` and `let connectionPromise: Promise<Client> | null`
-    (lines 5-6); `getGitNexusClient()` (lines 8-30) spawns `npx -y gitnexus mcp`
-    over `StdioClientTransport` with `stderr: 'pipe'`. `GitNexusProvider` methods
-    `graph/impact/query/context` map to child tools `call_graph/impact/query/context`.
-  - `src/tools/code-intelligence.ts`: zod schemas (`codeGraphSchema`,
-    `codeImpactSchema`, `codeQuerySchema`, `codeContextSchema`) all carry an
-    OPTIONAL `repo` param; `getProvider()` reads
-    `~/.apra-fleet/data/code-intelligence/config.json`, defaults to gitnexus.
-  - Tool registration: `src/index.ts` lines 310-325 (code_* tools, descriptions are
-    the second argument to `server.tool(...)`); `fleet_status` registered at
-    line 286, implemented by `fleetStatus()` in `src/tools/check-status.ts`
-    (line 194), which supports `format: 'compact' | 'json'`.
-  - Existing test `tests/code-intelligence.test.ts` mocks the MCP SDK via
-    `vi.hoisted` + `vi.mock('@modelcontextprotocol/sdk/client/index.js')` and
-    `vi.mock('@modelcontextprotocol/sdk/client/stdio.js')`. Because
-    `sharedClient`/`connectionPromise` are module-level singletons, tests that
-    exercise reset/reconnect behavior MUST use `vi.resetModules()` + dynamic
-    `await import(...)` per test (or an exported test-only reset hook) so each
-    test starts with a cold module.
-  - `package.json` has NO lint script. VERIFY checkpoints run `npm run build`
-    (tsc) and `npm test` (vitest run) only.
+KB was warm at planning time (21+ CONFIRMED entries from the hardening sprint,
+yashr-43h). Verified facts every doer must know:
 
-## Repo rules (apply to every task)
+- `src/tools/code-intelligence.ts` -- `CodeIntelligenceProvider` interface
+  (graph/impact/query/context, lines 7-12), zod schemas per tool, `PROVIDERS`
+  map (line 16), `getProvider()` (lines 42-59) reading
+  `~/.apra-fleet/data/code-intelligence/config.json`.
+- `src/tools/code-intelligence-gitnexus.ts` -- `GitNexusProvider` (lines
+  154-170); ALL provider methods route through the single guarded
+  `callGitNexus(name, params)` helper, which gives pre-flight index check
+  (missing-index structured error), connection resilience (poisoned
+  connectionPromise cleared on failure; transport/client onclose/onerror reset
+  guarded by `sharedClient === client` identity check), structured
+  `{ content, isError }` results (never throws), and the freshness note.
+  Module-level singletons: `sharedClient`, `connectionPromise`.
+- `src/tools/code-intelligence-freshness.ts` -- `freshnessNote(lastCommit,
+  head)` pure function + `appendFreshnessNote()`; kept in a SEPARATE module to
+  avoid a circular import (code-intelligence.ts re-exports GitNexusProvider
+  from gitnexus; gitnexus imports freshness helpers as values at module load).
+  Any new module imported by code-intelligence-gitnexus.ts must follow the same
+  rule: never import from code-intelligence.ts.
+- `src/index.ts` -- tool registration pattern: lines 310-325 register the four
+  code_* tools; each handler is `wrapTool(name, async (input) => { const
+  provider = await getProvider(); return JSON.stringify(await
+  provider.<method>(input)); })`. Descriptions carry the routing sentence
+  "Prefer this over Glob/Grep/file reads for structural questions (symbol
+  lookup, call chains, impact) -- the answer is pre-indexed." Tool descriptions
+  are the universal dispatch layer -- every new tool description must carry
+  routing guidance in this style.
+- `src/tools/kb-session-prime.ts` -- `kbSessionPrime(input)` tool wrapper:
+  validates paths, calls `providers.project.prime(...)` (SqliteProvider.prime
+  at `src/services/knowledge/sqlite-provider.ts` lines 511-577; HttpKbProvider
+  .prime at `src/services/knowledge/http-provider.ts` lines 233-243), then
+  appends up to 3 global entries. This wrapper is where P4b expansion lives.
+- `src/tools/check-status.ts` -- `codeIntelligenceHealth(repoDir)` +
+  `codeIntelligenceCompactLine()`; degraded-safe pattern: every IO/git call
+  individually try/caught, 3s execFileSync timeouts, never throws, section
+  omitted or degraded string on failure. fleetStatus() includes the section in
+  JSON (codeIntelligence key) and compact (trailing line).
+- Log helpers: `logLine`, `logWarn`, `logError` in `src/utils/log-helpers.ts`.
+- `.gitnexus/meta.json` stats: `{ files: 380, nodes: 4051, edges: 10976,
+  communities: 214, processes: 300, embeddings: 0 }`; capabilities show
+  `vectorSearch: { provider: "exact-scan", status: "unavailable" }`.
 
-- ASCII only in all files: `-` for dashes, `->` for arrows, `[OK]` for checkmarks.
-- Never push to `main`. All work stays on `feat/code-intelligence-abstraction`.
-- No PR this sprint -- the user raises PRs explicitly. Push the branch only.
-- Commit style: `<type>(<scope>): <description>`.
+### KB constraints copied verbatim (binding on doers)
 
-## Model assignment rules used
+1. Testing module singletons (applies to ANY test touching
+   code-intelligence-gitnexus.ts, the new reindex module, or telemetry module
+   state): "For testing code with module-level singletons (like
+   sharedClient/connectionPromise in code-intelligence-gitnexus), use
+   vi.resetModules() + dynamic import at the start of each test to get a fresh
+   module instance. Pre-hoisted vi.mock factories are re-applied, preserving
+   mock function references across resets." Pattern: hoist mocks with
+   vi.hoisted() before imports; in each cold-state test call vi.resetModules()
+   + vi.clearAllMocks() then `const { X } = await import(...)`.
+2. gitnexus analyze gotcha (applies to EVERY VERIFY task): "Running 'npx
+   gitnexus analyze' injects non-ASCII gitnexus:start/end block markers into
+   AGENTS.md and CLAUDE.md, violating ASCII-only convention. This happens in
+   every VERIFY phase. Fix: run 'git checkout -- AGENTS.md CLAUDE.md'
+   immediately after analyze to discard injected markers, keeping only the real
+   code intelligence updates to other files."
 
-- `claude-haiku-4-5` -- mechanical edits with exact text given in this plan.
-- `claude-sonnet-4-6` -- typical implementation with clear specs and test patterns.
-- `claude-opus-4-8` -- hard design / async lifecycle / multi-file reasoning.
+## Sprint-wide constraints
 
----
+- ASCII only in every file written. `-` for dashes, `->` for arrows.
+- Never push to `main`. NO PR -- the user raises PRs.
+- Every new tool: registered in src/index.ts, routed through callGitNexus
+  (except pure-KB paths), description carries routing guidance, zod schema in
+  code-intelligence.ts style, tests present (D1).
+- Do NOT parse ladybugdb (`lbug`) files directly -- format is private to
+  gitnexus (D1 fallback ladder step 3).
+- Known pre-existing test failures: only the 2 timezone failures in
+  tests/time-utils.test.ts (beads yashr-302) may fail.
+- Telemetry, KB enrichment, and auto-reindex must NEVER fail or block a tool
+  call (D3, D4, D8): fire-and-forget + try/catch everywhere.
 
-## Phase 1 -- Fix 3: silent-empty failure mode (riskiest first)
+## Phase 1 -- Spikes + riskiest build work
 
-### T1.1 -- Connection resilience for the shared GitNexus client (F3.2)
+Per design.md phasing guidance: both spikes gate later mapping decisions and
+belong here; P4b is the riskiest pure-code task and rides alongside.
 
-- **Model:** claude-opus-4-8
-- **Why opus:** requirements.md names F3.2 the riskiest work in the sprint (async
-  lifecycle of a shared MCP client); KB has zero prior coverage of these symbols.
-- **Files:** `src/tools/code-intelligence-gitnexus.ts`,
-  `tests/code-intelligence.test.ts` (extend; add new describe blocks or a sibling
-  test file `tests/code-intelligence-resilience.test.ts` if isolation demands it).
-- **What to build:** Fix the two caching bugs in `getGitNexusClient()` and make
-  dead-client failures actionable:
-  1. Failure reset: if the `connectionPromise` rejects, clear `connectionPromise`
-     (and leave `sharedClient` null) before the rejection propagates, so the NEXT
-     call retries a fresh connection instead of awaiting the poisoned promise
-     forever. Implement inside the async IIFE with try/catch (rethrow after
-     clearing) or via `.catch` bookkeeping -- the observable contract is: call 1
-     fails, call 2 attempts a brand-new connection.
-  2. Transport death reset: after a successful connect, register close/error
-     handlers (the MCP SDK exposes `transport.onclose` / `transport.onerror`, and
-     `Client` has an `onclose` hook -- use whichever the installed SDK version
-     provides; verify against `node_modules/@modelcontextprotocol/sdk`) that set
-     `sharedClient = null` and `connectionPromise = null`, so the call after a
-     child-process death reconnects instead of failing opaquely.
-  3. Guarded callTool: wrap every `client.callTool(...)` in the four
-     `GitNexusProvider` methods (extract one private helper, e.g.
-     `callGitNexus(name, params)`, so the logic lives in ONE place) so that a
-     thrown dead-client/connection error is caught and returned as a structured
-     actionable error in the SAME shape as F3.1 (T1.2) -- a normal tool result
-     whose text tells the agent code intelligence is offline and how to recover
-     (mention starting/reinstalling gitnexus via `npx gitnexus analyze` /
-     `/pm index`). Never an unhandled throw, never a silent empty result. After a
-     caught dead-client error the module state must be reset so the next call
-     reconnects.
-- **Edge cases:** two concurrent first calls share one connection attempt (keep
-  the single-flight `connectionPromise` semantics); a failure reset must not race
-  a concurrent waiter into a null deref; handlers must not fire the reset for a
-  client that was already replaced.
-- **Tests (required by sprint done criteria):** using the existing
-  `vi.hoisted`/`vi.mock` pattern plus `vi.resetModules()` + dynamic import per
-  test: (a) `connect` rejects once -> first provider call errors with the
-  actionable message shape, second call triggers a second `connect` attempt and
-  succeeds; (b) after a successful call, simulating transport close then calling
-  again creates a new client; (c) `callTool` throwing yields the structured error
-  message, not a throw.
-- **Done criteria:** `npm run build` clean; new tests green alongside all 4
-  existing GitNexusProvider tests and 3 getProvider tests; no call path can
-  return a silent empty on connection failure; ASCII only; committed as
-  `fix(code-intelligence): reset shared client on connection failure` (or
-  similar `fix(code-intelligence): ...`).
+### T1.1 SPIKE: gitnexus MCP child tool surface investigation
 
-### T1.2 -- Pre-flight index check with actionable missing-index error (F3.1)
+- type: spike
+- model: claude-opus-4-8
+- Deliverable: `docs/code-intelligence-child-surface.md` (new file) + a note in
+  progress.json. NO product code changes.
+- The gitnexus MCP child's actual tool surface is UNKNOWN until listed (design
+  D1). Connect to the child the same way the fleet server does (see
+  getGitNexusClient in src/tools/code-intelligence-gitnexus.ts -- it spawns
+  `npx gitnexus mcp` over stdio) and list its tools. Practical options: a
+  short throwaway node script using @modelcontextprotocol/sdk Client +
+  StdioClientTransport calling listTools(); and/or read the installed gitnexus
+  package (node_modules/gitnexus or `npm ls gitnexus` then its dist/docs) to
+  confirm tool names, input schemas, and output shapes. Record for EVERY child
+  tool: name, input schema, output shape (run one sample call per tool where
+  cheap, e.g. against this repo's existing .gitnexus index).
+- Answer these three capability questions explicitly, one section each
+  (design D1 fallback ladder: 1. direct tool -> proxy; 2. generic query surface
+  that can express it -> compose; 3. neither -> descope + docs + backlog):
+  a. Communities: is there a direct communities/map tool? If not, can the
+     query/graph surface return community data (meta.json says 214 communities
+     exist)?
+  b. Flows/processes: is there a direct flows/processes tool? (meta.json says
+     300 processes exist; code_query responses already include a `processes`
+     array -- document whether that surface is filterable by from/to/name.)
+  c. Upstream traversal for tests: can impact/graph express "callers of X,
+     depth 2" as needed by P9 code_tests?
+- End the doc with a "Decisions" table: capability -> ladder rung chosen ->
+  child tool + params to use (or DESCOPED + backlog bead text). T2.1, T2.2 and
+  T4.4 cite this table; write it so those doers need no further investigation.
+- ASCII only. Do not commit any throwaway scripts (scratch dir or delete).
+- Done: docs/code-intelligence-child-surface.md exists with tool list, schemas,
+  three capability sections, Decisions table; progress.json notes updated.
 
-- **Model:** claude-sonnet-4-6
-- **Files:** `src/tools/code-intelligence-gitnexus.ts` (or a small helper in
-  `src/tools/code-intelligence.ts` if cleaner -- keep provider-agnostic logic out
-  of the gitnexus file only if it stays one concern), plus tests.
-- **What to build:** Before proxying any provider call whose `params` carry a
-  `repo` value (all four schemas have optional `repo`): check
-  `<repo>/.gitnexus/meta.json` exists with `fs.existsSync` (cheap, synchronous --
-  requirement says existsSync explicitly). If absent, return the structured error
-  WITHOUT forwarding the call to the child process, message verbatim from
-  requirements.md:
-  `"No code intelligence index found for <repo>. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry."`
-  (substitute the actual repo path for `<repo>`).
-- **Edge cases (from requirements):** calls WITHOUT a `repo` param must be
-  forwarded untouched -- the check only runs when `repo` is present and is a
-  non-empty string. A `repo` pointing at a nonexistent directory also yields the
-  missing-index error (existsSync covers it). The check must run before
-  `getGitNexusClient()` is awaited so a missing index never spawns the child.
-- **Tests (required by sprint done criteria):** create a temp dir WITHOUT
-  `.gitnexus/` (use `fs.mkdtempSync(join(tmpdir(), ...))`), call each provider
-  method with `repo` set to it, assert the exact error text and that
-  `mockCallTool`/`mockConnect` were NOT called; plus one test that a call without
-  `repo` still forwards to `callTool`.
-- **Done criteria:** build clean, tests green, message matches requirements
-  verbatim, no child spawn on missing index, ASCII only, committed.
+### T1.2 SPIKE: embeddings population investigation
 
-### T1.3 -- Code intelligence health section in fleet_status (F3.3)
+- type: spike
+- model: claude-sonnet-4-6
+- Deliverable: `docs/code-intelligence-embeddings.md` (new file, short: what
+  works, what it needs, cost) + finding recorded in progress.json notes. NO
+  wiring in this task (T2.3 does the wiring).
+- Context: `.gitnexus/meta.json` shows `embeddings: 0` and `vectorSearch:
+  { provider: "exact-scan", status: "unavailable", reason: "LadybugDB VECTOR is
+  disabled on this platform; semantic search uses exact scan when embeddings
+  exist." }` -- code_query is lexical FTS only today.
+- Timebox: this is an investigation, not a build. Determine how the INSTALLED
+  gitnexus version populates embeddings: CLI flag on `npx gitnexus analyze`?
+  config file? external model/API key? or unsupported in this version. Methods:
+  `npx gitnexus analyze --help`, `npx gitnexus --help`, read the installed
+  package's docs/source, try a candidate flag against a small test repo (NOT
+  this repo's live index; if you must run analyze here, afterwards run
+  `git checkout -- AGENTS.md CLAUDE.md` -- analyze injects non-ASCII
+  gitnexus:start/end markers into those files, see KB constraint 2).
+- Classify the outcome for T2.3 (design D2): LOCAL (flag or bundled model,
+  works offline via npx) vs EXTERNAL (API key or heavyweight model download) vs
+  UNSUPPORTED. State the classification on the first line of the doc.
+- Done: doc exists with classification + evidence + cost notes; progress.json
+  notes record the finding (required by requirements.md even if UNSUPPORTED).
 
-- **Model:** claude-sonnet-4-6
-- **Files:** `src/tools/check-status.ts` (implementation `fleetStatus()` at
-  line 194; add a small helper, e.g. `codeIntelligenceHealth(cwd)`), optional new
-  test file `tests/fleet-status-code-intelligence.test.ts`.
-- **What to build:** Add a code intelligence section to `fleet_status` output for
-  the current working repo: if `process.cwd()` contains `.gitnexus/meta.json`,
-  read it (`lastCommit`, `indexedAt`, `stats` with files/nodes/edges -- this is
-  the documented meta.json shape) and report:
-  - index present yes/no
-  - nodes / edges / files from `stats`
-  - `indexedAt`
-  - `lastCommit` vs current git HEAD: "matching" or "N commits behind" (get HEAD
-    via `git rev-parse HEAD`, count via `git rev-list --count <lastCommit>..HEAD`;
-    both against `process.cwd()`).
-  Surface it in BOTH formats: a `codeIntelligence` key in the `json` payload and
-  one extra line in `compact` output (e.g.
-  `code-intel: index present | 1234 nodes / 5678 edges / 90 files | indexed <indexedAt> | matching HEAD`).
-  If no index: `code-intel: no index (run 'npx gitnexus analyze' or /pm index)`.
-- **Edge cases:** MUST be read-only and fast -- no child MCP spawn, no network;
-  degrade gracefully (never throw, never fail fleet_status) when: meta.json is
-  missing or unparseable, git is unavailable, `lastCommit` is unknown to the
-  local git (rev-list fails -> report `indexed <lastCommit:8>, HEAD comparison
-  unavailable`). Wrap git calls in try/catch with a short timeout.
-- **Tests:** unit-test the helper with a temp dir: (a) no .gitnexus -> absent
-  report; (b) meta.json present + mocked/undefined git -> graceful degradation;
-  (c) parse of stats fields.
-- **Done criteria:** `fleet_status` shows the section in compact and json formats,
-  never throws when git/meta.json unavailable, build + tests green, ASCII only,
-  committed.
+### T1.3 P4b: kb_session_prime graph-neighbor expansion
 
-### T1.4 -- VERIFY Phase 1
+- type: work
+- model: claude-opus-4-8
+- Riskiest pure-code task of the sprint (design phasing guidance): touches the
+  kb-session-prime tool wrapper + CI provider interplay.
+- File: `src/tools/kb-session-prime.ts` (design D4: expansion calls the CI
+  provider through the PROVIDERS map via getProvider() from
+  `./code-intelligence.js`; the KB service side already models
+  recommended_code_calls; do NOT modify SqliteProvider.prime or
+  HttpKbProvider.prime -- the join lives one layer up, in this wrapper, so it
+  works for both project providers).
+- Behavior, after `providers.project.prime(...)` returns and direct hint
+  matches are collected:
+  1. For each `hint_symbols` entry, call the CI provider (impact or context,
+     depth 1 semantics -- use `provider.context({ name: symbol })` or
+     `provider.impact({ target: symbol, direction: 'upstream' })`, whichever
+     T1.1's surface doc shows returns parseable neighbor symbol names) to get
+     neighbor symbols. Parse defensively: the provider returns either an MCP
+     result object or a structured `{ isError: true }` result -- treat isError,
+     missing content, and unparseable JSON all as "no neighbors for this
+     symbol".
+  2. Collect neighbor names not already in hint_symbols, capped at
+     NEIGHBOR_CAP (default 10, exported const).
+  3. Run ONE extra KB query batch over those neighbors: a single
+     `providers.project.query({ query: neighbors.join(' '), l1_only: true,
+     limit: 10, include_stale: false })`.
+  4. Merge results into `result.top_entries`: skip entries already present
+     (by id), mark each added entry with `via: "graph-neighbor"`, rank them
+     BELOW all direct hits (append after), cap additions at ADDED_ENTRY_CAP
+     (default 5, exported const).
+- Constants NEIGHBOR_CAP = 10 and ADDED_ENTRY_CAP = 5 exported for tests
+  (design D4).
+- Graceful skip (design D4): the ENTIRE expansion is wrapped in try/catch with
+  a hard skip on any error -- graph unavailable, no index, child down, KB query
+  failure -> prime returns exactly what it returns today. No error text in the
+  response, no throw. Also skip when hint_symbols is empty/absent.
+- Tests (new file or extend tests/knowledge/kb-session-prime.test.ts): neighbor
+  expansion with a mocked provider (mock getProvider/PROVIDERS -- KB constraint
+  1 verbatim: "For testing code with module-level singletons ... use
+  vi.resetModules() + dynamic import at the start of each test to get a fresh
+  module instance. Pre-hoisted vi.mock factories are re-applied, preserving
+  mock function references across resets."); cap enforcement (11 neighbors ->
+  10 queried; 8 candidate entries -> 5 added); dedupe against direct hits;
+  graceful-skip path (provider throws -> output identical to non-expanded
+  prime); via marker present and ranked below direct hits.
+- Done: expansion works behind caps, all tests green, no behavior change when
+  graph is unavailable, build clean.
 
-- **Type:** verify (no model)
-- Run `npm run build` (tsc must be clean). Lint: not configured in package.json --
-  skip and note in progress.json. Run `npm test` (vitest, full suite green,
-  including the new F3.1 and F3.2 tests).
-- Run `npx gitnexus analyze` after tests pass (non-fatal if it errors).
-- Push the branch: `git push origin feat/code-intelligence-abstraction`.
-  Never push to main. Do NOT open a PR.
+### T1.4 VERIFY Phase 1
 
----
+- type: verify (no model)
+- Sequence:
+  1. `npm run build` -- must be clean.
+  2. `npm test` -- green except known pre-existing: only the 2 timezone
+     failures in tests/time-utils.test.ts (beads yashr-302) may fail.
+  3. `npx gitnexus analyze` -- non-fatal if it errors.
+  4. KB constraint 2 verbatim: "Running 'npx gitnexus analyze' injects
+     non-ASCII gitnexus:start/end block markers into AGENTS.md and CLAUDE.md
+     ... Fix: run 'git checkout -- AGENTS.md CLAUDE.md' immediately after
+     analyze." Then confirm `git status` shows no unexpected AGENTS.md /
+     CLAUDE.md modifications.
+  5. Push branch `feat/code-intelligence-abstraction`. Never push main. NO PR.
 
-## Phase 2 -- Fix 2: mid-sprint staleness
+## Phase 2 -- New tools from the child surface (P1) + embeddings outcome (P2)
 
-### T2.1 -- Freshness metadata in tool responses (F2.2)
+### T2.1 code_map tool (communities)
 
-- **Model:** claude-sonnet-4-6
-- **Files:** `src/tools/code-intelligence-gitnexus.ts` (append logic), a pure
-  function (exported for tests -- put it in `src/tools/code-intelligence.ts` or a
-  small `src/tools/code-intelligence-freshness.ts`), tests.
-- **What to build:**
-  1. Pure function (unit-testable, no IO), e.g.
-     `freshnessNote(lastCommit: string | undefined, head: string | undefined): string | null`
-     returning `null` when either side is missing or they match, else the note
-     verbatim from requirements.md:
-     `"[code-intelligence] index is behind repo HEAD (indexed <lastCommit:8> vs HEAD <head:8>). Results may miss recent changes; run 'npx gitnexus analyze' to refresh."`
-     where `<lastCommit:8>`/`<head:8>` are the first 8 chars of each SHA.
-  2. Wiring: when a provider call carries `repo` AND `<repo>/.gitnexus/meta.json`
-     exists (this runs naturally after T1.2's pre-flight passes), read
-     `meta.json.lastCommit`, get `git rev-parse HEAD` for that repo, and when they
-     differ APPEND the note to the tool response text. Do NOT block or fail the
-     call: any error reading meta.json or running git means "no note", never a
-     thrown error. Preserve the response shape (MCP content array from the child)
-     -- append the note as additional text content or suffix the text block;
-     keep it consistent across all four methods (do it in the shared
-     `callGitNexus` helper from T1.1).
-- **Edge cases:** no `repo` param -> no note; git missing -> no note; identical
-  SHAs -> no note; note appended at most once per response.
-- **Tests (required by sprint done criteria):** pure-function cases: match ->
-  null, differ -> exact string with 8-char truncation, undefined either side ->
-  null, short SHAs (< 8 chars) do not crash. Plus one wiring test asserting the
-  note lands in the response when meta lastCommit differs from a stubbed HEAD.
-- **Done criteria:** pure function exported and covered by unit tests; note text
-  matches requirements verbatim; a failing git/meta read never fails the call;
-  build + tests green; ASCII only; committed.
+- type: work
+- model: claude-sonnet-4-6
+- Gated by T1.1. Decision rule (apply the Decisions table in
+  docs/code-intelligence-child-surface.md, communities row): if the child
+  exposes a direct communities/map tool -> proxy it via callGitNexus; elif the
+  child's generic query surface can express communities -> compose (one or more
+  callGitNexus calls + mapping code in the provider method); else -> DESCOPE:
+  implement nothing in src/, record the gap in
+  docs/code-intelligence-child-surface.md and progress.json notes with a
+  backlog item, and mark this task descoped in progress.json. Do NOT parse
+  ladybugdb (lbug) directly.
+- If building: input schema `codeMapSchema` in src/tools/code-intelligence.ts:
+  `{ repo?: string, top?: number }` (repo described exactly like existing
+  schemas; top = max communities to return). Add `map(params)` to the
+  CodeIntelligenceProvider interface and GitNexusProvider (method body routes
+  through callGitNexus like the existing four -- pre-flight index check,
+  resilience, freshness note, ASCII-only output all come for free, design D1).
+  Output: the repo's architectural map -- communities with their key
+  symbols/files, sized/ranked, shaped per what the child returns (document the
+  mapping in code comments citing the surface doc).
+- Register in src/index.ts next to the existing code_* block, handler pattern
+  identical (getProvider() -> provider.map(input) -> JSON.stringify), with a
+  routing-guidance description in the established style, e.g.: 'Get the
+  architectural map of a repository: module communities with their key symbols
+  and files, ranked by size. Prefer this over directory listings or file reads
+  when orienting in an unfamiliar codebase -- the answer is pre-indexed.'
+- Tests (tests/code-intelligence.test.ts or a new file): schema validation;
+  missing-index error path reuse (same structured error as existing tools);
+  mocked child response mapping test. KB constraint 1 verbatim applies: "For
+  testing code with module-level singletons (like sharedClient/
+  connectionPromise in code-intelligence-gitnexus), use vi.resetModules() +
+  dynamic import at the start of each test to get a fresh module instance.
+  Pre-hoisted vi.mock factories are re-applied, preserving mock function
+  references across resets."
+- Done: tool registered + tested, or documented descope with backlog note in
+  progress.json (silent omission is NOT acceptable per requirements.md).
 
-### T2.2 -- Re-index at VERIFY checkpoints in PM skill docs (F2.1)
+### T2.2 code_flow tool (process flows)
 
-- **Model:** claude-haiku-4-5
-- **Files:** `skills/pm/doer-reviewer-loop.md`, `skills/pm/index.md`.
-- **What to build (docs-only, mechanical):**
-  1. In `doer-reviewer-loop.md`, doer template (the block starting
-     "You are executing a plan.", currently lines 160-180): extend the VERIFY
-     checkpoint sentence ("run it -- build, linter, and full test suite") so the
-     sequence is: build, linter, full test suite, then `npx gitnexus analyze`
-     (after all pass, BEFORE pushing). State explicitly that the analyze step is
-     non-fatal: an analyze failure must not fail the VERIFY -- record it in
-     progress.json and continue.
-  2. In `skills/pm/index.md`, "When to run" section: add a bullet that VERIFY
-     checkpoints re-run `npx gitnexus analyze` automatically (incremental via
-     fileHashes in `.gitnexus/meta.json`, takes seconds), so mid-sprint symbols
-     stay visible to later phases.
-- **Edge cases:** touch ONLY these two files; do not reflow unrelated template
-  text; keep line width consistent with surrounding prose; ASCII only.
-- **Done criteria:** both files updated, wording states non-fatal explicitly,
-  `git diff` shows changes confined to the two files, committed as
-  `docs(pm): re-index at VERIFY checkpoints`.
+- type: work
+- model: claude-sonnet-4-6
+- Gated by T1.1. Decision rule (Decisions table, flows row): if direct
+  flows/processes tool -> proxy via callGitNexus; elif generic query surface
+  can express it (note: code_query responses already carry a `processes`
+  array; T1.1 documents whether that is filterable) -> compose; else ->
+  descope + docs + backlog note in progress.json. Do NOT parse ladybugdb
+  directly.
+- If building: input schema `codeFlowSchema` in src/tools/code-intelligence.ts:
+  `{ from?: string, to?: string, name?: string, repo?: string }` -> matching
+  process flows (entry -> steps -> exit). Add `flow(params)` to
+  CodeIntelligenceProvider + GitNexusProvider routing through callGitNexus.
+  Filtering by from/to/name happens child-side if supported, else in the
+  provider method over the child's response.
+- Register in src/index.ts with routing-guidance description, e.g.: 'Find
+  process flows (entry -> steps -> exit) matching a name or endpoints. Prefer
+  this over manually tracing call chains across files -- the flows are
+  pre-indexed.'
+- Tests: schema validation; missing-index error path reuse; mocked child
+  response mapping test (including from/to/name filter behavior). KB constraint
+  1 (vi.resetModules + dynamic import + vi.hoisted mocks) applies verbatim as
+  in T2.1.
+- Done: tool registered + tested, or documented descope with backlog note.
 
-### T2.3 -- VERIFY Phase 2
+### T2.3 Embeddings outcome implementation (P2)
 
-- **Type:** verify (no model)
-- Run `npm run build`; lint not configured -- skip and note. Run `npm test`
-  (full suite green including F2.2 pure-function tests).
-- Run `npx gitnexus analyze` after tests pass (non-fatal).
-- Push the branch: `git push origin feat/code-intelligence-abstraction`.
-  Never push to main. Do NOT open a PR.
+- type: work
+- model: claude-sonnet-4-6
+- Gated by T1.2. Decision rule (classification on line 1 of
+  docs/code-intelligence-embeddings.md, design D2):
+  - LOCAL (flag or bundled model, offline via npx) -> wire it: `/pm index`
+    (skills/pm/index.md) and the VERIFY re-index step pass the flag; document
+    the flag in skills/pm/index.md; update docs/code-intelligence-embeddings.md
+    with the wiring.
+  - EXTERNAL (API key or heavyweight model) -> do NOT wire by default: plumb an
+    OPT-IN config field in `~/.apra-fleet/data/code-intelligence/config.json`:
+    `{ embeddings: { enabled: boolean, provider: string, ... } }` (read where
+    the analyze command line is built -- when enabled, append the necessary
+    flags/env; default OFF so behavior is unchanged); document in
+    docs/code-intelligence-embeddings.md + skills/pm/index.md; create a
+    follow-up backlog item in progress.json notes. The sprint is NOT blocked
+    on external dependencies.
+  - UNSUPPORTED -> docs-only: finalize docs/code-intelligence-embeddings.md
+    with the finding + backlog item in progress.json notes; no code.
+- Config lives ONLY in the code-intelligence config.json (design D2 -- "the
+  single place such config lives"); reuse the CONFIG_PATH constant pattern from
+  src/tools/code-intelligence.ts (do not duplicate parsing style).
+- Tests: only if code is written -- config parsing (enabled/disabled/absent ->
+  correct analyze args), default-OFF behavior.
+- Done: one of the three branches fully executed; docs + progress.json updated
+  in all branches (a documented descope with a backlog item is acceptable;
+  silent omission is not).
 
----
+### T2.4 VERIFY Phase 2
 
-## Phase 3 -- Fix 1: prompt-dependence of tool routing
+- type: verify (no model)
+- Same sequence as T1.4: npm run build; npm test (only the 2 pre-existing
+  timezone failures in tests/time-utils.test.ts, beads yashr-302, may fail);
+  npx gitnexus analyze (non-fatal); then per KB constraint 2 run
+  `git checkout -- AGENTS.md CLAUDE.md` to discard the injected non-ASCII
+  gitnexus:start/end markers; push branch. Never push main. NO PR.
 
-### T3.1 -- Routing guidance in the four tool descriptions (F1.1)
+## Phase 3 -- Self-healing freshness (P3) + code_context KB enrichment (P4a)
 
-- **Model:** claude-haiku-4-5
-- **Files:** `src/index.ts` (registrations, lines 310-325 -- the description
-  string is the second argument to each `server.tool(...)` call). Check
-  `src/tools/code-intelligence.ts` too: its schemas describe params, not tools;
-  only change it if a tool-level description string actually lives there
-  (currently it does not -- src/index.ts is the single registration point).
-- **What to build (mechanical, exact text):** append one sentence to each of the
-  four descriptions (code_graph, code_impact, code_query, code_context):
-  `Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.`
-- **Edge cases:** keep each description a single string on its existing line
-  style; do not alter schemas, handler bodies, or other tools' descriptions;
-  ASCII only (use `--`, never an em dash).
-- **Done criteria:** all four descriptions carry the sentence; `npm run build`
-  clean; diff touches only description strings; committed as
-  `feat(code-intelligence): routing guidance in tool descriptions`.
+### T3.1 Auto-reindex module: state, decision function, spawn
 
-### T3.2 -- Code intelligence + KB paragraph in reviewer dispatch template (F1.2)
+- type: work
+- model: claude-sonnet-4-6
+- New file `src/tools/code-intelligence-reindex.ts` (design D3). Must NOT
+  import from src/tools/code-intelligence.ts (circular-import rule -- this
+  module will be imported by code-intelligence-gitnexus.ts in T3.2, mirroring
+  the freshness module precedent).
+- Contents:
+  - Module-level `Map<repoPath, { runningChild?: ChildProcess,
+    lastFinishedAt?: number }>` (in-memory is acceptable: the server is
+    long-lived; a restart just means one extra reindex -- design D3).
+  - Pure exported decision function taking `(state, now)` -- e.g.
+    `shouldStartReindex(entry: { running: boolean, lastFinishedAt?: number } |
+    undefined, now: number, cooldownMs: number): boolean` -- so it unit-tests
+    without timers (design D3). Semantics: single-flight per repo + cooldown; a
+    trigger while one analyze runs or within cooldownMs of the last finish is a
+    no-op. Cooldown default 120000 ms.
+  - Config override via `~/.apra-fleet/data/code-intelligence/config.json`
+    `{ autoReindex: { cooldownMs?: number, enabled?: boolean } }`, default
+    enabled: true (design D3). enabled: false -> scheduling function always
+    no-ops.
+  - `maybeScheduleReindex(repoPath: string): boolean` (returns whether a
+    reindex was started): consults config + decision function, then spawns
+    `npx gitnexus analyze` with cwd = repo, detached, stdio ignored EXCEPT a
+    tail of stderr captured and written to the fleet log (logWarn/logError from
+    src/utils/log-helpers.ts) on non-zero exit (design D3). Never awaited on
+    the tool-call path; on child exit update lastFinishedAt and clear
+    runningChild. All failures logged, never thrown (requirements P3:
+    "failures are logged and never affect the tool call"). Windows note: use
+    shell-safe spawn of npx (spawn('npx', ['gitnexus', 'analyze'], { shell:
+    process.platform === 'win32', ... }) or equivalent existing pattern in the
+    codebase).
+- Tests (tests/code-intelligence-reindex.test.ts): decision function as a pure
+  unit (running -> false; within cooldown -> false; past cooldown -> true;
+  undefined entry -> true; custom cooldownMs honored); single-flight guarantee
+  (two maybeScheduleReindex calls -> one spawn); spawn-args correctness (mock
+  child_process); enabled:false no-op. Module has state -> KB constraint 1
+  verbatim: "For testing code with module-level singletons ... use
+  vi.resetModules() + dynamic import at the start of each test to get a fresh
+  module instance. Pre-hoisted vi.mock factories are re-applied, preserving
+  mock function references across resets."
+- Done: module + tests green; no import from code-intelligence.ts; build clean.
 
-- **Model:** claude-haiku-4-5
-- **Files:** `skills/pm/doer-reviewer-loop.md` -- reviewer template only (the
-  block starting "You are reviewing code.", currently lines 184-194). Verified
-  during planning: the planner and doer templates in this file already carry
-  KB/code-intelligence paragraphs; the reviewer template has none.
-- **What to build:** add a paragraph in the same style as the doer template's
-  (lines 174-179), adapted to review work:
-  - `kb_session_prime` at session start with hint_symbols/hint_modules derived
-    from the diff under review;
-  - `code_impact` for "who else calls this changed method" questions;
-  - `kb_query` before reading an unfamiliar file -- trust CONFIRMED/INFERRED
-    entries and skip the source read;
-  - never Glob/Grep for structural queries when code intelligence tools are
-    available.
-- **Edge cases:** do not modify the planner/doer/plan-reviewer templates; keep
-  the template's inline-prompt formatting (it is a fenced block); ASCII only.
-- **Done criteria:** reviewer template carries the paragraph, other templates
-  byte-identical, committed as `docs(pm): code intelligence instructions in
-  reviewer dispatch template`.
+### T3.2 Wire auto-reindex into the freshness path + note suffix
 
-### T3.3 -- Fill CI gap in tpl-planner.md; confirm fleet-mode templates (F1.3)
+- type: work
+- model: claude-sonnet-4-6
+- File: `src/tools/code-intelligence-gitnexus.ts`. Trigger point is inside the
+  existing freshness-note computation in callGitNexus (design D3: "already
+  per-call, already knows repo + divergence; no new watchers, no cron"): when a
+  divergence is detected for params.repo, call
+  `maybeScheduleReindex(params.repo)` (import from
+  ./code-intelligence-reindex.js -- value import is safe, no cycle). The tool
+  call itself still returns immediately with the note; scheduling is
+  fire-and-forget and wrapped so any error is swallowed/logged.
+- When maybeScheduleReindex returned true, the freshness note text gains the
+  exact suffix: ` A background re-index has been started.` (requirements P3;
+  note the leading space). Extend freshnessNote/appendFreshnessNote in
+  src/tools/code-intelligence-freshness.ts as needed (keep the pure function
+  pure: e.g. add a parameter `reindexScheduled: boolean`).
+- Tests: extend tests/code-intelligence-freshness.test.ts (pure function with
+  and without suffix -- exact string) and tests/code-intelligence.test.ts
+  (divergence triggers exactly one schedule call; schedule failure does not
+  affect the tool result). KB constraint 1 (vi.resetModules + dynamic import,
+  vi.hoisted mock factories) applies verbatim -- these tests touch the
+  gitnexus module singletons.
+- Done: divergence -> background reindex scheduled at most once per
+  repo/cooldown; note carries suffix only when scheduled; no tool-call latency
+  or failure introduced; tests green.
 
-- **Model:** claude-haiku-4-5 (stays haiku because the exact paragraph to insert
-  is given verbatim below -- no drafting judgment required).
-- **Files:** `skills/pm/tpl-planner.md` (edit -- gap confirmed),
-  `skills/pm/tpl-doer.md`, `skills/pm/tpl-reviewer.md` (read-and-confirm).
-- **Verified reality (plan review, 2026-07-06):** each template must contain
-  BOTH: (a) a kb_session_prime instruction, and (b) code intelligence tool
-  guidance (code_graph/code_impact/code_query/code_context, prefer over
-  Glob/Grep). tpl-doer.md (lines 47, 57) and tpl-reviewer.md (lines 76-79) carry
-  both elements. tpl-planner.md carries ONLY the kb_session_prime instruction
-  (line 8) and has NO code intelligence tool guidance -- grep for
-  `code_graph|code_impact|code_query|code_context|code intelligence|Glob/Grep`
-  returns zero hits in that file. A gap exists and must be fixed.
-- **What to do:**
-  1. In `skills/pm/tpl-planner.md`, insert the following section verbatim after
-     the "Knowledge Bank" section (i.e. after the line "If the KB is empty
-     (first sprint on this repo), skip and proceed normally.", currently
-     line 21) and before the "## Planning Model" heading:
+### T3.3 P4a: code_context inlines KB entries
 
-     ```
-     ## Code Intelligence (use while planning)
+- type: work
+- model: claude-sonnet-4-6
+- Design D4 layering is binding: the gitnexus provider file must NOT import the
+  KB service (avoids a src/tools <-> src/services cycle). Implement a small
+  helper `src/tools/code-intelligence-kb-enrich.ts` imported ONLY by the
+  code_context handler in src/index.ts; the handler calls the provider, then
+  the helper, and merges.
+- Behavior: after a successful code_context child call (result not isError),
+  query the KB -- `getKbProviders()` from
+  src/services/knowledge/kb-providers.js, `providers.project.query({ query:
+  <name>, l1_only: true, include_stale: false, ... })` -- and filter to
+  CONFIRMED entries whose `symbols` array contains the requested name (exact
+  match on the symbols field, same repo scope as the project provider).
+  Append a compact block to the response text:
+  `[knowledge-bank] N confirmed entries for <name>:` then one line per entry
+  (`- <title> -- <summary first 120 chars>`). Zero matching entries -> NO
+  block at all. KB read errors -> no block, never fail the call (try/catch
+  around the whole enrichment). ASCII only.
+- Do not enrich error results; do not enrich other code_* tools.
+- Tests (new tests/code-intelligence-kb-enrich.test.ts): append path (2 mocked
+  CONFIRMED entries with matching symbols -> block with N=2, 120-char summary
+  truncation verified); no-append path (zero entries; entries whose symbols do
+  not contain the name; non-CONFIRMED entries excluded); error path (KB service
+  mock throws -> response identical to un-enriched). Mock the KB service
+  module.
+- Done: enrichment behind the handler only, provider file untouched by KB
+  imports, all three test paths green.
 
-     For symbol lookups, call chain tracing, and impact analysis while planning,
-     use the fleet code intelligence tools (code_graph, code_impact, code_query,
-     code_context) -- e.g. code_query to locate an implementation you are about
-     to write tasks against, code_context to see its callers and flows. Never
-     use Glob/Grep or file reads for structural questions -- the answer is
-     pre-indexed.
-     ```
+### T3.4 VERIFY Phase 3
 
-     Keep a blank line above and below the new section; do not alter any other
-     part of the file.
-  2. Read `tpl-doer.md` and `tpl-reviewer.md` and confirm both elements are
-     present in each; make no edits to them unless an element is genuinely
-     missing (not expected). Record the confirmation (per file, what was found
-     and where) plus the tpl-planner.md fix in progress.json notes for this task.
-- **Done criteria:** tpl-planner.md contains the new section exactly as given
-  (ASCII only); tpl-doer.md and tpl-reviewer.md are byte-identical unless a real
-  gap was found; written confirmation per file in progress.json; committed as
-  `docs(pm): fill code intelligence gaps in fleet-mode templates`.
+- type: verify (no model)
+- Same sequence as T1.4: npm run build; npm test (only the 2 pre-existing
+  timezone failures in tests/time-utils.test.ts, beads yashr-302, may fail);
+  npx gitnexus analyze (non-fatal); then per KB constraint 2 run
+  `git checkout -- AGENTS.md CLAUDE.md` to discard injected non-ASCII markers;
+  push branch. Never push main. NO PR.
 
-### T3.4 -- VERIFY Phase 3 (sprint-final)
+## Phase 4 -- Telemetry (P8) + code_tests (P9)
 
-- **Type:** verify (no model)
-- Run `npm run build`; lint not configured -- skip and note. Run `npm test`
-  (full suite green: F3.1 missing-index, F3.2 connection reset, F2.2 freshness,
-  plus all pre-existing tests).
-- Sweep for the sprint-wide done criteria: ASCII only in every touched file
-  (`git diff main...feat/code-intelligence-abstraction` contains no non-ASCII
-  bytes).
-- Run `npx gitnexus analyze` after tests pass (non-fatal).
-- Push the branch: `git push origin feat/code-intelligence-abstraction`.
-  Never push to main. Do NOT open a PR -- the user raises PRs explicitly.
+### T4.1 Telemetry recorder: append + rotation + handler wiring
 
----
+- type: work
+- model: claude-sonnet-4-6
+- New file `src/tools/code-intelligence-telemetry.ts` (design D8):
+  - `recordUsage(tool: string, target: string, repo: string | null): void` --
+    appends one JSON object per line to
+    `~/.apra-fleet/data/code-intelligence/usage.jsonl`:
+    `{ ts: ISO8601, tool: string, target: string, repo: string | null }`.
+    `target` is the symbol/query/name argument as given.
+  - Rotation: before append, if file size > 5 MB rename to `usage.jsonl.1`
+    (overwrite any existing .1) and start fresh. Simple, lossy-by-design (D8).
+  - Write is fs.appendFile fire-and-forget wrapped in try/catch (including
+    mkdir of the parent dir on first write); a telemetry failure must NEVER
+    surface to the caller (D8).
+- Wiring (design D8: "recording happens in the shared tool-handler layer, NOT
+  inside GitNexusProvider -- provider stays a pure proxy"): in each code_*
+  handler in src/index.ts (code_graph, code_impact, code_query, code_context,
+  plus code_map/code_flow from Phase 2 and code_tests from T4.4 if they were
+  built), call recordUsage(toolName, <symbol|target|query|name arg>, input.repo
+  ?? null) before/alongside the provider call. Keep it one line per handler; do
+  not touch code-intelligence-gitnexus.ts.
+- Tests (tests/code-intelligence-telemetry.test.ts): append format (exact JSON
+  keys, ISO ts, repo null when absent); rotation trigger (mock fs stat > 5MB ->
+  rename called with overwrite semantics, fresh file appended); error isolation
+  (fs throws -> recordUsage never throws). If module keeps any state, KB
+  constraint 1 (vi.resetModules + dynamic import) applies.
+- Done: every code_* call is recorded, failures invisible to callers, tests
+  green.
+
+### T4.2 fleet_status: top symbols (30d)
+
+- type: work
+- model: claude-haiku-4-5
+- File: `src/tools/check-status.ts`. Extend the existing code-intel section
+  (codeIntelligenceHealth / codeIntelligenceCompactLine -- follow their
+  degraded-safe pattern exactly: every IO call try/caught, never throw, omit on
+  failure).
+- Behavior (design D8 read spec): single pass over
+  `~/.apra-fleet/data/code-intelligence/usage.jsonl` AND `usage.jsonl.1` if
+  present; parse each line (skip unparseable lines), filter `ts >= now - 30d`,
+  aggregate count by `target`, take top 5 by count. Keep it fast: one pass, cap
+  total bytes read (files are already size-capped at ~5MB each by rotation).
+- Surface in BOTH formats: JSON -- add `topSymbols: [{ target, count }, ...]`
+  to the codeIntelligence object; compact -- append
+  `top symbols (30d): a (12), b (9), ...` to the code-intel line. No usage
+  file or any error -> field/segment omitted entirely (try/catch around the
+  whole computation).
+- Tests (extend tests/fleet-status-code-intelligence.test.ts): top-N
+  aggregation (ties, fewer than 5 targets), 30d time filter excludes old
+  entries, reads .1 file too, unparseable lines skipped, error isolation
+  (missing file / bad JSON -> section omitted, no throw).
+- Done: json + compact both show top 5, all failure modes silent, tests green.
+
+### T4.3 isTestPath pure function
+
+- type: work
+- model: claude-haiku-4-5
+- New file `src/tools/code-intelligence-tests.ts`. Exported pure function
+  exactly per design D9: `isTestPath(path: string): boolean` -- true when any
+  path segment is `test`, `tests`, or `spec` (case-insensitive), or the
+  filename matches `/\.(test|spec)\.[^.]+$/`. Handle both `/` and `\`
+  separators (Windows paths appear in child output on this platform). No other
+  exports needed yet (T4.4 adds to this file or imports from it).
+- Tests (tests/code-intelligence-tests.test.ts): segment matches
+  (`tests/foo.ts`, `src/TESTS/x.ts`, `a\spec\b.ts`); filename matches
+  (`foo.test.ts`, `bar.spec.js`); negatives (`contest/file.ts`,
+  `attest.ts`, `testfile.ts`, `src/lib/protest.spec` without extension after
+  spec -- verify regex requires `.something` after `.test`/`.spec`);
+  mixed-separator paths.
+- Done: function + exhaustive table-driven tests green.
+
+### T4.4 code_tests tool (test-to-symbol mapping)
+
+- type: work
+- model: claude-sonnet-4-6
+- Gated by T1.1. Decision rule (Decisions table, upstream-traversal row): if
+  the child's impact/graph surface supports upstream traversal usable for
+  "callers of X, transitively, depth <= 2" -> compose it; else -> descope:
+  no code, record gap in docs/code-intelligence-child-surface.md +
+  progress.json notes with a backlog item. Do NOT parse ladybugdb directly.
+- If building: input schema `codeTestsSchema` in
+  src/tools/code-intelligence.ts: `{ symbol: string, repo?: string }`. Add
+  `tests(params)` to CodeIntelligenceProvider + GitNexusProvider, routed
+  through callGitNexus (upstream impact/graph query per the surface doc, depth
+  fixed at 2 -- design D9), then filter the returned callers to test paths
+  using `isTestPath` from src/tools/code-intelligence-tests.ts (T4.3). Output:
+  the test files/functions that transitively call the symbol.
+- Register in src/index.ts; description tells agents the use (requirements
+  P9), e.g.: 'Find the test files and test functions that exercise a symbol
+  (transitive callers, depth 2). Use this to run targeted tests for the code
+  you changed instead of the full suite. Prefer this over Grep for test
+  discovery -- the call graph is pre-indexed.'
+- Wire telemetry recording in the handler like the other tools (T4.1 pattern).
+- Tests: mocked child response filtering (mixed test/product callers -> only
+  test paths remain; depth semantics per mocked shape); missing-index error
+  path reuse; schema validation. KB constraint 1 (vi.resetModules + dynamic
+  import + vi.hoisted mocks) applies verbatim -- gitnexus module singletons.
+- Done: tool registered + tested, or documented descope with backlog note in
+  progress.json.
+
+### T4.5 VERIFY Phase 4 (final)
+
+- type: verify (no model)
+- Same sequence as T1.4: npm run build; npm test (only the 2 pre-existing
+  timezone failures in tests/time-utils.test.ts, beads yashr-302, may fail);
+  npx gitnexus analyze (non-fatal); then per KB constraint 2 run
+  `git checkout -- AGENTS.md CLAUDE.md` to discard injected non-ASCII markers.
+  Additionally: final ASCII sweep over all files changed this sprint (reject
+  any non-ASCII byte); confirm every investigation outcome (P1 child surface,
+  P2 embeddings) is reflected in docs/ + progress.json notes even where
+  descoped (sprint-wide done criteria). Push branch. Never push main. NO PR.
 
 ## Task summary
 
-| Task | Fix  | Concern                                   | Model             |
-|------|------|-------------------------------------------|-------------------|
-| T1.1 | F3.2 | Shared client connection resilience       | claude-opus-4-8   |
-| T1.2 | F3.1 | Pre-flight index check + error            | claude-sonnet-4-6 |
-| T1.3 | F3.3 | fleet_status health section               | claude-sonnet-4-6 |
-| T1.4 | --   | VERIFY Phase 1                            | (verify, none)    |
-| T2.1 | F2.2 | Freshness note + pure comparison fn       | claude-sonnet-4-6 |
-| T2.2 | F2.1 | Re-index at VERIFY (PM skill docs)        | claude-haiku-4-5  |
-| T2.3 | --   | VERIFY Phase 2                            | (verify, none)    |
-| T3.1 | F1.1 | Tool description routing guidance         | claude-haiku-4-5  |
-| T3.2 | F1.2 | Reviewer dispatch template paragraph      | claude-haiku-4-5  |
-| T3.3 | F1.3 | Fill tpl-planner CI gap + confirm tpls    | claude-haiku-4-5  |
-| T3.4 | --   | VERIFY Phase 3 + sprint done criteria     | (verify, none)    |
+| Phase | Tasks | Models |
+|-------|-------|--------|
+| 1 | T1.1 spike (opus), T1.2 spike (sonnet), T1.3 P4b (opus), T1.4 verify | 2 opus, 1 sonnet |
+| 2 | T2.1 code_map (sonnet), T2.2 code_flow (sonnet), T2.3 embeddings (sonnet), T2.4 verify | 3 sonnet |
+| 3 | T3.1 reindex module (sonnet), T3.2 wiring (sonnet), T3.3 P4a (sonnet), T3.4 verify | 3 sonnet |
+| 4 | T4.1 telemetry (sonnet), T4.2 fleet_status (haiku), T4.3 isTestPath (haiku), T4.4 code_tests (sonnet), T4.5 verify | 2 sonnet, 2 haiku |
+
+13 work/spike tasks: 2 x claude-opus-4-8, 9 x claude-sonnet-4-6,
+2 x claude-haiku-4-5. 4 VERIFY tasks (no model). 17 tasks total.
