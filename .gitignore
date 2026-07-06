@@ -36,3 +36,7 @@ COPILOT-INSTRUCTIONS.md
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+
+# Local tool scaffolding, not project deliverables
+.agents/
+.codex/
