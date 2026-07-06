@@ -25,6 +25,9 @@ code_graph, code_impact, code_query, and code_context tools.
 
 - **Automatically inside `/pm init`** -- runs as the final step of project initialization.
   The worktree must exist before indexing (gitnexus needs files on disk to analyze).
+- **Automatically at VERIFY checkpoints** -- checkpoints re-run npx gitnexus analyze to keep
+  mid-sprint symbols visible to later phases (incremental via fileHashes in .gitnexus/meta.json,
+  takes seconds).
 - After a large merge or rebase that changes many files
 - When `kb_session_prime` returns many stale entries
 - Any time the user asks to re-index (run `/pm index` explicitly)
