@@ -1,175 +1,33 @@
 {
-  "sprint": "code-intelligence-hardening",
+  "sprint": "code-intelligence-power",
   "track": "single",
   "branch": "feat/code-intelligence-abstraction",
   "base": "main",
   "worktree": "C:\\ws_yash\\Repos\\apra-fleet-main\\apra-fleet",
   "transport": "remote",
-  "epic": "yashr-43h",
-  "lastDispatchedPhase": 3,
+  "epic": "yashr-8m0",
+  "lastDispatchedPhase": null,
   "tasks": [
-    {
-      "id": "T1.1",
-      "phase": 1,
-      "title": "Connection resilience for shared GitNexus client (F3.2)",
-      "model": "claude-opus-4-8",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.1",
-      "commit": "ec3c81e276accf81bf5f60ad2a7294d50007ca83",
-      "notes": "Cleared rejected connectionPromise for retry; transport+client onclose/onerror reset sharedClient/connectionPromise; all 4 methods route through single guarded callGitNexus helper returning structured offline result (isError) and resetting state. Added 3 F3.2 resilience tests (vi.resetModules + dynamic import). Build clean; code-intelligence suite 10/10 green. Note: 2 pre-existing time-utils failures are timezone-dependent (IST machine), unrelated to this change."
-    },
-    {
-      "id": "T1.2",
-      "phase": 1,
-      "title": "Pre-flight index check with actionable error (F3.1)",
-      "model": "claude-sonnet-4-6",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.2",
-      "commit": "9a19e7d",
-      "notes": "Added missingIndexResult() + pre-flight fs.existsSync check on <repo>/.gitnexus/meta.json inside the shared callGitNexus helper (runs before getGitNexusClient() is awaited, so a missing index never spawns the child). Calls without a repo param, or with an empty-string repo, forward untouched. Message matches requirements verbatim. Added 5 tests in tests/code-intelligence.test.ts (temp dir via mkdtempSync per provider method asserting exact error text + mockConnect/mockCallTool not called, plus one forwarding test) -- 15/15 green in that file. Build clean."
-    },
-    {
-      "id": "T1.3",
-      "phase": 1,
-      "title": "Code intelligence health in fleet_status (F3.3)",
-      "model": "claude-sonnet-4-6",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.3",
-      "commit": "118164b",
-      "notes": "Added codeIntelligenceHealth(repoDir) + codeIntelligenceCompactLine() to src/tools/check-status.ts. Reads <cwd>/.gitnexus/meta.json read-only (fs.existsSync/readFileSync, no MCP spawn, no network); compares meta.lastCommit to git rev-parse HEAD (execFileSync with 3s timeout) via git rev-list --count for the behind-count. Wired into fleetStatus(): codeIntelligence key in json payload, extra compact line ('code-intel: index present | N nodes / N edges / N files | indexed <ts> | matching HEAD' or '... N commits behind HEAD' or degraded '... HEAD comparison unavailable'; 'code-intel: no index (...)' when absent). All paths caught internally plus a defensive try/catch at the call site -- never throws, never fails fleet_status. New tests/fleet-status-code-intelligence.test.ts (9 tests: absent index, git-unavailable degrade, stats parsing, invalid JSON, missing dir, compact-line rendering for matching/behind/unavailable/absent) -- all green; existing tests/fleet-status-branch.test.ts (6 tests) still green with the new line present. Build clean."
-    },
-    {
-      "id": "T1.4",
-      "phase": 1,
-      "title": "VERIFY Phase 1 -- build, tests, gitnexus analyze, push",
-      "model": null,
-      "type": "verify",
-      "status": "completed",
-      "bead": "yashr-43h.4",
-      "commit": null,
-      "notes": "build: npm run build (tsc) clean, no errors. lint: not configured in package.json -- skipped as expected. test: npm test full suite -- 1647 passed, 2 failed, 14 skipped across 115 files; the 2 failures are the known pre-existing tests/time-utils.test.ts timezone-dependent failures (IST machine, beads yashr-302), unrelated to this sprint -- treated as green per instructions. gitnexus analyze: npx gitnexus analyze ran after tests passed and succeeded (non-fatal step regardless) -- incremental update (changed=32 added=30 deleted=19), 4039 nodes / 10951 edges / 214 clusters / 300 flows, ~26.7s. Pushed feat/code-intelligence-abstraction to origin. No PR opened; never pushed to main."
-    },
-    {
-      "id": "T2.1",
-      "phase": 2,
-      "title": "Freshness note + pure comparison function (F2.2)",
-      "model": "claude-sonnet-4-6",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.5",
-      "commit": "a8add4f",
-      "notes": "Added freshnessNote(lastCommit, head) pure function in new src/tools/code-intelligence-freshness.ts (separate module, avoids circular import between code-intelligence.ts and code-intelligence-gitnexus.ts). Wired into the shared callGitNexus helper: after a successful callTool when params.repo is set and the F3.1 pre-flight passed, reads <repo>/.gitnexus/meta.json.lastCommit and git rev-parse HEAD (execFileSync, 3s timeout, same style as check-status.ts), appends the verbatim note as an extra text content block when they differ via appendFreshnessNote(). All reads wrapped in try/catch returning null on any failure -- never blocks or fails the call; note appended at most once. Tests: new tests/code-intelligence-freshness.test.ts (7 tests: match->null, differ->exact string with 8-char truncation, undefined lastCommit/head/both->null, short SHAs no crash, short-SHA match->null). Added 4 wiring tests to tests/code-intelligence.test.ts (mocking child_process.execFileSync for stubbed HEAD): note appended when differ, no note when match, no note when git throws, no note when meta.json invalid JSON -- code-intelligence.test.ts now 19/19 green (up from 15), full suite 1658 passed / 2 failed (known pre-existing tests/time-utils.test.ts timezone failures, beads yashr-302) / 14 skipped. Build clean."
-    },
-    {
-      "id": "T2.2",
-      "phase": 2,
-      "title": "Re-index at VERIFY checkpoints in PM docs (F2.1)",
-      "model": "claude-haiku-4-5",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.6",
-      "commit": "56e27f6",
-      "notes": "Extended VERIFY checkpoint sentence in doer template (skills/pm/doer-reviewer-loop.md lines 166-168) to include npx gitnexus analyze after build, linter, full test suite, explicitly stating non-fatal (if fails, record and continue). Added new bullet to skills/pm/index.md 'When to run' section documenting that VERIFY checkpoints automatically re-run gitnexus analyze incrementally to keep mid-sprint symbols visible to later phases. Both files touched only; no unrelated text reflowed. ASCII only."
-    },
-    {
-      "id": "T2.3",
-      "phase": 2,
-      "title": "VERIFY Phase 2 -- build, tests, gitnexus analyze, push",
-      "model": null,
-      "type": "verify",
-      "status": "completed",
-      "bead": "yashr-43h.7",
-      "commit": null,
-      "notes": "build: npm run build (tsc) clean, no errors. lint: not configured in package.json -- skipped as expected. test: npm test full suite -- 1658 passed, 2 failed, 14 skipped across 116 test files; the 2 failures are the known pre-existing tests/time-utils.test.ts timezone-dependent failures (IST machine, beads yashr-302), unrelated to this sprint -- treated as green per instructions. gitnexus analyze: npx gitnexus analyze ran after tests passed and succeeded (non-fatal step regardless) -- incremental update (changed=6 added=2 deleted=0), 4051 nodes / 10976 edges / 214 clusters / 300 flows, 46s. Reverted gitnexus-injected non-ASCII blocks from AGENTS.md and CLAUDE.md. Pushed feat/code-intelligence-abstraction to origin. No PR opened; never pushed to main."
-    },
-    {
-      "id": "T3.1",
-      "phase": 3,
-      "title": "Routing guidance in tool descriptions (F1.1)",
-      "model": "claude-haiku-4-5",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.8",
-      "commit": "0e008da",
-      "notes": "Appended routing sentence to all four code_* tool descriptions in src/index.ts (lines 310-325): code_graph, code_impact, code_query, code_context. Each description now includes: 'Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.' All descriptions updated with identical appended text. Build clean (no build run yet; T3.4 will verify)."
-    },
-    {
-      "id": "T3.2",
-      "phase": 3,
-      "title": "CI+KB paragraph in reviewer dispatch template (F1.2)",
-      "model": "claude-haiku-4-5",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.9",
-      "commit": "cbd943d",
-      "notes": "Added knowledge bank + code intelligence paragraph to reviewer template in skills/pm/doer-reviewer-loop.md. Paragraph includes: kb_session_prime call at session start with hints from diff; kb_query for unfamiliar files with CONFIRMED/INFERRED trust; code_impact for impact questions; guidance to use code_graph/code_impact/code_query/code_context for structural questions, never Glob/Grep. Adapted from doer template style for review work. Other templates byte-identical."
-    },
-    {
-      "id": "T3.3",
-      "phase": 3,
-      "title": "Fill tpl-planner CI gap + confirm templates (F1.3)",
-      "model": "claude-haiku-4-5",
-      "type": "work",
-      "status": "completed",
-      "bead": "yashr-43h.10",
-      "commit": "9df9d89",
-      "notes": "tpl-planner.md: inserted '## Code Intelligence (use while planning)' section verbatim after Knowledge Bank section (line 21) and before Planning Model. tpl-doer.md CONFIRMED: line 47 'kb_session_prime' instruction present, lines 57-60 code intelligence guidance (code_graph/code_impact/code_query/code_context, never Glob/Grep). tpl-reviewer.md CONFIRMED: line 76 'kb_session_prime' instruction present, lines 78-80 code intelligence guidance (code_graph/code_impact/code_query/code_context). All three templates byte-identical to requirements where not touched. ASCII only."
-    },
-    {
-      "id": "T3.4",
-      "phase": 3,
-      "title": "VERIFY Phase 3 -- sprint-final checks, ASCII sweep, push",
-      "model": null,
-      "type": "verify",
-      "status": "completed",
-      "bead": "yashr-43h.11",
-      "commit": null,
-      "notes": "build: npm run build (tsc) clean, no errors. lint: not configured in package.json -- skipped as expected. test: npm test full suite -- 1658 passed, 2 failed, 14 skipped; the 2 failures are the known pre-existing tests/time-utils.test.ts timezone-dependent failures (IST machine, beads yashr-302), unrelated to this sprint -- treated as green per instructions. ASCII sweep: git diff main...feat/code-intelligence-abstraction -- our modified files (src/index.ts, skills/pm/doer-reviewer-loop.md, skills/pm/tpl-planner.md, progress.json) contain zero non-ASCII bytes; broader diff has pre-existing non-ASCII from main branch (unrelated to this sprint). gitnexus analyze: npx gitnexus analyze succeeded (non-fatal step) -- incremental update (changed=5 added=0 deleted=0), 4051 nodes / 10976 edges / 214 clusters / 300 flows, 14.3s. No AGENTS.md/CLAUDE.md modifications needed (not touched locally). Pushed feat/code-intelligence-abstraction to origin. No PR opened; never pushed to main."
-    }
+    { "id": "T1.1", "phase": 1, "title": "SPIKE: gitnexus MCP child tool surface investigation", "model": "claude-opus-4-8", "type": "spike", "status": "pending", "bead": "yashr-8m0.1", "commit": null, "notes": "" },
+    { "id": "T1.2", "phase": 1, "title": "SPIKE: embeddings population investigation", "model": "claude-sonnet-4-6", "type": "spike", "status": "pending", "bead": "yashr-8m0.2", "commit": null, "notes": "" },
+    { "id": "T1.3", "phase": 1, "title": "P4b: kb_session_prime graph-neighbor expansion", "model": "claude-opus-4-8", "type": "work", "status": "pending", "bead": "yashr-8m0.3", "commit": null, "notes": "" },
+    { "id": "T1.4", "phase": 1, "title": "VERIFY Phase 1", "model": null, "type": "verify", "status": "pending", "bead": "yashr-8m0.4", "commit": null, "notes": "" },
+    { "id": "T2.1", "phase": 2, "title": "code_map tool (communities)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.5", "commit": null, "notes": "" },
+    { "id": "T2.2", "phase": 2, "title": "code_flow tool (process flows)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.6", "commit": null, "notes": "" },
+    { "id": "T2.3", "phase": 2, "title": "Embeddings outcome implementation", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.7", "commit": null, "notes": "" },
+    { "id": "T2.4", "phase": 2, "title": "VERIFY Phase 2", "model": null, "type": "verify", "status": "pending", "bead": "yashr-8m0.8", "commit": null, "notes": "" },
+    { "id": "T3.1", "phase": 3, "title": "Auto-reindex module: state, decision fn, spawn", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.9", "commit": null, "notes": "" },
+    { "id": "T3.2", "phase": 3, "title": "Wire auto-reindex into freshness path + suffix", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.10", "commit": null, "notes": "" },
+    { "id": "T3.3", "phase": 3, "title": "P4a: code_context inlines KB entries", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.11", "commit": null, "notes": "" },
+    { "id": "T3.4", "phase": 3, "title": "VERIFY Phase 3", "model": null, "type": "verify", "status": "pending", "bead": "yashr-8m0.12", "commit": null, "notes": "" },
+    { "id": "T4.1", "phase": 4, "title": "Telemetry recorder: append, rotation, handler wiring", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.13", "commit": null, "notes": "" },
+    { "id": "T4.2", "phase": 4, "title": "fleet_status: top symbols (30d)", "model": "claude-haiku-4-5", "type": "work", "status": "pending", "bead": "yashr-8m0.14", "commit": null, "notes": "" },
+    { "id": "T4.3", "phase": 4, "title": "isTestPath pure function", "model": "claude-haiku-4-5", "type": "work", "status": "pending", "bead": "yashr-8m0.15", "commit": null, "notes": "" },
+    { "id": "T4.4", "phase": 4, "title": "code_tests tool (test-to-symbol mapping)", "model": "claude-sonnet-4-6", "type": "work", "status": "pending", "bead": "yashr-8m0.16", "commit": null, "notes": "" },
+    { "id": "T4.5", "phase": 4, "title": "VERIFY Phase 4 (final)", "model": null, "type": "verify", "status": "pending", "bead": "yashr-8m0.17", "commit": null, "notes": "" }
   ],
   "dispatches": [
-    {
-      "seq": 1,
-      "role": "planner",
-      "model": "claude-fable-5",
-      "phase": 0,
-      "tasks": [],
-      "tokens": 71001,
-      "toolUses": 23,
-      "ms": 285793
-    },
-    {
-      "seq": 2,
-      "role": "plan-reviewer",
-      "model": "claude-fable-5",
-      "phase": 0,
-      "tasks": [],
-      "tokens": 64369,
-      "toolUses": 19,
-      "ms": 253273
-    },
-    {
-      "seq": 3,
-      "role": "planner",
-      "model": "claude-fable-5",
-      "phase": 0,
-      "tasks": [],
-      "tokens": null,
-      "toolUses": null,
-      "ms": null
-    },
-    {
-      "seq": 4,
-      "role": "plan-reviewer",
-      "model": "claude-fable-5",
-      "phase": 0,
-      "tasks": [],
-      "tokens": null,
-      "toolUses": null,
-      "ms": null
-    }
+    { "seq": 1, "role": "planner", "model": "claude-fable-5", "phase": 0, "tasks": [], "tokens": 104756, "toolUses": 36, "ms": 441607 },
+    { "seq": 2, "role": "plan-reviewer", "model": "claude-fable-5", "phase": 0, "tasks": [], "tokens": 122194, "toolUses": 22, "ms": 339932 }
   ]
 }
