@@ -1,4 +1,11 @@
-export type ContentType = 'context-cache' | 'learning' | 'knowledge' | 'runbook';
+// D6 (T3.1): 'user-directive' is the highest-trust entry type -- a standing
+// instruction/correction the user gave during a sprint. It is captured at
+// confidence='CONFIRMED' (the SOLE exemption from the D1 clamp, stamped by the
+// kb-capture tool layer), is NEVER auto-decayed, and can only be superseded by
+// another user-directive. Retrieval needs NO special ranking code: because it
+// stores confidence='CONFIRMED', every existing confidence-aware ranking path
+// treats it as CONFIRMED-equivalent automatically (D6 semantic 4).
+export type ContentType = 'context-cache' | 'learning' | 'knowledge' | 'runbook' | 'user-directive';
 
 export type Confidence = 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED';
 

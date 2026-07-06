@@ -137,6 +137,19 @@ export function makeAudnDecision(
       };
     }
 
+    // D6 (T3.1) user-directive supersede guard (kept here in the pure decision
+    // function so it is directly unit-testable): a user-directive may ONLY be
+    // superseded/updated by ANOTHER user-directive -- an agent capture of any
+    // other type can NEVER retire a user directive. When the candidate is a
+    // user-directive and the incoming entry is not, the update/supersede path is
+    // FORBIDDEN: we `continue` past the dedup/update path, so this candidate
+    // degrades to 'flagged' if a contradiction signal was present (handled
+    // above) or falls through to 'add'. When BOTH sides are user-directives the
+    // guard does not trip and normal same-type supersede applies (a newer user
+    // directive supersedes the older one). This is evaluated before the general
+    // same-type gate so the user-directive rule is the explicit reason.
+    if (candidate.type === 'user-directive' && input.type !== 'user-directive') continue;
+
     // DEDUP / UPDATE path: same-type refinements only, symbol AND file overlap.
     if (candidate.type !== input.type) continue;
     const fileMatch = filesOverlap(input.source_files ?? [], candidate.source_files);

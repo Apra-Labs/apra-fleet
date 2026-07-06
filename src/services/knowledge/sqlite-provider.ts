@@ -388,10 +388,17 @@ export class SqliteProvider implements MemoryProvider {
 
   private decayConceptEntries(db: Database.Database, days: number): void {
     const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
+    // D6 (T3.1): a user-directive is NEVER auto-decayed. This `type !=
+    // 'user-directive'` clause is defensive (belt-and-braces): decay already
+    // only touches confidence='INFERRED' rows, and a user-directive is always
+    // stored at confidence='CONFIRMED', so it can never match the WHERE today.
+    // The explicit type guard keeps the invariant true even if the confidence
+    // predicate is ever loosened.
     db.prepare(`
       UPDATE entries
       SET confidence = 'UNVERIFIED'
       WHERE confidence = 'INFERRED'
+        AND type != 'user-directive'
         AND superseded_at IS NULL
         AND (source_files = '[]' OR source_files IS NULL OR source_files = '')
         AND (last_accessed IS NULL OR last_accessed < ?)

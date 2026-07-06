@@ -20,8 +20,8 @@ function validateAuthor(role: string | undefined): Author | 'unknown' {
 }
 
 export const kbCaptureSchema = z.object({
-  type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook'])
-    .describe('Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures'),
+  type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'])
+    .describe('Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures, user-directive for a standing user instruction/correction (highest trust: stored CONFIRMED, exempt from the clamp)'),
   title: z.string().min(1).describe('Short description (max ~80 chars)'),
   summary: z.string().min(1).describe('2-4 sentence overview'),
   content: z.string().min(1).describe('Full detail (will be truncated at 4000 chars)'),
@@ -71,29 +71,36 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
   // misled. Existing direct-CONFIRMED rows are historical data and are NOT
   // migrated -- enforcement applies only to new captures from this point on.
   //
-  // D6 forward-compat exemption: entry type 'user-directive' is authoritative on
-  // capture and bypasses the clamp. That type is not part of the ContentType
-  // union yet, so compare the raw string here.
-  // TODO(T3.1): replace this raw-string check with the typed 'user-directive'
-  // ContentType member once it lands, and stamp author/source accordingly.
-  const isUserDirective = (input.type as string) === 'user-directive';
+  // D6 (T3.1): entry type 'user-directive' is authoritative on capture and is
+  // the SOLE exemption from the D1 clamp. Now that 'user-directive' is a real
+  // ContentType member, the earlier T1.1 forward-compat raw-string guard is
+  // replaced with this typed-union check. A user-directive is stamped
+  // confidence='CONFIRMED' directly (highest trust tier) regardless of the
+  // caller's confidence hint -- it does not climb the promote ladder. Every
+  // other type is clamped: an incoming CONFIRMED is downgraded to INFERRED, made
+  // visible via confidence_clamped + a bracketed content note (D6 semantic 4:
+  // storing CONFIRMED is all that is needed for CONFIRMED-equivalent retrieval
+  // ranking -- no extra ranking code).
+  const isUserDirective = input.type === 'user-directive';
   const requestedConfidence = input.confidence ?? 'INFERRED';
   let confidence = requestedConfidence;
   let content = input.content;
   let confidence_clamped = false;
-  if (requestedConfidence === 'CONFIRMED' && !isUserDirective) {
+  if (isUserDirective) {
+    confidence = 'CONFIRMED';
+  } else if (requestedConfidence === 'CONFIRMED') {
     confidence = 'INFERRED';
     confidence_clamped = true;
     content = content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]';
   }
 
-  // D5 (T2.3): provenance is stamped by this handler, never accepted as a
-  // free string from the caller. author is the validated role hint (Author |
-  // 'unknown'); source is derived from the validated role/type -- 'review'
-  // for a reviewer capture, 'user-directive' for the D6 exemption (T3.1
-  // wires the ContentType member; the raw-string check above already
-  // detects it), else 'session'.
-  const author = validateAuthor(input.role);
+  // D5 (T2.3) + D6 (T3.1): provenance is stamped by this handler, never
+  // accepted as a free string from the caller. A user-directive is stamped
+  // author='user' and source='user-directive' (the user is the authority, not
+  // the invoking agent's role hint). Otherwise author is the validated role
+  // hint (Author | 'unknown') and source is derived -- 'review' for a reviewer
+  // capture, else 'session'.
+  const author: Author | 'unknown' = isUserDirective ? 'user' : validateAuthor(input.role);
   const source: CaptureSource = isUserDirective
     ? 'user-directive'
     : author === 'reviewer'

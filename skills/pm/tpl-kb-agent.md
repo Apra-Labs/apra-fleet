@@ -100,9 +100,19 @@ When in doubt, capture at INFERRED. CONFIRMED is a strong signal reached only vi
 kb_promote, and only when the reviewer explicitly approved the behavior the entry
 describes.
 
-Note (D6, lands in Phase 3): a future `user-directive` entry type -- a standing
-instruction the user gave during the sprint -- is the sole exception, captured at
-CONFIRMED directly. It is not available yet; do not use it until it ships.
+### User directives (D6): the sole CONFIRMED-on-capture exception
+
+The `user-directive` entry type is the one exception to the capture-at-INFERRED
+rule. Capture one with `kb_capture({ type: 'user-directive', ... })`: the tool
+layer stamps author='user', source='user-directive' and confidence='CONFIRMED'
+directly (no kb_promote step). A user-directive is never auto-decayed and can
+only be superseded by another user-directive -- an ordinary agent capture that
+contradicts it gets flagged, never supersedes it.
+
+Record a user-directive WHEN the user gives a standing instruction or correction
+during a sprint -- e.g. "always do X", "never do Y", "we decided Z". Do NOT use
+it for ordinary findings, verified behaviors, or your own inferences; those
+follow the capture-at-INFERRED / promote ladder above.
 
 ---
 
