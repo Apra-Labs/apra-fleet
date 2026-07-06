@@ -20,6 +20,15 @@ Read every entry in `top_entries`. Let prior sprint knowledge inform your planni
 
 If the KB is empty (first sprint on this repo), skip and proceed normally.
 
+## Code Intelligence (use while planning)
+
+For symbol lookups, call chain tracing, and impact analysis while planning,
+use the fleet code intelligence tools (code_graph, code_impact, code_query,
+code_context) -- e.g. code_query to locate an implementation you are about
+to write tasks against, code_context to see its callers and flows. Never
+use Glob/Grep or file reads for structural questions -- the answer is
+pre-indexed.
+
 ## Planning Model
 
 You are producing PLAN.md for a sprint. Read requirements.md and design.md (if present).
