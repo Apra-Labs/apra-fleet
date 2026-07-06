@@ -6,7 +6,7 @@
   "worktree": "C:\\ws_yash\\Repos\\apra-fleet-main\\apra-fleet",
   "transport": "remote",
   "epic": "yashr-43h",
-  "lastDispatchedPhase": null,
+  "lastDispatchedPhase": 1,
   "tasks": [
     {
       "id": "T1.1",
@@ -14,10 +14,10 @@
       "title": "Connection resilience for shared GitNexus client (F3.2)",
       "model": "claude-opus-4-8",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.1",
-      "commit": null,
-      "notes": ""
+      "commit": "ec3c81e276accf81bf5f60ad2a7294d50007ca83",
+      "notes": "Cleared rejected connectionPromise for retry; transport+client onclose/onerror reset sharedClient/connectionPromise; all 4 methods route through single guarded callGitNexus helper returning structured offline result (isError) and resetting state. Added 3 F3.2 resilience tests (vi.resetModules + dynamic import). Build clean; code-intelligence suite 10/10 green. Note: 2 pre-existing time-utils failures are timezone-dependent (IST machine), unrelated to this change."
     },
     {
       "id": "T1.2",
