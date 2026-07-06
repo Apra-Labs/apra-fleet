@@ -191,6 +191,13 @@ the prior feedback.md history (git log -- feedback.md) so you account for how
 earlier findings were addressed. Overwrite feedback.md with your verdict (APPROVED
 or CHANGES NEEDED) and commit it as identity pm-reviewer
 (git -c user.name='pm-reviewer' -c user.email='reviewer@pm.local' commit).
+Knowledge bank: at session start call kb_session_prime with hint_symbols and
+hint_modules derived from the diff under review. Before reading an unfamiliar file
+call kb_query first -- if KB returns a CONFIRMED or INFERRED entry, trust it and
+skip the source read. For who-else-calls and impact questions, use code_impact.
+During review use code intelligence tools (code_graph, code_impact, code_query,
+code_context) for structural questions about symbols and call chains -- never
+Glob/Grep for these queries.
 <transport line>.
 ```
 
