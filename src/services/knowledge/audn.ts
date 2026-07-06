@@ -1,10 +1,38 @@
 import type { KBEntry, KBEntryInput, AudnDecision } from './types.js';
 
-export const CONTRADICTION_KEYWORDS = ['was wrong', 'actually', 'correction', 'not true', 'incorrect'];
+export const CONTRADICTION_KEYWORDS = ['was wrong', 'actually', 'correction', 'not true', 'incorrect', 'no longer', 'is fixed', 'now works'];
 
 export function hasContradictionKeywords(content: string): boolean {
   const lower = content.toLowerCase();
   return CONTRADICTION_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// Conservative opposite-polarity antonym pairs. A contradiction is signalled
+// when one side of a symbol-overlapping pair reads as negative-polarity (broken/
+// absent/failing) and the other reads as positive-polarity (works/fixed/exists).
+// Kept deliberately narrow so ordinary refinements (which carry no polarity
+// words) are NOT flagged. Phrases avoid substring collisions between the lists.
+const POLARITY_NEGATIVE = [
+  'does not exist', "doesn't exist", 'does not work', "doesn't work",
+  'is broken', 'broken', 'no longer works', 'not working', 'is missing',
+];
+const POLARITY_POSITIVE = [
+  'now works', 'works now', 'is fixed', 'fixed', 'now exists',
+  'is available', 'resolved',
+];
+
+/**
+ * Light opposite-polarity check between two texts: true when one carries
+ * negative polarity and the other positive polarity. Pure and case-insensitive.
+ */
+export function hasOppositePolarity(a: string, b: string): boolean {
+  const la = a.toLowerCase();
+  const lb = b.toLowerCase();
+  const aNeg = POLARITY_NEGATIVE.some(p => la.includes(p));
+  const aPos = POLARITY_POSITIVE.some(p => la.includes(p));
+  const bNeg = POLARITY_NEGATIVE.some(p => lb.includes(p));
+  const bPos = POLARITY_POSITIVE.some(p => lb.includes(p));
+  return (aNeg && bPos) || (aPos && bNeg);
 }
 
 export function symbolsOverlap(a: string[], b: string[]): boolean {
@@ -34,8 +62,17 @@ export interface AudnResult {
  * Pure AUDN decision logic: given a list of FTS-matched candidates and the
  * incoming entry input, returns the AUDN decision or null if no match.
  *
- * AND-logic: symbol overlap AND file overlap are both required for a merge
- * decision. A single-field match is insufficient.
+ * Two distinct gates (D2):
+ * - CONTRADICTION (flagged): symbol overlap AND a contradiction signal is
+ *   sufficient -- file overlap is NOT required and the candidate may be a
+ *   DIFFERENT entry type. This catches corrections across files/types (e.g. a
+ *   "code_graph is broken" knowledge entry contradicted by a later "code_graph
+ *   now works" entry that touches a different file). A contradiction signal is
+ *   an explicit CONTRADICTION_KEYWORDS hit OR opposite-polarity content/title.
+ * - DEDUP ('none') / UPDATE: same-topic refinement of an existing entry. These
+ *   remain SAME-TYPE only and still require symbol AND file overlap. Because
+ *   findAudnCandidates no longer filters by type (HALF B), the type gate is
+ *   re-imposed here so only the contradiction path is cross-type.
  */
 export function makeAudnDecision(
   input: KBEntryInput,
@@ -44,12 +81,16 @@ export function makeAudnDecision(
 ): AudnResult | null {
   for (const candidate of candidates) {
     const symMatch = symbolsOverlap(input.symbols ?? [], candidate.symbols);
-    const fileMatch = filesOverlap(input.source_files ?? [], candidate.source_files);
+    if (!symMatch) continue;
 
-    // AND-logic: title similarity (via FTS) + symbol overlap + file overlap
-    if (!symMatch || !fileMatch) continue;
-
-    if (hasContradictionKeywords(input.content)) {
+    // CONTRADICTION path: symbol overlap + a contradiction signal, regardless of
+    // file overlap and regardless of type (cross-type discovery via HALF B).
+    const inputText = newContent + ' ' + (input.title ?? '');
+    const candidateText = candidate.content + ' ' + (candidate.title ?? '');
+    const contradictionSignal =
+      hasContradictionKeywords(newContent) ||
+      hasOppositePolarity(inputText, candidateText);
+    if (contradictionSignal) {
       return {
         decision: 'flagged',
         matchedId: candidate.id,
@@ -61,6 +102,11 @@ export function makeAudnDecision(
         },
       };
     }
+
+    // DEDUP / UPDATE path: same-type refinements only, symbol AND file overlap.
+    if (candidate.type !== input.type) continue;
+    const fileMatch = filesOverlap(input.source_files ?? [], candidate.source_files);
+    if (!fileMatch) continue;
 
     if (newContent === candidate.content) {
       return { decision: 'none', matchedId: candidate.id };

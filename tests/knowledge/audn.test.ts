@@ -146,6 +146,125 @@ describe('makeAudnDecision', () => {
   });
 });
 
+// -- T1.4 / D2: contradiction on shared symbols WITHOUT shared file, incl. cross-type --
+
+describe('makeAudnDecision contradiction path (D2, loosened)', () => {
+  it('code_graph broken-vs-fixed shape: same symbols, NO shared file -> flagged (opposite polarity)', () => {
+    // The live code_graph pair. Old logic required file overlap -> would have
+    // returned null ('add'); new logic flags on symbol overlap + polarity signal.
+    const candidate = makeCandidate({
+      type: 'knowledge',
+      title: 'code_graph tool status',
+      symbols: ['GitNexusProvider.graph', 'callGitNexus'],
+      source_files: ['docs/code-intelligence-child-surface.md'],
+      content: 'call_graph tool does not exist / code_graph is broken',
+    });
+    const newContent = 'code_graph now works / fixed via cypher CALLS traversal';
+    const input = makeInput({
+      type: 'knowledge',
+      title: 'code_graph tool status',
+      symbols: ['GitNexusProvider.graph', 'callGitNexus'],
+      source_files: ['src/tools/code-intelligence-gitnexus.ts'],
+      content: newContent,
+    });
+
+    const result = makeAudnDecision(input, [candidate], newContent);
+    expect(result?.decision).toBe('flagged');
+    expect(result?.matchedId).toBe(candidate.id);
+    expect(result?.shouldFlagExisting).toBe(true);
+    expect(result?.newEntryOverrides?.contradiction_of).toBe(candidate.id);
+    expect(result?.newEntryOverrides?.confidence).toBe('UNVERIFIED');
+  });
+
+  it('CROSS-TYPE contradiction (knowledge candidate, learning input), no shared file -> flagged', () => {
+    const candidate = makeCandidate({
+      type: 'knowledge',
+      title: 'code_graph availability',
+      symbols: ['code_graph'],
+      source_files: ['docs/a.md'],
+      content: 'code_graph is broken and does not exist yet',
+    });
+    const newContent = 'code_graph now works, fixed via cypher CALLS traversal';
+    const input = makeInput({
+      type: 'learning',
+      title: 'code_graph availability',
+      symbols: ['code_graph'],
+      source_files: ['src/b.ts'],
+      content: newContent,
+    });
+
+    const result = makeAudnDecision(input, [candidate], newContent);
+    expect(result?.decision).toBe('flagged');
+    expect(result?.newEntryOverrides?.contradiction_of).toBe(candidate.id);
+  });
+
+  it('no false positive: same symbols, no file overlap, no contradiction signal -> null (add)', () => {
+    const candidate = makeCandidate({
+      type: 'knowledge',
+      title: 'code_graph capabilities',
+      symbols: ['code_graph'],
+      source_files: ['src/a.ts'],
+      content: 'code_graph supports caller traversal',
+    });
+    const newContent = 'code_graph also supports callee traversal and flow queries';
+    const input = makeInput({
+      type: 'knowledge',
+      title: 'code_graph capabilities',
+      symbols: ['code_graph'],
+      source_files: ['src/b.ts'],
+      content: newContent,
+    });
+
+    const result = makeAudnDecision(input, [candidate], newContent);
+    expect(result).toBeNull();
+  });
+
+  it('re-imposed type gate: cross-type same symbols+files, no contradiction -> null (no update)', () => {
+    // Since findAudnCandidates is now cross-type, makeAudnDecision must NOT
+    // dedup/update across types. Different type + no contradiction -> null.
+    const candidate = makeCandidate({
+      type: 'knowledge',
+      title: 'X behavior',
+      symbols: ['symX'],
+      source_files: ['src/x.ts'],
+      content: 'old content describing X',
+    });
+    const newContent = 'refined content describing X in more detail';
+    const input = makeInput({
+      type: 'learning',
+      title: 'X behavior',
+      symbols: ['symX'],
+      source_files: ['src/x.ts'],
+      content: newContent,
+    });
+
+    const result = makeAudnDecision(input, [candidate], newContent);
+    expect(result).toBeNull();
+  });
+
+  it('same-type dedup still works after the type gate (regression)', () => {
+    const candidate = makeCandidate({
+      type: 'learning',
+      title: 'X behavior',
+      symbols: ['symX'],
+      source_files: ['src/x.ts'],
+      content: 'old content describing X',
+    });
+    const newContent = 'refined content describing X in more detail';
+    const input = makeInput({
+      type: 'learning',
+      title: 'X behavior',
+      symbols: ['symX'],
+      source_files: ['src/x.ts'],
+      content: newContent,
+    });
+
+    const result = makeAudnDecision(input, [candidate], newContent);
+    expect(result?.decision).toBe('update');
+    expect(result?.shouldSupersede).toBe(true);
+  });
+});
+
 // -- Integration: self-wiring via SqliteProvider --
 
 let provider: SqliteProvider;

@@ -232,15 +232,20 @@ export class SqliteProvider implements MemoryProvider {
     const ftsQuery = makeFtsQuery(input.title);
     if (!ftsQuery) return [];
     try {
+      // D2 HALF B (candidate-discovery fix): candidates are discovered by symbol/
+      // title overlap across ALL entry types -- the same-type restriction was
+      // removed so cross-type contradictions (e.g. a 'knowledge' entry
+      // contradicting a 'learning' entry on shared symbols) are discoverable.
+      // makeAudnDecision re-imposes candidate.type === input.type for the
+      // dedup/update decisions; only the contradiction path stays cross-type.
       const rows = db.prepare(`
         SELECT e.* FROM entries e
         JOIN entries_fts ON entries_fts.rowid = e.rowid
         WHERE entries_fts MATCH ?
           AND e.superseded_at IS NULL
-          AND e.type = ?
         ORDER BY rank
         LIMIT 10
-      `).all(ftsQuery, input.type) as Record<string, unknown>[];
+      `).all(ftsQuery) as Record<string, unknown>[];
       return rows.map(r => this.rowToEntry(r));
     } catch {
       return [];
