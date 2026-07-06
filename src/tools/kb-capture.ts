@@ -2,6 +2,22 @@ import { z } from 'zod';
 import { computeFileHash } from '../services/knowledge/kb-service.js';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import type { Author, CaptureSource } from '../services/knowledge/types.js';
+
+// D5 (T2.3): the full Author enum. Kept as a plain array (not a zod enum on
+// the schema itself) so an invalid role hint degrades to 'unknown' at the
+// handler rather than rejecting the whole capture call at the schema layer.
+const AUTHOR_VALUES: readonly Author[] = ['doer', 'reviewer', 'planner', 'plan-reviewer', 'kb-agent', 'harvest', 'pm', 'user'];
+
+// D5 (T2.3): validate the caller's role hint against the Author enum. Any
+// value outside the enum -- including an absent hint -- stamps the literal
+// 'unknown'. Never a free string is persisted as author.
+function validateAuthor(role: string | undefined): Author | 'unknown' {
+  if (role && (AUTHOR_VALUES as readonly string[]).includes(role)) {
+    return role as Author;
+  }
+  return 'unknown';
+}
 
 export const kbCaptureSchema = z.object({
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook'])
@@ -14,11 +30,10 @@ export const kbCaptureSchema = z.object({
   module: z.string().optional().describe('Module name'),
   tags: z.array(z.string()).optional().describe('Labels for filtering'),
   source_file: z.string().optional().describe('File to hash (required when type=context-cache)'),
-  source: z.enum(['doer', 'reviewer', 'user_interrupt', 'kb_agent_harvest']).optional()
-    .describe('Who captured this (default: doer)'),
+  role: z.string().optional()
+    .describe('Role hint for provenance: doer/reviewer/planner/plan-reviewer/kb-agent/harvest/pm/user. Validated server-side against the Author enum; invalid or absent stamps "unknown". source is derived from the validated role/type and is never accepted from the caller.'),
   confidence: z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED']).optional()
     .describe('Confidence level (default: INFERRED)'),
-  author: z.string().optional().describe('Agent or user that captured this'),
   scope: z.enum(['project', 'global']).optional()
     .describe('Scope: project (default) or global for team-wide conventions'),
 });
@@ -72,6 +87,19 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     content = content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]';
   }
 
+  // D5 (T2.3): provenance is stamped by this handler, never accepted as a
+  // free string from the caller. author is the validated role hint (Author |
+  // 'unknown'); source is derived from the validated role/type -- 'review'
+  // for a reviewer capture, 'user-directive' for the D6 exemption (T3.1
+  // wires the ContentType member; the raw-string check above already
+  // detects it), else 'session'.
+  const author = validateAuthor(input.role);
+  const source: CaptureSource = isUserDirective
+    ? 'user-directive'
+    : author === 'reviewer'
+      ? 'review'
+      : 'session';
+
   const { id, audn_decision } = await target.capture({
     type: input.type,
     title: input.title,
@@ -84,8 +112,8 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     content_hash,
     content_hash_type,
     flagged_for_review: false,
-    author: input.author ?? '',
-    source: input.source ?? 'doer',
+    author,
+    source,
     confidence,
     scope: input.scope ?? 'project',
   });

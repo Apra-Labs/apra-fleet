@@ -95,7 +95,10 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
   let entries_updated = 0;
   let entries_skipped = 0;
 
-  const source: CaptureSource = 'kb_agent_harvest';
+  // D5 + revised D7 (T2.3): harvested entries are UNVERIFIED, regex-extracted,
+  // low-trust captures from the execute_prompt autowire -- distinct provenance
+  // from real KB-Agent captures (author='kb-agent', source='session'/'review').
+  const source: CaptureSource = 'harvest';
 
   for (const learning of learnings) {
     const entryInput: KBEntryInput = {
@@ -109,7 +112,7 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
       content_hash: '',
       content_hash_type: 'sha256',
       flagged_for_review: false,
-      author: 'kb-harvest',
+      author: 'harvest',
       source,
       confidence: 'UNVERIFIED',
     };

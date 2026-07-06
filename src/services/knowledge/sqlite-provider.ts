@@ -720,13 +720,20 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     const now = new Date().toISOString();
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook gotcha: backtick-n escapes inside JS template literals false-
+    // positive on the hook's non-ASCII scan.
     const promotionNote = reason
-      ? `\n[Promoted: ${reason} -- ${entry.author || 'unknown'}]`
-      : `\n[Promoted -- ${entry.author || 'unknown'}]`;
+      ? '\n[Promoted: ' + reason + ' -- ' + (entry.author || 'unknown') + ']'
+      : '\n[Promoted -- ' + (entry.author || 'unknown') + ']';
     const newContent = entry.content + promotionNote;
 
-    db.prepare('UPDATE entries SET confidence = ?, promoted_at = ?, content = ? WHERE id = ?')
-      .run(confidence_after, now, newContent, id);
+    // D5 (T2.3): kb_promote is a tool-layer provenance event -- stamp
+    // source='promotion' on the promoted row. This is a deliberate D5
+    // choice: the row's provenance reflects the promotion mechanism rather
+    // than preserving the original capture source.
+    db.prepare('UPDATE entries SET confidence = ?, promoted_at = ?, content = ?, source = ? WHERE id = ?')
+      .run(confidence_after, now, newContent, 'promotion', id);
 
     return { id, confidence_before, confidence_after };
   }

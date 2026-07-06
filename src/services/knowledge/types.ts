@@ -2,7 +2,15 @@ export type ContentType = 'context-cache' | 'learning' | 'knowledge' | 'runbook'
 
 export type Confidence = 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED';
 
-export type CaptureSource = 'doer' | 'reviewer' | 'user_interrupt' | 'kb_agent_harvest';
+// D5 (T2.3): canonical provenance enums. These are stamped ONLY by the tool
+// layer (kb-capture / kb-promote handlers) -- callers cannot pass a free
+// string into either field via the tool schemas (the zod schemas were
+// tightened accordingly). 'harvest' is ADDED to Author beyond D5's literal
+// list per the revised D7: harvest-sourced entries need a distinct author
+// from real KB-Agent captures (feedback.md LOW finding 6). This deviation
+// from D5's literal enum is recorded in progress.json notes for T2.3.
+export type Author = 'doer' | 'reviewer' | 'planner' | 'plan-reviewer' | 'kb-agent' | 'harvest' | 'pm' | 'user';
+export type CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'user-directive' | 'unknown';
 
 export type AudnDecision = 'add' | 'update' | 'flagged' | 'none';
 
@@ -26,8 +34,14 @@ export interface KBEntry {
   stale: boolean;
   flagged_for_review: boolean;
   contradiction_of?: string;
+  // Tolerant reads (D5, no migration): existing rows carry legacy free-string
+  // author values and legacy source values ('doer', 'reviewer',
+  // 'user_interrupt', 'kb_agent_harvest'). New WRITES from the tool layer are
+  // enum-only (Author | 'unknown' for author, CaptureSource for source), but
+  // the read-side type stays loose so rowToEntry never lies about historical
+  // data that is intentionally NOT migrated.
   author: string;
-  source: CaptureSource;
+  source: CaptureSource | string;
   confidence: Confidence;
   scope?: 'project' | 'global';
   created_at: string;
