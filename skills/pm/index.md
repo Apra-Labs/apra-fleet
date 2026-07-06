@@ -11,7 +11,7 @@ code_graph, code_impact, code_query, and code_context tools.
    the repo path.
 3. Run via `execute_command` (wrap in background Agent per fleet rules):
    ```
-   npx gitnexus analyze
+   npx gitnexus analyze --embeddings
    ```
    - `run_from`: project repo root
    - `timeout_s`: 300 (indexing large repos can take a minute)
@@ -20,6 +20,23 @@ code_graph, code_impact, code_query, and code_context tools.
    via npx.
 5. Non-fatal: if the command fails (e.g. no package.json, unsupported language),
    log the error and tell the user -- do not block the sprint.
+
+## The `--embeddings` flag
+
+- Enables semantic embedding generation using a LOCAL ONNX CPU model
+  (`Snowflake/snowflake-arctic-embed-xs`, 384-dim) bundled with gitnexus --
+  no API key, no external service, no config needed.
+- One-time cost: the first `--embeddings` run on a machine downloads the
+  model (~87 MB) from HuggingFace and caches it at `~/.cache/huggingface`;
+  every run after that is offline.
+- Embeddings are OFF by default and PRESERVED across a plain `analyze`
+  (only `--drop-embeddings` removes them), so passing `--embeddings` here is
+  additive and safe to run repeatedly.
+- win32 caveat: on Windows, LadybugDB's VECTOR index is unavailable, so
+  semantic search falls back to an exact scan (capped at 10000 chunks) --
+  this still works, it is just brute-force rather than an ANN index. Not a
+  blocker; see `docs/code-intelligence-embeddings.md` for the full
+  investigation.
 
 ## When to run
 

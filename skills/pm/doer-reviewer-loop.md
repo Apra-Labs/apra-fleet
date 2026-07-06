@@ -164,9 +164,10 @@ Execute ONLY task(s) <task scope> in phase <N>, one at a time: implement, run fa
 tests after each, commit, update progress.json. Make every commit as identity
 pm-doer (git -c user.name='pm-doer' -c user.email='doer@pm.local'
 commit). If your scope reaches the phase <N>
-VERIFY checkpoint, run it -- build, linter, full test suite, then npx gitnexus analyze
-(non-fatal; if it fails, record in progress.json and continue) -- record results in
-progress.json, then stop. Otherwise stop after the last task in <task scope>.
+VERIFY checkpoint, run it -- build, linter, full test suite, then npx gitnexus
+analyze --embeddings (non-fatal; if it fails, record in progress.json and
+continue) -- record results in progress.json, then stop. Otherwise stop after
+the last task in <task scope>.
 <transport line>. Do not start anything beyond <task scope>. The worktree and branch
 already exist -- do not create branches.
 [If fixing review findings:] feedback.md says CHANGES NEEDED. Address every HIGH

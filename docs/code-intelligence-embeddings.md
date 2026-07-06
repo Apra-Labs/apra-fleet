@@ -126,6 +126,25 @@ exact-scan platform caveat here. No API key, no config field, no external
 dependency is required for the default local path. (The env-var remote path
 above can be a documented opt-in but is out of scope for the LOCAL wiring.)
 
+## T2.3 wiring done
+
+- `skills/pm/index.md` step 3 now runs `npx gitnexus analyze --embeddings`
+  (was `npx gitnexus analyze`), and a new "The `--embeddings` flag" section
+  documents the local-ONNX classification, the one-time ~87 MB HuggingFace
+  download, the OFF-by-default/preserved-unless-`--drop-embeddings` behavior,
+  and the win32 exact-scan caveat from this doc.
+- `skills/pm/doer-reviewer-loop.md`'s `doer` dispatch template VERIFY step
+  (which every PM-dispatched doer agent's checkpoint literally runs) now
+  invokes `npx gitnexus analyze --embeddings` instead of the bare command, so
+  embeddings get populated/refreshed at every VERIFY re-index, not just at
+  initial `/pm init`.
+- No `src/` code path builds the `gitnexus analyze` command line -- it is only
+  ever invoked by PM-dispatched agents via `execute_command` per the skill
+  docs above (the fleet's own gitnexus MCP child process is spawned separately
+  as `npx -y gitnexus mcp`, unaffected by this flag). Per the T2.3 decision
+  rule (LOCAL branch), no config field, no code change, and no API key were
+  needed -- this task was docs + flag plumbing only, as anticipated.
+
 ## Cost summary
 
 | Item | Cost |
