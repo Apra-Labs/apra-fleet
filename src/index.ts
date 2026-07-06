@@ -45,7 +45,7 @@ Usage:
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
-  apra-fleet join <token> [--hub-url <url>]  Exchange a hub enrollment token for a machine JWT (apra-fleet-us9.5/fnz.4)
+  apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard (apra-fleet-6bf)
   apra-fleet spoke <origin-member-id>        Run as an outbound hub-connected spoke (apra-fleet-jfn); requires apra-fleet join first
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
