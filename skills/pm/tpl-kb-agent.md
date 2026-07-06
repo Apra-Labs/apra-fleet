@@ -28,7 +28,9 @@ There are four types of entry. Be deliberate -- quality over quantity.
 
 ### knowledge (durable codebase facts)
 Non-obvious facts about how this codebase works. Valid across sprints and tasks.
-Capture these at INFERRED (or CONFIRMED if reviewer approved the code that demonstrates it).
+Capture these at INFERRED. If the reviewer approved the code that demonstrates the
+fact, capture at INFERRED and then call kb_promote to mint CONFIRMED -- kb_capture
+cannot set CONFIRMED (see the Confidence Decision section below).
 
 Good examples:
 - "SqliteProvider.init() must be called before any query -- the constructor does not auto-init"
@@ -82,15 +84,25 @@ If yes, capture as knowledge instead. If only useful for the next sprint, captur
 
 ## Confidence Decision
 
-| Condition | Confidence to assign |
-|---|---|
-| Reviewer verdict: APPROVED, entry describes approved code behavior | CONFIRMED |
-| KB agent verified by reading source file | INFERRED |
-| Extracted from session transcript only, not verified in source | UNVERIFIED |
-| Reviewer verdict: CHANGES NEEDED | INFERRED at most (code may be wrong, insights may still be valid) |
+kb_capture caps confidence at INFERRED. Any CONFIRMED you pass to kb_capture is
+downgraded to INFERRED server-side (the result carries confidence_clamped:true).
+CONFIRMED is minted ONLY by kb_promote, after verification. So the decision below
+is: what do you CAPTURE at, and when do you then PROMOTE.
 
-When in doubt, use INFERRED. CONFIRMED is a strong signal -- only set it when the
-reviewer explicitly approved the behavior the entry describes.
+| Condition | Capture at | Then |
+|---|---|---|
+| Reviewer verdict: APPROVED, entry describes approved code behavior | INFERRED | kb_promote to CONFIRMED |
+| KB agent verified by reading source file | INFERRED | leave (promote later if reviewer confirms) |
+| Extracted from session transcript only, not verified in source | UNVERIFIED | leave |
+| Reviewer verdict: CHANGES NEEDED | INFERRED at most | do NOT promote (code may be wrong) |
+
+When in doubt, capture at INFERRED. CONFIRMED is a strong signal reached only via
+kb_promote, and only when the reviewer explicitly approved the behavior the entry
+describes.
+
+Note (D6, lands in Phase 3): a future `user-directive` entry type -- a standing
+instruction the user gave during the sprint -- is the sole exception, captured at
+CONFIRMED directly. It is not available yet; do not use it until it ships.
 
 ---
 
@@ -152,7 +164,8 @@ For each entry you decided to capture:
    - Content is wrong or outdated: call `kb_capture` with corrected content. AUDN will update the old one.
 3. If no match: call `kb_capture` with:
    - `type`: knowledge / runbook / context-cache / learning
-   - `confidence`: per the confidence decision table above
+   - `confidence`: per the confidence decision table above (capped at INFERRED;
+     if the entry warrants CONFIRMED, capture at INFERRED then kb_promote in step 6)
    - `source_files`: the actual file paths (from diff or file read)
    - `symbols`: the actual function/class names
    - `source`: 'reviewer' if entry came from reviewer verdict, 'doer' if from session output
@@ -204,5 +217,5 @@ Symbols worth indexing in a future sprint (gap): [list]
 - NEVER commit files. NEVER push to git. No git operations.
 - NEVER modify PLAN.md, progress.json, or feedback.md.
 - NEVER write, suggest, or evaluate code -- that is not your role.
-- NEVER set CONFIRMED unless reviewer verdict was APPROVED and the entry describes approved behavior.
+- CONFIRMED is reached ONLY via kb_promote (kb_capture caps at INFERRED). Promote to CONFIRMED only when reviewer verdict was APPROVED and the entry describes approved behavior.
 - If uncertain between INFERRED and UNVERIFIED: use UNVERIFIED. Promotion is cheap; demotion requires the decay mechanism.
