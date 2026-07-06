@@ -165,7 +165,7 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
-  const { getProvider, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema } = await import('./tools/code-intelligence.js');
+  const { getProvider, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema } = await import('./tools/code-intelligence.js');
   const { kbCaptureSchema, kbCapture } = await import('./tools/kb-capture.js');
   const { kbInvalidateSchema, kbInvalidate } = await import('./tools/kb-invalidate.js');
   const { kbContextSchema, kbContext } = await import('./tools/kb-context.js');
@@ -326,6 +326,10 @@ async function startServer() {
   server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapTool('code_map', async (input) => {
     const provider = await getProvider();
     return JSON.stringify(await provider.map(input));
+  }));
+  server.tool('code_flow', 'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.', codeFlowSchema.shape, wrapTool('code_flow', async (input) => {
+    const provider = await getProvider();
+    return JSON.stringify(await provider.flow(input));
   }));
 
   // --- Knowledge Bank ---

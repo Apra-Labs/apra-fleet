@@ -10,6 +10,7 @@ export interface CodeIntelligenceProvider {
   query(params: Record<string, unknown>): Promise<unknown>;
   context(params: Record<string, unknown>): Promise<unknown>;
   map(params: Record<string, unknown>): Promise<unknown>;
+  flow(params: Record<string, unknown>): Promise<unknown>;
 }
 
 const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
@@ -43,6 +44,13 @@ export const codeContextSchema = z.object({
 export const codeMapSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
   top: z.number().int().positive().optional().describe('Maximum number of communities to return (default 20).'),
+});
+
+export const codeFlowSchema = z.object({
+  from: z.string().optional().describe('Entry-point symbol or label fragment the flow must start from'),
+  to: z.string().optional().describe('Terminal symbol or label fragment the flow must end at'),
+  name: z.string().optional().describe('Process name or label fragment to match, e.g. "RemoveMember"'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
 export async function getProvider(): Promise<CodeIntelligenceProvider> {

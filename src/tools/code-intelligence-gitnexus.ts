@@ -153,20 +153,19 @@ async function callGitNexus(name: string, params: Record<string, unknown>): Prom
 }
 
 // ---------------------------------------------------------------------------
-// Rung-2 compose support (T2.1 code_map; reused by T2.2 code_flow): gitnexus
-// 1.6.7 has no direct communities/map tool (see
-// docs/code-intelligence-child-surface.md), so map() composes over the
-// generic `cypher` tool, which returns `{ markdown, row_count }` -- a
-// Markdown table, not JSON rows -- so the response must be parsed here rather
-// than passed through untouched like graph/impact/query/context above. Do NOT
-// parse ladybugdb directly; always route through callGitNexus('cypher', ...).
+// Rung-2 compose support (T2.1 code_map, T2.2 code_flow): gitnexus 1.6.7 has
+// no direct communities/map or flows/processes tool (see
+// docs/code-intelligence-child-surface.md). Both compose over the generic
+// `cypher` tool, which returns `{ markdown, row_count }` -- a Markdown table,
+// not JSON rows -- so the response must be parsed here rather than passed
+// through untouched like graph/impact/query/context above. Do NOT parse
+// ladybugdb directly; always route through callGitNexus('cypher', ...).
 // ---------------------------------------------------------------------------
 
 export type MarkdownTableRow = Record<string, string>;
 
-// Small, pure, exported so both T2.1 (code_map) and T2.2 (code_flow, added
-// later) can reuse it and it can be unit tested directly without mocking the
-// MCP client.
+// Small, pure, exported so both T2.1 (code_map) and T2.2 (code_flow) can reuse
+// it and it can be unit tested directly without mocking the MCP client.
 export function parseMarkdownTable(markdown: string): MarkdownTableRow[] {
   if (typeof markdown !== 'string' || markdown.length === 0) return [];
 
@@ -259,6 +258,50 @@ function mapCommunitiesResult(result: unknown): unknown {
   return textResult({ communities, row_count: payload.row_count });
 }
 
+// Bounds the number of matched processes for which a second (steps) query is
+// issued, so a broad/unfiltered flow() call cannot fan out unbounded cypher
+// calls against the child.
+const MAX_FLOW_STEP_LOOKUPS = 5;
+
+const FLOW_STEP_QUERY =
+  'MATCH (s)-[r:CodeRelation {type: "STEP_IN_PROCESS"}]->(p:Process) WHERE p.heuristicLabel = $label ' +
+  'RETURN s.name AS step, s.filePath AS filePath, r.step AS stepOrder ORDER BY r.step';
+
+async function mapFlowResult(listResult: unknown, repo: string | undefined): Promise<unknown> {
+  if (isErrorResult(listResult)) return listResult;
+  const payload = extractCypherPayload(listResult);
+  if (!payload) return listResult;
+
+  const rows = parseMarkdownTable(payload.markdown);
+  const processes: Array<{ label: string; processType: string; stepCount: number; steps: Array<{ step: string; filePath: string; order: number }> }> = [];
+
+  for (const row of rows.slice(0, MAX_FLOW_STEP_LOOKUPS)) {
+    const rawLabel = row.label ?? '';
+    const stepsResult = await callGitNexus('cypher', {
+      query: FLOW_STEP_QUERY,
+      params: { label: rawLabel },
+      ...(repo ? { repo } : {}),
+    });
+    const stepsPayload = extractCypherPayload(stepsResult);
+    const steps = stepsPayload
+      ? parseMarkdownTable(stepsPayload.markdown).map((s) => ({
+          step: asciiSanitizeLabel(s.step ?? ''),
+          filePath: s.filePath ?? '',
+          order: Number(s.stepOrder) || 0,
+        }))
+      : [];
+
+    processes.push({
+      label: asciiSanitizeLabel(rawLabel),
+      processType: row.processType ?? '',
+      stepCount: Number(row.stepCount) || 0,
+      steps,
+    });
+  }
+
+  return textResult({ processes, row_count: payload.row_count });
+}
+
 export class GitNexusProvider implements CodeIntelligenceProvider {
   async graph(params: Record<string, unknown>): Promise<unknown> {
     return callGitNexus('call_graph', params);
@@ -290,5 +333,40 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
       ...(typeof repo === 'string' ? { repo } : {}),
     });
     return mapCommunitiesResult(result);
+  }
+
+  // T2.2: process flows via Process/STEP_IN_PROCESS nodes (rung 2 -- compose
+  // over cypher; no direct flows/processes tool, and code_query's `processes`
+  // array is free-text only, not from/to/name filterable). See Decisions table
+  // in docs/code-intelligence-child-surface.md. from/to are matched against the
+  // "Entry -> Terminal" heuristicLabel text (CONTAINS) since there is no
+  // structured endpoint field to filter on directly.
+  async flow(params: Record<string, unknown>): Promise<unknown> {
+    const repo = typeof params.repo === 'string' ? params.repo : undefined;
+    const conditions: string[] = [];
+    const cypherParams: Record<string, unknown> = {};
+
+    if (typeof params.name === 'string' && params.name.length > 0) {
+      conditions.push('p.heuristicLabel CONTAINS $name');
+      cypherParams.name = params.name;
+    }
+    if (typeof params.from === 'string' && params.from.length > 0) {
+      conditions.push('p.heuristicLabel CONTAINS $from');
+      cypherParams.from = params.from;
+    }
+    if (typeof params.to === 'string' && params.to.length > 0) {
+      conditions.push('p.heuristicLabel CONTAINS $to');
+      cypherParams.to = params.to;
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')} ` : '';
+    const listResult = await callGitNexus('cypher', {
+      query:
+        `MATCH (p:Process) ${whereClause}RETURN p.heuristicLabel AS label, ` +
+        'p.processType AS processType, p.stepCount AS stepCount ORDER BY stepCount DESC LIMIT 20',
+      params: cypherParams,
+      ...(repo ? { repo } : {}),
+    });
+    return mapFlowResult(listResult, repo);
   }
 }

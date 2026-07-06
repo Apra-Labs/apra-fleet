@@ -40,7 +40,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, codeMapSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, codeMapSchema, codeFlowSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 
 // ---------------------------------------------------------------------------
@@ -432,6 +432,18 @@ describe('codeMapSchema validation', () => {
   });
 });
 
+describe('codeFlowSchema validation', () => {
+  it('accepts an empty object (all fields optional)', () => {
+    const result = codeFlowSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts from/to/name/repo together', () => {
+    const result = codeFlowSchema.safeParse({ from: 'Entry', to: 'Exit', name: 'RemoveMember', repo: '/a/b' });
+    expect(result.success).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // parseMarkdownTable() / asciiSanitizeLabel() -- pure functions reused by both
 // map() and flow() to turn the child's `cypher` markdown-table output into
@@ -564,6 +576,152 @@ describe('GitNexusProvider.map() pre-flight index check', () => {
   it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
     const provider = new GitNexusProvider();
     const result = (await provider.map({ repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// GitNexusProvider.flow() (T2.2 code_flow -- process flows)
+//
+// gitnexus 1.6.7 has no direct flows/processes tool, so flow() composes a
+// list query (filtered by name/from/to over Process.heuristicLabel) followed
+// by one steps query per matched process over STEP_IN_PROCESS edges.
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider.flow()', () => {
+  let provider: GitNexusProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    provider = new GitNexusProvider();
+  });
+
+  function mockListResult(rows: string[]): void {
+    const markdown = [
+      '| label | processType | stepCount |',
+      '| --- | --- | --- |',
+      ...rows,
+    ].join('\n');
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ markdown, row_count: rows.length }) }],
+    });
+  }
+
+  function mockStepsResult(rows: string[]): void {
+    const markdown = ['| step | filePath | stepOrder |', '| --- | --- | --- |', ...rows].join('\n');
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ markdown, row_count: rows.length }) }],
+    });
+  }
+
+  it('builds a WHERE clause on $name when name is provided', async () => {
+    mockListResult([]);
+
+    await provider.flow({ name: 'RemoveMember' });
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'cypher',
+      arguments: expect.objectContaining({
+        query: expect.stringContaining('p.heuristicLabel CONTAINS $name'),
+        params: { name: 'RemoveMember' },
+      }),
+    });
+  });
+
+  it('builds a WHERE clause combining $from and $to when both are provided', async () => {
+    mockListResult([]);
+
+    await provider.flow({ from: 'RemoveMember', to: 'MaskSecrets' });
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'cypher',
+      arguments: expect.objectContaining({
+        query: expect.stringContaining('p.heuristicLabel CONTAINS $from'),
+        params: { from: 'RemoveMember', to: 'MaskSecrets' },
+      }),
+    });
+    const call = mockCallTool.mock.calls[0][0];
+    expect(call.arguments.query).toContain('p.heuristicLabel CONTAINS $to');
+    expect(call.arguments.query).toContain(' AND ');
+  });
+
+  it('omits the WHERE clause entirely when no filters are provided', async () => {
+    mockListResult([]);
+
+    await provider.flow({});
+
+    const call = mockCallTool.mock.calls[0][0];
+    expect(call.arguments.query).not.toContain('WHERE');
+    expect(call.arguments.params).toEqual({});
+  });
+
+  it('fetches steps for each matched process and ASCII-sanitizes the unicode arrow in labels', async () => {
+    mockListResult(['| RemoveMember→MaskSecrets | cross_community | 10 |']);
+    mockStepsResult([
+      '| validate | src/a.ts | 1 |',
+      '| mask | src/b.ts | 2 |',
+    ]);
+
+    const result = (await provider.flow({ name: 'RemoveMember' })) as { content: { text: string }[] };
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed).toEqual({
+      processes: [
+        {
+          label: 'RemoveMember->MaskSecrets',
+          processType: 'cross_community',
+          stepCount: 10,
+          steps: [
+            { step: 'validate', filePath: 'src/a.ts', order: 1 },
+            { step: 'mask', filePath: 'src/b.ts', order: 2 },
+          ],
+        },
+      ],
+      row_count: 1,
+    });
+
+    // Second callTool invocation is the steps lookup, keyed on the RAW
+    // (un-sanitized) label so it matches the child's stored heuristicLabel.
+    expect(mockCallTool).toHaveBeenCalledTimes(2);
+    const stepsCall = mockCallTool.mock.calls[1][0];
+    expect(stepsCall.arguments.params).toEqual({ label: 'RemoveMember→MaskSecrets' });
+  });
+
+  it('caps step lookups at 5 matched processes', async () => {
+    const rows = Array.from({ length: 8 }, (_, i) => `| Process${i} | linear | 1 |`);
+    mockListResult(rows);
+    for (let i = 0; i < 5; i++) mockStepsResult([]);
+
+    await provider.flow({});
+
+    // 1 list call + 5 step-lookup calls (capped), not 8.
+    expect(mockCallTool).toHaveBeenCalledTimes(6);
+  });
+});
+
+describe('GitNexusProvider.flow() pre-flight index check', () => {
+  let tempRepo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    tempRepo = mkdtempSync(join(tmpdir(), 'code-intel-flow-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempRepo, { recursive: true, force: true });
+  });
+
+  it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+    const provider = new GitNexusProvider();
+    const result = (await provider.flow({ name: 'x', repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe(
