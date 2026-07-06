@@ -148,6 +148,16 @@ export class SqliteProvider implements MemoryProvider {
     try {
       this.db.exec("ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
     } catch {}
+
+    // T2.2 (F3 PART A, revised D3): additive column storing a JSON map of
+    // source_file -> content hash captured AT CAPTURE TIME, for ALL entry
+    // types (not just context-cache). No migration -- existing rows default
+    // to '{}' (no basis) and are treated fresh/unknown, never falsely stale
+    // (D1/D3 no-mass-migration). This is the freshness basis checkFreshness
+    // compares against at prime() time.
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
+    } catch {}
   }
 
   private getDb(): Database.Database {
@@ -188,7 +198,8 @@ export class SqliteProvider implements MemoryProvider {
     id: string,
     input: KBEntryInput,
     content: string,
-    now: string
+    now: string,
+    sourceFileHashes: Record<string, string> = {}
   ): void {
     db.prepare(`
       INSERT INTO entries (
@@ -197,6 +208,7 @@ export class SqliteProvider implements MemoryProvider {
         content_hash, content_hash_type, stale,
         flagged_for_review, contradiction_of,
         author, source, confidence, scope, created_at,
+        source_file_hashes,
         superseded_at, promoted_at, use_count
       ) VALUES (
         ?, ?, ?, ?, ?,
@@ -204,6 +216,7 @@ export class SqliteProvider implements MemoryProvider {
         ?, ?, ?,
         ?, ?,
         ?, ?, ?, ?, ?,
+        ?,
         NULL, NULL, 0
       )
     `).run(
@@ -225,8 +238,89 @@ export class SqliteProvider implements MemoryProvider {
       input.source,
       input.confidence,
       input.scope ?? 'project',
-      now
+      now,
+      JSON.stringify(sourceFileHashes)
     );
+  }
+
+  // T2.2 (F3 PART A): resolve a per-file hash basis for the given source_files
+  // at capture time, for ALL types. Files that do not resolve are simply
+  // absent from the returned map (not an error). Bounded to the caller's own
+  // source_files list. Non-fatal: any hashing error yields an empty basis
+  // rather than failing the capture.
+  private async computeSourceFileHashes(files: string[]): Promise<Record<string, string>> {
+    if (files.length === 0) return {};
+    try {
+      const hashes = await computeFileHashBatch(files);
+      const map: Record<string, string> = {};
+      for (const file of Object.keys(hashes)) {
+        const result = hashes[file];
+        if (result) map[file] = result.hash;
+      }
+      return map;
+    } catch {
+      return {};
+    }
+  }
+
+  // T2.2 (F3 PART B, revised D3): freshness check bounded to the primed set.
+  // Keyed off source_files with a per-file hash basis persisted at capture
+  // time (source_file_hashes) -- NOT content_hash, which is only ever set for
+  // context-cache entries that prime() already excludes from top_entries.
+  // Entries with no source_files, or an empty/unparseable stored basis, are
+  // left untouched (never falsely stale -- D1/D3 no-mass-migration covers
+  // historical rows with no basis). For entries that DO have a basis, re-hash
+  // the union of basis files ONCE (bounded to the primed set, never the whole
+  // KB) and compare; any changed or now-missing basis file marks the entry
+  // stale=1 (one UPDATE) and drops it from the returned list.
+  private async checkFreshness(db: Database.Database, entries: KBEntry[]): Promise<KBEntry[]> {
+    const candidateIds = entries.filter(e => e.source_files.length > 0).map(e => e.id);
+    if (candidateIds.length === 0) return entries;
+
+    const rows = db.prepare(
+      `SELECT id, source_file_hashes FROM entries WHERE id IN (${candidateIds.map(() => '?').join(',')})`
+    ).all(...candidateIds) as { id: string; source_file_hashes: string | null }[];
+
+    const basisById = new Map<string, Record<string, string>>();
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.source_file_hashes || '{}') as Record<string, string>;
+        if (parsed && Object.keys(parsed).length > 0) basisById.set(row.id, parsed);
+      } catch {
+        // malformed basis -- treat as no basis (never falsely stale)
+      }
+    }
+
+    if (basisById.size === 0) return entries;
+
+    const fileSet = new Set<string>();
+    for (const basis of basisById.values()) {
+      for (const file of Object.keys(basis)) fileSet.add(file);
+    }
+
+    const currentHashes = await computeFileHashBatch([...fileSet]);
+
+    const staleIds: string[] = [];
+    for (const [id, basis] of basisById) {
+      let changed = false;
+      for (const file of Object.keys(basis)) {
+        const current = currentHashes[file];
+        if (!current || current.hash !== basis[file]) {
+          changed = true;
+          break;
+        }
+      }
+      if (changed) staleIds.push(id);
+    }
+
+    if (staleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 1 WHERE id IN (${staleIds.map(() => '?').join(',')})`
+      ).run(...staleIds);
+    }
+
+    const staleSet = new Set(staleIds);
+    return entries.filter(e => !staleSet.has(e.id));
   }
 
   private findAudnCandidates(db: Database.Database, input: KBEntryInput): KBEntry[] {
@@ -258,7 +352,8 @@ export class SqliteProvider implements MemoryProvider {
     input: KBEntryInput,
     candidates: KBEntry[],
     newContent: string,
-    now: string
+    now: string,
+    sourceFileHashes: Record<string, string>
   ): { id: string; audn_decision: AudnDecision } | null {
     const decision = makeAudnDecision(input, candidates, newContent);
     if (!decision) return null;
@@ -270,7 +365,7 @@ export class SqliteProvider implements MemoryProvider {
     if (decision.decision === 'flagged') {
       db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(decision.matchedId);
       const newId = randomUUID();
-      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now);
+      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes);
       this.wireLinks(db, newId, input);
       return { id: newId, audn_decision: 'flagged' };
     }
@@ -283,7 +378,7 @@ export class SqliteProvider implements MemoryProvider {
       // branches are owned by the contradiction path.
       db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, decision.matchedId);
       const newId = randomUUID();
-      this.insertEntry(db, newId, input, newContent, now);
+      this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
       this.wireLinks(db, newId, input);
       return { id: newId, audn_decision: 'update' };
     }
@@ -334,14 +429,19 @@ export class SqliteProvider implements MemoryProvider {
     const now = new Date().toISOString();
     const content = truncateContent(input.content);
 
+    // T2.2 (F3 PART A): capture() is the single choke point every caller
+    // (kb_capture, kb_harvest, future paths) goes through, so every entry
+    // gets a hash basis here regardless of type.
+    const sourceFileHashes = await this.computeSourceFileHashes(input.source_files ?? []);
+
     const candidates = this.findAudnCandidates(db, input);
     if (candidates.length > 0) {
-      const result = this.evaluateAudn(db, input, candidates, content, now);
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes);
       if (result) return result;
     }
 
     const id = randomUUID();
-    this.insertEntry(db, id, input, content, now);
+    this.insertEntry(db, id, input, content, now, sourceFileHashes);
     this.wireLinks(db, id, input);
     return { id, audn_decision: 'add' };
   }
@@ -559,6 +659,15 @@ export class SqliteProvider implements MemoryProvider {
       } catch {
         // FTS match may fail on unusual tokens
       }
+    }
+
+    // T2.2 (F3 PART B): bounded, non-fatal freshness check keyed off
+    // source_files -- see checkFreshness. Any error (hash batch throws, DB
+    // error) degrades to leaving top_entries exactly as built above.
+    try {
+      top_entries = await this.checkFreshness(this.getDb(), top_entries);
+    } catch {
+      // graceful degradation: prime() returns today's output on any error
     }
 
     const recommended_code_calls: CodeIntelCall[] = [];
