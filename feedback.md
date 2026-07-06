@@ -1,66 +1,98 @@
-# apra-fleet KB+CI Bug Fixes - Code Review
+# Plan Review -- Code Intelligence Hardening (PLAN.md vs requirements.md)
 
-**Reviewer:** ApraFleetRev
-**Date:** 2026-06-19 19:45:00+05:30
-**Verdict:** APPROVED
-
----
-
-## T1.1 -- Field/type rename + tool names
-
-**PASS (src/):** All source code renames are correct.
-- `GitNexusCall` renamed to `CodeIntelCall` in `src/services/knowledge/types.ts:9`
-- `recommended_gitnexus_calls` renamed to `recommended_code_calls` in `PrimedContext` at `types.ts:81`
-- `sqlite-provider.ts:534` emits `{ tool: 'code_context', args: { name: symbol } }` -- correct
-- `sqlite-provider.ts:539` emits `{ tool: 'code_impact', args: { target: file, direction: 'upstream' } }` -- correct
-- Zero remaining uses of `GitNexusCall` or `recommended_gitnexus_calls` in `src/` (grep confirmed)
-
-**FAIL (tests/):** `tests/knowledge/kb-session-prime.test.ts` was NOT updated. It still references:
-1. Field name `recommended_gitnexus_calls` instead of `recommended_code_calls` (lines 95, 101, 102, 109, 113, 118, 120)
-2. Tool name `'context'` instead of `'code_context'` (line 109)
-3. Arg shape `{ symbol: 'initRegistry' }` instead of `{ name: 'initRegistry' }` (line 111)
-4. Tool name `'impact'` instead of `'code_impact'` (line 113)
-5. Arg shape `{ file: 'src/registry.ts' }` instead of `{ target: 'src/registry.ts', direction: 'upstream' }` (line 115)
-
-This causes **2 NEW test failures** (not pre-existing). The test accesses the nonexistent `recommended_gitnexus_calls` property which is now `undefined`, producing assertion errors.
-
-**Doer:** fixed in commit f381bdf -- updated kb-session-prime.test.ts: renamed field to recommended_code_calls, tool names to code_context/code_impact, updated arg shapes to { name } and { target, direction: 'upstream' }. All 4 kb-session-prime tests now pass. Total tests: 2 failed (pre-existing time-utils), 1616 passed.
-
-## T1.2 -- skills/pm/index.md
-
-**PASS.** `git ls-files skills/pm/index.md` confirms tracked. Content documents the `/pm index` command with correct fleet tool names (`code_graph`, `code_impact`, `code_query`, `code_context`).
-
-## T1.3 -- Installer overlay
-
-**PASS.** Two overlay blocks present in `src/cli/install.ts`:
-- SEA mode: lines 700-706 -- `fs.existsSync` + `fs.readdirSync` guard, then `copyDirSync`
-- Dev/npm mode: lines 713-718 -- identical guard pattern
-
-Both copy `skills/pm/` from repo root on top of the installed PM skills directory.
-
-## T1.4 -- Build + install verification
-
-**PASS (after re-review).**
-- `npm run build`: clean (exit 0)
-- `npm test`: 1632 tests, **2 failures** -- pre-existing in `time-utils.test.ts` only, **1616 passed**
-- Installed `~/.claude/skills/pm/tpl-doer.md`: contains `recommended_code_calls` -- correct
-- Installed `~/.claude/skills/pm/tpl-reviewer.md`: contains `recommended_code_calls` -- correct
-- Installed `~/.claude/skills/pm/index.md`: exists -- correct
-- No `recommended_gitnexus_calls` found anywhere in installed `~/.claude/skills/pm/` -- correct
-
-## File Hygiene
-
-**PASS.** Sprint commits (`f4e3a03..42d61d0`) touch only:
-- `progress.json` -- tracking
-- `skills/pm/index.md` -- T1.2
-- `skills/pm/tpl-doer.md`, `skills/pm/tpl-reviewer.md` -- T1.4
-- `src/cli/install.ts` -- T1.3
-- `src/services/knowledge/sqlite-provider.ts`, `src/services/knowledge/types.ts` -- T1.1
-
-All files justified. CLAUDE.md is modified in working copy only (review instructions), not committed in sprint commits.
-
----
+Reviewer: pm-plan-reviewer
+Date: 2026-07-06
+Verdict: **CHANGES NEEDED**
 
 ## Summary
 
-All Phase 1 tasks (T1.1-T1.4) pass. T1.1 test gap flagged in initial review was fixed in commit 6543411 -- verified: all 5 issues (field name, tool names, arg shapes) corrected. Build clean, 1616 tests pass (2 pre-existing time-utils failures only). Templates installed correctly with fleet tool names. File hygiene clean.
+The plan is strong: full requirement coverage, F3.2 correctly front-loaded as
+Task 1, exact models on every work task, VERIFY checkpoints closing every phase
+with build + test + push (no PR, never main), and self-contained task
+descriptions whose factual anchors I spot-checked against the source -- nearly
+all verified accurate. One factual claim is wrong and biases a task toward
+silently missing requirement F1.3; it needs a one-sentence correction before
+execution.
+
+## Findings
+
+### 1. [MEDIUM] T3.3 asserts tpl-planner.md carries CI guidance -- it does not
+
+PLAN.md (T3.3) states: "Planning-time grep found kb_session_prime + CI guidance
+hits in all three (tpl-planner.md line 8, tpl-doer.md lines 47/57,
+tpl-reviewer.md lines 76-79), so the expected outcome is confirmation with NO
+edits."
+
+Verified against the source: `skills/pm/tpl-planner.md` contains the
+kb_session_prime instruction (line 8) but NO code intelligence tool guidance --
+grep for `code_graph|code_impact|code_query|code_context|code intelligence|
+gitnexus|Glob/Grep` (case-insensitive) returns zero hits in that file.
+tpl-doer.md (lines 47, 57) and tpl-reviewer.md (lines 76, 78) do carry both
+elements as claimed; tpl-planner.md carries only the KB element.
+
+Why this matters: T3.3 is assigned claude-haiku-4-5 and primed with "expected
+outcome is confirmation with NO edits". A doer anchored on that expectation may
+record confirmation without a real per-file check, leaving F1.3 unmet (the
+requirement explicitly says "fix only if a gap is found" -- and a gap exists).
+The task's fallback instruction ("if a template lacks one of the two elements,
+add it") is correct, but the false expectation works against it.
+
+Fix: in T3.3, correct the planning-time claim to state that tpl-planner.md has
+kb_session_prime only and LACKS code intelligence tool guidance, and change the
+expected outcome to: tpl-doer.md and tpl-reviewer.md confirm with no edits;
+tpl-planner.md needs a code intelligence paragraph added (same style as its
+siblings, e.g. use code_query/code_context to locate implementations while
+planning; prefer CI tools over Glob/Grep for structural questions), committed as
+`docs(pm): fill code intelligence gaps in fleet-mode templates`.
+
+## Verified-accurate claims (spot-checked, no action needed)
+
+- `src/tools/code-intelligence-gitnexus.ts`: 53 lines; `sharedClient` /
+  `connectionPromise` at lines 5-6; `getGitNexusClient()` lines 8-30; spawns
+  `npx -y gitnexus mcp` with `stderr: 'pipe'`; methods map to
+  call_graph/impact/query/context. A rejected connectionPromise is indeed
+  cached forever and there are no transport close/error handlers -- the F3.2
+  bugs are real as described.
+- `src/tools/code-intelligence.ts`: all four zod schemas carry an OPTIONAL
+  `repo` param; `getProvider()` reads
+  `~/.apra-fleet/data/code-intelligence/config.json`, defaults to gitnexus;
+  no tool-level description strings live here (T3.1's single-registration-point
+  claim is correct).
+- `src/index.ts`: code_* tool registrations at lines 310-325 with the
+  description as the second argument; `fleet_status` registered at line 286.
+- `src/tools/check-status.ts`: `fleetStatus()` at line 194; supports
+  `format: 'compact' | 'json'`.
+- `tests/code-intelligence.test.ts`: uses `vi.hoisted` + `vi.mock` of
+  `@modelcontextprotocol/sdk/client/index.js` and `client/stdio.js`; 4
+  GitNexusProvider tests + 3 getProvider tests as stated. The plan's warning
+  that module-level singleton state requires `vi.resetModules()` + dynamic
+  import for reset/reconnect tests is well taken.
+- `package.json`: no lint script -- VERIFY tasks correctly run build + test
+  only and note the skip.
+- `skills/pm/doer-reviewer-loop.md`: doer template block at lines 161-180 with
+  the VERIFY sentence ("run it -- build, linter, and full test suite") at line
+  167 and the KB/CI paragraph at lines 174-179; reviewer template at lines
+  184-194 carries NO KB/CI paragraph (F1.2 gap confirmed real).
+- `skills/pm/index.md` has a "When to run" section (line 24) as T2.2 targets.
+
+## Review checklist
+
+- [OK] Coverage: F3.1->T1.2, F3.2->T1.1, F3.3->T1.3, F2.1->T2.2, F2.2->T2.1,
+  F1.1->T3.1, F1.2->T3.2, F1.3->T3.3; done criteria precise and testable.
+- [OK] Risk front-loading: F3.2 is Task 1 (T1.1, opus) as requirements mandate.
+- [OK] Every work task has an exact model; T1.4/T2.3/T3.4 VERIFY tasks end each
+  phase with build + test + push.
+- [OK] Task descriptions self-contained: verbatim message strings, file paths,
+  line anchors, edge cases, and test recipes included.
+- [OK] Required tests planned: F3.1 missing-index (T1.2), F3.2
+  connection-promise reset (T1.1), F2.2 freshness pure function (T2.1).
+- [OK] Repo rules: ASCII only, never push to main, no PR this sprint --
+  restated in the plan and in every VERIFY task.
+- [X] Factual claims: one inaccuracy (Finding 1); all other spot-checked
+  claims verified.
+
+## Decision
+
+CHANGES NEEDED -- fix Finding 1 (a one-sentence correction to T3.3 plus its
+expected-outcome/done-criteria wording). Everything else is approved as-is; no
+other task needs revision.
