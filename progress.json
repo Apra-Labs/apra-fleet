@@ -25,10 +25,10 @@
       "title": "Pre-flight index check with actionable error (F3.1)",
       "model": "claude-sonnet-4-6",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.2",
-      "commit": null,
-      "notes": ""
+      "commit": "9a19e7d",
+      "notes": "Added missingIndexResult() + pre-flight fs.existsSync check on <repo>/.gitnexus/meta.json inside the shared callGitNexus helper (runs before getGitNexusClient() is awaited, so a missing index never spawns the child). Calls without a repo param, or with an empty-string repo, forward untouched. Message matches requirements verbatim. Added 5 tests in tests/code-intelligence.test.ts (temp dir via mkdtempSync per provider method asserting exact error text + mockConnect/mockCallTool not called, plus one forwarding test) -- 15/15 green in that file. Build clean."
     },
     {
       "id": "T1.3",
@@ -36,10 +36,10 @@
       "title": "Code intelligence health in fleet_status (F3.3)",
       "model": "claude-sonnet-4-6",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.3",
-      "commit": null,
-      "notes": ""
+      "commit": "118164b",
+      "notes": "Added codeIntelligenceHealth(repoDir) + codeIntelligenceCompactLine() to src/tools/check-status.ts. Reads <cwd>/.gitnexus/meta.json read-only (fs.existsSync/readFileSync, no MCP spawn, no network); compares meta.lastCommit to git rev-parse HEAD (execFileSync with 3s timeout) via git rev-list --count for the behind-count. Wired into fleetStatus(): codeIntelligence key in json payload, extra compact line ('code-intel: index present | N nodes / N edges / N files | indexed <ts> | matching HEAD' or '... N commits behind HEAD' or degraded '... HEAD comparison unavailable'; 'code-intel: no index (...)' when absent). All paths caught internally plus a defensive try/catch at the call site -- never throws, never fails fleet_status. New tests/fleet-status-code-intelligence.test.ts (9 tests: absent index, git-unavailable degrade, stats parsing, invalid JSON, missing dir, compact-line rendering for matching/behind/unavailable/absent) -- all green; existing tests/fleet-status-branch.test.ts (6 tests) still green with the new line present. Build clean."
     },
     {
       "id": "T1.4",
