@@ -270,7 +270,12 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     if (decision.decision === 'update') {
-      db.prepare('UPDATE entries SET superseded_at = ? WHERE id = ?').run(now, decision.matchedId);
+      // D2 (F2a): a superseded entry MUST be marked both superseded_at AND
+      // stale = 1 so it is excluded from query()/prime() by default (query
+      // filters stale = 0 independently of superseded_at). content_hash is
+      // left intact. Only the 'update' branch touches this; the flagged/none
+      // branches are owned by the contradiction path.
+      db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, decision.matchedId);
       const newId = randomUUID();
       this.insertEntry(db, newId, input, newContent, now);
       this.wireLinks(db, newId, input);

@@ -59,11 +59,13 @@ describe('kb_capture AUDN decisions', () => {
     expect(second.audn_decision).toBe('update');
     expect(second.id).not.toBe(first.id);
 
-    // Old entry must have superseded_at set
-    const allResults = await provider.query({ include_superseded: true });
+    // Old entry must have superseded_at set AND be marked stale (T1.3/D2).
+    // Since it is now stale, we must pass include_stale to see it at all.
+    const allResults = await provider.query({ include_superseded: true, include_stale: true });
     const old = allResults.results.find(e => e.id === first.id);
     expect(old).toBeDefined();
     expect(old!.superseded_at).toBeTruthy();
+    expect(old!.stale).toBe(true);
   });
 
   it('contradicting fact returns audn_decision=flagged and existing entry is flagged_for_review', async () => {
