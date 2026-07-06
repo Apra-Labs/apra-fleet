@@ -2,7 +2,7 @@
 
 Watch fleet members work in real time. `apra-fleet watch` streams what members
 are doing -- both the shell commands Fleet dispatches (any member, local or
-remote) and, for local members, the LLM session's reasoning and edits -- to your
+remote) and the LLM session's reasoning, tool calls, and output -- to your
 terminal, multiplexed and grouped. It is the `docker compose logs -f` model for
 your fleet.
 
@@ -13,27 +13,32 @@ A dispatched member is a black box: `execute_prompt` returns a single final blob
 lets a human simply watch members work -- or watch several in parallel, which is
 the whole point of a fleet.
 
-## The model: watch what Fleet does, plus the local LLM session
+## The model: watch what Fleet does, plus the LLM session
 
-In apra-fleet, only the **local** machine runs the LLM (Claude). Remote members
-are driven purely by shell commands over the ssh2 client; they never run Claude,
-so they have no provider transcript. The observation that makes `watch` work for
-*every* member is that **Fleet already records every dispatch locally**: the
-server writes a structured JSONL activity log at
+Each member runs its **own** agent CLI (Claude) locally on its machine -- the
+fleet server is the orchestrator that drives it over ssh2. So a member's LLM
+session transcript is written on the **member's own disk**, at
+`~/.claude/projects/<encoded-workdir>/<sessionId>.jsonl`, whether the member is
+local or remote.
+
+Fleet also records **every dispatch** in a structured JSONL activity log at
 `FLEET_DIR/logs/fleet-<pid>.log`, tagged with the member, for `execute_command`,
-`execute_prompt`, `send_files`, etc. -- local and remote alike, at dispatch time,
-with no ssh2 round-trip.
+`execute_prompt`, `send_files`, etc. -- local and remote alike, written locally
+at dispatch time with no ssh2 round-trip.
 
-So `watch` merges two sources:
+So `watch` merges two kinds of source: the universal activity spine (the fleet
+log) plus the rich provider transcript, read from wherever it lives:
 
-| Source | Captures | Location | Members |
-|--------|----------|----------|---------|
-| Fleet activity log | every dispatch: shell commands (+ their output) with exit status, prompt invocations, file transfers | local (`FLEET_DIR/logs/fleet-*.log`) | **all** (local + remote) |
-| Provider transcript (`~/.claude/projects/*.jsonl`) | the LLM session's reasoning, edits, tool output | local disk only | **local** members running an LLM |
+| Source | Captures | How `watch` reads it | Members |
+|--------|----------|----------------------|---------|
+| Fleet activity log | every dispatch: shell commands (+ their output) with exit status, prompt invocations, file transfers | local file tail (`FLEET_DIR/logs/fleet-*.log`) | **all** (local + remote) |
+| Provider transcript (local) | the LLM session's reasoning, tool calls, output, edits | local FS, byte-offset tail | **local** Claude members |
+| Provider transcript (remote) | same rich session detail | persistent `tail -F` over a dedicated SSH channel | **remote** Claude members |
 
-The fleet log is the **universal spine**; the transcript is **local-only
-enrichment** layered in when a local member ran a prompt. Remote members stream
-their command activity entirely from the local fleet log -- no remote tailing.
+The fleet log is the **universal spine**; the transcript is **rich enrichment**
+layered in whenever a member runs a prompt. Local transcripts are tailed from the
+local filesystem; remote transcripts are streamed over a long-lived SSH channel
+(push, not poll -- see Architecture).
 
 ## Command surface
 
@@ -45,7 +50,8 @@ apra-fleet watch --feature <name>    Follow members on one feature (branch match
 apra-fleet watch --branch <ref>      Follow members on an exact branch
 apra-fleet watch --list              Print the overview and exit (no follow)
 apra-fleet watch --tail <n>          Backfill the last n events per member
-apra-fleet watch --verbose | -v      Show edit diffs, file contents, commands + output, thinking
+apra-fleet watch --verbose | -v      Also show the model's thinking/reasoning
+                                     (diffs, file contents + output show by default)
 ```
 
 ## Three zoom levels
@@ -70,12 +76,17 @@ derived from the fleet log, so it is universal (works for remote members too).
 Marker-forward, ASCII + color (source is ASCII-only per repo convention):
 
 - `>` (cyan) -- read-only tools / prompt dispatch / file transfer
-- `*` (yellow) -- edits/writes
+- `*` (yellow) -- edits/writes; the header carries a size summary,
+  e.g. `Edit cart.js (+3 -1)`, `Write notes.md (40 lines)`
 - `$` (green) -- shell commands, with the command itself as the body
 - no marker -- assistant prose (plain, no "assistant:" label)
 - dim `-> exit=0 elapsed=...` -- command lifecycle; error exits render red
-- verbose detail (diffs, content, output, thinking) indents beneath its action,
-  colored by kind (green added, red removed, dim output)
+- detail lines (edit diffs, written content, command/tool output) indent beneath
+  their action, colored by kind (green added, red removed, dim output)
+
+**Default view shows the logs.** Tool/command output, edit diffs, written
+content, and multi-line command bodies all render by default. The model's
+**thinking/reasoning is the only content reserved for `-v`**.
 
 Single followed member: full-width, no name prefix. Multiple: interleaved, each
 line tagged with the member's colored icon + name.
@@ -83,29 +94,42 @@ line tagged with the member's colored icon + name.
 ## Architecture
 
 ```
-fleet log (all members) --tail--\
-                                  +-- format -> merge, tag by member, color -> stdout
-local transcripts (per member) --/
+fleet log (all members) --------tail--\
+local transcripts (local members) -----+-- format -> merge, tag by member, color -> stdout
+remote transcripts (remote, ssh) ------/
 ```
 
 - **Standalone.** A CLI subcommand (like `secret`/`auth`/`update`) that reads
-  `registry.json` and tails local files. No MCP server connection required.
+  `registry.json` and tails logs. No MCP server connection required.
 - **Fleet-log tailer** (`services/watch/fleet-log.ts`): one poll over the newest
   `fleet-<pid>.log`; each line is attributed to a member by `mid`/`mem` and
   dispatched to that follower. Noise tags (stall ticks, startup) are dropped.
-- **Transcript tailer** (`services/watch/transcript-formatter.ts`): per local
-  member; rolls over to the newest session file as sessions change.
+- **Local transcript tailer** (`cli/watch.ts` + `services/watch/transcript-formatter.ts`):
+  per local member; byte-offset tail that rolls over to the newest session file
+  as sessions change.
+- **Remote transcript tailer** (`cli/watch.ts` `ensureRemoteTail` +
+  `services/ssh.ts` `execStream`): per remote Claude member, a dedicated
+  long-lived SSH `tail -F` channel streams the session `.jsonl` as it is written
+  -- no per-tick round-trips. A cheap periodic `ls` (every few poll ticks) only
+  reopens a channel that died or follows a session rotation; the first attach
+  primes to EOF (`-n0`, no history dump), a rotation reads the new session from
+  the top (`-n +1`). The session directory is resolved with
+  `encodeClaudeProjectDir` (Claude's real `[^a-zA-Z0-9] -> '-'` path-encoding
+  rule), shared with the stall detector.
+- Both transcript sources feed the **same** `formatTranscriptLine` renderer, so
+  local and remote render identically.
 
 ## Scope
 
 **Covered:** all members (local + remote) for command/dispatch activity via the
-fleet log; local Claude members additionally for LLM-session detail; overview,
-project/feature/member selection, compact + verbose rendering, marker styling,
-shell-completion helper.
+fleet log; local **and remote** Claude members for the rich LLM-session detail;
+overview, project/feature/member selection, default + verbose rendering, marker
+styling, shell-completion helper.
 
 **Deferred:**
-- Gemini/other-provider transcript parsing (fleet-log activity still works for
-  them; only the rich LLM detail is Claude-only).
+- Gemini/other-provider transcript parsing, and remote transcript tailing for
+  non-Claude providers (fleet-log activity still works for them; only the rich
+  LLM detail is Claude-only).
 - Push-based SSE/WebSocket sink and a multi-pane web/TUI.
 - PM `status.md` feature-name labeling (branch names shown in the interim).
 
@@ -115,3 +139,12 @@ shell-completion helper.
   narrow by feature/member. Thinking is verbose-only.
 - The fleet log rolls over on server restart (new pid); `watch` re-resolves the
   newest log each poll and follows the rollover.
+- Rich LLM detail is Claude-only. A remote member on another provider still shows
+  its command/dispatch activity from the fleet log, just not the session detail.
+- Backfill (`--tail`) applies to the fleet log and local transcripts; a remote
+  transcript starts streaming from the moment `watch` attaches (primes to EOF),
+  so it has no history backfill.
+- Remote tailing opens one dedicated SSH connection per remote Claude member for
+  the lifetime of the `watch`; it is closed cleanly on Ctrl-C. If a member is
+  asleep/unreachable the channel simply fails soft and is retried on the next
+  check.

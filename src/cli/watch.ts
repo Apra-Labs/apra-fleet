@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAllAgents } from '../services/registry.js';
 import { resolveSessionLogDir } from '../services/stall/index.js';
+import { encodeClaudeProjectDir } from '../services/stall/log-path-resolver.js';
+import { execCommand, execStream, type SSHStream } from '../services/ssh.js';
 import {
   enrichMember,
   groupByProject,
@@ -32,11 +34,14 @@ const YELLOW = '\x1b[33m';
 const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO_COLOR;
 
 // ---------------------------------------------------------------------------
-// Sources. Two kinds of activity are merged per member:
+// Sources. Three kinds of activity are merged per member:
 //   1. Fleet activity log (universal spine) -- every dispatch the server makes,
 //      for local AND remote members, tailed once from the local fleet log.
-//   2. Provider transcript (local members only) -- the LLM session's rich
-//      reasoning/edits/output, tailed per local member.
+//   2. Provider transcript (local members) -- the LLM session's rich
+//      reasoning/edits/output, tailed per local member from the local FS.
+//   3. Remote provider transcript (remote Claude members) -- the same rich
+//      session detail, streamed over a dedicated long-lived `tail -F` SSH
+//      channel since the .jsonl lives on the member's own disk (ensureRemoteTail).
 // ---------------------------------------------------------------------------
 
 interface Follower {
@@ -49,6 +54,13 @@ interface Follower {
   txOffset: number;
   txLeftover: string;
   txBackfilled: boolean;
+  // remote transcript state (remote Claude members; rtEnc null = unsupported)
+  rtEnc: string | null;         // encoded ~/.claude/projects/<seg> dir segment
+  rtFile: string | null;        // remote .jsonl currently being tailed
+  rtStream: SSHStream | null;   // live `tail -F` channel (push, not poll)
+  rtLeftover: string;           // trailing partial line carried across chunks
+  rtStarted: boolean;           // first tail primes to EOF; rotations read from top
+  rtBusy: boolean;              // an open/rotate check is in progress -- do not stack
 }
 
 interface FleetLogState {
@@ -213,6 +225,8 @@ export async function runWatch(args: string[]): Promise<void> {
     const isLocal = ctx.agent.agentType !== 'remote';
     const provider = ctx.agent.llmProvider ?? 'claude';
     const txDir = isLocal ? resolveSessionLogDir(provider as any, ctx.agent.workFolder) : null;
+    // Remote Claude members: tail the transcript over SSH (it lives on their disk).
+    const rtEnc = !isLocal && provider === 'claude' ? encodeClaudeProjectDir(ctx.agent.workFolder) : null;
     const f: Follower = {
       agent: ctx.agent,
       provider,
@@ -222,6 +236,12 @@ export async function runWatch(args: string[]): Promise<void> {
       txOffset: 0,
       txLeftover: '',
       txBackfilled: false,
+      rtEnc,
+      rtFile: null,
+      rtStream: null,
+      rtLeftover: '',
+      rtStarted: false,
+      rtBusy: false,
     };
     followers.push(f);
     byKey.set(ctx.agent.friendlyName.toLowerCase(), f);
@@ -242,8 +262,14 @@ export async function runWatch(args: string[]): Promise<void> {
   // Prime (with optional backfill), then poll.
   pumpFleetLog(fl, byKey, single, tailN, verbose);
   for (const f of followers) pumpTranscript(f, single, tailN, verbose);
+  // Open the remote tail channels immediately (they stream on their own after this).
+  for (const f of followers) void ensureRemoteTail(f, single, verbose);
 
+  // Remote tails push content on their own; we only periodically check whether a
+  // channel died or the session rotated (a cheap `ls`), not every poll tick.
+  let tick = 0;
   const timer = setInterval(() => {
+    tick++;
     // The server rolls its log on restart (new pid). Follow a STRICTLY newer log
     // (not just any different one -- short-lived servers create noise logs with
     // fresh mtimes), and jump to its END rather than replaying its history.
@@ -261,16 +287,23 @@ export async function runWatch(args: string[]): Promise<void> {
     pumpFleetLog(fl, byKey, single, 0, verbose);
 
     for (const f of followers) {
-      if (!f.txDir) continue;
-      const newest = newestTranscript(f.txDir);
-      if (newest && newest !== f.txFile) {
-        f.txFile = newest; f.txOffset = 0; f.txLeftover = ''; f.txBackfilled = true;
+      if (f.txDir) {
+        const newest = newestTranscript(f.txDir);
+        if (newest && newest !== f.txFile) {
+          f.txFile = newest; f.txOffset = 0; f.txLeftover = ''; f.txBackfilled = true;
+        }
+        pumpTranscript(f, single, 0, verbose);
       }
-      pumpTranscript(f, single, 0, verbose);
+      if (tick % RT_CHECK_EVERY_TICKS === 0) void ensureRemoteTail(f, single, verbose);
     }
   }, POLL_INTERVAL_MS);
 
-  const stop = () => { clearInterval(timer); console.log(''); process.exit(0); };
+  const stop = () => {
+    clearInterval(timer);
+    for (const f of followers) { if (f.rtStream) { try { f.rtStream.close(); } catch { /* best-effort */ } } }
+    console.log('');
+    process.exit(0);
+  };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 }
@@ -344,6 +377,70 @@ function pumpTranscript(f: Follower, single: boolean, tailN: number, verbose: bo
   }
   const toPrint = tailN > 0 && collected.length > tailN ? collected.slice(-tailN) : collected;
   for (const ev of toPrint) emit(f, ev, single);
+}
+
+/** Single-quote a string for safe interpolation into a bash command. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+// A remote tail is re-checked every this-many poll ticks (~POLL_INTERVAL_MS each)
+// -- only to detect a dead channel or a rotated session, NOT to fetch content
+// (the tail streams that on its own). Rotations are rare, so this stays light.
+const RT_CHECK_EVERY_TICKS = 5;
+
+/** Feed a chunk of tailed transcript bytes out as formatted lines, keeping any trailing partial line. */
+function processRemoteChunk(f: Follower, chunk: string, single: boolean, verbose: boolean): void {
+  const parts = (f.rtLeftover + chunk).split('\n');
+  f.rtLeftover = parts.pop() ?? '';
+  for (const line of parts) {
+    for (const ev of formatTranscriptLine(f.provider, line, verbose)) emit(f, ev, single);
+  }
+}
+
+/**
+ * Ensure a remote Claude member has a live `tail -F` channel on its newest
+ * session transcript. The transcript .jsonl lives on the member's own disk, so
+ * we stream it over a dedicated long-lived SSH channel (push, not poll). This
+ * runs once at startup and then only periodically -- just to (re)open a channel
+ * that died or to follow a session rotation. A cheap `ls` finds the newest file:
+ *   - first open primes to EOF (`-n0`) so no history is dumped;
+ *   - a rotation opens the new session from its top (`-n +1`) so nothing is missed.
+ * Fails soft: connect/exec errors leave rtStream null and the next check retries.
+ */
+async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean): Promise<void> {
+  if (!f.rtEnc || f.rtBusy) return;
+  f.rtBusy = true;
+  try {
+    const dir = `"$HOME/.claude/projects/${f.rtEnc}"`;
+    const res = await execCommand(f.agent, `ls -t ${dir}/*.jsonl 2>/dev/null | head -1`, 8000);
+    const newest = res.stdout.trim().split('\n')[0]?.trim();
+    if (!newest) return;
+    if (f.rtStream && newest === f.rtFile) return; // already tailing the current session
+
+    // (Re)open: close any stale channel, then tail the newest file.
+    if (f.rtStream) { try { f.rtStream.close(); } catch { /* best-effort */ } f.rtStream = null; }
+    const primed = f.rtStarted; // first open = EOF; any later open = a new session, read from top
+    const startFlag = primed ? '-n +1' : '-n0';
+    f.rtLeftover = '';
+
+    let stream: SSHStream;
+    const onEnd = () => { if (f.rtStream === stream) f.rtStream = null; }; // channel died -> next check reopens
+    stream = await execStream(
+      f.agent,
+      `tail ${startFlag} -F ${shq(newest)}`,
+      (chunk) => processRemoteChunk(f, chunk, single, verbose),
+      onEnd,
+    );
+    f.rtFile = newest;
+    f.rtStarted = true;
+    f.rtStream = stream;
+  } catch {
+    // Member asleep / connection dropped -- leave rtStream null; the next check retries.
+    if (f.rtStream) { try { f.rtStream.close(); } catch { /* best-effort */ } f.rtStream = null; }
+  } finally {
+    f.rtBusy = false;
+  }
 }
 
 const TIME_W = 8; // "HH:MM:SS"
@@ -423,9 +520,11 @@ Usage:
   apra-fleet watch --branch <ref>      Follow members on an exact branch
   apra-fleet watch --list              Print the overview and exit (no follow)
   apra-fleet watch --tail <n>          Backfill the last n events per member
-  apra-fleet watch --verbose | -v      Show edit diffs, file contents, commands + output, thinking
+  apra-fleet watch --verbose | -v      Also show the model's thinking/reasoning
+                                       (diffs, file contents + output show by default)
 
 Sources: the fleet activity log (all shell commands + prompt dispatches, for
-local AND remote members) plus, for local members, the LLM session transcript
-(reasoning, edits, output). Scope: project = git origin, feature = git branch.`);
+local AND remote members) plus the LLM session transcript (reasoning, edits,
+output) -- read from disk for local members and tailed over SSH for remote
+Claude members. Scope: project = git origin, feature = git branch.`);
 }
