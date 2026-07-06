@@ -395,3 +395,190 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     expect(passedQuery).toContain('"audn"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Canonical-bible cold-seed (T3.5, F8c, D8) -- LAST sequenced block in
+// kbSessionPrime, after the T2.1 global-append and graph-neighbor merges.
+// Uses REAL node:fs against a controlled tmp dir (process.cwd() spied) rather
+// than mocking node:fs -- the first describe block in this file already
+// exercises real fs via tmpDir, and mocking the fs module globally would
+// collide with that. KB constraint 1 still applies to the mocked modules
+// (kb-providers, code-intelligence, path-validation): vi.resetModules() +
+// dynamic import per test.
+// ---------------------------------------------------------------------------
+
+describe('kb_session_prime canonical-bible cold-seed', () => {
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let bibleTmpDir: string;
+
+  function canonicalEntry(id: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      type: 'knowledge',
+      title: 'Canonical ' + id,
+      summary: 'Canonical summary for ' + id,
+      symbols: [],
+      source_files: [],
+      confidence: 'CONFIRMED',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function writeCanonicalFile(entries: unknown): void {
+    const fleetDir = path.join(bibleTmpDir, '.fleet');
+    fs.mkdirSync(fleetDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(fleetDir, 'kb-canonical.json'),
+      typeof entries === 'string' ? entries : JSON.stringify(entries),
+      'utf-8',
+    );
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    mockPrime.mockReset();
+    mockProjectQuery.mockReset();
+    mockGlobalQuery.mockReset();
+    mockContext.mockReset();
+    mockGetProvider.mockReset();
+    mockGetKbProviders.mockReset();
+    mockValidateFilePaths.mockReset();
+
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+    mockGetKbProviders.mockResolvedValue({
+      project: { prime: mockPrime, query: mockProjectQuery },
+      global: { query: mockGlobalQuery },
+      projectSlug: 'test',
+    });
+    mockGetProvider.mockResolvedValue({ context: mockContext });
+    mockContext.mockResolvedValue(contextResult([]));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    bibleTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-canonical-test-'));
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(bibleTmpDir);
+  });
+
+  afterEach(() => {
+    cwdSpy.mockRestore();
+    fs.rmSync(bibleTmpDir, { recursive: true, force: true });
+  });
+
+  it('cold KB + fixture canonical file: entries appear via canonical-bible below live hits', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile([canonicalEntry('c1'), canonicalEntry('c2')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1', 'c2']);
+    expect(parsed.top_entries[0].via).toBeUndefined();
+    expect(parsed.top_entries[1].via).toBe('canonical-bible');
+    expect(parsed.top_entries[2].via).toBe('canonical-bible');
+  });
+
+  it('file absent: output identical to today (no canonical merge)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    // No writeCanonicalFile call -- .fleet/kb-canonical.json does not exist.
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('malformed JSON: output identical to today', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile('{ this is not valid json');
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('bad shape (not an array, or entries missing required fields): output identical to today', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile({ not: 'an array' });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('invalid entries within an otherwise-valid array are dropped, valid ones still seed', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    writeCanonicalFile([
+      { id: 'bad', title: 'missing summary/symbols/source_files' },
+      canonicalEntry('good1'),
+    ]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['good1']);
+  });
+
+  it('warm KB (>= COLD_KB_MAX live hits): no canonical merge', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b'), entry('c')]));
+    writeCanonicalFile([canonicalEntry('c1')]);
+
+    const { kbSessionPrime, COLD_KB_MAX } = await import('../../src/tools/kb-session-prime.js');
+    expect(COLD_KB_MAX).toBe(3);
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b', 'c']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('dedupes canonical entries already present among live hits by id', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile([canonicalEntry('a'), canonicalEntry('c1')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
+  });
+
+  it('caps canonical additions at ADDED_ENTRY_CAP', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    const many = Array.from({ length: 8 }, (_, i) => canonicalEntry('cap' + i));
+    writeCanonicalFile(many);
+
+    const { kbSessionPrime, ADDED_ENTRY_CAP } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries).toHaveLength(ADDED_ENTRY_CAP);
+  });
+
+  it('prefers canonical entries whose symbols match hint_symbols', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    writeCanonicalFile([
+      canonicalEntry('noMatch1'),
+      canonicalEntry('matchA', { symbols: ['wantedSymbol'] }),
+      canonicalEntry('noMatch2'),
+    ]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['wantedSymbol'] }));
+
+    expect(parsed.top_entries[0].id).toBe('matchA');
+  });
+
+  it('prefers canonical entries whose source_files match hint_modules', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    writeCanonicalFile([
+      canonicalEntry('noMatch1'),
+      canonicalEntry('matchB', { source_files: ['src/tools/kb-list.ts'] }),
+    ]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_modules: ['src/tools'] }));
+
+    expect(parsed.top_entries[0].id).toBe('matchB');
+  });
+});

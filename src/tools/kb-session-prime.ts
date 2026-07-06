@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import fs from 'node:fs';
+import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
@@ -18,6 +20,77 @@ export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;
 export const NEIGHBOR_CAP = 10;
 // ADDED_ENTRY_CAP: max neighbor-derived KB entries appended to top_entries.
 export const ADDED_ENTRY_CAP = 5;
+
+// T3.5 (F8c, D8): fewer than this many top_entries after ALL merges above
+// (direct hits + global-append + graph-neighbor) counts as a cold local KB,
+// triggering the canonical-bible cold-seed below. Exported for tests.
+export const COLD_KB_MAX = 3;
+
+// Shape written by kb_export (T3.4) to <repo>/.fleet/kb-canonical.json.
+// Validated field-by-field below rather than trusted -- the file is
+// external input (hand-edited, stale from an older kb_export version, or
+// simply absent) and a bad shape must degrade to today's output, never throw
+// past the try/catch that wraps the whole cold-seed block.
+interface CanonicalBibleEntry {
+  id: string;
+  type: string;
+  title: string;
+  summary: string;
+  symbols: string[];
+  source_files: string[];
+  confidence?: string;
+  updated_at?: string;
+}
+
+function isCanonicalBibleEntry(value: unknown): value is CanonicalBibleEntry {
+  if (!value || typeof value !== 'object') return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e.id === 'string' &&
+    typeof e.type === 'string' &&
+    typeof e.title === 'string' &&
+    typeof e.summary === 'string' &&
+    Array.isArray(e.symbols) &&
+    Array.isArray(e.source_files)
+  );
+}
+
+// Prefer canonical entries whose symbols overlap hint_symbols, or whose
+// source_files contain a hint_module as a substring (canonical entries carry
+// no separate "module" field -- hint_modules in practice are path-like
+// strings, e.g. "src/tools", that match against source_files directly).
+function canonicalMatchesHints(
+  entry: CanonicalBibleEntry,
+  hintSymbols: string[],
+  hintModules: string[],
+): boolean {
+  if (hintSymbols.length > 0 && entry.symbols.some(s => hintSymbols.includes(s))) return true;
+  if (hintModules.length > 0 && entry.source_files.some(f => hintModules.some(m => f.includes(m)))) return true;
+  return false;
+}
+
+function toCanonicalKBEntry(e: CanonicalBibleEntry): KBEntry & { via: string } {
+  return {
+    id: e.id,
+    type: e.type as KBEntry['type'],
+    title: e.title,
+    summary: e.summary,
+    content: '',
+    source_files: e.source_files,
+    symbols: e.symbols,
+    tags: [],
+    content_hash: '',
+    content_hash_type: 'sha256',
+    stale: false,
+    flagged_for_review: false,
+    author: 'canonical-bible',
+    source: 'promotion',
+    confidence: (e.confidence as KBEntry['confidence']) ?? 'CONFIRMED',
+    created_at: e.updated_at ?? '',
+    use_count: 0,
+    via: 'canonical-bible',
+  };
+}
 
 // Pull neighbor symbol names out of a code-intelligence `context` result.
 // The provider returns a normal MCP result object -- a `content` array of text
@@ -160,6 +233,56 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
       }
     } catch {
       // Hard skip: leave `result` exactly as prime returned it.
+    }
+  }
+
+  // T3.5 (F8c, D8): cold-KB seed from the canonical git bible -- LAST
+  // sequenced merge, after direct hits + global-append + graph-neighbor
+  // above. When the local KB still returns few top_entries (COLD_KB_MAX),
+  // fall back to <repo>/.fleet/kb-canonical.json (written by kb_export after
+  // promotion) so a fresh clone or cold project still gets team knowledge.
+  // Entries are marked via:'canonical-bible' and always appended BELOW every
+  // live-KB hit gathered above. Non-fatal: the entire block is a hard skip --
+  // missing file, unreadable/malformed JSON, or a bad shape leaves `result`
+  // exactly as built above (same contract as the neighbor block).
+  if ((result.top_entries ?? []).length < COLD_KB_MAX) {
+    try {
+      const repoRoot = process.cwd();
+      const canonicalPath = path.join(repoRoot, '.fleet', 'kb-canonical.json');
+      if (fs.existsSync(canonicalPath)) {
+        const raw = fs.readFileSync(canonicalPath, 'utf-8');
+        const parsed = JSON.parse(raw) as unknown;
+
+        if (Array.isArray(parsed)) {
+          const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
+          const hintSymbols = input.hint_symbols ?? [];
+          const hintModules = input.hint_modules ?? [];
+
+          const valid = parsed
+            .filter(isCanonicalBibleEntry)
+            .filter(e => !existingIds.has(e.id));
+
+          let ordered = valid;
+          if (hintSymbols.length > 0 || hintModules.length > 0) {
+            const matched = valid.filter(e => canonicalMatchesHints(e, hintSymbols, hintModules));
+            const matchedIds = new Set(matched.map(e => e.id));
+            const rest = valid.filter(e => !matchedIds.has(e.id));
+            ordered = [...matched, ...rest];
+          }
+
+          const additions: Array<KBEntry & { via: string }> = [];
+          for (const e of ordered) {
+            if (additions.length >= ADDED_ENTRY_CAP) break;
+            additions.push(toCanonicalKBEntry(e));
+          }
+
+          if (additions.length > 0) {
+            result.top_entries = [...(result.top_entries ?? []), ...additions];
+          }
+        }
+      }
+    } catch {
+      // Hard skip: leave `result` exactly as built above.
     }
   }
 
