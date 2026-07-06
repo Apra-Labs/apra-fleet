@@ -1,142 +1,178 @@
-# Phase 1 Review -- Code Intelligence Power Sprint
+# Phase 2 Review -- Code Intelligence Power Sprint
 
 Reviewer: pm-reviewer
-Scope: Phase 1 commits 5e29169 (T1.1 spike), b01bd97 (T1.2 spike),
-495a676 (T1.3 P4b). Focus: T1.3 code (src/tools/kb-session-prime.ts +
-tests/knowledge/kb-session-prime.test.ts). Spikes sanity-checked for presence
-and internal consistency.
-Sources: PLAN.md (T1.1-T1.4), requirements.md (P4b), design.md (D1, D4),
-progress.json, code_impact/code_context on the changed wrapper.
+Scope: Phase 2 commits bed2318 (T2.1 code_map), 4451d99 (T2.2 code_flow),
+a419268 (T2.3 embeddings wiring). Focus: src/tools/code-intelligence.ts,
+src/tools/code-intelligence-gitnexus.ts, src/index.ts,
+tests/code-intelligence.test.ts, skills/pm/index.md,
+skills/pm/doer-reviewer-loop.md, docs/code-intelligence-embeddings.md.
+Sources: PLAN.md (T2.1-T2.4), requirements.md (P1, P2), design.md (D1, D2),
+docs/code-intelligence-child-surface.md (Decisions table), progress.json.
+KB primed (session_warm) with the CONFIRMED gitnexus 1.6.7 child-surface facts.
 
 ## Verdict: APPROVED
 
-T1.3 meets every binding item of design D4 and the review checklist. The key
-safety property (prime never throws and never returns degraded output when the
-graph/CI side fails) holds on every code path I traced. Build clean; full suite
-1667 passed with only the 2 known pre-existing timezone failures
-(tests/time-utils.test.ts, yashr-302). One MEDIUM finding is a plan-inherited
-effectiveness limitation, not a safety or correctness regression; it does not
-block Phase 1.
+Both new tools implement the exact rung-2 compose path the T1.1 Decisions table
+prescribed, route through the shared guarded callGitNexus (so they inherit the
+pre-flight index check, resilience, and freshness note for free), do NOT parse
+ladybugdb, and are registered with routing-guidance descriptions. The embeddings
+task correctly executed the LOCAL branch (docs + flag plumbing, no code, no key).
 
-Counts: 0 HIGH, 1 MEDIUM, 3 LOW.
+The single load-bearing correctness risk -- whether the child's `cypher` tool
+actually supports `LIMIT $top` parameter substitution (Kuzu historically
+rejected parameterized LIMIT, which would have made code_map DOA the way
+call_graph is DOA for code_graph) -- I verified EMPIRICALLY against the live
+.gitnexus index by spawning `npx -y gitnexus mcp` exactly as the fleet does and
+running the exact map()/flow()/steps queries. All succeeded: `LIMIT $top` binds
+correctly, the markdown format matches parseMarkdownTable byte-for-byte, process
+heuristicLabels carry the unicode arrow (`RemoveMember -> MaskSecrets`) that
+asciiSanitizeLabel converts, and the steps lookup keyed on the RAW pre-sanitize
+label matches the child's stored value and returns ordered steps. code_map and
+code_flow are functionally correct end-to-end, not just in mocked tests.
 
-## Findings
+Build clean (tsc exit 0). Full suite: 1690 passed, 2 failed, 14 skipped -- the 2
+failures are ONLY the known pre-existing timezone tests in
+tests/time-utils.test.ts (yashr-302). code-intelligence.test.ts 42/42 green.
 
-1. MEDIUM -- Multi-neighbor batch query uses FTS5 implicit-AND, so expansion
-   rarely surfaces entries once there are 2+ distinct neighbors.
-   SqliteProvider.query() (src/services/knowledge/sqlite-provider.ts:379-388)
-   passes opts.query verbatim into `entries_fts MATCH ?` with no OR rewrite.
-   ftsSafeTerm produces quoted phrases (`"nbrA"`) and the neighbors are joined
-   with a single space (kb-session-prime.ts:138-141), so the batch becomes
-   `"nbrA" "nbrB" ...`, which FTS5 treats as AND -- an entry must contain ALL
-   neighbor tokens to match. In the common case (2+ unrelated neighbor names)
-   the batch returns nothing and no entries are ever appended, so the feature
-   under-delivers on its P4b intent ("surface additional relevant entries").
-   This is plan-specified (PLAN.md T1.3 step 3 says `neighbors.join(' ')`) and
-   is fully SAFE -- it only ever yields fewer additions, never a throw or
-   degraded output -- so it is non-blocking. Recommended follow-up (backlog):
-   OR-join the sanitized terms (e.g. `.join(' OR ')`) so the batch surfaces
-   entries relevant to ANY neighbor. Single-neighbor and shared-token cases
-   already work today.
+Counts: 0 HIGH, 0 MEDIUM, 6 LOW. No blocking findings.
 
-2. LOW -- Embeddings doc line-3 wording is internally inconsistent with its own
-   evidence. docs/code-intelligence-embeddings.md line 3 parenthetical calls the
-   model "bundled", but Evidence section 3 (lines 73-87) states "The model is
-   NOT bundled in the package; it is fetched from HuggingFace on first use"
-   (~87 MB one-time download). The LOCAL classification itself is correct and
-   well-evidenced (local ONNX, no API key, offline after first fetch, --embeddings
-   flag exists on 1.6.7); only the "bundled" adjective is loose. Cosmetic; does
-   not mislead T2.3, which reads the flag + download caveat correctly.
+## Findings (all LOW / non-blocking)
 
-3. LOW -- parseContextNeighbors harvests BOTH incoming.calls and outgoing.calls
-   (kb-session-prime.ts:46). Requirements P4b says "depth 1"; taking callers and
-   callees is depth-1 in both directions, which is a reasonable and generous
-   reading (the T1.1 surface doc lines 90-92 confirm both arrays carry parseable
-   names). Recording it only so the choice is explicit; matches the plan's
-   "impact/context, depth 1" latitude. No change required.
+1. LOW -- code_flow output `row_count` can exceed `processes.length`. mapFlowResult
+   returns `row_count` from the LIST query (capped at LIMIT 20) but only pushes
+   the first MAX_FLOW_STEP_LOOKUPS=5 processes into the `processes` array
+   (code-intelligence-gitnexus.ts, rows.slice(0, 5)). So an unfiltered or broad
+   flow() returns row_count up to 20 while processes has at most 5, and rows 6-20
+   are dropped entirely (not merely step-less). The cap is intentional and
+   documented (bounds cypher fan-out), but the mismatch between row_count and the
+   returned array could mislead a consumer. Consider setting row_count to
+   processes.length, or documenting the two-tier cap in the output. map() has no
+   such mismatch. Non-blocking.
 
-4. LOW -- Minor: the neighbor-expansion merge does not filter appended entries by
-   type, unlike the global-append block just above it (which filters
-   `type === 'knowledge'`, line 93). This is plan-compliant (PLAN.md T1.3 step 4
-   specifies only id-dedupe + via marker + cap, no type filter) and dedupe/cap
-   keep the output bounded, so it is not a defect -- noted only for symmetry
-   awareness if a type filter is later desired.
+2. LOW -- code_flow from/to are non-positional CONTAINS filters. from/to/name each
+   compile to `p.heuristicLabel CONTAINS $param` ANDed together, matching anywhere
+   in the "Entry -> Terminal" label. So `from: 'MaskSecrets'` also matches a
+   process whose TERMINAL is MaskSecrets. This is the approximation the T1.1
+   surface doc explicitly sanctioned ("filter on the endpoints encoded in
+   heuristicLabel ... or resolve entryPointId/terminalId") and the plan permits;
+   it is documented in the method comment. Verified working live
+   (`WHERE p.heuristicLabel CONTAINS $name` returns matches). Noted only so the
+   looseness is explicit; a future refinement could resolve entryPointId/
+   terminalId for strict directional filtering.
 
-## Checklist verification (T1.3, design D4 binding)
+3. LOW -- parseMarkdownTable does not handle escaped pipes (`\|`) inside cell
+   values (it splits naively on `|`). This is SAFE in practice because the child's
+   own producer (gitnexus formatCypherAsMarkdown) also does not escape pipes -- it
+   joins cells with ` | ` after `String(v)` / `JSON.stringify(v)` with no escaping,
+   so parser and producer are symmetric, and community labels / keywords (arrays
+   like `[]`) / step names / file paths do not contain literal `|`. Verified the
+   real output format matches the parser exactly. Robustness note only.
 
-1. Expansion location -- PASS. `git diff 6671ec6..495a676 -- src/services/knowledge/`
-   is empty: SqliteProvider.prime and HttpKbProvider.prime are byte-unchanged.
-   All expansion lives in src/tools/kb-session-prime.ts, one layer up (D4).
+4. LOW -- skills/pm/index.md wording: the `--embeddings` section calls the ONNX
+   model "bundled with gitnexus" then states the first run "downloads the model
+   (~87 MB) from HuggingFace". Same loose "bundled" adjective flagged in the
+   Phase 1 review (finding 2) -- the model is fetched on first use, not shipped in
+   the package. The material caveats (local, no API key, ~87 MB one-time download,
+   OFF-by-default/preserved-unless---drop-embeddings, win32 exact-scan) are all
+   correct and clearly stated, so this does not mislead operators. Cosmetic.
 
-2. CI surface + defensive parse -- PASS. Uses `getProvider().context({ name })`
-   (kb-session-prime.ts:112,123), NOT provider.graph (T1.1 doc confirms
-   graph -> call_graph is broken on gitnexus 1.6.7). parseContextNeighbors
-   returns [] on isError, non-object result, missing/non-array content, no text
-   block, unparseable JSON, and ambiguous-candidate responses (verified against
-   a live context call: `incoming` can be `{}` and is handled). Never throws.
+5. LOW -- T2.1/T2.2 tests use static imports + vi.clearAllMocks() rather than the
+   literal `vi.resetModules() + dynamic import at the start of each test` from KB
+   constraint 1. They DO use vi.hoisted() mock factories (the other half of the
+   constraint). This is consistent with the file's pre-existing F2.2 convention
+   and is sound here: the compose/parse mapping logic under test is stateless, the
+   MCP client/connect are deterministic hoisted mocks cleared per test, and the
+   missing-index assertions (`mockConnect not called`) hold because the pre-flight
+   .gitnexus check short-circuits before any connect on a fresh temp repo. Ran
+   twice, 42/42 stable. Non-blocking; noted for pattern awareness.
 
-3. Caps -- PASS. NEIGHBOR_CAP=10 and ADDED_ENTRY_CAP=5 are exported consts
-   (lines 17,19). Guards use `>=` BEFORE push in both loops (lines 120,128,156),
-   so no off-by-one. Tests assert exactly 10 quoted terms from 11 neighbors and
-   exactly 5 additions from 8 candidates.
+6. LOW -- Non-ASCII characters (unicode arrows in UNICODE_ARROW_PATTERN; a
+   unicode arrow and an accented char in test fixtures) are committed in the .ts
+   source and test files. This is
+   PERMITTED by the repo's enforced pre-commit hook (.git/hooks/pre-commit), which
+   bans non-ASCII only in .yml/.yaml/.sh/.md and explicitly excludes TypeScript/JS
+   ("Node.js handles UTF-8 fine"). The .md docs and skills changed this phase are
+   ASCII-clean (verified). It strictly conflicts with the CLAUDE.md "ASCII only in
+   any file" text; `\uXXXX` escapes in the regex and in fixtures would satisfy
+   both the rule and the hook. Given the enforced policy, non-blocking.
 
-4. Merge -- PASS. existingIds seeded from `result.top_entries` (line 153), which
-   at that point already includes both prime's direct hits AND the appended
-   globals -> dedupe covers both. Each addition gets `via: 'graph-neighbor'`
-   (line 159); additions are appended AFTER direct hits (line 162), so they rank
-   strictly below; capped at ADDED_ENTRY_CAP. Tests confirm order [direct...,
-   neighbors...], via marker only on neighbors, and dedupe against direct hits.
+## Checklist verification
 
-5. Graceful skip (KEY SAFETY PROPERTY) -- PASS. The entire expansion is inside
-   one try/catch (lines 111-168) whose catch is a no-op, leaving `result`
-   exactly as prime returned it. getProvider() is inside the try, so a provider
-   throw is caught. Per-symbol context() calls have their own inner try/catch
-   (continue on throw). The KB neighbor query and merge are inside the outer try.
-   Skips entirely when hint_symbols is empty/absent (line 110 guard). I could
-   find no path that makes prime throw or emit error text when the CI/graph side
-   fails. Tests cover getProvider-throws and context-throws-for-every-symbol,
-   both yielding output identical to non-expanded prime.
+1. D1 provider abstraction -- PASS. `map` and `flow` added to the
+   CodeIntelligenceProvider interface (code-intelligence.ts) and implemented on
+   GitNexusProvider. Both bodies route through `callGitNexus('cypher', ...)`
+   (and flow's steps via a second callGitNexus), inheriting the pre-flight index
+   check (verified by the missing-index tests), resilience, and freshness note.
+   Registered in src/index.ts next to the code_* block via
+   `wrapTool('code_map'|'code_flow', ...)` with "Prefer this over ..." routing
+   descriptions. No lbug parsing anywhere -- only cypher.
 
-6. FTS-safety -- PASS. ftsSafeTerm tokenizes on [A-Za-z0-9_]+ and quotes each
-   token; names with no usable token return null and are filtered out
-   (lines 138-141), so one FTS-hostile neighbor degrades to skipping that
-   neighbor, not killing the batch. Test "FTS-hostile neighbor is skipped"
-   confirms `((` drops out while `goodName` survives as `"goodName"`. (See
-   finding 1 for the separate AND-semantics effectiveness note.)
+2. Markdown parsing + ASCII -- PASS. parseMarkdownTable is a pure, exported
+   function; skips lines[0]=header and lines[1]=separator, data from index 2;
+   returns [] for empty/single-line/header-only input; fills missing trailing
+   cells with ''. Verified against the child's REAL output shape (probe against
+   live index): `| label | symbols | cohesion | keywords |` etc. -- matches
+   exactly. extractCypherPayload correctly strips the `\n\n---\n**Next:**` hint
+   suffix before JSON.parse (safe because JSON.stringify escapes the markdown's
+   own newlines, so the split token cannot appear inside the payload).
+   asciiSanitizeLabel maps 7 unicode arrow codepoints -> '->' and any other
+   non-ASCII -> '?'; the live process labels use a unicode arrow and are
+   handled. Unit tests
+   cover all of the above incl. malformed/empty/truncated rows. (See finding 3
+   for the pipe-escaping robustness note.)
 
-7. Tests meaningful -- PASS. 13 tests, all green. Real over-limit inputs for
-   both caps, dedupe against direct hits, via marker + below-direct ranking,
-   both graceful-skip paths (getProvider throws; context throws), isError
-   result, FTS-hostile neighbor, and hint_symbols-absent skip. KB constraint 1
-   honored: vi.hoisted() mock fns, vi.mock factories, vi.resetModules() +
-   dynamic import at the start of each expansion test.
+3. code_map injection safety -- PASS. `top` is zod-constrained
+   (z.number().int().positive()); the provider re-guards to a positive number or
+   default 20; it is passed as the `$top` bind param, NOT interpolated. `repo` is
+   passed as a param, never string-interpolated into the query. There is no raw
+   string interpolation of any user input into the cypher text. EMPIRICALLY
+   CONFIRMED the child supports `LIMIT $top` (returned 3 rows for {top:3}); this
+   was the highest-risk item and it works.
 
-8. Build + tests -- PASS. `npm run build` (tsc) exit 0.
-   `npx vitest run tests/knowledge/kb-session-prime.test.ts` 13/13 pass. Full
-   `npx vitest run`: 1667 passed, 2 failed, 14 skipped -- the 2 failures are
-   ONLY the known pre-existing timezone tests in tests/time-utils.test.ts
-   (yashr-302). Matches T1.4 progress.json note.
+4. code_flow filters + step cap -- PASS. from/to/name each become
+   `CONTAINS $param` ANDed; WHERE omitted entirely when none given (test asserts
+   params={} and no WHERE). Per-process steps lookup is capped at
+   MAX_FLOW_STEP_LOOKUPS=5 (const + comment explaining fan-out bound); test
+   asserts 8 matched rows -> exactly 1 list + 5 step calls. Step query keyed on
+   the RAW label -- verified live that the raw process label (entry, unicode
+   arrow with surrounding spaces, terminal) matches the stored heuristicLabel and
+   returns ordered
+   steps. (See findings 1, 2.)
 
-9. ASCII -- PASS. No non-ASCII bytes in kb-session-prime.ts,
-   kb-session-prime.test.ts, or either spike doc.
+5. T2.3 embeddings LOCAL branch -- PASS. `--embeddings` wired into
+   skills/pm/index.md step 3 AND skills/pm/doer-reviewer-loop.md's doer VERIFY
+   re-index step. docs/code-intelligence-embeddings.md updated with a "T2.3 wiring
+   done" section. Default behavior unchanged when the flag is absent (additive;
+   preserved unless --drop-embeddings). win32 exact-scan caveat + one-time ~87 MB
+   download both documented. No secret/API key committed (LOCAL path needs none;
+   grep of the diff shows no key/token/config field). No src/ code path builds the
+   analyze command line, so docs-only was the correct scope per the LOCAL rule.
+   (Live re-index during T2.4 populated embeddings 0 -> 2359, meta.json confirms.)
 
-## Spike sanity check
+6. Tests meaningful -- PASS. codeMapSchema (4) + codeFlowSchema (2) validation;
+   parseMarkdownTable pure-unit (4, incl. empty/single-line/header-only/short
+   rows); asciiSanitizeLabel (3, incl. arrow + stray non-ASCII); map() mapping +
+   default/explicit top + ASCII sanitize (3); map() missing-index reuse (1);
+   flow() name/from+to/no-filter WHERE behavior (3); flow() steps + arrow sanitize
+   (1); flow() step cap at 5 (1); flow() missing-index reuse (1). vi.hoisted mock
+   factories present. (Deviation from the literal resetModules pattern is finding
+   5; not a defect.)
 
-- T1.1 (docs/code-intelligence-child-surface.md): present, internally
-  consistent. 13-tool inventory, three capability sections each ending in an
-  explicit ladder rung, and a Decisions table whose rungs match the section
-  conclusions (communities -> rung 2 compose via cypher; flows -> rung 2 compose
-  via cypher; upstream-for-tests -> rung 1/2 direct impact + isTestPath filter).
-  Documents the call_graph-broken-on-1.6.7 finding that justifies T1.3 using
-  context. Consistent with progress.json T1.1 note.
-- T1.2 (docs/code-intelligence-embeddings.md): present. Classification LOCAL on
-  line 1, evidence + cost sections complete, consistent with progress.json T1.2
-  note. One cosmetic wording inconsistency (finding 2).
+7. Build + tests -- PASS. `npm run build` (tsc) exit 0. `npx vitest run`: 1690
+   passed, 2 failed (ONLY tests/time-utils.test.ts timezone, yashr-302), 14
+   skipped. code-intelligence.test.ts 42/42.
+
+8. ASCII sweep -- PASS with note. docs/code-intelligence-embeddings.md,
+   skills/pm/index.md, skills/pm/doer-reviewer-loop.md are ASCII-clean. Non-ASCII
+   in the two .ts files is permitted by the enforced pre-commit hook (finding 6).
 
 ## Summary
 
-APPROVED. 0 HIGH, 1 MEDIUM, 3 LOW. The MEDIUM is a plan-inherited FTS AND-vs-OR
-effectiveness limitation that never compromises safety or correctness and is a
-clean backlog follow-up. The load-bearing safety property is airtight, tests are
-substantive and green, providers are untouched, and both spikes are present and
-self-consistent.
+APPROVED. 0 HIGH, 0 MEDIUM, 6 LOW. Both tools faithfully implement the T1.1
+Decisions table, route through callGitNexus, avoid lbug, and are registered with
+routing guidance. The one query that could have been silently broken
+(`LIMIT $top`) was verified working against the live child, along with the raw-
+label steps lookup and CONTAINS filtering -- code_map and code_flow are correct
+end-to-end. Embeddings correctly took the LOCAL docs+flag branch with no code,
+no key, and unchanged defaults. All six findings are documented approximations,
+cosmetic wording, or enforced-policy-permitted style; none blocks the phase.
