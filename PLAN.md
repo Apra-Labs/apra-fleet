@@ -287,22 +287,46 @@ Source of truth: `requirements.md` (design decisions inline; no design.md).
   byte-identical, committed as `docs(pm): code intelligence instructions in
   reviewer dispatch template`.
 
-### T3.3 -- Confirm fleet-mode templates carry CI + KB instructions (F1.3)
+### T3.3 -- Fill CI gap in tpl-planner.md; confirm fleet-mode templates (F1.3)
 
-- **Model:** claude-haiku-4-5
-- **Files:** `skills/pm/tpl-planner.md`, `skills/pm/tpl-doer.md`,
-  `skills/pm/tpl-reviewer.md` (read-and-confirm; edit only if a gap is found).
-- **What to do:** read all three and confirm each contains BOTH: (a) a
-  kb_session_prime instruction, and (b) code intelligence tool guidance
-  (code_graph/code_impact/code_query/code_context, prefer over Glob/Grep).
-  Planning-time grep found kb_session_prime + CI guidance hits in all three
-  (tpl-planner.md line 8, tpl-doer.md lines 47/57, tpl-reviewer.md lines 76-79),
-  so the expected outcome is confirmation with NO edits. If a template lacks one
-  of the two elements, add it in the same style as its siblings; otherwise make
-  no changes and record the confirmation (per file, what was found and where) in
-  progress.json notes for this task.
-- **Done criteria:** written confirmation per file in progress.json; zero diffs
-  unless a real gap was found; if edits were needed they are committed as
+- **Model:** claude-haiku-4-5 (stays haiku because the exact paragraph to insert
+  is given verbatim below -- no drafting judgment required).
+- **Files:** `skills/pm/tpl-planner.md` (edit -- gap confirmed),
+  `skills/pm/tpl-doer.md`, `skills/pm/tpl-reviewer.md` (read-and-confirm).
+- **Verified reality (plan review, 2026-07-06):** each template must contain
+  BOTH: (a) a kb_session_prime instruction, and (b) code intelligence tool
+  guidance (code_graph/code_impact/code_query/code_context, prefer over
+  Glob/Grep). tpl-doer.md (lines 47, 57) and tpl-reviewer.md (lines 76-79) carry
+  both elements. tpl-planner.md carries ONLY the kb_session_prime instruction
+  (line 8) and has NO code intelligence tool guidance -- grep for
+  `code_graph|code_impact|code_query|code_context|code intelligence|Glob/Grep`
+  returns zero hits in that file. A gap exists and must be fixed.
+- **What to do:**
+  1. In `skills/pm/tpl-planner.md`, insert the following section verbatim after
+     the "Knowledge Bank" section (i.e. after the line "If the KB is empty
+     (first sprint on this repo), skip and proceed normally.", currently
+     line 21) and before the "## Planning Model" heading:
+
+     ```
+     ## Code Intelligence (use while planning)
+
+     For symbol lookups, call chain tracing, and impact analysis while planning,
+     use the fleet code intelligence tools (code_graph, code_impact, code_query,
+     code_context) -- e.g. code_query to locate an implementation you are about
+     to write tasks against, code_context to see its callers and flows. Never
+     use Glob/Grep or file reads for structural questions -- the answer is
+     pre-indexed.
+     ```
+
+     Keep a blank line above and below the new section; do not alter any other
+     part of the file.
+  2. Read `tpl-doer.md` and `tpl-reviewer.md` and confirm both elements are
+     present in each; make no edits to them unless an element is genuinely
+     missing (not expected). Record the confirmation (per file, what was found
+     and where) plus the tpl-planner.md fix in progress.json notes for this task.
+- **Done criteria:** tpl-planner.md contains the new section exactly as given
+  (ASCII only); tpl-doer.md and tpl-reviewer.md are byte-identical unless a real
+  gap was found; written confirmation per file in progress.json; committed as
   `docs(pm): fill code intelligence gaps in fleet-mode templates`.
 
 ### T3.4 -- VERIFY Phase 3 (sprint-final)
@@ -333,5 +357,5 @@ Source of truth: `requirements.md` (design decisions inline; no design.md).
 | T2.3 | --   | VERIFY Phase 2                            | (verify, none)    |
 | T3.1 | F1.1 | Tool description routing guidance         | claude-haiku-4-5  |
 | T3.2 | F1.2 | Reviewer dispatch template paragraph      | claude-haiku-4-5  |
-| T3.3 | F1.3 | Confirm fleet-mode templates              | claude-haiku-4-5  |
+| T3.3 | F1.3 | Fill tpl-planner CI gap + confirm tpls    | claude-haiku-4-5  |
 | T3.4 | --   | VERIFY Phase 3 + sprint done criteria     | (verify, none)    |
