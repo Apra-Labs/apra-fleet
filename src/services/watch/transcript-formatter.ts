@@ -20,7 +20,7 @@ export interface FormattedEvent {
   detail?: boolean;
 }
 
-const MAX_DETAIL_LINES = 20; // cap per edit/write/result block in verbose mode
+const DETAIL_CAP = 40; // cap per output/diff/result block (thinking is the only -v-gated content)
 
 /** Collapse whitespace and cap length -- for prose. */
 function truncate(s: string, n: number): string {
@@ -41,14 +41,14 @@ function timeOf(ev: any): string | null {
 }
 
 /** Render a block of text as capped detail lines of a given kind, with an optional per-line prefix. */
-function detailLines(text: string, prefix: string, kind: LineKind): FormattedEvent[] {
+function detailLines(text: string, prefix: string, kind: LineKind, cap: number = DETAIL_CAP): FormattedEvent[] {
   const lines = text.split('\n');
   const out: FormattedEvent[] = [];
-  for (const line of lines.slice(0, MAX_DETAIL_LINES)) {
+  for (const line of lines.slice(0, cap)) {
     out.push({ time: null, marker: '', kind, detail: true, text: prefix + clip(line, 200) });
   }
-  if (lines.length > MAX_DETAIL_LINES) {
-    out.push({ time: null, marker: '', kind: 'dim', detail: true, text: `... (${lines.length - MAX_DETAIL_LINES} more lines)` });
+  if (lines.length > cap) {
+    out.push({ time: null, marker: '', kind: 'dim', detail: true, text: `... (${lines.length - cap} more lines)` });
   }
   return out;
 }
@@ -73,11 +73,24 @@ function toolHeader(tool: string, input: any): string {
   if (!input || typeof input !== 'object') return tool;
   switch (tool) {
     case 'Read':
+      return input.file_path ? `${tool} ${path.basename(String(input.file_path))}` : tool;
     case 'Edit':
     case 'MultiEdit':
-    case 'Write':
-    case 'NotebookEdit':
-      return input.file_path ? `${tool} ${path.basename(String(input.file_path))}` : tool;
+    case 'NotebookEdit': {
+      if (!input.file_path) return tool;
+      const name = path.basename(String(input.file_path));
+      // Compact +added/-removed summary so the default view conveys edit size.
+      const rm = typeof input.old_string === 'string' && input.old_string.length ? input.old_string.split('\n').length : 0;
+      const add = typeof input.new_string === 'string' && input.new_string.length ? input.new_string.split('\n').length : 0;
+      const delta = add || rm ? ` (+${add} -${rm})` : '';
+      return `${tool} ${name}${delta}`;
+    }
+    case 'Write': {
+      if (!input.file_path) return tool;
+      const name = path.basename(String(input.file_path));
+      const n = typeof input.content === 'string' ? input.content.split('\n').length : 0;
+      return `${tool} ${name}${n ? ` (${n} lines)` : ''}`;
+    }
     case 'Bash': {
       // Body after the '$' marker is the command itself (first line).
       const cmd = typeof input.command === 'string' ? input.command.split('\n')[0] : '';
@@ -94,8 +107,12 @@ function toolHeader(tool: string, input: any): string {
   }
 }
 
-/** Verbose detail lines that follow a tool_use header. */
-function toolVerboseDetail(tool: string, input: any): FormattedEvent[] {
+/**
+ * Detail lines that follow a tool_use header: full edit diffs, written file
+ * contents, and multi-line command bodies. All shown by default -- thinking is
+ * the only content reserved for verbose.
+ */
+function toolDetail(tool: string, input: any): FormattedEvent[] {
   if (!input || typeof input !== 'object') return [];
   switch (tool) {
     case 'Edit':
@@ -113,7 +130,7 @@ function toolVerboseDetail(tool: string, input: any): FormattedEvent[] {
     case 'Write':
       return typeof input.content === 'string' ? detailLines(input.content, '+ ', 'add') : [];
     case 'Bash': {
-      // Header already shows line 1; show any continuation lines dimmed.
+      // Header shows line 1; show any continuation lines dimmed.
       if (typeof input.command !== 'string') return [];
       const rest = input.command.split('\n').slice(1);
       return rest.length > 0 ? detailLines(rest.join('\n'), '', 'dim') : [];
@@ -145,18 +162,20 @@ function formatClaude(ev: any, verbose: boolean): FormattedEvent[] {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
         // Prose: no label, no marker.
-        out.push({ time, marker: '', kind: 'info', text: truncate(block.text, verbose ? 400 : 100) });
+        out.push({ time, marker: '', kind: 'info', text: truncate(block.text, 400) });
       } else if (block.type === 'tool_use' && typeof block.name === 'string') {
         out.push({ time, marker: toolMarker(block.name), kind: 'info', text: toolHeader(block.name, block.input) });
-        if (verbose) out.push(...toolVerboseDetail(block.name, block.input));
+        out.push(...toolDetail(block.name, block.input));
       } else if (block.type === 'thinking' && verbose && typeof block.thinking === 'string' && block.thinking.trim()) {
+        // Thinking is the ONLY content reserved for verbose (-v).
         out.push({ time, marker: '', kind: 'dim', text: `thinking: ${truncate(block.thinking, 240)}` });
       }
     }
     return out;
   }
 
-  if (ev.type === 'user' && verbose && Array.isArray(content)) {
+  // Tool results (command/tool output) are the "logs" -- always shown.
+  if (ev.type === 'user' && Array.isArray(content)) {
     const out: FormattedEvent[] = [];
     for (const block of content) {
       if (!block || typeof block !== 'object' || block.type !== 'tool_result') continue;
@@ -173,9 +192,9 @@ function formatClaude(ev: any, verbose: boolean): FormattedEvent[] {
 /**
  * Parse and format one raw transcript JSONL line for the given provider.
  * Returns [] to skip the line. Claude is fully parsed; other providers fall
- * back to a compact raw preview. When verbose is true, edits show diffs,
- * writes show content, bash shows the full command + output, and thinking is
- * included.
+ * back to a compact raw preview. Everything -- edit diffs, written content,
+ * command bodies and outputs -- is shown by default; verbose adds only the
+ * model's thinking/reasoning.
  */
 export function formatTranscriptLine(provider: string, raw: string, verbose = false): FormattedEvent[] {
   const line = raw.trim();

@@ -16,12 +16,12 @@ describe('formatTranscriptLine (claude, compact)', () => {
     expect(formatTranscriptLine('claude', '   ')).toEqual([]);
   });
 
-  it('suppresses user/tool_result events in compact mode', () => {
+  it('skips empty tool_result events (no content)', () => {
     const line = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result' }] } });
     expect(formatTranscriptLine('claude', line)).toEqual([]);
   });
 
-  it('suppresses thinking blocks in compact mode', () => {
+  it('suppresses thinking blocks by default (verbose-only)', () => {
     expect(formatTranscriptLine('claude', assistant([{ type: 'thinking', thinking: 'hmm' }]))).toEqual([]);
   });
 
@@ -66,47 +66,44 @@ describe('formatTranscriptLine (claude, compact)', () => {
   });
 });
 
-describe('formatTranscriptLine (claude, verbose)', () => {
-  it('renders an Edit as a header plus a - / + diff, marked as detail', () => {
+describe('formatTranscriptLine (claude, default view shows the logs)', () => {
+  it('renders an Edit header with a (+added -removed) summary plus the diff, by default', () => {
     const line = assistant([
       { type: 'tool_use', name: 'Edit', input: { file_path: '/a/cart.js', old_string: 'const X = 1;', new_string: 'const X = 2;' } },
     ]);
-    const out = formatTranscriptLine('claude', line, true);
-    expect(out[0]).toMatchObject({ marker: '*', text: 'Edit cart.js' });
+    const out = formatTranscriptLine('claude', line); // no verbose flag
+    expect(out[0]).toMatchObject({ marker: '*', text: 'Edit cart.js (+1 -1)' });
     const del = out.find((e) => e.kind === 'del');
     const add = out.find((e) => e.kind === 'add');
     expect(del).toMatchObject({ detail: true, text: '- const X = 1;' });
     expect(add).toMatchObject({ detail: true, text: '+ const X = 2;' });
   });
 
-  it('renders Write content as added detail lines', () => {
+  it('renders a Write header with a (N lines) summary plus content, by default', () => {
     const line = assistant([
       { type: 'tool_use', name: 'Write', input: { file_path: '/a/n.md', content: 'line1\nline2' } },
     ]);
-    const out = formatTranscriptLine('claude', line, true);
-    expect(out[0]).toMatchObject({ marker: '*', text: 'Write n.md' });
+    const out = formatTranscriptLine('claude', line);
+    expect(out[0]).toMatchObject({ marker: '*', text: 'Write n.md (2 lines)' });
     expect(out.filter((e) => e.kind === 'add').map((e) => e.text)).toEqual(['+ line1', '+ line2']);
   });
 
-  it('shows Bash continuation lines only in verbose', () => {
+  it('shows Bash continuation lines by default', () => {
     const line = assistant([
       { type: 'tool_use', name: 'Bash', input: { command: 'echo one\necho two', description: 'x' } },
     ]);
-    const compact = formatTranscriptLine('claude', line, false);
-    expect(compact).toHaveLength(1);
-    expect(compact[0].text).toBe('echo one'); // header = first line
-    const v = formatTranscriptLine('claude', line, true);
-    expect(v.some((e) => e.detail && e.text === 'echo two')).toBe(true);
+    const out = formatTranscriptLine('claude', line);
+    expect(out[0].text).toBe('echo one'); // header = first line
+    expect(out.some((e) => e.detail && e.text === 'echo two')).toBe(true);
   });
 
-  it('renders tool_result output only in verbose', () => {
+  it('renders tool_result output by default', () => {
     const line = JSON.stringify({
       type: 'user',
       message: { content: [{ type: 'tool_result', content: 'All tests passed', is_error: false }] },
     });
-    expect(formatTranscriptLine('claude', line, false)).toEqual([]);
-    const v = formatTranscriptLine('claude', line, true);
-    expect(v.some((e) => e.kind === 'out' && e.detail && e.text.includes('All tests passed'))).toBe(true);
+    const out = formatTranscriptLine('claude', line);
+    expect(out.some((e) => e.kind === 'out' && e.detail && e.text.includes('All tests passed'))).toBe(true);
   });
 
   it('marks error tool_results as del kind with a ! prefix', () => {
@@ -114,15 +111,15 @@ describe('formatTranscriptLine (claude, verbose)', () => {
       type: 'user',
       message: { content: [{ type: 'tool_result', content: 'boom', is_error: true }] },
     });
-    const v = formatTranscriptLine('claude', line, true);
-    expect(v.some((e) => e.kind === 'del' && e.text === '! boom')).toBe(true);
+    const out = formatTranscriptLine('claude', line);
+    expect(out.some((e) => e.kind === 'del' && e.text === '! boom')).toBe(true);
   });
 
-  it('caps long content and notes how many lines were hidden', () => {
-    const content = Array.from({ length: 30 }, (_, i) => `line${i}`).join('\n');
+  it('caps long content (>40 lines) and notes how many lines were hidden', () => {
+    const content = Array.from({ length: 50 }, (_, i) => `line${i}`).join('\n');
     const line = assistant([{ type: 'tool_use', name: 'Write', input: { file_path: '/a/big.txt', content } }]);
-    const v = formatTranscriptLine('claude', line, true);
-    expect(v.some((e) => e.text.includes('more lines'))).toBe(true);
+    const out = formatTranscriptLine('claude', line);
+    expect(out.some((e) => e.text.includes('more lines'))).toBe(true);
   });
 
   it('includes thinking (dimmed) only in verbose', () => {
