@@ -1,45 +1,175 @@
 {
+  "sprint": "code-intelligence-hardening",
+  "track": "single",
+  "branch": "feat/code-intelligence-abstraction",
+  "base": "main",
+  "worktree": "C:\\ws_yash\\Repos\\apra-fleet-main\\apra-fleet",
+  "transport": "remote",
+  "epic": "yashr-43h",
+  "lastDispatchedPhase": null,
   "tasks": [
     {
       "id": "T1.1",
-      "title": "Fix kb_session_prime -- rename type/field, update tool names to fleet names",
       "phase": 1,
-      "tier": "cheap",
-      "status": "completed",
-      "notes": "Renamed GitNexusCall -> CodeIntelCall, recommended_gitnexus_calls -> recommended_code_calls, updated tool names to code_context/code_impact with fleet-compatible args. Test file also updated in follow-up commit f381bdf."
+      "title": "Connection resilience for shared GitNexus client (F3.2)",
+      "model": "claude-opus-4-8",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.1",
+      "commit": null,
+      "notes": ""
     },
     {
       "id": "T1.2",
-      "title": "Add skills/pm/index.md to repo source control",
       "phase": 1,
-      "tier": "cheap",
-      "status": "completed",
-      "notes": "Copied exact content from ~/.claude/skills/pm/index.md to repo at skills/pm/index.md"
+      "title": "Pre-flight index check with actionable error (F3.1)",
+      "model": "claude-sonnet-4-6",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.2",
+      "commit": null,
+      "notes": ""
     },
     {
       "id": "T1.3",
-      "title": "Fix installer dev-mode PM skills overlay (skills/pm/ fallback)",
       "phase": 1,
-      "tier": "standard",
-      "status": "completed",
-      "notes": "Added overlay logic to both SEA and non-SEA blocks in install.ts to copy skills/pm/ from repo root on top of installed PM skills"
+      "title": "Code intelligence health in fleet_status (F3.3)",
+      "model": "claude-sonnet-4-6",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.3",
+      "commit": null,
+      "notes": ""
     },
     {
       "id": "T1.4",
-      "title": "Build, install, verify deployed templates use fleet tool names",
       "phase": 1,
-      "tier": "cheap",
-      "status": "completed",
-      "notes": "npm run build: success, npm test: 1632 tests (4 pre-existing failures in time-utils), npm install: success with overlay, all 3 verification checks passed"
+      "title": "VERIFY Phase 1 -- build, tests, gitnexus analyze, push",
+      "model": null,
+      "type": "verify",
+      "status": "pending",
+      "bead": "yashr-43h.4",
+      "commit": null,
+      "notes": ""
     },
     {
-      "id": "VERIFY-1",
-      "title": "Reviewer -- build, tests, field naming, installed templates",
-      "phase": 1,
-      "tier": "premium",
+      "id": "T2.1",
+      "phase": 2,
+      "title": "Freshness note + pure comparison function (F2.2)",
+      "model": "claude-sonnet-4-6",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.5",
+      "commit": null,
+      "notes": ""
+    },
+    {
+      "id": "T2.2",
+      "phase": 2,
+      "title": "Re-index at VERIFY checkpoints in PM docs (F2.1)",
+      "model": "claude-haiku-4-5",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.6",
+      "commit": null,
+      "notes": ""
+    },
+    {
+      "id": "T2.3",
+      "phase": 2,
+      "title": "VERIFY Phase 2 -- build, tests, gitnexus analyze, push",
+      "model": null,
       "type": "verify",
-      "status": "ready_for_review",
-      "notes": "All 4 tasks completed and pushed. Awaiting PM review."
+      "status": "pending",
+      "bead": "yashr-43h.7",
+      "commit": null,
+      "notes": ""
+    },
+    {
+      "id": "T3.1",
+      "phase": 3,
+      "title": "Routing guidance in tool descriptions (F1.1)",
+      "model": "claude-haiku-4-5",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.8",
+      "commit": null,
+      "notes": ""
+    },
+    {
+      "id": "T3.2",
+      "phase": 3,
+      "title": "CI+KB paragraph in reviewer dispatch template (F1.2)",
+      "model": "claude-haiku-4-5",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.9",
+      "commit": null,
+      "notes": ""
+    },
+    {
+      "id": "T3.3",
+      "phase": 3,
+      "title": "Fill tpl-planner CI gap + confirm templates (F1.3)",
+      "model": "claude-haiku-4-5",
+      "type": "work",
+      "status": "pending",
+      "bead": "yashr-43h.10",
+      "commit": null,
+      "notes": ""
+    },
+    {
+      "id": "T3.4",
+      "phase": 3,
+      "title": "VERIFY Phase 3 -- sprint-final checks, ASCII sweep, push",
+      "model": null,
+      "type": "verify",
+      "status": "pending",
+      "bead": "yashr-43h.11",
+      "commit": null,
+      "notes": ""
+    }
+  ],
+  "dispatches": [
+    {
+      "seq": 1,
+      "role": "planner",
+      "model": "claude-fable-5",
+      "phase": 0,
+      "tasks": [],
+      "tokens": 71001,
+      "toolUses": 23,
+      "ms": 285793
+    },
+    {
+      "seq": 2,
+      "role": "plan-reviewer",
+      "model": "claude-fable-5",
+      "phase": 0,
+      "tasks": [],
+      "tokens": 64369,
+      "toolUses": 19,
+      "ms": 253273
+    },
+    {
+      "seq": 3,
+      "role": "planner",
+      "model": "claude-fable-5",
+      "phase": 0,
+      "tasks": [],
+      "tokens": null,
+      "toolUses": null,
+      "ms": null
+    },
+    {
+      "seq": 4,
+      "role": "plan-reviewer",
+      "model": "claude-fable-5",
+      "phase": 0,
+      "tasks": [],
+      "tokens": null,
+      "toolUses": null,
+      "ms": null
     }
   ]
 }
