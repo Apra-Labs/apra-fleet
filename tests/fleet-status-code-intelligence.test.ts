@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   codeIntelligenceHealth,
   codeIntelligenceCompactLine,
+  computeTopSymbols,
 } from '../src/tools/check-status.js';
 
 // ---------------------------------------------------------------------------
@@ -134,5 +135,163 @@ describe('codeIntelligenceCompactLine()', () => {
       headStatus: 'unavailable',
     });
     expect(line).toContain('indexed deadbeef, HEAD comparison unavailable');
+  });
+
+  it('appends the top-symbols fragment when present', () => {
+    const line = codeIntelligenceCompactLine({
+      present: true,
+      nodes: 1,
+      edges: 2,
+      files: 3,
+      indexedAt: '2026-07-05T12:00:00.000Z',
+      lastCommit: 'deadbeef00001111222233334444555566667777',
+      headStatus: 'matching',
+      topSymbols: [{ target: 'a', count: 12 }, { target: 'b', count: 9 }],
+    });
+    expect(line).toBe(
+      'code-intel: index present | 1 nodes / 2 edges / 3 files | indexed 2026-07-05T12:00:00.000Z | matching HEAD | top symbols (30d): a (12), b (9)',
+    );
+  });
+
+  it('omits the top-symbols fragment entirely when absent', () => {
+    const line = codeIntelligenceCompactLine({ present: true, headStatus: 'matching' });
+    expect(line).not.toContain('top symbols');
+  });
+
+  it('appends the top-symbols fragment even on the no-index line', () => {
+    const line = codeIntelligenceCompactLine({
+      present: false,
+      topSymbols: [{ target: 'x', count: 1 }],
+    });
+    expect(line).toBe("code-intel: no index (run 'npx gitnexus analyze' or /pm index) | top symbols (30d): x (1)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeTopSymbols() (T4.2, design D8 read spec)
+//
+// Single pass over usage.jsonl AND usage.jsonl.1 (if present), 30-day
+// window, aggregate count by target, top 5. Never throws -- no file, an
+// unreadable file, or any other error degrades to undefined (segment
+// omitted). computeTopSymbols() takes the usage/rotated paths as optional
+// overrides (defaulting to the real ~/.apra-fleet paths) purely so tests can
+// point it at real temp files instead of mocking fs.
+// ---------------------------------------------------------------------------
+describe('computeTopSymbols()', () => {
+  let usageDir: string;
+  let usagePath: string;
+  let rotatedPath: string;
+  const NOW = new Date('2026-07-06T00:00:00.000Z').getTime();
+
+  function line(target: string, daysAgo: number): string {
+    const ts = new Date(NOW - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+    return JSON.stringify({ ts, tool: 'code_graph', target, repo: null });
+  }
+
+  beforeEach(() => {
+    usageDir = mkdtempSync(join(tmpdir(), 'code-intel-top-symbols-test-'));
+    usagePath = join(usageDir, 'usage.jsonl');
+    rotatedPath = join(usageDir, 'usage.jsonl.1');
+  });
+
+  afterEach(() => {
+    rmSync(usageDir, { recursive: true, force: true });
+  });
+
+  it('returns undefined when neither usage file exists', () => {
+    expect(computeTopSymbols(NOW, usagePath, rotatedPath)).toBeUndefined();
+  });
+
+  it('aggregates counts by target and returns the top 5 by count, descending', () => {
+    const lines = [
+      line('a', 1), line('a', 1), line('a', 1),
+      line('b', 1), line('b', 1),
+      line('c', 1),
+      line('d', 1),
+      line('e', 1),
+      line('f', 1),
+    ];
+    writeFileSync(usagePath, lines.join('\n') + '\n');
+
+    const top = computeTopSymbols(NOW, usagePath, rotatedPath);
+
+    expect(top).toBeDefined();
+    expect(top!.length).toBe(5);
+    expect(top![0]).toEqual({ target: 'a', count: 3 });
+    expect(top![1]).toEqual({ target: 'b', count: 2 });
+    // c, d, e, f are tied at 1 -- exactly one of them is dropped to respect
+    // the top-5 cap, and the remaining four keep count 1 each.
+    expect(top!.slice(2).every((s) => s.count === 1)).toBe(true);
+  });
+
+  it('returns fewer than 5 entries when fewer than 5 distinct targets exist', () => {
+    writeFileSync(usagePath, [line('a', 1), line('b', 1), line('b', 1)].join('\n') + '\n');
+
+    const top = computeTopSymbols(NOW, usagePath, rotatedPath);
+
+    expect(top).toEqual([{ target: 'b', count: 2 }, { target: 'a', count: 1 }]);
+  });
+
+  it('excludes entries older than 30 days', () => {
+    writeFileSync(usagePath, [line('recent', 1), line('old', 31)].join('\n') + '\n');
+
+    const top = computeTopSymbols(NOW, usagePath, rotatedPath);
+
+    expect(top).toEqual([{ target: 'recent', count: 1 }]);
+  });
+
+  it('includes an entry exactly at the 30-day boundary', () => {
+    writeFileSync(usagePath, line('boundary', 30) + '\n');
+
+    const top = computeTopSymbols(NOW, usagePath, rotatedPath);
+
+    expect(top).toEqual([{ target: 'boundary', count: 1 }]);
+  });
+
+  it('reads usage.jsonl.1 in addition to usage.jsonl', () => {
+    writeFileSync(usagePath, line('fromCurrent', 1) + '\n');
+    writeFileSync(rotatedPath, [line('fromRotated', 1), line('fromRotated', 1)].join('\n') + '\n');
+
+    const top = computeTopSymbols(NOW, usagePath, rotatedPath);
+
+    expect(top).toEqual(
+      expect.arrayContaining([
+        { target: 'fromRotated', count: 2 },
+        { target: 'fromCurrent', count: 1 },
+      ]),
+    );
+    expect(top!.length).toBe(2);
+  });
+
+  it('skips unparseable lines without throwing', () => {
+    writeFileSync(usagePath, ['not valid json', line('ok', 1), '{ also not valid'].join('\n') + '\n');
+
+    expect(() => computeTopSymbols(NOW, usagePath, rotatedPath)).not.toThrow();
+    expect(computeTopSymbols(NOW, usagePath, rotatedPath)).toEqual([{ target: 'ok', count: 1 }]);
+  });
+
+  it('skips lines missing ts or target without throwing', () => {
+    writeFileSync(
+      usagePath,
+      [
+        JSON.stringify({ tool: 'code_graph', target: 'noTs', repo: null }),
+        JSON.stringify({ ts: new Date(NOW).toISOString(), tool: 'code_graph', repo: null }),
+        line('ok', 1),
+      ].join('\n') + '\n',
+    );
+
+    expect(computeTopSymbols(NOW, usagePath, rotatedPath)).toEqual([{ target: 'ok', count: 1 }]);
+  });
+
+  it('returns undefined when the usage file exists but every line is unparseable/out of window', () => {
+    writeFileSync(usagePath, ['garbage', line('old', 100)].join('\n') + '\n');
+
+    expect(computeTopSymbols(NOW, usagePath, rotatedPath)).toBeUndefined();
+  });
+
+  it('never throws when the usage path points at a directory instead of a file', () => {
+    // readFileSync on a directory throws EISDIR -- must degrade to undefined.
+    expect(() => computeTopSymbols(NOW, usageDir, rotatedPath)).not.toThrow();
+    expect(computeTopSymbols(NOW, usageDir, rotatedPath)).toBeUndefined();
   });
 });

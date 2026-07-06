@@ -17,6 +17,7 @@ import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, 
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
 import { getActiveLogFile } from '../utils/log-helpers.js';
+import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -201,6 +202,11 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
 // (missing/unparseable meta.json, git unavailable, unknown lastCommit)
 // degrades to a graceful "unavailable" state instead of failing fleet_status.
 // ---------------------------------------------------------------------------
+export interface TopSymbol {
+  target: string;
+  count: number;
+}
+
 export interface CodeIntelligenceHealth {
   present: boolean;
   nodes?: number;
@@ -210,6 +216,7 @@ export interface CodeIntelligenceHealth {
   lastCommit?: string;
   headStatus?: 'matching' | 'behind' | 'unavailable';
   commitsBehind?: number;
+  topSymbols?: TopSymbol[];
 }
 
 interface GitNexusMeta {
@@ -247,6 +254,58 @@ function commitsBehindCount(repoDir: string, lastCommit: string, head: string): 
     return Number.isFinite(count) ? count : null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Top symbols read (T4.2, design D8 read spec). Single pass over usage.jsonl
+// AND usage.jsonl.1 (if present), 30-day window, aggregate count by target,
+// top 5. Degraded-safe: no usage file, an unreadable file, or any other
+// error -> undefined (field/segment omitted entirely from fleet_status).
+// Unparseable individual lines are skipped rather than failing the pass.
+// ---------------------------------------------------------------------------
+const TOP_SYMBOLS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const TOP_SYMBOLS_LIMIT = 5;
+
+function readUsageLines(path: string): string[] {
+  try {
+    return readFileSync(path, 'utf-8').split('\n').filter((line) => line.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function computeTopSymbols(
+  now: number = Date.now(),
+  usagePath: string = USAGE_LOG_PATH,
+  rotatedUsagePath: string = ROTATED_USAGE_LOG_PATH,
+): TopSymbol[] | undefined {
+  try {
+    const lines = [...readUsageLines(usagePath), ...readUsageLines(rotatedUsagePath)];
+    if (lines.length === 0) return undefined;
+
+    const cutoff = now - TOP_SYMBOLS_WINDOW_MS;
+    const counts = new Map<string, number>();
+    for (const line of lines) {
+      try {
+        const record = JSON.parse(line) as { ts?: unknown; target?: unknown };
+        if (typeof record.ts !== 'string' || typeof record.target !== 'string') continue;
+        const ts = new Date(record.ts).getTime();
+        if (!Number.isFinite(ts) || ts < cutoff) continue;
+        counts.set(record.target, (counts.get(record.target) ?? 0) + 1);
+      } catch {
+        // Unparseable line -- skip it, keep going.
+      }
+    }
+
+    if (counts.size === 0) return undefined;
+
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_SYMBOLS_LIMIT)
+      .map(([target, count]) => ({ target, count }));
+  } catch {
+    return undefined;
   }
 }
 
@@ -302,16 +361,23 @@ function headComparisonLabel(health: CodeIntelligenceHealth): string {
   return `indexed ${shortSha}, HEAD comparison unavailable`;
 }
 
+/** Render the trailing "top symbols (30d): a (12), b (9), ..." fragment, or "" when absent. */
+function topSymbolsFragment(topSymbols?: TopSymbol[]): string {
+  if (!topSymbols || topSymbols.length === 0) return '';
+  const rendered = topSymbols.map((s) => `${s.target} (${s.count})`).join(', ');
+  return ` | top symbols (30d): ${rendered}`;
+}
+
 /** Render the one-line compact fleet_status code intelligence summary. */
 export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): string {
   if (!health.present) {
-    return "code-intel: no index (run 'npx gitnexus analyze' or /pm index)";
+    return "code-intel: no index (run 'npx gitnexus analyze' or /pm index)" + topSymbolsFragment(health.topSymbols);
   }
   const nodes = health.nodes ?? 0;
   const edges = health.edges ?? 0;
   const files = health.files ?? 0;
   const indexedAt = health.indexedAt ?? 'unknown';
-  return `code-intel: index present | ${nodes} nodes / ${edges} edges / ${files} files | indexed ${indexedAt} | ${headComparisonLabel(health)}`;
+  return `code-intel: index present | ${nodes} nodes / ${edges} edges / ${files} files | indexed ${indexedAt} | ${headComparisonLabel(health)}${topSymbolsFragment(health.topSymbols)}`;
 }
 
 export type FleetStatusInput = z.infer<typeof fleetStatusSchema>;
@@ -371,6 +437,17 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     // Defensive: codeIntelligenceHealth() already degrades gracefully
     // internally, but fleet_status must never fail because of this section.
     codeIntelligence = { present: false };
+  }
+
+  // T4.2: usage-telemetry top symbols (30d), independent of index presence --
+  // recordUsage() fires on every code_* call regardless of whether the repo
+  // has an index. Defensive on top of computeTopSymbols()'s own try/catch;
+  // any failure here just omits the field, never fails fleet_status.
+  try {
+    const topSymbols = computeTopSymbols();
+    if (topSymbols) codeIntelligence.topSymbols = topSymbols;
+  } catch {
+    // omit -- see comment above
   }
 
   if (format === 'json') {
