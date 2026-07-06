@@ -5,6 +5,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
 import { freshnessNote } from './code-intelligence-freshness.js';
+import { maybeScheduleReindex } from './code-intelligence-reindex.js';
+import { logError } from '../utils/log-helpers.js';
 
 let sharedClient: Client | null = null;
 let connectionPromise: Promise<Client> | null = null;
@@ -89,6 +91,14 @@ async function getGitNexusClient(): Promise<Client> {
 // `git rev-parse HEAD`. Never throws -- any failure reading meta.json or
 // running git degrades to "no note" so a stale/missing index or unavailable
 // git never blocks or fails the call.
+//
+// P3 (design D3): when divergence is detected, this is also the trigger point
+// for a background reindex -- "already per-call, already knows repo +
+// divergence; no new watchers, no cron". maybeScheduleReindex() is
+// synchronous and non-blocking (it spawns the child detached/unref'd and
+// returns immediately), so calling it here adds no tool-call latency. Any
+// error from it is swallowed and logged -- it must never affect the note or
+// the tool result.
 function computeFreshnessNote(repo: string): string | null {
   try {
     const metaPath = join(repo, '.gitnexus', 'meta.json');
@@ -96,7 +106,20 @@ function computeFreshnessNote(repo: string): string | null {
     const head = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: repo, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    return freshnessNote(meta.lastCommit, head);
+
+    const diverged = freshnessNote(meta.lastCommit, head) !== null;
+    let reindexScheduled = false;
+    if (diverged) {
+      try {
+        reindexScheduled = maybeScheduleReindex(repo);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        logError('code-intelligence-gitnexus', `maybeScheduleReindex threw for ${repo}: ${detail}`);
+        reindexScheduled = false;
+      }
+    }
+
+    return freshnessNote(meta.lastCommit, head, reindexScheduled);
   } catch {
     return null;
   }

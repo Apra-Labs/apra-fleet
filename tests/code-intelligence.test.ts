@@ -11,6 +11,9 @@ const mockReadFile = vi.hoisted(() => vi.fn());
 const mockCallTool = vi.hoisted(() => vi.fn());
 const mockConnect = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockExecFileSync = vi.hoisted(() => vi.fn());
+const mockMaybeScheduleReindex = vi.hoisted(() => vi.fn());
+const mockLogWarn = vi.hoisted(() => vi.fn());
+const mockLogError = vi.hoisted(() => vi.fn());
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
@@ -21,6 +24,19 @@ vi.mock('fs/promises', () => ({
 // in this file touches child_process, so a blanket mock is safe here.
 vi.mock('child_process', () => ({
   execFileSync: mockExecFileSync,
+}));
+
+// T3.2: the freshness path calls maybeScheduleReindex() on divergence. Mock
+// it here rather than exercising the real spawn logic (that lives in
+// tests/code-intelligence-reindex.test.ts) so these tests stay focused on the
+// wiring: exactly-once scheduling and failure isolation.
+vi.mock('../src/tools/code-intelligence-reindex.js', () => ({
+  maybeScheduleReindex: mockMaybeScheduleReindex,
+}));
+
+vi.mock('../src/utils/log-helpers.js', () => ({
+  logWarn: mockLogWarn,
+  logError: mockLogError,
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
@@ -334,12 +350,13 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     rmSync(tempRepo, { recursive: true, force: true });
   });
 
-  it('appends the freshness note when meta lastCommit differs from stubbed HEAD', async () => {
+  it('appends the freshness note (no suffix) when reindex scheduling declines', async () => {
     writeFileSync(
       join(tempRepo, '.gitnexus', 'meta.json'),
       JSON.stringify({ lastCommit: 'aaaaaaaa1111222233334444555566667777' }),
     );
     mockExecFileSync.mockReturnValue('bbbbbbbb111122223333444455556666777788\n');
+    mockMaybeScheduleReindex.mockReturnValue(false);
 
     const provider = new GitNexusProvider();
     const original = { content: [{ type: 'text', text: 'call graph result' }] };
@@ -357,6 +374,84 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
         "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
         "Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
     });
+    expect(mockMaybeScheduleReindex).toHaveBeenCalledTimes(1);
+    expect(mockMaybeScheduleReindex).toHaveBeenCalledWith(tempRepo);
+  });
+
+  it('appends the freshness note WITH the reindex suffix when scheduling starts one (T3.2)', async () => {
+    writeFileSync(
+      join(tempRepo, '.gitnexus', 'meta.json'),
+      JSON.stringify({ lastCommit: 'aaaaaaaa1111222233334444555566667777' }),
+    );
+    mockExecFileSync.mockReturnValue('bbbbbbbb111122223333444455556666777788\n');
+    mockMaybeScheduleReindex.mockReturnValue(true);
+
+    const provider = new GitNexusProvider();
+    const original = { content: [{ type: 'text', text: 'call graph result' }] };
+    mockCallTool.mockResolvedValueOnce(original);
+
+    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toEqual({
+      type: 'text',
+      text:
+        "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
+        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh." +
+        " A background re-index has been started.",
+    });
+    expect(mockMaybeScheduleReindex).toHaveBeenCalledTimes(1);
+  });
+
+  it('a schedule failure (maybeScheduleReindex throws) does not affect the tool result', async () => {
+    writeFileSync(
+      join(tempRepo, '.gitnexus', 'meta.json'),
+      JSON.stringify({ lastCommit: 'aaaaaaaa1111222233334444555566667777' }),
+    );
+    mockExecFileSync.mockReturnValue('bbbbbbbb111122223333444455556666777788\n');
+    mockMaybeScheduleReindex.mockImplementation(() => {
+      throw new Error('spawn EMFILE');
+    });
+
+    const provider = new GitNexusProvider();
+    const original = { content: [{ type: 'text', text: 'call graph result' }] };
+    mockCallTool.mockResolvedValueOnce(original);
+
+    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+      content: { type: string; text: string }[];
+    };
+
+    // The note is still appended (divergence itself is unaffected), but
+    // without the suffix since scheduling failed -- and, crucially, the call
+    // does not throw or return an error result.
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toEqual({
+      type: 'text',
+      text:
+        "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
+        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+    });
+    expect(mockMaybeScheduleReindex).toHaveBeenCalledTimes(1);
+    expect(mockLogError).toHaveBeenCalled();
+  });
+
+  it('does not call maybeScheduleReindex when there is no divergence', async () => {
+    writeFileSync(
+      join(tempRepo, '.gitnexus', 'meta.json'),
+      JSON.stringify({ lastCommit: 'aaaaaaaa1111222233334444555566667777' }),
+    );
+    mockExecFileSync.mockReturnValue('aaaaaaaa1111222233334444555566667777\n');
+
+    const provider = new GitNexusProvider();
+    const original = { content: [{ type: 'text', text: 'call graph result' }] };
+    mockCallTool.mockResolvedValueOnce(original);
+
+    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+
+    expect(result).toBe(original);
+    expect(mockMaybeScheduleReindex).not.toHaveBeenCalled();
   });
 
   it('does not append a note when meta lastCommit matches stubbed HEAD', async () => {

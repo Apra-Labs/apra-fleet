@@ -42,3 +42,39 @@ describe('freshnessNote()', () => {
     expect(freshnessNote('abc', 'abc')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// freshnessNote() reindexScheduled suffix (T3.2, P3). The function stays pure
+// -- reindexScheduled is just another input -- so these are exact-string
+// checks with no IO or mocking involved.
+// ---------------------------------------------------------------------------
+describe('freshnessNote() reindexScheduled suffix', () => {
+  const lastCommit = 'aaaaaaaa1111222233334444555566667777';
+  const head = 'bbbbbbbb111122223333444455556666777788';
+
+  it('omits the suffix when reindexScheduled is false', () => {
+    expect(freshnessNote(lastCommit, head, false)).toBe(
+      "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
+        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+    );
+  });
+
+  it('omits the suffix when reindexScheduled is omitted (default false)', () => {
+    expect(freshnessNote(lastCommit, head)).toBe(
+      "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
+        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+    );
+  });
+
+  it('appends the exact suffix (with leading space) when reindexScheduled is true', () => {
+    expect(freshnessNote(lastCommit, head, true)).toBe(
+      "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
+        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh." +
+        " A background re-index has been started.",
+    );
+  });
+
+  it('still returns null when SHAs match, regardless of reindexScheduled', () => {
+    expect(freshnessNote(lastCommit, lastCommit, true)).toBeNull();
+  });
+});

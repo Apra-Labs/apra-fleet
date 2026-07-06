@@ -7,10 +7,21 @@
 // Returns null when either SHA is missing or they match; otherwise the
 // verbatim freshness note (first 8 chars of each SHA) that callGitNexus
 // appends to a tool response when the gitnexus index is behind repo HEAD.
-export function freshnessNote(lastCommit: string | undefined, head: string | undefined): string | null {
+//
+// `reindexScheduled` (P3, design D3) is an extra boolean the caller passes in
+// after deciding whether a background reindex was started for this
+// divergence -- the function itself stays pure (no IO, no side effects): when
+// true, the exact suffix " A background re-index has been started." (note
+// the leading space) is appended to the note text.
+export function freshnessNote(
+  lastCommit: string | undefined,
+  head: string | undefined,
+  reindexScheduled = false,
+): string | null {
   if (!lastCommit || !head) return null;
   if (lastCommit === head) return null;
   const shortLastCommit = lastCommit.slice(0, 8);
   const shortHead = head.slice(0, 8);
-  return `[code-intelligence] index is behind repo HEAD (indexed ${shortLastCommit} vs HEAD ${shortHead}). Results may miss recent changes; run 'npx gitnexus analyze' to refresh.`;
+  const base = `[code-intelligence] index is behind repo HEAD (indexed ${shortLastCommit} vs HEAD ${shortHead}). Results may miss recent changes; run 'npx gitnexus analyze' to refresh.`;
+  return reindexScheduled ? `${base} A background re-index has been started.` : base;
 }
