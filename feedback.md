@@ -1,156 +1,169 @@
-# Plan Re-Review -- KB Integrity Sprint (PLAN.md @ b8013d4, design.md @ b97ee58)
+# Phase 1 Review -- KB Integrity Sprint (trust core: F1, F2)
 
-Reviewer: pm-plan-reviewer. Second pass. Scope: verify each of the prior 1
-HIGH / 4 MEDIUM / 1 LOW findings is resolved by the revised PLAN.md and the
-revised design.md (D2 candidate-discovery, D3 content-hash scope, D4 fourth
-FTS site, D7 harvest-is-autowired), re-checked against unchanged source.
+Reviewer: pm-reviewer. Scope: Phase 1 commits c30a7e9 (T1.1 gate clamp),
+c40708b (T1.2 docs), 1f4929e (T1.3 supersede), e8a2f35 (T1.4 contradiction +
+cross-type discovery). Binding: design.md D1, D2 (as revised in b97ee58),
+requirements F1/F2, PLAN.md T1.1-T1.5. Verified against source + a full
+build/test run.
 
 ## Verdict: APPROVED
 
-All six findings from the first pass are resolved, correctly and at the right
-altitude. The revised design.md now carries the fixes as binding decisions
-(not just plan text), so the tasks and the decisions agree. The planner's one
-flagged deviation (adding 'harvest' to the Author enum) is reasonable and
-required by revised D7. The expanded shared-file sequencing on
-sqlite-provider.ts is coherent. One LOW documentation nit remains (below); it
-does not block execution because task order is unambiguous.
-
-## Finding-by-finding resolution
-
-### 1. HIGH (harvest autowired) -- RESOLVED
-
-Revised D7 and T3.2 correct the false premise. T3.2 ("Keep kb_harvest
-autowired; make it honest and low-trust") explicitly: leaves
-src/tools/execute-prompt.ts lines ~323-330 untouched (VERIFY, do NOT remove),
-keeps tests/knowledge/kb-harvest-autowire.test.ts green (the plan names the
-exact wiring strings the test greps for and forbids touching them), removes
-ONLY the redundant "call kb_harvest yourself at session end" manual
-instruction from tpl-doer.md, and adds a behavioral test asserting harvested
-entries are UNVERIFIED + source='harvest'. The autowire is preserved and the
-autowire test cannot break. Confirmed against source: execute-prompt.ts still
-fire-and-forgets kbHarvest with session_transcript; kb-harvest.ts line 114
-already captures UNVERIFIED, so the D1 clamp trivially holds. Resolved.
-
-### 2. MEDIUM (type filter blocks cross-type contradiction) -- RESOLVED
-
-T1.4 is now two coupled halves. HALF B removes `AND e.type = ?` from
-findAudnCandidates (sqlite-provider.ts ~line 242) so symbol-overlap candidates
-of ANY type are discovered; HALF A re-imposes `candidate.type === input.type`
-inside makeAudnDecision for the dedup ('none') and update paths, leaving ONLY
-the contradiction path cross-type. This is coherent against source:
-makeAudnDecision today has no type check, so adding the same-type gate to
-dedup/update exactly preserves T1.3's same-type supersede behavior while the
-widened discovery makes the cross-type contradiction reachable. A cross-type
-candidate with symbol overlap but no contradiction signal correctly falls
-through to `continue` (fails the dedup/update type gate, fails the
-contradiction-signal gate) -- no false update across types. Resolved.
-
-### 3. MEDIUM (fourth implicit-AND site) -- RESOLVED
-
-Revised D4 and T2.1 enumerate all four sites: (1) makeFtsQuery (audn.ts:20),
-(2) prime() searchTerms.join(' ') (sqlite-provider.ts:536), (3) neighbor
-batch .join(' ') (kb-session-prime.ts:141), (4) the global-append query
-(kb-session-prime.ts:83, `session_files?.join(' ') ?? hint_symbols?.join(' ')`
--- confirmed at source, and its raw-file-path FTS hostility is called out). One
-exported helper orJoinFtsTerms fixes all four. The choice to also OR-join
-makeFtsQuery (D4 left this optional) is stated with rationale (it is what makes
-the F2 e2e candidate discoverable) and is safe: dedup/update stay gated on
-symbol overlap + same type, so broader FTS candidates do not create false
-merges. Resolved.
-
-### 4. MEDIUM (F3 near-no-op) -- RESOLVED
-
-Revised D3 and T2.2 abandon the content_hash approach (correctly -- confirmed
-at source: content_hash is set only for context-cache at kb-capture.ts:37-43,
-and prime() excludes context-cache at sqlite-provider.ts:542, so it would
-no-op). The rewrite adds an additive `source_file_hashes` column (JSON
-file->hash map) populated in SqliteProvider.capture() for ALL types via
-computeFileHashBatch (the single choke point every capture path hits), then a
-prime-time checkFreshness keyed off source_files + the stored basis. This makes
-staleness fire on learning/knowledge entries -- which DO carry source_files and
-appear in top_entries -- so the audit finding ("0 entries stale") is genuinely
-addressed. No migration (existing rows default '{}' -> treated fresh), bounded
-to the primed set, non-fatal try/catch. Resolved.
-
-### 5. MEDIUM (e2e contradiction proof) -- RESOLVED
-
-The capture()-level proof is moved to T2.1 and correctly sequenced AFTER both
-prerequisites: T1.4's cross-type findAudnCandidates (HALF B) and T2.1's own
-OR-join of makeFtsQuery. Traced against source: for entry B ("code_graph now
-works / fixed via cypher CALLS", type 'learning'), findAudnCandidates builds
-makeFtsQuery(B.title) OR-joined, so entry A ("code_graph is broken", type
-'knowledge') matches on the shared 'code_graph' token and is returned (type
-filter now gone); makeAudnDecision sees symbol overlap + a contradiction
-keyword ('now works'/'fixed', which T1.4 adds) and returns 'flagged' with
-contradiction_of = A.id, regardless of type or file overlap. The pair is
-deliberately CROSS-TYPE (knowledge vs learning) to prove HALF B. Passable as
-sequenced. Resolved.
-
-### 6. LOW (harvest free-string author) -- RESOLVED
-
-Folded into T2.3: 'harvest' added to the Author union; kb-harvest.ts literals
-changed author 'kb-harvest' -> 'harvest' and source 'kb_agent_harvest' ->
-'harvest' (correctly done in T2.3 rather than T3.2 because the CaptureSource
-union change would otherwise break kb-harvest.ts compilation). A test asserts
-author='harvest' + source='harvest'. Resolved.
-
-## Deviation sanity-check (Author enum += 'harvest')
-
-Acceptable. D5's literal list omits 'harvest', but revised D7 explicitly
-requires a distinct harvest author to distinguish the autowire path from real
-KB-Agent captures ("Harvested entries get source='harvest' and a distinct
-author (e.g. 'harvest')"). The two revised decisions are now internally
-consistent, and T2.3 records the deviation in progress.json notes as required.
-Reasonable.
-
-## Shared-file sequencing coherence
-
-sqlite-provider.ts (T1.3 -> T1.4 -> T2.1 -> T2.2 -> T3.1): coherent. Each task
-edits a distinct method -- T1.3 evaluateAudn ('update' branch), T1.4
-findAudnCandidates, T2.1 prime() searchTerms line, T2.2 capture() + insertEntry
-+ init() ALTER + a new checkFreshness call in prime(), T3.1 decayConceptEntries.
-The only intra-file overlap is prime(), touched by T2.1 (searchTerms ~536) and
-T2.2 (checkFreshness call after top_entries is built, ~547) in different
-regions; the plan flags this and forbids restructuring T2.1's join. capture()
-itself is edited only by T2.2 (T1.3/T1.4 edit the helper methods capture()
-calls, not its body). Sequencing is clean.
-
-Other shared files verified coherent: audn.ts (T1.4 then T2.1, disjoint
-functions), kb-capture.ts (T1.1 -> T2.3 -> T3.1), types.ts (T2.3 -> T3.1),
-kb-session-prime.ts (T2.1 -> T3.5), kb-harvest.ts (T2.3 literals -> T3.2
-comments/docs, disjoint).
-
-## Remaining nit
-
-### LOW -- audn.ts sequencing bullet omits T3.1's makeAudnDecision edit
-
-The shared-file sequencing bullet (PLAN.md line 49) lists audn.ts as edited by
-T1.4 (makeAudnDecision) and T2.1 (makeFtsQuery) only, but T3.1 (line 406) also
-edits makeAudnDecision for the user-directive supersede guard. So
-makeAudnDecision is touched by both T1.4 and T3.1. This is NOT a hazard: T3.1
-is Phase 3 (strictly after T1.4 and T2.1), executes last, and its own file
-list correctly names audn.ts. It is a documentation-completeness nit only --
-the binding order is unambiguous. Optional to note in the sequencing bullet;
-does not require a re-plan.
+All four work tasks implement their binding decisions correctly and at the
+right altitude. Build is clean (tsc). Test suite: 1784 passed, 14 skipped,
+only the 2 pre-existing yashr-302 timezone failures in tests/time-utils.test.ts
+(explicitly allowed) fail -- NO regressions, and specifically none in the
+capture/prime/query/audn suites. The KEY regression risk (stale=1-on-supersede
+leaking into other retrieval paths) was traced end-to-end and is clean. Three
+LOW / informational findings below; none blocks Phase 2.
 
 ## Checklist confirmation
 
-- Coverage F1-F8: intact; fail-then-pass mandated for T1.1 (gate), T1.3
-  (supersede stale), T1.4 (contradiction, pure), T2.1 (OR-join + F2 cross-type
-  contradiction at capture()) [OK].
-- Design compliance D1-D8: all satisfied, including the three revised decisions
-  (D2 candidate discovery, D3 source_file_hashes basis, D4 four sites, D7
-  autowired harvest) [OK].
-- Models: 12 work tasks (3 opus, 8 sonnet, 1 haiku) each carry an exact model;
-  3 VERIFY tasks modelless with build + test (2-timezone-failure allowance,
-  yashr-302) + gitnexus analyze + mandatory `git checkout -- AGENTS.md
-  CLAUDE.md` (runbook 3fa771af) + ASCII sweep + feature-branch push [OK].
-- Repo rules: ASCII-only, NEVER push main, NO PR -- stated sprint-wide and in
-  every VERIFY [OK].
+### 1. T1.1 gate (D1) -- CONFORMS
+
+- Clamp is enforced server-side in the kbCapture handler
+  (src/tools/kb-capture.ts:60-72), not merely in the zod schema. CONFIRMED ->
+  INFERRED; UNVERIFIED and INFERRED pass through untouched.
+- Caller is informed: result carries `confidence_clamped: true` and a bracketed
+  note "[confidence clamped: CONFIRMED requires kb_promote]" is appended to
+  content (string concatenation, not a template literal -- ASCII-hook safe).
+- kb_promote is untouched (diff does not modify promote()); it remains the sole
+  CONFIRMED path. The ladder test (UNVERIFIED -> INFERRED -> CONFIRMED via two
+  promote() calls) passes.
+- D6 user-directive exemption present as a forward-compat raw-string check
+  (`(input.type as string) === 'user-directive'`) with a TODO(T3.1) comment --
+  compiles today, full typing deferred to T3.1 as planned.
+- No row migration; a code comment states enforcement is forward-only and
+  existing direct-CONFIRMED rows are historical.
+- Tool description updated in src/index.ts:357 (ASCII clean).
+- Fail-then-pass genuinely fails on old code: the test asserts
+  `out.confidence_clamped === true` and `entry.confidence === 'INFERRED'`; old
+  kbCapture returned only `{id, audn_decision}` (confidence_clamped undefined)
+  and stored CONFIRMED verbatim -- both assertions fail pre-T1.1. Verified by
+  code inspection of the diff.
+
+Note (LOW, finding 2): the clamp lives at the tool-handler layer, so a direct
+`provider.capture({confidence:'CONFIRMED'})` is NOT clamped -- see below.
+
+### 2. T1.3 supersede (D2) -- CONFORMS; KEY REGRESSION RISK CLEARED
+
+- The 'update' branch (sqlite-provider.ts:283) now sets BOTH `superseded_at =
+  now` AND `stale = 1` on the old entry; content_hash is left intact. The
+  flagged/none branches are untouched (T1.4 owns the contradiction path).
+- Fail-then-pass (kb-supersede.test.ts) asserts the old row has superseded_at
+  truthy AND stale === true; the stale assertion fails on old code. Sound.
+
+STALE=1-ON-SUPERSEDE DID NOT BREAK ANY OTHER RETRIEVAL PATH. Traced every
+reader of the entries table:
+- prime() (SqliteProvider, line 545-550) calls query() with
+  `include_stale: false` and default `include_superseded` (false), so the
+  superseded row was ALREADY excluded via `superseded_at IS NULL` before T1.3.
+  Adding stale=1 is redundant-but-consistent -- no behavior change.
+- query() default path (lines 370-375) excludes both superseded and stale --
+  fine.
+- query() `flagged_only` path (kb-query.ts:29-30) uses `include_stale: true` +
+  `include_superseded: false`; flagged entries are marked flagged_for_review
+  (T1.4), NOT superseded, so they still surface. Unaffected.
+- query() regular path (kb-query.ts:58-59) ties include_superseded to the same
+  flag as include_stale, so there is no "superseded-true, stale-false" combo.
+- getLinked() (line 516) and context() (lines 435, 490) filter
+  `superseded_at IS NULL` directly -- a superseded row was already invisible;
+  the stale flag changes nothing.
+- kb-session-prime.ts wrapper (lines 90, 148) uses include_stale:false + default
+  superseded exclusion -- unaffected.
+- No kb_list yet (T3.3, Phase 3) -- it must be built to exclude stale/superseded
+  by default, which the plan already specifies.
+
+The ONLY behavioral consequence: a caller that wants to SEE a superseded row
+must now also pass `include_stale: true`. The sole such caller in the tree was
+the existing kb-capture.test.ts 'update' assertion, which the doer correctly
+updated (added include_stale:true, plus a new stale===true assertion). No
+product code path reads superseded-without-stale. Confirmed clean.
+
+### 3. T1.4 contradiction (D2) -- CONFORMS
+
+- makeAudnDecision (audn.ts): the CONTRADICTION path flags on symbolsOverlap +
+  contradiction-signal, checked BEFORE the type/file gates -- so it fires
+  regardless of file overlap AND regardless of type. Signal =
+  hasContradictionKeywords(newContent) OR hasOppositePolarity(inputText,
+  candidateText). Flagged result correctly sets shouldFlagExisting, new-entry
+  confidence UNVERIFIED, and contradiction_of = candidate.id.
+- DEDUP/UPDATE re-impose `candidate.type === input.type` then require file
+  overlap -- so same-type refinements still merge and only the contradiction
+  path is cross-type. A cross-type symbol-overlap candidate with no signal
+  correctly falls through to `continue` (add), and a cross-type same-file no-
+  signal pair yields null (no update) -- both covered by dedicated tests.
+- findAudnCandidates (sqlite-provider.ts:240-248) dropped `AND e.type = ?`; FTS
+  MATCH + `superseded_at IS NULL` + LIMIT 10 structure intact; a comment states
+  dedup/update remain same-type via the makeAudnDecision gate. Coherent.
+- Pure test uses the exact code_graph shape from D2/PLAN (candidate symbols
+  [GitNexusProvider.graph, callGitNexus], "code_graph is broken", vs input
+  "code_graph now works / fixed via cypher CALLS", no shared file) and expects
+  flagged + contradiction_of. Meaningful and matches the live-KB pair the sprint
+  targets. Fail-then-pass holds (old AND-logic returned null -> add).
+
+### 4. Build + tests -- PASS
+
+- `npm run build` (tsc): clean.
+- `npm test`: 1784 passed / 14 skipped; the only 2 failures are the pre-existing
+  yashr-302 timezone tests in tests/time-utils.test.ts (allowed). No capture,
+  prime, query, supersede, or audn test regressed by the stale=1 change.
+
+### 5. ASCII + docs -- PASS
+
+- All Phase-1-changed files are ASCII clean (docs/kb-trust-model.md,
+  tpl-kb-agent.md, kb-capture.ts, audn.ts, sqlite-provider.ts, and the new
+  tests). The changed src/index.ts line (357) is ASCII clean.
+- docs/kb-trust-model.md and tpl-kb-agent.md accurately describe the ENFORCED
+  behavior: cap at INFERRED, server-side clamp, confidence_clamped flag +
+  bracketed note, kb_promote as sole CONFIRMED mint, forward-only no-migration,
+  D6 user-directive as the Phase-3 exception, harvest UNVERIFIED. The decision
+  table was reworked to Capture-at / Then columns matching the clamp. Correct.
+
+## Findings
+
+### LOW 1 -- hasOppositePolarity uses naive substring matching (over-eager antonym risk)
+
+audn.ts POLARITY lists match via `String.includes` on short tokens including
+'fixed', 'broken', and 'resolved'. These collide with superstrings: 'prefixed'
+and 'suffixed' contain 'fixed'; 'unresolved' contains 'resolved' (and would be
+read as POSITIVE polarity despite being negative in meaning). A symbol-
+overlapping entry pair where one side mentions e.g. "prefixed" and the other
+"broken" could be flagged as a contradiction. Impact is bounded: it requires
+symbol overlap AND opposite-polarity text between the two entries, and the
+consequence is a review flag (new entry -> UNVERIFIED, old -> flagged_for_review)
+-- not data loss or supersession. D2 asked for a conservative matcher; this is
+mostly conservative but the substring approach on 'fixed'/'resolved' is a real
+false-positive vector. Recommend word-boundary matching (or dropping the bare
+'fixed'/'resolved' tokens in favor of the phrase forms already present) in a
+follow-up. Non-blocking.
+
+### LOW 2 -- clamp is tool-handler-layer, not provider.capture (per plan; noted)
+
+The D1 clamp is in the kbCapture handler (src/tools/kb-capture.ts), so a direct
+`provider.capture({confidence:'CONFIRMED'})` is not clamped. This matches the
+plan's explicit direction (T1.1: "in the kbCapture handler") and the audit
+threat model (every MCP caller routes through kbCapture; kb_promote is the
+separate CONFIRMED mint; harvest already captures UNVERIFIED). It is sufficient
+for the stated threat. Flagged only so future maintainers know provider.capture
+remains the raw, unguarded path -- if an internal code path ever needs to mint
+via capture(), it will bypass the gate. No action required for this sprint.
+
+### INFO 3 -- pre-existing non-ASCII in src/index.ts (out of scope)
+
+src/index.ts carries em-dashes/arrows on lines 28, 137, 186, 210, 273, 274, 307
+-- all pre-existing, none touched by Phase 1, and outside the no-migration
+scope. The Phase-1-changed line (357) is clean. Not a Phase 1 defect; noted for
+awareness only.
 
 ## Summary
 
-APPROVED. All 1 HIGH + 4 MEDIUM + 1 LOW findings resolved; the fixes are now
-binding in design.md; the Author-enum deviation is justified and recorded; the
-five-task sqlite-provider.ts sequence is coherent. One LOW documentation nit
-(audn.ts bullet) is optional and non-blocking. Ready to execute.
+APPROVED. Findings: 0 HIGH, 0 MEDIUM, 2 LOW (+1 INFO). The trust core is real
+and enforced in code: the CONFIRMED gate clamps server-side and informs the
+caller, supersede marks superseded_at + stale=1, and contradiction flagging is
+loosened to symbol-overlap + signal across files and types with cross-type
+candidate discovery. Build clean; suite green modulo the allowed timezone
+failures. Critically, the stale=1-on-supersede change broke NO other retrieval
+path -- prime/query/getLinked/context/kb-session-prime all either already
+excluded superseded rows via `superseded_at IS NULL` or tie include_superseded
+to include_stale, and the one test that inspected a superseded row was correctly
+updated. Ready for Phase 2.
