@@ -152,6 +152,113 @@ async function callGitNexus(name: string, params: Record<string, unknown>): Prom
   }
 }
 
+// ---------------------------------------------------------------------------
+// Rung-2 compose support (T2.1 code_map; reused by T2.2 code_flow): gitnexus
+// 1.6.7 has no direct communities/map tool (see
+// docs/code-intelligence-child-surface.md), so map() composes over the
+// generic `cypher` tool, which returns `{ markdown, row_count }` -- a
+// Markdown table, not JSON rows -- so the response must be parsed here rather
+// than passed through untouched like graph/impact/query/context above. Do NOT
+// parse ladybugdb directly; always route through callGitNexus('cypher', ...).
+// ---------------------------------------------------------------------------
+
+export type MarkdownTableRow = Record<string, string>;
+
+// Small, pure, exported so both T2.1 (code_map) and T2.2 (code_flow, added
+// later) can reuse it and it can be unit tested directly without mocking the
+// MCP client.
+export function parseMarkdownTable(markdown: string): MarkdownTableRow[] {
+  if (typeof markdown !== 'string' || markdown.length === 0) return [];
+
+  const lines = markdown
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 2) return [];
+
+  const splitRow = (line: string): string[] =>
+    line
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map((cell) => cell.trim());
+
+  const headers = splitRow(lines[0]);
+  // lines[1] is the "| --- | --- |" separator row -- data starts at index 2.
+  const rows: MarkdownTableRow[] = [];
+  for (let i = 2; i < lines.length; i++) {
+    const cells = splitRow(lines[i]);
+    const row: MarkdownTableRow = {};
+    headers.forEach((header, idx) => {
+      row[header] = cells[idx] ?? '';
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+// gitnexus heuristicLabels for processes encode "Entry -> Terminal" using a
+// Unicode arrow (confirmed in the T1.1 spike sample: "RemoveMember -> MaskSecrets").
+// Community keywords can also carry non-ASCII punctuation. Sanitize before this
+// text is written anywhere in an ASCII-only project (repo convention).
+const UNICODE_ARROW_PATTERN = /[→⇒⟶⟹➔➜↦]/g;
+
+export function asciiSanitizeLabel(label: string): string {
+  if (typeof label !== 'string') return label;
+  return label
+    .replace(UNICODE_ARROW_PATTERN, '->')
+    .replace(/[^\x00-\x7F]/g, '?');
+}
+
+function isErrorResult(result: unknown): boolean {
+  return !!(result && typeof result === 'object' && (result as { isError?: unknown }).isError === true);
+}
+
+// The child's `cypher` tool result is an MCP content array whose text is
+// `JSON.stringify({ markdown, row_count }, null, 2)` followed by a
+// "\n\n---\n**Next:**..." hint suffix (see gitnexus dist/mcp/server.js). Strip
+// the hint before parsing so `JSON.parse` sees only the payload.
+function extractCypherPayload(result: unknown): { markdown: string; row_count: number } | null {
+  if (!result || typeof result !== 'object' || !('content' in result)) return null;
+  const content = (result as { content: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0] as { text?: unknown } | undefined;
+  if (!first || typeof first.text !== 'string') return null;
+
+  const jsonPart = first.text.split('\n\n---\n')[0];
+  try {
+    const parsed = JSON.parse(jsonPart) as { markdown?: unknown; row_count?: unknown };
+    if (typeof parsed.markdown === 'string') {
+      return {
+        markdown: parsed.markdown,
+        row_count: typeof parsed.row_count === 'number' ? parsed.row_count : 0,
+      };
+    }
+  } catch {
+    // Not the expected shape -- caller falls back to the raw result.
+  }
+  return null;
+}
+
+function textResult(payload: unknown): { content: Array<{ type: 'text'; text: string }> } {
+  return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
+}
+
+function mapCommunitiesResult(result: unknown): unknown {
+  if (isErrorResult(result)) return result;
+  const payload = extractCypherPayload(result);
+  if (!payload) return result;
+
+  const communities = parseMarkdownTable(payload.markdown).map((row) => ({
+    label: asciiSanitizeLabel(row.label ?? ''),
+    symbols: Number(row.symbols) || 0,
+    cohesion: row.cohesion !== undefined && row.cohesion !== '' ? Number(row.cohesion) : undefined,
+    keywords: row.keywords !== undefined ? asciiSanitizeLabel(row.keywords) : undefined,
+  }));
+
+  return textResult({ communities, row_count: payload.row_count });
+}
+
 export class GitNexusProvider implements CodeIntelligenceProvider {
   async graph(params: Record<string, unknown>): Promise<unknown> {
     return callGitNexus('call_graph', params);
@@ -167,5 +274,21 @@ export class GitNexusProvider implements CodeIntelligenceProvider {
 
   async context(params: Record<string, unknown>): Promise<unknown> {
     return callGitNexus('context', params);
+  }
+
+  // T2.1: architectural map via Community nodes (rung 2 -- compose over cypher;
+  // no direct communities/map tool exists on gitnexus 1.6.7). See Decisions
+  // table in docs/code-intelligence-child-surface.md.
+  async map(params: Record<string, unknown>): Promise<unknown> {
+    const top = typeof params.top === 'number' && params.top > 0 ? params.top : 20;
+    const repo = params.repo;
+    const result = await callGitNexus('cypher', {
+      query:
+        'MATCH (c:Community) RETURN c.heuristicLabel AS label, c.symbolCount AS symbols, ' +
+        'c.cohesion AS cohesion, c.keywords AS keywords ORDER BY symbols DESC LIMIT $top',
+      params: { top },
+      ...(typeof repo === 'string' ? { repo } : {}),
+    });
+    return mapCommunitiesResult(result);
   }
 }

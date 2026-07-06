@@ -40,8 +40,8 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS } from '../src/tools/code-intelligence.js';
-import { GitNexusProvider } from '../src/tools/code-intelligence-gitnexus.js';
+import { getProvider, PROVIDERS, codeMapSchema } from '../src/tools/code-intelligence.js';
+import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 
 // ---------------------------------------------------------------------------
 // getProvider() tests
@@ -404,5 +404,172 @@ describe('GitNexusProvider freshness note wiring (F2.2)', () => {
     const result = await provider.graph({ symbol: 'x', repo: tempRepo });
 
     expect(result).toBe(original);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// codeMapSchema / codeFlowSchema validation (T2.1 / T2.2)
+// ---------------------------------------------------------------------------
+describe('codeMapSchema validation', () => {
+  it('accepts an empty object (all fields optional)', () => {
+    const result = codeMapSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts repo and top', () => {
+    const result = codeMapSchema.safeParse({ repo: '/a/b', top: 5 });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a non-positive top', () => {
+    const result = codeMapSchema.safeParse({ top: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-integer top', () => {
+    const result = codeMapSchema.safeParse({ top: 1.5 });
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseMarkdownTable() / asciiSanitizeLabel() -- pure functions reused by both
+// map() and flow() to turn the child's `cypher` markdown-table output into
+// structured rows.
+// ---------------------------------------------------------------------------
+describe('parseMarkdownTable()', () => {
+  it('parses a header + separator + data rows into row objects', () => {
+    const markdown = [
+      '| label | symbols | cohesion |',
+      '| --- | --- | --- |',
+      '| Providers | 47 | 0.786 |',
+      '| Services | 35 | 0.554 |',
+    ].join('\n');
+
+    expect(parseMarkdownTable(markdown)).toEqual([
+      { label: 'Providers', symbols: '47', cohesion: '0.786' },
+      { label: 'Services', symbols: '35', cohesion: '0.554' },
+    ]);
+  });
+
+  it('returns an empty array for a header-only table (no data rows)', () => {
+    const markdown = ['| label | symbols |', '| --- | --- |'].join('\n');
+    expect(parseMarkdownTable(markdown)).toEqual([]);
+  });
+
+  it('returns an empty array for empty or non-table input', () => {
+    expect(parseMarkdownTable('')).toEqual([]);
+    expect(parseMarkdownTable('just one line')).toEqual([]);
+  });
+
+  it('fills missing trailing cells with empty string', () => {
+    const markdown = ['| a | b | c |', '| --- | --- | --- |', '| 1 | 2 |'].join('\n');
+    expect(parseMarkdownTable(markdown)).toEqual([{ a: '1', b: '2', c: '' }]);
+  });
+});
+
+describe('asciiSanitizeLabel()', () => {
+  it('converts a Unicode arrow to ASCII "->"', () => {
+    expect(asciiSanitizeLabel('RemoveMember→MaskSecrets')).toBe('RemoveMember->MaskSecrets');
+  });
+
+  it('leaves plain ASCII text unchanged', () => {
+    expect(asciiSanitizeLabel('Providers')).toBe('Providers');
+  });
+
+  it('replaces other stray non-ASCII characters with "?"', () => {
+    expect(asciiSanitizeLabel('café')).toBe('caf?');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitNexusProvider.map() (T2.1 code_map -- communities)
+//
+// gitnexus 1.6.7 has no direct communities/map tool, so map() composes over
+// callGitNexus('cypher', ...) and parses the returned markdown table.
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider.map()', () => {
+  let provider: GitNexusProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    provider = new GitNexusProvider();
+  });
+
+  it('calls the cypher tool with a default top of 20 when top is omitted', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ markdown: '| label | symbols | cohesion | keywords |\n| --- | --- | --- | --- |', row_count: 0 }) }],
+    });
+
+    await provider.map({});
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'cypher',
+      arguments: expect.objectContaining({ params: { top: 20 } }),
+    });
+  });
+
+  it('passes an explicit top through to the cypher params', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ markdown: '| label | symbols | cohesion | keywords |\n| --- | --- | --- | --- |', row_count: 0 }) }],
+    });
+
+    await provider.map({ top: 5 });
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'cypher',
+      arguments: expect.objectContaining({ params: { top: 5 } }),
+    });
+  });
+
+  it('parses the markdown table into structured communities and ASCII-sanitizes labels', async () => {
+    const markdown = [
+      '| label | symbols | cohesion | keywords |',
+      '| --- | --- | --- | --- |',
+      '| Provi→ders | 47 | 0.786 | ["auth","session"] |',
+      '| Services | 35 | 0.554 |  |',
+    ].join('\n');
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ markdown, row_count: 2 }) + '\n\n---\n**Next:** do something else' }],
+    });
+
+    const result = (await provider.map({})) as { content: { text: string }[] };
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed).toEqual({
+      communities: [
+        { label: 'Provi->ders', symbols: 47, cohesion: 0.786, keywords: '["auth","session"]' },
+        { label: 'Services', symbols: 35, cohesion: 0.554, keywords: '' },
+      ],
+      row_count: 2,
+    });
+  });
+
+});
+
+describe('GitNexusProvider.map() pre-flight index check', () => {
+  let tempRepo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    tempRepo = mkdtempSync(join(tmpdir(), 'code-intel-map-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempRepo, { recursive: true, force: true });
+  });
+
+  it('returns the missing-index error without connecting when repo has no .gitnexus', async () => {
+    const provider = new GitNexusProvider();
+    const result = (await provider.map({ repo: tempRepo })) as { isError?: boolean; content: { text: string }[] };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe(
+      `No code intelligence index found for ${tempRepo}. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry.`,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
   });
 });
