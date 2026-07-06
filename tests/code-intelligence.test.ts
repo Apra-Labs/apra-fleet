@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -10,9 +10,17 @@ import { join } from 'path';
 const mockReadFile = vi.hoisted(() => vi.fn());
 const mockCallTool = vi.hoisted(() => vi.fn());
 const mockConnect = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockExecFileSync = vi.hoisted(() => vi.fn());
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
+}));
+
+// Only code-intelligence-gitnexus.ts's freshness-note wiring (F2.2) calls
+// execFileSync (to read `git rev-parse HEAD`); no other code path under test
+// in this file touches child_process, so a blanket mock is safe here.
+vi.mock('child_process', () => ({
+  execFileSync: mockExecFileSync,
 }));
 
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
@@ -301,5 +309,100 @@ describe('GitNexusProvider pre-flight index check (F3.1)', () => {
 
     expect(mockCallTool).toHaveBeenCalledWith({ name: 'call_graph', arguments: { symbol: 'x' } });
     expect(result).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitNexusProvider freshness note wiring (F2.2)
+//
+// When the call carries a `repo` param whose index exists, callGitNexus
+// compares meta.json's lastCommit against a stubbed `git rev-parse HEAD`
+// (child_process.execFileSync is mocked at the top of this file) and appends
+// the freshness note to the response when they differ.
+// ---------------------------------------------------------------------------
+describe('GitNexusProvider freshness note wiring (F2.2)', () => {
+  let tempRepo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConnect.mockResolvedValue(undefined);
+    tempRepo = mkdtempSync(join(tmpdir(), 'code-intel-freshness-test-'));
+    mkdirSync(join(tempRepo, '.gitnexus'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tempRepo, { recursive: true, force: true });
+  });
+
+  it('appends the freshness note when meta lastCommit differs from stubbed HEAD', async () => {
+    writeFileSync(
+      join(tempRepo, '.gitnexus', 'meta.json'),
+      JSON.stringify({ lastCommit: 'aaaaaaaa1111222233334444555566667777' }),
+    );
+    mockExecFileSync.mockReturnValue('bbbbbbbb111122223333444455556666777788\n');
+
+    const provider = new GitNexusProvider();
+    const original = { content: [{ type: 'text', text: 'call graph result' }] };
+    mockCallTool.mockResolvedValueOnce(original);
+
+    const result = (await provider.graph({ symbol: 'x', repo: tempRepo })) as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0]).toEqual({ type: 'text', text: 'call graph result' });
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toEqual({
+      type: 'text',
+      text:
+        "[code-intelligence] index is behind repo HEAD (indexed aaaaaaaa vs HEAD bbbbbbbb). " +
+        "Results may miss recent changes; run 'npx gitnexus analyze' to refresh.",
+    });
+  });
+
+  it('does not append a note when meta lastCommit matches stubbed HEAD', async () => {
+    writeFileSync(
+      join(tempRepo, '.gitnexus', 'meta.json'),
+      JSON.stringify({ lastCommit: 'aaaaaaaa1111222233334444555566667777' }),
+    );
+    mockExecFileSync.mockReturnValue('aaaaaaaa1111222233334444555566667777\n');
+
+    const provider = new GitNexusProvider();
+    const original = { content: [{ type: 'text', text: 'call graph result' }] };
+    mockCallTool.mockResolvedValueOnce(original);
+
+    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+
+    expect(result).toBe(original);
+  });
+
+  it('does not append a note and does not fail the call when git is unavailable', async () => {
+    writeFileSync(
+      join(tempRepo, '.gitnexus', 'meta.json'),
+      JSON.stringify({ lastCommit: 'aaaaaaaa1111222233334444555566667777' }),
+    );
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error('git not found');
+    });
+
+    const provider = new GitNexusProvider();
+    const original = { content: [{ type: 'text', text: 'call graph result' }] };
+    mockCallTool.mockResolvedValueOnce(original);
+
+    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+
+    expect(result).toBe(original);
+  });
+
+  it('does not append a note when meta.json is unreadable/invalid JSON', async () => {
+    writeFileSync(join(tempRepo, '.gitnexus', 'meta.json'), '{ not valid json');
+    mockExecFileSync.mockReturnValue('bbbbbbbb111122223333444455556666777788\n');
+
+    const provider = new GitNexusProvider();
+    const original = { content: [{ type: 'text', text: 'call graph result' }] };
+    mockCallTool.mockResolvedValueOnce(original);
+
+    const result = await provider.graph({ symbol: 'x', repo: tempRepo });
+
+    expect(result).toBe(original);
   });
 });

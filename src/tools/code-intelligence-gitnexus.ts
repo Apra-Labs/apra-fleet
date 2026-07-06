@@ -1,8 +1,10 @@
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CodeIntelligenceProvider } from './code-intelligence.js';
+import { freshnessNote } from './code-intelligence-freshness.js';
 
 let sharedClient: Client | null = null;
 let connectionPromise: Promise<Client> | null = null;
@@ -82,6 +84,41 @@ async function getGitNexusClient(): Promise<Client> {
   return connectionPromise;
 }
 
+// Freshness metadata (F2.2): when a call carries a `repo` param and the index
+// exists, compare meta.json's lastCommit against the repo's current
+// `git rev-parse HEAD`. Never throws -- any failure reading meta.json or
+// running git degrades to "no note" so a stale/missing index or unavailable
+// git never blocks or fails the call.
+function computeFreshnessNote(repo: string): string | null {
+  try {
+    const metaPath = join(repo, '.gitnexus', 'meta.json');
+    const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as { lastCommit?: string };
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repo, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return freshnessNote(meta.lastCommit, head);
+  } catch {
+    return null;
+  }
+}
+
+// Append the freshness note to an MCP tool response as an additional text
+// content block, preserving the existing content array shape. If the result
+// does not look like a content-array response, return it unchanged rather
+// than risk corrupting an unexpected shape.
+function appendFreshnessNote(result: unknown, note: string): unknown {
+  if (
+    result &&
+    typeof result === 'object' &&
+    'content' in result &&
+    Array.isArray((result as { content: unknown }).content)
+  ) {
+    const { content, ...rest } = result as { content: unknown[] } & Record<string, unknown>;
+    return { ...rest, content: [...content, { type: 'text', text: note }] };
+  }
+  return result;
+}
+
 // Single guarded entry point for every provider method. A thrown
 // connection/dead-client error is converted into a structured actionable
 // result and the shared state is reset so the next call reconnects.
@@ -92,16 +129,22 @@ async function getGitNexusClient(): Promise<Client> {
 // untouched -- the check only applies when a repo is named.
 async function callGitNexus(name: string, params: Record<string, unknown>): Promise<unknown> {
   const repo = params.repo;
-  if (typeof repo === 'string' && repo.length > 0) {
-    const metaPath = join(repo, '.gitnexus', 'meta.json');
+  const hasRepo = typeof repo === 'string' && repo.length > 0;
+  if (hasRepo) {
+    const metaPath = join(repo as string, '.gitnexus', 'meta.json');
     if (!existsSync(metaPath)) {
-      return missingIndexResult(repo);
+      return missingIndexResult(repo as string);
     }
   }
 
   try {
     const client = await getGitNexusClient();
-    return await client.callTool({ name, arguments: params });
+    const result = await client.callTool({ name, arguments: params });
+    if (hasRepo) {
+      const note = computeFreshnessNote(repo as string);
+      if (note) return appendFreshnessNote(result, note);
+    }
+    return result;
   } catch (err) {
     resetConnection();
     const detail = err instanceof Error ? err.message : String(err);
