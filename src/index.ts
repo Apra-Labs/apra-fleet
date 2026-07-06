@@ -354,7 +354,7 @@ async function startServer() {
   }));
 
   // --- Knowledge Bank ---
-  server.tool('kb_capture', 'Capture a learning, fact, or file summary into the knowledge bank. Returns {id, audn_decision}. audn_decision: add=new entry, none=duplicate skipped, update=superseded old, flagged=contradiction flagged for review.', kbCaptureSchema.shape, wrapTool('kb_capture', (input) => kbCapture(input as any)));
+  server.tool('kb_capture', 'Capture a learning, fact, or file summary into the knowledge bank. Confidence is capped at INFERRED: any CONFIRMED passed here is downgraded to INFERRED (result carries confidence_clamped:true). CONFIRMED is minted ONLY via kb_promote. Returns {id, audn_decision, confidence_clamped}. audn_decision: add=new entry, none=duplicate skipped, update=superseded old, flagged=contradiction flagged for review.', kbCaptureSchema.shape, wrapTool('kb_capture', (input) => kbCapture(input as any)));
   server.tool('kb_invalidate', 'Mark context-cache entries stale for the given file paths. Call after modifying files to ensure the KB reflects the current state.', kbInvalidateSchema.shape, wrapTool('kb_invalidate', (input) => kbInvalidate(input as any)));
   server.tool('kb_context', 'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read.', kbContextSchema.shape, wrapTool('kb_context', (input) => kbContext(input as any)));
   server.tool('kb_session_prime', 'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.', kbSessionPrimeSchema.shape, wrapTool('kb_session_prime', (input) => kbSessionPrime(input as any)));
