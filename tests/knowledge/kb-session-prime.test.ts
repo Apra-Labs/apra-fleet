@@ -121,3 +121,230 @@ describe('kb_session_prime', () => {
     expect(result.session_warm).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Graph-neighbor expansion (T1.3 P4b) -- exercises the kbSessionPrime wrapper
+// with the KB providers and the code-intelligence provider fully mocked. KB
+// constraint 1: module-level singletons -> vi.resetModules() + dynamic import
+// at the start of each test; mock fns hoisted via vi.hoisted().
+// ---------------------------------------------------------------------------
+
+import type { KBEntry } from '../../src/services/knowledge/types.js';
+
+const mockPrime = vi.hoisted(() => vi.fn());
+const mockProjectQuery = vi.hoisted(() => vi.fn());
+const mockGlobalQuery = vi.hoisted(() => vi.fn());
+const mockContext = vi.hoisted(() => vi.fn());
+const mockGetProvider = vi.hoisted(() => vi.fn());
+const mockGetKbProviders = vi.hoisted(() => vi.fn());
+const mockValidateFilePaths = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/services/knowledge/kb-providers.js', () => ({
+  getKbProviders: mockGetKbProviders,
+}));
+vi.mock('../../src/tools/code-intelligence.js', () => ({
+  getProvider: mockGetProvider,
+}));
+vi.mock('../../src/services/knowledge/path-validation.js', () => ({
+  validateFilePaths: mockValidateFilePaths,
+}));
+
+function entry(id: string, type: KBEntry['type'] = 'knowledge'): KBEntry {
+  return {
+    id,
+    type,
+    title: id,
+    summary: `summary-${id}`,
+    content: '',
+    source_files: [],
+    symbols: [],
+    tags: [],
+    content_hash: '',
+    content_hash_type: 'sha256',
+    stale: false,
+    flagged_for_review: false,
+    author: '',
+    source: 'doer',
+    confidence: 'CONFIRMED',
+    created_at: '2026-01-01T00:00:00.000Z',
+    use_count: 0,
+  };
+}
+
+// Build a code-intelligence `context` MCP result carrying the given neighbor
+// names as incoming calls.
+function contextResult(names: string[]): unknown {
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          status: 'found',
+          symbol: { name: 'root' },
+          incoming: { calls: names.map(n => ({ name: n })) },
+          outgoing: { calls: [] },
+        }),
+      },
+    ],
+  };
+}
+
+function primedContext(top: KBEntry[]) {
+  return {
+    session_warm: true,
+    stale_files: [],
+    top_entries: top,
+    fresh_summaries: [],
+    recommended_code_calls: [],
+    token_estimate: 0,
+  };
+}
+
+describe('kb_session_prime graph-neighbor expansion', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mockPrime.mockReset();
+    mockProjectQuery.mockReset();
+    mockGlobalQuery.mockReset();
+    mockContext.mockReset();
+    mockGetProvider.mockReset();
+    mockGetKbProviders.mockReset();
+    mockValidateFilePaths.mockReset();
+
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+    mockGetKbProviders.mockResolvedValue({
+      project: { prime: mockPrime, query: mockProjectQuery },
+      global: { query: mockGlobalQuery },
+      projectSlug: 'test',
+    });
+    mockGetProvider.mockResolvedValue({ context: mockContext });
+  });
+
+  it('appends neighbor-derived entries below direct hits with via marker', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b')]));
+    mockContext.mockResolvedValue(contextResult(['nbrX']));
+    mockProjectQuery.mockResolvedValue({ results: [entry('c')], total: 1, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b', 'c']);
+    // Direct hits carry no via marker; neighbor entry does.
+    expect(parsed.top_entries[0].via).toBeUndefined();
+    expect(parsed.top_entries[1].via).toBeUndefined();
+    expect(parsed.top_entries[2].via).toBe('graph-neighbor');
+  });
+
+  it('caps neighbors queried at NEIGHBOR_CAP (11 -> 10)', async () => {
+    const eleven = Array.from({ length: 11 }, (_, i) => 'nbr' + i);
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockContext.mockResolvedValue(contextResult(eleven));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime, NEIGHBOR_CAP } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ hint_symbols: ['root'] });
+
+    expect(NEIGHBOR_CAP).toBe(10);
+    expect(mockProjectQuery).toHaveBeenCalledTimes(1);
+    const passedQuery = mockProjectQuery.mock.calls[0][0].query as string;
+    // 10 neighbors survive the cap; the 11th is excluded.
+    const quotedTerms = passedQuery.match(/"nbr\d+"/g) ?? [];
+    expect(quotedTerms).toHaveLength(NEIGHBOR_CAP);
+    expect(passedQuery).not.toContain('"nbr10"');
+  });
+
+  it('caps additions at ADDED_ENTRY_CAP (8 candidates -> 5 added)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('d0')]));
+    mockContext.mockResolvedValue(contextResult(['nbrX']));
+    const eight = Array.from({ length: 8 }, (_, i) => entry('n' + i));
+    mockProjectQuery.mockResolvedValue({ results: eight, total: 8, l1_only: true });
+
+    const { kbSessionPrime, ADDED_ENTRY_CAP } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['root'] }));
+
+    expect(ADDED_ENTRY_CAP).toBe(5);
+    const added = parsed.top_entries.filter((e: KBEntry & { via?: string }) => e.via === 'graph-neighbor');
+    expect(added).toHaveLength(ADDED_ENTRY_CAP);
+    // Direct hit is preserved and ranked first.
+    expect(parsed.top_entries[0].id).toBe('d0');
+  });
+
+  it('dedupes neighbor entries against direct hits by id', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b')]));
+    mockContext.mockResolvedValue(contextResult(['nbrX']));
+    // query returns b (already a direct hit) plus new c, d
+    mockProjectQuery.mockResolvedValue({
+      results: [entry('b'), entry('c'), entry('d')],
+      total: 3,
+      l1_only: true,
+    });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b', 'c', 'd']);
+    const added = parsed.top_entries.filter((e: KBEntry & { via?: string }) => e.via === 'graph-neighbor');
+    expect(added.map((e: KBEntry) => e.id)).toEqual(['c', 'd']);
+  });
+
+  it('graceful skip: CI provider throws -> output identical to non-expanded prime', async () => {
+    const direct = primedContext([entry('a'), entry('b')]);
+    mockPrime.mockResolvedValue(direct);
+    mockGetProvider.mockRejectedValue(new Error('graph offline'));
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const withExpansion = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    // No neighbor query attempted, no additions, output matches direct hits.
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+    expect(withExpansion.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b']);
+    expect(withExpansion.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('graceful skip: context() throws for every symbol -> no query, no additions', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    mockContext.mockRejectedValue(new Error('boom'));
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a', 'b'] }));
+
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('skips expansion entirely when hint_symbols is absent', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ session_files: [] });
+
+    expect(mockGetProvider).not.toHaveBeenCalled();
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+  });
+
+  it('isError context result yields no neighbors (no query)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    mockContext.mockResolvedValue({ content: [{ type: 'text', text: 'Error: Unknown tool' }], isError: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('FTS-hostile neighbor is skipped without killing the batch', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    // "(" sanitizes to nothing; "goodName" survives.
+    mockContext.mockResolvedValue(contextResult(['((', 'goodName']));
+    mockProjectQuery.mockResolvedValue({ results: [entry('c')], total: 1, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['root'] }));
+
+    expect(mockProjectQuery).toHaveBeenCalledTimes(1);
+    const passedQuery = mockProjectQuery.mock.calls[0][0].query as string;
+    expect(passedQuery).toBe('"goodName"');
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['c']);
+  });
+});
