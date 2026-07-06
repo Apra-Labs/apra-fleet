@@ -14,17 +14,25 @@ Status: planning document, 2026-07-03, partially implemented as of 2026-07-04. T
 plan supersedes the topology described in docs/cloud-fleet-architecture.md where the
 two conflict (see section 5).
 
-> **2026-07-05 update -- superseded on tier-3 ownership (apra-fleet-yp3/qaz):** the
-> `src/hub-service/` implementation described throughout this plan as "the hub" is
-> now reference-only. The product owner's authoritative directive
-> (docs/api-contract-reconciliation.md section 1.5) makes fleet-dashboard the sole
-> tier-3 persistence layer for all workspace/project/member/secret configuration;
-> `apra-fleet.exe` is either a SaaS-connected client of fleet-dashboard's contract
-> (JWT issued by fleet-dashboard) or standalone with local-JSON state -- it never
-> owns a Postgres database of its own. SSH-to-relay migration, workspace_id JWT
-> scoping, and the wire-protocol/security semantics documented below remain valid
-> local/relay design; only the "hub-service is the deployed tier-3 backend" premise
-> is retired. Read docs/api-contract-reconciliation.md first for current scope.
+> **2026-07-05 update -- superseded on tier-3 ownership and SSH/relay scope
+> (apra-fleet-yp3/qaz, epic apra-fleet-yeb):** the `src/hub-service/` implementation
+> described throughout this plan as "the hub" is now reference-only. The product
+> owner's authoritative directive (docs/api-contract-reconciliation.md section 1.5,
+> cross-checked against fleet-dashboard's own `docs/architecture.md`) makes
+> fleet-dashboard the sole tier-3 persistence layer for all workspace/project/
+> member/secret configuration; `apra-fleet.exe` is either a SaaS-connected client of
+> fleet-dashboard's contract (JWT issued by fleet-dashboard) or standalone with
+> local-JSON state -- it never owns a Postgres database of its own. The subsequent
+> scoping decision (docs/api-contract-reconciliation.md section 1.6) further
+> corrects item 6 above: **SSH is NOT deprecated -- it stays a permanent,
+> first-class execution transport**, and the SSH-to-hub-relay migration this plan
+> describes (items 6-7 below) is explicitly DEFERRED, not an active migration
+> target (deferred child issue `apra-fleet-8rs`). The near-term focus is bootstrap/
+> sync (see docs/bootstrap-sync-design-proposal.md), not relay/execution transport
+> replacement. The workspace_id JWT scoping and wire-protocol/security semantics
+> documented below remain valid design; only "hub-service is the deployed tier-3
+> backend" and "SSH dispatch is being replaced" are retired. Read
+> docs/api-contract-reconciliation.md sections 1.5-1.6 first for current scope.
 
 **Implementation status (2026-07-04):** The `workspace_id` hard-scope claim (item 4)
 is live: `src/services/jwt.ts` requires `workspace_id` on every claim, `project_id`
