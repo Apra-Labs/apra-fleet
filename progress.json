@@ -6,7 +6,7 @@
   "worktree": "C:\\ws_yash\\Repos\\apra-fleet-main\\apra-fleet",
   "transport": "remote",
   "epic": "yashr-43h",
-  "lastDispatchedPhase": 1,
+  "lastDispatchedPhase": 2,
   "tasks": [
     {
       "id": "T1.1",
@@ -58,10 +58,10 @@
       "title": "Freshness note + pure comparison function (F2.2)",
       "model": "claude-sonnet-4-6",
       "type": "work",
-      "status": "pending",
+      "status": "completed",
       "bead": "yashr-43h.5",
-      "commit": null,
-      "notes": ""
+      "commit": "a8add4f",
+      "notes": "Added freshnessNote(lastCommit, head) pure function in new src/tools/code-intelligence-freshness.ts (separate module, avoids circular import between code-intelligence.ts and code-intelligence-gitnexus.ts). Wired into the shared callGitNexus helper: after a successful callTool when params.repo is set and the F3.1 pre-flight passed, reads <repo>/.gitnexus/meta.json.lastCommit and git rev-parse HEAD (execFileSync, 3s timeout, same style as check-status.ts), appends the verbatim note as an extra text content block when they differ via appendFreshnessNote(). All reads wrapped in try/catch returning null on any failure -- never blocks or fails the call; note appended at most once. Tests: new tests/code-intelligence-freshness.test.ts (7 tests: match->null, differ->exact string with 8-char truncation, undefined lastCommit/head/both->null, short SHAs no crash, short-SHA match->null). Added 4 wiring tests to tests/code-intelligence.test.ts (mocking child_process.execFileSync for stubbed HEAD): note appended when differ, no note when match, no note when git throws, no note when meta.json invalid JSON -- code-intelligence.test.ts now 19/19 green (up from 15), full suite 1658 passed / 2 failed (known pre-existing tests/time-utils.test.ts timezone failures, beads yashr-302) / 14 skipped. Build clean."
     },
     {
       "id": "T2.2",
