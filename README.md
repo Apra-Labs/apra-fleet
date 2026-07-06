@@ -178,13 +178,14 @@ Warm session:  kb_session_prime returns stale_files=[], session_warm=true
                Agent works from KB summaries. Zero file reads.
 ```
 
-Eight MCP tools ship with the KB:
+MCP tools that ship with the KB:
 
 | Tool | What it does |
 |------|--------------|
 | `kb_session_prime` | Prime a session: stale files, fresh summaries, GitNexus call list |
 | `kb_capture` | Store a learning, context-cache, runbook, or knowledge entry |
 | `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
+| `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
 | `kb_context` | Batch file freshness check (single git call for N files) |
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |

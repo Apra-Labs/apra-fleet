@@ -707,6 +707,58 @@ export class SqliteProvider implements MemoryProvider {
     };
   }
 
+  // T3.3 (F8a, D8): dedicated read-only listing for kb_list. CHOICE (stated
+  // per PLAN.md): a separate provider method rather than a query() option --
+  // query() bumps use_count/last_accessed unconditionally (its "retrieval
+  // means relevance" telemetry contract, exercised by retrieval paths like
+  // kb_query/prime), and kb_list's purpose is pure audit/inspection ("is the
+  // CONFIRMED set what we think it is") which should not perturb that
+  // telemetry. A dedicated method keeps the two contracts textually distinct
+  // instead of an easy-to-miss opt-out flag threaded through query(). Always
+  // excludes superseded and stale entries (no override -- this is an
+  // audit-the-live-set tool, not a full-history query).
+  async list(opts: {
+    confidence?: Confidence;
+    type?: KBEntry['type'];
+    module?: string;
+    symbol?: string;
+    limit?: number;
+  }): Promise<KBEntry[]> {
+    const db = this.getDb();
+    const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
+    const params: unknown[] = [];
+
+    if (opts.confidence) {
+      conditions.push('e.confidence = ?');
+      params.push(opts.confidence);
+    }
+    if (opts.type) {
+      conditions.push('e.type = ?');
+      params.push(opts.type);
+    }
+    if (opts.module) {
+      conditions.push('e.module = ?');
+      params.push(opts.module);
+    }
+    if (opts.symbol) {
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.symbols) WHERE value = ?)');
+      params.push(opts.symbol);
+    }
+
+    const where = 'WHERE ' + conditions.join(' AND ');
+    const limitClause = opts.limit !== undefined ? 'LIMIT ?' : '';
+    if (opts.limit !== undefined) params.push(opts.limit);
+
+    const rows = db.prepare(`
+      SELECT e.* FROM entries e
+      ${where}
+      ORDER BY e.id ASC
+      ${limitClause}
+    `).all(...params) as Record<string, unknown>[];
+
+    return rows.map(r => this.rowToEntry(r));
+  }
+
   async promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
     const db = this.getDb();
     const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;

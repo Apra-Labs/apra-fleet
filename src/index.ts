@@ -173,6 +173,7 @@ async function startServer() {
   const { kbContextSchema, kbContext } = await import('./tools/kb-context.js');
   const { kbSessionPrimeSchema, kbSessionPrime } = await import('./tools/kb-session-prime.js');
   const { kbQuerySchema, kbQuery } = await import('./tools/kb-query.js');
+  const { kbListSchema, kbList } = await import('./tools/kb-list.js');
   const { kbHarvestSchema, kbHarvest } = await import('./tools/kb-harvest.js');
   const { kbPromoteSchema, kbPromote } = await import('./tools/kb-promote.js');
   const { kbSetupSchema, kbSetup } = await import('./tools/kb-setup.js');
@@ -359,6 +360,7 @@ async function startServer() {
   server.tool('kb_context', 'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read.', kbContextSchema.shape, wrapTool('kb_context', (input) => kbContext(input as any)));
   server.tool('kb_session_prime', 'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.', kbSessionPrimeSchema.shape, wrapTool('kb_session_prime', (input) => kbSessionPrime(input as any)));
   server.tool('kb_query', 'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution.', kbQuerySchema.shape, wrapTool('kb_query', (input) => kbQuery(input as any)));
+  server.tool('kb_list', 'List KB entries by confidence/type/module/symbol -- audit the CONFIRMED set (or any tier) without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}.', kbListSchema.shape, wrapTool('kb_list', (input) => kbList(input as any)));
   server.tool('kb_harvest', 'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.', kbHarvestSchema.shape, wrapTool('kb_harvest', (input) => kbHarvest(input as any)));
   server.tool('kb_promote', 'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.', kbPromoteSchema.shape, wrapTool('kb_promote', (input) => kbPromote(input as any)));
   server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.', kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
