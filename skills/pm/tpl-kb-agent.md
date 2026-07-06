@@ -199,6 +199,22 @@ kb_promote(id, reason="code approved by reviewer -- {{sprint_name}}")
 This upgrades UNVERIFIED -> INFERRED or INFERRED -> CONFIRMED. This is the primary
 mechanism for entries reaching CONFIRMED status in the KB.
 
+### Step 6b: Export the canonical bible
+
+After any promotion in Step 6 (or any capture in Step 5 that reached CONFIRMED via
+the user-directive exception), call:
+
+```
+kb_export()
+```
+
+This writes every live CONFIRMED project entry to `.fleet/kb-canonical.json` (id,
+type, title, summary, symbols, source_files, confidence, updated_at -- deterministic
+id order, ASCII-safe). It is the diffable, git-shareable half of the team bible:
+`kb_session_prime` seeds from this file when a project's local KB is cold. You write
+the file; you do not commit it -- the PM commits `.fleet/kb-canonical.json` alongside
+the rest of the sprint's files when it has changed.
+
 ### Step 7: Resolve contradictions
 
 For each flagged pair found in step 2 within this sprint's domain:

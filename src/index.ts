@@ -174,6 +174,7 @@ async function startServer() {
   const { kbSessionPrimeSchema, kbSessionPrime } = await import('./tools/kb-session-prime.js');
   const { kbQuerySchema, kbQuery } = await import('./tools/kb-query.js');
   const { kbListSchema, kbList } = await import('./tools/kb-list.js');
+  const { kbExportSchema, kbExport } = await import('./tools/kb-export.js');
   const { kbHarvestSchema, kbHarvest } = await import('./tools/kb-harvest.js');
   const { kbPromoteSchema, kbPromote } = await import('./tools/kb-promote.js');
   const { kbSetupSchema, kbSetup } = await import('./tools/kb-setup.js');
@@ -364,6 +365,7 @@ async function startServer() {
   server.tool('kb_harvest', 'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.', kbHarvestSchema.shape, wrapTool('kb_harvest', (input) => kbHarvest(input as any)));
   server.tool('kb_promote', 'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.', kbPromoteSchema.shape, wrapTool('kb_promote', (input) => kbPromote(input as any)));
   server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.', kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
+  server.tool('kb_export', 'Export all CONFIRMED, non-superseded, non-stale project KB entries to <repo>/.fleet/kb-canonical.json (stable field set, deterministic id order, ASCII-safe). Run after kb_promote so the canonical set stays current; the PM commits the resulting file.', kbExportSchema.shape, wrapTool('kb_export', (input) => kbExport(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

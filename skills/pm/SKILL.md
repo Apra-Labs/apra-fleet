@@ -225,6 +225,13 @@ do X", "never do Y", "we decided Z" -- record it as a `user-directive` KB entry
 only be superseded by another user-directive, so later agent captures cannot quietly
 overwrite it. See `tpl-kb-agent.md`.
 
+After `kb_promote`, the KB Agent runs `kb_export` to write the repo's live CONFIRMED
+entries to `.fleet/kb-canonical.json` (stable field set, deterministic id order,
+ASCII-safe). This is the diffable, git-shareable half of the team bible -- a fresh
+clone or cold project seeds `kb_session_prime` from it when the local KB has few
+entries. The PM commits `.fleet/kb-canonical.json` when it changes; `kb_export` only
+writes the file, it does not commit. See `tpl-kb-agent.md`.
+
 For small, low-risk work (1-3 tasks, no phasing) use the lightweight path instead
 of the full harness. See `sprint.md` Sprint selection.
 
