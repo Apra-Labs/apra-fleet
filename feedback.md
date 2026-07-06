@@ -1,84 +1,96 @@
-# Review: code-intelligence-power sprint, Phase 4 (final) -- T4.1-T4.5
+# Review: code_graph retarget off non-existent call_graph tool (yashr-5t9)
 
 Reviewer: pm-reviewer
-Scope: telemetry (P8/D8), code_tests + isTestPath (P9/D9). Commits ac09a6a
-(T4.1), 3f8ac49 (T4.2), 45a60c7 (T4.3), 0742c33 (T4.4), verify T4.5.
+Scope: commit f4fa648 -- src/tools/code-intelligence-gitnexus.ts,
+tests/code-intelligence.test.ts, docs/code-intelligence-child-surface.md.
+Bug: GitNexusProvider.graph() called child tool 'call_graph', which does not
+exist in gitnexus 1.6.7, so code_graph always returned isError
+"Unknown tool: call_graph".
 
 ## Verdict: APPROVED
 
-Phase 4 implements D8 telemetry and D9 test-mapping exactly to spec. All
-load-bearing safety properties hold, tests are thorough and meaningful, build
-is clean, and the only failing tests are the two known pre-existing timezone
-cases (yashr-302). No regressions. No Phase-4-introduced non-ASCII.
+graph() is correctly retargeted to compose two depth-bounded cypher CALLS
+traversals (callers + callees), the user-controlled symbol is safely bound as a
+cypher param (no interpolation), the query works live against the real child,
+the response mapping is correct and degraded-safe, and the new regression test
+genuinely fails on the old mapping and passes on the fix. Build clean; only the
+2 known pre-existing timezone failures (yashr-302). Two LOW, non-blocking notes.
 
 ## Checklist results
 
-1. T4.1 telemetry (D8) -- PASS. recordUsage() appends one JSON line
-   {ts:ISO8601, tool, target, repo} to usage.jsonl; rotation renames to
-   usage.jsonl.1 (fs.rename overwrite semantics) only when size strictly > 5MB;
-   writeUsageLine does mkdir(recursive) -> rotateIfNeeded -> appendFile, all
-   swallowed via `void writeUsageLine().catch(()=>{})` plus an outer try/catch.
-   recordUsage returns void synchronously -- cannot throw or block. Wired in the
-   src/index.ts shared handler layer for all seven code_* tools (graph, impact,
-   query, context, map, flow, tests), one line each, before the provider call.
-   Provider file NOT polluted: code-intelligence-gitnexus.ts imports only
-   isTestPath (T4.4), never the telemetry module -- provider stays a pure proxy.
+1. Retarget correctness -- PASS. graph() no longer calls call_graph; it issues
+   callGitNexus('cypher', ...) twice. Both queries are depth-bounded
+   `:CodeRelation*1..2 {type: "CALLS"}` (GRAPH_MAX_DEPTH=2) in both directions
+   (callers: `(caller)-[..]->(target)` WHERE target.name; callees:
+   `(source)-[..]->(callee)` WHERE source.name). The only value concatenated
+   into the query string is the integer constant GRAPH_MAX_DEPTH/GRAPH_ROW_LIMIT
+   (Cypher cannot parameterize variable-length bounds); the user-controlled
+   `symbol` is bound via the params object `params: { symbol }`, never
+   interpolated -- no injection surface. Routes through callGitNexus, inheriting
+   pre-flight index check, resilience, and freshness wiring. Does NOT parse lbug.
 
-2. T4.2 fleet_status top symbols (D8 read) -- PASS. computeTopSymbols() reads
-   usage.jsonl AND usage.jsonl.1, skips unparseable lines, filters ts >= now-30d
-   (boundary-inclusive), aggregates count by target via Map, returns top 5. JSON
-   codeIntelligence.topSymbols + compact "top symbols (30d): a (12), ..."
-   fragment appended to both the present and no-index branches. Fully
-   degraded-safe: readUsageLines catches per-file, computeTopSymbols wraps the
-   whole pass, and fleetStatus wraps the call again -- missing file / bad JSON /
-   read error -> field and segment omitted, never throws. Follows the
-   codeIntelligenceHealth degraded-safe pattern.
+2. LOAD-BEARING live verification -- PASS. Spawned `npx -y gitnexus mcp` over
+   stdio exactly as getGitNexusClient does (throwaway script, not committed) and
+   ran the EXACT GRAPH_CALLERS_QUERY / GRAPH_CALLEES_QUERY graph() sends.
+   - listTools() -> 13 tools; call_graph ABSENT; cypher present. Confirms the
+     bug and the choice of child tool.
+   - CALLERS(callGitNexus) -> isError:false, row_count 11, {markdown,row_count}
+     shape with a depth column: depth-1 callers (context, flow, graph, impact,
+     map, query, tests) and depth-2 (kbSessionPrime, test file) -- real,
+     correct, multi-hop.
+   - CALLEES(callGitNexus) -> isError:false, row_count 9: depth-1
+     (getGitNexusClient, appendFreshnessNote, computeFreshnessNote,
+     offlineResult, missingIndexResult, resetConnection) and depth-2
+     (freshnessNote, logError, maybeScheduleReindex).
+   The query is well-formed and returns meaningful caller/callee rows. No error,
+   no empty result.
 
-3. T4.3 isTestPath (D9) -- PASS. Pure exported fn; splits on /[/\\]+/, true when
-   any segment (lowercased) is in {test,tests,spec} OR the filename matches
-   /\.(test|spec)\.[^.]+$/i. Negatives correctly rejected: contest, attest.ts,
-   testfile.ts, protest.spec (no trailing extension), attestation/, specimen/,
-   testHelpers.ts, empty string. Mixed separators handled. Exhaustive
-   table-driven tests (22).
+3. Response mapping -- PASS. mapGraphRows -> extractCypherPayload (strips the
+   "\n\n---\n" hint suffix) -> parseMarkdownTable -> {name, filePath, depth}.
+   Column names (name|filePath|depth) match the live markdown exactly.
+   asciiSanitizeLabel is applied to each row's name and to the top-level symbol
+   echo. Empty table -> [] (parseMarkdownTable guards < 2 lines). isError is
+   short-circuited in graph() BEFORE mapping (callers checked first, so a broken
+   index does not fan out a second call). Unexpected shape -> extractCypherPayload
+   returns null -> mapGraphRows returns [] rather than throwing. (Minor: filePath
+   is not ASCII-sanitized, but paths are ASCII in practice -- not a defect.)
 
-4. T4.4 code_tests (D9) -- PASS. GitNexusProvider.tests() routes
-   callGitNexus('impact', {target:symbol, direction:'upstream', maxDepth:2,
-   includeTests:true, repo?}); mapTestsResult collects byDepth["1"]+["2"] and
-   filters filePath through isTestPath, returning {tests, count}. codeTestsSchema
-   {symbol, repo?}. Registered in src/index.ts with routing-guidance description
-   ("run targeted tests ... Prefer this over Grep for test discovery"); telemetry
-   wired in the handler. Inherits pre-flight missing-index check and connection
-   resilience from callGitNexus.
+4. Regression test -- PASS, genuinely guards the bug class. The "child-tool
+   surface guard" exercises every provider method that reaches the child, then
+   derives invokedToolNames DYNAMICALLY from mockCallTool.mock.calls (not a
+   hardcoded list of invoked names), asserting (a) it never contains
+   'call_graph' and (b) every invoked name is present in the child surface.
+   Under the old graph()->'call_graph' mapping, 'call_graph' would be recorded
+   and is absent from the surface, so BOTH assertions fail; the composition test
+   independently expects exactly 2 'cypher' calls, which the old single
+   call_graph call also fails. Verified by construction (product code was not
+   modified to run the negative case, per the no-product-edits constraint).
+   Limitation (see LOW-2): the surface list is a hardcoded/mocked
+   CHILD_SURFACE_1_6_7, so the test catches a fleet-side mapping to a name absent
+   from the documented surface, but does NOT catch the real child renaming an
+   existing tool -- that live drift check is delegated to the out-of-band probe +
+   doc, as the test comments state.
 
-5. Load-bearing safety -- PASS. Telemetry is synchronous fire-and-forget with
-   swallow at both the sync and async boundaries; it cannot throw, block, or
-   degrade a tool call. code_tests never throws: callGitNexus returns structured
-   {content,isError} and mapTestsResult passes error results through untouched;
-   extractImpactPayload returning null falls back to the raw result rather than
-   throwing.
+5. Test migration -- PASS, no coverage lost. The freshness (F2.2), resilience
+   (F3.2), and pre-flight (F3.1) tests previously used graph() purely as a
+   generic callGitNexus passthrough vehicle. Since graph() is no longer a
+   passthrough (it reshapes and, by design, does not carry the freshness note),
+   they were correctly moved to impact(), which is a true passthrough exercising
+   the identical callGitNexus wiring. The pre-flight assertion that previously
+   expected `{name:'call_graph', arguments:{symbol}}` now correctly expects
+   `{name:'impact', ...}`. New graph() tests (shape, unicode sanitization, error
+   short-circuit) add the coverage the removed passthrough test used to imply.
 
-6. Tests -- PASS. Telemetry: append format (exact keys, ISO ts, repo null/set),
-   mkdir-before-append, no-rotate under threshold, exactly-5MB no-rotate,
-   rotate+overwrite, error isolation x4 (mkdir/stat/rename/appendFile reject).
-   Top-N: ties, <5, 30d filter, exact-boundary inclusion, reads .1, unparseable
-   skipped, missing-ts/target skipped, error->undefined. isTestPath: exhaustive
-   positives/negatives + mixed separators. code_tests: impact-args, depth-1+2
-   filtering, empty result, hint-suffix stripping, error passthrough, schema,
-   missing-index reuse. The telemetry test's use of static vi.mock('fs/promises')
-   + vi.waitFor instead of vi.resetModules is a correct, documented deviation:
-   the module holds no singleton state, so KB constraint 1 does not apply.
-
-7. build + test -- PASS. `npm run build` (tsc) exit 0. Full suite: 1770 passed,
+6. build + test -- PASS. `npm run build` (tsc) exit 0. Full suite: 1773 passed,
    2 failed, 14 skipped -- both failures are the known pre-existing timezone
-   tests in tests/time-utils.test.ts (yashr-302). No other regressions.
+   tests in tests/time-utils.test.ts (yashr-302). code-intelligence.test.ts:
+   57/57 pass. No other regressions.
 
-8. ASCII -- PASS (no Phase 4 violation). Byte-scan of all Phase 4 changed files:
-   check-status.ts's 9 non-ASCII bytes are pre-existing on main (em-dash comments
-   + a warning-sign glyph from PRs #1/#263, lines 423/427/491 -- outside T4.2's
-   diff); code-intelligence-gitnexus.ts (21) and code-intelligence.test.ts (14)
-   are the Phase 2 asciiSanitizeLabel UNICODE_ARROW_PATTERN and its test
-   fixtures, which are load-bearing (the sanitizer must contain the glyphs it
-   strips). Phase 4 (T4.1-T4.4) introduced zero non-ASCII bytes.
+7. ASCII + doc -- PASS with LOW-1. Doc: clean, updated to reality (finding
+   retitled "RESOLVED (yashr-5t9)", backlog bead marked DONE, live re-verification
+   recorded). Source: the only non-ASCII is the pre-existing UNICODE_ARROW_PATTERN
+   regex (line 227), unchanged by this commit. Test: one NEW literal unicode arrow
+   at line 203 (see LOW-1).
 
 ## Findings
 
@@ -86,17 +98,31 @@ HIGH: none.
 
 MEDIUM: none.
 
-LOW-1 (cosmetic, non-blocking): code_map records recordUsage('code_map', '', ...)
-and code_flow may record '' when no name/from/to is given. Since
-computeTopSymbols accepts any string target (including ''), heavy code_map use
-could surface a blank-labelled entry in the fleet_status "top symbols (30d)"
-line, e.g. " (7)". This matches the doer's documented choice (a listing tool has
-no natural single-string target) and does not affect correctness or the D8
-contract; a future cleanup could drop empty targets from the top-N aggregation
-or omit telemetry for argument-less tools. No change required for this sprint.
+LOW-1 (ASCII convention, non-blocking): tests/code-intelligence.test.ts line 203
+introduces a literal non-ASCII arrow in a fixture
+(`'| Rem->ove | src/a.ts | 1 |'` written with U+2192) to exercise
+asciiSanitizeLabel over a returned graph-node name. This matches five
+pre-existing accepted fixtures in the same file (lines 718/726/775/899/927) and
+the load-bearing sanitizer regex the prior review already deemed acceptable, so
+it is consistent with codebase precedent rather than a new class of violation.
+Strictly, the project ASCII-only rule could be honored by using a
+JS unicode escape (backslash-u-2192) instead of the literal glyph. No functional impact; optional cleanup.
+
+LOW-2 (test design, informational): the child-tool surface guard asserts against
+a hardcoded/mocked CHILD_SURFACE_1_6_7 rather than a live listTools(). It
+therefore guards the exact shipped bug (fleet maps to a tool name that never
+existed on the documented surface) and would catch any future fleet-side mapping
+to an undocumented tool, but it would NOT catch the real gitnexus child renaming
+an existing tool out from under the fleet. That live-drift concern is explicitly
+delegated to the out-of-band probe + doc in the test comments. Acceptable as
+scoped; a future enhancement could add a slow/tagged live-spawn contract test.
 
 ## Rationale
 
-Phase 4 lands telemetry and code_tests precisely per D8/D9 with airtight
-error isolation, thorough tests, a clean build, no regressions, and no
-Phase-4-introduced ASCII violations -- APPROVED.
+The retarget removes the dead call_graph mapping, binds the only user-controlled
+value as a cypher param, is confirmed working live against the real 1.6.7 child
+(13 tools, call_graph absent; both queries return real depth-1/2 rows in the
+{markdown,row_count} shape), maps responses safely, migrates the reused
+passthrough tests without losing coverage, and adds a regression test that fails
+on the old mapping -- with a clean build and only pre-existing timezone failures.
+APPROVED.
