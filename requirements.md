@@ -1,118 +1,127 @@
-# Requirements -- Code Intelligence Hardening
+# Requirements -- Code Intelligence Power
 
-Sprint epic: yashr-43h. Branch: feat/code-intelligence-abstraction (base: main).
+Sprint epic: yashr-8m0. Branch: feat/code-intelligence-abstraction (base: main).
+Prior sprint (code-intelligence-hardening, yashr-43h) delivered resilience,
+freshness, and routing; this sprint raises the capability ceiling. Binding
+architecture decisions are in design.md -- read it before planning.
 
-## Background
+Six features. Numbering follows the improvement list agreed with the user
+(items 5-7 are backlogged as yashr-m7x, yashr-68b, yashr-tfy -- OUT of scope).
 
-The code intelligence pipeline (gitnexus index -> apra-fleet MCP proxy -> code_graph /
-code_impact / code_query / code_context tools) works end to end, but an audit
-(2026-07-06, documented in docs/kb-current-state.html) found three weaknesses.
-This sprint fixes all three.
+## P1 -- Expose communities and flows as new tools (code_map, code_flow)
 
-The proxy lives in `src/tools/code-intelligence-gitnexus.ts` (spawns `npx gitnexus mcp`
-as a stdio MCP child process, one shared client). Tool schemas and provider selection
-live in `src/tools/code-intelligence.ts`. Tool registration is in `src/index.ts`.
-The gitnexus index lives at `<repo>/.gitnexus/` with `meta.json` holding
-`lastCommit`, `indexedAt`, `stats` (files/nodes/edges), and `fileHashes`.
+The gitnexus index already computes module communities (500 for streamsurv) and
+process flows (300) -- see `.gitnexus/meta.json` stats. No fleet tool serves them.
 
-## Fix 3 (RISKIEST -- must be Phase 1): silent-empty failure mode
+- New tool `code_map`: input { repo?: string, top?: number } -> the repo's
+  architectural map: communities with their key symbols/files, sized/ranked.
+  Backed by whatever the gitnexus MCP child exposes for communities -- FIRST
+  investigate the child's tool list (connect to `npx gitnexus mcp` and list
+  tools, or read gitnexus docs/package). If the child has no community tool,
+  read the data via the child's query surface or descope to reading
+  `.gitnexus/meta.json`-adjacent stores ONLY if a stable read path exists;
+  otherwise record the gap and descope this half (see design.md D1 fallback).
+- New tool `code_flow`: input { from?: string, to?: string, name?: string,
+  repo?: string } -> matching process flows (entry -> steps -> exit). Same
+  investigation-first rule.
+- Both tools: register in src/index.ts with routing-guidance descriptions
+  (same style as the four existing code_* tools), route through the shared
+  guarded callGitNexus helper (pre-flight index check, resilience, freshness
+  note all apply for free), ASCII-only output.
+- Tests: schema validation, missing-index error path reuse, and a mocked child
+  response mapping test per tool.
 
-Today, when the index is missing or the gitnexus child process fails, the tools
-return empty results. Agents silently degrade to file reads; nobody learns code
-intelligence was offline. This cost a real debugging session on 2026-06-23
-(root-caused wrongly as "missing index.db").
+## P2 -- Semantic code_query via embeddings (investigation-first)
 
-### F3.1 Pre-flight index check
+`meta.json` shows `embeddings: 0` and `vectorSearch: exact-scan` -- code_query
+is lexical FTS only. Goal: conceptual queries match code that uses different
+words.
 
-In `code-intelligence-gitnexus.ts`, before proxying any call that carries a `repo`
-parameter: check `<repo>/.gitnexus/meta.json` exists. If absent, return a structured,
-actionable error instead of forwarding the call:
-`"No code intelligence index found for <repo>. Run 'npx gitnexus analyze' in the repo (or /pm index) and retry."`
-The check must be cheap (fs.existsSync) and must NOT break calls without a `repo` param.
+- SPIKE first (timeboxed task): determine how gitnexus populates embeddings --
+  CLI flag, config, external model/API key, or unsupported in the installed
+  version. Deliverable: a written finding in progress.json notes AND
+  docs/code-intelligence-embeddings.md (short: what works, what it needs, cost).
+- If embeddings need only local/offline means (e.g. a bundled model or a flag):
+  wire it -- `/pm index` and the VERIFY re-index pass the flag; document in
+  skills/pm/index.md.
+- If they need an external API key or heavyweight model: do NOT wire by
+  default. Plumb an OPT-IN config field (`~/.apra-fleet/data/code-intelligence/
+  config.json`: { embeddings: { enabled, provider, ... } }), document it, and
+  create a follow-up backlog item. The sprint is NOT blocked on external
+  dependencies.
 
-### F3.2 Connection resilience
+## P3 -- Auto-reindex on drift (self-healing freshness)
 
-`getGitNexusClient()` caches `sharedClient` and `connectionPromise` forever:
-- A FAILED `connectionPromise` is cached, so one bad startup poisons every later call.
-- If the child process dies after connecting, every later call fails opaquely.
+The freshness note (prior sprint) warns when the index is behind HEAD. Upgrade
+warn -> self-heal.
 
-Required behavior:
-- On connection failure, clear `connectionPromise` so the next call retries.
-- Listen for transport close/error; reset `sharedClient`/`connectionPromise` so the
-  next call reconnects.
-- Wrap `callTool` so a dead-client error returns the same actionable message shape
-  as F3.1 (never an unhandled throw, never a silent empty).
+- In the fleet MCP server process: when a code_* call computes a freshness
+  divergence for a repo, schedule a background incremental
+  `npx gitnexus analyze` for that repo (child_process spawn, detached from the
+  call path -- the call itself still returns immediately with the note).
+- Debounce/single-flight per repo (design.md D3): at most one analyze running
+  per repo; a new trigger while one runs or within the cooldown (default 120s,
+  configurable) is a no-op. Track in-memory in the server process.
+- Failures are logged (existing log helper) and never affect the tool call.
+- The freshness note text gains a suffix when a reindex was scheduled:
+  ` A background re-index has been started.`
+- Tests: debounce logic as a pure/injectable unit (fake timers or injected
+  clock), single-flight guarantee, spawn-args correctness (mock child_process).
 
-### F3.3 Health surfacing in fleet_status
+## P4 -- KB and code graph cross-linking (one retrieval surface)
 
-Add a code intelligence section to the `fleet_status` tool output (find its
-implementation via code_query; likely `src/tools/check-status.ts` or similar):
-for the current working repo (process.cwd() if it has .gitnexus/), report:
-index present yes/no, nodes/edges/files from meta.json stats, indexedAt,
-and lastCommit vs current git HEAD (matching / N commits behind).
-Keep it read-only and fast; degrade gracefully when git or meta.json is unavailable.
+Two one-way joins; see design.md D4 for the dependency direction rule.
 
-## Fix 2: mid-sprint staleness
+- P4a `code_context` inlines KB: after a successful code_context child call,
+  query the KB (same repo scope) for CONFIRMED entries whose `symbols` contain
+  the requested name; append a compact block to the response text:
+  `[knowledge-bank] N confirmed entries for <name>:` then one line per entry
+  (title -- summary first 120 chars). Zero entries -> no block. KB read errors
+  -> no block, never fail the call.
+- P4b `kb_session_prime` expands hints through the graph: after collecting
+  direct hint matches, call the code intelligence provider for each
+  hint_symbol (impact/context, depth 1) to get neighbor symbols; run ONE extra
+  KB query batch over those neighbors; merge results into top_entries with a
+  `via: "graph-neighbor"` marker, ranked below direct hits. Cap neighbors
+  (default 10) and total added entries (default 5). Graph unavailable (no
+  index, child down) -> prime works exactly as today (graceful skip).
+- Tests: P4a append/no-append/error paths (mock KB service); P4b neighbor
+  expansion with mocked provider, cap enforcement, graceful-skip path.
 
-The index reflects the repo at analyze time. Symbols created in sprint phases 1-2
-are invisible to the phase-3 doer.
+## P8 -- Usage telemetry on code intelligence queries
 
-### F2.1 Re-index at VERIFY checkpoints
+- Record each code_* call (also code_map/code_flow): { ts, tool, symbol/query,
+  repo } appended to `~/.apra-fleet/data/code-intelligence/usage.jsonl`
+  (design.md D8: JSONL, append-only, size-capped rotation at 5MB -> keep last
+  file + one .1 backup). Never block or fail a call on telemetry errors.
+- Surface: `fleet_status` code-intel section gains `top symbols (30d): a (12),
+  b (9), ...` (top 5) in json + compact; computed by reading usage.jsonl with
+  a time filter -- keep it fast (single pass, cap file read).
+- Tests: append format, rotation trigger, top-N aggregation, error isolation.
 
-In `skills/pm/doer-reviewer-loop.md` (doer template) and `skills/pm/index.md`:
-add `npx gitnexus analyze` to the VERIFY checkpoint sequence (after build/lint/tests
-pass, before push). Indexing is incremental via fileHashes, so this is seconds.
-Non-fatal: an analyze failure must not fail the VERIFY.
+## P9 -- Test-to-symbol mapping (code_tests)
 
-### F2.2 Freshness metadata in tool responses
+The call graph already contains test files calling product symbols. Expose it:
 
-In `code-intelligence-gitnexus.ts`: when a call carries a `repo` param and the index
-exists, compare `meta.json.lastCommit` with the repo's current `git rev-parse HEAD`.
-When they differ, append a freshness note to the tool response (do not block the
-call): `"[code-intelligence] index is behind repo HEAD (indexed <lastCommit:8> vs HEAD <head:8>). Results may miss recent changes; run 'npx gitnexus analyze' to refresh."`
-Extract the comparison into a small pure function so it is unit-testable.
+- New tool `code_tests`: input { symbol: string, repo?: string } -> the test
+  files/functions that (transitively, depth <= 2) call the symbol. Implement as
+  an upstream code_impact/graph query through the child, then filter results to
+  test paths (path contains `test`/`tests`/`spec` or filename *.test.* /
+  *.spec.* -- keep the matcher a small exported pure function).
+- Description tells agents the use: "run targeted tests for the code you
+  changed instead of the full suite."
+- Tests: path-matcher pure function cases; mocked child response filtering;
+  missing-index reuse.
 
-## Fix 1: prompt-dependence of tool routing
+## Sprint-wide done criteria
 
-Agents only use the tools when the dispatch prompt says so. Tool descriptions are
-the only channel present on EVERY dispatch path.
-
-### F1.1 Routing guidance in tool descriptions
-
-In `src/tools/code-intelligence.ts` and wherever the user-facing tool descriptions
-are registered (check `src/index.ts`), extend each tool description
-(code_graph, code_impact, code_query, code_context) with one sentence:
-"Prefer this over Glob/Grep/file reads for structural questions (symbol lookup,
-call chains, impact) -- the answer is pre-indexed."
-
-### F1.2 Reviewer dispatch template
-
-In `skills/pm/doer-reviewer-loop.md`, the reviewer template has no code
-intelligence / KB instructions (planner and doer templates were patched this week).
-Add the same style paragraph: kb_session_prime at start (hints from the diff),
-code_impact for "who else calls this changed method", kb_query before unfamiliar
-file reads.
-
-### F1.3 Confirm fleet-mode templates
-
-Verify `skills/pm/tpl-planner.md`, `skills/pm/tpl-doer.md`, `skills/pm/tpl-reviewer.md`
-all carry the code intelligence + KB instructions (updated earlier on this branch;
-this is a read-and-confirm task, fix only if a gap is found).
-
-## Done criteria (sprint-wide)
-
-- `npm run build` clean (tsc, no errors)
-- `npm test` green (vitest) including NEW unit tests for:
-  - F3.1 missing-index error (temp dir without .gitnexus)
-  - F3.2 connection-promise reset on failure (mockable transport)
-  - F2.2 freshness comparison logic (pure function)
-- ASCII only in all files (repo rule)
-- No PR raised (the user raises PRs explicitly). Work stays on
-  feat/code-intelligence-abstraction; never push to main.
-
-## Design note
-
-No separate design.md: the architecture is fixed by the existing provider
-abstraction; binding decisions (error message shapes, freshness note format) are
-specified inline above. The riskiest work is F3.2 (async lifecycle of the shared
-MCP client) -- front-load it.
+- npm run build clean; npm test green (only the 2 pre-existing timezone
+  failures, beads yashr-302, may fail).
+- Every new tool: registered in src/index.ts, routed through callGitNexus
+  (except pure-KB paths), description carries routing guidance, schema in
+  code-intelligence.ts style, tests present.
+- ASCII only in all files. Never push to main. NO PR (user raises PRs).
+- Investigation results (P1 child-tool surface, P2 embeddings) written to
+  docs/ and progress.json notes even where a feature was descoped -- a
+  documented descope with a backlog item is an acceptable outcome for the
+  investigation-gated halves; silent omission is not.
