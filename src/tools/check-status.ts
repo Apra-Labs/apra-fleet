@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { join } from 'path';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -189,6 +192,128 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
   return row;
 }
 
+// ---------------------------------------------------------------------------
+// Code intelligence health (F3.3)
+//
+// Read-only, fast, no MCP child spawn, no network. Reports whether the
+// current working repo has a gitnexus index, its stats, and whether the
+// indexed commit matches current git HEAD. Never throws -- every failure
+// (missing/unparseable meta.json, git unavailable, unknown lastCommit)
+// degrades to a graceful "unavailable" state instead of failing fleet_status.
+// ---------------------------------------------------------------------------
+export interface CodeIntelligenceHealth {
+  present: boolean;
+  nodes?: number;
+  edges?: number;
+  files?: number;
+  indexedAt?: string;
+  lastCommit?: string;
+  headStatus?: 'matching' | 'behind' | 'unavailable';
+  commitsBehind?: number;
+}
+
+interface GitNexusMeta {
+  lastCommit?: string;
+  indexedAt?: string;
+  stats?: { files?: number; nodes?: number; edges?: number };
+}
+
+function readGitNexusMeta(repoDir: string): GitNexusMeta | null {
+  const metaPath = join(repoDir, '.gitnexus', 'meta.json');
+  if (!existsSync(metaPath)) return null;
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf-8')) as GitNexusMeta;
+  } catch {
+    return null;
+  }
+}
+
+function currentHead(repoDir: string): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function commitsBehindCount(repoDir: string, lastCommit: string, head: string): number | null {
+  try {
+    const out = execFileSync('git', ['rev-list', '--count', `${lastCommit}..${head}`], {
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const count = Number.parseInt(out, 10);
+    return Number.isFinite(count) ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+export function codeIntelligenceHealth(repoDir: string): CodeIntelligenceHealth {
+  const meta = readGitNexusMeta(repoDir);
+  if (!meta) return { present: false };
+
+  const health: CodeIntelligenceHealth = {
+    present: true,
+    nodes: meta.stats?.nodes,
+    edges: meta.stats?.edges,
+    files: meta.stats?.files,
+    indexedAt: meta.indexedAt,
+    lastCommit: meta.lastCommit,
+  };
+
+  if (!meta.lastCommit) {
+    health.headStatus = 'unavailable';
+    return health;
+  }
+
+  const head = currentHead(repoDir);
+  if (!head) {
+    health.headStatus = 'unavailable';
+    return health;
+  }
+
+  if (head === meta.lastCommit) {
+    health.headStatus = 'matching';
+    return health;
+  }
+
+  const behind = commitsBehindCount(repoDir, meta.lastCommit, head);
+  if (behind === null) {
+    health.headStatus = 'unavailable';
+    return health;
+  }
+
+  health.headStatus = 'behind';
+  health.commitsBehind = behind;
+  return health;
+}
+
+/**
+ * Render the trailing head-comparison fragment used by the compact
+ * fleet_status line, e.g. "matching HEAD", "5 commits behind HEAD", or
+ * "indexed a1b2c3d4, HEAD comparison unavailable".
+ */
+function headComparisonLabel(health: CodeIntelligenceHealth): string {
+  if (health.headStatus === 'matching') return 'matching HEAD';
+  if (health.headStatus === 'behind') return `${health.commitsBehind} commits behind HEAD`;
+  const shortSha = health.lastCommit ? health.lastCommit.slice(0, 8) : 'unknown';
+  return `indexed ${shortSha}, HEAD comparison unavailable`;
+}
+
+/** Render the one-line compact fleet_status code intelligence summary. */
+export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): string {
+  if (!health.present) {
+    return "code-intel: no index (run 'npx gitnexus analyze' or /pm index)";
+  }
+  const nodes = health.nodes ?? 0;
+  const edges = health.edges ?? 0;
+  const files = health.files ?? 0;
+  const indexedAt = health.indexedAt ?? 'unknown';
+  return `code-intel: index present | ${nodes} nodes / ${edges} edges / ${files} files | indexed ${indexedAt} | ${headComparisonLabel(health)}`;
+}
+
 export type FleetStatusInput = z.infer<typeof fleetStatusSchema>;
 
 export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
@@ -239,12 +364,21 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
 
   const updateNotice = getUpdateNotice();
   const logFile = getActiveLogFile();
+  let codeIntelligence: CodeIntelligenceHealth;
+  try {
+    codeIntelligence = codeIntelligenceHealth(process.cwd());
+  } catch {
+    // Defensive: codeIntelligenceHealth() already degrades gracefully
+    // internally, but fleet_status must never fail because of this section.
+    codeIntelligence = { present: false };
+  }
 
   if (format === 'json') {
     const payload: Record<string, unknown> = {
       version: serverVersion,
       summary: { total: rows.length, online, offline: rows.length - online },
       members: rows,
+      codeIntelligence,
     };
     if (logFile) payload.logFile = logFile;
     if (updateNotice) {
@@ -282,5 +416,6 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     }
     t += line + '\n';
   }
+  t += codeIntelligenceCompactLine(codeIntelligence) + '\n';
   return t;
 }
