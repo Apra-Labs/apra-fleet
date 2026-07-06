@@ -59,5 +59,8 @@ If this task requires secrets, API keys, or tokens (e.g., external API calls, pr
   symbol lookup. Do NOT call kb_capture yourself -- the KB Agent handles all capturing
   after your session ends. Your KB role is retrieval only.
 
-- End of session: run `kb_harvest` to make your session output available to the KB Agent.
-  The KB Agent runs after the reviewer and processes your transcript into structured entries.
+- You do not need to call `kb_harvest` yourself -- it has no session transcript to work
+  from and is a no-op when called without one. The fleet auto-dispatches it with your
+  full transcript after your session ends (a separate, low-trust path that produces
+  UNVERIFIED entries). The KB Agent runs after the reviewer and captures directly from
+  your session output and the reviewer's verdict -- that is the primary path.

@@ -40,6 +40,26 @@ Bug: The cleanup handler in src/services/registry.ts does not close the database
     expect(result.entries_skipped).toBe(0);
   });
 
+  // T3.2 (F7, revised D7): harvested entries must be low-trust regardless of
+  // wording in the transcript -- confidence forced to UNVERIFIED (the D1 clamp
+  // covers this path too) and provenance stamped author='harvest',
+  // source='harvest' so harvested entries are distinguishable from real
+  // KB-Agent direct captures in queries.
+  it('captured entry is UNVERIFIED with author=harvest, source=harvest', async () => {
+    const transcript = `Key insight: the src/services/registry.ts \`getOrCreate\` helper is the only safe entry point for singleton construction.`;
+
+    const result = JSON.parse(await kbHarvest({ session_transcript: transcript }));
+    expect(result.entries_captured).toBeGreaterThanOrEqual(1);
+
+    const { results } = await provider.query({ query: 'getOrCreate', include_stale: true });
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    for (const entry of results) {
+      expect(entry.confidence).toBe('UNVERIFIED');
+      expect(entry.author).toBe('harvest');
+      expect(entry.source).toBe('harvest');
+    }
+  });
+
   it('deduplicates already-captured learnings via AUDN', async () => {
     const transcript = `Note: The registry uses lazy initialization and must be called before other operations.`;
 

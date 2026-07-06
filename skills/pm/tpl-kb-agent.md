@@ -20,6 +20,11 @@ You run after the reviewer has returned a verdict. You have access to:
 The reviewer's APPROVED or CHANGES NEEDED verdict directly determines what confidence
 level you assign to captured entries.
 
+Note: `kb_harvest` is a separate, automatic, low-trust path -- the fleet auto-dispatches
+it with the full session transcript after every doer/reviewer session, producing
+regex-extracted, UNVERIFIED entries (author='harvest', source='harvest'). It runs
+independently of you; the direct-capture flow below is the primary, higher-trust path.
+
 ---
 
 ## What to Capture

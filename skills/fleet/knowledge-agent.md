@@ -39,14 +39,17 @@ kb_capture
 
 ## Phase 3 (Harvest)
 
-Run at the end of every session before stopping.
+`kb_harvest` fires automatically (fire-and-forget) after `execute_prompt` completes,
+passing the full session transcript -- the one thing a member cannot reliably supply
+about its own session. You do not need to call it yourself; calling it without a
+transcript is a no-op.
 
-```
-kb_harvest
-```
-
-- Summarizes session learnings into durable KB entries.
-- Ensures future sessions (and other members) benefit from work done this session.
+- Regex-extracts learnings from the transcript into durable KB entries.
+- Low-trust: entries are always captured at confidence=UNVERIFIED with
+  author='harvest', source='harvest' -- distinct from entries you capture directly
+  via kb_capture in Phase 2.
+- Ensures future sessions (and other members) benefit from work done this session
+  even when nothing was explicitly captured.
 
 ---
 

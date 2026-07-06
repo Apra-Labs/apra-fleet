@@ -78,8 +78,11 @@ Commit feedback.md and push.
   the fleet code intelligence tools (code_graph, code_impact, code_query, code_context).
 - During work: use fleet code intelligence tools for cross-file tracing and symbol lookup -- never
   plain-read files for structural questions.
-- End of session: run `kb_harvest` to make your session output available to the KB Agent.
+- You do not need to call `kb_harvest` yourself -- it has no session transcript to work
+  from and is a no-op when called without one. The fleet auto-dispatches it with your
+  full transcript after your session ends (a separate, low-trust path that produces
+  UNVERIFIED entries).
 
-The KB Agent runs after you and processes the full session into structured KB entries.
+The KB Agent runs after you and captures directly from the full session into structured KB entries.
 Your APPROVED or CHANGES NEEDED verdict determines which entries the KB Agent promotes
 to CONFIRMED. You do not call kb_capture or kb_promote -- that is the KB Agent's job.

@@ -178,7 +178,9 @@ hint_modules derived from your first task. Before reading an unfamiliar file cal
 kb_query first -- if KB returns a CONFIRMED or INFERRED entry, trust it and skip
 the source read. During work use code intelligence tools (code_graph, code_impact,
 code_query, code_context) for symbol lookups and call graph questions -- never
-Glob/Grep for structural queries. At session end call kb_harvest.
+Glob/Grep for structural queries. Do NOT call kb_capture or kb_harvest yourself --
+kb_harvest is auto-dispatched with your transcript after your session ends, and the
+KB Agent captures directly from your session output afterward.
 ```
 
 ### reviewer
