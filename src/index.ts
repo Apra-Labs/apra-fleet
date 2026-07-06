@@ -307,19 +307,19 @@ async function startServer() {
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
 
   // --- Code Intelligence ---
-  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase.', codeGraphSchema.shape, wrapTool('code_graph', async (input) => {
+  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeGraphSchema.shape, wrapTool('code_graph', async (input) => {
     const provider = await getProvider();
     return JSON.stringify(await provider.graph(input));
   }));
-  server.tool('code_impact', 'Find what is affected by changes to a symbol.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
+  server.tool('code_impact', 'Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
     const provider = await getProvider();
     return JSON.stringify(await provider.impact(input));
   }));
-  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns.', codeQuerySchema.shape, wrapTool('code_query', async (input) => {
+  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeQuerySchema.shape, wrapTool('code_query', async (input) => {
     const provider = await getProvider();
     return JSON.stringify(await provider.query(input));
   }));
-  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
+  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
     const provider = await getProvider();
     return JSON.stringify(await provider.context(input));
   }));
