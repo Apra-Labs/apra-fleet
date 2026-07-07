@@ -133,6 +133,21 @@ styling, shell-completion helper.
 - Push-based SSE/WebSocket sink and a multi-pane web/TUI.
 - PM `status.md` feature-name labeling (branch names shown in the interim).
 
+## Configuration
+
+`~/.apra-fleet/data/config.json` (i.e. `FLEET_DIR/data/config.json`):
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `logging.previewChars` | `256` | Max chars of a command/prompt written to the fleet log. Invalid values warn and fall back to the default. `watch` renders the full prompt from the session transcript when available; the log line is an identifier, not a full record. |
+
+Example:
+```json
+{
+  "logging": { "previewChars": 512 }
+}
+```
+
 ## Known gotchas
 
 - Output volume: a broad scope with many active members interleaves a lot;
@@ -144,6 +159,10 @@ styling, shell-completion helper.
 - Backfill (`--tail`) applies to the fleet log and local transcripts; a remote
   transcript starts streaming from the moment `watch` attaches (primes to EOF),
   so it has no history backfill.
+- Long commands/prompts are truncated in the fleet log (default 256 chars,
+  configurable via `logging.previewChars`). The full prompt is still visible in
+  `watch` for any member whose transcript is being tailed; non-Claude or
+  offline-remote members show the truncated preview only.
 - Remote tailing opens one dedicated SSH connection per remote Claude member for
   the lifetime of the `watch`; it is closed cleanly on Ctrl-C. If a member is
   asleep/unreachable the channel simply fails soft and is retried on the next
