@@ -41,6 +41,7 @@ Usage:
   apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
   apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
   apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
+  apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
   process.exit(0);
@@ -125,6 +126,14 @@ Usage:
       .then(m => m.runKbDirectives(subCmd, process.argv.slice(4)))
       .then(code => process.exit(code))
       .catch(err => { logError('cli', `kb ${subCmd} failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'commit') {
+    // T3.7b: manual/recovery re-export + commit -- the command the amended-D5
+    // fleet_status bible-drift anomaly message tells operators to run.
+    // kb_export owns all commit/no-commit decisions; this is a thin wrapper.
+    import('./cli/kb-commit.js')
+      .then(m => m.runKbCommit(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb commit failed: ${err.message}`); process.exit(1); });
   } else {
     console.error(`Error: unknown kb subcommand '${subCmd}'`);
     process.exit(1);
