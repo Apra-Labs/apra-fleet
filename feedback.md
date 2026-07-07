@@ -1,208 +1,193 @@
-# SPRINT-FINAL Review -- KB Trust-Ops Sprint (epic yashr-bp2)
+# Review -- In-Flight KB Capture (epic yashr-auh, lightweight sprint)
 
-Reviewer: pm-reviewer. Target: Phase 3 (T3.1-T3.8 + PM-added T3.7b) plus a
-sprint-wide re-check, on branch feat/code-intelligence-abstraction (base main).
-Phases 1 and 2 were reviewed and APPROVED previously (Phase 2 verdict is
-preserved in git history of this file). Phase 3 commits reviewed: b8825c7 (T3.1
-kb_feedback), 7a98072 (T3.2 docs), ccea4be (T3.3 global export), 2b9114a (T3.4
-installer copy), ef12973 (T3.5 global cold-seed), 8f3d17f (T3.6 quantitative
-templates), 091e612 (T3.7 e2e), cb53ae7 (T3.7b kb commit CLI), 3c8f991 (ASCII
-fix), c292f5c (T3.8 VERIFY). Checked against requirements.md (F8-F11), design.md
-(D7, D8, D9), PLAN.md (T3.1-T3.8 done criteria), and progress.json.
+Reviewer: pm-reviewer. Branch feat/code-intelligence-abstraction (base main).
+Commits reviewed: 2133888 (T1 tag filter), 8f3bb66 (T2 template policy flip),
+3b1c9b1 (T3 KB Agent curator). Prior sprint's verdict (KB Trust-Ops, epic
+yashr-bp2 -- APPROVED) is preserved in this file's git history, per the same
+convention that sprint used for its own earlier phases.
 
-## VERDICT: APPROVED
+## VERDICT: CHANGES NEEDED
 
-0 HIGH, 0 MEDIUM, 3 LOW (all informational / carried-forward). Every Phase 3
-acceptance point holds and the two security invariants the sprint exists to
-protect are intact after Phase 3: kb_feedback cannot elevate or activate a
-directive, and the global-bible distribution path cannot smuggle an active
-directive into a cold-seeded project KB. Build clean; full suite 1975 passed,
-6 failed, and the 6 are EXACTLY the allowed set (2 timezone yashr-302 + 4
-kb-session-prime graph-neighbor yashr-bwc), verified by an isolated re-run of
-those two files. ASCII sweep of the sprint's added lines (cb37341..HEAD) is
-clean. Main untouched; branch in sync with origin; no PR raised.
+1 HIGH, 1 MEDIUM, 2 LOW. The requirement (capture learnings at discovery time,
+KB Agent becomes curator) is well-designed and the trust clamp keeps it safe --
+but the sprint's centerpiece step, the KB Agent gathering the phase's in-flight
+captures by tag, cannot execute as documented: it issues a `kb_query` call the
+tool layer rejects at runtime. T1 wired the `tag` param through the schema,
+provider, and the flagged_only branch, but did not relax the main-path guard
+that the T3 curation step depends on. Everything else conforms. Build clean;
+full suite 1987 passed / 6 failed with the 6 EXACTLY the allowed set (2
+time-utils yashr-302 + 4 kb-session-prime graph-neighbor yashr-bwc, confirmed by
+isolated re-run); ASCII sweep of all added lines clean; main untouched.
 
-## SECURITY RE-CHECK (the gate must survive Phase 3) -- BOTH PATHS SAFE
+## TRUST RE-CHECK -- does in-flight capture open a hole? Answer: NO to the gate; YES to bounded noise growth.
 
-Answer to the posed question: NO. Neither the feedback path nor the bible path
-can reach an ACTIVE directive.
+The CONFIRMED trust gate is NOT breached by letting planner/doer/reviewer
+capture freely:
 
-- kb_feedback CANNOT elevate/activate a directive. SqliteProvider.feedback()
-  (sqlite-provider.ts:861-887) issues exactly one of two UPDATEs, and NEITHER
-  writes the `confidence` column, the `type` column, or the `directive:pending`
-  tag. For a normal entry: `stale=1, flagged_for_review=1, content=?`. For an
-  ACTIVE directive (type='user-directive' AND confidence='CONFIRMED'):
-  `flagged_for_review=1, content=?` only -- stale is left untouched. There is no
-  code path in feedback() that can move UNVERIFIED -> CONFIRMED or otherwise
-  mint the ACTIVE predicate. Activation remains reachable ONLY via
-  approveDirective/addDirective (dedicated CLI methods, not MCP), unchanged
-  since T1.1/T1.2.
+- CLAMP HOLDS. `kb_capture` caps every capture at INFERRED server-side
+  (confidence_clamped:true); CONFIRMED is minted ONLY by `kb_promote`. No agent
+  role template calls kb_promote -- tpl-doer/tpl-reviewer/tpl-planner instruct
+  kb_capture only, and tpl-reviewer's closing line was narrowed to "You do not
+  call kb_promote". So no in-flight capture can self-mint CONFIRMED.
+- PROMOTION STILL GATED. Only the KB Agent promotes, and Step 3 promotes an
+  in-flight entry ONLY when the reviewer verdict is APPROVED and the entry
+  describes behavior the approved code has -- capture-then-promote exactly as
+  before, the only change being who captured first. Unvalidated entries are left
+  at INFERRED; verdict-invalidated entries are kb_feedback-flagged (stale +
+  flagged), never deleted. All confirmed against the preserved Confidence
+  Decision table (tpl-kb-agent.md:103-119).
+- DIRECTIVES STILL CLI-ONLY. No new template invites type='user-directive'
+  capture; the new instructions all say type knowledge/learning. Even if an
+  agent captured a directive, kb_capture clamps it to UNVERIFIED + directive:pending
+  (proposal only), default retrieval excludes it (sqlite-provider.ts:535), and
+  kb_promote refuses user-directive entries. Activation remains human-CLI-only.
+- FLOOD MITIGATED. Dedupe-first (kb_query before every capture), the
+  durable+non-obvious/no-task-logs quality bar, and the curator's flag/leave/promote
+  triage all bound low-quality growth.
 
-- The GLOBAL BIBLE path CANNOT smuggle an active directive into a cold-seeded
-  KB. Two independent barriers hold:
-  1. Getting a directive into kb-canonical-global.json is already blocked
-     upstream: kb_capture forces scope='project' for user-directive proposals
-     (M1, T1.1), addDirective (CLI) writes providers.project, and kb_export
-     scope='global' reads providers.global.list({confidence:'CONFIRMED'}) -- the
-     global KB, which no supported flow populates with a directive.
-  2. Even if kb-canonical-global.json DID contain a
-     type='user-directive'/confidence='CONFIRMED' entry, the cold-seed block
-     (kb-session-prime.ts:334-372) ONLY appends synthesized KBEntry objects to
-     `result.top_entries` -- the prime OUTPUT JSON. It performs NO database
-     write of any kind. The synthesized entries are marked
-     via/author='canonical-bible-global' (the canonical marker lives in the
-     OUTPUT only). The DB-level directive guards (query()/prime() default
-     exclusion, supersede guard, decay guard, promote-ladder refusal) all
-     operate on real DB rows, of which the cold-seed creates none. So a directive
-     riding the bible would surface at most as a marked context suggestion in one
-     prime response, never as a persisted, retrievable-as-directive, or
-     guard-protected active directive. The gate is intact.
+HONEST RESIDUAL RISK (MEDIUM-1 below): valid-but-unvalidated in-flight captures
+persist at INFERRED (Step 3's "left Z" bucket), and the retrieval-first rule
+tells future agents to TRUST INFERRED entries and skip the source read. So the
+population of retrieval-trusted INFERRED entries now grows with un-curated,
+agent-authored content -- an unvalidated INFERRED capture can later be trusted
+by another agent without source verification. This does not elevate anything to
+CONFIRMED (the gate holds), but it is a real knowledge-quality/noise
+amplification the pre-change flow did not have. Mitigated, not eliminated.
 
-## T3.1 kb_feedback (F8, D7) -- CONFORMS
+## T1 -- tag filter (2133888) -- CONFORMS (code), but see HIGH-1 for the tool guard gap
 
-- stale + flagged + ASCII note with validated role: CONFIRMED. feedback() sets
-  stale=1 + flagged_for_review=1 (non-directive path) and appends
-  '\n\n[feedback <ISO>] <author>: <reason>' built by string concatenation (ASCII
-  hook gotcha respected). Role validated in the tool layer via a duplicated
-  AUTHOR_VALUES/validateAuthor (kb-feedback.ts:9-16, deliberately NOT imported
-  from kb-capture.ts per the shared-file sequencing); invalid/absent -> 'unknown'.
-- never deletes / never touches confidence: CONFIRMED. Both UPDATE statements
-  omit the confidence column and there is no DELETE anywhere in the path.
-- USER-DIRECTIVE FLAG-ONLY, never staled -- guard verified: CONFIRMED.
-  isActiveDirective = `type === 'user-directive' && confidence === 'CONFIRMED'`
-  (same rekey as T1.1's guards). Active directive -> flagged_for_review=1 only,
-  stale left as-is. A pending proposal (confidence != CONFIRMED) falls to the
-  else branch and stales normally -- proven by a dedicated test.
-- CONTENT_CAP respected: CONFIRMED. Note is appended through
-  truncateContent(entry.content + note), CONTENT_CAP=4000 (sqlite-provider.ts:33).
-- Registered as kb_feedback in index.ts (line 393) with the never-deletes /
-  never-demotes / directive-exception wording in the description.
+- WHERE clause, exact match via json_each, ANDed with existing filters: CONFIRMED.
+  SqliteProvider.query() pushes `EXISTS (SELECT 1 FROM json_each(e.tags) WHERE
+  value = ?)` into `conditions` (sqlite-provider.ts:515-523), the same array
+  consumed by BOTH the FTS branch (`ftsWhere`, line 544) and the plain-listing
+  branch (`where`, line 538/556). Same pattern as list()'s symbol filter
+  (line 791-794). FTS MATCH string and the OR-join are untouched -- tag is not
+  an FTS term.
+- Applied in BOTH branches of query(): CONFIRMED (see above). Notably the plain
+  branch (line 553 `else`) runs when there is NO query, so the PROVIDER supports
+  a queryless tag-only filter -- it is the TOOL that blocks it (HIGH-1).
+- No-tag behavior unchanged: CONFIRMED, proven by the "no tag -> unchanged" tests
+  in both kb-list.test.ts and kb-query.test.ts (provider + tool layers).
+- No use_count regression in list(): CONFIRMED. list() has no use_count/last_accessed
+  UPDATE (kb-list.ts's audit-view choice is preserved); only query() bumps telemetry,
+  unchanged by this diff.
+- zod schemas + descriptions: CONFIRMED. kb-list.ts:16 and kb-query.ts:10 add the
+  `tag` param with accurate descriptions; index.ts tool descriptions updated for
+  both kb_query and kb_list.
+- Tests meaningful: CONFIRMED. tag-only match, no-tag-unchanged, and composition
+  (module AND tag; type AND tag) at both provider and tool layers, plus a tool
+  test asserting the untagged entry is NOT returned. All pass.
 
-## T3.3/T3.4/T3.5 global bible chain (F9, D8) -- CONFORMS, chain traced end-to-end
+## T2 -- capture-at-discovery-time policy flip (8f3bb66) -- CONFORMS
 
-- T3.3 kb_export scope='global': reads providers.global via
-  source.list({confidence:'CONFIRMED'}), writes .fleet/kb-canonical-global.json
-  with the same CanonicalEntry field set and the same asciiSafeStringify +
-  id-sorted determinism as project scope. maybeAutoCommitBible() gained a scope
-  param used ONLY for the commit-message label ('global knowledge bible'); the
-  pathspec-only add+commit, pm-kb identity, content-gating, config off-switch,
-  and non-fatal contract are unchanged and apply identically to the global file.
-- T3.4 installer copy: copyGlobalBible(repoCwd) (install.ts:444-457) copies
-  <repo>/.fleet/kb-canonical-global.json -> FLEET_DIR/knowledge/global/
-  kb-canonical-global.json. Absent source -> early silent return (before any dir
-  creation); any error -> caught, '[WARN] ...' logged, never thrown. Target dir
-  created with mkdirSync({recursive:true}). Called from Step 9 (install.ts:824).
-  Non-fatal on every path.
-- T3.5 cold-seed merge: a NEW block (kb-session-prime.ts:334-372) appended AFTER
-  the existing project-bible block, reading FLEET_DIR/knowledge/global/
-  kb-canonical-global.json (homedir-based, the T3.4 target -- NOT the repo). It
-  re-checks the SAME shared COLD_KB_MAX threshold against top_entries as built by
-  every prior merge, dedupes by id against everything already in top_entries
-  (live hits + project bible), marks via:'canonical-bible-global', caps at
-  ADDED_ENTRY_CAP, and hard-skips non-fatally on missing/malformed/non-array
-  (identical try/catch shape to the project block).
-- Existing blocks not restructured: CONFIRMED. Only toCanonicalKBEntry gained an
-  optional `via` param defaulting to 'canonical-bible', so the project call site
-  (line 304) is byte-for-byte unchanged.
-- Ordering end-to-end: live hits -> global-KB FTS append -> graph-neighbor ->
-  project bible -> global bible. Global-bible entries land strictly below
-  project-bible entries, per D8. Correct.
-- Degrade paths: installer absent/error non-fatal; cold-seed
-  missing/unreadable/malformed/non-array all leave `result` exactly as built;
-  warm session (>= COLD_KB_MAX) never enters either bible block.
+- All three role templates flipped: CONFIRMED. tpl-planner.md gains a "Capture at
+  discovery time" section, tpl-doer.md and tpl-reviewer.md replace the retrieval-only
+  wording with immediate-kb_capture instructions.
+- All three dispatch blocks flipped consistently: CONFIRMED. doer-reviewer-loop.md
+  planner block (role hint planner, line ~143), doer block (line ~189, role hint
+  doer), and reviewer block (line ~220, role hint reviewer) all carry the flip.
+- Quality rules retained: CONFIRMED. dedupe-with-kb_query-first, durable+non-obvious
+  only, no task logs, one concern per entry, real symbols + source_files -- present
+  in every flipped surface.
+- Tagging convention ['sprint:<name>','phase:<n>'] with placeholders in dispatch
+  blocks: CONFIRMED (doer-reviewer-loop.md:146,198,229; tpl-* use
+  ['sprint:<sprint-name>','phase:<n>']). See LOW-2 on concrete substitution.
+- Retrieval-first rules untouched: CONFIRMED (kb_query-before-unfamiliar-read,
+  trust CONFIRMED/INFERRED, code-intelligence-over-Grep all intact).
+- "Do NOT call kb_capture" fully gone: CONFIRMED -- zero matches across skills/.
+- kb_harvest still autowire-only: CONFIRMED ("Do NOT call kb_harvest yourself ...
+  auto-dispatched ... backstop" in every surface).
+- No template invites type='user-directive' capture beyond the existing proposal
+  flow: CONFIRMED (new instructions specify type knowledge/learning only; the
+  directive proposal flow in tpl-kb-agent.md is unchanged).
 
-## T3.7b kb commit CLI -- CONFORMS, closes Phase 2 LOW-1
+## T3 -- KB Agent curator (3b1c9b1) -- CONFORMS except HIGH-1
 
-- Thin wrapper over kbExport (kb-commit.ts): kbCommitCmd takes an injected
-  KbExportFn, parses [--repo <path>] [--global], calls
-  exportFn({ repo_path, scope: global ? 'global' : 'project' }), prints the
-  export count/path/scope + committed true/false, returns 0 on success and 1 on
-  any thrown/parse error. No new git or repo-path logic -- resolveRepoPath
-  precedence stays inside kb_export (explicit --repo > validated cwd, T1.6).
-- CLI-only, NOT MCP-exposed: CONFIRMED. Wired ONLY into the src/index.ts kb
-  subcommand dispatch (subCmd === 'commit', lines 129-136); there is no
-  server.tool('kb_commit', ...) registration anywhere.
-- Closes the Phase 2 LOW-1 dangling reference: the amended-D5 fleet_status
-  bible-drift anomaly message tells operators to "run apra-fleet kb commit", and
-  that command now exists and does exactly that (re-export + auto-commit).
+- Curator process ordered correctly: CONFIRMED. Step 1 scope -> Step 2 gather by
+  tag -> Step 3 curate (dedupe / promote-on-APPROVED / flag-if-invalidated /
+  leave) -> Steps 4-7 residual gap capture -> Step 8/8b promote + export -> Step 9
+  contradictions -> Step 10 report. Ordering rule at line ~349 makes "curate
+  before residual capture" explicit.
+- kb_query-vs-kb_list tags-field rationale is SOUND: VERIFIED. kb-list.ts:34-42
+  maps output to {id,type,confidence,title,summary,symbols,source_files} --
+  `tags` is genuinely omitted. kb_query returns full entries (l1_results, tags
+  present), and list() takes only a single `tag`, so kb_list cannot intersect
+  sprint:+phase:. Using kb_query and post-filtering on the returned tags is the
+  correct choice. (The call itself is still broken -- HIGH-1.)
+- Report template updated: CONFIRMED. Step 10 gains the "In-flight (phase P): N
+  reviewed, promoted X, flagged Y, left Z" line; kb-agent.md status line updated
+  to match.
+- kb-agent.md fill-list gained {{phase}}: CONFIRMED (kb-agent.md:41-43), with the
+  tag-derivation note.
+- ALL trust rules preserved: CONFIRMED. Clamp respected (Confidence Decision
+  table intact, capture caps at INFERRED); promote only on APPROVED + entry-matches-approved-code
+  (Step 3 bullet 2); never promote a directive (Step 3 uses kb_promote only on
+  behavioral entries; the user-directive section still routes activation to the
+  human CLI and states kb_promote refuses directives); kb_feedback(role="kb-agent")
+  for invalidated entries -- and "kb-agent" is a valid Author enum value
+  (types.ts:19), so the flag is attributed correctly, not stamped "unknown".
 
-## T3.6 quantitative templates (F10, D9) -- CONFORMS
+## FINDINGS
 
-- tpl-planner.md carries the numbered thresholds (coverage >= 0.8 ->
-  cheap/standard; < 0.3 -> premium + front-load; between -> judgment), the
-  explicit "PLAN.md's model rationale MUST cite the coverage number" requirement
-  with an example, the kb_stats-unavailable qualitative fallback, and a
-  Self-critique citation-check bullet.
-- doer-reviewer-loop.md's planner dispatch block (lines 134-137) carries the same
-  kb_stats-then-threshold instruction, the citation requirement, and the
-  unavailable fallback. Both planner surfaces covered. Template text only, no
-  code touched.
+HIGH-1 (blocks the sprint's headline feature). tpl-kb-agent.md Step 2
+(line 167) instructs:
+`kb_query({ tag: "phase:{{phase}}", include_stale: true, limit: 100 })`.
+This call has neither `query` nor `flagged_only`, so the kb_query TOOL rejects
+it at runtime: kb-query.ts:20-22 throws
+`Provide either query (free-text search) or flagged_only: true`. The KB Agent
+calls kb_query via MCP (index.ts registers `kb_query` -> kbQuery), so the guard
+applies. Consequences: the curator cannot gather the in-flight capture set that
+is the entire input to Step 3, so the sprint's headline mechanism does not run
+as documented. There is no clean workaround through kb_query -- supplying a
+free-text query (e.g. "phase:1") filters by FTS relevance on title+summary (tags
+are not in the FTS index), which is exactly what the design avoids; and the
+flagged_only branch (which now accepts tag, kb-query.ts:29) only returns
+flagged/contradiction entries, not all captures. The provider already supports
+the queryless+tag path (sqlite-provider.ts:553 plain branch), so the fix is a
+one-line guard relaxation:
+`if (!input.query && !input.flagged_only && !input.tag) { throw ... }`.
+T1 half-plumbed this (schema + provider + flagged branch accept `tag`) but left
+the main-path guard unrelaxed, and T3 built on the assumption it was reachable.
+Without the fix the KB Agent silently degrades to its old residual-only behavior
+(safe, but the requirement is unmet).
 
-## T3.7 flagged-pipeline e2e (F11) -- CONFORMS
+MEDIUM-1 (residual trust/noise risk -- non-blocking, honest note per checklist 4).
+Valid-but-unvalidated in-flight captures stay at INFERRED (Step 3 "left Z"), and
+the retrieval-first rule instructs agents to trust INFERRED entries and skip the
+source read. The retrieval-trusted INFERRED population therefore grows with
+un-curated, agent-authored content that no verdict ever validated. The CONFIRMED
+gate is NOT breached (see TRUST RE-CHECK), so this is a knowledge-quality risk,
+not a trust-elevation hole. Mitigations in place (dedupe-first, curator
+flagging). Suggested hardening (future, non-blocking): have the curator's report
+surface the "left Z" count for periodic review, or let unvalidated in-flight
+INFERRED entries decay faster than KB-Agent-vetted ones.
 
-- tests/knowledge/kb-flagged-pipeline.test.ts drives the real tool layer
-  (kbCapture/kbFeedback/kbQuery) + provider primitives. Stage 1: A vs B
-  contradiction -> B.audn_decision 'flagged', A.flagged_for_review=true,
-  B.contradiction_of=A. Stage 2: kb_feedback downvotes unrelated C ->
-  stale+flagged. Stage 3: flagged_only returns all three (A,B,C) with non-empty
-  content (the tool forces include_stale so C is not dropped). Stage 4/5: resolve
-  via promote(B)x2 + a corrective capture that supersedes A, then asserts the
-  ACTUAL post-resolution reality -- A (superseded) drops out of flagged_only,
-  B (promoted winner) REMAINS listed because kb_promote never clears
-  contradiction_of, C remains until separately resolved; final flagged_only
-  total=2, not 0.
-- Non-directive entries used throughout (directive resolution is CLI-only, out
-  of scope for the agent-resolvable flow). CONFIRMS.
-- kb-review.md corrected to match observed reality (Step-4 supersede mechanics +
-  a "Verified actual behavior" note that a kb_feedback-downvoted entry stays
-  listed until separately resolved, line 84). Doc-vs-code mismatch resolved in
-  favor of documented reality, per resolution 7.
+LOW-1 (minor). Step 2's `include_stale: true` also flips `include_superseded`
+true (kb-query.ts:61-62 tie the two together), so a superseded in-flight capture
+would be pulled into the curation set. Low impact -- captures are fresh within
+the phase and Step 3's dedupe would handle any superseded straggler -- but the
+curator may briefly consider an already-superseded entry. Cosmetic.
 
-## Sprint-wide done criteria -- ALL MET
+LOW-2 (verify substitution end-to-end). The doer/reviewer dispatch blocks in
+doer-reviewer-loop.md carry literal `['sprint:<sprint>', 'phase:<phase>']`
+placeholders and tell the agent the "exact values are in your dispatch prompt".
+For the tag mechanism to work once HIGH-1 is fixed, the PM's dispatch MUST
+substitute concrete sprint name and phase number on BOTH the capture side
+(doer/reviewer) and the query side (KB Agent's {{sprint_name}}/{{phase}}). If a
+literal `phase:<phase>` is ever emitted, captures and the curator query will not
+match. Confirm the PM assembly injects concrete values; add a one-line note in
+the dispatch block if not already guaranteed.
 
-- npm run build: CLEAN (tsc, no output).
-- npm test (full suite): 1975 passed, 6 failed, 14 skipped. The 6 are EXACTLY
-  the allowed set, verified by an isolated re-run of the two files:
-  tests/time-utils.test.ts -> 2 failed (toLocalISOString offset +
-  minute-preservation, yashr-302); tests/knowledge/kb-session-prime.test.ts ->
-  4 failed, ALL inside the "graph-neighbor expansion" describe block
-  (graceful-skip x2, isError-context, FTS-hostile-neighbor, yashr-bwc, the
-  unmocked-process.cwd() real-KB leak). The T3.5 global-bible cold-seed lives in
-  a separate describe block and passes; no new/different failures.
-- F1 fail-then-pass gate present and green: tests/knowledge/kb-directive-gate.
-  test.ts (8 tests), unchanged since T1.3.
-- ASCII sweep over the sprint's added lines (git diff cb37341..HEAD, added-lines
-  only, > U+007F scan): CLEAN, zero hits (the T3.8 em-dash fix in
-  install.test.ts's describe title is the last remaining violation and is
-  resolved).
-- No mass migration: forward-only. feedback()/approve/reject/addDirective all
-  operate on a single addressed row; no bulk rewrite of historical rows anywhere
-  in Phase 3.
-- Main untouched (main at 5526fe7, branch HEAD c292f5c), branch in sync with
-  origin (rev-list left-right 0 0), no PR raised. Only untracked
-  orchestrator-scratch dirs (.claude/skills/, .claude/worktrees/) remain, as in
-  every prior VERIFY.
+## EVIDENCE
 
-## Findings
-
-LOW-1 (informational, bible-seed does not filter directive types). The
-global-bible cold-seed's toCanonicalKBEntry copies `type` verbatim and defaults
-absent confidence to 'CONFIRMED', so a hypothetical type='user-directive' row in
-kb-canonical-global.json would appear in the prime OUTPUT top_entries marked
-via='canonical-bible-global'. This is OUTPUT-ONLY and never persisted (see the
-security re-check above), and two upstream barriers make such a row nearly
-impossible to create, so it is not a trust breach -- purely a display note.
-Optional future hardening: skip type='user-directive' entries when seeding from
-any bible, since a directive should only ever be activated through the CLI.
-Non-blocking.
-
-LOW-2 (informational, kb commit "not committed" reason is generic). kb_export's
-returned `committed:false` does not distinguish "no change" from "autoCommit
-disabled" from "not a git repo", so the CLI prints all three as one message. The
-progress note acknowledges this; it matches kb_export's own contract. Cosmetic.
-
-LOW-3 (informational, carried from Phase 1/2). The 4 kb-session-prime
-graph-neighbor failures (yashr-bwc) are an environmental real-KB leak (unmocked
-process.cwd() reads this repo's own .fleet/kb-canonical.json), not a Phase 3
-regression -- confirmed unchanged by T3.5, which adds a separate, passing
-describe block. Already tracked.
+- npm run build: CLEAN (tsc, exit 0, no output).
+- npm test (full suite): 1987 passed, 6 failed, 14 skipped. The 6 are EXACTLY
+  the allowed set, confirmed by isolated re-run of the two files: time-utils.test.ts
+  -> 2 (toLocalISOString offset + minute-preservation, yashr-302);
+  kb-session-prime.test.ts -> 4, ALL in the "graph-neighbor expansion" describe
+  (graceful-skip x2, isError-context, FTS-hostile-neighbor, yashr-bwc). No new
+  failures; the T1 tag tests pass.
+- ASCII sweep of all added lines across 2133888..3b1c9b1 (src, skills, tests):
+  CLEAN, zero non-ASCII hits.
+- Main untouched; only untracked orchestrator scratch dirs (.claude/skills/,
+  .claude/worktrees/) present; no PR raised.
