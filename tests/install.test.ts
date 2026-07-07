@@ -182,7 +182,7 @@ describe('install step 8 — Beads task tracker', () => {
 // T3.4 (F9b, D8): installer copies the repo's committed
 // .fleet/kb-canonical-global.json (when present) into the shared global KB
 // data dir so every project on the machine can see it.
-describe('install step 9 — global bible copy (T3.4, F9b, D8)', () => {
+describe('install step 9 -- global bible copy (T3.4, F9b, D8)', () => {
   // FLEET_DIR (src/paths.ts) resolves from APRA_FLEET_DATA_DIR (set by
   // tests/setup.ts to a real tmp dir), NOT the mocked os.homedir() -- the env
   // var takes precedence in paths.ts's own resolution order.
