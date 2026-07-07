@@ -171,6 +171,39 @@
     "updated_at": "2026-07-06T10:22:25.651Z"
   },
   {
+    "id": "28a1e6b5-c30f-4e9d-ac40-3246778acad7",
+    "type": "knowledge",
+    "title": "Guard rekeys: supersede and decay guard now key on type + CONFIRMED (D1, T1.1, L2)",
+    "summary": "Two directive-specific guard rules protect ACTIVE (CONFIRMED) directives from agent actions: (1) supersede guard in makeAudnDecision (audn.ts:175) skips update/merge when candidate is type='user-directive' AND confidence='CONFIRMED', allowing only contradiction-flagging; (2) decay guard in decayConceptEntries (sqlite-provider.ts:402) excludes from staleness check when type='user-directive' AND confidence='CONFIRMED'. A PENDING proposal (always UNVERIFIED) bypasses both guards and follows normal same-type dedup/decay rules.",
+    "symbols": [
+      "makeAudnDecision",
+      "decayConceptEntries"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:53:55.913Z"
+  },
+  {
+    "id": "34b9b7a6-2d9d-4fa0-a5b8-e7990d3de13e",
+    "type": "knowledge",
+    "title": "AUTO-COMMIT AT HARVEST in kb_export (T2.3, user directive 2026-07-07)",
+    "summary": "kb_export now commits the canonical bible automatically at export time. Constraints: pathspec-only (unrelated staged/dirty state preserved), dedicated identity pm-kb <kb@pm.local>, content-gated (no commit if unchanged), non-fatal on git failure (export still succeeds + logWarn), config-gated via FLEET_DIR/knowledge/config.json {bible:{autoCommit:false}} default true, injection-safe (execFileSync argv, no shell).",
+    "symbols": [
+      "maybeAutoCommitBible",
+      "autoCommitEnabled",
+      "bibleContentChanged"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:43:51.818Z"
+  },
+  {
     "id": "35899f07-32c2-4de5-82a5-abfb715d19e4",
     "type": "knowledge",
     "title": "isTestPath matcher: recognizing test files with critical negative cases (T4.3)",
@@ -364,6 +397,40 @@
     "updated_at": "2026-07-06T11:09:09.764Z"
   },
   {
+    "id": "57fc6968-6fd8-4de6-99d6-cd1a790f3192",
+    "type": "knowledge",
+    "title": "Version handshake: compiled-in vs on-disk mismatch detection (T2.4, F7/D6)",
+    "summary": "fleet_status detects server version drift via fresh on-disk read in version-check.ts. Strips dev git-hash suffix (_abcdef) from running version before comparing. Returns null (no mismatch or read failure) rather than throwing, so version check never blocks fleet_status. Disk-read failure (missing file, malformed JSON, non-string version) silently omits the check from output.",
+    "symbols": [
+      "readDiskVersion",
+      "checkVersionMismatch",
+      "VersionMismatch"
+    ],
+    "source_files": [
+      "src/services/version-check.ts",
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:16.776Z"
+  },
+  {
+    "id": "5e97ea10-29cd-4d3e-8d18-5b95461ea509",
+    "type": "knowledge",
+    "title": "LOW-2: Theoretical HTTP provider edge case in kb_stats (Phase 2 T2.1)",
+    "summary": "kb_stats bible.drift calculation calls providers.project.list() for live-CONFIRMED entries. If PROJECT provider were ever an HttpKbProvider, that call would throw (HttpKbProvider has no list() method). Bible would degrade to {present:false, drift:0} instead of the intended all-live-CONFIRMED count. Unreachable in normal operation (providers.project is always local SqliteProvider; HTTP is the sync peer). Cosmetic only; no action needed.",
+    "symbols": [
+      "kbStats",
+      "providers.project.list"
+    ],
+    "source_files": [
+      "src/tools/kb-stats.ts",
+      "src/services/knowledge/kb-providers.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:35.106Z"
+  },
+  {
     "id": "601c8a65-27c5-4b5b-af99-f89803d7b745",
     "type": "knowledge",
     "title": "Load-bearing safety invariant: subsystems cannot degrade tool calls",
@@ -549,6 +616,63 @@
     "updated_at": "2026-07-06T20:30:38.096Z"
   },
   {
+    "id": "8de251dc-1fad-4b81-b424-ac9cdc9aceb0",
+    "type": "knowledge",
+    "title": "DIRECTIVE GATE CLOSED: user-directive entries are PROPOSAL-ONLY (F1, D1, closes yashr-9ha)",
+    "summary": "The directive type is no longer forgeable. Any kb_capture call with type='user-directive' is transformed by SqliteProvider.capture() into a PENDING PROPOSAL (confidence forced to UNVERIFIED, flagged_for_review=true, tagged 'directive:pending') -- the single choke point closes both the kb_capture handler AND the HTTP /api/kb/capture route. Activation is CLI-only via 'apra-fleet kb approve-directive <id>' (the human terminal is the trust boundary). Supersedes the outdated yashr-9ha KB entry claiming directives are forgeable.",
+    "symbols": [
+      "SqliteProvider.capture",
+      "kbCapture",
+      "makeAudnDecision",
+      "decayConceptEntries",
+      "query"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/audn.ts",
+      "src/cli/kb-directives.ts",
+      "index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:53:46.131Z"
+  },
+  {
+    "id": "8e23a5cf-0466-4d0a-8e69-9c46fec7aac2",
+    "type": "knowledge",
+    "title": "fleet_status KB health surfaces with degraded-safe pattern (T2.2, F5/F6)",
+    "summary": "fleet_status integrates KB health reporting via kbHealthSummary() and kbHealthCompactLine(), surfacing entry counts, retrieval metrics, and drift with anomaly wording. Degraded-safe throughout: any failure (DB unavailable, bad JSON) yields null so the KB section is omitted; fleet_status never fails because of the KB.",
+    "symbols": [
+      "kbHealthSummary",
+      "kbHealthCompactLine",
+      "KbHealth",
+      "fleetStatus"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts",
+      "src/tools/kb-stats.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:08.097Z"
+  },
+  {
+    "id": "9462ab04-192b-4b2f-8549-7c6b1130edc2",
+    "type": "knowledge",
+    "title": "HTTP /api/kb/capture bypasses general confidence clamp for non-directive types (yasyr-f3g, pre-existing LOW)",
+    "summary": "The general CONFIRMED->INFERRED confidence clamp lives in the kb_capture tool handler (lines 97-101), not in SqliteProvider.capture(). This leaves the HTTP /api/kb/capture route exposed for non-directive types: a remote caller holding the KB server bearer token can POST type='learning', confidence='CONFIRMED' and mint a CONFIRMED entry directly to capture(). The directive gate IS closed on HTTP (forcing PROPOSAL-only via capture() choke point, verified phase-1 attack). This general clamp gap is pre-existing (accepted at kb-integrity sprint start), affects remote-KB deployments only, and tracked as yasyr-f3g. Recommendation: future sprint should relocate general clamp into capture() so the choke point enforces both invariants uniformly.",
+    "symbols": [
+      "kbCapture",
+      "SqliteProvider.capture"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/kb/kb-server.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:39.396Z"
+  },
+  {
     "id": "979b52ae-e983-41da-9f04-8de47d98dd7d",
     "type": "knowledge",
     "title": "code_map tool: Cypher-backed Community node query (T2.1)",
@@ -686,6 +810,21 @@
     "updated_at": "2026-07-06T14:25:40.275Z"
   },
   {
+    "id": "c5a129ed-2046-41e3-ad2a-fab13eadfffd",
+    "type": "learning",
+    "title": "LOW-3: kb-session-prime graph-neighbor test failures are environmental (Phase 1 carryover)",
+    "summary": "4 kb-session-prime graph-neighbor tests fail (yashr-bwc) due to unmocked process.cwd() reading this repo's own .fleet/kb-canonical.json during test execution. Environmental real-KB leak, not a Phase 2 regression. Tests pass with KB mock isolation; issue is pre-existing and already tracked, orthogonal to kb-trust-ops sprint work.",
+    "symbols": [
+      "kb-session-prime"
+    ],
+    "source_files": [
+      "feedback.md",
+      "progress.json"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:40.490Z"
+  },
+  {
     "id": "c6789713-15f5-4b5e-96fd-59062fa22212",
     "type": "knowledge",
     "title": "Pre-flight validation pattern for external tooling (F3.1)",
@@ -770,6 +909,21 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T23:00:14.657Z"
+  },
+  {
+    "id": "d5193cb9-c8fe-47f6-adbb-85fdce1a7574",
+    "type": "knowledge",
+    "title": "resolveRepoPath: shared precedence pattern for repo path resolution (T1.6, closes yasyr-u2h)",
+    "summary": "Both kb-export.ts and kb-session-prime.ts implement resolveRepoPath(explicit?) with identical precedence: explicit input > validated process.cwd() > refuse/skip. Both validate via fs.existsSync + isDirectory before returning. kb-export throws on failure (fatal); kb-session-prime returns null (non-fatal cold-seed). No blind process.cwd() fallback; no path accepted without validation. Closes yasyr-u2h (unvalidated cwd fallback).",
+    "symbols": [
+      "resolveRepoPath"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/tools/kb-session-prime.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:14.666Z"
   },
   {
     "id": "d9ba91ac-73fa-4cc3-9b39-1f7ab626b8e9",
@@ -886,6 +1040,23 @@
     "updated_at": "2026-07-06T11:08:30.954Z"
   },
   {
+    "id": "e7b86a91-c7ba-4cb6-b31b-3c26b32499c3",
+    "type": "knowledge",
+    "title": "kb_stats: read-only aggregation tool (T2.1, F5/D4)",
+    "summary": "kb_stats is a telemetry-free aggregation tool that reports KB health: confidence/type totals, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible drift, and optional per-symbol coverage. Never bumps use_count/last_accessed; drift counts live-CONFIRMED entries newer than bible's newest updated_at; null denominators render as null, never NaN.",
+    "symbols": [
+      "kbStats",
+      "kbHealthSummary",
+      "kbHealthCompactLine"
+    ],
+    "source_files": [
+      "src/tools/kb-stats.ts",
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:00.699Z"
+  },
+  {
     "id": "e7da8cd0-5045-443a-b469-5ac53257cf83",
     "type": "knowledge",
     "title": "Embeddings support: LOCAL branch wiring + --embeddings flag (T2.3)",
@@ -920,6 +1091,58 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T10:51:33.121Z"
+  },
+  {
+    "id": "ec1f0fa0-b06d-4eae-bb05-466f991d0563",
+    "type": "knowledge",
+    "title": "PM standing instructions flow: capture -> pending proposal -> CLI approval (T1.4, D1)",
+    "summary": "PM skill documents the standing-instructions pattern (SKILL.md lines 235-244, tpl-kb-agent.md lines 108-133, kb-review.md): when user issues a standing instruction during sprint (\\\"always do X\\\", \\\"never do Y\\\", \\\"we decided Z\\\"), PM proposes via kb_capture(type='user-directive', ...) which is proposal-only (UNVERIFIED, flagged, 'directive:pending'). No trust gained by capture. Human activates via 'apra-fleet kb approve-directive <id>' in their own terminal (the trust boundary). PM tells user the directive is PENDING and surfaces the exact activation command.",
+    "symbols": [
+      "kb_capture",
+      "approveDirective",
+      "kbCapture"
+    ],
+    "source_files": [
+      "skills/pm/SKILL.md",
+      "skills/pm/tpl-kb-agent.md",
+      "skills/pm/kb-review.md",
+      "src/cli/kb-directives.ts",
+      "index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:27.571Z"
+  },
+  {
+    "id": "f68e41ae-a758-41d5-9af9-7e30ac38f6c2",
+    "type": "knowledge",
+    "title": "LOW-1: Dangling command reference in KB drift anomaly message (Phase 2 T2.2)",
+    "summary": "The amended-D5 anomaly message (check-status.ts:423) points users to 'apra-fleet kb commit' for drift remediation, but no such subcommand exists. kb group implements only directives/approve-directive/reject-directive/add-directive (src/cli/kb-directives.ts). Wording is verbatim-faithful to binding D5 spec, so this is NOT a spec deviation; non-blocking, recommend future task to either add the command or reword to a real remediation (re-run kb_export / inspect logged warning).",
+    "symbols": [
+      "bibleDriftFragment"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:28.954Z"
+  },
+  {
+    "id": "f782fa69-4cc1-421c-8fb6-0ade248dfc35",
+    "type": "knowledge",
+    "title": "hasOppositePolarity uses word-boundary regex matching, not substring (T1.5, closes yashr-hzd)",
+    "summary": "The polarity-check function in audn.ts:50-56 uses precompiled \\b-anchored regexes (lines 39-44) to detect negative/positive polarity phrases, eliminating false positives from substring collisions. 'prefixed' no longer matches 'fixed', 'unresolved' no longer matches 'resolved', and 'suffixed' no longer matches 'fixed'. Multi-word phrases like \\\"doesn't work\\\" match correctly (apostrophe sits inside phrase boundary, not at the break).",
+    "symbols": [
+      "hasOppositePolarity",
+      "toWordBoundaryPattern",
+      "NEGATIVE_PATTERNS",
+      "POSITIVE_PATTERNS"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:05.318Z"
   },
   {
     "id": "fccb50ff-4384-4d3c-8404-9684fcb53cc1",
