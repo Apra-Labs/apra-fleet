@@ -322,6 +322,7 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
+| Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
 | Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
