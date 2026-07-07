@@ -202,6 +202,17 @@ function primedContext(top: KBEntry[]) {
 }
 
 describe('kb_session_prime graph-neighbor expansion', () => {
+  // ISOLATION (F1/D1, KB c5a129ed): the canonical-bible cold-seed resolves the
+  // repo root via resolveRepoPath() -> process.cwd() when no repo_path is given
+  // (kb-session-prime.ts:90-91). Any test here whose live+neighbor hits stay
+  // below COLD_KB_MAX (3) triggers that cold-seed; with an unmocked cwd it read
+  // THIS repo's real .fleet/kb-canonical.json and leaked its entries into
+  // top_entries. Point cwd at an empty temp dir so the cold-seed finds no bible
+  // and the assertions run against the mocks alone. FLEET_DIR (global bible) is
+  // already isolated by tests/setup.ts's APRA_FLEET_DATA_DIR override.
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let emptyCwdDir: string;
+
   beforeEach(() => {
     vi.resetModules();
     mockPrime.mockReset();
@@ -219,6 +230,14 @@ describe('kb_session_prime graph-neighbor expansion', () => {
       projectSlug: 'test',
     });
     mockGetProvider.mockResolvedValue({ context: mockContext });
+
+    emptyCwdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-neighbor-cwd-'));
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(emptyCwdDir);
+  });
+
+  afterEach(() => {
+    cwdSpy.mockRestore();
+    fs.rmSync(emptyCwdDir, { recursive: true, force: true });
   });
 
   it('appends neighbor-derived entries below direct hits with via marker', async () => {
