@@ -124,6 +124,7 @@ than it saves.
 | `/pm init <project>` | Set up project folder, beads epic, worktree, run `npx gitnexus analyze` | `sprint.md` Setup, `index.md` |
 | `/pm pair <doer> <reviewer>` | Assign doer-reviewer pair (fleet mode) | `fleet-addendum.md` |
 | `/pm kb-review` | Surface all contradiction-flagged KB entries and resolve them interactively | `kb-review.md` |
+| `/pm kb-reconcile` | Post-merge: import the merged bible, sweep freshness, hash-prefilter and reconciler-agent the remaining contradictions, re-export | `kb-reconcile.md` |
 | *(auto) KB Agent* | Dispatched by PM after every reviewer verdict -- captures and promotes KB entries | `kb-agent.md` |
 
 ## Core rules
@@ -206,6 +207,7 @@ init (worktree + beads epic + npx gitnexus analyze)
   -> requirements -> design -> [planner: kb_session_prime] -> plan (loop)
   -> execute (doer-review loop per phase)
   -> [KB Agent after each VERIFY] -> deploy (if applicable) -> complete -> PR
+  -> after merging branches: /pm kb-reconcile
 ```
 
 `/pm init` runs `npx gitnexus analyze` as its final step so code intelligence is
@@ -263,9 +265,16 @@ and beads.
   See `beads.md`.
 - **cleanup** -- close the beads epic and the delivered source issues, drop the
   sprint scaffolding files (so the PR's net diff is product only), raise the PR, and
-  remove the track worktrees. See `sprint.md` Completion.
+  remove the track worktrees. See `sprint.md` Completion. After merging branches
+  (this sprint's own PR merge, or any other branch merge that lands a
+  `.fleet/kb-canonical.json` change), run `/pm kb-reconcile` so the local KB
+  absorbs the merged bible instead of silently drifting from it.
 - **kb-review** -- surface all contradiction-flagged KB entries and resolve them
   interactively. See `kb-review.md`.
+- **kb-reconcile** -- post-merge KB absorption: import the merged bible, sweep
+  freshness, hash-prefilter and reconciler-agent the remaining contradiction
+  pairs, re-export. Runs standalone or as the post-merge step of `cleanup`
+  above. See `kb-reconcile.md`.
 
 ## Sub-documents
 
@@ -281,6 +290,8 @@ and beads.
   stop_prompt, unattended modes, context-file delivery.
 - `tpl-progress.json` -- the `progress.json` schema generated from `PLAN.md`.
 - `kb-review.md` -- contradiction resolution: surface flagged KB pairs, resolve interactively.
+- `kb-reconcile.md` -- post-merge KB reconcile flow: import, sweep, hash-prefilter, reconciler agent, export.
+- `tpl-kb-reconciler.md` -- KB Reconciler context template: reads merged code to settle contradiction pairs the hash prefilter could not.
 - `kb-agent.md` -- KB Agent dispatch: when to run, what inputs to send, how verdict affects confidence.
 - `tpl-kb-agent.md` -- KB Agent context template: role, decision framework, process, report format.
 - `tpl-planner.md` -- Planner context template: kb_session_prime before planning, model assignment rules, KB-informed task descriptions.
