@@ -18,6 +18,10 @@ Read every entry in `top_entries`. Let prior sprint knowledge inform your planni
   "jitter applied after maxDelayMs cap") -> copy them verbatim into the relevant task
   description so the doer does not rediscover them.
 
+Trust CONFIRMED entries fully; treat INFERRED as a strong hint but verify against
+source before baking it into a task description (an INFERRED entry may be an
+unvalidated in-flight capture).
+
 If the KB is empty (first sprint on this repo), skip and proceed normally.
 
 ### Capture at discovery time

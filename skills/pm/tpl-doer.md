@@ -53,6 +53,8 @@ If this task requires secrets, API keys, or tokens (e.g., external API calls, pr
   entry, trust it and work from it -- skip the full source read. Only read source if KB
   is cold (no entry), stale, or the entry says "see source for details."
   This avoids re-reading files that prior agents have already summarized.
+  Trust CONFIRMED fully; treat INFERRED as a strong hint but verify against source when
+  correctness matters (an INFERRED entry may be an unvalidated in-flight capture).
 
 - During work: use fleet code intelligence tools (code_graph, code_impact, code_query,
   code_context) for structural questions -- never plain-read files for call graph or

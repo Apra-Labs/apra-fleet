@@ -78,6 +78,8 @@ Commit feedback.md and push.
   the fleet code intelligence tools (code_graph, code_impact, code_query, code_context).
 - During work: use fleet code intelligence tools for cross-file tracing and symbol lookup -- never
   plain-read files for structural questions.
+- Trust CONFIRMED KB entries fully; treat INFERRED as a strong hint but verify against
+  source when it matters (an INFERRED entry may be an unvalidated in-flight capture).
 - Capture at discovery time: when you discover something durable and non-obvious while
   reviewing -- a coding convention, a structural pattern, an architectural constraint, a
   gotcha the diff exposed -- call `kb_capture` on it IMMEDIATELY (type `knowledge` or

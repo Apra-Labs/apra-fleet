@@ -4,10 +4,10 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 const L2_CONTENT_CAP = 3200;
 
 export const kbQuerySchema = z.object({
-  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true.'),
+  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
-  tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term)'),
+  tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term). May be used alone (no query) to list all entries carrying the tag.'),
   limit: z.number().optional().describe('Max L1 results (default 20)'),
   include_stale: z.boolean().optional().describe('Include stale and superseded entries (default false)'),
   flagged_only: z.boolean().optional()
@@ -17,8 +17,11 @@ export const kbQuerySchema = z.object({
 export type KbQueryInput = z.infer<typeof kbQuerySchema>;
 
 export async function kbQuery(input: KbQueryInput): Promise<string> {
-  if (!input.query && !input.flagged_only) {
-    throw new Error('Provide either query (free-text search) or flagged_only: true (list contradictions)');
+  // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
+  // branch supports a queryless listing, so `kb_query({ tag })` lists all
+  // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
+  if (!input.query && !input.flagged_only && !input.tag) {
+    throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
   const providers = await getKbProviders();

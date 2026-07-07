@@ -237,4 +237,30 @@ describe('kb_query tool', () => {
     expect(titles).toContain('Tool compose knowledge registry');
     expect(titles).not.toContain('Tool compose other-tag knowledge registry');
   });
+
+  it('tag-only call (no query) is accepted and returns only tagged entries', async () => {
+    // HIGH-1: the KB Agent curator's Step 2 is kb_query({ tag: 'phase:<n>' })
+    // with NO free-text query -- the tool guard must let it through to the
+    // provider's plain (non-FTS) branch.
+    await provider.capture(makeInput({
+      title: 'Tag-only phase capture', tags: ['sprint:kb-inflight-capture', 'phase:1'],
+      symbols: ['symTagOnlyA'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Tag-only unrelated entry', tags: ['other'],
+      symbols: ['symTagOnlyB'],
+    }));
+
+    const parsed = JSON.parse(await kbQuery({ tag: 'phase:1' }));
+    const titles = parsed.l1_results.map((e: any) => e.title);
+    expect(titles).toContain('Tag-only phase capture');
+    expect(titles).not.toContain('Tag-only unrelated entry');
+    // Tags array must be present so the curator can intersect sprint + phase
+    const entry = parsed.l1_results.find((e: any) => e.title === 'Tag-only phase capture');
+    expect(entry.tags).toContain('sprint:kb-inflight-capture');
+  });
+
+  it('call with no query, no flagged_only, and no tag still errors as before', async () => {
+    await expect(kbQuery({})).rejects.toThrow(/query|tag|flagged_only/);
+  });
 });
