@@ -64,3 +64,6 @@ If this task requires secrets, API keys, or tokens (e.g., external API calls, pr
   full transcript after your session ends (a separate, low-trust path that produces
   UNVERIFIED entries). The KB Agent runs after the reviewer and captures directly from
   your session output and the reviewer's verdict -- that is the primary path.
+
+- If a KB entry you retrieved proves wrong in practice, call kb_feedback with the entry
+  id and what was wrong.

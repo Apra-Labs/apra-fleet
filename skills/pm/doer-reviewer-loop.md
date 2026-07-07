@@ -180,7 +180,9 @@ the source read. During work use code intelligence tools (code_graph, code_impac
 code_query, code_context) for symbol lookups and call graph questions -- never
 Glob/Grep for structural queries. Do NOT call kb_capture or kb_harvest yourself --
 kb_harvest is auto-dispatched with your transcript after your session ends, and the
-KB Agent captures directly from your session output afterward.
+KB Agent captures directly from your session output afterward. If a KB entry you
+retrieved proves wrong in practice, call kb_feedback with the entry id and what was
+wrong.
 ```
 
 ### reviewer
@@ -200,7 +202,8 @@ call kb_query first -- if KB returns a CONFIRMED or INFERRED entry, trust it and
 skip the source read. For who-else-calls and impact questions, use code_impact.
 During review use code intelligence tools (code_graph, code_impact, code_query,
 code_context) for structural questions about symbols and call chains -- never
-Glob/Grep for these queries.
+Glob/Grep for these queries. If a KB entry you retrieved proves wrong in practice,
+call kb_feedback with the entry id and what was wrong.
 <transport line>.
 ```
 

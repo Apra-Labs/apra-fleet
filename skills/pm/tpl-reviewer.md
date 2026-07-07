@@ -82,6 +82,8 @@ Commit feedback.md and push.
   from and is a no-op when called without one. The fleet auto-dispatches it with your
   full transcript after your session ends (a separate, low-trust path that produces
   UNVERIFIED entries).
+- If a KB entry you retrieved proves wrong in practice, call kb_feedback with the entry
+  id and what was wrong.
 
 The KB Agent runs after you and captures directly from the full session into structured KB entries.
 Your APPROVED or CHANGES NEEDED verdict determines which entries the KB Agent promotes
