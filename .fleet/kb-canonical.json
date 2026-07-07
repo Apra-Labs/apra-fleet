@@ -582,6 +582,22 @@
     "updated_at": "2026-07-06T10:22:43.175Z"
   },
   {
+    "id": "768c3e62-0f14-4c72-a6c4-a6554c7dc94c",
+    "type": "knowledge",
+    "title": "QueryOptions.tags/symbols/source_files were declared but unused before tag filter",
+    "summary": "Before the T-tag-filter change, QueryOptions in src/services/knowledge/types.ts declared tags?: string[], symbols?: string[], and source_files?: string[] fields that SqliteProvider.query() never read -- dead interface fields. Only the new tag?: string field (singular, exact-match) is actually wired into query()'s WHERE-clause conditions array.",
+    "symbols": [
+      "QueryOptions",
+      "query"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T08:37:14.810Z"
+  },
+  {
     "id": "7964b900-6a82-4daf-ad2f-992cb988db5f",
     "type": "knowledge",
     "title": "kb_list: read-only audit via dedicated SqliteProvider.list() (T3.3, D8)",
@@ -703,6 +719,22 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-07T04:44:08.097Z"
+  },
+  {
+    "id": "93ea6f8f-a965-4d96-8628-ecaf13005a8f",
+    "type": "knowledge",
+    "title": "kb_list's reduced output omits tags -- use kb_query to inspect an entry's tags",
+    "summary": "kb-list.ts's kbList() maps each entry down to {id, type, confidence, title, summary, symbols, source_files} before returning JSON -- tags is deliberately not in that reduced set (confirmed by the existing \"returns the stable reduced field set\" test in tests/knowledge/kb-list.test.ts). kb_query's l1_results, by contrast, return full KBEntry objects (minus content when l1_only), so tags IS present there.",
+    "symbols": [
+      "kbList",
+      "kbQuery"
+    ],
+    "source_files": [
+      "src/tools/kb-list.ts",
+      "src/tools/kb-query.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T08:37:20.850Z"
   },
   {
     "id": "9462ab04-192b-4b2f-8549-7c6b1130edc2",
