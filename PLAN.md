@@ -3,8 +3,11 @@
 Branch: feat/code-intelligence-abstraction (base: main). All work lands on this
 branch. NEVER push to main. NO PR -- the user raises PRs. Requirements:
 requirements.md (F1-F11, phases P1/P2/P3). Binding decisions: design.md
-(D1-D9). Risk-front-loaded: F1 (the directive trust gate, D1) leads Phase 1
-on claude-opus-4-8.
+(D1-D9), INCLUDING the D1 "PLAN-REVIEW HARDENING" section (commit 9c3072b:
+H1 promote ladder, H2 retrieval defaults, M1 global-scope escape, L1/L2).
+Risk-front-loaded: F1 (the directive trust gate, D1) leads Phase 1 on
+claude-opus-4-8. This is the second revision, folding in plan-review
+feedback.md at commit 3f63f97 (CHANGES NEEDED: 2 HIGH, 1 MEDIUM, 2 LOW).
 
 ## Planning context (KB coverage, D9 live trial)
 
@@ -89,7 +92,12 @@ extra-explicit descriptions below.
 
 ## Shared-file sequencing (from design.md Phasing -- binding)
 
-- src/tools/kb-capture.ts: touched ONLY by T1.1 (F1 removes the exemption).
+- src/tools/kb-capture.ts: touched ONLY by T1.1 (F1 removes the exemption,
+  forces project scope, updates the stale description).
+- src/services/knowledge/sqlite-provider.ts: T1.1 (guards + promote gate +
+  activation primitives) BEFORE T2.1 (stats()) BEFORE T3.1 (feedback
+  support) -- phase order enforces this; no parallel edits.
+- src/tools/kb-query.ts: touched ONLY by T1.1 (flagged_only note carve-out).
 - src/services/knowledge/audn.ts: T1.1 (guard rekey, audn.ts:140-150) BEFORE
   T1.5 (polarity, audn.ts:28-36). Disjoint functions, but the order is fixed
   anyway: T1.1 -> T1.5.
@@ -108,8 +116,15 @@ extra-explicit descriptions below.
 1. Pending-proposal representation (D1 leaves the pick to the planner):
    REUSE existing columns -- confidence='UNVERIFIED' + flagged_for_review=1 +
    a 'directive:pending' entry in the existing tags array. No schema
-   migration; kb_query/prime defaults already exclude flagged+UNVERIFIED
-   entries, which D1 says to assert rather than re-filter.
+   migration. CORRECTED per plan review H2: query()/prime() defaults exclude
+   ONLY stale/superseded today (sqlite-provider.ts:478-490, 657-662), so
+   pending proposals WOULD surface via any FTS match. Per the binding D1
+   hardening, T1.1 adds the surgical default exclusion (type='user-directive'
+   AND confidence != 'CONFIRMED' excluded from query()/prime() defaults);
+   active directives keep surfacing; kb_list and flagged_only DO show
+   pending. D1's original "assert rather than filter" wording is superseded
+   by the hardening section (note this in progress.json per the deviation
+   rule).
 2. Approval does NOT auto-supersede older active directives. D1's "only a
    user-approved directive supersedes it" is satisfied operationally: the
    human approves the new directive and explicitly runs reject-directive on
@@ -142,14 +157,28 @@ Model: claude-opus-4-8
 The riskiest change of the sprint: it REVERSES the kb-integrity T3.1
 invariants documented in the KB. Files: src/tools/kb-capture.ts,
 src/services/knowledge/audn.ts, src/services/knowledge/sqlite-provider.ts,
+src/tools/kb-query.ts (flagged_only note carve-out, H1),
 src/services/knowledge/types.ts (only if a helper type is needed).
+Implements D1 INCLUDING its binding PLAN-REVIEW HARDENING section
+(H1/H2/M1/L1/L2).
 
 1. REMOVE the kb-capture clamp exemption (kb-capture.ts:84-95, condition
    `if (isUserDirective) { confidence = 'CONFIRMED'; }` checked before the
    clamp). After this change kb_capture(type='user-directive') stores a
    PROPOSAL: confidence='UNVERIFIED', flagged_for_review=1, tags gains
    'directive:pending' (ambiguity resolution 1). NO trust semantics attach
-   while pending.
+   while pending. Additionally (M1, binding): kb_capture FORCES
+   scope='project' for type='user-directive' -- kb_capture currently routes
+   scope='global' entries to the global KB (kb-capture.ts:61-63), where the
+   project CLI could never list/approve/reject the proposal (dead-end audit
+   trail) and the guard rekey would not hold. Document the forced scope in
+   the tool description; global directives are a future
+   `add-directive --global` concern, out of scope.
+   ALSO (L1): update kb-capture.ts's tool/schema description text
+   (kb-capture.ts:24 and the role param text), which still advertises
+   user-directive as "highest trust: stored CONFIRMED, exempt from the
+   clamp" -- post-F1 it must describe proposal-only semantics and the CLI
+   activation path, or it actively misleads agents.
 2. Provenance honesty (D1): STOP stamping author='user' on proposals
    (kb-capture.ts:103-108 currently forces author='user',
    source='user-directive'). Instead stamp the validated role hint via the
@@ -163,6 +192,21 @@ src/services/knowledge/types.ts (only if a helper type is needed).
    stale=1, keep the tag for audit; never delete), and
    addDirective(text, symbols?) (creates an already-active directive:
    CONFIRMED, author='user', source='user-directive', promoted_at=now).
+   PROMOTE-LADDER GATE (H1, binding): SqliteProvider.promote()
+   (sqlite-provider.ts:762-798) currently has NO type guard and climbs
+   UNVERIFIED -> INFERRED -> CONFIRMED one step per agent-callable kb_promote
+   call -- two calls would mint type='user-directive' AND
+   confidence='CONFIRMED', which IS the ACTIVE predicate, re-opening
+   yashr-9ha through the side door. promote() must REFUSE any entry with
+   type='user-directive' (refuse ENTIRELY, keeping the pending state binary,
+   per the reviewer's recommendation) with a clear error naming the CLI
+   path (`apra-fleet kb approve-directive <id>`). Activation is reachable
+   ONLY via approveDirective/addDirective -- approveDirective is a DEDICATED
+   method and must NOT delegate to promote(). Related (H1): the kb_query
+   flagged_only response note (kb-query.ts:49) tells agents to resolve
+   flagged entries "by calling kb_promote (keep)" -- add a carve-out:
+   directive-pending entries are resolved ONLY by the human CLI
+   (approve-directive / reject-directive), never kb_promote.
 4. Rekey the guards to ACTIVE directives (type='user-directive' AND
    confidence='CONFIRMED'), per D1:
    - makeAudnDecision supersede guard (audn.ts:140-150, currently
@@ -174,31 +218,60 @@ src/services/knowledge/types.ts (only if a helper type is needed).
      re-opening yashr-9ha). Proposals land as 'add' (or 'flagged' via the
      cross-type contradiction path, which stays untouched and ahead of the
      guard, per KB 492cabfd).
-   - decayConceptEntries guard (sqlite-provider.ts:391-401,
+   - decayConceptEntries guard (sqlite-provider.ts:391-405,
      `AND type != 'user-directive'`) becomes
-     `AND NOT (type='user-directive' AND confidence='CONFIRMED')` so pending
-     proposals decay like any UNVERIFIED entry while active directives never
-     decay.
-5. Retrieval: do NOT add new filters. Pending proposals are UNVERIFIED +
-   flagged so prime/query defaults already exclude them; T1.3 asserts this.
+     `AND NOT (type='user-directive' AND confidence='CONFIRMED')`. Precise
+     wording (L2): decay only demotes INFERRED -> UNVERIFIED, and pending
+     proposals sit at UNVERIFIED already, so decay is NOT OBSERVABLE on a
+     fresh proposal -- the rekey matters so that any hypothetical INFERRED
+     user-directive row decays while an ACTIVE (CONFIRMED) directive never
+     does. Tests assert exactly that pair, not "pending decays".
+5. RETRIEVAL DEFAULT EXCLUSION (H2, binding -- replaces the earlier "assert,
+   do not filter" premise, which was factually wrong): query()/prime()
+   defaults today exclude ONLY stale/superseded (sqlite-provider.ts:478-490;
+   prime delegates at 657-662; the kb_query tool layer adds nothing), so a
+   pending proposal WOULD surface via any FTS match. Add the surgical
+   exclusion to query() and prime() defaults: rows WHERE
+   type='user-directive' AND confidence != 'CONFIRMED' (pending or rejected
+   proposals) are excluded. Active (CONFIRMED) directives keep surfacing at
+   top tier. kb_list (audit tool) and the flagged_only path MUST still show
+   pending proposals -- that is where humans/agents find them. No broader
+   behavior change. Record in progress.json notes that D1's original
+   "assert rather than filter" sentence is superseded by the binding
+   hardening section.
 6. Forward-only: no migration of existing rows; add a short comment at the
    removed-exemption site referencing D1 and yashr-9ha.
 
 New/updated unit tests in this task (activation-flow tests come in T1.3):
-proposal stored UNVERIFIED+flagged+tagged; role hint stamped (and 'unknown'
+proposal stored UNVERIFIED+flagged+tagged; scope forced to 'project' even
+when scope='global' is requested (M1); role hint stamped (and 'unknown'
 fallback); approveDirective/rejectDirective/addDirective state transitions;
-supersede guard protects active, not pending; proposal cannot supersede an
-active directive; decay touches pending but never active. Use the
-module-singleton vitest pattern (verbatim constraint above) where module
-state is involved.
+promote() refuses a pending proposal AND an active directive with the
+CLI-naming error (H1); supersede guard protects active, not pending;
+proposal cannot supersede an active directive; an INFERRED user-directive
+row decays while a CONFIRMED one never does (L2 wording); query()/prime()
+defaults exclude pending proposals while kb_list and flagged_only surface
+them (H2, both sides). Use the module-singleton vitest pattern (verbatim
+constraint above) where module state is involved.
 
 Done criteria:
 - kb_capture(type='user-directive') can no longer mint CONFIRMED under any
-  input combination; the clamp applies to it like any other type.
+  input combination; the clamp applies to it like any other type; scope is
+  forced to 'project' and the tool description says so (M1).
+- SqliteProvider.promote() refuses type='user-directive' entirely; no
+  sequence of agent-callable MCP calls (capture, promote, or both) can
+  produce type='user-directive' + confidence='CONFIRMED' (H1).
+- kb-query.ts flagged_only note carves out directive-pending entries
+  (CLI-only resolution) (H1).
+- query()/prime() defaults exclude non-CONFIRMED user-directive rows;
+  kb_list and flagged_only still show them (H2, tested both sides).
 - Provider primitives exist with the exact state transitions above and are
-  not reachable through any MCP tool.
+  not reachable through any MCP tool; approveDirective does not delegate to
+  promote().
 - Both guards key off type+CONFIRMED; an agent directive proposal can neither
   supersede nor outrank an active directive.
+- kb-capture.ts tool description no longer advertises the removed CONFIRMED
+  exemption (L1).
 - All listed unit tests green; build clean; ASCII only.
 
 ### T1.2 -- F1 CLI: human-terminal activation surface (D1)
@@ -224,7 +297,11 @@ Commands (exact names from D1):
 
 The commands open the SAME project KB (scope resolution consistent with the
 MCP server's provider construction) so an approval is visible to the running
-server without restart (same sqlite file). Never expose these over MCP.
+server without restart (same sqlite file). This is complete coverage because
+T1.1 (M1) forces every directive proposal to scope='project' -- no proposal
+can land in the global KB where this CLI could not reach it; a future
+`add-directive --global` is explicitly out of scope. Never expose these
+over MCP.
 Trust rationale comment at top of kb-directives.ts: MCP has no user-vs-agent
 identity; the human terminal is the only unforgeable channel (D1).
 
@@ -248,14 +325,21 @@ Depends on T1.1 + T1.2.
 
 1. MANDATED fail-then-pass test (sprint done criteria): an agent capture via
    the kb_capture tool handler with type='user-directive' and any
-   confidence/role input is NOT an active directive: (a) not CONFIRMED,
-   (b) absent from kb_query and kb_session_prime DEFAULT results (flagged +
-   UNVERIFIED exclusion asserted, no new filters), (c) NOT protected by the
-   supersede guard, (d) NOT exempt from decay. THEN the same entry after
-   approveDirective (invoked as the CLI does) IS active: CONFIRMED,
+   confidence/role/scope input is NOT an active directive: (a) not
+   CONFIRMED, (b) absent from kb_query and kb_session_prime DEFAULT results
+   -- proving T1.1's H2 default exclusion works (while kb_list and
+   flagged_only DO surface the pending proposal), (c) NOT protected by the
+   supersede guard, (d) carries no decay exemption (per L2: assert the
+   guard predicate protects only CONFIRMED directives; pending UNVERIFIED
+   rows have no observable decay to assert). PROMOTE-LADDER ATTACK (H1,
+   mandated): call kb_promote TWICE on the pending proposal and assert it is
+   REFUSED with the CLI-naming error and the entry is STILL not active
+   (still UNVERIFIED, still excluded from defaults). THEN the same entry
+   after approveDirective (invoked as the CLI does) IS active: CONFIRMED,
    author='user', top-tier retrieval, never decayed, never
    agent-supersedable. This test encodes the yashr-9ha attack (KB 0b1678e7:
-   forge type='user-directive' -> self-elevate) and proves it closed.
+   forge type='user-directive' -> self-elevate) through BOTH doors (capture
+   exemption and promote ladder) and proves both closed.
 2. Rewrite existing kb-user-directive tests through activation: every test
    that previously relied on capture-time CONFIRMED (clamp exemption,
    top-rank retrieval, decay survival, supersede guard, second-directive
@@ -271,7 +355,10 @@ Depends on T1.1 + T1.2.
 Use the module-singleton vitest pattern (verbatim constraint above).
 
 Done criteria: fail-then-pass test exists and passes with assertions on BOTH
-sides of activation; all rewritten directive tests green; no test creates an
+sides of activation AND includes the promote-ladder attack (two kb_promote
+calls -> refused, still inactive) (H1); the default-exclusion is asserted on
+both sides (excluded from query/prime defaults, visible in kb_list and
+flagged_only) (H2); all rewritten directive tests green; no test creates an
 active directive without going through approveDirective/addDirective; full
 suite green (timezone exception only).
 
@@ -642,7 +729,10 @@ has never met a real flagged pair:
 3. kb_query({flagged_only:true}) sees BOTH flagged items with full content.
 4. Resolve one via kb_promote + supersede (promote the correct entry of the
    contradiction pair; the loser gets superseded_at + stale per kb-integrity
-   promote-then-supersede semantics).
+   promote-then-supersede semantics). Use NON-directive entries here: after
+   T1.1's H1 gate, kb_promote refuses user-directive rows, and the
+   flagged_only note carves out directive-pending entries (CLI-only
+   resolution) -- this e2e exercises the agent-resolvable flagged flow only.
 5. Verify the flags clear appropriately: assert the ACTUAL post-resolution
    flag state (resolution 7) -- superseded/stale entries drop from
    flagged_only surfacing or their flags are cleared, whichever the code
@@ -677,7 +767,7 @@ Type: verify (no model)
 
 | Task | Feature | Model | Files (primary) |
 |------|---------|-------|-----------------|
-| T1.1 | F1/D1 core | claude-opus-4-8 | kb-capture.ts, audn.ts, sqlite-provider.ts |
+| T1.1 | F1/D1 core | claude-opus-4-8 | kb-capture.ts, audn.ts, sqlite-provider.ts, kb-query.ts |
 | T1.2 | F1/D1 CLI | claude-sonnet-4-6 | src/cli/kb-directives.ts, src/index.ts |
 | T1.3 | F1/D1 tests | claude-opus-4-8 | tests/kb-user-directive.test.ts, tests/kb-directive-gate.test.ts |
 | T1.4 | F2/D2 docs | claude-haiku-4-5 | SKILL.md, tpl-kb-agent.md, kb-review.md |
