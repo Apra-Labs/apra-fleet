@@ -105,19 +105,32 @@ When in doubt, capture at INFERRED. CONFIRMED is a strong signal reached only vi
 kb_promote, and only when the reviewer explicitly approved the behavior the entry
 describes.
 
-### User directives (D6): the sole CONFIRMED-on-capture exception
+### User directives (D1): proposal via capture, activation via CLI only
 
-The `user-directive` entry type is the one exception to the capture-at-INFERRED
-rule. Capture one with `kb_capture({ type: 'user-directive', ... })`: the tool
-layer stamps author='user', source='user-directive' and confidence='CONFIRMED'
-directly (no kb_promote step). A user-directive is never auto-decayed and can
-only be superseded by another user-directive -- an ordinary agent capture that
-contradicts it gets flagged, never supersedes it.
+The `user-directive` entry type is captured like any other type: `kb_capture`
+clamps it to UNVERIFIED, flags it for review, and tags it `directive:pending`
+-- this is a PROPOSAL, not an active directive. No trust is minted by capture
+alone (D1 closes the forge-a-directive gap: MCP gives no user-vs-agent
+identity, so nothing an agent calls can self-activate a directive). A pending
+proposal is excluded from `kb_query` / `kb_session_prime` default results;
+`kb_query({ flagged_only: true })` and `kb_list` still surface it. `kb_promote`
+refuses `user-directive` entries entirely -- it cannot activate one.
 
-Record a user-directive WHEN the user gives a standing instruction or correction
-during a sprint -- e.g. "always do X", "never do Y", "we decided Z". Do NOT use
-it for ordinary findings, verified behaviors, or your own inferences; those
-follow the capture-at-INFERRED / promote ladder above.
+Only the human, running `apra-fleet kb approve-directive <id>` in their own
+terminal, activates a directive (confidence='CONFIRMED', top-tier retrieval,
+never decayed, only a reject-then-replace by the human can supersede it).
+
+You MAY propose a directive you detect in the session record -- an "always X"
+/ "never Y" / "we decided Z" statement the doer or reviewer surfaced -- via
+`kb_capture({ type: 'user-directive', ... })`; this is proposal-only and safe
+for the same reason above. When you do, tell the PM it is PENDING and name the
+exact activation command: `apra-fleet kb approve-directive <id>`. Do NOT call
+`kb_promote` on it -- that path is refused; only the human CLI activates.
+
+Record a directive proposal WHEN the session recorded a standing instruction
+or correction from the user -- e.g. "always do X", "never do Y", "we decided
+Z". Do NOT use it for ordinary findings, verified behaviors, or your own
+inferences; those follow the capture-at-INFERRED / promote ladder above.
 
 ---
 
@@ -201,8 +214,7 @@ mechanism for entries reaching CONFIRMED status in the KB.
 
 ### Step 6b: Export the canonical bible
 
-After any promotion in Step 6 (or any capture in Step 5 that reached CONFIRMED via
-the user-directive exception), call:
+After any promotion in Step 6, call:
 
 ```
 kb_export()

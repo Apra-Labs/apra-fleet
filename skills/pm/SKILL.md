@@ -219,11 +219,8 @@ The KB Agent runs automatically after every reviewer verdict. It is dispatched b
 (not by the user) and runs on the doer member at cheap model. See `kb-agent.md`.
 
 When the user gives a standing instruction or correction during a sprint -- "always
-do X", "never do Y", "we decided Z" -- record it as a `user-directive` KB entry
-(`kb_capture({ type: 'user-directive', ... })`). It is stored at CONFIRMED directly
-(the sole exception to the capture-at-INFERRED gate), is never auto-decayed, and can
-only be superseded by another user-directive, so later agent captures cannot quietly
-overwrite it. See `tpl-kb-agent.md`.
+do X", "never do Y", "we decided Z" -- record it as a `user-directive` KB entry. See
+Standing instructions below.
 
 After `kb_promote`, the KB Agent runs `kb_export` to write the repo's live CONFIRMED
 entries to `.fleet/kb-canonical.json` (stable field set, deterministic id order,
@@ -234,6 +231,17 @@ writes the file, it does not commit. See `tpl-kb-agent.md`.
 
 For small, low-risk work (1-3 tasks, no phasing) use the lightweight path instead
 of the full harness. See `sprint.md` Sprint selection.
+
+## Standing instructions
+
+When the user issues a standing instruction during a sprint -- "always do X",
+"never do Y", "we decided Z" -- immediately propose it via
+`kb_capture({ type: 'user-directive', ... })`. This is safe: capture is
+proposal-only (confidence forced to UNVERIFIED, flagged for review, tagged
+`directive:pending`) and mints no trust on its own. Tell the user the
+directive is PENDING and surface the exact activation command:
+`apra-fleet kb approve-directive <id>`. The human terminal running that
+command is the trust boundary, not the capture call -- see `tpl-kb-agent.md`.
 
 ## Commands
 

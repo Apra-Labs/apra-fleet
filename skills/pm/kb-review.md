@@ -2,6 +2,11 @@
 
 Surface all contradiction-flagged KB entries and resolve them interactively.
 
+Note: `/pm kb-review` also surfaces pending `user-directive` proposals (via
+`kb_query({ flagged_only: true })`) and instructs the human to run
+`apra-fleet kb approve-directive <id>` or `reject-directive <id>` -- these are
+CLI-only resolutions, never `kb_promote`.
+
 ## When to run
 
 - After any sprint completes, as part of KB hygiene.
