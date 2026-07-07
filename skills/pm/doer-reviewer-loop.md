@@ -160,8 +160,17 @@ branches.
 ```
 You are reviewing a plan. Your worktree is <abs worktree path> on branch <branch>.
 cd there; use absolute paths. Read requirements.md, design.md (if present), and
-PLAN.md. Follow your plan-reviewer instructions. Overwrite feedback.md with your
-verdict (APPROVED or CHANGES NEEDED) and commit it as identity pm-plan-reviewer
+PLAN.md. Follow your plan-reviewer instructions.
+Knowledge bank: kb_session_prime with hint_symbols/hint_modules from the plan's
+key symbols; trust CONFIRMED entries fully, verify INFERRED against source when
+it matters. When your review DISCOVERS something durable and non-obvious (a
+design flaw class, a factual anchor correction, an attack path, a constraint the
+plan missed), kb_capture it immediately (type knowledge/learning, role hint
+plan-reviewer, tags ['sprint:<sprint>','phase:0']) -- dedupe with kb_query first.
+The clamp caps you at INFERRED; the KB Agent curates at harvest. Review insights
+not captured in-flight are lost when your session ends.
+Overwrite feedback.md with your verdict (APPROVED or CHANGES NEEDED) and commit
+it as identity pm-plan-reviewer
 (git -c user.name='pm-plan-reviewer' -c user.email='plan-reviewer@pm.local'
 commit). <transport line>.
 ```

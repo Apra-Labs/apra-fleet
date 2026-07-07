@@ -102,6 +102,7 @@
       <h2 style="color:#93c5fd">Plan Review (loop to APPROVED)</h2>
       <div class="who">PLAN-REVIEWER -- strongest model, fresh session</div>
       <div class="step"><span>Checks coverage, design compliance, risk order, self-containedness -- and <b>attacks the plan</b>: verifies factual anchors against source, war-games the security design.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span>plan-review discoveries (a design flaw class, an attack path, a corrected factual anchor) are captured at discovery time too -- they no longer evaporate into feedback.md history.</span></div>
       <div class="step"><span>CHANGES NEEDED -&gt; PM updates design.md if the design itself was wrong -&gt; planner revises -&gt; re-review. APPROVED -&gt; beads tasks + progress.json generated.</span></div>
       <div class="loop">planner &lt;-&gt; plan-reviewer loop until APPROVED -- the cheapest place to catch a flaw</div>
     </div>
@@ -140,6 +141,7 @@
       <div class="who">REVIEWER -- strongest model, fresh session, independent</div>
       <div class="step"><span>Reads diff + PLAN + requirements + design; <b>runs build and tests itself</b>; uses</span><span class="tool ci">code_impact</span><span>for blast radius;</span><span class="tool">kb_query</span><span>to skip re-derivation.</span></div>
       <div class="step"><span>Security-critical work gets <b>live attacks</b>, not test-reading: the reviewer executes the exploit against compiled code and confirms it fails.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span><b>REVIEWERS CAPTURE TOO:</b> flaw classes, attack paths, constraints the diff exposed are captured at discovery (INFERRED, tagged) -- both the code reviewer AND the plan-reviewer (stage 3). Review insights no longer live only in feedback.md history.</span></div>
       <div class="step"><span>Writes feedback.md verdict as pm-reviewer. CHANGES NEEDED -&gt; doer fixes -&gt; re-review (max 3 cycles). <b>The verdict is also the knowledge quality gate.</b></span></div>
       <div class="loop">doer &lt;-&gt; reviewer loop until APPROVED, then the phase's knowledge is harvestable</div>
     </div>
