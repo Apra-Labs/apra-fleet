@@ -61,6 +61,35 @@ quietly use is a command the human runs in their own terminal. Therefore:
   CONFIRMED, not exempt from decay/supersede rules, not retrievable in
   defaults) until approved via CLI.
 
+PLAN-REVIEW HARDENING (2 HIGH + 1 MEDIUM, binding):
+- H1 PROMOTE LADDER: SqliteProvider.promote() has no type guard -- two
+  agent-callable kb_promote calls walk a pending proposal UNVERIFIED ->
+  INFERRED -> CONFIRMED, which IS the ACTIVE predicate. REQUIRED: promote()
+  REFUSES any entry with type='user-directive' (clear error naming the CLI
+  path). CLI activation uses a DEDICATED provider method (e.g.
+  approveDirective(id)), not promote(). The kb_query flagged_only response
+  note (kb-query.ts:49) currently tells agents to resolve flagged entries "by
+  calling kb_promote" -- add a carve-out: directive-pending entries are
+  resolved only by the human CLI. T1.3's fail-then-pass suite MUST include the
+  promote-ladder attack (two promotes on a pending proposal -> refused, still
+  inactive).
+- H2 RETRIEVAL DEFAULTS: query()/prime() defaults exclude only stale/
+  superseded -- flagged UNVERIFIED entries DO surface today, so the pending
+  representation alone does NOT keep proposals out of defaults. REQUIRED
+  (surgical, no broad behavior change): query() and prime() defaults exclude
+  rows WHERE type='user-directive' AND confidence != 'CONFIRMED' (pending or
+  rejected proposals). Active (CONFIRMED) directives keep surfacing. kb_list
+  (audit tool) and the flagged_only path DO show pending proposals -- that is
+  where humans/agents find them. Assert both sides in tests.
+- M1 GLOBAL-SCOPE ESCAPE: a directive proposal captured with scope='global'
+  would land where the project CLI cannot list/approve it. REQUIRED:
+  kb_capture forces scope='project' for type='user-directive' (documented in
+  the tool description); global directives, if ever needed, are a future CLI
+  add-directive --global concern.
+- L1: update kb-capture.ts's tool description (still advertises the removed
+  CONFIRMED exemption). L2: pending proposals are not subject to observable
+  decay (decay is INFERRED->UNVERIFIED); word tests accordingly.
+
 ## D2 -- Auto-capture flow is documentation on top of D1
 
 No new server machinery. PM SKILL.md gains a short "standing instructions"
