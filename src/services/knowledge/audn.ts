@@ -137,18 +137,22 @@ export function makeAudnDecision(
       };
     }
 
-    // D6 (T3.1) user-directive supersede guard (kept here in the pure decision
-    // function so it is directly unit-testable): a user-directive may ONLY be
-    // superseded/updated by ANOTHER user-directive -- an agent capture of any
-    // other type can NEVER retire a user directive. When the candidate is a
-    // user-directive and the incoming entry is not, the update/supersede path is
-    // FORBIDDEN: we `continue` past the dedup/update path, so this candidate
-    // degrades to 'flagged' if a contradiction signal was present (handled
-    // above) or falls through to 'add'. When BOTH sides are user-directives the
-    // guard does not trip and normal same-type supersede applies (a newer user
-    // directive supersedes the older one). This is evaluated before the general
-    // same-type gate so the user-directive rule is the explicit reason.
-    if (candidate.type === 'user-directive' && input.type !== 'user-directive') continue;
+    // F1 (D1, closes yashr-9ha) ACTIVE-directive supersede guard (kept here in
+    // the pure decision function so it is directly unit-testable): an ACTIVE
+    // directive (type='user-directive' AND confidence='CONFIRMED') can NEVER be
+    // superseded or updated by ANY capture() path. Every MCP directive capture
+    // is now a PROPOSAL (UNVERIFIED, per SqliteProvider.capture()), so the old
+    // both-directives-supersede rule would let an agent proposal replace an
+    // active directive -- re-opening the forge-a-directive attack. Superseding an
+    // active directive is a human act (approve-new + reject-old via the CLI).
+    // When the candidate is an active directive the update/supersede path is
+    // FORBIDDEN: we `continue`, so this candidate degrades to 'flagged' if a
+    // contradiction signal was present (handled above) or the new entry falls
+    // through to 'add'. Evaluated before the general same-type gate so the
+    // directive rule is the explicit reason. A non-active (pending/rejected)
+    // directive candidate is not protected here -- proposal-vs-proposal dedup
+    // follows the normal same-type path below.
+    if (candidate.type === 'user-directive' && candidate.confidence === 'CONFIRMED') continue;
 
     // DEDUP / UPDATE path: same-type refinements only, symbol AND file overlap.
     if (candidate.type !== input.type) continue;

@@ -388,17 +388,18 @@ export class SqliteProvider implements MemoryProvider {
 
   private decayConceptEntries(db: Database.Database, days: number): void {
     const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
-    // D6 (T3.1): a user-directive is NEVER auto-decayed. This `type !=
-    // 'user-directive'` clause is defensive (belt-and-braces): decay already
-    // only touches confidence='INFERRED' rows, and a user-directive is always
-    // stored at confidence='CONFIRMED', so it can never match the WHERE today.
-    // The explicit type guard keeps the invariant true even if the confidence
-    // predicate is ever loosened.
+    // F1 (D1): only an ACTIVE directive (type='user-directive' AND
+    // confidence='CONFIRMED') is exempt from decay. A pending/rejected directive
+    // proposal is UNVERIFIED, so it is already below the INFERRED decay target
+    // and decay is not observable on it (L2). The rekeyed guard
+    // `NOT (type='user-directive' AND confidence='CONFIRMED')` keeps the
+    // invariant precise: a hypothetical INFERRED user-directive row would decay
+    // like any concept, while an ACTIVE directive never does.
     db.prepare(`
       UPDATE entries
       SET confidence = 'UNVERIFIED'
       WHERE confidence = 'INFERRED'
-        AND type != 'user-directive'
+        AND NOT (type = 'user-directive' AND confidence = 'CONFIRMED')
         AND superseded_at IS NULL
         AND (source_files = '[]' OR source_files IS NULL OR source_files = '')
         AND (last_accessed IS NULL OR last_accessed < ?)
@@ -434,6 +435,31 @@ export class SqliteProvider implements MemoryProvider {
   async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
     const db = this.getDb();
     const now = new Date().toISOString();
+
+    // F1 (D1, closes yashr-9ha): capture() is the single choke point every
+    // MCP-reachable route flows through (the kb_capture handler AND the HTTP
+    // /api/kb/capture route on the KB server). Enforcing the directive
+    // proposal-transformation HERE -- not only in the kb_capture handler --
+    // means no capture route can mint an active directive. A user-directive
+    // captured over MCP is forced to a PENDING PROPOSAL: confidence downgraded
+    // to UNVERIFIED, flagged_for_review set, a 'directive:pending' tag added,
+    // and scope forced to 'project' (M1: a global proposal would be unreachable
+    // by the project CLI that approves it). Activation is CLI-only via the
+    // dedicated approveDirective/addDirective methods, which bypass capture().
+    if (input.type === 'user-directive') {
+      const existingTags = input.tags ?? [];
+      const tags = existingTags.includes('directive:pending')
+        ? existingTags
+        : [...existingTags, 'directive:pending'];
+      input = {
+        ...input,
+        confidence: 'UNVERIFIED',
+        flagged_for_review: true,
+        scope: 'project',
+        tags,
+      };
+    }
+
     const content = truncateContent(input.content);
 
     // T2.2 (F3 PART A): capture() is the single choke point every caller
@@ -487,6 +513,16 @@ export class SqliteProvider implements MemoryProvider {
     }
     if (opts.flagged_only) {
       conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
+    } else {
+      // H2 (F1, D1, closes yashr-9ha): default retrieval NEVER surfaces a
+      // pending or rejected directive PROPOSAL (type='user-directive' with
+      // confidence != 'CONFIRMED'). Only an ACTIVE (CONFIRMED) directive
+      // surfaces. This is the surgical exclusion the pending representation
+      // alone does not provide (flagged UNVERIFIED rows otherwise match FTS).
+      // The flagged_only audit path is exempt (above) -- that is where a human
+      // finds pending proposals; kb_list uses a separate method and is likewise
+      // unaffected. prime() delegates here, so it inherits the exclusion.
+      conditions.push("NOT (e.type = 'user-directive' AND e.confidence != 'CONFIRMED')");
     }
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
@@ -767,6 +803,20 @@ export class SqliteProvider implements MemoryProvider {
     const entry = this.rowToEntry(row);
     if (entry.superseded_at) throw new Error(`Cannot promote superseded entry: ${id}`);
 
+    // H1 (F1, D1, closes yashr-9ha): promote() REFUSES any user-directive entry.
+    // The promote ladder (UNVERIFIED -> INFERRED -> CONFIRMED) would otherwise
+    // let two agent-callable kb_promote calls walk a pending directive proposal
+    // up to type='user-directive' + confidence='CONFIRMED' -- exactly the ACTIVE
+    // predicate -- re-opening the forge-a-directive attack through the side door.
+    // Directive activation is human-terminal ONLY, via the dedicated
+    // approveDirective() method (which does NOT delegate here). Refuse ENTIRELY
+    // so the pending/active state stays binary.
+    if (entry.type === 'user-directive') {
+      throw new Error(
+        'Cannot promote a user-directive via kb_promote (F1/D1): directive activation is human-terminal only. Run `apra-fleet kb approve-directive ' + id + '` (or `reject-directive ' + id + '` to discard).'
+      );
+    }
+
     const confidence_before = entry.confidence;
     let confidence_after: Confidence;
 
@@ -795,6 +845,108 @@ export class SqliteProvider implements MemoryProvider {
       .run(confidence_after, now, newContent, 'promotion', id);
 
     return { id, confidence_before, confidence_after };
+  }
+
+  // --- F1 (D1) directive activation primitives ---
+  // These are the human-terminal trust surface for user-directives. They are
+  // called ONLY by the `apra-fleet kb ...` CLI commands (src/cli/kb-directives.ts)
+  // and are NEVER exposed over MCP: MCP has no user-vs-agent identity, so the
+  // only unforgeable channel is a command the human runs in their own terminal.
+  // approveDirective is DEDICATED (it does NOT delegate to promote(), which
+  // refuses user-directive entries outright per H1).
+
+  // Audit read (no use_count bump): all non-rejected directives -- pending
+  // proposals (UNVERIFIED + 'directive:pending') and active directives
+  // (CONFIRMED). Rejected directives are superseded and excluded.
+  async listDirectives(): Promise<KBEntry[]> {
+    const db = this.getDb();
+    const rows = db.prepare(`
+      SELECT * FROM entries
+      WHERE type = 'user-directive' AND superseded_at IS NULL
+      ORDER BY created_at DESC
+    `).all() as Record<string, unknown>[];
+    return rows.map(r => this.rowToEntry(r));
+  }
+
+  // Human approval: a pending proposal becomes an ACTIVE directive. Sets
+  // confidence='CONFIRMED', author='user' (the human at the terminal is the
+  // authority), clears flagged_for_review, drops the 'directive:pending' tag,
+  // and stamps promoted_at=now (activation is the promotion-equivalent event,
+  // keeping kb_export's updated_at and F5's promote_ratio coherent). From here
+  // all directive semantics apply (never decayed, top-tier retrieval, only a
+  // human supersede via reject).
+  async approveDirective(id: string): Promise<KBEntry> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('Directive not found: ' + id);
+    const entry = this.rowToEntry(row);
+    if (entry.type !== 'user-directive') throw new Error('Not a user-directive: ' + id);
+    if (entry.superseded_at) throw new Error('Cannot approve a rejected directive: ' + id);
+    if (entry.confidence === 'CONFIRMED') throw new Error('Directive already active: ' + id);
+
+    const now = new Date().toISOString();
+    const tags = entry.tags.filter(t => t !== 'directive:pending');
+    db.prepare(
+      "UPDATE entries SET confidence = 'CONFIRMED', author = 'user', flagged_for_review = 0, tags = ?, promoted_at = ? WHERE id = ?"
+    ).run(JSON.stringify(tags), now, id);
+
+    const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(updated);
+  }
+
+  // Human rejection: works on a pending proposal OR an active directive (the
+  // approve-new + reject-old supersede flow, resolution 2). Marks superseded_at
+  // and stale so it drops from retrieval, but NEVER deletes and KEEPS the
+  // 'directive:pending' tag as an audit trail.
+  async rejectDirective(id: string): Promise<KBEntry> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('Directive not found: ' + id);
+    const entry = this.rowToEntry(row);
+    if (entry.type !== 'user-directive') throw new Error('Not a user-directive: ' + id);
+    if (entry.superseded_at) throw new Error('Directive already rejected: ' + id);
+
+    const now = new Date().toISOString();
+    db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, id);
+
+    const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(updated);
+  }
+
+  // Direct human add: creates an ALREADY-ACTIVE directive (the human terminal is
+  // the trust root, D1). Bypasses capture() -- which would force the proposal
+  // representation -- and inserts directly at confidence='CONFIRMED',
+  // author='user', source='user-directive', promoted_at=now.
+  async addDirective(text: string, symbols?: string[]): Promise<KBEntry> {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const title = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    const summary = text.length > 200 ? text.slice(0, 197) + '...' : text;
+    const input: KBEntryInput = {
+      type: 'user-directive',
+      title,
+      summary,
+      content: text,
+      source_files: [],
+      symbols: symbols ?? [],
+      module: undefined,
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      contradiction_of: undefined,
+      author: 'user',
+      source: 'user-directive',
+      confidence: 'CONFIRMED',
+      scope: 'project',
+    };
+    this.insertEntry(db, id, input, truncateContent(text), now);
+    db.prepare('UPDATE entries SET promoted_at = ? WHERE id = ?').run(now, id);
+    this.wireLinks(db, id, input);
+
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(row);
   }
 
   async sync(opts?: SyncOptions): Promise<SyncResult> {

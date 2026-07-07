@@ -46,7 +46,7 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
       total: merged.length,
       note: merged.length === 0
         ? 'No flagged contradictions found -- KB is clean.'
-        : `${merged.length} flagged entry pairs found. Each pair: one entry has flagged_for_review=true, its counterpart has contradiction_of set to the original ID. Resolve by calling kb_promote (keep), kb_capture (correct), or kb_invalidate (remove).`,
+        : `${merged.length} flagged entries found. Contradiction pairs: one entry has flagged_for_review=true, its counterpart has contradiction_of set to the original ID -- resolve by calling kb_promote (keep), kb_capture (correct), or kb_invalidate (remove). EXCEPTION (F1/D1): a directive PROPOSAL (type=user-directive, tag directive:pending) is resolved ONLY by the human CLI (apra-fleet kb approve-directive <id> / reject-directive <id>) -- kb_promote refuses user-directive entries.`,
     });
   }
 

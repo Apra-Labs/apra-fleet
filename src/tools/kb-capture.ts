@@ -21,7 +21,7 @@ function validateAuthor(role: string | undefined): Author | 'unknown' {
 
 export const kbCaptureSchema = z.object({
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'])
-    .describe('Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures, user-directive for a standing user instruction/correction (highest trust: stored CONFIRMED, exempt from the clamp)'),
+    .describe('Content type: context-cache for file summaries, learning for session insights, knowledge for facts, runbook for procedures, user-directive for a standing user instruction/correction. NOTE (F1/D1): a user-directive captured here is stored as a PENDING PROPOSAL (UNVERIFIED, flagged for review, scope forced to project) -- it is NOT an active directive and does NOT gain any trust semantics until a human approves it in their own terminal via "apra-fleet kb approve-directive <id>". MCP cannot mint an active directive.'),
   title: z.string().min(1).describe('Short description (max ~80 chars)'),
   summary: z.string().min(1).describe('2-4 sentence overview'),
   content: z.string().min(1).describe('Full detail (will be truncated at 4000 chars)'),
@@ -57,8 +57,18 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     }
   }
 
+  const isUserDirective = input.type === 'user-directive';
+
+  // M1 (F1, D1): force scope='project' for a directive proposal. A scope='global'
+  // proposal would be routed to the global KB where the project CLI could never
+  // list/approve/reject it (a dead-end audit trail) and the guard rekey would
+  // not hold. Global directives, if ever needed, are a future
+  // `add-directive --global` concern (out of scope). Every other type keeps its
+  // requested scope.
+  const scope = isUserDirective ? 'project' : (input.scope ?? 'project');
+
   // context-cache always goes to project; scope='global' goes to global; otherwise project
-  const target = (input.type === 'context-cache' || input.scope !== 'global')
+  const target = (input.type === 'context-cache' || scope !== 'global')
     ? providers.project
     : providers.global;
 
@@ -71,36 +81,34 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
   // misled. Existing direct-CONFIRMED rows are historical data and are NOT
   // migrated -- enforcement applies only to new captures from this point on.
   //
-  // D6 (T3.1): entry type 'user-directive' is authoritative on capture and is
-  // the SOLE exemption from the D1 clamp. Now that 'user-directive' is a real
-  // ContentType member, the earlier T1.1 forward-compat raw-string guard is
-  // replaced with this typed-union check. A user-directive is stamped
-  // confidence='CONFIRMED' directly (highest trust tier) regardless of the
-  // caller's confidence hint -- it does not climb the promote ladder. Every
-  // other type is clamped: an incoming CONFIRMED is downgraded to INFERRED, made
-  // visible via confidence_clamped + a bracketed content note (D6 semantic 4:
-  // storing CONFIRMED is all that is needed for CONFIRMED-equivalent retrieval
-  // ranking -- no extra ranking code).
-  const isUserDirective = input.type === 'user-directive';
+  // F1 (D1, closes yashr-9ha): the user-directive CONFIRMED clamp exemption is
+  // REMOVED. A user-directive is no longer minted CONFIRMED here -- it is stored
+  // as a PENDING PROPOSAL (confidence downgraded to UNVERIFIED, flagged, tagged
+  // 'directive:pending') by the single choke point SqliteProvider.capture(), so
+  // no MCP-reachable route (this handler OR the HTTP /api/kb/capture route) can
+  // mint an active directive. It becomes ACTIVE only when a human approves it via
+  // `apra-fleet kb approve-directive <id>` (the only unforgeable channel).
+  // The general clamp below still downgrades an incoming CONFIRMED for EVERY
+  // type, user-directive included.
   const requestedConfidence = input.confidence ?? 'INFERRED';
   let confidence = requestedConfidence;
   let content = input.content;
   let confidence_clamped = false;
-  if (isUserDirective) {
-    confidence = 'CONFIRMED';
-  } else if (requestedConfidence === 'CONFIRMED') {
+  if (requestedConfidence === 'CONFIRMED') {
     confidence = 'INFERRED';
     confidence_clamped = true;
     content = content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]';
   }
 
-  // D5 (T2.3) + D6 (T3.1): provenance is stamped by this handler, never
-  // accepted as a free string from the caller. A user-directive is stamped
-  // author='user' and source='user-directive' (the user is the authority, not
-  // the invoking agent's role hint). Otherwise author is the validated role
-  // hint (Author | 'unknown') and source is derived -- 'review' for a reviewer
-  // capture, else 'session'.
-  const author: Author | 'unknown' = isUserDirective ? 'user' : validateAuthor(input.role);
+  // D5 (T2.3) + F1 (D1): provenance is stamped by this handler, never accepted
+  // as a free string from the caller. author='user' is NO LONGER stamped on a
+  // directive proposal -- MCP identity is forgeable, so a proposal records the
+  // VALIDATED role hint (Author | 'unknown') instead. author='user' is stamped
+  // ONLY by the CLI activation path (approveDirective / addDirective), the one
+  // channel a human controls. source stays 'user-directive' for a directive
+  // (it describes the channel/type, not identity); otherwise 'review' for a
+  // reviewer capture, else 'session'.
+  const author: Author | 'unknown' = validateAuthor(input.role);
   const source: CaptureSource = isUserDirective
     ? 'user-directive'
     : author === 'reviewer'
@@ -122,7 +130,7 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     author,
     source,
     confidence,
-    scope: input.scope ?? 'project',
+    scope,
   });
 
   return JSON.stringify({ id, audn_decision, confidence_clamped });
