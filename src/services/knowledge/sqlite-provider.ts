@@ -264,35 +264,120 @@ export class SqliteProvider implements MemoryProvider {
     }
   }
 
-  // T2.2 (F3 PART B, revised D3): freshness check bounded to the primed set.
-  // Keyed off source_files with a per-file hash basis persisted at capture
-  // time (source_file_hashes) -- NOT content_hash, which is only ever set for
-  // context-cache entries that prime() already excludes from top_entries.
-  // Entries with no source_files, or an empty/unparseable stored basis, are
-  // left untouched (never falsely stale -- D1/D3 no-mass-migration covers
-  // historical rows with no basis). For entries that DO have a basis, re-hash
-  // the union of basis files ONCE (bounded to the primed set, never the whole
-  // KB) and compare; any changed or now-missing basis file marks the entry
-  // stale=1 (one UPDATE) and drops it from the returned list.
-  private async checkFreshness(db: Database.Database, entries: KBEntry[]): Promise<KBEntry[]> {
-    const candidateIds = entries.filter(e => e.source_files.length > 0).map(e => e.id);
-    if (candidateIds.length === 0) return entries;
+  // T1.3 (F2/D2 HARDENED): the ANCHORED feedback-downvote marker. feedback()
+  // writes exactly '\n\n[feedback ' + new Date().toISOString() + '] ...'
+  // (see feedback()). The predicate below excludes any entry carrying this
+  // marker from revival, so a feedback-downvoted entry stays retired even if
+  // some later flow clears its flagged_for_review bit (the T3.1 winner path
+  // clears flags; the marker is the durable downvote record). We anchor to the
+  // two-newline prefix PLUS the ISO date shape ('[feedback ' + YYYY-MM-DDT)
+  // rather than a bare '[feedback ' substring: an entry whose content merely
+  // QUOTES the feedback-note format (e.g. a learning ABOUT the kb_feedback
+  // mechanism -- such entries exist in this very KB) must NOT be permanently
+  // excluded from revival once freshness-staled. Chosen pattern stated here and
+  // used verbatim by the shared predicate.
+  private static readonly FEEDBACK_MARKER_RE = /\n\n\[feedback \d{4}-\d{2}-\d{2}T/;
 
+  // T1.3 (F2/D2 HARDENED) -- THE UN-STALE PREDICATE (binding, verbatim):
+  //
+  //     stale = 1
+  //     AND superseded_at IS NULL
+  //     AND flagged_for_review = 0
+  //     AND content_hash != 'invalidated'
+  //     AND content NOT LIKE the ANCHORED feedback marker (FEEDBACK_MARKER_RE:
+  //         /\n\n\[feedback \d{4}-\d{2}-\d{2}T/ -- the newline+ISO-timestamp
+  //         form feedback() actually writes, NOT a bare substring)
+  //     AND the re-hash of the FULL stored basis matches current files
+  //
+  // That is precisely the freshness-staled population. stale=1 is set by FOUR
+  // actors -- freshness mismatch (prime/sweep), supersede (AUDN update, carries
+  // superseded_at), feedback downvote (carries flagged_for_review=1 AND the
+  // marker), and invalidate() (sets content_hash='invalidated', leaves
+  // flagged=0, superseded NULL, basis untouched) -- and ONLY the first may
+  // revive. This method evaluates the four NON-hash reason conjuncts; the
+  // caller owns the stale=1 gate and the full-basis re-hash (it batches the
+  // hashing). Shared by checkFreshness(), freshnessSweep(), and (T3.1)
+  // resolveContradiction() -- ONE implementation, never copied.
+  private freshnessRevivable(e: {
+    superseded_at?: string | null;
+    flagged_for_review: boolean;
+    content_hash: string;
+    content: string;
+  }): boolean {
+    if (e.superseded_at) return false;                 // supersede actor
+    if (e.flagged_for_review) return false;            // feedback flag standing
+    if (e.content_hash === 'invalidated') return false; // invalidate actor
+    if (SqliteProvider.FEEDBACK_MARKER_RE.test(e.content ?? '')) return false; // durable downvote
+    return true;
+  }
+
+  // T1.3 (F2/D2): the FULL-basis re-hash conjunct. Returns true only when the
+  // stored basis is non-empty AND every basis file resolves to a current hash
+  // equal to the stored one. An empty basis never matches (never revive on an
+  // empty/malformed basis); a partial match (some file changed/missing) is NOT
+  // a full match, so a multi-file entry with only one file matching is not
+  // revived. Complement (not a full match) is exactly "basis mismatch" used for
+  // the stale=1 direction.
+  private basisFullyMatches(
+    basis: Record<string, string>,
+    currentHashes: Record<string, { hash: string } | null | undefined>
+  ): boolean {
+    const files = Object.keys(basis);
+    if (files.length === 0) return false;
+    for (const file of files) {
+      const current = currentHashes[file];
+      if (!current || current.hash !== basis[file]) return false;
+    }
+    return true;
+  }
+
+  // Parse a stored source_file_hashes JSON map; returns null for empty or
+  // malformed bases (never falsely stale, never falsely revive).
+  private parseBasis(raw: string | null): Record<string, string> | null {
+    try {
+      const parsed = JSON.parse(raw || '{}') as Record<string, string>;
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) return parsed;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // T1.3 (F2/D2 HARDENED): freshness check bounded to the primed set, now
+  // BIDIRECTIONAL. Keyed off source_files with a per-file hash basis persisted
+  // at capture time (source_file_hashes) -- NOT content_hash, which is only ever
+  // set for context-cache entries that prime() already excludes from
+  // top_entries. Entries with no source_files, or an empty/unparseable stored
+  // basis, are left untouched (never falsely stale). For entries that DO have a
+  // basis, re-hash the union of basis files ONCE (bounded to the primed set,
+  // never the whole KB): a basis MISMATCH marks stale=1 and drops the entry from
+  // the returned list; a FULL basis match on an entry that is stale AND passes
+  // the shared un-stale predicate clears stale=0.
+  //
+  // CAVEAT (also on freshnessSweep): prime()'s candidate set EXCLUDES stale
+  // entries by definition (query filters stale=0), so in practice the un-stale
+  // direction here is a no-op -- prime alone CANNOT revive a staled entry.
+  // Branch-switch revival requires freshnessSweep() (invoked by kb_import in
+  // T2.1 and /pm kb-reconcile in T3.2), NOT just a prime. kb_stats stays
+  // read-only (D2). The un-stale branch is implemented here for consistency and
+  // to share the exact predicate, but the real revival surface is the sweep.
+  private async checkFreshness(db: Database.Database, entries: KBEntry[]): Promise<KBEntry[]> {
+    const candidates = entries.filter(e => e.source_files.length > 0);
+    if (candidates.length === 0) return entries;
+
+    const candidateIds = candidates.map(e => e.id);
     const rows = db.prepare(
       `SELECT id, source_file_hashes FROM entries WHERE id IN (${candidateIds.map(() => '?').join(',')})`
     ).all(...candidateIds) as { id: string; source_file_hashes: string | null }[];
 
     const basisById = new Map<string, Record<string, string>>();
     for (const row of rows) {
-      try {
-        const parsed = JSON.parse(row.source_file_hashes || '{}') as Record<string, string>;
-        if (parsed && Object.keys(parsed).length > 0) basisById.set(row.id, parsed);
-      } catch {
-        // malformed basis -- treat as no basis (never falsely stale)
-      }
+      const basis = this.parseBasis(row.source_file_hashes);
+      if (basis) basisById.set(row.id, basis);
     }
-
     if (basisById.size === 0) return entries;
+
+    const entryById = new Map(entries.map(e => [e.id, e]));
 
     const fileSet = new Set<string>();
     for (const basis of basisById.values()) {
@@ -302,16 +387,15 @@ export class SqliteProvider implements MemoryProvider {
     const currentHashes = await computeFileHashBatch([...fileSet]);
 
     const staleIds: string[] = [];
+    const unstaleIds: string[] = [];
     for (const [id, basis] of basisById) {
-      let changed = false;
-      for (const file of Object.keys(basis)) {
-        const current = currentHashes[file];
-        if (!current || current.hash !== basis[file]) {
-          changed = true;
-          break;
-        }
+      const entry = entryById.get(id);
+      const matches = this.basisFullyMatches(basis, currentHashes);
+      if (!matches) {
+        staleIds.push(id);
+      } else if (entry && entry.stale && this.freshnessRevivable(entry)) {
+        unstaleIds.push(id);
       }
-      if (changed) staleIds.push(id);
     }
 
     if (staleIds.length > 0) {
@@ -319,9 +403,96 @@ export class SqliteProvider implements MemoryProvider {
         `UPDATE entries SET stale = 1 WHERE id IN (${staleIds.map(() => '?').join(',')})`
       ).run(...staleIds);
     }
+    if (unstaleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 0 WHERE id IN (${unstaleIds.map(() => '?').join(',')})`
+      ).run(...unstaleIds);
+    }
 
     const staleSet = new Set(staleIds);
     return entries.filter(e => !staleSet.has(e.id));
+  }
+
+  // T1.3 (F2/D2 HARDENED) resolution R2: a bounded, full-KB bidirectional
+  // freshness sweep -- the revival surface that prime() cannot be (its candidate
+  // set excludes stale entries). Runs the SAME shared predicate in BOTH
+  // directions over ALL entries with a non-empty basis: a basis mismatch marks a
+  // currently-fresh entry stale=1; a full basis match revives a stale entry that
+  // passes freshnessRevivable() (superseded, feedback-downvoted, and invalidated
+  // entries stay retired). Bounded: ONE computeFileHashBatch over the union of
+  // all basis files (the KB is <1000 entries -- fine for an explicit command;
+  // NOT wired into prime). Exposed as MCP tool kb_freshness_sweep and invoked by
+  // kb_import (T2.1) and /pm kb-reconcile (T3.2).
+  //
+  // Return semantics: `checked` counts entries with a non-empty, parseable basis
+  // that were evaluated against the hash batch (entries with no/empty/malformed
+  // basis are neither staled nor revived nor counted). `staled` counts fresh
+  // entries newly marked stale on a mismatch; `unstaled` counts stale entries
+  // revived on a full match.
+  async freshnessSweep(): Promise<{ checked: number; staled: number; unstaled: number }> {
+    const db = this.getDb();
+    const rows = db.prepare(
+      `SELECT id, stale, superseded_at, flagged_for_review, content_hash, content, source_file_hashes
+       FROM entries`
+    ).all() as {
+      id: string;
+      stale: number;
+      superseded_at: string | null;
+      flagged_for_review: number;
+      content_hash: string;
+      content: string;
+      source_file_hashes: string | null;
+    }[];
+
+    const basisById = new Map<string, Record<string, string>>();
+    const rowById = new Map<string, typeof rows[number]>();
+    for (const row of rows) {
+      const basis = this.parseBasis(row.source_file_hashes);
+      if (basis) {
+        basisById.set(row.id, basis);
+        rowById.set(row.id, row);
+      }
+    }
+    if (basisById.size === 0) return { checked: 0, staled: 0, unstaled: 0 };
+
+    const fileSet = new Set<string>();
+    for (const basis of basisById.values()) {
+      for (const file of Object.keys(basis)) fileSet.add(file);
+    }
+    const currentHashes = await computeFileHashBatch([...fileSet]);
+
+    const staleIds: string[] = [];
+    const unstaleIds: string[] = [];
+    let checked = 0;
+    for (const [id, basis] of basisById) {
+      checked++;
+      const row = rowById.get(id)!;
+      const matches = this.basisFullyMatches(basis, currentHashes);
+      const isStale = row.stale === 1;
+      if (!matches) {
+        if (!isStale) staleIds.push(id); // freshness mismatch actor
+      } else if (isStale && this.freshnessRevivable({
+        superseded_at: row.superseded_at,
+        flagged_for_review: row.flagged_for_review === 1,
+        content_hash: row.content_hash,
+        content: row.content,
+      })) {
+        unstaleIds.push(id);
+      }
+    }
+
+    if (staleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 1 WHERE id IN (${staleIds.map(() => '?').join(',')})`
+      ).run(...staleIds);
+    }
+    if (unstaleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 0 WHERE id IN (${unstaleIds.map(() => '?').join(',')})`
+      ).run(...unstaleIds);
+    }
+
+    return { checked, staled: staleIds.length, unstaled: unstaleIds.length };
   }
 
   private findAudnCandidates(db: Database.Database, input: KBEntryInput): KBEntry[] {
