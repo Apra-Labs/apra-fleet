@@ -1,14 +1,22 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { FLEET_DIR } from '../paths.js';
+import { logWarn } from '../utils/log-helpers.js';
 
 // T3.4 (F8b, D8): export half of the shareable, diffable team bible. Writes
 // all CONFIRMED, non-superseded, non-stale project entries to
 // <repo>/.fleet/kb-canonical.json. Registered as a real MCP tool (not just an
 // exported helper) so the KB Agent -- which is MCP-only, it has no shell/git
-// access -- can invoke it directly after kb_promote. The PM commits the
-// resulting file; this tool only writes it to disk.
+// access -- can invoke it directly after kb_promote.
+// T2.3 (F6a, D5 AMENDED -- USER DIRECTIVE 2026-07-07): the tool itself now
+// commits the bible after writing it (see maybeAutoCommitBible below) -- the
+// PM no longer needs a manual "commit the bible" step. This is code, not
+// agent discretion: tpl-kb-agent.md documents that the export TOOL commits
+// with its own dedicated identity (pm-kb), so the KB Agent's "no git
+// operations" rule is not violated by this automatic side effect.
 // F4 (T1.6): repo path resolution precedence -- (1) explicit repo_path input,
 // validated (must exist and be a directory) or kb_export refuses with a clear
 // error; (2) validated session context -- this process's own working
@@ -77,6 +85,74 @@ function resolveRepoPath(explicit?: string): string {
   return candidate;
 }
 
+// T2.3 (F6a, D5 AMENDED): off-switch for the auto-commit below, read from the
+// same KB config file kb-setup.ts writes (FLEET_DIR/knowledge/config.json),
+// under a new { bible: { autoCommit?: boolean } } section. Default TRUE.
+// Missing file, missing section, or malformed JSON all degrade to the
+// default (TRUE) -- kb_export never fails because the config is absent or
+// bad, and a config problem must not silently disable the feature either.
+const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
+
+function autoCommitEnabled(): boolean {
+  try {
+    if (!fs.existsSync(KB_CONFIG_PATH)) return true;
+    const raw = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8')) as { bible?: { autoCommit?: boolean } };
+    return raw.bible?.autoCommit ?? true;
+  } catch {
+    return true;
+  }
+}
+
+function isGitRepo(repoPath: string): boolean {
+  return fs.existsSync(path.join(repoPath, '.git'));
+}
+
+// "Content actually changed" (D5): git status --porcelain against the exact
+// pathspec, run AFTER the write above. Empty output means the working tree
+// already matches HEAD for this one path -- re-exporting an identical bible
+// is a no-op, so there is nothing to commit. Any output (modified, or a
+// brand-new untracked file on the very first export) means it changed.
+function bibleContentChanged(repoPath: string, outPath: string): boolean {
+  const status = execFileSync('git', ['status', '--porcelain', '--', outPath], {
+    cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  return status.trim().length > 0;
+}
+
+// T2.3 (F6a, D5 AMENDED -- USER DIRECTIVE 2026-07-07): auto-commit the bible
+// at export time so the reviewer-verdict -> KB Agent -> promote -> export ->
+// COMMIT chain is fully automatic (zero manual steps). PATHSPEC-ONLY: `git
+// add <bible-path>` then a commit scoped to `-- <bible-path>` so unrelated
+// staged or dirty working-tree state is NEVER swept in, exactly per D5.
+// Dedicated identity (pm-kb) -- not the KB Agent's own git-less MCP session.
+// Any git failure (not a repo, no git binary, hooks reject, index lock) is
+// logged via log-helpers and NON-FATAL: the export itself already succeeded
+// by the time this runs, and stays successful regardless of what happens
+// here. Push is NOT automatic (D5: rides the existing per-turn sprint pushes).
+function maybeAutoCommitBible(repoPath: string, outPath: string, entryCount: number): boolean {
+  if (!autoCommitEnabled()) return false;
+  if (!isGitRepo(repoPath)) return false;
+
+  try {
+    if (!bibleContentChanged(repoPath, outPath)) return false;
+
+    execFileSync('git', ['add', outPath], {
+      cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const message = 'chore(kb): update knowledge bible -- ' + entryCount + ' confirmed entries';
+    execFileSync(
+      'git',
+      ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
+      { cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    return true;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logWarn('kb-export', 'bible auto-commit failed (non-fatal, export still succeeded): ' + reason);
+    return false;
+  }
+}
+
 export async function kbExport(input: KbExportInput): Promise<string> {
   const repoPath = resolveRepoPath(input.repo_path);
 
@@ -104,5 +180,7 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   const outPath = path.join(fleetDir, 'kb-canonical.json');
   fs.writeFileSync(outPath, asciiSafeStringify(canonical) + '\n', 'utf-8');
 
-  return JSON.stringify({ exported: canonical.length, path: outPath });
+  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length);
+
+  return JSON.stringify({ exported: canonical.length, path: outPath, committed });
 }
