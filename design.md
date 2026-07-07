@@ -1,221 +1,141 @@
-# Design -- KB Trust-Ops
+# Design -- KB Branch Reconcile
 
-Binding decisions for the kb-trust-ops sprint (epic yashr-bp2). Planner and
-reviewers check code against these; deviations need a recorded reason in
-progress.json notes.
+Binding decisions for the kb-branch-reconcile sprint (epic yashr-ii1).
+Deviations need a recorded reason in progress.json notes.
 
-Relevant code (state after kb-integrity, verified 2026-07-07):
-- src/tools/kb-capture.ts -- clamp to INFERRED; sole exemption
-  type==='user-directive' stores CONFIRMED + author='user' +
-  source='user-directive'. THIS EXEMPTION IS THE HOLE F1 CLOSES.
-- src/services/knowledge/audn.ts -- makeAudnDecision: user-directive supersede
-  guard; contradiction path cross-type; orJoinFtsTerms/ftsSafeTerm;
-  hasOppositePolarity (substring matching -- F3 target).
-- src/services/knowledge/sqlite-provider.ts -- capture/promote/list/prime;
-  checkFreshness; decayConceptEntries (type != 'user-directive' guard);
-  flagged_for_review + superseded_at + stale columns.
-- src/tools/kb-export.ts -- CONFIRMED -> .fleet/kb-canonical.json; repo path
-  input validated but callers may default to cwd (F4 target).
-- src/tools/kb-session-prime.ts -- prime -> staleness -> global append ->
-  graph-neighbor -> cold-seed (COLD_KB_MAX=3, via:'canonical-bible').
-- src/tools/kb-list.ts -- dedicated no-bump provider read (pattern for F5).
-- src/tools/check-status.ts -- fleetStatus() degraded-safe sections (pattern
-  for F5/F6/F7 surfacing). src/version.ts -- serverVersion.
-- src/cli/*.ts + src/index.ts -- CLI command dispatch (install etc.); the F1
-  activation command lives here.
-- KB scope column exists ('project' | 'global'); global KB at
-  ~/.apra-fleet/data/knowledge/global/kb.sqlite.
+Relevant code (state after kb-inflight-capture, verified 2026-07-07):
+- src/services/knowledge/sqlite-provider.ts -- capture() holds the directive
+  proposal gate; checkFreshness() (prime-time, sets stale=1 only); promote()
+  refuses directives; feedback() sets stale+flag; list()/query() tag filter;
+  source_file_hashes column (JSON map) written at capture.
+- src/tools/kb-capture.ts -- general INFERRED clamp lives HERE (handler layer);
+  directive transformation lives in provider.capture() (choke point).
+- src/tools/kb-export.ts -- bible writer + auto-commit (pm-kb, pathspec-only);
+  resolveRepoPath precedence (explicit > validated cwd > refuse).
+- src/tools/kb-session-prime.ts -- prime pipeline; cold-seed reads bibles
+  OUTPUT-ONLY (never writes DB).
+- src/cli/kb-directives.ts + kb-commit.ts -- CLI subcommand pattern (argv
+  dispatch in src/index.ts, never MCP-exposed for directives).
+- Provenance enums (Author, CaptureSource) stamped at tool layer;
+  CaptureSource already includes... verify; add 'import' if absent.
+- tests: kb-session-prime.test.ts has 4 env-leaking tests (real KB/bible via
+  cwd); time-utils.test.ts has 2 TZ-dependent failures.
 
-## D1 -- Directive gate: propose via MCP, activate via CLI (human-only)
+## D1 -- Test isolation first (F1)
 
-Identity truth: MCP gives no user-vs-agent signal; env vars and prompt-level
-confirmation are forgeable by construction. The only channel agents cannot
-quietly use is a command the human runs in their own terminal. Therefore:
+- kb-session-prime tests: every test that touches cold-seed/graph-neighbor
+  paths must run against a temp-dir KB and a mocked/injected repo root -- no
+  test may resolve the developer's real cwd repo or ~/.apra-fleet data. Use
+  the existing vi.hoisted + vi.resetModules pattern; inject resolveRepoPath or
+  set an explicit repo param fixture.
+- time-utils tests: force a fixed timezone (e.g. construct dates from fixed
+  epoch + explicit offset expectations, or vi.stubEnv TZ where the impl reads
+  it) so assertions hold in any zone. Do not weaken what the tests assert.
+- From this task onward the sprint's VERIFY criterion is ZERO test failures.
 
-- PROPOSAL (MCP, any caller): kb_capture(type='user-directive') stores the
-  entry with confidence='UNVERIFIED', flagged_for_review=1, and a
-  directive-pending marker (add a tag 'directive:pending' or reuse an existing
-  column -- planner picks the cleanest representation and states it; NO new
-  trust semantics attach while pending). author='user' is NO LONGER stamped on
-  proposals -- stamp the validated role hint (or 'unknown') so provenance is
-  honest about who proposed. The kb-capture clamp exemption is REMOVED (a
-  pending proposal is UNVERIFIED like anything else).
-- ACTIVATION (CLI, human terminal): new command, e.g.
-  `apra-fleet kb directives` (list pending + active) and
-  `apra-fleet kb approve-directive <id>` / `reject-directive <id>`.
-  Approval sets confidence='CONFIRMED', author='user', clears
-  flagged_for_review/pending marker -- the entry becomes an ACTIVE directive
-  and all kb-integrity D6 semantics apply from here (never decayed, only a
-  user-approved directive supersedes it, top-tier retrieval). Rejection marks
-  superseded_at + stale (audit trail, never delete).
-- makeAudnDecision's user-directive supersede guard and decay guard must key
-  off ACTIVE directives (type + CONFIRMED), not pending proposals -- verify
-  and adjust the checks.
-- Retrieval: pending proposals are flagged+UNVERIFIED so they already do not
-  surface in prime/query defaults; assert this in tests rather than adding
-  filters.
-- Direct human add: `apra-fleet kb add-directive "<text>" [--symbols ...]`
-  creates an already-active directive (human terminal = the trust root).
-- Existing kb-user-directive tests are rewritten to go through activation.
-- Fail-then-pass: agent-asserted directive is NOT an active directive (not
-  CONFIRMED, not exempt from decay/supersede rules, not retrievable in
-  defaults) until approved via CLI.
+## D2 -- Bidirectional staleness with a reason discriminator (F2)
 
-PLAN-REVIEW HARDENING (2 HIGH + 1 MEDIUM, binding):
-- H1 PROMOTE LADDER: SqliteProvider.promote() has no type guard -- two
-  agent-callable kb_promote calls walk a pending proposal UNVERIFIED ->
-  INFERRED -> CONFIRMED, which IS the ACTIVE predicate. REQUIRED: promote()
-  REFUSES any entry with type='user-directive' (clear error naming the CLI
-  path). CLI activation uses a DEDICATED provider method (e.g.
-  approveDirective(id)), not promote(). The kb_query flagged_only response
-  note (kb-query.ts:49) currently tells agents to resolve flagged entries "by
-  calling kb_promote" -- add a carve-out: directive-pending entries are
-  resolved only by the human CLI. T1.3's fail-then-pass suite MUST include the
-  promote-ladder attack (two promotes on a pending proposal -> refused, still
-  inactive).
-- H2 RETRIEVAL DEFAULTS: query()/prime() defaults exclude only stale/
-  superseded -- flagged UNVERIFIED entries DO surface today, so the pending
-  representation alone does NOT keep proposals out of defaults. REQUIRED
-  (surgical, no broad behavior change): query() and prime() defaults exclude
-  rows WHERE type='user-directive' AND confidence != 'CONFIRMED' (pending or
-  rejected proposals). Active (CONFIRMED) directives keep surfacing. kb_list
-  (audit tool) and the flagged_only path DO show pending proposals -- that is
-  where humans/agents find them. Assert both sides in tests.
-- M1 GLOBAL-SCOPE ESCAPE: a directive proposal captured with scope='global'
-  would land where the project CLI cannot list/approve it. REQUIRED:
-  kb_capture forces scope='project' for type='user-directive' (documented in
-  the tool description); global directives, if ever needed, are a future CLI
-  add-directive --global concern.
-- L1: update kb-capture.ts's tool description (still advertises the removed
-  CONFIRMED exemption). L2: pending proposals are not subject to observable
-  decay (decay is INFERRED->UNVERIFIED); word tests accordingly.
+Problem: stale=1 is set by three different actors -- freshness mismatch
+(prime), supersede (AUDN update), feedback (downvote). Un-staling may ONLY
+revive freshness-staled entries; a superseded or downvoted entry must stay
+retired even if its files match again.
+- Discriminator WITHOUT migration: superseded entries carry superseded_at
+  (never un-stale those); feedback entries carry the "[feedback ...]" note in
+  content AND flagged_for_review=1. Decision: un-stale ONLY entries where
+  stale=1 AND superseded_at IS NULL AND flagged_for_review=0 AND the re-hash
+  of their FULL stored basis matches current files. That is precisely the
+  freshness-staled population. State this predicate in a comment + test each
+  exclusion.
+- Where: extend checkFreshness() (prime-time) to do both directions over the
+  primed candidate set, PLUS a new provider method freshnessSweep() that runs
+  the same predicate over ALL entries with a non-empty basis (bounded: one
+  computeFileHashBatch over the union; the KB is <1000 entries -- fine for an
+  explicit command, NOT wired into prime). freshnessSweep returns
+  {checked, staled, unstaled}.
+- Prime-time un-stale caveat: prime's candidate set excludes stale entries by
+  definition, so prime alone cannot revive them. The revive path is
+  freshnessSweep (invoked by /pm kb-reconcile and by kb_stats? NO -- stats
+  stays read-only). Also expose freshnessSweep as part of the kb_import tool
+  flow (D3) and the reconcile command. Document that branch-switch revival
+  requires a sweep (reconcile or import), not just a prime.
 
-## D2 -- Auto-capture flow is documentation on top of D1
+## D3 -- kb_import: trusted-channel import with directive quarantine (F4)
 
-No new server machinery. PM SKILL.md gains a short "standing instructions"
-section: detect "always/never/we decided" style user statements -> immediately
-kb_capture(type='user-directive') the proposal -> tell the user: pending, run
-`apra-fleet kb approve-directive <id>`. tpl-kb-agent.md gains the same for
-directives detected in session records. Keep wording tight; this is behavior
-agents follow because dispatch templates carry it (known limitation, fine --
-the TRUST boundary is the CLI, not the detection).
+- New src/tools/kb-import.ts + provider support. Input { path? , repo?,
+  scope?: 'project' } -- resolves the bible file via explicit path else
+  resolveRepoPath(repo)/.fleet/kb-canonical.json.
+- Each bible entry routes through provider.capture() (the AUDN choke point) so
+  dedupe/supersede/flag semantics apply -- with an IMPORT MODE flag that:
+  (a) preserves the entry's bible confidence for NON-directive types. Rationale
+  (binding): the bible is a git-reviewed, human-merged artifact -- the trusted
+  channel; re-clamping would demote the entire team's CONFIRMED knowledge on
+  every import. This is the sole exemption to the F3 provider clamp besides
+  approveDirective, and it is stamped source='import' (add to CaptureSource if
+  absent) so provenance shows the channel.
+  (b) FORCES type='user-directive' entries to pending proposals (the existing
+  directive gate path applies -- never active via import; same security
+  property as cold-seed). A bible cannot smuggle an active directive.
+- Idempotency: an entry whose id OR content-identical AUDN match already exists
+  -> skipped (AUDN 'none'). Re-import of the same bible = all skipped. Track
+  and report {imported, skipped, superseded, flagged}.
+- Preserve original ids where possible (bible id becomes the entry id if free)
+  so re-import dedupe is exact; on id collision with different content, let
+  AUDN decide (update/flag) under a fresh id.
+- Registered as MCP tool kb_import AND CLI `apra-fleet kb import [--repo ...]
+  [--path ...]`. After import, run freshnessSweep (D2) so imported entries
+  whose basis does not match this worktree are immediately staled rather than
+  serving wrong-branch claims.
 
-## D3 -- Polarity word-boundary
+## D4 -- Hash prefilter for flagged pairs (F5 step 3)
 
-hasOppositePolarity tokenizes with word boundaries (regex \b or split on
-non-word chars) instead of String.includes. Keep the antonym pair list; only
-the matching tightens. Tests: prefixed/unresolved/suffixed no longer signal;
-fixed-vs-broken still does; case-insensitive.
+- New provider read: flaggedPairs() -- flagged entries joined to their
+  contradiction_of counterpart (both live). For each pair, re-hash both sides'
+  bases against the current worktree: exactly one side fully matches -> that
+  side WINS mechanically: kb_promote the winner if INFERRED (reason cites
+  "hash-basis match on merged worktree"), supersede+stale the loser, clear
+  both flags. Both match, both mismatch, or either side has no basis ->
+  leave for the agent rung.
+- Never applies to pairs involving an ACTIVE user-directive (flag stays for
+  the human; directives outrank mechanics).
+- Exposed as part of the reconcile tooling (a kb_reconcile_prefilter tool or a
+  function invoked by the PM flow -- planner picks the surface and states it).
 
-## D4 -- kb_stats: one read-only aggregation tool
+## D5 -- Reconciler agent (F5 step 4)
 
-- src/tools/kb-stats.ts + SqliteProvider.stats() as a dedicated read (kb_list
-  pattern -- never bumps use_count).
-- Sections (all cheap single queries): totals (GROUP BY confidence, type);
-  stale/flagged/superseded counts; retrieval { entries_retrieved
-  (use_count>0), total_uses (SUM), hit_rate (retrieved/total live) };
-  promote_ratio (promoted_at IS NOT NULL / CONFIRMED count); bible { present,
-  entries, drift } (see D5); coverage (input symbols[] -> per-symbol boolean:
-  EXISTS live CONFIRMED entry with symbol exact-in-array, plus the fraction).
-- fleet_status: one compact line + json key, degraded-safe try/catch (omit on
-  any error), following the code-intel health precedent in check-status.ts.
-- HttpKbProvider: implement stats() or return a documented not-supported
-  result -- never throw.
+- New skills/pm/tpl-kb-reconciler.md (role template) + skills/pm/
+  kb-reconcile.md (PM flow doc) + SKILL.md command-table row + a line in the
+  completion/cleanup flow ("after merging branches, run /pm kb-reconcile").
+- The agent: for each remaining flagged pair, read the MERGED code via
+  code_context/code_impact/code_query (never Glob/Grep), decide which claim
+  the code supports; winner -> kb_promote with evidence note citing file+
+  symbol; loser -> kb_feedback (flag+stale) or capture a superseding
+  correction; code silent -> trust tier (CONFIRMED > INFERRED > UNVERIFIED);
+  still undecidable -> leave flagged for /pm kb-review with a note appended.
+  Active user-directives are NEVER auto-retired (flag only). Cheap/standard
+  model tier. Report: {pairs, code_decided, tier_decided, deferred}.
+- Runs AFTER import + sweep + prefilter; ends with kb_export (auto-commits).
 
-## D5 -- Bible auto-commit at harvest + drift as anomaly signal
+## D6 -- E2E simulation shape (F6)
 
-USER DIRECTIVE (2026-07-07): learnings must be committed automatically at
-harvest time -- no manual step. Binding design:
-
-- AUTO-COMMIT lives inside kb_export (code-enforced, not template-instructed):
-  after writing .fleet/kb-canonical.json (or the global variant), when the
-  target repo path is a git repo AND the file content actually changed:
-  `git add <bible-path>` then
-  `git -c user.name='pm-kb' -c user.email='kb@pm.local' commit -m "chore(kb):
-  update knowledge bible -- <N> confirmed entries" -- <bible-path>`.
-  PATHSPEC-ONLY commit: only the bible file is committed; unrelated staged or
-  dirty working-tree state is never swept in. Any git failure (no repo, hooks,
-  index lock) is logged and NON-FATAL -- the export itself still succeeds.
-- Config off-switch: KB config (FLEET_DIR/knowledge/config.json)
-  { bible: { autoCommit?: boolean } }, default TRUE.
-- Push is NOT automatic. Rationale: outward writes stay under the existing
-  sprint push cadence (every VERIFY/turn pushes); auto-commit makes the
-  learning durable locally and rides the next push.
-- KB Agent nuance: tpl-kb-agent.md keeps its "no git operations" rule for the
-  AGENT -- the commit is performed by the kb_export TOOL with its own
-  identity (pm-kb), which is code, not agent discretion. State this in the
-  template so reviewers do not flag it as a violation.
-- Drift (kb_stats.bible.drift) = count of live CONFIRMED entries whose
-  updated_at > the newest updated_at inside the bible (file absent -> drift =
-  all live CONFIRMED, present=false). With auto-commit on, nonzero drift is an
-  ANOMALY (a failed auto-commit), and fleet_status words it that way:
-  "bible: N promotions behind (auto-commit may have failed -- run
-  apra-fleet kb commit)".
-- Tests: content-unchanged -> no commit; changed -> exactly one pathspec
-  commit with pm-kb identity; git failure -> export still returns success +
-  logged warning; autoCommit:false -> no git call; dirty unrelated file never
-  committed.
-
-## D6 -- Version handshake inside the running server
-
-The running server compares its compiled-in serverVersion (src/version.ts)
-against the on-disk version of the code it was launched from (read
-version.json / package.json relative to the dist entry actually resolved at
-runtime -- findProjectRoot pattern from install.ts). Mismatch -> fleet_status
-warning line + json field. Notes: SEA binaries embed assets (read via the
-existing manifest path); if the disk read fails, omit silently (degraded-safe).
-No auto-restart in this sprint -- surface only.
-
-## D7 -- kb_feedback: downvote without deletion
-
-- src/tools/kb-feedback.ts: input { id, reason, role? }. Effect: stale=1,
-  flagged_for_review=1, append ASCII note "[feedback <ISO>] <validated-role>:
-  <reason>" to content (CONTENT_CAP respected). Validated role via the
-  provenance enums; invalid -> 'unknown'. Never deletes, never touches
-  confidence (a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged --
-  the human resolves in kb-review; state this in the tool description).
-- Registered in src/index.ts; one line in tpl-doer.md + tpl-reviewer.md + the
-  doer/reviewer dispatch templates in doer-reviewer-loop.md: "if a KB entry you
-  retrieved proves wrong in practice, call kb_feedback with the entry id and
-  what was wrong."
-- user-directive entries: feedback flags them for review but must NOT stale
-  them (directives outrank agent experience; the human decides) -- flag only.
-
-## D8 -- Global bible: export from global scope, distribute via installer
-
-- kb_export input gains scope: 'project' (default, unchanged) | 'global'.
-  Global export reads the GLOBAL KB (scope='global' provider / global
-  kb.sqlite), writes .fleet/kb-canonical-global.json in the given repo path
-  (in practice: the apra-fleet platform repo, committed there).
-- Installer (src/cli/install.ts): a step copies the repo's committed
-  .fleet/kb-canonical-global.json (when present) to
-  ~/.apra-fleet/data/knowledge/global/kb-canonical-global.json. Non-fatal.
-- kb_session_prime cold-seed: after the project-bible merge, also merge from
-  the INSTALLED global bible path (homedir, not repo), marked
-  via:'canonical-bible-global', below project-bible entries, same caps and
-  non-fatal contract. Cold threshold shared (COLD_KB_MAX).
-- Do NOT auto-promote project entries to global; moving knowledge to the
-  global scope stays a deliberate act (out of scope here beyond what
-  kb_capture's scope param already allows).
-
-## D9 -- Quantitative model assignment is template-only
-
-planner template (doer-reviewer-loop.md) + tpl-planner.md: after
-kb_session_prime, call kb_stats with the plan's key symbols; use coverage:
->= 0.8 -> cheap/standard for tasks on those symbols; < 0.3 -> premium +
-front-load; between -> judgment. Require PLAN.md's model rationale to cite the
-coverage number. No code changes.
+- Provider/tool-level test, temp git repo + temp KB: seed branch-A claims
+  (with hash bases from fixture files), write a branch-B bible fixture
+  (duplicate + refinement + contradiction entries), kb_import it, run
+  freshnessSweep + prefilter. Assert: duplicate skipped; refinement superseded
+  the old (superseded_at + stale, per existing semantics); contradiction
+  flagged; after modifying fixture files to the "merged" state where B's claim
+  matches, the prefilter resolves it (B promoted, A superseded, flags
+  cleared); export writes the reconciled set. Directive-in-bible fixture ->
+  pending proposal, never active.
 
 ## Phasing (risk order)
 
-Phase 1: F1 (D1 -- riskiest: touches the trust core + first CLI surface), F2
-(D2 docs, after F1), F3 (D3), F4 (repo-path robustness). Phase 2: F5+F6 (D4/D5
-share kb-stats), F7 (D6). Phase 3: F8 (D7), F9 (D8), F10 (D9 templates), F11
-(flagged-pipeline e2e).
+P1: F1 (test isolation FIRST -- everything after runs at zero-failure), F3
+(clamp relocation -- touches the same capture() choke point F4 needs; land
+before import mode), F2 (bidirectional staleness + freshnessSweep).
+P2: F4 (kb_import, depends on F3's clamp location + F2's sweep).
+P3: F5 (prefilter + reconciler template + PM command/docs), F6 (e2e), final
+VERIFY.
 
-Shared files: kb-capture.ts (F1 removes the exemption) and audn.ts (F1 guard
-rekey, F3 polarity) both touched in Phase 1 -- sequence F1 before F3 or state
-disjoint functions. kb-session-prime.ts touched by F4 (path) and F9 (global
-seed) -- F4 first, F9 appends after the existing cold-seed block.
-check-status.ts touched by F5/F6/F7 -- one coherent task or strictly
-sequenced. kb-export.ts touched by F4 and F9 -- sequence F4 first.
+Shared files: sqlite-provider.ts touched by F2, F3, F4, D4 -- strictly
+sequence; kb-capture.ts by F3; kb-session-prime tests by F1 then F2's tests;
+kb-export.ts untouched except reconcile invokes it.
