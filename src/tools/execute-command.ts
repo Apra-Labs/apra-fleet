@@ -11,7 +11,8 @@ import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
 import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
-import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
+import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import type { Agent } from '../types.js';
 
@@ -39,6 +40,16 @@ const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|In
 
 // Matches raw sec:// credential handles that must never reach shell or LLM
 const SEC_RE = /sec:\/\/[a-zA-Z0-9_]+/;
+
+/** Cap command output before logging it, to protect the fleet log from huge dumps. */
+function capForLog(text: string, maxLines = 50, maxChars = 4000): string {
+  let t = text.length > maxChars ? text.slice(0, maxChars) + '\n... [output truncated]' : text;
+  const lines = t.split('\n');
+  if (lines.length > maxLines) {
+    t = lines.slice(0, maxLines).join('\n') + `\n... [+${lines.length - maxLines} more lines]`;
+  }
+  return t;
+}
 
 interface ResolvedCredential {
   name: string;
@@ -122,7 +133,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   const strategy = getStrategy(agent);
-    const scope = new LogScope('execute_command', `${truncateForLog(maskSecrets(input.command))}`, agent);
+    const scope = new LogScope('execute_command', truncateForLog(maskSecrets(input.command), getLogPreviewChars()), agent);
     const onPidCaptured = (pid: number) => scope.info(`pid=${pid}`);
 
   const cmds = getOsCommands(getAgentOS(agent));
@@ -249,6 +260,13 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const output = credentials.length > 0 ? redactOutput(rawOutput, credentials) : rawOutput;
 
     writeStatusline();
+
+    // Log command output under a dedicated tag so `watch` can surface it (the
+    // fleet log is watch's source; short-command stdout is otherwise not
+    // persisted anywhere). Capped to protect the log from huge outputs.
+    if (output && output !== '(no output)') {
+      logLine('command_output', capForLog(output), agent, scope.getInv());
+    }
 
     if (result.code !== 0) scope.fail(`exit=${result.code}`);
     else scope.ok(`exit=0`);

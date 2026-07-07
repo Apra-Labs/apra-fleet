@@ -256,6 +256,47 @@ export async function execCommand(
   });
 }
 
+export interface SSHStream {
+  /** Close the streaming channel and its dedicated connection. */
+  close: () => void;
+}
+
+/**
+ * Open a dedicated (non-pooled) SSH channel for a long-lived streaming command
+ * such as `tail -F`. stdout chunks are delivered to onData as they arrive; the
+ * channel stays open until close() is called or the remote command exits
+ * (onEnd). It uses its own connection so a long-lived tail is never blocked by,
+ * or torn down by the idle timer of, the request/response pool. Fails soft: the
+ * returned promise rejects on connect/exec error so callers can retry later.
+ */
+export async function execStream(
+  agent: Agent,
+  command: string,
+  onData: (chunk: string) => void,
+  onEnd?: () => void,
+): Promise<SSHStream> {
+  const config = getSSHConfig(agent);
+  const client = await new Promise<Client>((resolve, reject) => {
+    const c = new Client();
+    c.on('ready', () => resolve(c));
+    c.on('error', reject);
+    c.connect(config);
+  });
+
+  return new Promise<SSHStream>((resolve, reject) => {
+    client.exec(command, (err, stream) => {
+      if (err) { try { client.end(); } catch {} reject(err); return; }
+      let ended = false;
+      const done = () => { if (ended) return; ended = true; onEnd?.(); try { client.end(); } catch {} };
+      stream.on('data', (d: Buffer) => onData(d.toString()));
+      stream.stderr.on('data', () => { /* ignore tail's stderr */ });
+      stream.on('close', done);
+      stream.on('error', done);
+      resolve({ close: () => { try { stream.close(); } catch {} try { client.end(); } catch {} } });
+    });
+  });
+}
+
 export async function testConnection(agent: Agent): Promise<{ ok: boolean; latencyMs: number; error?: string; warning?: string }> {
   const start = Date.now();
   try {

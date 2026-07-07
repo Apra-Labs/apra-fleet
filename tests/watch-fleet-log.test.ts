@@ -1,0 +1,79 @@
+import { describe, it, expect } from 'vitest';
+import { formatFleetLogLine } from '../src/services/watch/fleet-log.js';
+
+const ts = '2026-07-05T11:18:43.717+05:30';
+
+function line(o: Record<string, unknown>): string {
+  return JSON.stringify({ ts, level: 'info', ...o });
+}
+
+describe('formatFleetLogLine', () => {
+  it('skips noise tags (stall ticks, startup)', () => {
+    expect(formatFleetLogLine(line({ tag: 'stall_poll_tick', msg: 'x' }))).toBeNull();
+    expect(formatFleetLogLine(line({ tag: 'startup', msg: 'up' }))).toBeNull();
+  });
+
+  it('returns null for unparseable lines', () => {
+    expect(formatFleetLogLine('not json')).toBeNull();
+  });
+
+  it('renders an execute_command entry with a $ marker and attribution', () => {
+    const r = formatFleetLogLine(line({ tag: 'execute_command', mem: 'ecs-remote', mid: 'abc', msg: 'ls -la' }));
+    expect(r?.mem).toBe('ecs-remote');
+    expect(r?.mid).toBe('abc');
+    expect(r?.events[0]).toMatchObject({ marker: '$', text: 'ls -la' });
+  });
+
+  it('renders exit lifecycle as a dim detail line', () => {
+    const r = formatFleetLogLine(line({ tag: 'execute_command', mem: 'm', msg: 'exit=0 elapsed=1081ms' }));
+    expect(r?.events[0]).toMatchObject({ detail: true, kind: 'dim', text: '-> exit=0 elapsed=1081ms' });
+  });
+
+  it('marks an error-level exit as del kind', () => {
+    const r = formatFleetLogLine(JSON.stringify({ ts, level: 'error', tag: 'execute_command', mem: 'm', msg: 'exit=1 elapsed=5ms' }));
+    expect(r?.events[0]).toMatchObject({ detail: true, kind: 'del' });
+  });
+
+  it('always hides pid lines (internal detail, not useful to watch)', () => {
+    expect(formatFleetLogLine(line({ tag: 'execute_command', mem: 'm', msg: 'pid=953032' }))).toBeNull();
+    expect(formatFleetLogLine(line({ tag: 'execute_command', mem: 'm', msg: 'pid=953032' }), true)).toBeNull();
+  });
+
+  it('renders an execute_prompt entry with a > marker and LLM prefix, flagged as the prompt line', () => {
+    const r = formatFleetLogLine(line({ tag: 'execute_prompt', mem: 'doer', msg: '[sonnet] resume=false timeout=120s Do the thing' }));
+    expect(r?.events[0]).toMatchObject({ marker: '>' });
+    expect(r?.events[0].text).toContain('LLM');
+    expect(r?.events[0].text).toContain('Do the thing');
+    expect(r?.promptLine).toBe(true); // watch drops this line for transcript-backed members
+  });
+
+  it('does not flag an execute_prompt lifecycle (exit) line as a prompt line', () => {
+    const r = formatFleetLogLine(line({ tag: 'execute_prompt', mem: 'doer', msg: 'done in 12s' }));
+    expect(r?.promptLine).toBeFalsy(); // only the prompt-text line is dropped; lifecycle stays
+  });
+
+  it('renders send_files with a > marker', () => {
+    const r = formatFleetLogLine(line({ tag: 'send_files', mem: 'm', msg: '2 file(s)' }));
+    expect(r?.events[0]).toMatchObject({ marker: '>' });
+    expect(r?.events[0].text).toContain('send_files');
+  });
+
+  it('renders command_output as dim out detail lines', () => {
+    const r = formatFleetLogLine(line({ tag: 'command_output', mem: 'm', msg: 'line one\nline two' }));
+    expect(r?.events).toHaveLength(2);
+    expect(r?.events[0]).toMatchObject({ detail: true, kind: 'out', text: 'line one' });
+    expect(r?.events[1]).toMatchObject({ detail: true, kind: 'out', text: 'line two' });
+  });
+
+  it('caps command_output and notes hidden lines', () => {
+    const msg = Array.from({ length: 25 }, (_, i) => `l${i}`).join('\n');
+    const r = formatFleetLogLine(line({ tag: 'command_output', mem: 'm', msg }));
+    expect(r?.events.some((e) => e.text.includes('more lines'))).toBe(true);
+  });
+
+  it('renders config events (update_member) dimmed with no marker', () => {
+    const r = formatFleetLogLine(line({ tag: 'update_member', mem: 'm', msg: 'unattended=auto' }));
+    expect(r?.events[0]).toMatchObject({ marker: '', kind: 'dim' });
+    expect(r?.events[0].text).toContain('update_member');
+  });
+});
