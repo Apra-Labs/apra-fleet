@@ -18,15 +18,16 @@ The layer has two planes:
 |  - SqliteProvider (local) |      |  - symbol definitions     |
 |  - HttpKbProvider (http)  |      |  - call graphs            |
 |                           |      |  - file impact analysis   |
-|  8 MCP tools:             |      |                           |
-|  kb_capture               |      |  MCP server: npx gitnexus |
-|  kb_query                 |      |  16 tools: context,       |
-|  kb_context               |      |  impact, detect_changes,  |
-|  kb_invalidate            |      |  query, cypher, ...       |
-|  kb_session_prime         |      |                           |
-|  kb_promote               |      |                           |
-|  kb_harvest               |      |                           |
-|  kb_setup                 |      |                           |
+|  16 MCP tools, incl:      |      |  MCP server: npx gitnexus |
+|  kb_capture  kb_query     |      |  16 tools: context,       |
+|  kb_context  kb_invalidate|      |  impact, detect_changes,  |
+|  kb_session_prime         |      |  query, cypher, ...       |
+|  kb_promote  kb_harvest   |      |                           |
+|  kb_setup    kb_export    |      |                           |
+|  kb_import                |      |                           |
+|  kb_freshness_sweep       |      |                           |
+|  kb_reconcile_prefilter   |      |                           |
+|  kb_resolve_contradiction |      |                           |
 +---------------------------+      +---------------------------+
             |                                   |
             +-------------- LLM --------------- +
@@ -79,6 +80,160 @@ provider. Run `kb_setup` to write the config.
 
 ---
 
+## Trust model (enforced)
+
+Every entry carries a confidence tier and moves up a one-way ladder:
+
+```
+UNVERIFIED  ->  INFERRED  ->  CONFIRMED
+```
+
+- `UNVERIFIED` -- extracted but unchecked (auto-harvested from a transcript, a
+  raw session insight). Lowest trust.
+- `INFERRED` -- verified by reading source, or captured deliberately. Default,
+  and the ceiling for `kb_capture`.
+- `CONFIRMED` -- the reviewer approved the code the entry describes. Highest.
+
+**The clamp is enforced at two layers.** `kb_capture` clamps any incoming
+`CONFIRMED` down to `INFERRED` in the tool handler (returning
+`confidence_clamped: true` and appending a note to content -- the user-facing
+signal). But the HTTP route `POST /api/kb/capture` calls `provider.capture()`
+directly and bypasses the handler, so the same clamp is ALSO enforced inside
+`SqliteProvider.capture()` -- the choke point every route shares. The handler
+clamp is UX; the provider clamp is enforcement. No route can mint `CONFIRMED`
+through capture.
+
+**`kb_promote` is the sole path to `CONFIRMED`.** It steps an entry up exactly
+one rung and appends the reason as an evidence trail. The workflow is therefore
+always capture-at-INFERRED, then promote-after-review.
+
+**User directives are the one exemption, and they are quarantined.** A
+`type='user-directive'` entry (a standing instruction: "always do X", "we
+decided Z") is the only type that can hold `CONFIRMED` without promotion. But
+the directive gate in `capture()` forces every incoming directive to a pending
+proposal first -- UNVERIFIED + `flagged_for_review` + tag `directive:pending` +
+scope `project`, never surfaced by default retrieval. Activation is CLI-only
+(`apra-fleet kb approve-directive`); no MCP/HTTP route and no bible import can
+activate a directive. This is the unforgeable tier.
+
+The two capture-level exemptions to the clamp are: (1) `kb_promote` (a separate
+method, not capture), and (2) import mode inside `capture()` for the bible
+channel -- an INTERNAL parameter that no deserialized route can set (the HTTP
+route passes exactly one argument; the MCP handler builds input from zod-parsed
+fields). `capture()` additionally NORMALIZES the `source` field: a
+caller-supplied `source='import'` or `'promotion'` arriving via a deserialized
+body is overwritten unless the internal import mode is actually engaged, so
+forged trusted-channel provenance is impossible.
+
+See [kb-trust-model.md](kb-trust-model.md) for the ladder in full.
+
+---
+
+## The canonical bible
+
+The SQLite database is one developer's private, warm working memory. The
+**canonical bible** is the team's shared, git-native slice of it:
+
+- `kb_export` writes all `CONFIRMED`, non-superseded, non-stale PROJECT entries
+  to `<repo>/.fleet/kb-canonical.json` (a stable field set --
+  `{id, type, title, summary, symbols, source_files, confidence, updated_at}`
+  -- id-sorted for meaningful diffs, ASCII-escaped so it honours the repo's
+  ASCII-only rule).
+- With `scope='global'` it exports the GLOBAL KB to
+  `.fleet/kb-canonical-global.json` (committed in the platform repo so the
+  installer can distribute team-wide conventions).
+- **Cold-seed:** when a KB is nearly empty (`kb_session_prime` under
+  `COLD_KB_MAX=3`), prime reads the bible for OUTPUT only to warm the session.
+  Cold-seed never writes the database and never activates a directive; the write
+  path into a warm KB is `kb_import` (see below).
+
+### Why the DB is central and the bible is in-repo
+
+The SQLite database is the source of truth deliberately, and the bible is a
+projection of it, for a merge-cost reason. A binary SQLite file committed to git
+would make branch merges painful -- two branches writing rows produce an opaque
+binary conflict git cannot resolve, and the file churns on every read
+(use-count bumps, freshness bits). The bible is instead a git-native, diffable,
+per-project JSON artifact: a text file that merges like source, reviews like
+source, and carries only the durable, CONFIRMED slice. Branch confusion -- the
+bible on branch B describing files as they are on B -- is handled AFTER the
+merge by `kb_import` (write the merged bible into the local DB) and
+`freshnessSweep` + the reconcile flow (re-hash against the merged worktree so
+wrong-branch claims go stale and contradictions are arbitrated). See
+[kb-reconcile-architecture.md](kb-reconcile-architecture.md).
+
+### Auto-commit at export
+
+`kb_export` COMMITS the bible itself after writing it, so the reviewer-verdict
+-> promote -> export chain reaches git with zero manual steps. This is code, not
+agent discretion (the KB Agent is MCP-only and has no git access). The commit
+is deliberately narrow:
+
+- **Dedicated identity** `pm-kb <kb@pm.local>` -- distinct from the human author
+  and from the KB Agent's git-less session.
+- **Pathspec-only:** `git add <bible-path>` then `git commit -- <bible-path>`,
+  so unrelated staged or dirty working-tree state is never swept in.
+- **Content-gated:** it commits only when `git status --porcelain` shows the
+  bible actually changed; re-exporting an identical bible is a no-op.
+- **Non-fatal:** any git failure (not a repo, no git binary, hook rejects, index
+  lock) is logged and swallowed -- the export already succeeded.
+- **Off-switch:** `{ "bible": { "autoCommit": false } }` in the KB config
+  disables it. Missing/malformed config degrades to the default (ON).
+- **No push.** The commit rides the branch's existing push flow; `kb_export`
+  never pushes.
+
+---
+
+## Bidirectional staleness
+
+A `context-cache` entry stores a per-file hash basis (`source_file_hashes`, a
+JSON map) at capture time. Staleness is detected by re-hashing that basis
+against the current worktree -- not by any git event -- so it is correct across
+branch switches and rebases.
+
+- **At prime,** `checkFreshness()` re-hashes the primed candidate set in BOTH
+  directions: mark `stale=1` on basis mismatch, and clear `stale=0` where the
+  entry is revivable and its full basis matches again.
+- **`freshnessSweep()`** runs the same predicate over ALL entries with a
+  non-empty basis (one bounded batched hash). It is the branch-switch REVIVAL
+  surface, because prime's candidate set excludes stale rows by definition --
+  prime alone can never revive a staled entry. The sweep is invoked by
+  `kb_import` and `/pm kb-reconcile` (and standalone as `kb_freshness_sweep`),
+  never wired into per-prime. It returns `{checked, staled, unstaled}`.
+
+**The revival predicate (`freshnessRevivable`).** `stale=1` is set by four
+distinct actors, and only ONE population may be revived -- freshness mismatch.
+An entry is revivable only when all hold:
+
+```
+stale = 1
+AND superseded_at IS NULL              (not retired by an AUDN update)
+AND flagged_for_review = 0             (not a live feedback downvote)
+AND content_hash != 'invalidated'      (not explicitly invalidated)
+AND content has no "[feedback ..." marker  (durable downvote record)
+AND the full stored basis re-hashes to a match
+```
+
+The two content-based conjuncts are the durable discriminators: a
+feedback-downvoted entry must stay retired even if a later flow clears its flag
+bit (the `[feedback ...]` marker survives), and an explicitly invalidated entry
+must never auto-revive. This predicate is implemented ONCE and reused by
+`checkFreshness()`, `freshnessSweep()`, and the reconcile winner path.
+
+---
+
+## Branch-merge reconcile
+
+When branches merge, learnings must merge too, and contradictions are decided
+by the merged code. That flow -- `kb_import` (write path) ->
+`kb_freshness_sweep` -> `kb_reconcile_prefilter` -> reconciler agent ->
+`kb_export` -- and its single `resolveContradiction` write path are documented
+separately in
+[kb-reconcile-architecture.md](kb-reconcile-architecture.md). The PM entry
+point is `/pm kb-reconcile`.
+
+---
+
 ## Setup Guide
 
 ### 1. Quick start (SQLite, local)
@@ -88,14 +243,12 @@ No setup required. The KB initializes automatically on first use at:
 ~/.apra-fleet/data/knowledge/kb.sqlite
 ```
 
-Install the git post-commit hook (one-time per repo) so KB entries are
-invalidated automatically when files change:
-
-```
-kb_setup
-```
-
-Or, run `kb_setup` with no arguments from within the repo directory in Claude Code.
+Staleness needs no git hook: `context-cache` entries store a per-file hash
+basis and are re-checked by content hash at prime (and by `freshnessSweep`),
+so changes are detected across commits, branch switches, and rebases alike --
+see [Bidirectional staleness](#bidirectional-staleness) above. Running
+`kb_setup` writes the provider config (and, for teams, encrypts the remote
+token); it is optional for the local SQLite default.
 
 ### 2. Central server (HTTP, team-shared)
 
@@ -157,22 +310,25 @@ npx gitnexus analyze
 Verify by calling `context` with a symbol name in Claude Code.
 `kb_session_prime` degrades gracefully when GitNexus is absent.
 
-### 4. Git hook
+### 4. Keeping the KB in sync with git
 
-The post-commit hook fires after every commit and invalidates KB context-cache
-entries for files that changed. Install it:
+There is no post-commit hook driving KB state. Two mechanisms keep the KB and
+git aligned, both described in the architecture sections above:
 
-```
-kb_setup
-```
+- **Staleness is hash-based, not hook-based.** `context-cache` entries store a
+  per-file hash basis and are re-checked at prime and by `freshnessSweep`. This
+  detects changes regardless of how they arrived (commit, branch switch,
+  rebase, or an uncommitted edit), which a commit-triggered hook could not.
+  See [Bidirectional staleness](#bidirectional-staleness).
+- **The bible reaches git via `kb_export`'s auto-commit**, not a hook -- a
+  narrow, pathspec-only commit under the `pm-kb` identity, content-gated,
+  non-fatal, with a config off-switch. See
+  [Auto-commit at export](#auto-commit-at-export).
 
-The hook is written to `.git/hooks/post-commit`. It calls:
-
-```bash
-git diff-tree --no-commit-id -r --name-only HEAD | while IFS= read -r f; do
-  [ -n "$f" ] && node dist/index.js kb invalidate "$f" 2>/dev/null || true
-done
-```
+(`kb_setup` still writes a legacy `.git/hooks/post-commit` invalidation hook,
+but it is not load-bearing: it calls a repo-relative `node dist/index.js` path
+and swallows all errors, so it is effectively inert outside the apra-fleet
+source tree. Hash-based freshness is the mechanism to rely on.)
 
 ---
 
@@ -287,8 +443,17 @@ No KB tool changes are required.
 
 ## KB Agent
 
-The KB Agent is a fleet member whose sole role is maintaining the knowledge
-base. It is dispatched by the PM after each sprint phase.
+The KB Agent is a fleet member whose role is CURATING the knowledge base -- not
+authoring it. Knowledge enters the KB in-flight: the working agent captures at
+the moment of discovery (`kb_capture` with descriptive tags, e.g. a sprint and
+phase label), so entries land as they are learned rather than in a single
+post-hoc pass. Auto-harvest backstops this by scanning the transcript when a
+prompt completes, so nothing discovered mid-session is lost even if the agent
+forgot to capture it.
+
+The KB Agent then curates that raw stream: it promotes entries the reviewer
+confirmed (`kb_promote`), dedups and reconciles, exports the bible, and runs the
+branch-merge reconcile flow. It is dispatched by the PM after each sprint phase.
 
 Skills file: `skills/fleet/knowledge-agent.md`
 
@@ -344,20 +509,19 @@ concurrent reads but serializes writes.
 If errors persist, only one agent should write at a time. Consider the HTTP
 provider for multi-agent setups.
 
-### Git hook not firing
+### Stale entries not reviving after a branch switch
 
-**Symptom**: context-cache entries not going stale after commits.
+**Symptom**: switching back to a branch whose files are unchanged still shows
+its `context-cache` entries as stale.
 
-**Check**:
-```bash
-cat .git/hooks/post-commit
-ls -la .git/hooks/post-commit
-```
+**Cause**: `kb_session_prime` cannot revive stale entries -- its candidate set
+excludes stale rows by definition. Revival only happens in a full-KB sweep.
 
-The hook must be executable. Re-install if missing:
-```
-kb_setup
-```
+**Fix**: run `kb_freshness_sweep` (or `/pm kb-reconcile`, which runs it as part
+of the ladder). It re-hashes every entry's basis against the current worktree
+and revives freshness-staled entries whose files match again. Superseded,
+feedback-downvoted, and invalidated entries stay retired by design -- see
+[Bidirectional staleness](#bidirectional-staleness).
 
 ### Offline queue warning on exit
 

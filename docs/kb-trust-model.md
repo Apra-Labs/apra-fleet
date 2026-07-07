@@ -19,10 +19,12 @@ UNVERIFIED  ->  INFERRED  ->  CONFIRMED
 
 kb_capture clamps any incoming confidence to a maximum of INFERRED. UNVERIFIED and
 INFERRED pass through unchanged; a CONFIRMED passed to kb_capture is downgraded to
-INFERRED. The clamp is enforced server-side in the tool handler (not just the zod
-schema), so no caller can bypass it. The downgrade is never silent: the result
-carries `confidence_clamped: true` and a short note is appended to the entry
-content ("[confidence clamped: CONFIRMED requires kb_promote]").
+INFERRED. The clamp is enforced at two layers so no caller can bypass it: the
+kb_capture tool handler (which surfaces the user-facing flag) AND
+SqliteProvider.capture(), the choke point the HTTP route also passes through.
+The downgrade is never silent: the result carries `confidence_clamped: true`
+and a short note is appended to the entry content
+("[confidence clamped: CONFIRMED requires kb_promote]").
 
 ## kb_promote is the sole path to CONFIRMED
 
