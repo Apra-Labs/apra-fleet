@@ -1,192 +1,169 @@
-# Design -- KB Integrity
+# Design -- KB Trust-Ops
 
-Binding decisions for the kb-integrity sprint (epic yashr-oaf). Planner and
+Binding decisions for the kb-trust-ops sprint (epic yashr-bp2). Planner and
 reviewers check code against these; deviations need a recorded reason in
 progress.json notes.
 
-Relevant code (verified 2026-07-06):
-- src/tools/kb-capture.ts -- confidence param `z.enum(['CONFIRMED','INFERRED',
-  'UNVERIFIED']).optional()` (line 19), applied `input.confidence ?? 'INFERRED'`
-  (line 64). This is the open gate.
-- src/tools/kb-promote.ts -- kbPromote upgrades confidence; registered as a tool
-  (src/index.ts:363). Appends a promotion note.
-- src/services/knowledge/sqlite-provider.ts -- capture() runs AUDN
-  (makeAudnDecision) and returns audn_decision (add/none/update/flagged); query()
-  builds FTS MATCH (makeFtsQuery in audn.ts); sync() does file-hash staleness
-  (lines 436-490, computeFileHashBatch) but is only called by kb_invalidate;
-  prime() runs decayConceptEntries (line 512) but NOT file-hash sync.
-- src/services/knowledge/audn.ts -- hasContradictionKeywords, symbolsOverlap,
-  filesOverlap, makeFtsQuery, makeAudnDecision (the AND-logic contradiction gate).
-- src/services/knowledge/types.ts -- KBEntry / KBEntryInput / Confidence /
-  CaptureSource definitions.
-- src/tools/kb-session-prime.ts -- the prime wrapper (P4b neighbor expansion here
-  too); calls providers.project.prime then appends globals.
+Relevant code (state after kb-integrity, verified 2026-07-07):
+- src/tools/kb-capture.ts -- clamp to INFERRED; sole exemption
+  type==='user-directive' stores CONFIRMED + author='user' +
+  source='user-directive'. THIS EXEMPTION IS THE HOLE F1 CLOSES.
+- src/services/knowledge/audn.ts -- makeAudnDecision: user-directive supersede
+  guard; contradiction path cross-type; orJoinFtsTerms/ftsSafeTerm;
+  hasOppositePolarity (substring matching -- F3 target).
+- src/services/knowledge/sqlite-provider.ts -- capture/promote/list/prime;
+  checkFreshness; decayConceptEntries (type != 'user-directive' guard);
+  flagged_for_review + superseded_at + stale columns.
+- src/tools/kb-export.ts -- CONFIRMED -> .fleet/kb-canonical.json; repo path
+  input validated but callers may default to cwd (F4 target).
+- src/tools/kb-session-prime.ts -- prime -> staleness -> global append ->
+  graph-neighbor -> cold-seed (COLD_KB_MAX=3, via:'canonical-bible').
+- src/tools/kb-list.ts -- dedicated no-bump provider read (pattern for F5).
+- src/tools/check-status.ts -- fleetStatus() degraded-safe sections (pattern
+  for F5/F6/F7 surfacing). src/version.ts -- serverVersion.
+- src/cli/*.ts + src/index.ts -- CLI command dispatch (install etc.); the F1
+  activation command lives here.
+- KB scope column exists ('project' | 'global'); global KB at
+  ~/.apra-fleet/data/knowledge/global/kb.sqlite.
 
-## D1 -- Gate: kb_capture caps at INFERRED; only kb_promote mints CONFIRMED
+## D1 -- Directive gate: propose via MCP, activate via CLI (human-only)
 
-- kb_capture clamps any incoming confidence to a max of INFERRED. UNVERIFIED and
-  INFERRED are accepted as-is; CONFIRMED is downgraded to INFERRED with the
-  clamp recorded (a note or a returned flag) so the caller is not silently
-  misled. Prefer keeping the confidence param (back-compat) but enforcing the cap
-  server-side in kbCapture/provider.capture -- not just the zod schema.
-- kb_promote remains the ONLY path to CONFIRMED. It already requires an id +
-  reason; keep that.
-- The single exception is entry type `user-directive` (D6), which is authoritative
-  on capture and bypasses the clamp.
-- Do NOT mass-migrate the existing 44 direct-CONFIRMED rows -- they are historical.
-  Enforcement is forward-only. Document this in kb-capture.ts and a one-paragraph
-  docs/kb-trust-model.md.
+Identity truth: MCP gives no user-vs-agent signal; env vars and prompt-level
+confirmation are forgeable by construction. The only channel agents cannot
+quietly use is a command the human runs in their own terminal. Therefore:
 
-## D2 -- Supersede for real + looser contradiction flagging
+- PROPOSAL (MCP, any caller): kb_capture(type='user-directive') stores the
+  entry with confidence='UNVERIFIED', flagged_for_review=1, and a
+  directive-pending marker (add a tag 'directive:pending' or reuse an existing
+  column -- planner picks the cleanest representation and states it; NO new
+  trust semantics attach while pending). author='user' is NO LONGER stamped on
+  proposals -- stamp the validated role hint (or 'unknown') so provenance is
+  honest about who proposed. The kb-capture clamp exemption is REMOVED (a
+  pending proposal is UNVERIFIED like anything else).
+- ACTIVATION (CLI, human terminal): new command, e.g.
+  `apra-fleet kb directives` (list pending + active) and
+  `apra-fleet kb approve-directive <id>` / `reject-directive <id>`.
+  Approval sets confidence='CONFIRMED', author='user', clears
+  flagged_for_review/pending marker -- the entry becomes an ACTIVE directive
+  and all kb-integrity D6 semantics apply from here (never decayed, only a
+  user-approved directive supersedes it, top-tier retrieval). Rejection marks
+  superseded_at + stale (audit trail, never delete).
+- makeAudnDecision's user-directive supersede guard and decay guard must key
+  off ACTIVE directives (type + CONFIRMED), not pending proposals -- verify
+  and adjust the checks.
+- Retrieval: pending proposals are flagged+UNVERIFIED so they already do not
+  surface in prime/query defaults; assert this in tests rather than adding
+  filters.
+- Direct human add: `apra-fleet kb add-directive "<text>" [--symbols ...]`
+  creates an already-active directive (human terminal = the trust root).
+- Existing kb-user-directive tests are rewritten to go through activation.
+- Fail-then-pass: agent-asserted directive is NOT an active directive (not
+  CONFIRMED, not exempt from decay/supersede rules, not retrievable in
+  defaults) until approved via CLI.
 
-- In provider.capture(), when AUDN returns 'update' (a correcting entry for an
-  existing one), the OLD entry MUST be updated: set superseded_at = now and
-  stale = 1 (and content_hash left intact). Verify the current update branch --
-  the live code_graph pair proves the old entry was neither superseded nor
-  staled. Add a test asserting the superseded/stale columns after an update.
-- Contradiction flagging (makeAudnDecision + hasContradictionKeywords): today it
-  requires symbol overlap AND file overlap. Loosen to: flag when there is symbol
-  overlap AND contradiction signal (keyword or opposite-polarity content),
-  regardless of file overlap. Keep dedup/update behavior for genuine same-topic
-  refinements; only widen the CONTRADICTION path. Add a test using the
-  code_graph broken-vs-fixed shape (same symbol code_graph/call_graph, no shared
-  file necessarily) -> expect flagged.
-- CANDIDATE-DISCOVERY FIX (plan review, MEDIUM): findAudnCandidates currently
-  filters candidates by `AND e.type = ?`, so a contradiction across entry types
-  (e.g. a 'knowledge' "code_graph broken" vs a later 'knowledge' fix, or across
-  knowledge/learning) is never even considered. The code_graph pair in the live
-  KB is exactly this. For the CONTRADICTION path, candidate discovery must match
-  on symbol overlap WITHOUT the same-type restriction (dedup/update may keep the
-  type filter). Without this fix the loosened contradiction logic is unreachable
-  end-to-end, and the e2e flag test cannot pass. This is required for F2, not
-  optional.
-- Reconciling the existing live code_graph pair is OUT of scope (live data). The
-  new logic proving it WOULD flag going forward (via test) is IN scope.
+## D2 -- Auto-capture flow is documentation on top of D1
 
-## D3 -- Auto-staleness at prime
+No new server machinery. PM SKILL.md gains a short "standing instructions"
+section: detect "always/never/we decided" style user statements -> immediately
+kb_capture(type='user-directive') the proposal -> tell the user: pending, run
+`apra-fleet kb approve-directive <id>`. tpl-kb-agent.md gains the same for
+directives detected in session records. Keep wording tight; this is behavior
+agents follow because dispatch templates carry it (known limitation, fine --
+the TRUST boundary is the CLI, not the detection).
 
-- kb_session_prime, before returning, runs the file-hash staleness check for the
-  source_files of the entries it is about to surface (build a checkFreshness(files)
-  helper using computeFileHashBatch from file-hash.js; sync() at
-  sqlite-provider.ts:610 is a STUB, do not use it; HttpKbProvider has no local
-  files -> skip there). Entries whose files changed are marked stale=1 and
-  excluded from top_entries (prime already filters include_stale:false).
-- CONTENT-HASH SCOPE FIX (plan review, MEDIUM): today only context-cache entries
-  carry a content_hash, and prime already excludes context-cache from top_entries,
-  so a naive "compare content_hash" staleness check would near-no-op. Instead key
-  the freshness check off source_files presence, not content_hash: for ANY entry
-  in the primed set that has source_files, hash those files now (computeFileHashBatch)
-  and compare against a stored per-file basis. If entries lack a stored file-hash
-  basis, this sprint must ALSO persist one at capture time (store file hashes for
-  source_files on capture, for all types, not just context-cache) so staleness is
-  computable. State the storage approach in the task; keep it a small additive
-  column/side-table, no migration of existing rows (they simply have no basis ->
-  treated as fresh/unknown, never falsely stale).
-- Fast + non-fatal: wrap in try/catch; any error -> prime behaves as today. Bound
-  the work (only the files in the primed set, not the whole KB).
-- Tests: an entry whose source file is modified after capture is marked stale and
-  dropped from a subsequent prime; error path degrades gracefully.
+## D3 -- Polarity word-boundary
 
-## D4 -- FTS OR-join
+hasOppositePolarity tokenizes with word boundaries (regex \b or split on
+non-word chars) instead of String.includes. Keep the antonym pair list; only
+the matching tightens. Tests: prefixed/unresolved/suffixed no longer signal;
+fixed-vs-broken still does; case-insensitive.
 
-- makeFtsQuery (audn.ts) currently joins terms so FTS5 treats them as implicit
-  AND. Change multi-term queries to OR semantics (FTS5 `term1 OR term2 OR ...`,
-  each term still sanitized/quoted per the existing ftsSafeTerm approach).
-  Single-term queries unchanged. Ranking still applies (bm25/order), so more-
-  relevant entries surface first even with OR.
-- This fixes kb_session_prime multi-symbol primes AND the P4b neighbor batch
-  (yashr-5n2, yashr-17i). Keep include_stale/l1_only filters intact.
-- ALL implicit-AND SITES (plan review, MEDIUM -- fix every one via one shared
-  helper): (1) SqliteProvider.prime searchTerms.join(' ') at
-  sqlite-provider.ts:536; (2) the P4b neighbor batch .join(' ') at
-  kb-session-prime.ts:141; (3) the additional term-join at kb-session-prime.ts:83
-  flagged in review. makeFtsQuery (audn.ts:20) is only used by
-  findAudnCandidates -- decide whether the shared OR-join helper also replaces it
-  or leave the AUDN dedup query as-is (state the choice; dedup semantics differ
-  from retrieval, so leaving AUDN's join alone is acceptable if justified).
-- Tests: a two-term query where no single entry contains both terms returns the
-  entries containing either (today: returns nothing); single-term unchanged.
+## D4 -- kb_stats: one read-only aggregation tool
 
-## D5 -- Provenance enums stamped by the tool layer
+- src/tools/kb-stats.ts + SqliteProvider.stats() as a dedicated read (kb_list
+  pattern -- never bumps use_count).
+- Sections (all cheap single queries): totals (GROUP BY confidence, type);
+  stale/flagged/superseded counts; retrieval { entries_retrieved
+  (use_count>0), total_uses (SUM), hit_rate (retrieved/total live) };
+  promote_ratio (promoted_at IS NOT NULL / CONFIRMED count); bible { present,
+  entries, drift } (see D5); coverage (input symbols[] -> per-symbol boolean:
+  EXISTS live CONFIRMED entry with symbol exact-in-array, plus the fraction).
+- fleet_status: one compact line + json key, degraded-safe try/catch (omit on
+  any error), following the code-intel health precedent in check-status.ts.
+- HttpKbProvider: implement stats() or return a documented not-supported
+  result -- never throw.
 
-- types.ts: define `Author` and `CaptureSource` string-literal union types.
-  Author = 'doer' | 'reviewer' | 'planner' | 'plan-reviewer' | 'kb-agent' | 'pm'
-  | 'user'. CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' |
-  'user-directive' | 'unknown'.
-- The tool layer (kb-capture / kb-promote handlers) stamps these; the caller may
-  pass a role hint but it is validated against the enum and defaulted to 'unknown'
-  if invalid -- never a free string. Existing rows keep their historical values
-  (no migration).
-- Tests: capture with a valid role stamps it; an invalid/absent value -> 'unknown'
-  / correct default.
+## D5 -- Bible drift is visibility, not a CI gate
 
-## D6 -- user-directive entry type (highest trust)
+CI machines have no kb.sqlite, so a CI check cannot compare KB to bible. Drift
+lives where the KB lives: kb_stats.bible.drift = count of live CONFIRMED
+entries whose updated_at > the newest updated_at inside .fleet/
+kb-canonical.json (file absent -> drift = all live CONFIRMED, present flag
+false). fleet_status renders "bible: N promotions behind (run kb_export,
+commit .fleet/kb-canonical.json)" when N > 0. tpl-kb-agent.md Step: export
+after promote is already documented -- add the drift line to the KB Agent
+report template so the PM sees it each phase.
 
-- Add 'user-directive' to the entry type union (types.ts). Semantics: captured at
-  an authoritative tier -- treat as CONFIRMED-equivalent for retrieval, EXEMPT
-  from the D1 clamp, NEVER auto-decayed by decayConceptEntries, and only
-  superseded by another user-directive (agent captures cannot supersede a
-  user-directive).
-- Capture path: kb_capture with type='user-directive' (author='user',
-  source='user-directive'). Document in tpl-kb-agent.md and the PM skill WHEN to
-  record one: when the user gives a standing instruction/correction during a
-  sprint ("always do X", "never do Y", "we decided Z").
-- Tests: a user-directive is retrievable at top rank, survives decay, and an
-  agent capture with contradicting content does NOT supersede it (only flags).
+## D6 -- Version handshake inside the running server
 
-## D7 -- Fix kb_harvest provenance (CORRECTED -- harvest is auto-wired, not dead)
+The running server compares its compiled-in serverVersion (src/version.ts)
+against the on-disk version of the code it was launched from (read
+version.json / package.json relative to the dist entry actually resolved at
+runtime -- findProjectRoot pattern from install.ts). Mismatch -> fleet_status
+warning line + json field. Notes: SEA binaries embed assets (read via the
+existing manifest path); if the disk read fails, omit silently (degraded-safe).
+No auto-restart in this sprint -- surface only.
 
-CORRECTION (plan review, verified): kb_harvest is NOT vestigial. It is
-auto-dispatched by src/tools/execute-prompt.ts (lines ~323-330) on every
-successful execute_prompt, with the session transcript passed in;
-tests/knowledge/kb-harvest-autowire.test.ts asserts this wiring. The 14
-kb_agent_harvest-sourced entries in the apra-fleet KB came from this path. So
-harvest DOES produce entries -- via the autowire, which has the transcript the
-agent itself lacks.
+## D7 -- kb_feedback: downvote without deletion
 
-Revised decision: do NOT rip harvest out. Instead:
-- Keep the autowire. Harvested entries MUST be low-trust: force confidence
-  UNVERIFIED (they are regex-extracted, unreviewed) -- this is consistent with
-  the D1 gate (harvest can never mint CONFIRMED). Confirm kb-harvest.ts already
-  captures at UNVERIFIED (it does, per audit) and that the D1 clamp covers it.
-- Canonicalize harvest provenance under D5: author='kb-agent' is wrong for the
-  autowire; stamp author='kb-agent' only for real KB-Agent captures. Harvested
-  entries get source='harvest' and a distinct author (e.g. 'harvest') so the two
-  paths are distinguishable in queries.
-- Do NOT strip harvest from templates blindly: the KB-Agent direct-capture flow
-  and the execute_prompt autowire are DIFFERENT paths. Keep the autowire; only
-  remove any redundant "call kb_harvest yourself at session end" instruction from
-  tpl-doer.md if present (the agent calling it manually with no transcript is the
-  useless path; the autowire is the useful one). Update docs to describe harvest
-  accurately (autowired, UNVERIFIED, regex-extracted) rather than calling it dead.
-- Tests: kb-harvest-autowire.test.ts must still pass; add/adjust a test asserting
-  harvested entries are UNVERIFIED and carry source='harvest'. Do not break the
-  autowire.
+- src/tools/kb-feedback.ts: input { id, reason, role? }. Effect: stale=1,
+  flagged_for_review=1, append ASCII note "[feedback <ISO>] <validated-role>:
+  <reason>" to content (CONTENT_CAP respected). Validated role via the
+  provenance enums; invalid -> 'unknown'. Never deletes, never touches
+  confidence (a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged --
+  the human resolves in kb-review; state this in the tool description).
+- Registered in src/index.ts; one line in tpl-doer.md + tpl-reviewer.md + the
+  doer/reviewer dispatch templates in doer-reviewer-loop.md: "if a KB entry you
+  retrieved proves wrong in practice, call kb_feedback with the entry id and
+  what was wrong."
+- user-directive entries: feedback flags them for review but must NOT stale
+  them (directives outrank agent experience; the human decides) -- flag only.
 
-## D8 -- kb_list + canonical git bible
+## D8 -- Global bible: export from global scope, distribute via installer
 
-- New tool kb_list: input { confidence?, type?, module?, symbol?, limit? } ->
-  matching entries (id, type, confidence, title, summary, symbols, source_files).
-  Read-only, routed through the KB service (providers.project). Register in
-  src/index.ts with a clear description. Schema in the kb-*.ts style.
-- Canonical export: a function (invoked by the KB Agent after promotion, or a
-  small exported helper kb_export) writes CONFIRMED entries for the repo to
-  <repo>/.fleet/kb-canonical.json (stable field set: id, type, title, summary,
-  symbols, source_files, confidence, updated_at). The PM commits this file.
-- Seed on cold KB: kb_session_prime, when the local KB returns few/no top_entries,
-  reads <repo>/.fleet/kb-canonical.json (if present) and merges its entries into
-  the primed set (marked via:"canonical-bible"), below live-KB hits. Non-fatal.
-- Tests: kb_list filters; export writes the expected JSON shape; prime seeds from
-  a fixture canonical file when the KB is cold and skips gracefully when absent.
+- kb_export input gains scope: 'project' (default, unchanged) | 'global'.
+  Global export reads the GLOBAL KB (scope='global' provider / global
+  kb.sqlite), writes .fleet/kb-canonical-global.json in the given repo path
+  (in practice: the apra-fleet platform repo, committed there).
+- Installer (src/cli/install.ts): a step copies the repo's committed
+  .fleet/kb-canonical-global.json (when present) to
+  ~/.apra-fleet/data/knowledge/global/kb-canonical-global.json. Non-fatal.
+- kb_session_prime cold-seed: after the project-bible merge, also merge from
+  the INSTALLED global bible path (homedir, not repo), marked
+  via:'canonical-bible-global', below project-bible entries, same caps and
+  non-fatal contract. Cold threshold shared (COLD_KB_MAX).
+- Do NOT auto-promote project entries to global; moving knowledge to the
+  global scope stays a deliberate act (out of scope here beyond what
+  kb_capture's scope param already allows).
+
+## D9 -- Quantitative model assignment is template-only
+
+planner template (doer-reviewer-loop.md) + tpl-planner.md: after
+kb_session_prime, call kb_stats with the plan's key symbols; use coverage:
+>= 0.8 -> cheap/standard for tasks on those symbols; < 0.3 -> premium +
+front-load; between -> judgment. Require PLAN.md's model rationale to cite the
+coverage number. No code changes.
 
 ## Phasing (risk order)
 
-- Phase 1 (P0, trust core, riskiest): F1 gate, F2 supersede+contradiction. These
-  touch capture/promote/audn/provider -- the integrity core. Front-load.
-- Phase 2 (P1): F3 auto-staleness, F4 FTS OR-join, F5 provenance enums.
-- Phase 3 (P2): F6 user-directive, F7 retire harvest, F8 kb_list + canonical bible.
+Phase 1: F1 (D1 -- riskiest: touches the trust core + first CLI surface), F2
+(D2 docs, after F1), F3 (D3), F4 (repo-path robustness). Phase 2: F5+F6 (D4/D5
+share kb-stats), F7 (D6). Phase 3: F8 (D7), F9 (D8), F10 (D9 templates), F11
+(flagged-pipeline e2e).
 
-F4 (OR-join in audn.ts makeFtsQuery) and F2 (audn.ts contradiction logic) both
-touch audn.ts -- sequence them so the second rebases cleanly on the first, or
-note the shared file so the doer edits both coherently. F8's prime-seed and F3's
-prime-staleness both touch kb-session-prime.ts -- same caution.
+Shared files: kb-capture.ts (F1 removes the exemption) and audn.ts (F1 guard
+rekey, F3 polarity) both touched in Phase 1 -- sequence F1 before F3 or state
+disjoint functions. kb-session-prime.ts touched by F4 (path) and F9 (global
+seed) -- F4 first, F9 appends after the existing cold-seed block.
+check-status.ts touched by F5/F6/F7 -- one coherent task or strictly
+sequenced. kb-export.ts touched by F4 and F9 -- sequence F4 first.

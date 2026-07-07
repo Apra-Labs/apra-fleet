@@ -1,102 +1,128 @@
-# Requirements -- KB Integrity
+# Requirements -- KB Trust-Ops
 
-Sprint epic: yashr-oaf. Branch: feat/code-intelligence-abstraction (base: main).
-Binding architecture decisions are in design.md (D1-D8) -- read it before planning.
+Sprint epic: yashr-bp2. Branch: feat/code-intelligence-abstraction (base: main).
+Binding architecture decisions in design.md (D1-D9) -- read before planning.
 
 ## Background
 
-A data-grounded audit (2026-07-06) of the Agent Learning knowledge bank found the
-capture engine and retrieval work, but the TRUST model is unenforced. Evidence
-from two live KBs (apra-fleet 46 entries, streamsurv 46 entries):
+The kb-integrity sprint (yashr-oaf, APPROVED) made the KB trust model real. Its
+final review surfaced one MEDIUM trust gap plus a set of operational and reach
+improvements the user has approved. This sprint closes the gap and ships the
+ops/measurement/reach layer.
 
-- 44/44 CONFIRMED entries were captured directly as CONFIRMED; 0 went through
-  kb_promote (the gate is decorative -- kb-capture.ts accepts confidence:CONFIRMED
-  from any caller at lines 19, 64).
-- The apra-fleet KB holds BOTH "code_graph is broken" and "code_graph is fixed"
-  as live CONFIRMED entries -- corrections accumulate as contradictions instead
-  of superseding. The KB Agent reported superseding the old one; superseded_at is
-  null. AUDN never flagged the pair (0 flagged across 92 entries).
-- 0 entries stale in either project despite streamsurv spanning 2+ weeks of code
-  change -- file-hash staleness (sqlite-provider.ts sync path) runs only on an
-  explicit kb_invalidate, never at prime.
-- Retrieval is bimodal: 76% hit rate (apra-fleet) vs 11% (streamsurv). FTS MATCH
-  treats space-separated hint terms as implicit AND, so kb_session_prime silently
-  returns nothing when hints do not co-occur (tracked yashr-5n2, yashr-17i).
-- Provenance is inconsistent: author in {"", claude, kb-agent, Knowledge Agent,
-  pm, pm-planner}; source in {doer, reviewer, kb_agent_harvest} used loosely.
-- kb_harvest is vestigial (regex over a transcript the agent cannot access).
-- User instructions never enter the KB -- the most authoritative signal is
-  discarded.
+Beads sources: yashr-9ha (forgeable directive), yashr-hzd (polarity substring),
+yashr-u2h (cwd fragility), yashr-u2x (kb_stats), yashr-b4h (bible freshness),
+yashr-doq (server version handshake), yashr-2s5 (retrieval feedback),
+yashr-dpr (global bible), yashr-g4h (auto-capture directives).
 
-This sprint makes the trust model real: enforced in code, not in templates.
+## Phase P1 -- Trust closure (riskiest first)
 
-## Features (grouped by phase; planner finalizes tasks)
+**F1 Gate the user-directive type (yashr-9ha).** Today type='user-directive' is
+assertable by any kb_capture caller and lands CONFIRMED-equivalent, un-decayable,
+un-agent-supersedable -- any agent can self-elevate. The MCP layer has no
+user-vs-agent identity, so the gate is a two-tier redesign (design D1):
+- MCP path becomes PROPOSAL-ONLY: kb_capture(type='user-directive') no longer
+  stores an active directive; it stores a directive PROPOSAL (flagged, inactive
+  for retrieval-as-directive; see D1 for exact representation).
+- ACTIVATION is human-gated: a CLI command (runs in the human's terminal, not
+  via MCP) lists pending proposals and activates one; activation sets the
+  directive live (CONFIRMED tier semantics from kb-integrity apply unchanged
+  once active). /pm kb-review also surfaces pending proposals and instructs the
+  human to run the CLI.
+- All four D6 semantics from kb-integrity (never decayed, only user supersedes,
+  top-tier retrieval, CONFIRMED-equivalent rank) apply to ACTIVE directives
+  only. Existing tests must be updated to go through activation.
+- Fail-then-pass test: an agent capture of type user-directive is NOT
+  retrievable as an active directive until CLI activation.
 
-### P0 -- Trust core (riskiest, first)
+**F2 Auto-capture user directives (yashr-g4h; depends on F1).** PM-skill
+behavior, documentation + template work (no new server code beyond F1):
+- skills/pm/SKILL.md + sprint docs: when the user issues a standing instruction
+  ("always do X", "never do Y", "we decided Z"), the PM immediately proposes a
+  directive via kb_capture(type='user-directive') -- now safe because it is
+  proposal-only -- tells the user it is pending, and surfaces the activation
+  command to run.
+- tpl-kb-agent.md: the KB Agent may also propose directives it detects in the
+  session record, same pending flow.
 
-**F1 Enforce the CONFIRMED gate in code.** kb_capture must cap confidence at
-INFERRED regardless of the caller's value (see design D1). CONFIRMED is reachable
-ONLY via kb_promote, which already exists and is registered. Existing directly-
-CONFIRMED entries are left as historical data (the gate applies going forward);
-document this in the tool and a short docs note. user-directive entries are the
-sole exception (see F6/D6). Update tpl-kb-agent.md so the KB Agent uses
-kb_promote for CONFIRMED, and reconfirm the confidence decision table matches the
-enforced behavior.
+**F3 Polarity word-boundary fix (yashr-hzd).** hasOppositePolarity currently
+uses String.includes on bare tokens ('fixed' matches 'prefixed'); switch to
+word-boundary matching. Tests: 'prefixed'/'unresolved'/'suffixed' no longer
+signal; genuine 'fixed'/'broken' pairs still do.
 
-**F2 Corrections supersede; contradictions get flagged.** (design D2)
-- When kb_capture's AUDN path decides an entry corrects/updates an existing one,
-  the old entry MUST actually be marked superseded_at + stale=1 (verify the
-  current 'update' path does this; the code_graph pair proves it did not).
-- Loosen AUDN contradiction detection so a genuine contradiction on shared
-  symbols is flagged even without file overlap (current AND-logic is too strict).
-  Add tests using the real code_graph broken-vs-fixed pair shape.
-- Provide a one-time reconciliation for the existing code_graph contradiction in
-  the apra-fleet KB is OUT of scope (that is live data, not code) -- but the new
-  logic must flag such a pair going forward; add a test that proves it.
+**F4 Repo-path robustness (yashr-u2h).** kb_export and the kb_session_prime
+cold-seed derive repo root from process.cwd() fallbacks; make the repo path an
+explicit validated input everywhere feasible and document the precedence
+(explicit input > validated session context > skip). No behavior change when a
+valid path is provided.
 
-### P1 -- Freshness and retrieval
+## Phase P2 -- Ops and measurement
 
-**F3 Auto-staleness at prime.** (design D3) kb_session_prime runs the existing
-file-hash staleness check for the entries/files it is about to surface BEFORE
-returning, so entries whose source files changed are marked stale and excluded
-(or flagged). Must be fast and non-fatal -- any error degrades to today's
-behavior.
+**F5 kb_stats tool (yashr-u2x).** New read-only tool (design D4):
+input { repo?, symbols?: string[] } -> {
+  totals by confidence and type, stale count, flagged count,
+  retrieval: { entries_retrieved, total_uses, hit_rate },
+  promote_ratio (promoted_at set / CONFIRMED),
+  bible: { present, entries, drift (see F6) },
+  coverage: when symbols[] given, fraction with a live CONFIRMED entry whose
+  symbols contain it (exact match), plus per-symbol breakdown }.
+No use_count bumps (dedicated reads like kb_list). Surface a compact code-KB
+health line in fleet_status (degraded-safe pattern). Tests for every section.
 
-**F4 Fix retrieval FTS (OR-join).** (design D4) The FTS query builder joins
-multiple terms with OR semantics instead of implicit AND, so multi-term primes
-and the P4b neighbor batch actually return relevant entries. Single-term behavior
-unchanged. Closes yashr-5n2 and yashr-17i. Add tests with multi-term queries that
-return nothing today and hits after the fix.
+**F6 Bible freshness surfacing (yashr-b4h).** CI cannot see the local KB, so
+the guard is drift VISIBILITY not a CI gate (design D5): kb_stats.bible.drift
+reports how many live CONFIRMED entries are newer than the bible file's newest
+updated_at (and bible-absent). fleet_status shows it ("bible: 3 promotions
+behind -- run kb_export + commit"). tpl-kb-agent.md and the PM completion flow
+already say export-then-commit; tighten the wording to make it a checklist item.
 
-**F5 Canonicalize provenance.** (design D5) author and source become fixed enums
-stamped by the tool layer, not free strings from the caller. Migrate the schema/
-types; existing rows keep their values (historical), new writes use the enums.
+**F7 Server version handshake (yashr-doq).** The running MCP server can lag the
+rebuilt dist until restarted (bit us twice). The server knows its own version
+(serverVersion); add a check comparing it to the on-disk installed/built
+version (design D6) and surface a mismatch warning in fleet_status compact +
+json ("server running vX, disk has vY -- restart your MCP client"). Degraded-
+safe; never fails fleet_status.
 
-### P2 -- Reach and sharing
+## Phase P3 -- Reach
 
-**F6 Capture user instructions.** (design D6) A user-directive entry type at the
-highest trust tier: authoritative, never auto-decayed, only superseded by another
-user directive. Provide the capture path (a kb_capture with type=user-directive,
-exempt from the F1 gate) and document when the PM/agent records one.
+**F8 Retrieval feedback / downvote (yashr-2s5).** New small tool kb_feedback
+(design D7): input { id, reason, role? } -> marks the entry stale=1 +
+flagged_for_review=1, appends an ASCII feedback note (who/when/reason via the
+provenance enums), never deletes. Doer + reviewer templates gain one line: if a
+retrieved entry proves wrong in practice, kb_feedback it. /pm kb-review picks
+flagged entries up (existing).
 
-**F7 Retire kb_harvest.** (design D7) Deprecate the tool (keep registered as a
-documented no-op/deprecated for backward compat) and remove it from every
-template (tpl-doer.md, tpl-kb-agent.md, doer-reviewer-loop.md) and docs. KB-Agent
-direct capture is the sole documented capture path.
+**F9 Global bible inheritance (yashr-dpr).** Platform-level learnings (global
+KB scope) become a distributable bible (design D8):
+- kb_export gains scope handling: exporting the GLOBAL scope writes
+  .fleet/kb-canonical-global.json (same stable field set) -- committed in the
+  apra-fleet repo (the platform repo).
+- The installer copies the committed global bible into
+  ~/.apra-fleet/data/knowledge/global/ so EVERY project on the machine can see
+  it without having it in their own repo.
+- kb_session_prime cold-seed also merges from the installed global bible
+  (after project bible, below live hits, same via marker pattern:
+  'canonical-bible-global'), same non-fatal contract.
+- Tests: global export shape; installer copy step; prime seeds from global
+  fixture; absent/malformed degrade.
 
-**F8 kb_list + canonical git bible.** (design D8) New kb_list tool (filter by
-confidence/type/module/symbol) so the CONFIRMED set is visible. The KB Agent,
-after promoting, exports CONFIRMED entries to <repo>/.fleet/kb-canonical.json and
-the PM commits it; kb_session_prime seeds from that file when the local KB is
-cold. This is the shareable, diffable team bible discussed with the user.
+**F10 Quantitative model assignment.** Planner template (doer-reviewer-loop.md
+planner block + tpl-planner.md): call kb_stats with the plan's key symbols;
+coverage >= 0.8 -> lean cheap/standard; < 0.3 -> premium + front-load; cite the
+number in PLAN.md's model rationale. Template text only.
+
+**F11 Flagged-pipeline e2e proof.** The kb-review flow has never been exercised
+against a real flagged pair. Add an e2e test that: captures a contradiction
+(flagged), captures a kb_feedback downvote (flagged), queries
+flagged_only:true and sees both, resolves one via kb_promote + supersede, and
+verifies the flags clear appropriately. Documentation pass on kb-review.md if
+the flow description does not match reality.
 
 ## Done criteria (sprint-wide)
 
-- npm run build clean; npm test green (only the 2 pre-existing timezone failures
-  in tests/time-utils.test.ts, beads yashr-302, may fail).
-- Every behavior change has tests. F1/F2/F4 especially need tests that FAIL on
-  today's code and PASS after (the gate, the supersede, the OR-join, the
-  contradiction flag).
-- ASCII only. Never push to main. NO PR (the user raises PRs).
-- No silent data migration: existing rows are preserved; enforcement is forward-
-  looking and documented.
+- npm run build clean; npm test green (only the 2 pre-existing timezone
+  failures, yashr-302, may fail).
+- F1 has a fail-then-pass test (agent-asserted directive inactive until CLI
+  activation). Every new tool/behavior has tests.
+- ASCII only. Never push main. NO PR (user raises PRs). No mass migration of
+  existing rows; forward-only enforcement, documented.
