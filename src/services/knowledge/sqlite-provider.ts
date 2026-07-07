@@ -430,7 +430,19 @@ export class SqliteProvider implements MemoryProvider {
   // basis are neither staled nor revived nor counted). `staled` counts fresh
   // entries newly marked stale on a mismatch; `unstaled` counts stale entries
   // revived on a full match.
-  async freshnessSweep(): Promise<{ checked: number; staled: number; unstaled: number }> {
+  //
+  // T3.1 (D4 fold-in, Phase 2 review MEDIUM yashr-d8b): optional `root` anchors
+  // basis re-hashing at an explicit repo path (e.g. kb_import's --repo) WITHOUT
+  // a global process.chdir. Previously kb-import.ts's sweepAnchored() wrapped
+  // this call in process.chdir(repoAnchor)/process.chdir(prevCwd) across the
+  // await -- a global, process-wide mutation for the duration of the hashing
+  // that any other concurrent async work in the same process would also
+  // observe. Threading the anchor straight into computeFileHashBatch's { cwd }
+  // option removes that global side effect entirely; behavior is identical
+  // (relative basis paths still resolve against the intended repo root,
+  // absolute basis paths are unaffected either way). Omitting root preserves
+  // exact prior behavior (implicit process.cwd() resolution).
+  async freshnessSweep(root?: string): Promise<{ checked: number; staled: number; unstaled: number }> {
     const db = this.getDb();
     const rows = db.prepare(
       `SELECT id, stale, superseded_at, flagged_for_review, content_hash, content, source_file_hashes
@@ -460,7 +472,7 @@ export class SqliteProvider implements MemoryProvider {
     for (const basis of basisById.values()) {
       for (const file of Object.keys(basis)) fileSet.add(file);
     }
-    const currentHashes = await computeFileHashBatch([...fileSet]);
+    const currentHashes = await computeFileHashBatch([...fileSet], root ? { cwd: root } : undefined);
 
     const staleIds: string[] = [];
     const unstaleIds: string[] = [];
@@ -1140,6 +1152,242 @@ export class SqliteProvider implements MemoryProvider {
 
     const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
     return this.rowToEntry(updated);
+  }
+
+  // T3.1 (F5 step 3, D4 HARDENED): flaggedPairs() -- flagged entries joined to
+  // their contradiction_of counterpart. LIVENESS CONTRACT (binding, MEDIUM-3):
+  // pair membership requires ONLY superseded_at IS NULL on BOTH sides -- STALE
+  // MEMBERS MUST BE INCLUDED. Do NOT reuse the codebase's default "live"
+  // filter (superseded_at IS NULL AND stale = 0, as in list()/stats()/
+  // query()): the imported side of a pair is TYPICALLY stale after the
+  // post-import freshnessSweep, and the default filter would make this method
+  // return nothing and the prefilter silently no-op.
+  //
+  // PAIR ASYMMETRY (verified, KB a2781b82 + feedback.md): AUDN's contradiction
+  // branch inserts the NEW entry (the "challenger") with contradiction_of
+  // pointing at the OLD entry (the "original") and flagged_for_review lands on
+  // the OLD side ONLY (the new entry's flagged_for_review is explicitly false
+  // in newEntryOverrides). A genuine pair is therefore identified by
+  // challenger.contradiction_of = original.id -- NOT by flagged_for_review
+  // alone: a lone entry downvoted via feedback() also carries
+  // flagged_for_review = 1 but has no contradiction_of counterpart and must
+  // NEVER be returned here.
+  //
+  // Pairs involving an ACTIVE user-directive (type = 'user-directive' AND
+  // confidence = 'CONFIRMED') on EITHER side are excluded entirely -- an
+  // active directive can be the target of AUDN's contradiction path (the
+  // contradiction check runs before the AUDN active-directive supersede guard,
+  // see audn.ts), but directives outrank mechanics: the flag stays for a human
+  // via /pm kb-review, never the mechanical prefilter or the reconciler agent.
+  async flaggedPairs(): Promise<{ original: KBEntry; challenger: KBEntry }[]> {
+    const db = this.getDb();
+    const idRows = db.prepare(`
+      SELECT o.id as original_id, c.id as challenger_id
+      FROM entries c
+      JOIN entries o ON o.id = c.contradiction_of
+      WHERE c.contradiction_of IS NOT NULL
+        AND o.superseded_at IS NULL
+        AND c.superseded_at IS NULL
+        AND NOT (o.type = 'user-directive' AND o.confidence = 'CONFIRMED')
+        AND NOT (c.type = 'user-directive' AND c.confidence = 'CONFIRMED')
+    `).all() as { original_id: string; challenger_id: string }[];
+
+    const pairs: { original: KBEntry; challenger: KBEntry }[] = [];
+    for (const row of idRows) {
+      const originalRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(row.original_id) as Record<string, unknown> | undefined;
+      const challengerRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(row.challenger_id) as Record<string, unknown> | undefined;
+      if (!originalRow || !challengerRow) continue; // defensive; join guarantees both exist
+      pairs.push({ original: this.rowToEntry(originalRow), challenger: this.rowToEntry(challengerRow) });
+    }
+    return pairs;
+  }
+
+  // T3.1 (F5 step 3, D4 HARDENED HIGH-1/R7): the SINGLE write path for ALL
+  // reconcile resolutions -- both kb_reconcile_prefilter's mechanical wins and
+  // the T3.2 reconciler agent's code-decided wins. Deliberately NOT composed
+  // from promote() + feedback(): promote()'s one-step ladder cannot lift
+  // AUDN's UNVERIFIED contradiction-born entries directly to CONFIRMED, and
+  // neither promote() nor feedback() clears flagged_for_review or
+  // contradiction_of (KB a2781b82) -- this method is the only place both
+  // outcomes are produced together, atomically, for a pair.
+  //
+  // LINKAGE REFUSAL (re-review MEDIUM-1, binding): before writing ANYTHING,
+  // verify the two ids form a GENUINE contradiction pair --
+  // loser.contradiction_of === winner.id OR winner.contradiction_of ===
+  // loser.id (the AUDN pair asymmetry means the pointer sits on either side
+  // depending on which side happens to win) -- AND both rows exist AND
+  // neither is already superseded AND neither side is an ACTIVE
+  // user-directive. Refuse (throw) otherwise: NOTHING is written. Without this
+  // check any caller could mint CONFIRMED from any tier in ONE call and
+  // permanently retire an arbitrary unrelated entry.
+  //
+  // WINNER path -- explicit order (re-review MEDIUM-2, THE ORDER MATTERS):
+  //   (1) confidence = 'CONFIRMED' regardless of starting tier (the merged
+  //       code IS the verdict; reconcile is verdict-equivalent), with the
+  //       evidence note appended to content.
+  //   (2) clear the winner's flag fields FIRST: flagged_for_review = 0 AND
+  //       contradiction_of = NULL, unconditionally on the winner row -- the
+  //       pair asymmetry means exactly one of the two was actually set, so
+  //       clearing both is harmless on whichever side the winner is.
+  //   (3) THEN, and only then, evaluate the shared D2 freshnessRevivable
+  //       predicate (+ the full-basis re-hash conjunct) against the
+  //       POST-flag-clear row, and clear stale ONLY if it holds. Evaluating
+  //       the predicate BEFORE step (2) would self-defeat for a flagged
+  //       OLD-side winner (the predicate requires flagged_for_review = 0) --
+  //       it would end CONFIRMED but stale = 1 and silently vanish from the
+  //       kb_export bible. The durable exclusions (the anchored "[feedback "
+  //       marker, content_hash = 'invalidated') are UNAFFECTED by the
+  //       flag-clear, so a downvoted or invalidated winner still stays
+  //       retired: it wins the CONTRADICTION, not its reputation.
+  //
+  // LOSER: superseded_at = now + stale = 1 + flagged_for_review cleared
+  // (retired with an audit trail -- the existing loser invariant). NEVER
+  // deletes anything, on either side.
+  async resolveContradiction(
+    winnerId: string,
+    loserId: string,
+    evidence: string
+  ): Promise<{ winnerId: string; loserId: string }> {
+    const db = this.getDb();
+    const winnerRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(winnerId) as Record<string, unknown> | undefined;
+    const loserRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(loserId) as Record<string, unknown> | undefined;
+
+    if (!winnerRow || !loserRow) {
+      throw new Error('resolveContradiction: refused -- one or both entries do not exist (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+    const winner = this.rowToEntry(winnerRow);
+    const loser = this.rowToEntry(loserRow);
+
+    if (winner.superseded_at || loser.superseded_at) {
+      throw new Error('resolveContradiction: refused -- one or both entries are already superseded (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+
+    const linked = loser.contradiction_of === winner.id || winner.contradiction_of === loser.id;
+    if (!linked) {
+      throw new Error('resolveContradiction: refused -- ids do not form a genuine contradiction pair (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+
+    const isActiveDirective = (e: KBEntry): boolean => e.type === 'user-directive' && e.confidence === 'CONFIRMED';
+    if (isActiveDirective(winner) || isActiveDirective(loser)) {
+      throw new Error('resolveContradiction: refused -- pair involves an active user-directive; directives are never auto-resolved (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+
+    const now = new Date().toISOString();
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook gotcha: backtick-n/t/r escapes inside template literals
+    // false-positive on the hook's non-ASCII scan.
+    const evidenceNote = '\n\n[reconciled ' + now + '] winner over ' + loserId + ': ' + evidence;
+    const newContent = truncateContent(winner.content + evidenceNote);
+
+    // (1) confidence + evidence note, (2) flag-clear FIRST (both fields,
+    // unconditionally -- harmless on whichever side actually held a value).
+    db.prepare(
+      "UPDATE entries SET confidence = 'CONFIRMED', content = ?, flagged_for_review = 0, contradiction_of = NULL WHERE id = ?"
+    ).run(newContent, winnerId);
+
+    // (3) THEN evaluate the shared D2 predicate on the POST-flag-clear row.
+    const refreshedRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(winnerId) as Record<string, unknown>;
+    const refreshedWinner = this.rowToEntry(refreshedRow);
+    if (refreshedWinner.stale) {
+      const revivable = this.freshnessRevivable({
+        superseded_at: refreshedWinner.superseded_at ?? null,
+        flagged_for_review: refreshedWinner.flagged_for_review,
+        content_hash: refreshedWinner.content_hash,
+        content: refreshedWinner.content,
+      });
+      if (revivable) {
+        const basis = this.parseBasis((refreshedRow as { source_file_hashes?: string | null }).source_file_hashes ?? null);
+        if (basis) {
+          const currentHashes = await computeFileHashBatch(Object.keys(basis));
+          if (this.basisFullyMatches(basis, currentHashes)) {
+            db.prepare('UPDATE entries SET stale = 0 WHERE id = ?').run(winnerId);
+          }
+        }
+      }
+    }
+
+    // LOSER: audit trail, never deletes. contradiction_of is intentionally
+    // left as-is on the loser (harmless, and preserves which pair this row
+    // was once part of for later inspection); only flagged_for_review is
+    // cleared per the stated invariant.
+    db.prepare(
+      'UPDATE entries SET superseded_at = ?, stale = 1, flagged_for_review = 0 WHERE id = ?'
+    ).run(now, loserId);
+
+    return { winnerId, loserId };
+  }
+
+  // T3.1 (F5 step 3, D4 HARDENED, resolution R1): kb_reconcile_prefilter's
+  // provider backing. For each pair from flaggedPairs(), re-hash BOTH sides'
+  // FULL bases against the CURRENT worktree (one computeFileHashBatch over the
+  // union of every basis file across every pair -- same batching discipline as
+  // freshnessSweep): exactly one side fully matches -> that side WINS
+  // mechanically via resolveContradiction with the verbatim evidence string
+  // "hash-basis match on merged worktree". Both match, both mismatch, or
+  // EITHER side has an empty/missing basis -> left untouched for the T3.2
+  // reconciler agent. Directive pairs are already excluded by flaggedPairs()
+  // itself (MEDIUM-3 liveness contract); the explicit re-check here is
+  // belt-and-suspenders defense in depth and feeds the skipped_directive
+  // count honestly rather than assuming the upstream filter can never regress.
+  async reconcilePrefilter(): Promise<{
+    pairs: number;
+    resolved: { winnerId: string; loserId: string }[];
+    left_for_agent: { originalId: string; challengerId: string }[];
+    skipped_directive: number;
+  }> {
+    const pairs = await this.flaggedPairs();
+    const resolved: { winnerId: string; loserId: string }[] = [];
+    const left_for_agent: { originalId: string; challengerId: string }[] = [];
+    let skipped_directive = 0;
+
+    if (pairs.length === 0) {
+      return { pairs: 0, resolved, left_for_agent, skipped_directive };
+    }
+
+    const isActiveDirective = (e: KBEntry): boolean => e.type === 'user-directive' && e.confidence === 'CONFIRMED';
+
+    const liveTouchable = pairs.filter(pair => {
+      if (isActiveDirective(pair.original) || isActiveDirective(pair.challenger)) {
+        skipped_directive++;
+        return false;
+      }
+      return true;
+    });
+
+    const db = this.getDb();
+    const allIds = liveTouchable.flatMap(p => [p.original.id, p.challenger.id]);
+    const basisById = new Map<string, Record<string, string> | null>();
+    if (allIds.length > 0) {
+      const basisRows = db.prepare(
+        `SELECT id, source_file_hashes FROM entries WHERE id IN (${allIds.map(() => '?').join(',')})`
+      ).all(...allIds) as { id: string; source_file_hashes: string | null }[];
+      for (const row of basisRows) basisById.set(row.id, this.parseBasis(row.source_file_hashes));
+    }
+
+    const fileSet = new Set<string>();
+    for (const basis of basisById.values()) {
+      if (basis) for (const file of Object.keys(basis)) fileSet.add(file);
+    }
+    const currentHashes = await computeFileHashBatch([...fileSet]);
+
+    for (const pair of liveTouchable) {
+      const originalBasis = basisById.get(pair.original.id) ?? null;
+      const challengerBasis = basisById.get(pair.challenger.id) ?? null;
+      const originalMatches = originalBasis ? this.basisFullyMatches(originalBasis, currentHashes) : false;
+      const challengerMatches = challengerBasis ? this.basisFullyMatches(challengerBasis, currentHashes) : false;
+
+      if (originalMatches && !challengerMatches) {
+        await this.resolveContradiction(pair.original.id, pair.challenger.id, 'hash-basis match on merged worktree');
+        resolved.push({ winnerId: pair.original.id, loserId: pair.challenger.id });
+      } else if (challengerMatches && !originalMatches) {
+        await this.resolveContradiction(pair.challenger.id, pair.original.id, 'hash-basis match on merged worktree');
+        resolved.push({ winnerId: pair.challenger.id, loserId: pair.original.id });
+      } else {
+        left_for_agent.push({ originalId: pair.original.id, challengerId: pair.challenger.id });
+      }
+    }
+
+    return { pairs: pairs.length, resolved, left_for_agent, skipped_directive };
   }
 
   // --- F1 (D1) directive activation primitives ---

@@ -1,11 +1,26 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import type { KBEntry, StalenessResult } from './types.js';
 
-function execFileAsync(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+// T3.1 (D4 fold-in, Phase 2 review MEDIUM yashr-d8b): computeFileHashBatch
+// gains an optional { cwd } anchor so a caller resolving a bible/basis against
+// a DIFFERENT repo root (e.g. kb_import's --repo) never needs to mutate the
+// process-wide working directory (process.chdir) to get relative paths to
+// resolve correctly. When cwd is given, every relative path is resolved
+// against it for existence/read/git-hash purposes; the RETURNED map is still
+// keyed by the ORIGINAL (unresolved) path strings, matching every existing
+// caller's basis-map key expectations. Absolute paths are unaffected (already
+// cwd-independent). Omitting cwd preserves the exact previous behavior
+// (implicit process.cwd() resolution via fs/execFile defaults).
+function execFileAsync(
+  cmd: string,
+  args: string[],
+  opts?: { cwd?: string }
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, (err, stdout, stderr) => {
+    execFile(cmd, args, opts ?? {}, (err, stdout, stderr) => {
       if (err) reject(err);
       else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
     });
@@ -40,14 +55,21 @@ export async function computeFileHash(filePath: string): Promise<FileHashResult 
 }
 
 export async function computeFileHashBatch(
-  filePaths: string[]
+  filePaths: string[],
+  opts?: { cwd?: string }
 ): Promise<Record<string, FileHashResult | null>> {
   const result: Record<string, FileHashResult | null> = {};
 
   if (filePaths.length === 0) return result;
 
-  const existing = filePaths.filter(p => fs.existsSync(p));
-  const missing = filePaths.filter(p => !fs.existsSync(p));
+  const root = opts?.cwd;
+  // Resolve a possibly-relative basis path against the explicit root WITHOUT
+  // touching process.cwd(). Absolute paths pass through unchanged.
+  const resolvePath = (p: string): string =>
+    root && !path.isAbsolute(p) ? path.join(root, p) : p;
+
+  const existing = filePaths.filter(p => fs.existsSync(resolvePath(p)));
+  const missing = filePaths.filter(p => !fs.existsSync(resolvePath(p)));
 
   for (const p of missing) {
     result[p] = null;
@@ -57,7 +79,11 @@ export async function computeFileHashBatch(
 
   let gitSucceeded = false;
   try {
-    const { stdout } = await execFileAsync('git', ['hash-object', ...existing]);
+    const { stdout } = await execFileAsync(
+      'git',
+      ['hash-object', ...existing.map(resolvePath)],
+      root ? { cwd: root } : undefined
+    );
     const lines = stdout.trim().split('\n');
     if (lines.length === existing.length) {
       for (let i = 0; i < existing.length; i++) {
@@ -65,7 +91,7 @@ export async function computeFileHashBatch(
         if (hash.length > 0) {
           result[existing[i]] = { hash, type: 'git' };
         } else {
-          result[existing[i]] = { hash: sha256File(existing[i]), type: 'sha256' };
+          result[existing[i]] = { hash: sha256File(resolvePath(existing[i])), type: 'sha256' };
         }
       }
       gitSucceeded = true;
@@ -77,7 +103,7 @@ export async function computeFileHashBatch(
   if (!gitSucceeded) {
     for (const p of existing) {
       if (!result[p]) {
-        result[p] = { hash: sha256File(p), type: 'sha256' };
+        result[p] = { hash: sha256File(resolvePath(p)), type: 'sha256' };
       }
     }
   }

@@ -182,29 +182,19 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   // basis does not match THIS worktree stale immediately rather than serving
   // wrong-branch claims (D3).
   //
-  // LOW-1 (Phase 1 review) sweep anchoring: freshnessSweep() re-hashes each
-  // entry's stored basis via computeFileHashBatch, which resolves RELATIVE paths
-  // against process.cwd(). A bible imported into THIS worktree carries
-  // repo-relative basis paths, so the sweep must run with cwd anchored at the
-  // resolved repo or it would hash the wrong (or missing) files. We anchor by
-  // temporarily chdir-ing to the resolved repo for the duration of the sweep and
-  // restoring cwd in finally (absolute basis paths are cwd-independent and
-  // unaffected). This is an explicit, rarely-concurrent command, so the brief
-  // global cwd change during the sweep's file hashing is an accepted tradeoff.
-  const sweep = await sweepAnchored(repoAnchor);
+  // T3.1 (D4 fold-in, Phase 2 review MEDIUM yashr-d8b) sweep anchoring:
+  // freshnessSweep() re-hashes each entry's stored basis via
+  // computeFileHashBatch, which resolves RELATIVE paths against an explicit
+  // root when given. A bible imported into THIS worktree carries repo-relative
+  // basis paths, so the sweep anchors at the resolved repo -- previously via a
+  // global process.chdir(repoAnchor)/process.chdir(prevCwd) pair straddling
+  // the await (a process-wide mutation any other concurrent async work in this
+  // process would also observe); now via freshnessSweep's own `root` parameter,
+  // which threads the anchor straight into computeFileHashBatch's { cwd }
+  // option with no global side effect at all. Behavior is unchanged (absolute
+  // basis paths remain cwd-independent either way).
+  const sweep = await provider.freshnessSweep(repoAnchor);
 
   const report: KbImportReport = { imported, skipped, superseded, flagged, sweep };
   return JSON.stringify(report);
-}
-
-async function sweepAnchored(repoAnchor: string): Promise<{ checked: number; staled: number; unstaled: number }> {
-  const providers = await getKbProviders();
-  const prevCwd = process.cwd();
-  const needChdir = path.resolve(repoAnchor) !== path.resolve(prevCwd);
-  if (needChdir) process.chdir(repoAnchor);
-  try {
-    return await providers.project.freshnessSweep();
-  } finally {
-    if (needChdir) process.chdir(prevCwd);
-  }
 }

@@ -296,6 +296,26 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
       .rejects.toThrow(/not found/);
   });
 
+  it('T3.1 (D4 fold-in, Phase 2 review MEDIUM yashr-d8b): the post-import sweep never mutates process-wide cwd via process.chdir', async () => {
+    // Previously kb-import.ts's sweepAnchored() wrapped the sweep in
+    // process.chdir(repoAnchor)/process.chdir(prevCwd) across an await -- a
+    // global, process-wide mutation for the sweep's duration. freshnessSweep()
+    // now takes an explicit `root` and threads it into computeFileHashBatch's
+    // { cwd } option instead, so process.chdir must never be called at all,
+    // even when tmpRepo (the --repo anchor) differs from the actual process
+    // working directory (which it does here -- tmpRepo is a fresh mkdtemp
+    // dir, unrelated to wherever the test runner's cwd happens to be).
+    const chdirSpy = vi.spyOn(process, 'chdir');
+    const p = writeBible([
+      bibleEntry({ id: 'chdir-check-1', symbols: ['chdirCheckSym'] }),
+    ]);
+
+    await kbImport({ repo: tmpRepo, path: p });
+
+    expect(chdirSpy).not.toHaveBeenCalled();
+    chdirSpy.mockRestore();
+  });
+
   it('tolerates and skips malformed entries individually', async () => {
     const p = writeBible([
       bibleEntry({ id: 'good-1', symbols: ['goodSym'] }),
