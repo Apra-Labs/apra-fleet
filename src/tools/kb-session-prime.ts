@@ -6,6 +6,7 @@ import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
 import { orJoinFtsTerms } from '../services/knowledge/audn.js';
 import type { KBEntry } from '../services/knowledge/types.js';
+import { FLEET_DIR } from '../paths.js';
 
 export const kbSessionPrimeSchema = z.object({
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
@@ -92,7 +93,11 @@ function resolveRepoPath(explicit?: string): string | null {
   return candidate;
 }
 
-function toCanonicalKBEntry(e: CanonicalBibleEntry): KBEntry & { via: string } {
+// T3.5 (F9c, D8): `via` param added, defaulting to 'canonical-bible' so the
+// existing project-bible call site below is byte-for-byte unchanged. The new
+// global-bible cold-seed block passes via='canonical-bible-global' so those
+// entries are distinguishable in top_entries (D8's via marker requirement).
+function toCanonicalKBEntry(e: CanonicalBibleEntry, via: string = 'canonical-bible'): KBEntry & { via: string } {
   return {
     id: e.id,
     type: e.type as KBEntry['type'],
@@ -106,12 +111,12 @@ function toCanonicalKBEntry(e: CanonicalBibleEntry): KBEntry & { via: string } {
     content_hash_type: 'sha256',
     stale: false,
     flagged_for_review: false,
-    author: 'canonical-bible',
+    author: via,
     source: 'promotion',
     confidence: (e.confidence as KBEntry['confidence']) ?? 'CONFIRMED',
     created_at: e.updated_at ?? '',
     use_count: 0,
-    via: 'canonical-bible',
+    via,
   };
 }
 
@@ -297,6 +302,63 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
           for (const e of ordered) {
             if (additions.length >= ADDED_ENTRY_CAP) break;
             additions.push(toCanonicalKBEntry(e));
+          }
+
+          if (additions.length > 0) {
+            result.top_entries = [...(result.top_entries ?? []), ...additions];
+          }
+        }
+      }
+    } catch {
+      // Hard skip: leave `result` exactly as built above.
+    }
+  }
+
+  // T3.5 (F9c, D8): global-bible cold-seed -- APPENDED AFTER the existing
+  // project-bible cold-seed block above (design Phasing note: F9 appends
+  // after the existing cold-seed block; this is deliberately the LAST merge
+  // in the whole function). Reads the INSTALLED global bible at
+  // FLEET_DIR/knowledge/global/kb-canonical-global.json -- the homedir-based
+  // machine-wide copy the T3.4 installer step places there (NOT anything
+  // under the session's repo root, unlike the project bible above). Entries
+  // are marked via:'canonical-bible-global' and ordered BELOW every
+  // project-bible entry (this block only ever appends, after the project
+  // block has already run). Re-checks the SAME shared COLD_KB_MAX threshold
+  // against top_entries as built by every merge above (direct hits + global-
+  // KB append + graph-neighbor + project-bible), so this runs only when the
+  // session is still cold after all of that. Same dedupe-by-id, same
+  // ADDED_ENTRY_CAP, and the identical hard-skip non-fatal contract as the
+  // project-bible block: missing file, unreadable/malformed JSON, or a bad
+  // shape leaves `result` exactly as built above -- warm sessions (>=
+  // COLD_KB_MAX) never reach this block at all.
+  if ((result.top_entries ?? []).length < COLD_KB_MAX) {
+    try {
+      const globalBiblePath = path.join(FLEET_DIR, 'knowledge', 'global', 'kb-canonical-global.json');
+      if (fs.existsSync(globalBiblePath)) {
+        const raw = fs.readFileSync(globalBiblePath, 'utf-8');
+        const parsed = JSON.parse(raw) as unknown;
+
+        if (Array.isArray(parsed)) {
+          const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
+          const hintSymbols = input.hint_symbols ?? [];
+          const hintModules = input.hint_modules ?? [];
+
+          const valid = parsed
+            .filter(isCanonicalBibleEntry)
+            .filter(e => !existingIds.has(e.id));
+
+          let ordered = valid;
+          if (hintSymbols.length > 0 || hintModules.length > 0) {
+            const matched = valid.filter(e => canonicalMatchesHints(e, hintSymbols, hintModules));
+            const matchedIds = new Set(matched.map(e => e.id));
+            const rest = valid.filter(e => !matchedIds.has(e.id));
+            ordered = [...matched, ...rest];
+          }
+
+          const additions: Array<KBEntry & { via: string }> = [];
+          for (const e of ordered) {
+            if (additions.length >= ADDED_ENTRY_CAP) break;
+            additions.push(toCanonicalKBEntry(e, 'canonical-bible-global'));
           }
 
           if (additions.length > 0) {
