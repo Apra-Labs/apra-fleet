@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Apra Fleet -- Knowledge Invocation Map</title>
+<style>
+  :root {
+    --bg:#0f1117; --panel:#161b26; --border:#232b3b; --text:#e2e8f0;
+    --dim:#94a3b8; --faint:#64748b;
+    --green:#22c55e; --green-bg:#0a1f12;
+    --amber:#fbbf24; --amber-bg:#1f1a0a;
+    --blue:#60a5fa; --blue-bg:#0e1a2e;
+    --purple:#a78bfa; --purple-bg:#171130;
+    --red:#f87171; --red-bg:#1f0f0f;
+    --gold:#f59e0b;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    padding:36px 20px; display:flex; flex-direction:column; align-items:center; }
+  h1 { font-size:21px; margin:0 0 4px; }
+  .sub { color:var(--faint); font-size:13px; margin:0 0 26px; }
+  .wrap { width:100%; max-width:1100px; }
+
+  /* stage rows */
+  .stage { display:grid; grid-template-columns:190px 1fr; gap:0; margin-bottom:6px; }
+  .who { background:var(--panel); border:1px solid var(--border); border-right:none;
+    border-radius:10px 0 0 10px; padding:14px 12px; }
+  .who .actor { font-size:12px; font-weight:700; letter-spacing:0.04em; }
+  .who .when { font-size:10px; color:var(--faint); margin-top:4px; line-height:1.5; }
+  .what { background:#10151f; border:1px solid var(--border);
+    border-radius:0 10px 10px 0; padding:12px 14px; }
+  .call { display:flex; align-items:baseline; gap:8px; padding:5px 0;
+    border-bottom:1px dashed #1c2333; }
+  .call:last-child { border-bottom:none; }
+  .tool { font-family:Consolas,monospace; font-size:11px; padding:1px 7px;
+    border-radius:4px; white-space:nowrap; }
+  .t-kb   { background:var(--purple-bg); color:#c4b5fd; border:1px solid #3b2d6e; }
+  .t-ci   { background:var(--blue-bg); color:#93c5fd; border:1px solid #1e3a5f; }
+  .t-git  { background:#1a2030; color:#9ca3af; border:1px solid #2a3346; }
+  .t-user { background:#241a05; color:var(--gold); border:1px solid #6b4f0f; }
+  .desc { font-size:11px; color:var(--dim); line-height:1.5; }
+  .desc b { color:var(--text); font-weight:600; }
+  .trust { font-size:9px; font-weight:700; letter-spacing:0.05em; padding:1px 6px;
+    border-radius:8px; white-space:nowrap; }
+  .tr-unv { background:var(--amber-bg); color:var(--amber); border:1px solid #713f12; }
+  .tr-inf { background:var(--blue-bg); color:var(--blue); border:1px solid #1e3a5f; }
+  .tr-con { background:var(--green-bg); color:var(--green); border:1px solid #14532d; }
+  .tr-dir { background:#241a05; color:var(--gold); border:1px solid #6b4f0f; }
+  .tr-warn{ background:var(--red-bg); color:var(--red); border:1px solid #7f1d1d; }
+
+  .arrow-row { text-align:center; color:var(--faint); font-size:14px; margin:2px 0 8px; }
+
+  /* legend + invariants */
+  .footer { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:24px; }
+  .box { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .box h2 { font-size:12px; font-weight:700; letter-spacing:0.08em; color:var(--dim); margin:0 0 10px; }
+  .box .row { font-size:11px; color:var(--dim); margin-bottom:7px; line-height:1.5; }
+  .box .row b { color:var(--text); }
+  .loop-note { background:var(--purple-bg); border:1px solid #3b2d6e; border-radius:10px;
+    padding:12px 16px; margin-top:16px; font-size:12px; color:#c4b5fd; line-height:1.6; }
+</style>
+</head>
+<body>
+<h1>Knowledge Invocation Map -- when what is invoked</h1>
+<p class="sub">Both knowledge types across one sprint. Post kb-integrity sprint (2026-07-07): trust rules are enforced in code, not templates.</p>
+
+<div class="wrap">
+
+  <!-- 0 REPO CHECKOUT -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#f59e0b">REPO CHECKOUT</div>
+      <div class="when">any developer, any machine, day zero</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-git">.fleet/kb-canonical.json</span>
+        <span class="desc">The committed <b>knowledge bible</b> ships with the repo (56 CONFIRMED entries today). A brand-new machine starts with the team's entire confirmed knowledge -- nothing to install, it is just a file in git.</span>
+        <span class="trust tr-con">CONFIRMED</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- 1 INIT -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#4ade80">/pm init</div>
+      <div class="when">once per project setup (PM orchestrator)</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-ci">npx gitnexus analyze --embeddings</span>
+        <span class="desc">Builds the <b>code-base knowledge</b> index (.gitnexus/ per worktree): symbols, call graph, communities, flows; embeddings for semantic search (local ONNX model).</span></div>
+      <div class="call"><span class="tool t-kb">kb_setup</span>
+        <span class="desc">Creates the per-repo KB (kb.sqlite) for <b>agent learning</b>.</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- 2 PLANNER -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#60a5fa">PLANNER</div>
+      <div class="when">/pm plan -- before writing PLAN.md</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-kb">kb_session_prime</span>
+        <span class="desc">One call runs the whole retrieval pipeline: FTS <b>OR-join</b> match on hint_symbols/hint_modules -> <b>auto-staleness</b> (re-hash source files, drop changed entries) -> concept decay -> global append -> <b>graph-neighbor expansion</b> (via code_context) -> <b>cold-seed from the bible</b> when local KB is thin (&lt;3 hits).</span></div>
+      <div class="call"><span class="tool t-ci">code_map / code_query / code_context / code_flow</span>
+        <span class="desc">Architectural orientation from the index instead of Glob/Grep exploration. KB entries with CONFIRMED coverage let the planner assign <b>cheaper models</b> to well-understood tasks.</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- 3 DOER -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#fb923c">DOER</div>
+      <div class="when">/pm start -- per task, per phase</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-kb">kb_session_prime</span>
+        <span class="desc">Same pipeline as the planner -- arrives pre-loaded with prior learnings for its task's symbols.</span></div>
+      <div class="call"><span class="tool t-kb">kb_query</span>
+        <span class="desc"><b>Retrieve-first rule:</b> before reading an unfamiliar file. A CONFIRMED/INFERRED hit skips the source read entirely.</span></div>
+      <div class="call"><span class="tool t-ci">code_context / code_impact / code_graph / code_tests</span>
+        <span class="desc">Structural navigation. Every code_* call also gets: missing-index error (never silent), freshness note + <b>auto-reindex on drift</b>, usage <b>telemetry</b>, and code_context <b>inlines matching CONFIRMED KB entries</b> into its response.</span></div>
+      <div class="call"><span class="tool t-kb">kb_capture</span>
+        <span class="desc">Optional in-flight capture of discoveries. <b>Gate enforced:</b> confidence is clamped to INFERRED max -- no agent can self-certify. Provenance (author/source) stamped by the tool layer, never free strings.</span>
+        <span class="trust tr-inf">&lt;= INFERRED</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- USER DIRECTIVE (side channel, any time) -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#f59e0b">USER (any time)</div>
+      <div class="when">"always do X" / "never do Y" / "we decided Z"</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-user">kb_capture type=user-directive</span>
+        <span class="desc">PM records a standing user instruction. Highest tier: stored CONFIRMED (sole clamp exemption), <b>never auto-decayed</b>, an agent capture can <b>never supersede it</b> (only flag). Your guidance compounds across sprints.</span>
+        <span class="trust tr-dir">DIRECTIVE</span></div>
+      <div class="call"><span class="desc" style="color:#f87171"><b>Known gap (yashr-9ha):</b> this type is currently assertable by any caller -- needs a privileged/PM-only gate before heavy use.</span>
+        <span class="trust tr-warn">FORGEABLE</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- SESSION END AUTOWIRE -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#fbbf24">AUTOWIRE</div>
+      <div class="when">automatic -- end of every successful execute_prompt (fleet mode)</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-kb">kb_harvest</span>
+        <span class="desc">Fire-and-forget regex sweep over the session transcript (which only this path has access to). Honest and low-trust by design: everything it captures is UNVERIFIED, author/source = 'harvest'.</span>
+        <span class="trust tr-unv">UNVERIFIED</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- VERIFY -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#9ca3af">VERIFY checkpoint</div>
+      <div class="when">end of every phase (doer runs it)</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-git">build + full test suite</span>
+        <span class="desc">Must pass before review.</span></div>
+      <div class="call"><span class="tool t-ci">npx gitnexus analyze --embeddings</span>
+        <span class="desc">Incremental re-index so mid-sprint symbols stay visible to later phases (non-fatal). Then <b>git checkout -- AGENTS.md CLAUDE.md</b> (analyze injects non-ASCII markers -- a KB-recorded runbook gotcha).</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- REVIEWER -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#93c5fd">REVIEWER</div>
+      <div class="when">after every VERIFY -- fresh session, strongest model</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-kb">kb_session_prime + kb_query</span>
+        <span class="desc">Primes with hints derived from the diff; trusts CONFIRMED entries to skip re-derivation.</span></div>
+      <div class="call"><span class="tool t-ci">code_impact</span>
+        <span class="desc">"Who else calls this changed method" -- blast-radius checks from the index.</span></div>
+      <div class="call"><span class="tool t-git">feedback.md verdict</span>
+        <span class="desc">APPROVED / CHANGES NEEDED. <b>This verdict is the knowledge quality gate</b> -- it decides what the KB Agent may promote.</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- KB AGENT -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#c4b5fd">KB AGENT</div>
+      <div class="when">dispatched by PM after EVERY reviewer verdict (cheap model)</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-kb">kb_query</span>
+        <span class="desc">Before every capture -- dedupe check + flagged-contradiction scan.</span></div>
+      <div class="call"><span class="tool t-kb">kb_capture</span>
+        <span class="desc">Durable facts from the session. Lands INFERRED (clamped). AUDN runs on every capture: a correcting entry <b>really supersedes</b> the old one (superseded_at + stale=1); a same-symbol contradiction is <b>flagged cross-type</b> even without file overlap.</span>
+        <span class="trust tr-inf">INFERRED</span></div>
+      <div class="call"><span class="tool t-kb">kb_promote</span>
+        <span class="desc"><b>The only path to CONFIRMED</b> -- used only when the reviewer verdict was APPROVED and the entry describes approved behavior. Evidence trail appended.</span>
+        <span class="trust tr-con">CONFIRMED</span></div>
+      <div class="call"><span class="tool t-kb">kb_export</span>
+        <span class="desc">Writes all live CONFIRMED entries to <b>.fleet/kb-canonical.json</b> (deterministic, ASCII-safe). The PM commits it -- the bible in git grows every sprint.</span></div>
+    </div>
+  </div>
+  <div class="arrow-row">v</div>
+
+  <!-- HUMAN REVIEW LOOP -->
+  <div class="stage">
+    <div class="who"><div class="actor" style="color:#f59e0b">HUMAN (periodic)</div>
+      <div class="when">/pm kb-review + kb_list</div></div>
+    <div class="what">
+      <div class="call"><span class="tool t-kb">kb_list</span>
+        <span class="desc">Audit the KB by confidence/type/module/symbol -- read-only, no telemetry side effects. "Show me everything this project has learned."</span></div>
+      <div class="call"><span class="tool t-kb">/pm kb-review</span>
+        <span class="desc">Interactively resolve flagged contradictions -- the human tiebreak for what AUDN could not decide.</span></div>
+    </div>
+  </div>
+
+  <div class="loop-note">
+    <b>The compounding loop:</b> next sprint's planner calls kb_session_prime and receives everything above --
+    live CONFIRMED entries first, graph-expanded neighbors below, bible entries seeding any cold start.
+    Knowledge captured once is retrieved forever; a correction made once propagates forever; a user
+    instruction given once applies forever. Measured this session: 76% of entries retrieved, 235 total
+    reads, doers skipping exploration on KB hits.
+  </div>
+
+  <div class="footer">
+    <div class="box">
+      <h2>TRUST TIERS (enforced in code)</h2>
+      <div class="row"><span class="trust tr-unv">UNVERIFIED</span> &nbsp;harvest autowire output; transcript-only claims.</div>
+      <div class="row"><span class="trust tr-inf">INFERRED</span> &nbsp;the capture ceiling for every agent -- kb_capture clamps here.</div>
+      <div class="row"><span class="trust tr-con">CONFIRMED</span> &nbsp;mintable only by kb_promote, gated on a reviewer APPROVED verdict. Exported to the bible.</div>
+      <div class="row"><span class="trust tr-dir">USER-DIRECTIVE</span> &nbsp;above CONFIRMED: never decays, never agent-superseded. (Gate pending: yashr-9ha.)</div>
+    </div>
+    <div class="box">
+      <h2>INTEGRITY MACHINERY (always on)</h2>
+      <div class="row"><b>Supersede-for-real:</b> corrections mark the old entry superseded + stale -- no more coexisting truths.</div>
+      <div class="row"><b>Cross-type contradiction flag:</b> same-symbol opposite claims get flagged for /pm kb-review.</div>
+      <div class="row"><b>Auto-staleness:</b> prime re-hashes source files; changed code silently retires its entries.</div>
+      <div class="row"><b>OR-join retrieval:</b> multi-hint primes return anything relevant, not nothing.</div>
+      <div class="row"><b>Stamped provenance:</b> author/source are tool-set enums -- you can always ask who knew what.</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
