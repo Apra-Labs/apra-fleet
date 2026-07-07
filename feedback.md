@@ -1,114 +1,149 @@
-# Plan Final Review -- KB Branch Reconcile Sprint (epic yashr-ii1)
+# Phase 1 Code Review -- KB Branch Reconcile Sprint (epic yashr-ii1)
 
-Reviewer: pm-plan-reviewer. Round 3 (final). Reviewing PLAN.md at commit
-75ef839 against the hardened design.md (a1d344d) and requirements.md
-(F1-F6). Round 1 (CHANGES NEEDED: 1 HIGH, 4 MEDIUM, 2 LOW, commit 91b2a2c)
-and Round 2 (CHANGES NEEDED: 0 HIGH, 2 MEDIUM, 1 LOW, commit 52ef4fe) are
+Reviewer: pm-reviewer. Reviewing Phase 1 (T1.1-T1.4) of the
+kb-branch-reconcile sprint against PLAN.md (revision 3), requirements.md
+(F1-F3), and design.md (D1, D2 hardened, D3). Commits reviewed: 9ece587
+(T1.1 test isolation + TZ), 3bf2281 (T1.2 clamp relocation), 848f2a1 (T1.3
+bidirectional staleness). Prior plan-review verdicts (Rounds 1-3) are
 preserved in this file's git history.
 
 ## VERDICT: APPROVED
 
-0 HIGH, 0 MEDIUM, 0 LOW. All ten findings across two rounds are resolved
-and verified in the plan text; the three Round 2 edits match the
-prescriptions exactly; the R7 war-game is closed with no new hole. The
-plan is ready for dispatch.
+0 HIGH, 0 MEDIUM, 1 LOW. Phase 1 is correct, hermetic, and matches the
+hardened design. The load-bearing T1.3 predicate implements the full
+four-actor hardened D2 exactly; every exclusion war-gamed at the provider
+level stays retired and a genuine freshness-stale entry revives. Both
+fail-then-pass red states reproduced verbatim. Full suite: 2006 passed,
+14 skipped, 0 failed (run by this reviewer). Build clean (tsc exit 0).
 
 ---
 
-## Round 2 findings: verification against commit 75ef839
+## Verification performed
 
-### MEDIUM-1 R2 (pair-linkage refusal) -- FIXED, matches prescription
+- npm run build: clean (exit 0).
+- npm test (this reviewer's own run): 137 test files, 2006 passed / 14
+  skipped / 0 FAILED. The zero-failure criterion from T1.2 onward holds.
+- T1.2 red-state reproduced: checked out the provider at 3bf2281~1, ran the
+  new gate test -> RED with "AssertionError: expected 'CONFIRMED' to be
+  'INFERRED'" (exactly the doer's claim). Provider restored clean.
+- T1.3 red-state reproduced: checked out the provider at 848f2a1~1, ran the
+  freshness suite -> 8 RED with "TypeError: provider.freshnessSweep is not a
+  function" (exactly the doer's claim). Provider restored clean.
+- ASCII: no non-ASCII byte appears on any line ADDED by the three Phase 1
+  commits (checked + lines only). Pre-existing non-ASCII in src/index.ts
+  and tests/time-utils.test.ts is untouched -- correct, per the no-mass-
+  migration rule.
 
-T3.1(b) LINKAGE REFUSAL block: before writing ANYTHING the method
-verifies loser.contradiction_of === winner.id OR winner.contradiction_of
-=== loser.id (both-direction check, preserving the AUDN asymmetry point),
-both rows exist, neither superseded; refuse otherwise with nothing
-written. The tool-surface sentence now lists the linkage refusal among
-the refusal conditions. Test 8 covers: two existing but unlinked entries
-refused with NOTHING written (confidence, stale, flags, superseded_at all
-asserted unchanged on both rows), missing id refused, and
-linked-but-superseded member refused. Exactly as prescribed. [OK]
+## T1.1 -- test isolation + TZ (F1/D1) -- PASS
 
-### MEDIUM-2 R2 (winner-path operation order) -- FIXED, matches
-prescription
+- The leaking block was `kb_session_prime graph-neighbor expansion`. The fix
+  adds a per-test `process.cwd()` spy pointed at a fresh empty temp dir
+  (beforeEach) with cleanup (afterEach), so the canonical-bible cold-seed
+  (resolveRepoPath -> cwd) finds no bible and cannot read this repo's real
+  .fleet/kb-canonical.json. The other two cwd-sensitive blocks
+  (canonical-bible cold-seed line ~479, global-bible cold-seed line ~738)
+  already carried their own cwd spies; FLEET_DIR is isolated by
+  tests/setup.ts. Coverage of the leaking block is real and complete.
+- No assertion weakened: the only removed line in the T1.1 diff is the vitest
+  import line (widened to add vi/afterEach). All graph-neighbor assertions
+  (toEqual id-order, via:'graph-neighbor' marking, NEIGHBOR_CAP=10,
+  ADDED_ENTRY_CAP=5, dedupe-by-id) are verbatim.
+- TZ fix: `vi.stubEnv('TZ','Asia/Tokyo')` added to the two sub-hour-sensitive
+  tests plus a header afterEach unstub; the assertions (toContain('45:30.123')
+  etc.) are unchanged. Whole-hour zone pins the same minute/second-preservation
+  behavior deterministically.
 
-T3.1(b) WINNER block now states the order explicitly and numbers it:
-(1) confidence='CONFIRMED' + evidence note; (2) clear the winner's flag
-fields FIRST (flagged_for_review on the old side, contradiction_of on the
-new side, exact column writes required in the method); (3) THEN evaluate
-the shared D2 predicate and clear stale only if it holds -- with the
-rationale (predicate contains flagged_for_review=0; evaluating before the
-flag-clear self-defeats for a flagged old-side winner) and the
-durable-exclusion preservation note ("[feedback " marker and
-content_hash='invalidated' unaffected by the flag-clear, so a downvoted
-or invalidated winner still stays retired). Test 7: old-side flagged
-winner (flagged=1, stale=1, matching basis, no markers) ends CONFIRMED +
-unflagged + stale=0 and PASSES the list({confidence:'CONFIRMED'}) export
-filter. Done criteria require both the refusal and the ordering stated in
-the method doc comment. Exactly as prescribed. [OK]
+## T1.2 -- provider clamp relocation (F3/R3) -- PASS
 
-### LOW-1 R2 (marker anchoring) -- FIXED
+- The ENFORCEMENT clamp sits inside SqliteProvider.capture()
+  (sqlite-provider.ts:660-665), AFTER the directive gate (621-633). Gate runs
+  first and forces user-directives to UNVERIFIED pending proposals; the clamp
+  then downgrades non-directive CONFIRMED -> INFERRED and appends the bracketed
+  note. Directive path verified unchanged (test asserts UNVERIFIED + flagged +
+  directive:pending, no double clamp note). promote() still mints CONFIRMED.
+- R5 fixture fallout migrated via the REAL ladder (capture INFERRED then
+  promote) in kb-decay, kb-promote, kb-feedback, kb-claims-proof,
+  kb-token-and-learning. No test-only bypass flag added to product code;
+  assertions unchanged (still assert CONFIRMED end-state).
+- Import-mode seam is a COMMENT ONLY (652-657); capture() still has the single
+  `input: KBEntryInput` signature -- no reachable second parameter yet, as
+  required. T2.1 owns it.
 
-T1.3 MARKER ANCHORING note: match the form feedback() actually writes
-(two newlines + "[feedback " + ISO timestamp), newline-prefixed or
-timestamp-anchored rather than a bare substring, with the chosen pattern
-stated in the predicate comment -- closing the meta-content
-false-positive. [OK]
+## T1.3 -- bidirectional staleness + freshnessSweep (F2/D2 HARDENED) -- PASS
 
-R7's resolution text is updated to record the closure ("with the T3.1
-linkage refusal and the flag-clear-before-predicate winner order, R7
-introduces no new hole").
+- Shared predicate `freshnessRevivable()` (301-312) implements the four
+  NON-hash conjuncts (superseded_at NULL, flagged=0, content_hash !=
+  'invalidated', anchored feedback marker absent); the callers own the stale=1
+  gate and the full-basis re-hash (`basisFullyMatches()`, 321-332). ONE
+  implementation, reused by checkFreshness() and freshnessSweep() (and reserved
+  for T3.1). The full hardened D2 predicate is stated verbatim in the comment
+  at the site (281-290).
+- MARKER ANCHORING cross-checked against the writer: feedback() writes
+  `'\n\n[feedback ' + new Date().toISOString() + '] '` (line 1090); the regex
+  FEEDBACK_MARKER_RE `/\n\n\[feedback \d{4}-\d{2}-\d{2}T/` (279) matches that
+  exact newline+ISO-timestamp form, so a learning that merely QUOTES the
+  feedback format is not permanently excluded once freshness-staled. Anchoring
+  is correct.
+- WAR-GAME (each at the provider level, confirmed by code + the individual
+  tests, which use the REAL feedback()/invalidate() writers):
+  - superseded (superseded_at set, matching basis) -> freshnessRevivable false
+    at the superseded_at guard -> stays stale=1. RETIRED.
+  - feedback flag standing (stale=1, flagged=1) -> false at the flag guard ->
+    stays stale=1. RETIRED.
+  - downvote marker with flag CLEARED (flag=0, marker present) -> false at the
+    marker guard -> stays stale=1. RETIRED. (This is the MEDIUM-2 laundering
+    defense; test 4 simulates the T3.1 flag-clear and asserts the marker
+    survives.)
+  - invalidated (content_hash='invalidated', flag=0, superseded NULL) -> false
+    at the invalidated guard -> stays stale=1. RETIRED. (Test drives real
+    invalidate(); asserts flag=0/superseded NULL first.)
+  - partial basis (2 files, 1 restored) -> basisFullyMatches false (missing/
+    changed file) -> not counted as a match -> stays stale=1. RETIRED.
+  - empty/malformed basis -> parseBasis returns null -> excluded from
+    basisById -> checked=0, never staled/revived. UNTOUCHED.
+  - genuine freshness-stale, files restored byte-identical -> all four
+    conjuncts pass AND full basis matches -> revived (stale=0) and re-primed.
+    REVIVES.
+- checkFreshness cannot revive at prime: candidate set is
+  entries.filter(source_files.length>0) drawn from prime's top_entries, which
+  query() already filters to stale=0; the un-stale branch is gated on
+  `entry.stale && freshnessRevivable(entry)`, so it is a documented no-op at
+  prime. The caveat is stated in the code (357-363). Revival surface is the
+  sweep only.
+- Sweep NOT wired into prime: prime() calls only checkFreshness()
+  (sqlite-provider.ts:925); freshnessSweep has exactly one non-test caller,
+  the kb_freshness_sweep tool. Confirmed.
+- kb_freshness_sweep tool: thin handler over provider.freshnessSweep();
+  registered in src/index.ts (203 import, 391 server.tool). freshnessSweep is
+  read-only apart from the two `UPDATE entries SET stale = ...` statements.
+  Degraded-safe at the data level: computeFileHashBatch returns null for
+  missing files (treated as mismatch, not a throw) and falls back to sha256 if
+  git hash-object fails.
 
 ---
 
-## No-new-hole confirmation (final war-game)
+## Findings
 
-- The linkage refusal cannot break any legitimate path: every prefilter
-  and reconciler-agent resolution sources its pairs from flaggedPairs(),
-  whose contract (contradiction_of linkage, both rows exist, superseded
-  excluded, stale INCLUDED) is a strict subset of the refusal's
-  conditions -- a stale pair member remains resolvable (test 4 and the
-  refusal are consistent: only superseded excludes).
-- Refusal runs before any write, so partial-write states are impossible;
-  the winner CONFIRMED write happens only after the refusal passes.
-- The downvoted or invalidated winner still stays retired: the flag-clear
-  precedes the predicate, but the durable conjuncts ("[feedback " marker,
-  content_hash='invalidated') are content/hash-based and survive it --
-  Round 1 MEDIUM-2 protection intact (T3.1 tests 2 and 3 unchanged and
-  still correct).
-- The loser invariant (superseded_at set alongside every flag-clear)
-  holds on every path, including refusal (no write at all).
-- Directive protection is layered and intact: the capture() gate (import
-  cannot smuggle), promote() refusal, the prefilter HARD EXCLUSION, and
-  kb_resolve_contradiction's own directive-pair refusal.
-- R4 remains airtight (one-argument HTTP route, zod-built MCP input,
-  internal opts transport) with MEDIUM-4 R1's source normalization
-  closing the provenance side.
+### LOW-1 -- kb_freshness_sweep hashes basis paths relative to the process cwd
 
-## Cumulative resolution record
+freshnessSweep() re-hashes stored basis file paths via computeFileHashBatch
+with no repo anchoring; the tool exposes no repo/path parameter. This is
+consistent with checkFreshness()'s existing prime-time behavior and is within
+D2 (a bounded full-KB sweep over the project provider), so it is not a Phase 1
+defect. Flagging for T2.1/T3.2 awareness: kb_import runs the sweep internally
+AFTER resolving the repo, and /pm kb-reconcile runs in the merged worktree
+cwd, so both invoke it from the correct directory -- keep that invariant when
+wiring those callers, and ensure basis paths remain worktree-relative so the
+sweep re-hash resolves the intended files. No change required in Phase 1.
 
-- Round 1: HIGH-1 (winner never reached the bible) -> resolveContradiction
-  single write path; MEDIUM-1 (invalidate() fourth stale actor) ->
-  predicate conjunct + tests both levels; MEDIUM-2 (downvote laundering)
-  -> durable "[feedback " conjunct + tests + template rule; MEDIUM-3
-  (flaggedPairs liveness) -> superseded-only contract + tests; MEDIUM-4
-  (forged source='import') -> provenance normalization + extended HTTP
-  test; LOW-1/LOW-2 -> trust-boundary wording + id-skip-before-AUDN.
-- Round 2: MEDIUM-1 (linkage refusal), MEDIUM-2 (winner-path order),
-  LOW-1 (marker anchoring) -- all applied at 75ef839 as verified above.
+## Standing confirmations
 
-## Standing confirmations (unchanged from Rounds 1-2)
+F1/F2/F3 done criteria met with testable evidence; fail-then-pass demanded and
+verified for F3 (provider clamp) and F2 (un-stale core); allowed-failure list
+retired (never a literal allowlist -- the 6 known-flaky tests, now green); no
+mass migration (forward-only, 5 small fixture edits via the real ladder);
+ASCII-only in changed lines; build clean; zero test failures. T1.4 VERIFY
+(build + test + gitnexus + push) recorded and consistent with this reviewer's
+independent build+test run.
 
-F1-F6 covered with testable done criteria; fail-then-pass demanded for F2
-(un-stale core) and F3 (provider clamp); F4 idempotency + directive
-quarantine + HTTP-shape safety tested; F6 e2e chain independently
-re-traced and satisfiable, hermetic, ends at the export assertion. F1
-first, zero-failure criterion binding from T1.2 onward. sqlite-provider
-strict ordering T1.2 -> T1.3 -> T2.1 -> T3.1 binding. Prefilter never
-touches active-directive pairs. Reconciler template + kb-reconcile.md +
-SKILL.md row + cleanup-flow hook present; kb_export auto-commit closes
-the ladder. Models sane (opus exactly on T1.3 and T2.1). VERIFYs carry
-the gitnexus-analyze + git checkout AGENTS.md/CLAUDE.md gotcha and the
-final byte-level ASCII sweep. ASCII-only, never push main, NO PR.
-
-APPROVED for dispatch.
+APPROVED for Phase 2.
