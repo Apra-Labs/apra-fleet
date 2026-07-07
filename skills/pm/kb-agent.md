@@ -38,6 +38,9 @@ Model tier: cheap or standard. KB evaluation does not require premium reasoning.
 Fill `tpl-kb-agent.md` with:
 - `{{PROJECT_NAME}}`: project name
 - `{{sprint_name}}`: current sprint identifier
+- `{{phase}}`: the phase number just reviewed -- the KB Agent uses this (with
+  `{{sprint_name}}`) to find the planner/doer/reviewer's in-flight captures by tag
+  (`sprint:{{sprint_name}}` + `phase:{{phase}}`) before doing any residual capture
 - `{{base_branch}}`: e.g. main
 - `{{branch}}`: feature branch name
 
@@ -74,7 +77,7 @@ The KB Agent reports inline (does not commit files). After it finishes, read the
 and record the key numbers in status.md:
 
 ```
-KB Agent ({{sprint_name}}): N captured, M promoted, K updated, J contradictions resolved
+KB Agent ({{sprint_name}} phase {{phase}}): in-flight N reviewed/X promoted/Y flagged/Z left; N captured, M promoted, K updated, J contradictions resolved
 ```
 
 If the report lists gaps ("Symbols worth indexing in a future sprint"), add them to the
