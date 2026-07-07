@@ -17,6 +17,7 @@ import type {
   MemoryProvider,
   KBEntry,
   KBEntryInput,
+  CaptureOpts,
   QueryOptions,
   KBResult,
   FileContextResult,
@@ -604,7 +605,7 @@ export class SqliteProvider implements MemoryProvider {
     }
   }
 
-  async capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }> {
+  async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<{ id: string; audn_decision: AudnDecision }> {
     const db = this.getDb();
     const now = new Date().toISOString();
 
@@ -649,15 +650,34 @@ export class SqliteProvider implements MemoryProvider {
     // explicit type check keeps that intent legible. Keep this block AFTER the
     // directive gate.
     //
-    // SEAM for T2.1 (F4 import mode): import is the SOLE capture()-level
-    // exemption to this clamp. T2.1 threads an internal import-mode flag -- a
-    // SECOND parameter of capture(), NEVER a field of the deserialized input
-    // (the HTTP route passes exactly one argument, so a second parameter is
-    // structurally unreachable from any deserialized route) -- and gates this
-    // block on that flag being unset. Do NOT add that flag here; T2.1 owns it.
+    // T2.1 (F4, D3, MEDIUM-4) PROVENANCE NORMALIZATION -- runs BEFORE the clamp,
+    // AFTER the directive gate. insertEntry() persists input.source verbatim, so
+    // the two PRIVILEGED provenance values -- 'import' (the kb_import trusted
+    // channel) and 'promotion' (stamped only by promote(), which never calls
+    // capture()) -- must never be settable by a deserialized route body. When the
+    // internal import mode is NOT engaged, a caller-supplied source of 'import'
+    // or 'promotion' is OVERWRITTEN with 'unknown' (we mark provenance we cannot
+    // vouch for, rather than lying with 'session'). Under import mode the tool's
+    // own source='import' is legitimate and survives. Without this, an HTTP
+    // caller could stamp forged trusted-channel provenance (clamped, but
+    // mislabeled -- audits keyed on source='import' would trust forged rows).
+    if (!opts?.importMode && (input.source === 'import' || input.source === 'promotion')) {
+      input = { ...input, source: 'unknown' };
+    }
+
+    // T2.1 (F4, D3): import is the SOLE capture()-level exemption to this clamp.
+    // The internal import-mode flag is a SECOND parameter of capture() (opts),
+    // NEVER a field of the deserialized input (the HTTP route passes exactly one
+    // argument and the MCP handler builds input from zod fields, so a second
+    // parameter is structurally unreachable from any deserialized route -- R4).
+    // When import mode is engaged, a NON-directive entry keeps its bible
+    // confidence: the bible is a git-reviewed, human-merged artifact (the trusted
+    // channel) and re-clamping would demote the whole team's CONFIRMED knowledge
+    // on every import. The directive gate above still ran first, so a bible
+    // cannot smuggle an active directive even under import mode.
     // String concatenation (not a template literal) per the ASCII pre-commit
     // hook's backtick-escape false-positive.
-    if (input.type !== 'user-directive' && input.confidence === 'CONFIRMED') {
+    if (!opts?.importMode && input.type !== 'user-directive' && input.confidence === 'CONFIRMED') {
       input = {
         ...input,
         confidence: 'INFERRED',
@@ -678,10 +698,28 @@ export class SqliteProvider implements MemoryProvider {
       if (result) return result;
     }
 
-    const id = randomUUID();
+    // T2.1 (F4, D3, LOW-2): on the pure 'add' path, kb_import preserves the
+    // bible entry's id (opts.preferredId) so a re-import dedupes EXACTLY via the
+    // id-skip gate (kb_import checks hasEntry() before ever calling capture, so
+    // the id is guaranteed free here). AUDN's update/flagged branches above
+    // always mint a fresh randomUUID -- an id collision with different content is
+    // resolved by AUDN under a new id, never by overwriting the preserved id.
+    const id = opts?.preferredId ?? randomUUID();
     this.insertEntry(db, id, input, content, now, sourceFileHashes);
     this.wireLinks(db, id, input);
     return { id, audn_decision: 'add' };
+  }
+
+  // T2.1 (F4, D3, LOW-2): existence check for kb_import's per-entry id-skip --
+  // the FIRST gate, run BEFORE capture()/AUDN. Idempotency cannot rely on AUDN
+  // alone: AUDN dedupe needs symbol AND file overlap (symbolsOverlap/filesOverlap
+  // return false on empty arrays), so a symbol-less or file-less bible entry
+  // would re-add on every import if AUDN were the only guard. Checks ALL rows
+  // (superseded/stale included) so a previously-absorbed entry never re-adds, and
+  // -- unlike query({ids}) -- bumps no use_count/last_accessed telemetry.
+  hasEntry(id: string): boolean {
+    const row = this.getDb().prepare('SELECT 1 FROM entries WHERE id = ?').get(id);
+    return row !== undefined;
   }
 
   async query(opts: QueryOptions): Promise<KBResult> {

@@ -17,7 +17,14 @@ export type Confidence = 'CONFIRMED' | 'INFERRED' | 'UNVERIFIED';
 // from real KB-Agent captures (feedback.md LOW finding 6). This deviation
 // from D5's literal enum is recorded in progress.json notes for T2.3.
 export type Author = 'doer' | 'reviewer' | 'planner' | 'plan-reviewer' | 'kb-agent' | 'harvest' | 'pm' | 'user';
-export type CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'user-directive' | 'unknown';
+// T2.1 (F4, D3): 'import' is ADDED for the kb_import trusted-channel write path
+// -- entries absorbed from a git-reviewed, human-merged .fleet/kb-canonical.json
+// bible are stamped source='import' so provenance shows the channel. It is
+// STAMPED ONLY when the internal import mode is engaged (SqliteProvider.capture's
+// second, non-deserializable parameter); a caller-supplied 'import' (or
+// 'promotion') arriving via a deserialized route body is normalized away
+// (MEDIUM-4). See SqliteProvider.capture.
+export type CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'import' | 'user-directive' | 'unknown';
 
 export type AudnDecision = 'add' | 'update' | 'flagged' | 'none';
 
@@ -59,6 +66,21 @@ export interface KBEntry {
 }
 
 export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'superseded_at' | 'use_count' | 'last_accessed'>;
+
+// T2.1 (F4, D3, R4): internal-only options for SqliteProvider.capture(). This is
+// a SECOND parameter of capture() -- deliberately NOT a field of KBEntryInput --
+// so it is structurally unreachable from every deserialized route: the HTTP
+// /api/kb/capture route does capture(JSON.parse(body)) with exactly one argument
+// and the kb_capture MCP handler builds the input from zod-parsed fields and
+// calls capture({...}) with one argument. Only in-process callers (kb_import)
+// can set it. importMode grants the SOLE clamp exemption (bible confidence is
+// preserved for non-directive types) and suppresses provenance normalization so
+// source='import' survives; preferredId lets kb_import preserve a bible entry's
+// id on the pure 'add' path (exact re-import idempotency).
+export interface CaptureOpts {
+  importMode?: boolean;
+  preferredId?: string;
+}
 
 export interface QueryOptions {
   query?: string;
