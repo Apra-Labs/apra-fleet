@@ -31,6 +31,11 @@ jobs:
             runner: ubuntu-latest
           - os: macos-latest
             runner: macos-latest
+          # Pinned to windows-2022, not windows-latest: windows-latest migrated
+          # to windows-2025-vs2026 (Visual Studio 18), and node-gyp 11.5.0 fails
+          # VS detection against VS 18 with a maxBuffer error, breaking native
+          # module compilation. windows-2022 ships VS 17, which node-gyp fully
+          # supports. Revisit when node-gyp supports VS 18 (commit 2ff1a5a).
           - os: windows-latest
             runner: windows-2022
 
@@ -147,6 +152,10 @@ jobs:
             binary: apra-fleet-installer-linux-x64
           - os: macos-latest
             binary: apra-fleet-installer-darwin-arm64
+          # windows-2022 (VS 17), not windows-latest (VS 18): node-gyp 11.5.0
+          # cannot detect VS 18, which breaks the native-module build behind the
+          # single-executable binary. See the build-and-test matrix above and
+          # commit 2ff1a5a.
           - os: windows-2022
             binary: apra-fleet-installer-win-x64.exe
     runs-on: ${{ matrix.os }}
