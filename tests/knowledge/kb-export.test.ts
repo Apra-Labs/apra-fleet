@@ -172,4 +172,52 @@ describe('kb_export (T3.4, F8b, D8)', () => {
   it('rejects a repo_path that does not exist', async () => {
     await expect(kbExport({ repo_path: path.join(tmpDir, 'does-not-exist') })).rejects.toThrow();
   });
+
+  // F4 (T1.6): repo path resolution precedence -- explicit input > validated
+  // session context (process.cwd(), validated) > refuse with a clear error.
+  // No bare process.cwd() fallback: the session-context tier is validated
+  // the same way explicit input is.
+  describe('repo path precedence (F4, T1.6)', () => {
+    let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+    afterEach(() => {
+      cwdSpy?.mockRestore();
+    });
+
+    it('falls back to the validated session working directory when repo_path is omitted', async () => {
+      const { id } = await provider.capture(makeInput({ title: 'Session-context entry' }));
+      await provider.promote(id, 'confirmed for test');
+
+      cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+      const result = JSON.parse(await kbExport({}));
+      expect(result.exported).toBe(1);
+
+      const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+      expect(written).toHaveLength(1);
+    });
+
+    it('explicit repo_path input takes precedence over the session working directory', async () => {
+      const { id } = await provider.capture(makeInput({ title: 'Explicit-wins entry' }));
+      await provider.promote(id, 'confirmed for test');
+
+      const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-other-'));
+      try {
+        cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(otherDir);
+        await kbExport({ repo_path: tmpDir });
+
+        expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'))).toBe(true);
+        expect(fs.existsSync(path.join(otherDir, '.fleet', 'kb-canonical.json'))).toBe(false);
+      } finally {
+        fs.rmSync(otherDir, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses with a clear error when neither explicit input nor the session working directory validate', async () => {
+      const missingCwd = path.join(tmpDir, 'does-not-exist-cwd');
+      cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(missingCwd);
+
+      await expect(kbExport({})).rejects.toThrow('repo_path does not exist or is not a directory');
+      expect(fs.existsSync(path.join(missingCwd, '.fleet'))).toBe(false);
+    });
+  });
 });

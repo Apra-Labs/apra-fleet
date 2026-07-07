@@ -11,6 +11,17 @@ export const kbSessionPrimeSchema = z.object({
   session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
   hint_symbols: z.array(z.string()).optional().describe('Symbols likely to be relevant'),
   hint_modules: z.array(z.string()).optional().describe('Module names likely to be relevant'),
+  // F4 (T1.6): repo path resolution precedence for the canonical-bible
+  // cold-seed below -- (1) this explicit repo_path input, validated (must
+  // exist and be a directory); (2) validated session context -- this
+  // process's own working directory, used ONLY when repo_path is omitted,
+  // put through the exact same existence + isDirectory check, never trusted
+  // blindly; (3) neither validates -- the cold-seed block is skipped
+  // silently (the existing non-fatal hard-skip contract: prime must never
+  // fail because the repo root could not be validated). There is no bare
+  // process.cwd() fallback: the fallback tier is validated the same way
+  // explicit input is.
+  repo_path: z.string().optional().describe('Repo root for the canonical-bible cold-seed (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to the validated session working directory; if neither validates, the cold-seed merge is skipped silently.'),
 });
 
 export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;
@@ -67,6 +78,18 @@ function canonicalMatchesHints(
   if (hintSymbols.length > 0 && entry.symbols.some(s => hintSymbols.includes(s))) return true;
   if (hintModules.length > 0 && entry.source_files.some(f => hintModules.some(m => f.includes(m)))) return true;
   return false;
+}
+
+// F4 (T1.6): shared validation for both precedence tiers -- an explicit
+// repo_path (tier 1) and the session working directory fallback (tier 2, used
+// only when repo_path is omitted) go through the identical existence +
+// isDirectory check. Neither tier is ever trusted without it. Returns null
+// (rather than throwing) when nothing validates, so the caller can hard-skip
+// per the existing non-fatal cold-seed contract.
+function resolveRepoPath(explicit?: string): string | null {
+  const candidate = explicit || process.cwd();
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) return null;
+  return candidate;
 }
 
 function toCanonicalKBEntry(e: CanonicalBibleEntry): KBEntry & { via: string } {
@@ -247,9 +270,9 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   // exactly as built above (same contract as the neighbor block).
   if ((result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
-      const repoRoot = process.cwd();
-      const canonicalPath = path.join(repoRoot, '.fleet', 'kb-canonical.json');
-      if (fs.existsSync(canonicalPath)) {
+      const repoRoot = resolveRepoPath(input.repo_path);
+      const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
+      if (canonicalPath && fs.existsSync(canonicalPath)) {
         const raw = fs.readFileSync(canonicalPath, 'utf-8');
         const parsed = JSON.parse(raw) as unknown;
 

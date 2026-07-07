@@ -9,9 +9,18 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // exported helper) so the KB Agent -- which is MCP-only, it has no shell/git
 // access -- can invoke it directly after kb_promote. The PM commits the
 // resulting file; this tool only writes it to disk.
+// F4 (T1.6): repo path resolution precedence -- (1) explicit repo_path input,
+// validated (must exist and be a directory) or kb_export refuses with a clear
+// error; (2) validated session context -- this process's own working
+// directory, used ONLY when repo_path is omitted, and put through the exact
+// same existence + isDirectory check as an explicit path, never trusted
+// blindly; (3) neither validates -- kb_export refuses with a clear error
+// rather than silently writing relative to an arbitrary path. There is no
+// bare process.cwd() fallback: the fallback tier is validated the same way
+// explicit input is.
 export const kbExportSchema = z.object({
   repo_path: z.string().optional()
-    .describe('Path to the repo root to write .fleet/kb-canonical.json into (default: current directory)'),
+    .describe('Path to the repo root to write .fleet/kb-canonical.json into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error.'),
 });
 
 export type KbExportInput = z.infer<typeof kbExportSchema>;
@@ -56,11 +65,20 @@ function asciiSafeStringify(value: unknown): string {
   return out;
 }
 
-export async function kbExport(input: KbExportInput): Promise<string> {
-  const repoPath = input.repo_path || process.cwd();
-  if (!fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
-    throw new Error('kb_export: repo_path does not exist or is not a directory: ' + repoPath);
+// F4 (T1.6): shared validation for both precedence tiers -- an explicit
+// repo_path (tier 1) and the session working directory fallback (tier 2, used
+// only when repo_path is omitted) go through the identical existence +
+// isDirectory check. Neither tier is ever trusted without it.
+function resolveRepoPath(explicit?: string): string {
+  const candidate = explicit || process.cwd();
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
+    throw new Error('kb_export: repo_path does not exist or is not a directory: ' + candidate);
   }
+  return candidate;
+}
+
+export async function kbExport(input: KbExportInput): Promise<string> {
+  const repoPath = resolveRepoPath(input.repo_path);
 
   const providers = await getKbProviders();
   const entries = await providers.project.list({ confidence: 'CONFIRMED' });

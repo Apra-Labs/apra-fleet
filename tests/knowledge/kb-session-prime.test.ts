@@ -581,4 +581,72 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
 
     expect(parsed.top_entries[0].id).toBe('matchB');
   });
+
+  // F4 (T1.6): repo path resolution precedence -- explicit repo_path input >
+  // validated session context (process.cwd(), validated) > skip silently.
+  // No bare process.cwd() fallback: the session-context tier is validated
+  // the same way explicit input is, and an invalid explicit input does NOT
+  // fall through to cwd.
+  describe('repo path precedence (F4, T1.6)', () => {
+    it('explicit repo_path takes precedence over the session working directory', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      // cwd points somewhere with NO canonical file; explicit repo_path
+      // points at bibleTmpDir, which HAS one.
+      const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-empty-'));
+      cwdSpy.mockReturnValue(emptyDir);
+      try {
+        const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+        const parsed = JSON.parse(await kbSessionPrime({ repo_path: bibleTmpDir }));
+
+        expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
+      } finally {
+        fs.rmSync(emptyDir, { recursive: true, force: true });
+      }
+    });
+
+    it('invalid explicit repo_path skips silently -- no fallback to the session working directory', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      // cwd (bibleTmpDir) DOES have a valid canonical file, but the explicit
+      // repo_path below does not exist -- it must not silently fall back to
+      // the cwd tier.
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({
+        repo_path: path.join(bibleTmpDir, 'does-not-exist'),
+      }));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+      expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+    });
+
+    it('omitted repo_path falls back to the validated session working directory', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
+    });
+
+    it('neither explicit repo_path nor the session working directory validate -- skips silently', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      // cwd is valid AND has a canonical file, but that must not matter once
+      // an explicit (invalid) repo_path is given -- and separately, an
+      // invalid cwd with no explicit repo_path must also skip silently.
+      const missingCwd = path.join(bibleTmpDir, 'does-not-exist-cwd');
+      cwdSpy.mockReturnValue(missingCwd);
+
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+      expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+    });
+  });
 });
