@@ -131,6 +131,11 @@ design.md if present).
 Knowledge bank: before exploring the codebase call kb_session_prime with
 hint_symbols and hint_modules derived from the requirements. Read every entry in
 top_entries -- prior sprint knowledge informs model assignment and task descriptions.
+Then call kb_stats with the plan's key symbols (F10, D9): coverage >= 0.8 -> lean
+cheap/standard for tasks on those symbols; coverage < 0.3 -> lean premium and
+front-load the risk; between is a judgment call. PLAN.md's model rationale MUST
+cite the coverage number. If kb_stats is unavailable, record coverage
+qualitatively instead in a "Planning context" section of PLAN.md.
 For symbol lookups and call graph questions use code intelligence tools
 (code_graph, code_impact, code_query, code_context) -- never Glob/Grep for
 structural queries.

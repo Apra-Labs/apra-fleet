@@ -20,6 +20,29 @@ Read every entry in `top_entries`. Let prior sprint knowledge inform your planni
 
 If the KB is empty (first sprint on this repo), skip and proceed normally.
 
+### Quantitative model assignment (F10, D9)
+
+After `kb_session_prime`, call `kb_stats` with the plan's key symbols (the
+symbols the sprint's tasks will actually touch) and use the returned
+`coverage.fraction` to sharpen the qualitative judgment above into a number:
+
+- coverage >= 0.8 -> lean cheap/standard for tasks on those symbols
+  (well-understood, low reasoning risk).
+- coverage < 0.3 -> lean premium and front-load the risk (Task 1) --
+  unexplored territory.
+- between 0.3 and 0.8 -> judgment call; weigh the qualitative KB signals above
+  (non-obvious constraints, contradiction flags) alongside the number.
+
+**PLAN.md's model rationale MUST cite the coverage number** (e.g. "coverage
+0.85 across {symbols} -> claude-sonnet-4-6"), not just a qualitative
+impression.
+
+**Fallback:** if `kb_stats` is unavailable (tool error, not yet built in this
+sprint, or the KB has no symbols yet), record coverage qualitatively instead
+in a "Planning context" section of PLAN.md -- state explicitly that the
+quantitative trial was skipped and why, so the citation requirement is still
+honestly satisfied.
+
 ## Code Intelligence (use while planning)
 
 For symbol lookups, call chain tracing, and impact analysis while planning,
@@ -57,6 +80,10 @@ lint + full test suite and pushes the branch -- it has no model assignment.
 Symbols with CONFIRMED KB coverage -> lean toward standard or cheap (well-understood).
 Symbols with no KB entries -> lean toward premium (unknown territory).
 
+Quantify this with `kb_stats` coverage per the numbered thresholds above
+(>= 0.8 cheap/standard, < 0.3 premium + front-load, between is judgment) --
+cite the coverage number in the rationale, don't just eyeball `top_entries`.
+
 ### Front-loading
 
 The riskiest, most ambiguous task must be Task 1. Do not defer risk to later phases.
@@ -69,6 +96,8 @@ Re-read PLAN.md. Check:
 - Task 1 is the riskiest
 - KB-derived facts appear in task descriptions where relevant
 - No task spans more than one concern
+- The model rationale cites the `kb_stats` coverage number (or, if `kb_stats`
+  was unavailable, a qualitative "Planning context" section explains why)
 
 ## Output
 
