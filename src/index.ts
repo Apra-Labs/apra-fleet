@@ -187,6 +187,7 @@ async function startServer() {
   const { kbQuerySchema, kbQuery } = await import('./tools/kb-query.js');
   const { kbListSchema, kbList } = await import('./tools/kb-list.js');
   const { kbExportSchema, kbExport } = await import('./tools/kb-export.js');
+  const { kbStatsSchema, kbStats } = await import('./tools/kb-stats.js');
   const { kbHarvestSchema, kbHarvest } = await import('./tools/kb-harvest.js');
   const { kbPromoteSchema, kbPromote } = await import('./tools/kb-promote.js');
   const { kbSetupSchema, kbSetup } = await import('./tools/kb-setup.js');
@@ -378,6 +379,7 @@ async function startServer() {
   server.tool('kb_promote', 'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.', kbPromoteSchema.shape, wrapTool('kb_promote', (input) => kbPromote(input as any)));
   server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.', kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
   server.tool('kb_export', 'Export all CONFIRMED, non-superseded, non-stale project KB entries to <repo>/.fleet/kb-canonical.json (stable field set, deterministic id order, ASCII-safe). Run after kb_promote so the canonical set stays current; the PM commits the resulting file.', kbExportSchema.shape, wrapTool('kb_export', (input) => kbExport(input as any)));
+  server.tool('kb_stats', 'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it.', kbStatsSchema.shape, wrapTool('kb_stats', (input) => kbStats(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

@@ -15,6 +15,7 @@ import type {
   SyncResult,
   AudnDecision,
   Confidence,
+  ProviderStats,
 } from './types.js';
 
 const MAX_QUEUE_SIZE = 1000;
@@ -252,5 +253,26 @@ export class HttpKbProvider implements MemoryProvider {
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {
     return { synced: false, reason: 'local-only provider' };
+  }
+
+  // T2.1 (F5, D4): no /api/kb/stats route exists on the remote KB server yet,
+  // so this is a documented not-supported result -- NEVER throw. Returns a
+  // shape-complete ProviderStats (all-zero/null) so callers do not need a
+  // separate branch just to render an unsupported provider.
+  async stats(_opts?: { symbols?: string[] }): Promise<ProviderStats> {
+    return {
+      supported: false,
+      reason: 'kb_stats is not supported over the remote HTTP KB provider',
+      totals: {
+        by_confidence: { CONFIRMED: 0, INFERRED: 0, UNVERIFIED: 0 },
+        by_type: { 'context-cache': 0, learning: 0, knowledge: 0, runbook: 0, 'user-directive': 0 },
+        total: 0,
+      },
+      stale: 0,
+      flagged: 0,
+      superseded: 0,
+      retrieval: { entries_retrieved: 0, total_uses: 0, hit_rate: null },
+      promote_ratio: null,
+    };
   }
 }

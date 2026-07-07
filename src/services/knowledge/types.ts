@@ -111,6 +111,46 @@ export interface StalenessResult {
   currentHash?: string;
 }
 
+// T2.1 (F5, D4): kb_stats read-only aggregation shapes. totals/stale/flagged/
+// superseded are raw table-wide counts (no liveness filter) -- they exist to
+// show the full volume alongside the "live" subset used by retrieval.hit_rate
+// and coverage (resolution 6: hit_rate = entries_retrieved / total LIVE
+// entries, where live = superseded_at IS NULL AND stale = 0). promote_ratio
+// and hit_rate are null (not 0/NaN) when their denominator is zero (no
+// CONFIRMED entries / no live entries yet) -- an empty KB reports null, not a
+// misleading 0.
+export interface KbTotals {
+  by_confidence: Record<Confidence, number>;
+  by_type: Record<ContentType, number>;
+  total: number;
+}
+
+export interface KbRetrievalStats {
+  entries_retrieved: number;
+  total_uses: number;
+  hit_rate: number | null;
+}
+
+export interface KbCoverage {
+  fraction: number;
+  symbols: Record<string, boolean>;
+}
+
+export interface ProviderStats {
+  // Present (false) only on a provider that cannot compute stats at all (D4:
+  // HttpKbProvider returns a documented not-supported result rather than
+  // throwing). Absent/true on SqliteProvider's real computation.
+  supported?: boolean;
+  reason?: string;
+  totals: KbTotals;
+  stale: number;
+  flagged: number;
+  superseded: number;
+  retrieval: KbRetrievalStats;
+  promote_ratio: number | null;
+  coverage?: KbCoverage;
+}
+
 export interface SyncOptions {
   direction?: 'push' | 'pull' | 'both';
   peer?: string;
@@ -137,4 +177,9 @@ export interface MemoryProvider {
   prime(opts: PrimeOptions): Promise<PrimedContext>;
   promote(id: string, reason?: string): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
   sync(opts?: SyncOptions): Promise<SyncResult>;
+  // T2.1 (F5, D4): dedicated no-bump aggregation read (kb_list pattern -- never
+  // touches use_count/last_accessed). Part of the interface (not just
+  // SqliteProvider, unlike list()) because D4 binds HttpKbProvider to a
+  // documented not-supported result rather than an absent method.
+  stats(opts?: { symbols?: string[] }): Promise<ProviderStats>;
 }

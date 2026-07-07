@@ -27,6 +27,7 @@ import type {
   AudnDecision,
   Confidence,
   CodeIntelCall,
+  ProviderStats,
 } from './types.js';
 
 const CONTENT_CAP = 4000;
@@ -951,6 +952,95 @@ export class SqliteProvider implements MemoryProvider {
 
   async sync(opts?: SyncOptions): Promise<SyncResult> {
     return { synced: false, reason: 'local-only provider' };
+  }
+
+  // T2.1 (F5, D4): dedicated no-bump aggregation read, following the kb_list
+  // pattern -- every query below is a plain SELECT/COUNT/GROUP BY, never an
+  // UPDATE, so use_count/last_accessed telemetry is untouched (inspecting the
+  // KB's health is not "retrieval" for that purpose, same rationale as list()).
+  //
+  // "Live" (used for retrieval.hit_rate's denominator and coverage, per
+  // resolution 6 and D4) means superseded_at IS NULL AND stale = 0 --
+  // identical to list()'s and query()'s default filter. totals/stale/
+  // flagged/superseded below are deliberately UNFILTERED (whole-table counts)
+  // so they show full volume; only retrieval.hit_rate and coverage are
+  // liveness-scoped.
+  async stats(opts?: { symbols?: string[] }): Promise<ProviderStats> {
+    const db = this.getDb();
+
+    const byConfidenceRows = db.prepare(
+      'SELECT confidence, COUNT(*) as c FROM entries GROUP BY confidence'
+    ).all() as { confidence: Confidence; c: number }[];
+    const by_confidence: Record<Confidence, number> = { CONFIRMED: 0, INFERRED: 0, UNVERIFIED: 0 };
+    let total = 0;
+    for (const row of byConfidenceRows) {
+      by_confidence[row.confidence] = row.c;
+      total += row.c;
+    }
+
+    const byTypeRows = db.prepare(
+      'SELECT type, COUNT(*) as c FROM entries GROUP BY type'
+    ).all() as { type: KBEntry['type']; c: number }[];
+    const by_type: Record<KBEntry['type'], number> = {
+      'context-cache': 0,
+      'learning': 0,
+      'knowledge': 0,
+      'runbook': 0,
+      'user-directive': 0,
+    };
+    for (const row of byTypeRows) {
+      by_type[row.type] = row.c;
+    }
+
+    const staleRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE stale = 1').get() as { c: number };
+    const flaggedRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE flagged_for_review = 1').get() as { c: number };
+    const supersededRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE superseded_at IS NOT NULL').get() as { c: number };
+
+    const liveRow = db.prepare(
+      'SELECT COUNT(*) as c FROM entries WHERE superseded_at IS NULL AND stale = 0'
+    ).get() as { c: number };
+    const totalLive = liveRow.c;
+
+    const retrievedRow = db.prepare(
+      'SELECT COUNT(*) as c FROM entries WHERE use_count > 0 AND superseded_at IS NULL AND stale = 0'
+    ).get() as { c: number };
+    const totalUsesRow = db.prepare('SELECT COALESCE(SUM(use_count), 0) as s FROM entries').get() as { s: number };
+    const hit_rate = totalLive > 0 ? retrievedRow.c / totalLive : null;
+
+    const confirmedRow = db.prepare("SELECT COUNT(*) as c FROM entries WHERE confidence = 'CONFIRMED'").get() as { c: number };
+    const promotedRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE promoted_at IS NOT NULL').get() as { c: number };
+    const promote_ratio = confirmedRow.c > 0 ? promotedRow.c / confirmedRow.c : null;
+
+    const result: ProviderStats = {
+      totals: { by_confidence, by_type, total },
+      stale: staleRow.c,
+      flagged: flaggedRow.c,
+      superseded: supersededRow.c,
+      retrieval: { entries_retrieved: retrievedRow.c, total_uses: totalUsesRow.s, hit_rate },
+      promote_ratio,
+    };
+
+    if (opts?.symbols?.length) {
+      const symbolStmt = db.prepare(`
+        SELECT COUNT(*) as c FROM entries
+        WHERE confidence = 'CONFIRMED' AND superseded_at IS NULL AND stale = 0
+          AND EXISTS (SELECT 1 FROM json_each(symbols) WHERE value = ?)
+      `);
+      const symbols: Record<string, boolean> = {};
+      let trueCount = 0;
+      for (const symbol of opts.symbols) {
+        const row = symbolStmt.get(symbol) as { c: number };
+        const covered = row.c > 0;
+        symbols[symbol] = covered;
+        if (covered) trueCount++;
+      }
+      result.coverage = {
+        fraction: opts.symbols.length > 0 ? trueCount / opts.symbols.length : 0,
+        symbols,
+      };
+    }
+
+    return result;
   }
 
   close(): void {
