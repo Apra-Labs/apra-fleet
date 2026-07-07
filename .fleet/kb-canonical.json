@@ -51,6 +51,22 @@
     "updated_at": "2026-07-06T13:38:10.464Z"
   },
   {
+    "id": "13ea4d65-72ef-4b68-b325-565f331446d5",
+    "type": "knowledge",
+    "title": "kb_export bible includes only CONFIRMED, stale=0, non-superseded entries",
+    "summary": "kbExport calls provider.list({confidence:'CONFIRMED'}) and list() hard-filters superseded_at IS NULL AND stale=0. Any reconcile winner that ends UNVERIFIED/INFERRED or stale=1 is silently absent from .fleet/kb-canonical.json. The reconcile ladder must end the winner at CONFIRMED and stale=0 or the exported bible will not reflect the reconciled truth.",
+    "symbols": [
+      "kbExport",
+      "list"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:23.681Z"
+  },
+  {
     "id": "15eabb3f-5fd6-49cc-b996-43d4e2abd1a7",
     "type": "knowledge",
     "title": "CALLS-edge cypher call-graph recipe: verified working on gitnexus 1.6.7",
@@ -446,6 +462,23 @@
     "updated_at": "2026-07-07T07:52:16.783Z"
   },
   {
+    "id": "57a03d39-fd87-47ab-ad5e-2f182f3952b9",
+    "type": "knowledge",
+    "title": "kb_resolve_contradiction needs pair-linkage verification and flag-clear-before-predicate order",
+    "summary": "Two residual gaps in the hardened D4 resolveContradiction spec (plan 3374fc9): (1) the MCP-exposed tool refuses only missing ids and active-directive pairs, not unlinked ids -- without verifying contradiction_of linkage it is a one-call UNVERIFIED->CONFIRMED mint plus one-call permanent supersede of any entry pair; (2) the winner path lists predicate-guarded un-stale BEFORE flag clearing, but the shared D2 predicate contains flagged_for_review=0, so a flagged old-side winner fails the predicate and stays stale, excluded from the bible.",
+    "symbols": [
+      "resolveContradiction",
+      "flaggedPairs",
+      "makeAudnDecision"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/audn.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:29:01.833Z"
+  },
+  {
     "id": "57fc6968-6fd8-4de6-99d6-cd1a790f3192",
     "type": "knowledge",
     "title": "Version handshake: compiled-in vs on-disk mismatch detection (T2.4, F7/D6)",
@@ -478,6 +511,27 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-07T04:44:35.106Z"
+  },
+  {
+    "id": "5edfa184-305a-4896-afbc-3450937bc1c7",
+    "type": "learning",
+    "title": "T1.3 shared un-stale predicate + freshnessSweep for reuse by import/reconcile",
+    "summary": "SqliteProvider now has a shared un-stale eligibility predicate freshnessRevivable() plus a full-KB bidirectional freshnessSweep(). T2.1 kb_import calls freshnessSweep() after its entry loop; T3.1 resolveContradiction's winner path must reuse the SAME predicate (not a copy) to clear stale only when safe.",
+    "symbols": [
+      "freshnessSweep",
+      "freshnessRevivable",
+      "basisFullyMatches",
+      "checkFreshness",
+      "parseBasis",
+      "kbFreshnessSweep"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-freshness-sweep.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:06:23.327Z"
   },
   {
     "id": "601c8a65-27c5-4b5b-af99-f89803d7b745",
@@ -568,6 +622,22 @@
     "updated_at": "2026-07-06T14:25:17.458Z"
   },
   {
+    "id": "719b1c16-83bc-44c6-a1e5-3e2cce4d5f50",
+    "type": "knowledge",
+    "title": "Phase 1 suite isolation fix achieves zero failures (T1.1)",
+    "summary": "Test isolation fix (T1.1, commit 9ece587) resolves cwd cold-seed leak and sub-hour TZ assertion flakes. Full suite: 2006 passed, 14 skipped, 0 FAILED. Six-failure allowlist is retired.",
+    "symbols": [
+      "kb_session_prime",
+      "checkFreshness"
+    ],
+    "source_files": [
+      "tests/knowledge/kb-session-prime.test.ts",
+      "tests/time-utils.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:26:56.645Z"
+  },
+  {
     "id": "75ade624-765b-4ac4-b595-999282cfd98e",
     "type": "context-cache",
     "title": "code intelligence health section in check-status",
@@ -631,6 +701,22 @@
     "updated_at": "2026-07-06T14:57:28.715Z"
   },
   {
+    "id": "7f31b39d-7e27-407e-bc5a-0107423e529a",
+    "type": "knowledge",
+    "title": "Prefilter flag-clear on a downvoted winner can launder a feedback downvote",
+    "summary": "feedback() and the contradiction flag share the single flagged_for_review bit. An entry that is both contradiction-flagged and feedback-downvoted (stale=1, flagged=1, '[feedback ...]' content note, superseded_at NULL) can win the hash prefilter; clearing its flag makes it satisfy the D2 un-stale predicate, so a later sweep revives it -- erasing the downvote. The loser side is always safe (supersede sets superseded_at). Disambiguator: contradiction flag alone leaves stale=0; only feedback sets stale+flag together, plus the content note.",
+    "symbols": [
+      "feedback",
+      "approveDirective",
+      "promote"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:14:04.278Z"
+  },
+  {
     "id": "83726d75-4af9-442c-abf2-0f215fb19c77",
     "type": "knowledge",
     "title": "FTS5 implicit-AND gotcha in KB multi-neighbor queries",
@@ -679,6 +765,24 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T20:30:38.096Z"
+  },
+  {
+    "id": "89c3f703-58a2-4e67-af97-f51463da2e53",
+    "type": "knowledge",
+    "title": "HTTP /api/kb/capture cannot reach a second capture() arg but can forge source",
+    "summary": "src/commands/kb-server.ts:133-141 parses the request body as KBEntryInput and calls provider.capture(input) with exactly one argument, so an import-mode flag carried in a separate opts parameter of capture() is unreachable from HTTP. However input.source (and author) are caller-controlled and insertEntry writes input.source verbatim, so an HTTP caller can stamp source='import' on a clamped entry -- provenance forgery without confidence escalation.",
+    "symbols": [
+      "startKbServer",
+      "capture",
+      "insertEntry"
+    ],
+    "source_files": [
+      "src/commands/kb-server.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-capture.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:48.745Z"
   },
   {
     "id": "8de251dc-1fad-4b81-b424-ac9cdc9aceb0",
@@ -803,6 +907,22 @@
     "updated_at": "2026-07-06T10:51:49.005Z"
   },
   {
+    "id": "ac6cd709-dca9-4df7-8ce1-1e76759a7825",
+    "type": "knowledge",
+    "title": "LOW-1: kb_freshness_sweep hashes basis paths relative to process cwd (guidance for T2.1/T3.2)",
+    "summary": "freshnessSweep() re-hashes stored basis file paths via computeFileHashBatch with no repo anchoring; the tool exposes no repo/path parameter. Keep the invariant when wiring kb_import and kb_reconcile: both invoke sweep after resolving the repo, and /pm kb-reconcile runs in the merged worktree cwd, so both invoke it from the correct directory. Basis paths must remain worktree-relative so the sweep re-hash resolves the intended files. No change required in Phase 1.",
+    "symbols": [
+      "freshnessSweep",
+      "computeFileHashBatch"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-freshness-sweep.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:27:10.260Z"
+  },
+  {
     "id": "b7a35cbf-d7f5-44a4-b2de-f882460b0b54",
     "type": "knowledge",
     "title": "missingIndexResult pre-flight check (F3.1)",
@@ -920,6 +1040,24 @@
     "updated_at": "2026-07-07T04:44:40.490Z"
   },
   {
+    "id": "c5f1f415-b9be-4511-8241-c694253ab26b",
+    "type": "knowledge",
+    "title": "T1.2: Confidence clamp relocated into provider.capture() choke point (both handler + provider)",
+    "summary": "The INFERRED clamp for non-directive types is now enforced at SqliteProvider.capture() (after the directive gate) in addition to the kb_capture handler. Non-directive CONFIRMED downgrades to INFERRED + bracketed note. Directive path verified unchanged (test asserts UNVERIFIED + flagged + directive:pending, no double clamp note). promote() still mints CONFIRMED. HTTP route covered.",
+    "symbols": [
+      "kbCapture",
+      "SqliteProvider.capture",
+      "promote"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/commands/kb-server.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:27:25.827Z"
+  },
+  {
     "id": "c6789713-15f5-4b5e-96fd-59062fa22212",
     "type": "knowledge",
     "title": "Pre-flight validation pattern for external tooling (F3.1)",
@@ -934,6 +1072,22 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T11:09:15.749Z"
+  },
+  {
+    "id": "c724a84a-1794-48d5-8fe7-8a57665edf94",
+    "type": "knowledge",
+    "title": "AUDN flagged branch forces new contradiction entry to UNVERIFIED",
+    "summary": "In audn.ts makeAudnDecision, the contradiction path returns newEntryOverrides {confidence:'UNVERIFIED', contradiction_of:candidate.id, flagged_for_review:false} and flags only the EXISTING entry. So an imported bible entry that lands as a contradiction is stored UNVERIFIED regardless of import-mode confidence preservation, and the pair is asymmetric: old side carries flagged_for_review=1, new side carries contradiction_of.",
+    "symbols": [
+      "makeAudnDecision",
+      "evaluateAudn"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:16.443Z"
   },
   {
     "id": "cbc2e7ff-5e79-4c02-9f08-7bf00b0ecc1c",
@@ -970,6 +1124,36 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T22:18:45.991Z"
+  },
+  {
+    "id": "cfd839e8-954e-4298-bdc9-d90b7dec9cfe",
+    "type": "knowledge",
+    "title": "invalidate() is a fourth stale=1 actor the D2 un-stale predicate misses",
+    "summary": "SqliteProvider.invalidate() sets content_hash='invalidated' and stale=1 on context-cache entries but leaves flagged_for_review=0 and superseded_at NULL and does not touch source_file_hashes. The D2 un-stale predicate (stale=1 AND superseded_at IS NULL AND flagged_for_review=0 AND full basis match) would REVIVE an explicitly invalidated entry whose files never changed. Predicate needs content_hash != 'invalidated' as a fourth exclusion.",
+    "symbols": [
+      "invalidate",
+      "checkFreshness",
+      "feedback"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:40.195Z"
+  },
+  {
+    "id": "d036ab13-ba03-4ade-8ed8-f0d2dd5fcfbd",
+    "type": "knowledge",
+    "title": "CaptureSource union lacks 'import' -- F4 kb_import must extend it (types.ts:20)",
+    "summary": "Verified 2026-07-07 on feat/code-intelligence-abstraction: CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'user-directive' | 'unknown' (src/services/knowledge/types.ts:20). No 'import' member exists, so the kb-branch-reconcile F4 task must add 'import' to the union before stamping source='import' provenance on bible-imported entries (design D3).",
+    "symbols": [
+      "CaptureSource"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:02:51.566Z"
   },
   {
     "id": "d137252c-4bd7-4c0f-896b-869a4c3ec994",
@@ -1286,5 +1470,15 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T11:08:39.110Z"
+  },
+  {
+    "id": "ff1fc29f-fcbf-4c56-9daf-8bc8f594912a",
+    "type": "learning",
+    "title": "Phase 1 kb-branch-reconcile review APPROVED reviewer role",
+    "summary": "Phase 1 tasks reviewed and approved with one low finding. Tags sprint kb-branch-reconcile phase 1.",
+    "symbols": [],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:26:38.736Z"
   }
 ]
