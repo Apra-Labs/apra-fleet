@@ -16,6 +16,7 @@ import {
   ProviderInstallConfig
 } from './config.js';
 import { transformAgentForOpenCode } from './agent-transform.js';
+import { FLEET_DIR } from '../paths.js';
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -432,6 +433,29 @@ export function writeAgyWorkspaceOverlays(workFolder: string): void {
   }
 }
 
+// T3.4 (F9b, D8): copy the repo's committed .fleet/kb-canonical-global.json
+// (when present) into the shared global KB data dir
+// (~/.apra-fleet/data/knowledge/global/kb-canonical-global.json) so EVERY
+// project on this machine can see the platform-level global bible without
+// carrying it in its own repo. NON-FATAL on every path: absent source file ->
+// skip silently (not an error -- most repos never carry this file); any
+// read/copy failure (permissions, disk full, malformed path) -> warn and
+// continue. The installer must never fail because of the bible.
+function copyGlobalBible(repoCwd: string): void {
+  try {
+    const srcPath = path.join(repoCwd, '.fleet', 'kb-canonical-global.json');
+    if (!fs.existsSync(srcPath)) return;
+
+    const destDir = path.join(FLEET_DIR, 'knowledge', 'global');
+    fs.mkdirSync(destDir, { recursive: true });
+    const destPath = path.join(destDir, 'kb-canonical-global.json');
+    fs.copyFileSync(srcPath, destPath);
+    console.log('    [OK] Global knowledge bible copied to ' + destDir);
+  } catch (err) {
+    console.warn('    [WARN] Global knowledge bible copy skipped:', err instanceof Error ? err.message : String(err));
+  }
+}
+
 export async function runInstall(args: string[]): Promise<void> {
   // --help / -h guard — must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
@@ -792,6 +816,12 @@ Then re-run:  apra-fleet install`);
   } else {
     console.log('    Skipped: not in a git repository. Run apra-fleet install from your project root to set up KB.');
   }
+
+  // T3.4 (F9b, D8): distribute the committed global bible (if this repo
+  // carries one) to every project on the machine via the shared global KB
+  // data dir. Independent of the .git check above -- the source file's own
+  // presence is the only gate, and the step is fully non-fatal.
+  copyGlobalBible(repoCwd);
 
   // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
   try {

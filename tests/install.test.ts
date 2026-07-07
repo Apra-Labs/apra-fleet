@@ -178,3 +178,91 @@ describe('install step 8 — Beads task tracker', () => {
     warnSpy.mockRestore();
   });
 });
+
+// T3.4 (F9b, D8): installer copies the repo's committed
+// .fleet/kb-canonical-global.json (when present) into the shared global KB
+// data dir so every project on the machine can see it.
+describe('install step 9 — global bible copy (T3.4, F9b, D8)', () => {
+  // FLEET_DIR (src/paths.ts) resolves from APRA_FLEET_DATA_DIR (set by
+  // tests/setup.ts to a real tmp dir), NOT the mocked os.homedir() -- the env
+  // var takes precedence in paths.ts's own resolution order.
+  const globalBibleDestDir = path.join(process.env.APRA_FLEET_DATA_DIR!, 'knowledge', 'global');
+  const globalBibleDestPath = path.join(globalBibleDestDir, 'kb-canonical-global.json');
+  const globalBibleSrcPath = path.join(process.cwd(), '.fleet', 'kb-canonical-global.json');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(false);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+  });
+
+  it('file present -> copied to the shared global KB data dir (content equality via copyFileSync args)', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === globalBibleSrcPath) return true;
+      return false;
+    });
+
+    await runInstall([]);
+
+    const copyCall = vi.mocked(fs.copyFileSync).mock.calls.find(c => c[0] === globalBibleSrcPath);
+    expect(copyCall).toBeDefined();
+    expect(copyCall![1]).toBe(globalBibleDestPath);
+  });
+
+  it('absent -> install path unaffected (no copy attempted, install still succeeds)', async () => {
+    // Default makeFsMock() already returns false for kb-canonical-global.json.
+    await expect(runInstall([])).resolves.toBeUndefined();
+
+    const copyCall = vi.mocked(fs.copyFileSync).mock.calls.find(c => c[0] === globalBibleSrcPath);
+    expect(copyCall).toBeUndefined();
+  });
+
+  it('target dir is auto-created when the source bible is present', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === globalBibleSrcPath) return true;
+      return false;
+    });
+
+    await runInstall([]);
+
+    const mkdirCall = vi.mocked(fs.mkdirSync).mock.calls.find(c => c[0] === globalBibleDestDir);
+    expect(mkdirCall).toBeDefined();
+    expect(mkdirCall![1]).toEqual({ recursive: true });
+  });
+
+  it('copy failure does not throw out of the install step (non-fatal, warns)', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === globalBibleSrcPath) return true;
+      return false;
+    });
+    vi.mocked(fs.copyFileSync).mockImplementation((src: any) => {
+      if (src === globalBibleSrcPath) throw new Error('EACCES: permission denied');
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(runInstall([])).resolves.toBeUndefined();
+
+    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warns).toContain('Global knowledge bible copy skipped');
+  });
+});
