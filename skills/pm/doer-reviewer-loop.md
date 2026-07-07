@@ -139,6 +139,12 @@ qualitatively instead in a "Planning context" section of PLAN.md.
 For symbol lookups and call graph questions use code intelligence tools
 (code_graph, code_impact, code_query, code_context) -- never Glob/Grep for
 structural queries.
+Capture at discovery time: when exploring turns up something durable and non-obvious
+(a coding convention, structural pattern, architectural constraint, gotcha),
+kb_capture it immediately (type knowledge/learning, role hint planner) -- dedupe with
+kb_query first, one concern per entry, real symbols + source_files. Tag it
+['sprint:<sprint>', 'phase:<phase>'] (use this sprint's name and the relevant phase
+number) so the KB Agent can curate it later. Do not wait for harvest.
 Explore, draft, front-load risk (riskiest task first), self-critique, refine.
 Assign every work task the exact model to run it on (claude-haiku-4-5-20251001 for
 mechanical, claude-sonnet-4-6 for typical, claude-opus-4-8 for hard design),
@@ -183,11 +189,18 @@ hint_modules derived from your first task. Before reading an unfamiliar file cal
 kb_query first -- if KB returns a CONFIRMED or INFERRED entry, trust it and skip
 the source read. During work use code intelligence tools (code_graph, code_impact,
 code_query, code_context) for symbol lookups and call graph questions -- never
-Glob/Grep for structural queries. Do NOT call kb_capture or kb_harvest yourself --
-kb_harvest is auto-dispatched with your transcript after your session ends, and the
-KB Agent captures directly from your session output afterward. If a KB entry you
-retrieved proves wrong in practice, call kb_feedback with the entry id and what was
-wrong.
+Glob/Grep for structural queries. Capture at discovery time: when you discover
+something durable and non-obvious while exploring or implementing (a coding
+convention, structural pattern, architectural constraint, gotcha), kb_capture it
+immediately (type knowledge/learning, role hint doer) -- the clamp caps you at
+INFERRED, the KB Agent promotes what the reviewer's verdict validates. Dedupe with
+kb_query first, one concern per entry, real symbols + source_files. Tag every
+capture ['sprint:<sprint>', 'phase:<phase>'] (this sprint's name, phase <N>) so the
+KB Agent can curate it. Do not wait for harvest -- an uncaptured discovery is lost.
+Do NOT call kb_harvest yourself -- it is auto-dispatched with your transcript after
+your session ends as a backstop; the KB Agent's curation of your in-flight captures
+is the primary path. If a KB entry you retrieved proves wrong in practice, call
+kb_feedback with the entry id and what was wrong.
 ```
 
 ### reviewer
@@ -207,8 +220,16 @@ call kb_query first -- if KB returns a CONFIRMED or INFERRED entry, trust it and
 skip the source read. For who-else-calls and impact questions, use code_impact.
 During review use code intelligence tools (code_graph, code_impact, code_query,
 code_context) for structural questions about symbols and call chains -- never
-Glob/Grep for these queries. If a KB entry you retrieved proves wrong in practice,
-call kb_feedback with the entry id and what was wrong.
+Glob/Grep for these queries. Capture at discovery time: when reviewing turns up
+something durable and non-obvious (a coding convention, structural pattern,
+architectural constraint, gotcha the diff exposed), kb_capture it immediately (type
+knowledge/learning, role hint reviewer) -- the clamp caps you at INFERRED, the KB
+Agent promotes what your own verdict validates. Dedupe with kb_query first, one
+concern per entry, real symbols + source_files. Tag every capture
+['sprint:<sprint>', 'phase:<phase>'] (this sprint's name, phase <N>) so the KB Agent
+can curate it. Do not wait for harvest -- an uncaptured discovery is lost. If a KB
+entry you retrieved proves wrong in practice, call kb_feedback with the entry id and
+what was wrong.
 <transport line>.
 ```
 

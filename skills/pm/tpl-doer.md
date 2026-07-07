@@ -56,14 +56,27 @@ If this task requires secrets, API keys, or tokens (e.g., external API calls, pr
 
 - During work: use fleet code intelligence tools (code_graph, code_impact, code_query,
   code_context) for structural questions -- never plain-read files for call graph or
-  symbol lookup. Do NOT call kb_capture yourself -- the KB Agent handles all capturing
-  after your session ends. Your KB role is retrieval only.
+  symbol lookup.
+
+- Capture at discovery time: when you discover something durable and non-obvious while
+  exploring or working -- a coding convention, a structural pattern, an architectural
+  constraint, a gotcha -- call `kb_capture` on it IMMEDIATELY (type `knowledge` or
+  `learning`, role hint `doer`). The trust clamp caps in-flight captures at INFERRED;
+  the KB Agent promotes to CONFIRMED whatever the reviewer's verdict validates at
+  harvest time. Do not wait for harvest to write it down -- a discovery not captured
+  in-flight is lost, since the KB Agent only reconstructs from the diff and feedback.md
+  afterward. Before each capture, run `kb_query` to dedupe -- skip if an equivalent
+  entry already exists. Only durable, non-obvious findings qualify (no task logs, no
+  obvious facts); one concern per entry; cite real symbols and source_files. Tag every
+  in-flight capture with `['sprint:<sprint-name>', 'phase:<n>']` (the exact values are
+  in your dispatch prompt) so the KB Agent can find and curate this phase's captures.
 
 - You do not need to call `kb_harvest` yourself -- it has no session transcript to work
   from and is a no-op when called without one. The fleet auto-dispatches it with your
   full transcript after your session ends (a separate, low-trust path that produces
-  UNVERIFIED entries). The KB Agent runs after the reviewer and captures directly from
-  your session output and the reviewer's verdict -- that is the primary path.
+  UNVERIFIED entries). The KB Agent runs after the reviewer and curates your in-flight
+  captures against the reviewer's verdict, then captures any gaps they missed -- that is
+  the primary path now; harvest is a backstop.
 
 - If a KB entry you retrieved proves wrong in practice, call kb_feedback with the entry
   id and what was wrong.

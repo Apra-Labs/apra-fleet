@@ -20,6 +20,23 @@ Read every entry in `top_entries`. Let prior sprint knowledge inform your planni
 
 If the KB is empty (first sprint on this repo), skip and proceed normally.
 
+### Capture at discovery time
+
+Planning involves exploring the codebase before a single task exists to attribute a
+discovery to -- do not let that exploration evaporate. When you discover something
+durable and non-obvious while reading requirements.md/design.md or exploring code for
+model assignment -- a coding convention, a structural pattern, an architectural
+constraint, a gotcha -- call `kb_capture` on it IMMEDIATELY (type `knowledge` or
+`learning`, role hint `planner`). The trust clamp caps in-flight captures at INFERRED;
+the KB Agent promotes to CONFIRMED whatever the reviewer later validates. Do not wait
+for harvest -- a discovery not captured in-flight is lost. Before each capture, run
+`kb_query` to dedupe -- skip if an equivalent entry already exists. Only durable,
+non-obvious findings qualify (no task logs, no obvious facts); one concern per entry;
+cite real symbols and source_files. Tag every in-flight capture with
+`['sprint:<sprint-name>', 'phase:<n>']` (phase is the phase the finding is relevant to,
+typically the first phase that touches the symbol) so the KB Agent can find and curate
+these captures once that phase is reviewed.
+
 ### Quantitative model assignment (F10, D9)
 
 After `kb_session_prime`, call `kb_stats` with the plan's key symbols (the

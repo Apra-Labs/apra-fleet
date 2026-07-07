@@ -78,6 +78,17 @@ Commit feedback.md and push.
   the fleet code intelligence tools (code_graph, code_impact, code_query, code_context).
 - During work: use fleet code intelligence tools for cross-file tracing and symbol lookup -- never
   plain-read files for structural questions.
+- Capture at discovery time: when you discover something durable and non-obvious while
+  reviewing -- a coding convention, a structural pattern, an architectural constraint, a
+  gotcha the diff exposed -- call `kb_capture` on it IMMEDIATELY (type `knowledge` or
+  `learning`, role hint `reviewer`). The trust clamp caps in-flight captures at INFERRED;
+  the KB Agent promotes to CONFIRMED whatever your verdict validates at harvest time. Do
+  not wait for harvest -- a discovery not captured in-flight is lost. Before each
+  capture, run `kb_query` to dedupe -- skip if an equivalent entry already exists. Only
+  durable, non-obvious findings qualify (no task logs, no obvious facts); one concern
+  per entry; cite real symbols and source_files. Tag every in-flight capture with
+  `['sprint:<sprint-name>', 'phase:<n>']` (the exact values are in your dispatch prompt)
+  so the KB Agent can find and curate this phase's captures.
 - You do not need to call `kb_harvest` yourself -- it has no session transcript to work
   from and is a no-op when called without one. The fleet auto-dispatches it with your
   full transcript after your session ends (a separate, low-trust path that produces
@@ -85,6 +96,8 @@ Commit feedback.md and push.
 - If a KB entry you retrieved proves wrong in practice, call kb_feedback with the entry
   id and what was wrong.
 
-The KB Agent runs after you and captures directly from the full session into structured KB entries.
-Your APPROVED or CHANGES NEEDED verdict determines which entries the KB Agent promotes
-to CONFIRMED. You do not call kb_capture or kb_promote -- that is the KB Agent's job.
+The KB Agent runs after you and curates the phase's in-flight captures (yours and the
+doer's) against your verdict: entries describing APPROVED behavior get promoted to
+CONFIRMED with evidence, entries your verdict invalidates get flagged, the rest stay
+INFERRED. It then captures any gaps those in-flight captures missed -- a residual role,
+not the sole capturer. You do not call kb_promote -- that is the KB Agent's job.
