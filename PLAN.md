@@ -18,6 +18,12 @@ T2.1/T3.2 (trust-boundary wording), LOW-2 -> T2.1 (id-skip before AUDN +
 deterministic content synthesis). New resolution R7 records the
 resolveContradiction tool surface.
 
+REVISION 3: folds in re-review feedback.md at commit 52ef4fe (0 HIGH,
+2 MEDIUM, 1 LOW; all Round 1 findings verified fixed, R7 war-gamed). Two
+surgical T3.1(b) edits -- pair-linkage refusal (MEDIUM-1 R2) and winner-path
+flag-clear-BEFORE-predicate ordering + old-side flagged winner test
+(MEDIUM-2 R2) -- plus the LOW-1 R2 marker-anchoring note in T1.3.
+
 Risk order per design Phasing: F1 (test isolation) is the FIRST task of the
 sprint; from the task after it onward, every VERIFY requires ZERO test
 failures -- the allowed-failure list is retired permanently. Then F3 (clamp
@@ -259,6 +265,14 @@ feedback-downvoted entry must stay retired even if some later flow clears
 its flagged_for_review bit (the T3.1 winner path clears flags; the
 "[feedback " note is what survives). A superseded, downvoted, or invalidated
 entry must stay retired even if its files match again.
+MARKER ANCHORING (re-review LOW-1, 52ef4fe): implement the marker match
+anchored to what feedback() actually writes -- it appends two newlines +
+"[feedback " + ISO timestamp -- so match the newline-prefixed (or
+timestamp-anchored) form rather than a bare substring. Otherwise an entry
+whose content merely QUOTES the feedback note format (e.g. a learning ABOUT
+the kb_feedback mechanism; such entries exist in this very KB) would, once
+freshness-staled, be permanently excluded from revival. State the chosen
+pattern in the predicate comment.
 
 Two surfaces:
 (a) Extend checkFreshness() to do both directions over the primed candidate
@@ -491,8 +505,8 @@ Steps, in order:
 
 - id: T3.1
 - model: claude-sonnet-4-6
-- design: D4 (HARDENED a1d344d); KB a2781b82; feedback.md HIGH-1, MEDIUM-2,
-  MEDIUM-3
+- design: D4 (HARDENED a1d344d); KB a2781b82; feedback.md 91b2a2c HIGH-1,
+  MEDIUM-2, MEDIUM-3; re-review 52ef4fe MEDIUM-1, MEDIUM-2
 
 Description. Last sqlite-provider.ts change of the sprint (after T2.1).
 Three pieces: a pair reader, a dedicated resolution write path, and the
@@ -523,17 +537,35 @@ mechanical prefilter that drives it.
     (binding, hardened D4 -- this is the HIGH-1 fix that makes F6
     satisfiable, because kb_export filters CONFIRMED + stale=0 +
     superseded_at IS NULL):
-    - WINNER: set confidence='CONFIRMED' directly (regardless of starting
-      tier -- the merged code IS the verdict; reconcile is
-      verdict-equivalent) with the evidence note appended to content. Clear
-      the winner's stale ONLY via the D2 safe predicate (reuse T1.3's shared
-      predicate function -- one implementation): an invalidated
-      (content_hash='invalidated') or feedback-downvoted ("[feedback "
-      note) winner stays retired -- it wins the CONTRADICTION, not its
-      reputation (MEDIUM-2). Clear the winner's flag fields: on whichever
-      side each lives -- flagged_for_review=0 (old side) and
-      contradiction_of cleared/annotated (new side) per the asymmetry in
-      (a); define the exact column writes in the method.
+    - LINKAGE REFUSAL (re-review MEDIUM-1, binding): before writing
+      ANYTHING, the method verifies the two ids form a GENUINE contradiction
+      pair -- loser.contradiction_of === winner.id OR
+      winner.contradiction_of === loser.id (the AUDN asymmetry means the
+      pointer sits on either side depending on which side wins) -- AND both
+      rows exist AND neither is superseded. Refuse otherwise, nothing
+      written. Without this, any caller could mint CONFIRMED from any tier
+      in ONE call and permanently retire an arbitrary entry -- the method
+      reads both rows anyway (the directive refusal already requires it),
+      so the check is nearly free and matches the sprint's refusal-tested
+      choke-point standard.
+    - WINNER (operations in THIS order -- re-review MEDIUM-2): (1) set
+      confidence='CONFIRMED' directly (regardless of starting tier -- the
+      merged code IS the verdict; reconcile is verdict-equivalent) with the
+      evidence note appended to content; (2) clear the winner's flag fields
+      FIRST: on whichever side each lives -- flagged_for_review=0 (old
+      side) and contradiction_of cleared/annotated (new side) per the
+      asymmetry in (a); define the exact column writes in the method;
+      (3) THEN evaluate the D2 safe predicate (reuse T1.3's shared
+      predicate function -- one implementation) and clear stale ONLY if it
+      holds. The order matters: the predicate contains
+      flagged_for_review=0, so evaluating it before the flag-clear would
+      self-defeat for a flagged OLD-side winner (the branch-switch revival
+      scenario this sprint exists for) -- it would end CONFIRMED but
+      stale=1 and silently vanish from the bible. The durable exclusions
+      ("[feedback " marker, content_hash='invalidated') are unaffected by
+      the flag-clear, so an invalidated or feedback-downvoted winner still
+      stays retired -- it wins the CONTRADICTION, not its reputation
+      (MEDIUM-2 R1 preserved).
     - LOSER: superseded_at=now + stale=1 + flag cleared (retired with audit
       trail -- the existing loser invariant, which the reviewer verified
       safe: superseded_at is set alongside the flag-clear, so the loser can
@@ -542,8 +574,9 @@ mechanical prefilter that drives it.
     Expose as MCP tool kb_resolve_contradiction (thin handler,
     src/tools/kb-resolve-contradiction.ts, registered in src/index.ts) so
     the T3.2 reconciler agent uses the SAME write path (resolution R7).
-    The tool refuses when either id is missing or when the pair involves an
-    ACTIVE user-directive (below).
+    The tool refuses when either id is missing, when the ids are not a
+    genuinely linked contradiction pair (above), or when the pair involves
+    an ACTIVE user-directive (below).
 
 (c) Prefilter (surface per R1: MCP tool kb_reconcile_prefilter in
     src/tools/kb-reconcile-prefilter.ts backed by a provider method
@@ -580,12 +613,23 @@ Tests:
 5. Both-match and both-mismatch left alone; empty-basis left alone.
 6. Directive pair untouched even when the hash says the other side wins;
    kb_resolve_contradiction refuses directive pairs directly too.
+7. Old-side flagged winner (re-review MEDIUM-2): winner is the OLD side
+   (flagged_for_review=1, stale=1, matching basis, no feedback/invalidated
+   marker); after resolveContradiction it ends CONFIRMED + unflagged +
+   stale=0 and PASSES the list({confidence:'CONFIRMED'}) export filter
+   (proves the flag-clear-before-predicate order).
+8. Linkage refusal (re-review MEDIUM-1): two existing but UNLINKED entries
+   (neither's contradiction_of points at the other) -> refused, NOTHING
+   written (confidence, stale, flags, superseded_at all unchanged on both
+   rows). Also cover: missing id refused; linked-but-superseded member
+   refused.
 
 Done criteria:
 - All test groups green; npm run build clean; npm test ZERO failures.
 - flaggedPairs liveness contract stated in the doc comment; winner/loser
-  column writes explicit in resolveContradiction; D2 predicate reused, not
-  copied.
+  column writes explicit in resolveContradiction; the linkage refusal and
+  the flag-clear-before-predicate winner order both stated in the method
+  doc comment; D2 predicate reused, not copied.
 - kb_reconcile_prefilter AND kb_resolve_contradiction registered and
   callable; NEVER deletes anything.
 
@@ -753,7 +797,11 @@ Steps, in order:
   outcomes"). The agent needs a tool surface for it, so T3.1 registers
   kb_resolve_contradiction (thin handler over the provider method) and
   T3.2's template instructs the reconciler to use it instead of composing
-  kb_promote + kb_feedback for pair resolutions.
+  kb_promote + kb_feedback for pair resolutions. Re-review war-game
+  (52ef4fe): with the T3.1 linkage refusal and the
+  flag-clear-before-predicate winner order, R7 introduces no new hole --
+  the tool writes only to genuinely flagged, non-directive, non-superseded
+  pairs, and the loser invariant holds on every path.
 
 ## Task and model summary
 
