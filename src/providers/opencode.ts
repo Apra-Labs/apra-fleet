@@ -40,16 +40,16 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
     return {
-      cheap: 'ollama/qwen3-coder:30b',
-      standard: 'ollama/qwen3-coder:30b',
-      premium: 'ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M',
+      cheap: 'opencode/north-mini-code-free',
+      standard: 'opencode/deepseek-v4-flash-free',
+      premium: 'opencode/nemotron-3-ultra-free',
     };
   }
 
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
-    if (tier === 'premium') return 'ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M';
-    if (tier === 'cheap') return 'ollama/qwen3-coder:30b';
-    return 'ollama/qwen3-coder:30b';
+    if (tier === 'premium') return 'opencode/nemotron-3-ultra-free';
+    if (tier === 'cheap') return 'opencode/north-mini-code-free';
+    return 'opencode/deepseek-v4-flash-free';
   }
 
   modelFlag(model: string): string {

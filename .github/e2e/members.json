@@ -41,9 +41,7 @@
   "opencode": {
     "host": "192.168.1.102",
     "username": "akhil",
-    "work_folder": "/home/akhil/git/apra-fleet-e2e",
-    "endpoint": "http://localhost:11434/v1",
-    "_comment": "OpenCode uses a user-provisioned Ollama endpoint; CI must ensure Ollama is running and the model is pulled before the suite starts"
+    "work_folder": "/home/akhil/git/apra-fleet-e2e"
   },
   "toy_projects": {
     "github":    "https://github.com/Apra-Labs/fleet-e2e-toy",

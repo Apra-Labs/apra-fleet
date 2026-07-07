@@ -66,15 +66,15 @@ describe('OpenCodeProvider core methods', () => {
 
   it('modelTiers returns static defaults', () => {
     const tiers = p.modelTiers();
-    expect(tiers.cheap).toBe('ollama/qwen3-coder:30b');
-    expect(tiers.standard).toBe('ollama/qwen3-coder:30b');
-    expect(tiers.premium).toBe('ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M');
+    expect(tiers.cheap).toBe('opencode/north-mini-code-free');
+    expect(tiers.standard).toBe('opencode/deepseek-v4-flash-free');
+    expect(tiers.premium).toBe('opencode/nemotron-3-ultra-free');
   });
 
   it('modelForTier returns correct model', () => {
-    expect(p.modelForTier('cheap')).toBe('ollama/qwen3-coder:30b');
-    expect(p.modelForTier('mid')).toBe('ollama/qwen3-coder:30b');
-    expect(p.modelForTier('premium')).toBe('ollama/MichelRosselli/GLM-4.5-Air:Q4_K_M');
+    expect(p.modelForTier('cheap')).toBe('opencode/north-mini-code-free');
+    expect(p.modelForTier('mid')).toBe('opencode/deepseek-v4-flash-free');
+    expect(p.modelForTier('premium')).toBe('opencode/nemotron-3-ultra-free');
   });
 
   it('modelFlag', () => {

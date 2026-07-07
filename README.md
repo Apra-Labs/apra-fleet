@@ -4,6 +4,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
 
 ### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
 
@@ -51,33 +52,35 @@ You describe the goal, approve the plan once, and Fleet runs the doer-reviewer l
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet install                  # Claude Code (default)
-apra-fleet install --llm agy       # Google Antigravity CLI
-apra-fleet install --llm gemini    # Gemini CLI
-apra-fleet install --llm codex     # OpenAI Codex CLI
-apra-fleet install --llm opencode  # OpenCode (local/self-hosted models)
+apra-fleet                          # Claude Code (default) -- install is the default action
+apra-fleet --llm agy               # Google Antigravity CLI
+apra-fleet --llm gemini            # Gemini CLI
+apra-fleet --llm codex             # OpenAI Codex CLI
+apra-fleet --llm opencode          # OpenCode (local/self-hosted models)
 ```
 
-Run `install` once per provider you want to support. After install, load the
+Run once per provider you want to support. After install, load the
 server in Claude Code using `/mcp`, or restart your CLI for other providers.
 
 ### Option B -- standalone binary (no Node.js required)
 
-Copy-paste the one-liner for your platform:
+Download the installer for your platform from
+[GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
+**double-click it** (or run it from the terminal) -- installation is the default action.
 
 **macOS (Apple Silicon)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
 **Linux (x64)**
 ```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer install
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
-**Windows (x64)** -- run in PowerShell:
+**Windows (x64)** -- download `apra-fleet-installer-win-x64.exe` and double-click, or run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe install
+Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe
 ```
 
 > Installing for **Antigravity**, Codex, Copilot, Gemini, or **OpenCode** instead of
@@ -95,7 +98,11 @@ Verify it worked:
 
 > "Show me fleet status."
 
-You should see both members listed with status online or idle.
+You should see both members listed with status online or idle, grouped by
+category if any have been assigned one. Members carry keyword `tags` (up to 10,
+64 chars each) used for filtering in `list_members`, driving tag-aware permission
+profile composition in `compose_permissions`, and skill-matrix matching during
+onboarding. See [docs/features/member-tags.md](docs/features/member-tags.md).
 
 Add remote machines whenever you are ready:
 
@@ -322,8 +329,17 @@ what is in flight.
 | `/pm cleanup <project>` | Finish the sprint, close tasks, and raise a PR. |
 | `/pm backlog` | Query and manage deferred items via Beads. |
 | `/pm tasks` | Show the current sprint task tree. |
+| `/auto-sprint` | Run a fully automated sprint loop with cost accounting. |
 
 See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
+
+**Cost accounting.** When PM is installed, the installer also writes `cost.js`
+to the PM skill directory for every provider. `cost.js` exports the seven pure
+cost-computation functions (`computeSprintQuote`, `computeSprintAnalysis`,
+`buildSprintSummary`, etc.) extracted from the `auto-sprint.js` workflow. For
+Claude, the full `auto-sprint.js` is also copied to `~/.claude/workflows/` and
+`Skill(auto-sprint)` / `Workflow(auto-sprint)` are added to the allow-list
+automatically. See [docs/features/auto-sprint-install.md](docs/features/auto-sprint-install.md).
 
 Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/writing-skills.md).
 
@@ -337,7 +353,9 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
+| Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
 | Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
+| Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
@@ -361,6 +379,7 @@ Build from source (also the path for Intel Macs):
 
 ```bash
 git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
+git submodule update --init
 npm install && npm run build && npm test
 ```
 

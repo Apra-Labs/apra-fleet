@@ -84,10 +84,10 @@ jobs:
           CFG="$HOME/.config/opencode"
           test -f "$CFG/skills/pm/SKILL.md" || { echo "::error::pm skill missing at $CFG/skills/pm/SKILL.md"; exit 1; }
           AGENTS_DIR="$HOME/.config/opencode/agents"
-          for a in planner plan-reviewer doer reviewer; do
+          for a in planner plan-reviewer doer reviewer deployer harvester ci-watcher integ-test-runner; do
             test -f "$AGENTS_DIR/$a.md" || { echo "::error::agent $a missing at $AGENTS_DIR/$a.md"; exit 1; }
           done
-          echo "skill + 4 agents present under $CFG"
+          echo "skill + 8 agents present under $CFG"
 
       - name: Pre-flight - subagent dispatch works
         shell: bash

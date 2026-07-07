@@ -12,12 +12,17 @@ export const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
 export const DATA_DIR = path.join(FLEET_BASE, 'data');
 export const INSTALL_CONFIG_PATH = path.join(DATA_DIR, 'install-config.json');
 
+// Claude entries use the bare family aliases (haiku/sonnet/opus) instead of
+// dated model IDs -- the claude CLI/settings.json resolve these to the
+// current generation automatically, so they never go stale as Anthropic
+// ships new models. Other providers' CLIs don't share this alias support,
+// so their entries stay pinned to literal model IDs.
 export const CURATED_CHEAP_MODELS = [
   'gpt-oss-120b',
   'gpt-120',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite-preview',
-  'claude-haiku-4-5',
+  'haiku',
   'gpt-5.4-mini',
 ] as const;
 
@@ -25,23 +30,20 @@ export const CURATED_STANDARD_MODELS = [
   'gemini-3.5-flash',
   'gpt-oss-120b',
   'gpt-120',
-  'claude-sonnet-4.6',
-  'claude-sonnet-4-5',
+  'sonnet',
   'gemini-3-flash-preview',
   'gpt-5.4',
 ] as const;
 
 export const CURATED_PREMIUM_MODELS = [
-  'claude-sonnet-4.6',
-  'claude-opus-4.6',
-  'claude-opus-4-6',
-  'claude-opus-4-7',
+  'sonnet',
+  'opus',
   'gpt-oss-120b',
   'gemini-3.1-pro-preview',
 ] as const;
 
 export const PROVIDER_STANDARD_MODELS: Record<string, string> = {
-  claude: 'claude-sonnet-4-6',
+  claude: 'sonnet',
   gemini: 'gemini-3.5-flash',
   codex: 'gpt-5.4',
   copilot: 'claude-sonnet-4-5',

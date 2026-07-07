@@ -19,13 +19,17 @@ if (arg === '--help' || arg === '-h') {
   console.log(`apra-fleet ${serverVersion}
 
 Usage:
-  apra-fleet                  Start MCP server (stdio)
+  apra-fleet                  Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet run              Start MCP server (stdio) -- used by LLM providers after install
+  apra-fleet start            Alias for run
+  apra-fleet --stdio          Alias for run (backward compat for existing MCP configs)
   apra-fleet update           Check for and install latest update
   apra-fleet update --check   Check for update
-  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet watch            Stream live member logs (see 'watch --help')
+  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill pm        Install PM skill (also installs fleet -- PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
@@ -145,9 +149,31 @@ Usage:
     console.error(`Error: unknown kb subcommand '${subCmd}'`);
     process.exit(1);
   }
-} else if (arg === undefined || arg === '--stdio') {
-  // Default: start MCP server
+} else if (arg === 'watch') {
+  import('./cli/watch.js')
+    .then(m => m.runWatch(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Watch failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'run' || arg === 'start' || arg === '--stdio') {
+  // Start MCP server -- invoked by LLM providers via their MCP config, or manually
   startServer();
+} else if (arg === undefined || arg === '--llm' || arg?.startsWith('--llm=')
+        || arg === '--skill' || arg?.startsWith('--skill=')
+        || arg === '--no-skill' || arg === '--force') {
+  // Install flags forwarded directly so `apra-fleet --llm opencode` works as a short
+  // form of `apra-fleet install --llm opencode`. Use slice(2) -- no 'install' to skip.
+  //
+  // Default (no flags) only runs the installer for the SEA binary, where double-clicking
+  // is the expected install UX. In npm/dev mode, no-args defaults to starting the MCP
+  // server (old behavior) -- install.cjs owns the npm install path.
+  import('./cli/install.js').then(({ isSea }) => {
+    if (arg === undefined && !isSea()) {
+      startServer();
+    } else {
+      import('./cli/install.js')
+        .then(m => m.runInstall(process.argv.slice(2)))
+        .catch(err => { logError('cli', `Install failed: ${err.message}`); process.exit(1); });
+    }
+  });
 } else {
   console.error(`Error: unknown option '${arg}'`);
   console.error(`\nRun 'apra-fleet --help' for usage.`);
@@ -300,10 +326,10 @@ async function startServer() {
   }
 
   // --- Core Member Management ---
-  server.tool('register_member', 'Add a machine to the fleet. Use member_type "local" for this machine or "remote" for a machine reachable over SSH. Choose the AI provider the member will use for prompts.', registerMemberSchema.shape, wrapTool('register_member', (input) => registerMember(input as any)));
-  server.tool('list_members', 'List all fleet members and their current status. Use format="json" for structured data.', listMembersSchema.shape, wrapTool('list_members', (input) => listMembers(input as any)));
+  server.tool('register_member', 'Add a machine to the fleet. Use member_type "local" for this machine or "remote" for a machine reachable over SSH. Choose the AI provider the member will use for prompts. Optional: add tags for grouping and filtering members.', registerMemberSchema.shape, wrapTool('register_member', (input) => registerMember(input as any)));
+  server.tool('list_members', 'List all fleet members and their current status. Use format="json" for structured data. Use tags=["gpu"] to filter to members that have ALL specified tags (AND semantics); omit tags to return all members.', listMembersSchema.shape, wrapTool('list_members', (input) => listMembers(input as any)));
   server.tool('remove_member', 'Remove a member from the fleet.', removeMemberSchema.shape, wrapTool('remove_member', (input) => removeMember(input as any)));
-  server.tool('update_member', "Change a member's name, connection details, working directory, AI provider, or other settings.", updateMemberSchema.shape, wrapTool('update_member', (input) => updateMember(input as any)));
+  server.tool('update_member', "Change a member's name, connection details, working directory, AI provider, tags, or other settings.", updateMemberSchema.shape, wrapTool('update_member', (input) => updateMember(input as any)));
 
   // --- File Operations ---
   server.tool('send_files', 'Transfer local files to a member. Always batch multiple files into a single call — never invoke repeatedly for individual files.', sendFilesSchema.shape, wrapTool('send_files', (input, extra) => sendFiles(input as any, extra)));
@@ -330,7 +356,7 @@ async function startServer() {
   server.tool('version', 'Returns the installed apra-fleet server version', versionSchema.shape, wrapTool('version', () => version()));
 
   // --- Permissions ---
-  server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role. Automatically tailors permissions to the project type. Use grant to add specific permissions mid-sprint without a full recompose.', composePermissionsSchema.shape, wrapTool('compose_permissions', (input) => composePermissions(input as any)));
+  server.tool('compose_permissions', 'Set up and deliver the right permissions to a member for their role or tags. Automatically tailors permissions to the project type. Pass tags (e.g. ["doer","gpu"]) to layer custom tag profiles additively on top of the base role; a doer/reviewer tag sets the primary mode and wins over role. Use grant to add specific permissions mid-sprint without a full recompose.', composePermissionsSchema.shape, wrapTool('compose_permissions', (input) => composePermissions(input as any)));
 
   // --- Cloud Control ---
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. Start waits until the member is ready; stop is immediate.', cloudControlSchema.shape, wrapTool('cloud_control', (input) => cloudControl(input as any)));

@@ -213,10 +213,11 @@ describe('executePrompt', () => {
     });
 
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    // Default provider is Claude; standard tier is claude-sonnet-4-6
+    // Default provider is Claude; standard tier is the bare alias "sonnet"
+    // (auto-resolves to the current generation -- never a pinned dated ID)
     // calls[0] = writePromptFile, calls[1] = main prompt command
     expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-sonnet-4-6');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('"sonnet"');
   });
 
   it('uses explicit model param unchanged when provided', async () => {
@@ -232,10 +233,10 @@ describe('executePrompt', () => {
     // calls[0] = writePromptFile, calls[1] = main prompt command
     expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
     expect(mockExecCommand.mock.calls[1][0]).toContain('claude-opus-4-6');
-    expect(mockExecCommand.mock.calls[1][0]).not.toContain('claude-sonnet-4-6');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('"sonnet"');
   });
 
-  it('resolves tier name "standard" to claude-sonnet-4-6', async () => {
+  it('resolves tier name "standard" to the "sonnet" alias', async () => {
     const member = makeTestAgent({ friendlyName: 'tier-standard-member' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -247,11 +248,11 @@ describe('executePrompt', () => {
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'standard' });
     // calls[0] = writePromptFile, calls[1] = main prompt command
     expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-sonnet-4-6');
-    expect(mockExecCommand.mock.calls[1][0]).not.toContain('standard');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('"sonnet"');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('"standard"');
   });
 
-  it('resolves tier name "cheap" to claude-haiku-4-5', async () => {
+  it('resolves tier name "cheap" to the "haiku" alias', async () => {
     const member = makeTestAgent({ friendlyName: 'tier-cheap-member' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -263,11 +264,11 @@ describe('executePrompt', () => {
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'cheap' });
     // calls[0] = writePromptFile, calls[1] = main prompt command
     expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-haiku-4-5');
-    expect(mockExecCommand.mock.calls[1][0]).not.toContain('cheap');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('"haiku"');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('"cheap"');
   });
 
-  it('resolves tier name "premium" to claude-opus-4-6', async () => {
+  it('resolves tier name "premium" to the "opus" alias', async () => {
     const member = makeTestAgent({ friendlyName: 'tier-premium-member' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -279,8 +280,8 @@ describe('executePrompt', () => {
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
     // calls[0] = writePromptFile, calls[1] = main prompt command
     expect(mockExecCommand.mock.calls[1][0]).toContain('--model');
-    expect(mockExecCommand.mock.calls[1][0]).toContain('claude-opus-4-6');
-    expect(mockExecCommand.mock.calls[1][0]).not.toContain('premium');
+    expect(mockExecCommand.mock.calls[1][0]).toContain('"opus"');
+    expect(mockExecCommand.mock.calls[1][0]).not.toContain('"premium"');
   });
 
   it('appends token line when usage is present in response', async () => {

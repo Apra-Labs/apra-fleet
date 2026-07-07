@@ -1,9 +1,15 @@
 # Skill Matrix
 
-Maps project + role to required skills. Used during onboarding (Step 6).
+Maps project + tag to required skills. Used during onboarding (Step 6).
 
-| Project | VCS | Role | Required Skills |
-|---------|-----|------|----------------|
+Tags are real member tag names (set via `update_member tags=[...]`). They drive
+both skill selection (which activate_skill calls to make during onboarding) and
+permission composition (which tag-<name>.json profiles are merged in
+compose_permissions). The values in the Tag column below are the exact strings
+stored in the member's `tags` array.
+
+| Project | VCS | Tag | Required Skills |
+|---------|-----|-----|----------------|
 | Any | GitHub | Any | None (gh CLI sufficient) |
 | Any | Bitbucket | devops | `bitbucket-devops` |
 | Any | Bitbucket | code-review | `bitbucket-devops` |
@@ -27,8 +33,9 @@ Maps project + role to required skills. Used during onboarding (Step 6).
 
 ## Rules
 
-1. Skills are additive — multiple roles = union of all required skills
-2. GitHub members rarely need extra skills — gh CLI covers most operations
-3. Bitbucket/Azure DevOps members need provider-specific skills for devops/code-review (LLMs lack native API knowledge without skills)
-4. Project-specific skills layer on top of VCS skills
-5. Skills are independent of the member's LLM provider — a Gemini member needs the same project skills as a Claude member. Skill selection is driven by VCS provider and project, not LLM provider.
+1. Skills are additive -- multiple tags = union of all required skills
+2. Members with no tags need no tag-driven skills; VCS and project rules still apply
+3. GitHub members rarely need extra skills -- gh CLI covers most operations
+4. Bitbucket/Azure DevOps members need provider-specific skills for devops/code-review tags (LLMs lack native API knowledge without skills)
+5. Project-specific skills layer on top of VCS skills
+6. Skills are independent of the member's LLM provider -- a Gemini member needs the same project skills as a Claude member. Skill selection is driven by VCS provider, project, and tags, not LLM provider.

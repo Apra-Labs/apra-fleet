@@ -131,18 +131,22 @@ export class ClaudeProvider implements ProviderAdapter {
     return resuming ? buildResumeFlag(sessionId) : buildSessionIdFlag(sessionId);
   }
 
+  // Bare family aliases -- the claude CLI resolves these to the current
+  // generation automatically (`claude --help`: "Provide an alias for the
+  // latest model (e.g. 'fable', 'opus', or 'sonnet')"), so these never go
+  // stale as Anthropic ships new models. Do not pin to a dated model ID.
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
     return {
-      cheap: 'claude-haiku-4-5',
-      standard: 'claude-sonnet-4-6',
-      premium: 'claude-opus-4-6',
+      cheap: 'haiku',
+      standard: 'sonnet',
+      premium: 'opus',
     };
   }
 
   modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
-    if (tier === 'cheap') return 'claude-haiku-4-5';
-    if (tier === 'mid') return 'claude-sonnet-4-6';
-    return 'claude-opus-4-6';
+    if (tier === 'cheap') return 'haiku';
+    if (tier === 'mid') return 'sonnet';
+    return 'opus';
   }
 
   modelFlag(model: string): string {

@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Test suite to run. s*.1/.2/.3 = co-located fleet members (local processes, still registered+paired via fleet); s7.x = all-Gemini; fleet-less local-subagent runs are in fleet-lite-e2e (s10).'
+        description: 'Test suite to run. s*.1/.2/.3 = co-located fleet members (local processes, still registered+paired via fleet); s8.x = all-agy; fleet-less local-subagent runs are in fleet-lite-e2e (s10).'
         required: true
         type: choice
-        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s7.1, s7.2, s7.3, s8.1, s8.2, s8.3, s9, s9.1, s9.2, s9.3]
+        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s8.1, s8.2, s8.3, s9, s9.1, s9.2, s9.3]
 
 jobs:
   e2e:
@@ -25,21 +25,21 @@ jobs:
          || inputs.suite == 's3'   && 'fleet-macos'
          || inputs.suite == 's4'   && 'fleet-windows'
          || inputs.suite == 's5'   && 'fleet-linux'
-         || inputs.suite == 's7.1' && 'fleet-windows'
-         || inputs.suite == 's7.2' && 'fleet-linux'
-         || inputs.suite == 's7.3' && 'fleet-macos'
+         || inputs.suite == 's6'   && 'fleet-macos'
          || inputs.suite == 's8.1' && 'fleet-windows'
          || inputs.suite == 's8.2' && 'fleet-linux'
          || inputs.suite == 's8.3' && 'fleet-macos'
-         || inputs.suite == 's9'   && 'fleet-opencode'
-         || inputs.suite == 's9.1' && 'fleet-opencode-win'
-         || inputs.suite == 's9.2' && 'fleet-opencode'
-         || inputs.suite == 's9.3' && 'fleet-opencode-mac'
+         || inputs.suite == 's9'   && 'ubuntu-latest'
+         || inputs.suite == 's9.1' && 'windows-latest'
+         || inputs.suite == 's9.2' && 'ubuntu-latest'
+         || inputs.suite == 's9.3' && 'macos-latest'
          || 'fleet-macos' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Create run directory
         shell: bash
@@ -154,19 +154,15 @@ jobs:
             fi
           fi
 
-      - name: Verify OpenCode + Ollama if PM provider is opencode
+      - name: Install OpenCode CLI if not present
         if: steps.suite.outputs.pm_provider == 'opencode'
         shell: bash
         run: |
-          echo "Verifying OpenCode CLI is installed..."
-          opencode --version || { echo "::error::opencode CLI not found; install with: npm install -g opencode-ai"; exit 1; }
-          MEMBERS=$(cat .github/e2e/members.json)
-          ENDPOINT=$(echo "$MEMBERS" | jq -r '.opencode.endpoint // "http://localhost:11434/v1"')
-          echo "Verifying Ollama endpoint at $ENDPOINT ..."
-          curl -sf "$ENDPOINT/models" > /dev/null 2>&1 \
-            || curl -sf "$(echo "$ENDPOINT" | sed 's|/v1$||')/api/tags" > /dev/null 2>&1 \
-            || { echo "::error::Ollama endpoint not reachable at $ENDPOINT"; exit 1; }
-          echo "OpenCode CLI and Ollama endpoint verified"
+          if ! command -v opencode &> /dev/null; then
+            echo "OpenCode not found -- installing via npm..."
+            npm install -g opencode-ai
+          fi
+          opencode --version || { echo "::error::opencode CLI install failed"; exit 1; }
 
       - name: Prepare clean PM environment
         shell: bash
@@ -186,6 +182,40 @@ jobs:
           PROMPT="What is the version of the apra-fleet MCP server installed? If the tool is not available reply with: not installed. Also print names of your custom skills separated by comma."
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
+            # Deterministic checks run first and are the actual pass/fail gate.
+            # `claude mcp list` waits out the MCP stdio handshake properly, so
+            # it doesn't race a fresh server spawn the way a single fast `-p`
+            # turn can (that turn may answer before it has even looked, since
+            # apra-fleet tools are deferred behind ToolSearch).
+            FAIL=0
+            if ! claude mcp list 2>&1 | grep -qi "apra-fleet.*connected"; then
+              echo "::error::apra-fleet MCP server not connected (claude mcp list)"
+              FAIL=1
+            fi
+            for skill in fleet pm; do
+              skill_md="$HOME/.claude/skills/$skill/SKILL.md"
+              if [ ! -s "$skill_md" ]; then
+                echo "::error::Missing or empty skill file: $skill_md"
+                FAIL=1
+              fi
+            done
+            auto_sprint="$HOME/.claude/workflows/auto-sprint.js"
+            if [ ! -s "$auto_sprint" ]; then
+              echo "::error::Missing or empty auto-sprint workflow: $auto_sprint"
+              FAIL=1
+            fi
+            for agent in ci-watcher deployer doer harvester integ-test-runner planner plan-reviewer reviewer; do
+              agent_md="$HOME/.claude/agents/$agent.md"
+              if [ ! -s "$agent_md" ]; then
+                echo "::error::Missing or empty agent file: $agent_md"
+                FAIL=1
+              fi
+            done
+            [ "$FAIL" -eq 0 ] || exit 1
+
+            # Informational only below -- a fresh `-p` call can race the MCP
+            # handshake and report "not installed" even when the deterministic
+            # checks above just confirmed it is. Do not gate on this text.
             output=$(claude -p "$PROMPT" --model haiku 2>&1)
             echo "$output"
             echo "PM claude auth OK"
@@ -428,7 +458,7 @@ jobs:
               agy --dangerously-skip-permissions \
                 --print-timeout 45m \
                 -c \
-                -p "Continue the sprint. Read projects.md and checkpoints.json to see current state. Do NOT re-run /pm init or /pm plan if the project is already active. Continue with /pm start doer or drive the reviewer loop as needed." \
+                -p "Continue the sprint. Read projects.md and checkpoints.json to see current state. Do NOT re-run /pm init or /pm plan if the project is already active. Continue with /pm start alice or drive the reviewer loop as needed." \
                 > /dev/null 2>&1 || true
               node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-sprint.txt" 2>&1 || true
             done

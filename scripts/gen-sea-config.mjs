@@ -48,6 +48,23 @@ const skills = collectFiles(join(root, 'vendor', 'apra-pm', 'skills', 'pm'), 've
 const fleetSkills = collectFiles(join(root, 'skills', 'fleet'), 'skills/fleet');
 const agents = collectFiles(join(root, 'vendor', 'apra-pm', 'agents'), 'vendor/apra-pm/agents', 'vendor/apra-pm/agents');
 
+if (Object.keys(skills).length === 0 || Object.keys(agents).length === 0) {
+  console.error('Error: vendor/apra-pm submodule is not initialized (skills/pm or agents is empty).');
+  console.error('Run: git submodule update --init');
+  process.exit(1);
+}
+
+// Workflows: vendor source preferred, dist/ fallback (from vendor-pm.mjs copy)
+const workflowsVendorDir = join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
+const workflowsDistDir = join(root, 'dist', 'workflows');
+const workflowsSrcDir = existsSync(workflowsVendorDir) ? workflowsVendorDir : workflowsDistDir;
+const workflows = {};
+if (existsSync(workflowsSrcDir)) {
+  for (const [name, assetPath] of Object.entries(collectFiles(workflowsSrcDir, workflowsSrcDir.replace(/\\/g, '/'), workflowsSrcDir.replace(/\\/g, '/')))) {
+    if (name.endsWith('.js')) workflows[name] = assetPath;
+  }
+}
+
 const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf-8'));
 
 const manifest = {
@@ -57,6 +74,7 @@ const manifest = {
   skills,
   fleetSkills,
   agents,
+  workflows,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -66,6 +84,7 @@ console.log(`  Scripts:      ${Object.keys(scripts).length} files`);
 console.log(`  Skills (pm):  ${Object.keys(skills).length} files`);
 console.log(`  Skills (fleet): ${Object.keys(fleetSkills).length} files`);
 console.log(`  Agents:       ${Object.keys(agents).length} files`);
+console.log(`  Workflows:    ${Object.keys(workflows).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -96,6 +115,11 @@ for (const [, relPath] of Object.entries(fleetSkills)) {
 // Add all agent files
 for (const [, relPath] of Object.entries(agents)) {
   assets[relPath] = join(root, relPath);
+}
+
+// Add auto-sprint.js workflow as a named asset for SEA extraction
+for (const [name, relPath] of Object.entries(workflows)) {
+  assets[name] = existsSync(relPath) ? relPath : join(root, relPath);
 }
 
 const seaConfig = {

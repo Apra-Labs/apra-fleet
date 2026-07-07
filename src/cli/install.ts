@@ -79,6 +79,7 @@ interface AssetManifest {
   skills: Record<string, string>;
   fleetSkills: Record<string, string>;
   agents: Record<string, string>;
+  workflows: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -136,8 +137,23 @@ function buildDevManifest(root: string): AssetManifest {
   const skills = collectFilesRec(pmSkillsDir, pmBase, pmBase);
   const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
   const fleetSkills = collectFilesRec(path.join(root, 'skills', 'fleet'), 'skills/fleet');
+
+  // Collect auto-sprint.js from vendor/apra-pm/.claude/workflows (or dist/workflows fallback)
+  const vendorWorkflows = path.join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
+  const workflowsSrc = fs.existsSync(vendorWorkflows)
+    ? vendorWorkflows
+    : path.join(root, 'dist', 'workflows');
+  const workflows: Record<string, string> = {};
+  if (fs.existsSync(workflowsSrc)) {
+    for (const f of fs.readdirSync(workflowsSrc) as string[]) {
+      if (f.endsWith('.js')) {
+        workflows[f] = path.join(workflowsSrc, f).replace(/\\/g, '/');
+      }
+    }
+  }
+
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents };
+  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows };
 }
 
 let _manifestOverride: AssetManifest | null = null;
@@ -280,10 +296,10 @@ export function buildRequiredPerms(paths: ProviderInstallConfig): string[] {
   return perms;
 }
 
-function mergePermissions(paths: ProviderInstallConfig): void {
+function mergePermissions(paths: ProviderInstallConfig, extraPerms: string[] = []): void {
   const settings = readConfig(paths);
 
-  const requiredPerms = buildRequiredPerms(paths);
+  const requiredPerms = [...buildRequiredPerms(paths), ...extraPerms];
 
   settings.permissions = settings.permissions || {};
   settings.permissions.allow = settings.permissions.allow || [];
@@ -555,6 +571,8 @@ Options:
   const installAgents = installPm && paths.agentsDir !== undefined;
   let totalSteps = (installFleet && installPm) ? 9 : installFleet ? 8 : installPm ? 9 : 7;
   if (installAgents) totalSteps++;
+  if (installPm) totalSteps++; // cost.js extraction + workflow copy step
+  // Beads is the second-to-last step; KB + code intelligence setup is the final step.
   const beadsStep = totalSteps - 1;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
@@ -646,24 +664,24 @@ ${killHint}
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
 
+  // 'run' is the subcommand that starts the MCP server; it is passed as the last arg so
+  // LLM providers invoke `apra-fleet run` (or `node dist/index.js run`) and the no-arg
+  // default (installation) is never accidentally triggered by the MCP host.
   const mcpConfig = isSea()
-    ? { command: binaryPath, args: [] }
+    ? { command: binaryPath, args: ['run'] }
     : isNpmGlobalInstall()
-    ? { command: process.execPath, args: [process.argv[1]] }
-    : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js')] };
+    ? { command: process.execPath, args: [process.argv[1], 'run'] }
+    : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run'] };
 
   if (llm === 'claude') {
     try {
       run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
     } catch { /* not registered */ }
-    
+
     // Build the claude MCP command from the actual mcpConfig structure.
-    // SEA mode: { command: binaryPath, args: [] } -> register the binary alone.
-    // npm/dev mode: { command: <node>, args: [<script>] } -> register node + script path.
-    // Quote both segments so paths with spaces (e.g. Windows "Program Files") work.
-    const cmd = mcpConfig.args.length > 0
-      ? `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" "${mcpConfig.args[0]}"`
-      : `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}"`;
+    // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
+    const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+    const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
     run(cmd);
   } else if (llm === 'gemini') {
     mergeGeminiConfig(paths, mcpConfig);
@@ -743,13 +761,71 @@ Then re-run:  apra-fleet install`);
     }
   }
 
+  // --- Step 8: cost.js extraction + auto-sprint workflow copy (PM only) ---
+  if (installPm) {
+    console.log(`  [8/${totalSteps}] Installing PM cost functions + workflow...`);
+
+    // Locate auto-sprint.js source
+    let workflowContent: string | null = null;
+    if (isSea()) {
+      try { workflowContent = extractAsset('auto-sprint.js'); } catch { /* absent in older SEA build */ }
+    } else {
+      const root = findProjectRoot();
+      const wfPath = path.join(root, 'vendor', 'apra-pm', '.claude', 'workflows', 'auto-sprint.js');
+      const wfFallback = path.join(root, 'dist', 'workflows', 'auto-sprint.js');
+      const wfSrc = fs.existsSync(wfPath) ? wfPath : fs.existsSync(wfFallback) ? wfFallback : null;
+      if (wfSrc) workflowContent = fs.readFileSync(wfSrc, 'utf-8');
+    }
+
+    if (workflowContent) {
+      // Extract PURE_FUNCTIONS_BEGIN/END block and write cost.js to skill dir
+      const blockStart  = workflowContent.indexOf('// PURE_FUNCTIONS_BEGIN');
+      const blockEndIdx = workflowContent.indexOf('// PURE_FUNCTIONS_END');
+      const blockEnd    = blockEndIdx >= 0 ? blockEndIdx + '// PURE_FUNCTIONS_END'.length : -1;
+      if (blockStart >= 0 && blockEnd > blockStart) {
+        const block = workflowContent.slice(blockStart, blockEnd);
+        const costJs = [
+          '// Auto-generated by apra-fleet install -- do not edit directly.',
+          '// Source: apra-pm/.claude/workflows/auto-sprint.js (PURE_FUNCTIONS_BEGIN..END block)',
+          '',
+          block,
+          '',
+          "if (typeof module !== 'undefined') {",
+          '  module.exports = {',
+          '    DEFAULT_CALIBRATION,',
+          '    computeSprintQuote,',
+          '    computeSprintAnalysis,',
+          '    accumulateBucketTokens,',
+          '    computeUpdatedCalibration,',
+          '    buildSprintSummary,',
+          '    buildExecutionSummary,',
+          '    reviewerModelFor,',
+          '  };',
+          '}',
+        ].join('\n');
+        writeAssetFile(path.join(paths.skillsDir, 'cost.js'), costJs);
+      } else {
+        console.warn('  [!] PURE_FUNCTIONS_BEGIN/END markers not found -- cost.js not written');
+      }
+
+      // Claude only: copy full auto-sprint.js to ~/.claude/workflows/
+      if (llm === 'claude') {
+        const wfDest = path.join(os.homedir(), '.claude', 'workflows', 'auto-sprint.js');
+        fs.mkdirSync(path.dirname(wfDest), { recursive: true });
+        writeAssetFile(wfDest, workflowContent);
+      }
+    } else {
+      console.warn('  [!] auto-sprint.js not found -- cost.js and workflow not written');
+    }
+  }
+
   if (!installFleet && !installPm) {
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
 
   // --- Agent install step (only when agentsDir is defined and PM is installed) ---
   if (installAgents) {
-    const agentStep = (installFleet && installPm) ? 8 : installPm ? 8 : 7;
+    const agentStep = (installFleet && installPm) ? 9 : installPm ? 9 : 7;
     console.log(`  [${agentStep}/${totalSteps}] Installing PM agents...`);
     const agentsDestDir = paths.agentsDir!;
     fs.mkdirSync(agentsDestDir, { recursive: true });
@@ -787,7 +863,7 @@ Then re-run:  apra-fleet install`);
       // already installed — skip
     } catch {
       // not installed — install it
-      execFileSync('npm', ['install', '-g', '@beads/bd'], { stdio: 'inherit', shell: true });
+      execFileSync('npm', ['install', '-g', '@beads/bd@1.0.4'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install
@@ -851,7 +927,10 @@ Then re-run:  apra-fleet install`);
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
   // a top-level "permissions" key is invalid in opencode.json
   if (llm !== 'opencode') {
-    mergePermissions(paths);
+    const extraPerms = (llm === 'claude' && installPm)
+      ? ['Bash(*)', 'Skill(auto-sprint)', 'Workflow(auto-sprint)']
+      : [];
+    mergePermissions(paths, extraPerms);
   }
 
   // Write install-config.json (merge provider entry)
@@ -879,4 +958,11 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
 
 ${instructions}${forceNote}
 `);
+
+  if (llm === 'claude' && installPm) {
+    console.log('  /auto-sprint BD-1              (native workflow, current branch)');
+    console.log('  /auto-sprint BD-1 BD-2         (multiple sprint goals)');
+    console.log('  /pm                            (provider-agnostic skill, fleet-ready)');
+    console.log('');
+  }
 }

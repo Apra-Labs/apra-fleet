@@ -204,22 +204,22 @@ describe('curated model tier validations', () => {
     // standard
     expect(registerMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
     expect(registerMemberSchema.shape.model_standard.safeParse('gemini-3.5-flash').success).toBe(true);
-    expect(registerMemberSchema.shape.model_standard.safeParse('claude-sonnet-4.6').success).toBe(true);
+    expect(registerMemberSchema.shape.model_standard.safeParse('sonnet').success).toBe(true);
     expect(registerMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);
 
     expect(updateMemberSchema.shape.model_standard.safeParse(undefined).success).toBe(true);
     expect(updateMemberSchema.shape.model_standard.safeParse('gemini-3.5-flash').success).toBe(true);
-    expect(updateMemberSchema.shape.model_standard.safeParse('claude-sonnet-4.6').success).toBe(true);
+    expect(updateMemberSchema.shape.model_standard.safeParse('sonnet').success).toBe(true);
     expect(updateMemberSchema.shape.model_standard.safeParse('claude-haiku-4-5').success).toBe(false);
 
     // premium
     expect(registerMemberSchema.shape.model_premium.safeParse(undefined).success).toBe(true);
-    expect(registerMemberSchema.shape.model_premium.safeParse('claude-opus-4.6').success).toBe(true);
+    expect(registerMemberSchema.shape.model_premium.safeParse('opus').success).toBe(true);
     expect(registerMemberSchema.shape.model_premium.safeParse('gemini-3.1-pro-preview').success).toBe(true);
     expect(registerMemberSchema.shape.model_premium.safeParse('gemini-3.5-flash-lite').success).toBe(false);
 
     expect(updateMemberSchema.shape.model_premium.safeParse(undefined).success).toBe(true);
-    expect(updateMemberSchema.shape.model_premium.safeParse('claude-opus-4.6').success).toBe(true);
+    expect(updateMemberSchema.shape.model_premium.safeParse('opus').success).toBe(true);
     expect(updateMemberSchema.shape.model_premium.safeParse('gemini-3.1-pro-preview').success).toBe(true);
     expect(updateMemberSchema.shape.model_premium.safeParse('gemini-3.5-flash-lite').success).toBe(false);
   });
