@@ -188,6 +188,7 @@ async function startServer() {
   const { kbListSchema, kbList } = await import('./tools/kb-list.js');
   const { kbExportSchema, kbExport } = await import('./tools/kb-export.js');
   const { kbStatsSchema, kbStats } = await import('./tools/kb-stats.js');
+  const { kbFeedbackSchema, kbFeedback } = await import('./tools/kb-feedback.js');
   const { kbHarvestSchema, kbHarvest } = await import('./tools/kb-harvest.js');
   const { kbPromoteSchema, kbPromote } = await import('./tools/kb-promote.js');
   const { kbSetupSchema, kbSetup } = await import('./tools/kb-setup.js');
@@ -380,6 +381,7 @@ async function startServer() {
   server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.', kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
   server.tool('kb_export', 'Export all CONFIRMED, non-superseded, non-stale project KB entries to <repo>/.fleet/kb-canonical.json (stable field set, deterministic id order, ASCII-safe). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed. Non-fatal on any git failure; push is not automatic. Config off-switch: FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } }.', kbExportSchema.shape, wrapTool('kb_export', (input) => kbExport(input as any)));
   server.tool('kb_stats', 'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it.', kbStatsSchema.shape, wrapTool('kb_stats', (input) => kbStats(input as any)));
+  server.tool('kb_feedback', 'Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks the entry stale=1 + flagged_for_review=1 and appends an ASCII feedback note "[feedback <ISO>] <validated-role>: <reason>" (CONTENT_CAP respected). NEVER deletes and NEVER touches confidence -- a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged; the human resolves it in kb-review, this tool only flags it for that review. Exception: an ACTIVE user-directive is flagged for review but NOT staled (directives outrank agent experience -- the human decides); a pending directive proposal stales normally.', kbFeedbackSchema.shape, wrapTool('kb_feedback', (input) => kbFeedback(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

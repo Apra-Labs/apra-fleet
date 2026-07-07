@@ -848,6 +848,44 @@ export class SqliteProvider implements MemoryProvider {
     return { id, confidence_before, confidence_after };
   }
 
+  // T3.1 (F8, D7): kb_feedback downvote path -- marks an entry stale=1 +
+  // flagged_for_review=1 and appends an ASCII feedback note. NEVER deletes,
+  // NEVER touches confidence: a downvoted CONFIRMED entry stays
+  // CONFIRMED-but-stale-flagged; the human resolves it in kb-review.
+  // EXCEPTION (D7, verbatim): an ACTIVE user-directive (type='user-directive'
+  // AND confidence='CONFIRMED') outranks agent experience -- feedback flags it
+  // for review but must NOT stale it (the human decides in kb-review). This is
+  // keyed off ACTIVE directives only (type + CONFIRMED, same rekey as the T1.1
+  // supersede/decay guards) -- a pending directive proposal (confidence !=
+  // 'CONFIRMED') is not yet "active" and stales normally like any other entry.
+  async feedback(id: string, reason: string, author: string): Promise<KBEntry> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('Entry not found: ' + id);
+    const entry = this.rowToEntry(row);
+
+    const now = new Date().toISOString();
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook gotcha: backtick-n/t/r escapes inside template literals
+    // false-positive on the hook's non-ASCII scan (same convention as
+    // promote()'s promotionNote above and kb-export.ts).
+    const note = '\n\n[feedback ' + now + '] ' + author + ': ' + reason;
+    const newContent = truncateContent(entry.content + note);
+
+    const isActiveDirective = entry.type === 'user-directive' && entry.confidence === 'CONFIRMED';
+
+    if (isActiveDirective) {
+      db.prepare('UPDATE entries SET flagged_for_review = 1, content = ? WHERE id = ?')
+        .run(newContent, id);
+    } else {
+      db.prepare('UPDATE entries SET stale = 1, flagged_for_review = 1, content = ? WHERE id = ?')
+        .run(newContent, id);
+    }
+
+    const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(updated);
+  }
+
   // --- F1 (D1) directive activation primitives ---
   // These are the human-terminal trust surface for user-directives. They are
   // called ONLY by the `apra-fleet kb ...` CLI commands (src/cli/kb-directives.ts)
