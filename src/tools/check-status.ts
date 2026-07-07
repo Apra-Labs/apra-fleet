@@ -19,6 +19,7 @@ import { getUpdateNotice } from '../services/update-check.js';
 import { getActiveLogFile } from '../utils/log-helpers.js';
 import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
 import { kbStats } from './kb-stats.js';
+import { checkVersionMismatch, type VersionMismatch } from '../services/version-check.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -430,6 +431,17 @@ export function kbHealthCompactLine(health: KbHealth): string {
   return `kb: ${health.totals.total} entries (confirmed:${confirmed} stale:${health.stale} flagged:${health.flagged}) | hit-rate:${hitRatePct} | promote-ratio:${promotePct}${bibleDriftFragment(health.bible)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Server version handshake (T2.4, F7, D6). Compares the compiled-in
+// serverVersion against a fresh on-disk read (src/services/version-check.ts)
+// of the code this process was launched from -- catches the "rebuilt dist
+// but forgot to restart the MCP client" scenario. Degraded-safe: disk read
+// failure -> omit silently; no auto-restart, surface only.
+// ---------------------------------------------------------------------------
+export function versionMismatchCompactLine(mismatch: VersionMismatch): string {
+  return `server running ${mismatch.running}, disk has ${mismatch.disk} -- restart your MCP client`;
+}
+
 export type FleetStatusInput = z.infer<typeof fleetStatusSchema>;
 
 export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
@@ -512,6 +524,16 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     kbHealth = null;
   }
 
+  // T2.4 (F7, D6): version handshake -- degraded-safe, same belt-and-
+  // suspenders shape as the two sections above. checkVersionMismatch()
+  // already catches internally; the outer try/catch is defensive.
+  let versionMismatch: VersionMismatch | null = null;
+  try {
+    versionMismatch = checkVersionMismatch(serverVersion);
+  } catch {
+    versionMismatch = null;
+  }
+
   if (format === 'json') {
     const payload: Record<string, unknown> = {
       version: serverVersion,
@@ -520,6 +542,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       codeIntelligence,
     };
     if (kbHealth) payload.kbHealth = kbHealth;
+    if (versionMismatch) payload.versionMismatch = versionMismatch;
     if (logFile) payload.logFile = logFile;
     if (updateNotice) {
       const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
@@ -558,5 +581,6 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   }
   t += codeIntelligenceCompactLine(codeIntelligence) + '\n';
   if (kbHealth) t += kbHealthCompactLine(kbHealth) + '\n';
+  if (versionMismatch) t += versionMismatchCompactLine(versionMismatch) + '\n';
   return t;
 }
