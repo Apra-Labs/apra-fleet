@@ -1,251 +1,217 @@
-# Plan Review -- KB Branch Reconcile Sprint (epic yashr-ii1)
+# Plan Re-Review -- KB Branch Reconcile Sprint (epic yashr-ii1)
 
-Reviewer: pm-plan-reviewer. Reviewing PLAN.md at commit a23aded against
-requirements.md (F1-F6) and design.md (D1-D6), with source verification on
-feat/code-intelligence-abstraction.
+Reviewer: pm-plan-reviewer. Round 2. Reviewing PLAN.md at commit 3374fc9
+against the HARDENED design.md (a1d344d) and requirements.md (F1-F6).
+Round 1 (verdict CHANGES NEEDED: 1 HIGH, 4 MEDIUM, 2 LOW, commit 91b2a2c)
+is preserved in this file's git history.
 
 ## VERDICT: CHANGES NEEDED
 
-1 HIGH, 4 MEDIUM, 2 LOW. The plan's structure is strong: F1-F6 all covered
-with testable done criteria, fail-then-pass demanded where required, the
-sqlite-provider.ts ordering is binding, R1-R6 resolve every ambiguity the
-design left open, models and VERIFYs are sane, and the R4 import-mode
-mechanism survives a direct attack (details below). The blocker is a
-winner-end-state hole in the reconcile ladder that makes the F6 e2e's own
-done criteria unsatisfiable as written: the code's AUDN and export filters
-guarantee the "winning" claim never reaches the exported bible under the
-plan's current prefilter specification. Two predicate/invariant gaps found
-by war-gaming (invalidate() revival, downvote laundering) also need
-resolutions before the doers start T1.3/T3.1.
-
-All factual anchors checked against source: clamp at kb-capture.ts:97-101
-[OK]; HTTP route kb-server.ts:133-141 (file is src/commands/kb-server.ts,
-not src/kb/ -- cosmetic) [OK]; directive gate sqlite-provider.ts:450-462
-(plan cites 449-461, off-by-one, cosmetic) [OK]; checkFreshness sets stale=1
-only [OK]; CaptureSource lacks 'import' (types.ts:20) [OK]; promote() does
-NOT clear flagged_for_review or contradiction_of (its UPDATE touches only
-confidence/promoted_at/content/source) -- KB a2781b82 confirmed [OK];
-feedback() sets stale=1 + flagged_for_review=1 + "[feedback ...]" note [OK];
-AUDN update and rejectDirective both set superseded_at + stale [OK].
+0 HIGH, 2 MEDIUM, 1 LOW -- all seven Round 1 findings are verified FIXED
+(per-finding verification below), and the resolveContradiction redesign
+makes the F6 e2e chain genuinely satisfiable (independently re-traced).
+The two remaining MEDIUMs are both residuals of the new write path itself:
+kb_resolve_contradiction performs no pair-linkage verification (the exact
+class of check this sprint's trust philosophy demands on a new MCP-exposed
+CONFIRMED-minting surface), and the winner path's stated operation order
+(predicate-guarded un-stale BEFORE flag clearing) self-defeats for a
+flagged old-side winner because the shared D2 predicate contains
+flagged_for_review=0. Both are small, surgical plan edits to T3.1; no
+structural change needed.
 
 ---
 
-## HIGH
+## Round 1 findings: verification
 
-### HIGH-1: Reconcile winner never reaches the exported bible as specified
-(T3.1, T3.2, T3.3; design D4/D6 latent inconsistency the plan reproduced)
+### HIGH-1 (winner never reaches the bible) -- FIXED, chain re-traced
 
-Three verified facts compose into a broken ladder:
+The fix is resolveContradiction(winnerId, loserId, evidence) as the SINGLE
+write path (hardened D4, plan T3.1(b), R7). Re-traced end-to-end against
+source semantics:
 
-1. audn.ts makeAudnDecision's contradiction branch inserts the NEW entry
-   with newEntryOverrides { confidence: 'UNVERIFIED', contradiction_of,
-   flagged_for_review: false } -- so the imported (bible/B-side)
-   contradiction entry is stored UNVERIFIED, regardless of T2.1's
-   import-mode confidence preservation, and it is NOT flagged (only the
-   existing A-side gets flagged_for_review=1).
-2. T3.1's win path says "promote the winner if INFERRED". The typical
-   winner -- the contradiction-born imported entry -- is UNVERIFIED, so
-   this clause never fires; even if promoted once it lands at INFERRED,
-   not CONFIRMED. Additionally the winner can be stale=1 at prefilter time
-   (T3.3 step 4 explicitly stales B; the D2 sweep cannot revive it while
-   the pair is unresolved -- and the ladder in T3.2 runs the sweep at step
-   2, BEFORE the prefilter at step 3, with no sweep after).
-3. kb_export exports via list({confidence:'CONFIRMED'}) and list()
-   hard-filters superseded_at IS NULL AND stale = 0 (kb-export.ts:173,
-   sqlite-provider.ts:775). A winner that is UNVERIFIED, INFERRED, or
-   stale=1 is silently absent from .fleet/kb-canonical.json.
+1. Import: AUDN contradiction branch stores B UNVERIFIED, contradiction_of
+   = A, flagged=0; A gets flagged=1. Plan now states this asymmetry
+   explicitly (T3.1(a), T3.3 step 3). Matches audn.ts newEntryOverrides.
+2. Post-import sweep stales B (basis mismatch). flaggedPairs() still
+   returns the pair because liveness is pinned to superseded_at IS NULL
+   only (MEDIUM-3 fix); e2e step 4 asserts it.
+3. Merged state: B's basis matches, A's does not -> prefilter calls
+   resolveContradiction(B, A, "hash-basis match on merged worktree").
+   Winner: CONFIRMED directly (no promote ladder -- correct, since
+   promote() is one-step and clears no flags; KB a2781b82). Un-stale via
+   the D2 predicate: B has stale=1, superseded NULL, flagged=0, empty
+   content_hash, no "[feedback " marker, full basis match -> stale=0.
+   Loser A: superseded_at + stale=1 + flag cleared (safe: superseded_at
+   set alongside, loser can never satisfy the predicate).
+4. kb_export's list({confidence:'CONFIRMED'}) filter (CONFIRMED AND
+   stale=0 AND superseded_at IS NULL) now INCLUDES B and excludes A.
+   T3.3 step 6 asserts exactly this. T3.1 test 1 asserts the same at the
+   provider level, including the list() cross-check.
 
-Net effect: in the e2e as scripted (T3.3), after step 5 the winner B is at
-best INFERRED and still stale=1; step 6's assertion "B's claim in [the
-bible]" FAILS, and worse, the bible loses BOTH claims (A superseded, B
-filtered out) -- the opposite of "merged truth".
+The "no post-prefilter sweep needed" note in T3.2 step 2 is correct FOR
+THE NEW-SIDE WINNER (flagged=0). It is NOT correct for a flagged old-side
+winner -- see MEDIUM-1 below (an ordering residual inside the method, not
+a ladder problem).
 
-Required fix (pick one, state it in T3.1 and mirror it in T3.2's ladder and
-T3.3's assertions):
-- (preferred) The prefilter win path explicitly sets the winner's end
-  state: stale=0 (justified: the win condition IS a full-basis match --
-  the same predicate the D2 sweep uses to revive) and promotes the winner
-  to CONFIRMED regardless of starting tier (UNVERIFIED -> INFERRED ->
-  CONFIRMED via two promote steps or a dedicated reconcile-promotion path),
-  reason citing "hash-basis match on merged worktree"; or
-- Keep single-step promotion but add a post-prefilter freshnessSweep as
-  ladder step 4.5 AND redefine the e2e/export expectation for a winner that
-  ends INFERRED (which contradicts D6's "B's claim in" -- so this variant
-  needs a recorded design deviation).
+### MEDIUM-1 R1 (invalidate() fourth stale actor) -- FIXED
 
-Also make T3.1's "clear BOTH flags" concrete against the verified pair
-asymmetry: flagged_for_review lives on the OLD side only; contradiction_of
-lives on the NEW side only.
+content_hash != 'invalidated' conjunct added to the binding predicate
+(T1.3, verbatim block, six conjuncts); four-actor enumeration corrected;
+tested at BOTH levels: T1.3 test 5 (sweep exclusion) and T3.1 test 3
+(invalidated winner stays stale=1 through resolveContradiction). [OK]
 
-## MEDIUM
+### MEDIUM-2 R1 (downvote laundering) -- FIXED
 
-### MEDIUM-1: The D2 un-stale predicate misses the fourth stale actor:
-invalidate() (T1.3)
+content NOT LIKE '%[feedback %' conjunct makes the downvote durable across
+any flag-clear; T1.3 test 4 (marker with flag cleared, matching basis,
+stays stale); T3.1 test 2 (downvoted winner: CONFIRMED, flag-cleared,
+STILL stale=1, and a subsequent freshnessSweep does not revive);
+tpl-kb-reconciler.md rule "a downvoted winner stays stale (it wins the
+contradiction, not its reputation)" so the agent does not undo it. [OK]
+One false-positive edge noted as LOW-1 below.
 
-D2 and T1.3 enumerate three stale=1 setters (freshness, supersede,
-feedback). Verified in source there is a fourth: invalidate() sets
-content_hash='invalidated' + stale=1 on context-cache entries while leaving
-flagged_for_review=0 and superseded_at NULL, and it does NOT touch the
-stored source_file_hashes basis -- which still matches the unchanged
-worktree. Such an entry satisfies every clause of the T1.3 predicate, so
-freshnessSweep would REVIVE an explicitly invalidated entry into
-kb_query/list results (context() is independently protected by its own
-content_hash check; query()/list() are not). Fix: add a fourth conjunct to
-the predicate (content_hash != 'invalidated' or equivalent) and a seventh
-exclusion test: invalidated entry with matching basis stays stale after
-sweep.
+### MEDIUM-3 R1 (flaggedPairs liveness) -- FIXED
 
-### MEDIUM-2: Downvote laundering through the prefilter's flag-clear
-(T3.1; violates D2's "a downvoted entry must stay retired")
+Liveness contract pinned in T3.1(a): superseded_at IS NULL only, stale
+members MUST be included, with the explicit anti-pattern warning against
+reusing list()/stats()/query()'s default live filter; doc-comment
+requirement; T3.1 test 4 (stale member returned and resolvable; superseded
+member excludes; lone downvote never returned); e2e step 4 asserts the
+stale-member pair. [OK]
 
-War-game result for checklist 2b: the single flagged_for_review bit is
-shared by the contradiction flag and the feedback downvote. An entry that
-is both contradiction-flagged and feedback-downvoted (stale=1, flagged=1,
-"[feedback ...]" note, superseded_at NULL) can WIN the hash prefilter; the
-win path clears its flag without setting superseded_at, after which it
-satisfies the D2 predicate and the next sweep revives it -- the mechanical
-hash win silently erases an agent/human downvote. The LOSER side is safe
-everywhere (the plan always sets superseded_at before/while clearing the
-loser's flag -- invariant holds), and approveDirective (the only other
-flag-clearer today) is a human act on directives. Fix: T3.1 must state the
-winner-side rule -- either (a) pairs whose hash-winner carries a
-"[feedback " content note (the reliable downvote discriminator; a pure
-contradiction flag leaves stale=0) are left for the agent/human rung, or
-(b) the override is declared deliberate, documented in tpl-kb-reconciler.md
-/ kb-reconcile.md, and covered by a test. (a) is more faithful to D2.
+### MEDIUM-4 R1 (forged source='import') -- FIXED
 
-### MEDIUM-3: flaggedPairs() liveness must be "not superseded" only --
-stale pair members MUST be included (T3.1)
+T2.1(b) provenance normalization: caller-supplied 'import' OR 'promotion'
+overwritten unless internal import mode engaged; test 7 extended to assert
+clamp AND source rewrite for the HTTP-shaped one-argument payload,
+including the 'promotion' case; done criterion added. Matches hardened D3.
+[OK]
 
-The plan says "both sides live (not superseded)". Everywhere else in this
-codebase "live" means superseded_at IS NULL AND stale = 0 (list(), stats(),
-query() defaults). If a doer reuses that filter, the typically-stale
-imported side of a pair (T3.3 step 4 stales it) makes flaggedPairs() return
-nothing and the prefilter silently no-ops -- the e2e would fail with zero
-resolved pairs. Pin the definition in T3.1: superseded excluded, stale
-INCLUDED; add a test where one pair member is stale and the pair is still
-returned and resolvable.
+### LOW-1 R1 (arbitrary-path trust boundary) -- FIXED
 
-### MEDIUM-4: source='import' provenance is forgeable via HTTP
-/api/kb/capture (T2.1)
+Honest boundary statement (equivalent in power to kb_promote; explicit
+path = caller-asserted trust; directives quarantined regardless, gate
+before exemption) placed in the T2.1 tool description, T2.2 --path help
+text, and kb-reconcile.md step 1. [OK]
 
-The route parses the body as KBEntryInput and insertEntry persists
-input.source verbatim -- so once 'import' joins CaptureSource, any HTTP
-caller can stamp source='import' on its entries. Post-T1.2 they are still
-clamped to INFERRED (no confidence escalation), but the plan explicitly
-advertises source='import' as showing "the channel"; audits and future
-logic keyed on it would trust forged rows. Fix in T2.1: capture() must
-normalize/reject a caller-supplied source of 'import' when the internal
-import opt is not set (e.g. rewrite to 'session'/'unknown'), and extend
-test 7 to assert both the clamp AND the source rewrite for the HTTP-shaped
-payload.
+### LOW-2 R1 (id-skip before AUDN) -- FIXED
 
-## LOW
+T2.1 "ORDER OF OPERATIONS": id-exists check FIRST, before capture()/AUDN,
+with the correct rationale (symbolsOverlap/filesOverlap false on empty
+arrays; bible entries have no content field); deterministic content
+synthesis stated; test 3 extended with a symbol-less/file-less fixture
+entry. [OK]
 
-### LOW-1: kb_import arbitrary-path trust boundary should be stated
-(T2.1/T2.2 docs)
-
-{path?} accepts any readable file, so any MCP caller can import a crafted
-"bible" and bulk-mint CONFIRMED entries. Honest boundary statement: this is
-within the existing local-tool trust envelope -- kb_promote is already
-MCP-exposed and lets any agent walk any entry INFERRED->CONFIRMED one call
-at a time, so import-from-path adds bulk convenience, not a new privilege
-class; directives stay quarantined either way (gate runs before the
-exemption). But the plan should say this out loud: add a sentence to the
-tool description and kb-reconcile.md that an explicit path is
-caller-asserted trust (the "git-reviewed artifact" rationale only holds for
-the repo-resolved .fleet/kb-canonical.json), and validate the path
-resolves/parses before importing.
-
-### LOW-2: Id-preservation skip must run BEFORE AUDN routing (T2.1)
-
-Bible entries have no content field ({id, type, title, summary, symbols,
-source_files, confidence, updated_at}), and AUDN dedupe requires symbol AND
-file overlap plus content equality -- symbolsOverlap()/filesOverlap()
-return false on empty arrays, so a symbol-less or file-less bible entry can
-never dedupe via AUDN and would re-add on every import if only AUDN guards
-idempotency. The plan's id-preservation rule covers this, but T2.1 should
-state explicitly that the id-exists check happens BEFORE capture()/AUDN
-(skip on id hit), and that import synthesizes content deterministically
-(e.g. from summary) so the AUDN 'none' content-equality path also works for
-id-collision-with-identical-content cases.
+Also verified: the two cosmetic anchors from Round 1 were corrected
+(src/commands/kb-server.ts path; gate lines 450-462); R4 text updated with
+the verified one-argument evidence; R7 correctly records and resolves the
+D4-vs-D5 write-path conflict in favor of hardened D4.
 
 ---
 
-## Attack answers (checklist item 2)
+## New findings (Round 2)
 
-### 2a: Import-mode clamp exemption (R4)
+### MEDIUM-1: kb_resolve_contradiction does not verify the ids form a
+genuine contradiction pair (T3.1(b); R7 war-game)
 
-VERDICT: the R4 mechanism is airtight as specified; one provenance-hygiene
-gap (MEDIUM-4). Verified: the HTTP route (src/commands/kb-server.ts:133-141)
-does `const input = JSON.parse(body) as KBEntryInput; provider.capture(input)`
--- exactly ONE argument, no spread, no opts passthrough. The MCP kb_capture
-handler builds the KBEntryInput object explicitly from zod-parsed fields
-(z.object strips unknown keys), so no MCP caller can smuggle extra fields
-either. An import flag carried as a SECOND parameter of capture() (per R4)
-is therefore structurally unreachable from every deserialized route; the
-plan's T2.1 test 7 (HTTP-shaped payload with import-ish fields still
-clamped) locks it in. Cannot mint CONFIRMED via HTTP or MCP capture.
-Residual: input.source IS part of the deserialized body and is persisted
-verbatim -- forged source='import' provenance (clamped, but mislabeled) is
-possible unless normalized (MEDIUM-4). Directive quarantine holds under
-import: the gate at the top of capture() runs before any confidence
-handling and T2.1 test 2 asserts it. Arbitrary-path poisoned bible: real,
-but equivalent in power to the already-MCP-exposed kb_promote ladder --
-within the local trust model, should be stated honestly in docs (LOW-1).
+The plan's refusal list is: missing id, or pair involving an ACTIVE
+user-directive. Nothing requires the two ids to be LINKED. As specified,
+any MCP caller (including a confused reconciler agent passing wrong ids)
+can call kb_resolve_contradiction(anyA, anyB, "fabricated evidence") and
+get: anyA lifted to CONFIRMED in ONE call from ANY tier (bypassing the
+promote ladder entirely), anyB permanently retired (superseded_at -- not
+the reversible flag+stale of kb_feedback) with no human review.
 
-### 2b: Un-stale predicate (D2)
+Honest power analysis (why MEDIUM, not HIGH): within the local trust model
+this is not a new privilege CLASS -- an agent can already supersede an
+arbitrary entry via a crafted AUDN-update capture (same type + symbol
+overlap + file overlap + different content) and can mint CONFIRMED via the
+kb_promote ladder (two calls from UNVERIFIED). But it is a materially
+sloppier one-call footgun on a brand-new surface, in a sprint whose whole
+design language is choke points, refusals, and tested invariants
+(directive gate, R4 opts transport, prefilter hard exclusion). The
+directive refusal already inside the method proves the method reads both
+rows anyway -- the linkage check is nearly free.
 
-- Superseded entry: CANNOT be revived -- AUDN update sets superseded_at +
-  stale in one UPDATE; predicate excludes superseded_at IS NOT NULL. [OK]
-- Rejected directive: CANNOT be revived -- rejectDirective sets
-  superseded_at + stale (verified line ~963). [OK]
-- Feedback-downvoted entry: excluded while flagged_for_review=1 stands.
-  Flag-clearing flows audited: approveDirective (human CLI, directive-only,
-  and directives carry empty bases so the full-basis-match clause blocks
-  revival anyway); promote() does NOT clear flags (verified -- KB a2781b82
-  correct); the T3.1 prefilter is the first generic flag-clearer. Its
-  LOSER path is safe everywhere (superseded_at set alongside the
-  flag-clear, so the loser stays retired -- the invariant the checklist
-  asked to verify HOLDS on the loser side). The WINNER path is the gap:
-  a downvoted entry that also sits in a contradiction pair can win on
-  hash, get its flag cleared without superseded_at, and become
-  sweep-revivable -- downvote laundered (MEDIUM-2).
-- NEW: a fourth stale actor nobody enumerated -- invalidate() -- satisfies
-  the full predicate (flagged=0, superseded NULL, basis unchanged) and
-  would be wrongly revived (MEDIUM-1).
+Required fix in T3.1(b): resolveContradiction refuses unless the pair is
+genuinely linked -- loser.contradiction_of === winner.id OR
+winner.contradiction_of === loser.id (the AUDN asymmetry means the pointer
+can sit on either side depending on which side wins), both rows exist, and
+neither is superseded. Add to the refusal test group: unlinked ids ->
+refused, nothing written.
+
+### MEDIUM-2: winner path operation order self-defeats for a flagged
+old-side winner (T3.1(b))
+
+The plan's winner bullets are ordered: set CONFIRMED -> "Clear the
+winner's stale ONLY via the D2 safe predicate (reuse T1.3's shared
+predicate function)" -> "Clear the winner's flag fields". The shared
+predicate CONTAINS flagged_for_review = 0. By AUDN asymmetry the OLD side
+of a pair carries flagged_for_review=1 -- so when the old side wins (its
+basis matches the merged worktree; the imported claim was the wrong one --
+precisely the branch-switch revival scenario this sprint exists for), a
+doer following the stated bullet order evaluates the predicate while the
+flag is still set, the predicate fails, and the winner ends CONFIRMED but
+stale=1 -- silently dropped by kb_export's stale=0 filter. Same failure
+mode as Round 1's HIGH-1, in a narrower but realistic slice; T3.1 test 1
+and the e2e only exercise the NEW-side winner (flagged=0), so nothing
+catches it.
+
+Required fix in T3.1(b): state the order explicitly -- clear the winner's
+flag fields FIRST, then evaluate the D2 predicate for the un-stale (the
+durable exclusions, "[feedback " marker and content_hash='invalidated',
+are unaffected by the flag-clear, so MEDIUM-2 R1 protection is preserved;
+alternatively evaluate the predicate with the flag conjunct waived and the
+two durable-marker conjuncts + full-basis-match enforced -- pick one and
+say it). Add a test: old-side winner (flagged_for_review=1, stale=1,
+matching basis, no feedback/invalidated marker) ends CONFIRMED + stale=0
+and passes the list({confidence:'CONFIRMED'}) export filter.
+
+### LOW-1: "[feedback " marker conjunct can false-positive on meta-content
+(T1.3)
+
+An entry whose content legitimately quotes the feedback note format (e.g.
+a learning ABOUT the kb_feedback mechanism -- such entries exist in this
+very KB) would, once freshness-staled, be permanently excluded from
+revival by the content NOT LIKE '%[feedback %' conjunct. Self-healing via
+re-capture and rare, hence LOW. Cheap hardening: anchor the pattern to
+what feedback() actually writes -- it appends '\n\n[feedback ' +
+ISO-timestamp (verified in source), so matching the newline-prefixed form
+(or a timestamp-anchored form) sharply reduces collisions. Note the
+choice in the predicate comment either way.
 
 ---
 
-## Checklist confirmations (items 1, 3, 4, 5)
+## R7 war-game answer (checklist)
 
-1. Coverage: F1=T1.1, F2=T1.3 (fail-then-pass test 1 + per-exclusion
-   tests), F3=T1.2 (fail-then-pass at provider level), F4=T2.1/T2.2
-   (idempotency test 3, directive quarantine test 2, HTTP-shape test 7),
-   F5=T3.1/T3.2, F6=T3.3. Done criteria are concrete and testable
-   throughout. [OK] (subject to HIGH-1 correction in T3.1/T3.3)
-2. See attack answers above.
-3. F1 is the first task; zero-failure criterion binding from T1.2 onward
-   and in every VERIFY; sqlite-provider strict ordering T1.2 -> T1.3 ->
-   T2.1 -> T3.1 stated as binding with a shared-file table; prefilter HARD
-   EXCLUSION for active-directive pairs present in T3.1; reconciler
-   template + kb-reconcile.md + SKILL.md row + cleanup-flow hook in T3.2;
-   kb_export closes the ladder (step 5) and the e2e (step 6). [OK]
-4. Factual anchors verified against source (see header). KB citations
-   9462ab04/d1c6f758/4b87fbce/a2781b82/d036ab13 all consistent with code.
-   Two cosmetic path/line nits noted, not findings. [OK]
-5. Models: opus exactly on the two flagged hard tasks (T1.3 predicate,
-   T2.1 import trust); haiku only on mechanical CLI wiring; VERIFYs carry
-   the gitnexus-analyze + git checkout AGENTS.md/CLAUDE.md gotcha verbatim;
-   T3.4 adds the byte-level ASCII sweep; ASCII/never-main/no-PR constraints
-   present sprint-wide. [OK]
+Can an agent abuse the MCP-exposed kb_resolve_contradiction to CONFIRM
+arbitrary entries outside a genuine flagged pair? AS SPECIFIED, YES --
+the method verifies id existence and the active-directive exclusion but
+NOT contradiction linkage (MEDIUM-1 above): one call mints CONFIRMED from
+any tier and permanently supersedes the other id. Marginal power over the
+existing kb_promote ladder and crafted-AUDN-supersede paths is limited
+(same local trust envelope, directives still protected by the method's own
+refusal), so this does not reopen yashr-f3g -- but the linkage check is
+required before APPROVED because the method reads both rows anyway and the
+sprint's own standard is refusal-tested choke points. With MEDIUM-1's fix
+(refuse unlinked pairs) and MEDIUM-2's fix (flag-clear before predicate),
+R7 introduces no new hole: the tool then writes only to genuinely flagged,
+non-directive, non-superseded pairs, the winner's un-stale stays gated by
+the durable D2 exclusions, and the loser invariant (superseded_at set
+alongside every flag-clear) holds on every path.
 
 ## What must change before APPROVED
 
-- T3.1/T3.2/T3.3: specify the winner end-state (stale=0 + path to
-  CONFIRMED, or recorded deviation) per HIGH-1; pin flaggedPairs stale
-  inclusion (MEDIUM-3); winner-side downvote rule (MEDIUM-2).
-- T1.3: fourth predicate conjunct for invalidate() + exclusion test
-  (MEDIUM-1).
-- T2.1: source normalization when import opt unset + test extension
-  (MEDIUM-4); LOW-1/LOW-2 wording can ride along.
+- T3.1(b): add the pair-linkage refusal (contradiction_of match in either
+  direction, both rows live) + refusal test (MEDIUM-1).
+- T3.1(b): pin winner-path order -- clear flag fields BEFORE evaluating
+  the D2 un-stale predicate (or waive the flag conjunct there) + old-side
+  flagged winner test asserting CONFIRMED + stale=0 + export-filter pass
+  (MEDIUM-2).
+- T1.3: optional LOW-1 pattern anchoring, or a recorded note accepting the
+  false-positive edge.
+
+Everything else -- structure, ordering, models, R1-R7, all Round 1 fixes,
+F1-F6 coverage, fail-then-pass demands, VERIFY gotchas, ASCII/never-main/
+no-PR -- is in order. This is one task's worth of plan edits from
+APPROVED.
