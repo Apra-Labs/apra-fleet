@@ -69,12 +69,22 @@ input { repo?, symbols?: string[] } -> {
 No use_count bumps (dedicated reads like kb_list). Surface a compact code-KB
 health line in fleet_status (degraded-safe pattern). Tests for every section.
 
-**F6 Bible freshness surfacing (yashr-b4h).** CI cannot see the local KB, so
-the guard is drift VISIBILITY not a CI gate (design D5): kb_stats.bible.drift
-reports how many live CONFIRMED entries are newer than the bible file's newest
-updated_at (and bible-absent). fleet_status shows it ("bible: 3 promotions
-behind -- run kb_export + commit"). tpl-kb-agent.md and the PM completion flow
-already say export-then-commit; tighten the wording to make it a checklist item.
+**F6 Bible freshness: AUTO-COMMIT at harvest (yashr-b4h; USER DIRECTIVE
+2026-07-07: "at time of harvesting we should commit our learning -- we should
+not run this manually").** Two parts:
+- F6a AUTO-COMMIT (code, not docs -- design D5): kb_export, after writing the
+  bible file, automatically git-commits it (pathspec-only, dedicated identity,
+  only when content changed, non-fatal on any git failure, config off-switch).
+  Since the KB Agent already runs kb_export after every promotion, the chain
+  reviewer verdict -> KB Agent -> promote -> export -> COMMIT becomes fully
+  automatic -- zero manual steps. Push is NOT automatic (rides the existing
+  per-turn sprint pushes).
+- F6b drift VISIBILITY (design D5): kb_stats.bible.drift reports how many live
+  CONFIRMED entries are newer than the bible's newest updated_at; fleet_status
+  shows it. With F6a in place, nonzero drift becomes an ANOMALY signal (a
+  failed auto-commit), not a reminder. tpl-kb-agent.md wording updated to
+  reflect the automatic flow.
+CI cannot see the local KB, so there is no CI gate -- drift is visibility.
 
 **F7 Server version handshake (yashr-doq).** The running MCP server can lag the
 rebuilt dist until restarted (bit us twice). The server knows its own version

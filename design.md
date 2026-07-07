@@ -122,16 +122,39 @@ fixed-vs-broken still does; case-insensitive.
 - HttpKbProvider: implement stats() or return a documented not-supported
   result -- never throw.
 
-## D5 -- Bible drift is visibility, not a CI gate
+## D5 -- Bible auto-commit at harvest + drift as anomaly signal
 
-CI machines have no kb.sqlite, so a CI check cannot compare KB to bible. Drift
-lives where the KB lives: kb_stats.bible.drift = count of live CONFIRMED
-entries whose updated_at > the newest updated_at inside .fleet/
-kb-canonical.json (file absent -> drift = all live CONFIRMED, present flag
-false). fleet_status renders "bible: N promotions behind (run kb_export,
-commit .fleet/kb-canonical.json)" when N > 0. tpl-kb-agent.md Step: export
-after promote is already documented -- add the drift line to the KB Agent
-report template so the PM sees it each phase.
+USER DIRECTIVE (2026-07-07): learnings must be committed automatically at
+harvest time -- no manual step. Binding design:
+
+- AUTO-COMMIT lives inside kb_export (code-enforced, not template-instructed):
+  after writing .fleet/kb-canonical.json (or the global variant), when the
+  target repo path is a git repo AND the file content actually changed:
+  `git add <bible-path>` then
+  `git -c user.name='pm-kb' -c user.email='kb@pm.local' commit -m "chore(kb):
+  update knowledge bible -- <N> confirmed entries" -- <bible-path>`.
+  PATHSPEC-ONLY commit: only the bible file is committed; unrelated staged or
+  dirty working-tree state is never swept in. Any git failure (no repo, hooks,
+  index lock) is logged and NON-FATAL -- the export itself still succeeds.
+- Config off-switch: KB config (FLEET_DIR/knowledge/config.json)
+  { bible: { autoCommit?: boolean } }, default TRUE.
+- Push is NOT automatic. Rationale: outward writes stay under the existing
+  sprint push cadence (every VERIFY/turn pushes); auto-commit makes the
+  learning durable locally and rides the next push.
+- KB Agent nuance: tpl-kb-agent.md keeps its "no git operations" rule for the
+  AGENT -- the commit is performed by the kb_export TOOL with its own
+  identity (pm-kb), which is code, not agent discretion. State this in the
+  template so reviewers do not flag it as a violation.
+- Drift (kb_stats.bible.drift) = count of live CONFIRMED entries whose
+  updated_at > the newest updated_at inside the bible (file absent -> drift =
+  all live CONFIRMED, present=false). With auto-commit on, nonzero drift is an
+  ANOMALY (a failed auto-commit), and fleet_status words it that way:
+  "bible: N promotions behind (auto-commit may have failed -- run
+  apra-fleet kb commit)".
+- Tests: content-unchanged -> no commit; changed -> exactly one pathspec
+  commit with pm-kb identity; git failure -> export still returns success +
+  logged warning; autoCommit:false -> no git call; dirty unrelated file never
+  committed.
 
 ## D6 -- Version handshake inside the running server
 
