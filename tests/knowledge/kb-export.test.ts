@@ -28,21 +28,25 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
 }
 
 let provider: SqliteProvider;
+let globalProvider: SqliteProvider;
 let tmpDir: string;
 
 beforeEach(async () => {
   provider = new SqliteProvider(':memory:');
   await provider.init();
+  globalProvider = new SqliteProvider(':memory:');
+  await globalProvider.init();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-test-'));
   vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
     project: provider,
-    global: provider,
+    global: globalProvider,
     projectSlug: 'test',
   } as any);
 });
 
 afterEach(() => {
   provider.close();
+  globalProvider.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -218,6 +222,79 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
       await expect(kbExport({})).rejects.toThrow('repo_path does not exist or is not a directory');
       expect(fs.existsSync(path.join(missingCwd, '.fleet'))).toBe(false);
+    });
+  });
+
+  // T3.3 (F9a, D8): scope param -- 'global' reads the GLOBAL KB and writes
+  // .fleet/kb-canonical-global.json, leaving the project export path untouched.
+  describe('scope param (T3.3, F9a, D8)', () => {
+    it('default scope (omitted) exports the project KB to kb-canonical.json, byte-identical to before this task', async () => {
+      const { id } = await provider.capture(makeInput({ title: 'Project-scope default entry' }));
+      await provider.promote(id, 'confirmed for test');
+      // Put an unrelated CONFIRMED entry in the global KB to prove default
+      // scope never reads it.
+      const { id: globalId } = await globalProvider.capture(makeInput({ title: 'Global-only entry', symbols: ['globalOnlySym'] }));
+      await globalProvider.promote(globalId, 'confirmed for test');
+
+      const result = JSON.parse(await kbExport({ repo_path: tmpDir }));
+      expect(result.scope).toBe('project');
+      expect(result.exported).toBe(1);
+
+      const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+      expect(written).toHaveLength(1);
+      expect(written[0].id).toBe(id);
+      expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical-global.json'))).toBe(false);
+    });
+
+    it('scope="global" reads the global KB and writes kb-canonical-global.json with the same stable field set', async () => {
+      const { id: projectId } = await provider.capture(makeInput({ title: 'Project-only entry' }));
+      await provider.promote(projectId, 'confirmed for test');
+      const { id: globalId } = await globalProvider.capture(makeInput({
+        title: 'Global bible entry',
+        symbols: ['globalSym'],
+        source_files: ['src/global.ts'],
+      }));
+      await globalProvider.promote(globalId, 'confirmed for test');
+
+      const result = JSON.parse(await kbExport({ repo_path: tmpDir, scope: 'global' }));
+      expect(result.scope).toBe('global');
+      expect(result.exported).toBe(1);
+
+      const outPath = path.join(tmpDir, '.fleet', 'kb-canonical-global.json');
+      expect(fs.existsSync(outPath)).toBe(true);
+      const written = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+      expect(written).toHaveLength(1);
+      expect(written[0].id).toBe(globalId);
+      expect(written[0].title).toBe('Global bible entry');
+      expect(Object.keys(written[0]).sort()).toEqual(
+        ['confidence', 'id', 'source_files', 'summary', 'symbols', 'title', 'type', 'updated_at'].sort()
+      );
+
+      // Project export is untouched by the global export call.
+      expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'))).toBe(false);
+    });
+
+    it('scope="global" with an empty global KB writes a valid empty array file', async () => {
+      const result = JSON.parse(await kbExport({ repo_path: tmpDir, scope: 'global' }));
+      expect(result.exported).toBe(0);
+
+      const outPath = path.join(tmpDir, '.fleet', 'kb-canonical-global.json');
+      const written = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+      expect(written).toEqual([]);
+    });
+
+    it('scope="global" output is ASCII-safe', async () => {
+      const emDash = String.fromCharCode(8212);
+      const { id } = await globalProvider.capture(makeInput({
+        title: 'Global non-ASCII entry ' + emDash + ' note',
+      }));
+      await globalProvider.promote(id, 'confirmed for test');
+
+      await kbExport({ repo_path: tmpDir, scope: 'global' });
+      const raw = fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical-global.json'));
+      for (let i = 0; i < raw.length; i++) {
+        expect(raw[i]).toBeLessThanOrEqual(127);
+      }
     });
   });
 });

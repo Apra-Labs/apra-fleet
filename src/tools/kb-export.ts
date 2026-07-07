@@ -26,9 +26,19 @@ import { logWarn } from '../utils/log-helpers.js';
 // rather than silently writing relative to an arbitrary path. There is no
 // bare process.cwd() fallback: the fallback tier is validated the same way
 // explicit input is.
+// T3.3 (F9a, D8): scope param -- 'project' (default, unchanged behavior) reads
+// the PROJECT KB and writes .fleet/kb-canonical.json (as before); 'global'
+// reads the GLOBAL KB (providers.global -- the shared kb.sqlite at
+// ~/.apra-fleet/data/knowledge/global/) and writes
+// .fleet/kb-canonical-global.json in the given repo path (in practice the
+// apra-fleet platform repo, committed there per D8). Same stable field set,
+// same asciiSafeStringify + deterministic id-sorted output, and the same
+// auto-commit behavior (T2.3) applies to the global file too.
 export const kbExportSchema = z.object({
   repo_path: z.string().optional()
-    .describe('Path to the repo root to write .fleet/kb-canonical.json into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error.'),
+    .describe('Path to the repo root to write the canonical bible into. Precedence: this explicit input, when given, is validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated session working directory (same validation, not a blind default); if neither validates, kb_export refuses with a clear error.'),
+  scope: z.enum(['project', 'global']).optional()
+    .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the given repo path (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
 });
 
 export type KbExportInput = z.infer<typeof kbExportSchema>;
@@ -129,7 +139,7 @@ function bibleContentChanged(repoPath: string, outPath: string): boolean {
 // logged via log-helpers and NON-FATAL: the export itself already succeeded
 // by the time this runs, and stays successful regardless of what happens
 // here. Push is NOT automatic (D5: rides the existing per-turn sprint pushes).
-function maybeAutoCommitBible(repoPath: string, outPath: string, entryCount: number): boolean {
+function maybeAutoCommitBible(repoPath: string, outPath: string, entryCount: number, scope: 'project' | 'global' = 'project'): boolean {
   if (!autoCommitEnabled()) return false;
   if (!isGitRepo(repoPath)) return false;
 
@@ -139,7 +149,8 @@ function maybeAutoCommitBible(repoPath: string, outPath: string, entryCount: num
     execFileSync('git', ['add', outPath], {
       cwd: repoPath, timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const message = 'chore(kb): update knowledge bible -- ' + entryCount + ' confirmed entries';
+    const scopeLabel = scope === 'global' ? 'global knowledge bible' : 'knowledge bible';
+    const message = 'chore(kb): update ' + scopeLabel + ' -- ' + entryCount + ' confirmed entries';
     execFileSync(
       'git',
       ['-c', 'user.name=pm-kb', '-c', 'user.email=kb@pm.local', 'commit', '-m', message, '--', outPath],
@@ -155,9 +166,11 @@ function maybeAutoCommitBible(repoPath: string, outPath: string, entryCount: num
 
 export async function kbExport(input: KbExportInput): Promise<string> {
   const repoPath = resolveRepoPath(input.repo_path);
+  const scope = input.scope ?? 'project';
 
   const providers = await getKbProviders();
-  const entries = await providers.project.list({ confidence: 'CONFIRMED' });
+  const source = scope === 'global' ? providers.global : providers.project;
+  const entries = await source.list({ confidence: 'CONFIRMED' });
 
   // Deterministic ordering by id so re-exports produce meaningful diffs.
   const canonical: CanonicalEntry[] = entries
@@ -177,10 +190,11 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   if (!fs.existsSync(fleetDir)) {
     fs.mkdirSync(fleetDir, { recursive: true });
   }
-  const outPath = path.join(fleetDir, 'kb-canonical.json');
+  const fileName = scope === 'global' ? 'kb-canonical-global.json' : 'kb-canonical.json';
+  const outPath = path.join(fleetDir, fileName);
   fs.writeFileSync(outPath, asciiSafeStringify(canonical) + '\n', 'utf-8');
 
-  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length);
+  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope);
 
-  return JSON.stringify({ exported: canonical.length, path: outPath, committed });
+  return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed });
 }
