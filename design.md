@@ -41,11 +41,16 @@ revive freshness-staled entries; a superseded or downvoted entry must stay
 retired even if its files match again.
 - Discriminator WITHOUT migration: superseded entries carry superseded_at
   (never un-stale those); feedback entries carry the "[feedback ...]" note in
-  content AND flagged_for_review=1. Decision: un-stale ONLY entries where
-  stale=1 AND superseded_at IS NULL AND flagged_for_review=0 AND the re-hash
-  of their FULL stored basis matches current files. That is precisely the
-  freshness-staled population. State this predicate in a comment + test each
-  exclusion.
+  content AND flagged_for_review=1. Decision (HARDENED per plan review): the
+  un-stale predicate is stale=1 AND superseded_at IS NULL AND
+  flagged_for_review=0 AND content_hash != 'invalidated' AND content NOT LIKE
+  '%[feedback %' AND the re-hash of the FULL stored basis matches current
+  files. The two extra conjuncts close: (MEDIUM-1) invalidate() is a FOURTH
+  stale actor (sets stale=1, flagged=0, superseded NULL, basis unchanged) --
+  explicitly invalidated entries must never auto-revive; (MEDIUM-2) a
+  feedback-downvoted entry whose flag was later cleared (e.g. by a
+  flag-clearing flow) must stay retired -- the "[feedback " content marker is
+  the durable downvote record. Test EACH exclusion.
 - Where: extend checkFreshness() (prime-time) to do both directions over the
   primed candidate set, PLUS a new provider method freshnessSweep() that runs
   the same predicate over ALL entries with a non-empty basis (bounded: one
@@ -85,20 +90,50 @@ retired even if its files match again.
   [--path ...]`. After import, run freshnessSweep (D2) so imported entries
   whose basis does not match this worktree are immediately staled rather than
   serving wrong-branch claims.
+- PROVENANCE HARDENING (MEDIUM-4): provider.capture() must NORMALIZE the
+  source field -- a deserialized caller-supplied source of 'import' (or
+  'promotion') is overwritten with the route-appropriate value unless the
+  internal import mode is actually engaged. Forged trusted-channel provenance
+  via HTTP/MCP body is thereby impossible. Test it.
+- TRUST BOUNDARY (LOW, document in the tool description + kb-reconcile.md):
+  kb_import reads a caller-named local file; a local caller with tool access
+  could import a hand-crafted bible. This is equivalent in power to the
+  already-exposed kb_promote surface and is accepted under the local trust
+  model -- the unforgeable tier remains user-directives (CLI-gated). State it,
+  do not pretend otherwise.
 
-## D4 -- Hash prefilter for flagged pairs (F5 step 3)
+## D4 -- Hash prefilter for flagged pairs (F5 step 3) -- HARDENED per plan review
 
 - New provider read: flaggedPairs() -- flagged entries joined to their
-  contradiction_of counterpart (both live). For each pair, re-hash both sides'
-  bases against the current worktree: exactly one side fully matches -> that
-  side WINS mechanically: kb_promote the winner if INFERRED (reason cites
-  "hash-basis match on merged worktree"), supersede+stale the loser, clear
-  both flags. Both match, both mismatch, or either side has no basis ->
-  leave for the agent rung.
+  contradiction_of counterpart. LIVENESS (MEDIUM-3): pair membership requires
+  ONLY superseded_at IS NULL on both sides -- stale members MUST be included
+  (the imported side of a pair is typically stale after the post-import sweep;
+  the default "live = not superseded AND not stale" filter would silently
+  return no pairs). State this explicitly in the method contract + test.
+- Resolution is a DEDICATED provider method resolveContradiction(winnerId,
+  loserId, evidence) -- not composed from promote()+feedback() (HIGH fix):
+  - WINNER: set confidence='CONFIRMED' directly with the evidence note
+    appended (the merged code IS the verdict -- reconcile is
+    verdict-equivalent; promote()'s one-step ladder cannot lift the
+    UNVERIFIED contradiction-born entries AUDN produces). Clear the winner's
+    stale ONLY via the D2 safe predicate (so an invalidated or
+    feedback-downvoted winner stays retired -- MEDIUM-2: a downvoted entry
+    that wins on hash keeps its downvote; it wins the CONTRADICTION, not its
+    reputation). Clear the winner's flag.
+  - LOSER: superseded_at=now + stale=1 + flag cleared (retired with audit
+    trail -- the existing invariant).
+  - This method is what makes F6's e2e chain satisfiable: winner ends
+    CONFIRMED + un-staled (when predicate allows) and therefore reaches the
+    kb_export bible (which filters CONFIRMED + stale=0).
+- For each pair, re-hash both sides' bases against the current worktree:
+  exactly one side fully matches -> resolveContradiction(matching, other,
+  "hash-basis match on merged worktree"). Both match / both mismatch / either
+  side has no basis -> leave for the agent rung.
 - Never applies to pairs involving an ACTIVE user-directive (flag stays for
   the human; directives outrank mechanics).
-- Exposed as part of the reconcile tooling (a kb_reconcile_prefilter tool or a
-  function invoked by the PM flow -- planner picks the surface and states it).
+- Surface per planner R1: MCP tool kb_reconcile_prefilter; the reconciler
+  agent (D5) uses the SAME resolveContradiction method for its code-decided
+  resolutions (one write path for all reconcile outcomes).
 
 ## D5 -- Reconciler agent (F5 step 4)
 
