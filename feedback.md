@@ -1,149 +1,177 @@
-# Phase 1 Code Review -- KB Branch Reconcile Sprint (epic yashr-ii1)
+# Phase 2 Code Review -- KB Branch Reconcile Sprint (epic yashr-ii1)
 
-Reviewer: pm-reviewer. Reviewing Phase 1 (T1.1-T1.4) of the
-kb-branch-reconcile sprint against PLAN.md (revision 3), requirements.md
-(F1-F3), and design.md (D1, D2 hardened, D3). Commits reviewed: 9ece587
-(T1.1 test isolation + TZ), 3bf2281 (T1.2 clamp relocation), 848f2a1 (T1.3
-bidirectional staleness). Prior plan-review verdicts (Rounds 1-3) are
-preserved in this file's git history.
+Reviewer: pm-reviewer. Reviewing Phase 2 (T2.1-T2.3) of the
+kb-branch-reconcile sprint against PLAN.md (revision 3, T2.1-T2.3 +
+R4/LOW-2), requirements.md (F4), and design.md (D3 with PROVENANCE
+HARDENING + TRUST BOUNDARY). Commits reviewed: 20c86b3 (T2.1 kb_import +
+provider support), 8f26099 (T2.2 CLI subcommand). Prior review verdicts
+(plan Rounds 1-3, Phase 1) are preserved in this file's git history. This
+was a SECURITY-CRITICAL review: the import trust surface was attacked
+directly against the COMPILED dist, not only through the shipped tests.
 
 ## VERDICT: APPROVED
 
-0 HIGH, 0 MEDIUM, 1 LOW. Phase 1 is correct, hermetic, and matches the
-hardened design. The load-bearing T1.3 predicate implements the full
-four-actor hardened D2 exactly; every exclusion war-gamed at the provider
-level stays retired and a genuine freshness-stale entry revives. Both
-fail-then-pass red states reproduced verbatim. Full suite: 2006 passed,
-14 skipped, 0 failed (run by this reviewer). Build clean (tsc exit 0).
+0 HIGH, 1 MEDIUM, 1 LOW. The import trust surface -- the load-bearing
+security concern of this phase -- is airtight. Every attack in the review
+brief was reproduced live against dist and defended correctly. The MEDIUM
+(cwd anchoring under concurrency) and LOW (post-import sweep semantics) are
+robustness / design-text-accuracy findings, not trust-surface holes, and
+neither blocks Phase 2; both have a natural home in Phase 3 (T3.1 next
+touches the same provider). Build clean (tsc exit 0). Full suite: 2026
+passed / 14 skipped / 0 failed (run by this reviewer).
 
 ---
 
 ## Verification performed
 
-- npm run build: clean (exit 0).
-- npm test (this reviewer's own run): 137 test files, 2006 passed / 14
-  skipped / 0 FAILED. The zero-failure criterion from T1.2 onward holds.
-- T1.2 red-state reproduced: checked out the provider at 3bf2281~1, ran the
-  new gate test -> RED with "AssertionError: expected 'CONFIRMED' to be
-  'INFERRED'" (exactly the doer's claim). Provider restored clean.
-- T1.3 red-state reproduced: checked out the provider at 848f2a1~1, ran the
-  freshness suite -> 8 RED with "TypeError: provider.freshnessSweep is not a
-  function" (exactly the doer's claim). Provider restored clean.
-- ASCII: no non-ASCII byte appears on any line ADDED by the three Phase 1
-  commits (checked + lines only). Pre-existing non-ASCII in src/index.ts
-  and tests/time-utils.test.ts is untouched -- correct, per the no-mass-
-  migration rule.
+- npm run build: clean (exit 0, tsc).
+- npm test (this reviewer's own run): 139 test files, 2026 passed / 14
+  skipped / 0 FAILED. Zero-failure criterion holds.
+- LIVE ATTACK against compiled dist (dist/services/knowledge/
+  sqlite-provider.js + dist/tools/kb-capture.js), 15 assertions, ALL PASS.
+  The script exercised the real compiled SqliteProvider.capture and the real
+  kbCaptureSchema, not the test doubles.
+- ASCII: no non-ASCII byte on any line ADDED by 20c86b3 / 8f26099. The
+  pre-existing non-ASCII in src/index.ts (em dashes + arrows in unrelated
+  banners/tool descriptions) is present on main and untouched by this phase
+  -- correct per no-mass-migration. The T3.4 ASCII sweep must verify by
+  CHANGED-HUNK bytes, not whole-file grep, or it will false-positive here.
 
-## T1.1 -- test isolation + TZ (F1/D1) -- PASS
+## Attack results (review brief items 1-4)
 
-- The leaking block was `kb_session_prime graph-neighbor expansion`. The fix
-  adds a per-test `process.cwd()` spy pointed at a fresh empty temp dir
-  (beforeEach) with cleanup (afterEach), so the canonical-bible cold-seed
-  (resolveRepoPath -> cwd) finds no bible and cannot read this repo's real
-  .fleet/kb-canonical.json. The other two cwd-sensitive blocks
-  (canonical-bible cold-seed line ~479, global-bible cold-seed line ~738)
-  already carried their own cwd spies; FLEET_DIR is isolated by
-  tests/setup.ts. Coverage of the leaking block is real and complete.
-- No assertion weakened: the only removed line in the T1.1 diff is the vitest
-  import line (widened to add vi/afterEach). All graph-neighbor assertions
-  (toEqual id-order, via:'graph-neighbor' marking, NEIGHBOR_CAP=10,
-  ADDED_ENTRY_CAP=5, dedupe-by-id) are verbatim.
-- TZ fix: `vi.stubEnv('TZ','Asia/Tokyo')` added to the two sub-hour-sensitive
-  tests plus a header afterEach unstub; the assertions (toContain('45:30.123')
-  etc.) are unchanged. Whole-hour zone pins the same minute/second-preservation
-  behavior deterministically.
+### 1. R4 unreachability -- AIRTIGHT (live-proven)
 
-## T1.2 -- provider clamp relocation (F3/R3) -- PASS
+- 1(a) HTTP-shaped one-arg capture with source='import' + CONFIRMED:
+  clamped to INFERRED AND source scrubbed to 'unknown'. source='promotion'
+  likewise scrubbed. Verified live on the compiled provider.
+- 1(b) MCP kb_capture zod path: kbCaptureSchema.safeParse of a body carrying
+  importMode/preferredId/source drops all three -- parsed keys were
+  {type,title,summary,content,role,confidence} only. z.object strips unknown
+  keys, and independently the handler (kb-capture.ts:118) builds the input
+  from named fields and derives `source` server-side, so even a
+  non-stripping parser could not reach capture()'s opts.
+- 1(c) CaptureOpts exists ONLY as SqliteProvider.capture's second param
+  (types.ts CaptureOpts). Both deserialized routes pass exactly one
+  argument: kb-server.ts:139 `provider.capture(input)` and kb-capture.ts:118
+  `target.capture({...})`. No MCP/HTTP handler passes a second argument. The
+  ordering -- directive gate (622) -> provenance normalization (664) ->
+  clamp (680), gated on `!opts?.importMode` where relevant -- is correct.
 
-- The ENFORCEMENT clamp sits inside SqliteProvider.capture()
-  (sqlite-provider.ts:660-665), AFTER the directive gate (621-633). Gate runs
-  first and forces user-directives to UNVERIFIED pending proposals; the clamp
-  then downgrades non-directive CONFIRMED -> INFERRED and appends the bracketed
-  note. Directive path verified unchanged (test asserts UNVERIFIED + flagged +
-  directive:pending, no double clamp note). promote() still mints CONFIRMED.
-- R5 fixture fallout migrated via the REAL ladder (capture INFERRED then
-  promote) in kb-decay, kb-promote, kb-feedback, kb-claims-proof,
-  kb-token-and-learning. No test-only bypass flag added to product code;
-  assertions unchanged (still assert CONFIRMED end-state).
-- Import-mode seam is a COMMENT ONLY (652-657); capture() still has the single
-  `input: KBEntryInput` signature -- no reachable second parameter yet, as
-  required. T2.1 owns it.
+### 2. Directive quarantine -- WORKS (live-proven)
 
-## T1.3 -- bidirectional staleness + freshnessSweep (F2/D2 HARDENED) -- PASS
+A type='user-directive' bible entry at CONFIRMED, imported under import
+mode, lands UNVERIFIED + flagged_for_review=1 + tag 'directive:pending';
+promote() refuses to lift it (stays UNVERIFIED); default retrieval does not
+surface it. The directive gate runs BEFORE and independently of import mode,
+so import cannot smuggle an active directive.
 
-- Shared predicate `freshnessRevivable()` (301-312) implements the four
-  NON-hash conjuncts (superseded_at NULL, flagged=0, content_hash !=
-  'invalidated', anchored feedback marker absent); the callers own the stale=1
-  gate and the full-basis re-hash (`basisFullyMatches()`, 321-332). ONE
-  implementation, reused by checkFreshness() and freshnessSweep() (and reserved
-  for T3.1). The full hardened D2 predicate is stated verbatim in the comment
-  at the site (281-290).
-- MARKER ANCHORING cross-checked against the writer: feedback() writes
-  `'\n\n[feedback ' + new Date().toISOString() + '] '` (line 1090); the regex
-  FEEDBACK_MARKER_RE `/\n\n\[feedback \d{4}-\d{2}-\d{2}T/` (279) matches that
-  exact newline+ISO-timestamp form, so a learning that merely QUOTES the
-  feedback format is not permanently excluded once freshness-staled. Anchoring
-  is correct.
-- WAR-GAME (each at the provider level, confirmed by code + the individual
-  tests, which use the REAL feedback()/invalidate() writers):
-  - superseded (superseded_at set, matching basis) -> freshnessRevivable false
-    at the superseded_at guard -> stays stale=1. RETIRED.
-  - feedback flag standing (stale=1, flagged=1) -> false at the flag guard ->
-    stays stale=1. RETIRED.
-  - downvote marker with flag CLEARED (flag=0, marker present) -> false at the
-    marker guard -> stays stale=1. RETIRED. (This is the MEDIUM-2 laundering
-    defense; test 4 simulates the T3.1 flag-clear and asserts the marker
-    survives.)
-  - invalidated (content_hash='invalidated', flag=0, superseded NULL) -> false
-    at the invalidated guard -> stays stale=1. RETIRED. (Test drives real
-    invalidate(); asserts flag=0/superseded NULL first.)
-  - partial basis (2 files, 1 restored) -> basisFullyMatches false (missing/
-    changed file) -> not counted as a match -> stays stale=1. RETIRED.
-  - empty/malformed basis -> parseBasis returns null -> excluded from
-    basisById -> checked=0, never staled/revived. UNTOUCHED.
-  - genuine freshness-stale, files restored byte-identical -> all four
-    conjuncts pass AND full basis matches -> revived (stale=0) and re-primed.
-    REVIVES.
-- checkFreshness cannot revive at prime: candidate set is
-  entries.filter(source_files.length>0) drawn from prime's top_entries, which
-  query() already filters to stale=0; the un-stale branch is gated on
-  `entry.stale && freshnessRevivable(entry)`, so it is a documented no-op at
-  prime. The caveat is stated in the code (357-363). Revival surface is the
-  sweep only.
-- Sweep NOT wired into prime: prime() calls only checkFreshness()
-  (sqlite-provider.ts:925); freshnessSweep has exactly one non-test caller,
-  the kb_freshness_sweep tool. Confirmed.
-- kb_freshness_sweep tool: thin handler over provider.freshnessSweep();
-  registered in src/index.ts (203 import, 391 server.tool). freshnessSweep is
-  read-only apart from the two `UPDATE entries SET stale = ...` statements.
-  Degraded-safe at the data level: computeFileHashBatch returns null for
-  missing files (treated as mismatch, not a throw) and falls back to sha256 if
-  git hash-object fails.
+### 3. Import trust order -- CORRECT (live-proven)
 
----
+A non-directive CONFIRMED bible entry imports as CONFIRMED source='import'
+(the sole intended exemption), while the identical payload through plain
+one-arg capture() clamps to INFERRED. The gate->normalize->clamp ORDER
+cannot be exploited by a directive+import combination: a directive at
+CONFIRMED WITH source='import' AND importMode=true STILL lands UNVERIFIED +
+flagged + directive:pending. The gate is unconditional; the exemption only
+skips the general clamp for non-directive types.
 
-## Findings
+### 4. Idempotency / id-hijack -- CORRECT (live-proven + code-read)
 
-### LOW-1 -- kb_freshness_sweep hashes basis paths relative to the process cwd
+hasEntry(id) checks ALL rows (superseded/stale included) with no use_count
+bump and is the FIRST per-entry gate (kb-import.ts:144), before capture(). A
+bible entry whose id equals an EXISTING unrelated entry is SKIPPED, not
+overwritten: seeded a row under a fixed id, confirmed hasEntry true, content
+unchanged. preferredId is consumed only on the pure 'add' path
+(sqlite-provider.ts:707) where the id is already proven free; AUDN
+update/flagged branches always mint a fresh randomUUID, so no id collision
+can overwrite an existing entry. Suite TEST 3 additionally proves a
+symbol-less/file-less entry (AUDN can never dedupe it) is carried by the
+id-skip, and re-import reports imported=0 with row count unchanged.
 
-freshnessSweep() re-hashes stored basis file paths via computeFileHashBatch
-with no repo anchoring; the tool exposes no repo/path parameter. This is
-consistent with checkFreshness()'s existing prime-time behavior and is within
-D2 (a bounded full-KB sweep over the project provider), so it is not a Phase 1
-defect. Flagging for T2.1/T3.2 awareness: kb_import runs the sweep internally
-AFTER resolving the repo, and /pm kb-reconcile runs in the merged worktree
-cwd, so both invoke it from the correct directory -- keep that invariant when
-wiring those callers, and ensure basis paths remain worktree-relative so the
-sweep re-hash resolves the intended files. No change required in Phase 1.
+## Item 5 -- sweep semantics deviation (KEY JUDGMENT) -- ACCEPTABLE, rated LOW
 
-## Standing confirmations
+The recorded deviation is accurate and honestly stated. capture() computes
+source_file_hashes from the CURRENT worktree (computeSourceFileHashes), and
+the bible field set carries NO per-file hashes, so a freshly imported entry
+matches the worktree it was imported on BY CONSTRUCTION. The post-import
+freshnessSweep therefore NEVER stales a fresh import -- the D3 sentence
+"imported entries whose basis does not match this worktree are immediately
+staled" describes an unreachable branch for fresh imports. The sweep's real
+post-import value is re-evaluating PRE-EXISTING entries against the merged
+worktree (staling branch-A entries whose files the merge changed, reviving
+matches).
 
-F1/F2/F3 done criteria met with testable evidence; fail-then-pass demanded and
-verified for F3 (provider clamp) and F2 (un-stale core); allowed-failure list
-retired (never a literal allowlist -- the 6 known-flaky tests, now green); no
-mass migration (forward-only, 5 small fixture edits via the real ladder);
-ASCII-only in changed lines; build clean; zero test failures. T1.4 VERIFY
-(build + test + gitnexus + push) recorded and consistent with this reviewer's
-independent build+test run.
+Judgment: ACCEPTABLE within the reconcile flow. Import runs ON the merged
+worktree, so basis=current is the only sensible basis -- the bible has no
+hashes to preserve, and the entry genuinely describes the merged code as of
+import. This is the same hash-basis staleness model every capture() already
+uses; it is not a new hole. Contradiction arbitration is the prefilter's job
+(T3.1), not the sweep's. Rated LOW because it is a design-text vs behavior
+mismatch, not a code defect; the code does the only correct thing.
 
-APPROVED for Phase 2.
+What T3.3's e2e MUST prove (and MUST NOT claim): a B-side imported entry
+ALWAYS matches the merged worktree immediately (its basis was computed from
+it), so the prefilter's "exactly one side matches" mechanically confirms B
+ONLY when the merge took B's version (A's original basis then mismatches),
+and SAFELY DEFERS to the agent when the merge took A's version (both sides
+match). T3.3 must exercise the contradiction chain with these asymmetric
+bases and must NOT assert the post-import sweep stales a freshly imported
+entry. kb-import.test.ts TEST 6 already frames this correctly (it stales a
+PRE-EXISTING branch-A entry and asserts the imported entry stays fresh).
+
+## Item 6 -- cwd anchoring (LOW-1) -- NOT concurrency-safe, rated MEDIUM
+
+sweepAnchored() (kb-import.ts:200) does `process.chdir(repoAnchor)` before
+`await freshnessSweep()` and restores prevCwd in a finally. The chdir is
+functionally NECESSARY: imported entries store repo-relative basis paths and
+freshnessSweep -> computeFileHashBatch resolves relatives against
+process.cwd() (file-hash.ts:49 fs.existsSync + `git hash-object <relpath>`).
+
+But process.chdir mutates PROCESS-GLOBAL state, and freshnessSweep awaits
+`git hash-object` via execFileAsync -- it yields the event loop for the whole
+hashing window. In the long-lived MCP/KB server process, a concurrent tool
+call that reads process.cwd() during that window would resolve the wrong
+repo: the HTTP /api/kb/capture route hashing its own relative source_files
+(a WRONG-basis write, silent data corruption), another kb_import, or
+kb_export/resolveRepoPath falling back to cwd. It is not safe under
+concurrent async tool calls in one server process.
+
+Rating: MEDIUM, non-blocking for Phase 2. Real-world exposure is low --
+kb_import is a manual post-merge command, unlikely to overlap a concurrent
+KB write -- and the author documented it as an accepted tradeoff. But the
+"safe under concurrency" question is honestly answered NO. The clean fix is
+to thread a root/baseDir option into freshnessSweep() /
+computeFileHashBatch() (git -C <root> or path.resolve(root, p)) and drop the
+global chdir entirely. T3.1 next edits sqlite-provider.ts (freshnessSweep's
+home) -- the natural place to land it. Recommend scheduling before sprint
+close; not a gate on Phase 2.
+
+## Numbered findings
+
+- MEDIUM-1 (item 6): kb_import's chdir-based sweep anchoring is not
+  concurrency-safe (process-global cwd mutation across an await that yields
+  during git hashing). Non-blocking; fix by passing an explicit root into
+  freshnessSweep/computeFileHashBatch.
+- LOW-1 (item 5): D3's "imported entries ... immediately staled" is an
+  unreachable branch for fresh imports (basis=current at capture, bible
+  carries no hashes). Behavior is correct and honestly recorded; the design
+  text overstates it. T3.3 obligations stated above.
+
+## What is correct and load-bearing
+
+- CaptureOpts is a non-deserializable second parameter; both routes pass one
+  argument; zod strips unknown keys. R4 closed, live-verified.
+- Provenance normalization (MEDIUM-4): 'import'/'promotion' from a
+  deserialized body are rewritten to 'unknown' unless import mode is engaged;
+  source='import' survives only under the internal flag.
+- Directive gate is unconditional and ordered before the exemption; import
+  cannot mint or smuggle an active directive; activation stays CLI-only.
+- id-first idempotency via hasEntry() (all rows, no telemetry bump);
+  preferredId only on the free 'add' path; no id can overwrite an existing
+  entry.
+- CLI (T2.2) is a thin wrapper over the same kbImport (no logic dup), prints
+  an ASCII report, exits 1 on resolution failure, carries the LOW-1 trust
+  line in help. Tests cover happy + missing-bible + malformed-JSON + exit
+  codes.
+- Report shape {imported, skipped, superseded, flagged, sweep:{checked,
+  staled, unstaled}} matches the plan.
