@@ -18,6 +18,7 @@ import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
 import { getActiveLogFile } from '../utils/log-helpers.js';
 import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
+import { kbStats } from './kb-stats.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -380,6 +381,55 @@ export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): str
   return `code-intel: index present | ${nodes} nodes / ${edges} edges / ${files} files | indexed ${indexedAt} | ${headComparisonLabel(health)}${topSymbolsFragment(health.topSymbols)}`;
 }
 
+// ---------------------------------------------------------------------------
+// KB health (T2.2, F5/F6, D4/D5 amended). Degraded-safe: reuses kb_stats
+// (T2.1) for the numbers rather than re-querying the DB directly, following
+// the code-intelligence health precedent (KB 4e11460c) -- wrap ALL I/O in
+// try/catch, return null on any failure, never throw, never block status.
+// ---------------------------------------------------------------------------
+export interface KbHealthBible {
+  present: boolean;
+  entries: number;
+  drift: number;
+}
+
+export interface KbHealth {
+  totals: { by_confidence: Record<string, number>; by_type: Record<string, number>; total: number };
+  stale: number;
+  flagged: number;
+  superseded: number;
+  retrieval: { entries_retrieved: number; total_uses: number; hit_rate: number | null };
+  promote_ratio: number | null;
+  bible: KbHealthBible;
+}
+
+/** Read kb_stats and shape it for fleet_status. Never throws -- any failure (DB unavailable, bad JSON) yields null so the caller omits the KB section entirely. */
+export async function kbHealthSummary(): Promise<KbHealth | null> {
+  try {
+    const raw = await kbStats({});
+    return JSON.parse(raw) as KbHealth;
+  } catch {
+    return null;
+  }
+}
+
+// D5 (AMENDED): with F6a auto-commit in place inside kb_export, nonzero drift
+// is an ANOMALY signal (a failed auto-commit), not a routine reminder -- the
+// wording says so explicitly. Omitted entirely when drift is not positive
+// (nothing anomalous to report).
+function bibleDriftFragment(bible: KbHealthBible): string {
+  if (bible.drift <= 0) return '';
+  return ` | bible: ${bible.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)`;
+}
+
+/** Render the one-line compact fleet_status KB health summary. */
+export function kbHealthCompactLine(health: KbHealth): string {
+  const hitRatePct = health.retrieval.hit_rate === null ? 'n/a' : `${Math.round(health.retrieval.hit_rate * 100)}%`;
+  const promotePct = health.promote_ratio === null ? 'n/a' : `${Math.round(health.promote_ratio * 100)}%`;
+  const confirmed = health.totals.by_confidence.CONFIRMED ?? 0;
+  return `kb: ${health.totals.total} entries (confirmed:${confirmed} stale:${health.stale} flagged:${health.flagged}) | hit-rate:${hitRatePct} | promote-ratio:${promotePct}${bibleDriftFragment(health.bible)}`;
+}
+
 export type FleetStatusInput = z.infer<typeof fleetStatusSchema>;
 
 export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
@@ -450,6 +500,18 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     // omit -- see comment above
   }
 
+  // T2.2 (F5/F6, D4/D5 amended): KB health -- degraded-safe, mirrors the
+  // code-intelligence section above. kbHealthSummary() already catches
+  // internally; the outer try/catch here is defensive belt-and-suspenders
+  // (same rationale as the codeIntelligence call above), so fleet_status
+  // NEVER fails because of the KB.
+  let kbHealth: KbHealth | null = null;
+  try {
+    kbHealth = await kbHealthSummary();
+  } catch {
+    kbHealth = null;
+  }
+
   if (format === 'json') {
     const payload: Record<string, unknown> = {
       version: serverVersion,
@@ -457,6 +519,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       members: rows,
       codeIntelligence,
     };
+    if (kbHealth) payload.kbHealth = kbHealth;
     if (logFile) payload.logFile = logFile;
     if (updateNotice) {
       const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
@@ -494,5 +557,6 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     t += line + '\n';
   }
   t += codeIntelligenceCompactLine(codeIntelligence) + '\n';
+  if (kbHealth) t += kbHealthCompactLine(kbHealth) + '\n';
   return t;
 }
