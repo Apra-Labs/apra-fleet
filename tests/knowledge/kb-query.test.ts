@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
+import { kbQuery } from '../../src/tools/kb-query.js';
+import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
 function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
@@ -108,6 +110,50 @@ describe('kb_query', () => {
     expect(result.results[0].id).not.toBe(first.id);
   });
 
+  it('tag filter returns only entries whose tags array contains the value (json_each)', async () => {
+    await provider.capture(makeInput({
+      title: 'Tagged registry entry', tags: ['sprint:kb-inflight-capture', 'phase:1'],
+      symbols: ['symQueryTagged'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Untagged registry entry', tags: ['other-tag'],
+      symbols: ['symQueryUntagged'],
+    }));
+
+    const result = await provider.query({ query: 'registry', tag: 'sprint:kb-inflight-capture' });
+    expect(result.results.length).toBe(1);
+    expect(result.results[0].title).toBe('Tagged registry entry');
+  });
+
+  it('no tag -> unchanged behavior (both entries returned)', async () => {
+    await provider.capture(makeInput({ title: 'Registry entry alpha', tags: ['a'], symbols: ['symQueryAlpha'] }));
+    await provider.capture(makeInput({ title: 'Registry entry beta', tags: ['b'], symbols: ['symQueryBeta'] }));
+
+    const result = await provider.query({ query: 'registry' });
+    const titles = result.results.map(r => r.title);
+    expect(titles).toContain('Registry entry alpha');
+    expect(titles).toContain('Registry entry beta');
+  });
+
+  it('tag + type filter compose (AND, not FTS)', async () => {
+    await provider.capture(makeInput({
+      title: 'Compose knowledge registry', type: 'knowledge', tags: ['sprint:z'],
+      symbols: ['symQueryComposeK'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Compose cache registry', type: 'context-cache', tags: ['sprint:z'],
+      symbols: ['symQueryComposeC'], source_files: ['src/cache2.ts'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Compose other tag registry', type: 'knowledge', tags: ['sprint:other'],
+      symbols: ['symQueryComposeO'],
+    }));
+
+    const result = await provider.query({ query: 'registry', type: 'knowledge', tag: 'sprint:z' });
+    expect(result.results.length).toBe(1);
+    expect(result.results[0].title).toBe('Compose knowledge registry');
+  });
+
   it('L2 expansion returns full content for top 5 only', async () => {
     const entries: string[] = [];
     for (let i = 0; i < 8; i++) {
@@ -136,5 +182,59 @@ describe('kb_query', () => {
     for (const entry of l2.results) {
       expect(entry.content.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('kb_query tool', () => {
+  beforeEach(() => {
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+      project: provider,
+      global: provider,
+      projectSlug: 'test',
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('tag filter returns only tagged entries', async () => {
+    await provider.capture(makeInput({
+      title: 'Tool tagged registry entry', tags: ['sprint:kb-inflight-capture', 'phase:1'],
+      symbols: ['symToolQueryTagged'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Tool untagged registry entry', tags: ['other'],
+      symbols: ['symToolQueryUntagged'],
+    }));
+
+    const parsed = JSON.parse(await kbQuery({ query: 'registry', tag: 'sprint:kb-inflight-capture' }));
+    const titles = parsed.l1_results.map((e: any) => e.title);
+    expect(titles).toContain('Tool tagged registry entry');
+    expect(titles).not.toContain('Tool untagged registry entry');
+  });
+
+  it('no tag -> unchanged behavior', async () => {
+    await provider.capture(makeInput({ title: 'Tool no-tag alpha', symbols: ['symToolQueryAlpha'] }));
+
+    const parsed = JSON.parse(await kbQuery({ query: 'registry' }));
+    const titles = parsed.l1_results.map((e: any) => e.title);
+    expect(titles).toContain('Tool no-tag alpha');
+  });
+
+  it('tag + type filter compose', async () => {
+    await provider.capture(makeInput({
+      title: 'Tool compose knowledge registry', type: 'knowledge', tags: ['sprint:z'],
+      symbols: ['symToolQueryComposeK'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Tool compose other-tag knowledge registry', type: 'knowledge', tags: ['sprint:other'],
+      symbols: ['symToolQueryComposeO'],
+    }));
+
+    const parsed = JSON.parse(await kbQuery({ query: 'registry', type: 'knowledge', tag: 'sprint:z' }));
+    const titles = parsed.l1_results.map((e: any) => e.title);
+    expect(titles).toContain('Tool compose knowledge registry');
+    expect(titles).not.toContain('Tool compose other-tag knowledge registry');
   });
 });

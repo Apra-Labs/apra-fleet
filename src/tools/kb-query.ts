@@ -7,6 +7,7 @@ export const kbQuerySchema = z.object({
   query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
+  tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term)'),
   limit: z.number().optional().describe('Max L1 results (default 20)'),
   include_stale: z.boolean().optional().describe('Include stale and superseded entries (default false)'),
   flagged_only: z.boolean().optional()
@@ -25,6 +26,7 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
   if (input.flagged_only) {
     const flaggedOpts = {
       query: input.query,
+      tag: input.tag,
       flagged_only: true,
       include_stale: true,
       include_superseded: false,
@@ -53,6 +55,7 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
   const queryOpts = {
     query: input.query,
     type: input.type,
+    tag: input.tag,
     limit: input.limit ?? 20,
     l1_only: true,
     include_stale: input.include_stale ?? false,

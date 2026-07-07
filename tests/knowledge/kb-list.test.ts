@@ -81,6 +81,41 @@ describe('SqliteProvider.list (T3.3, F8a)', () => {
     expect(results[0].title).toBe('S2');
   });
 
+  it('tag filter matches entries whose tags array contains the value (json_each)', async () => {
+    await provider.capture(makeInput({ title: 'T1', symbols: ['symTagT1'], tags: ['sprint:kb-inflight-capture', 'phase:1'] }));
+    await provider.capture(makeInput({ title: 'T2', symbols: ['symTagT2'], tags: ['other-tag'] }));
+
+    const results = await provider.list({ tag: 'sprint:kb-inflight-capture' });
+    expect(results.length).toBe(1);
+    expect(results[0].title).toBe('T1');
+  });
+
+  it('no tag filter -> unchanged behavior (all entries regardless of tags)', async () => {
+    await provider.capture(makeInput({ title: 'NT1', symbols: ['symNoTag1'], tags: ['a'] }));
+    await provider.capture(makeInput({ title: 'NT2', symbols: ['symNoTag2'], tags: ['b'] }));
+
+    const results = await provider.list({});
+    const titles = results.map(e => e.title);
+    expect(titles).toContain('NT1');
+    expect(titles).toContain('NT2');
+  });
+
+  it('tag + other filter compose (module AND tag)', async () => {
+    await provider.capture(makeInput({
+      title: 'Compose1', symbols: ['symCompose1'], module: 'src/services', tags: ['sprint:x', 'phase:1'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Compose2', symbols: ['symCompose2'], module: 'src/tools', tags: ['sprint:x', 'phase:1'],
+    }));
+    await provider.capture(makeInput({
+      title: 'Compose3', symbols: ['symCompose3'], module: 'src/services', tags: ['sprint:y'],
+    }));
+
+    const results = await provider.list({ module: 'src/services', tag: 'sprint:x' });
+    expect(results.length).toBe(1);
+    expect(results[0].title).toBe('Compose1');
+  });
+
   it('limit is respected', async () => {
     for (let i = 0; i < 5; i++) {
       await provider.capture(makeInput({ title: `Entry ${i}`, symbols: [`sym${i}`] }));
@@ -157,5 +192,37 @@ describe('kb_list tool', () => {
       ['confidence', 'id', 'source_files', 'summary', 'symbols', 'title', 'type'].sort()
     );
     expect(entry.confidence).toBe('CONFIRMED');
+  });
+
+  it('tag filter returns only tagged entries', async () => {
+    await provider.capture(makeInput({ title: 'Tagged', symbols: ['symToolTagged'], tags: ['sprint:kb-inflight-capture', 'phase:1'] }));
+    await provider.capture(makeInput({ title: 'Untagged', symbols: ['symToolUntagged'], tags: ['other'] }));
+
+    const parsed = JSON.parse(await kbList({ tag: 'sprint:kb-inflight-capture' }));
+    expect(parsed.total).toBe(1);
+    expect(parsed.results[0].title).toBe('Tagged');
+  });
+
+  it('no tag -> unchanged behavior (returns all matching entries)', async () => {
+    await provider.capture(makeInput({ title: 'NoTagA', symbols: ['symToolNoTagA'] }));
+    await provider.capture(makeInput({ title: 'NoTagB', symbols: ['symToolNoTagB'] }));
+
+    const parsed = JSON.parse(await kbList({}));
+    const titles = parsed.results.map((e: any) => e.title);
+    expect(titles).toContain('NoTagA');
+    expect(titles).toContain('NoTagB');
+  });
+
+  it('tag + other filters compose', async () => {
+    await provider.capture(makeInput({
+      title: 'ComposeToolMatch', symbols: ['symToolCompose1'], module: 'src/services', tags: ['sprint:z'],
+    }));
+    await provider.capture(makeInput({
+      title: 'ComposeToolNoMatch', symbols: ['symToolCompose2'], module: 'src/tools', tags: ['sprint:z'],
+    }));
+
+    const parsed = JSON.parse(await kbList({ module: 'src/services', tag: 'sprint:z' }));
+    expect(parsed.total).toBe(1);
+    expect(parsed.results[0].title).toBe('ComposeToolMatch');
   });
 });

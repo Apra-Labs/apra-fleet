@@ -512,6 +512,15 @@ export class SqliteProvider implements MemoryProvider {
       conditions.push('e.type = ?');
       params.push(opts.type);
     }
+    if (opts.tag) {
+      // T-tag-filter: exact-match WHERE clause via json_each, same pattern as
+      // list()'s symbol filter above. This is NOT an FTS term -- it is ANDed
+      // into `conditions`, which both the FTS-query branch (ftsWhere) and the
+      // plain-listing branch (where) already consume below, so it composes
+      // with `query` and other filters without touching the FTS/OR-join logic.
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+      params.push(opts.tag);
+    }
     if (opts.flagged_only) {
       conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
     } else {
@@ -759,6 +768,7 @@ export class SqliteProvider implements MemoryProvider {
     type?: KBEntry['type'];
     module?: string;
     symbol?: string;
+    tag?: string;
     limit?: number;
   }): Promise<KBEntry[]> {
     const db = this.getDb();
@@ -780,6 +790,10 @@ export class SqliteProvider implements MemoryProvider {
     if (opts.symbol) {
       conditions.push('EXISTS (SELECT 1 FROM json_each(e.symbols) WHERE value = ?)');
       params.push(opts.symbol);
+    }
+    if (opts.tag) {
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+      params.push(opts.tag);
     }
 
     const where = 'WHERE ' + conditions.join(' AND ');

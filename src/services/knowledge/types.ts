@@ -66,6 +66,11 @@ export interface QueryOptions {
   symbols?: string[];
   source_files?: string[];
   tags?: string[];
+  // T-tag-filter: exact-match filter on a single tag value, applied as a WHERE
+  // clause (json_each over the tags column) alongside existing filters --
+  // NOT an FTS term, so it composes with `query` and does not disturb the
+  // FTS/OR-join logic. Same pattern as kb_list's `symbol` filter.
+  tag?: string;
   include_stale?: boolean;
   include_superseded?: boolean;
   flagged_only?: boolean;

@@ -13,6 +13,7 @@ export const kbListSchema = z.object({
     .describe('Filter by content type'),
   module: z.string().optional().describe('Filter by exact module name'),
   symbol: z.string().optional().describe('Filter to entries whose symbols array contains this value'),
+  tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match)'),
   limit: z.number().optional().describe('Max entries to return (default: no limit)'),
 });
 
@@ -26,6 +27,7 @@ export async function kbList(input: KbListInput): Promise<string> {
     type: input.type,
     module: input.module,
     symbol: input.symbol,
+    tag: input.tag,
     limit: input.limit,
   });
 
