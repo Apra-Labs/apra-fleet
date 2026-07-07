@@ -53,7 +53,10 @@ describe('kb_promote', () => {
   });
 
   it('CONFIRMED is a no-op (returns same confidence)', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'CONFIRMED' }));
+    // R5 (T1.2): provider.capture() clamps CONFIRMED -> INFERRED, so reach
+    // CONFIRMED via the ladder, then assert a further promote is a no-op.
+    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    await provider.promote(id);
     const result = await provider.promote(id);
     expect(result.confidence_before).toBe('CONFIRMED');
     expect(result.confidence_after).toBe('CONFIRMED');

@@ -211,13 +211,16 @@ describe('KB Claims Proof -- real measured numbers', () => {
     // Warm the session files first (simulating prior session that cached them)
     await captureAllEvalFiles(provider);
 
-    // Capture the reviewer correction (simulating kb_harvest after Task A review)
-    await provider.capture({
+    // Capture the reviewer correction (simulating kb_harvest after Task A review).
+    // R5 (T1.2): provider.capture() clamps CONFIRMED -> INFERRED, so promote the
+    // captured entry to CONFIRMED via the real ladder to model a confirmed
+    // reviewer correction.
+    const { id: correctionId } = await provider.capture({
       type: 'knowledge',
       title: 'cross-task: extend Parser not Evaluator for token processors',
       summary: 'Reviewer correction: token-processing classes must extend Parser, not Evaluator',
       content: 'REVIEWER CORRECTION: Any class that processes tokens (Lexer, Validator, Printer) must extend Parser, not Evaluator. Evaluator is for AST evaluation only.',
-      confidence: 'CONFIRMED',
+      confidence: 'INFERRED',
       symbols: ['Lexer', 'Parser', 'Evaluator', 'Printer'],
       source_files: ['src/lexer.ts', 'src/evaluator.ts', 'src/parser.ts'],
       source: 'kb_agent_harvest',
@@ -227,6 +230,7 @@ describe('KB Claims Proof -- real measured numbers', () => {
       flagged_for_review: false,
       author: 'kb-claims-proof',
     });
+    await provider.promote(correctionId, 'reviewer correction confirmed');
 
     // Task B: query KB for Printer task -- correction must surface
     // hint_symbols tells prime() what the agent is about to work on

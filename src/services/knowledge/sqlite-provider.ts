@@ -461,6 +461,39 @@ export class SqliteProvider implements MemoryProvider {
       };
     }
 
+    // T1.2 (F3, R3, KB 9462ab04): general confidence clamp -- the ENFORCEMENT
+    // copy. The kb_capture tool handler (kb-capture.ts) also clamps and returns
+    // a confidence_clamped UX flag to MCP callers, but the HTTP /api/kb/capture
+    // route calls provider.capture(JSON.parse(body)) directly
+    // (kb-server.ts:133-141), bypassing that handler and previously able to mint
+    // CONFIRMED for non-directive types. This block is the single enforcement
+    // choke point every route flows through: for NON-directive types an incoming
+    // CONFIRMED is downgraded to INFERRED with a bracketed content note that
+    // mirrors the handler's wording. CONFIRMED is minted ONLY by promote() and
+    // approveDirective/addDirective, all of which bypass capture() -- they are
+    // not exemptions here, they simply never reach this code.
+    //
+    // Ordering: the directive gate above has already forced user-directive
+    // entries to UNVERIFIED proposals, so this clamp never fires for them; the
+    // explicit type check keeps that intent legible. Keep this block AFTER the
+    // directive gate.
+    //
+    // SEAM for T2.1 (F4 import mode): import is the SOLE capture()-level
+    // exemption to this clamp. T2.1 threads an internal import-mode flag -- a
+    // SECOND parameter of capture(), NEVER a field of the deserialized input
+    // (the HTTP route passes exactly one argument, so a second parameter is
+    // structurally unreachable from any deserialized route) -- and gates this
+    // block on that flag being unset. Do NOT add that flag here; T2.1 owns it.
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook's backtick-escape false-positive.
+    if (input.type !== 'user-directive' && input.confidence === 'CONFIRMED') {
+      input = {
+        ...input,
+        confidence: 'INFERRED',
+        content: input.content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]',
+      };
+    }
+
     const content = truncateContent(input.content);
 
     // T2.2 (F3 PART A): capture() is the single choke point every caller

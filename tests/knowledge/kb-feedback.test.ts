@@ -51,11 +51,12 @@ async function fetchEntry(id: string) {
 
 describe('SqliteProvider.feedback (T3.1, D7)', () => {
   it('normal entry: stale=1, flagged_for_review=1, note appended, confidence untouched', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'CONFIRMED' }));
-    // capture() clamps CONFIRMED only via the kb_capture tool handler, not the
-    // provider -- direct provider.capture() here stores CONFIRMED as given, so
-    // this proves the "downvoted CONFIRMED stays CONFIRMED-but-stale-flagged"
-    // contract precisely.
+    // R5 (T1.2): provider.capture() now clamps CONFIRMED -> INFERRED (the F3
+    // enforcement choke point), so seed CONFIRMED via the real ladder (capture
+    // INFERRED, then promote). This still proves the "downvoted CONFIRMED stays
+    // CONFIRMED-but-stale-flagged" contract precisely.
+    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    await provider.promote(id);
     const before = await fetchEntry(id);
     expect(before.confidence).toBe('CONFIRMED');
 

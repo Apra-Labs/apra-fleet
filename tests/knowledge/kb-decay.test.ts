@@ -67,7 +67,10 @@ describe('confidence decay', () => {
   });
 
   it('does not demote CONFIRMED entries', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'CONFIRMED' }));
+    // R5 (T1.2): provider.capture() now clamps CONFIRMED -> INFERRED, so seed a
+    // CONFIRMED entry via the real ladder (capture INFERRED, then promote).
+    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    await provider.promote(id);
 
     const old = new Date(Date.now() - 60 * 86400 * 1000).toISOString();
     (provider as any).getDb().prepare('UPDATE entries SET last_accessed = ? WHERE id = ?').run(old, id);

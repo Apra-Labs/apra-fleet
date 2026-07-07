@@ -99,3 +99,85 @@ describe('kb_capture CONFIRMED gate (D1)', () => {
     expect(entry.confidence).toBe('CONFIRMED');
   });
 });
+
+// T1.2 (F3, R3, KB 9462ab04): the ENFORCEMENT clamp now lives in
+// SqliteProvider.capture() itself -- the single choke point the HTTP
+// /api/kb/capture route also flows through (it calls provider.capture(
+// JSON.parse(body)) directly, bypassing the kb_capture handler above). These
+// tests drive provider.capture() directly, exactly as that route does, and
+// prove the clamp is enforced at the provider regardless of route.
+describe('SqliteProvider.capture CONFIRMED clamp (F3 provider enforcement)', () => {
+  it('clamps a non-directive CONFIRMED capture to INFERRED (HTTP-route path)', async () => {
+    // Fail-then-pass core: before T1.2 the provider stored CONFIRMED verbatim
+    // (the clamp lived only in the handler), so this asserted INFERRED would
+    // fail red; after T1.2 the provider itself clamps.
+    const { id } = await provider.capture({
+      type: 'learning',
+      title: 'Provider-level CONFIRMED capture',
+      summary: 'Captured straight through the provider as CONFIRMED',
+      content: 'The HTTP route would mint this as CONFIRMED without the clamp.',
+      source_files: [],
+      symbols: ['providerClampSymbol'],
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      author: 'doer',
+      source: 'session',
+      confidence: 'CONFIRMED',
+    });
+
+    const entry = await fetchEntry(id);
+    expect(entry.confidence).toBe('INFERRED');
+    expect(entry.content).toContain('[confidence clamped: CONFIRMED requires kb_promote]');
+  });
+
+  it('directive input via provider.capture stays a pending UNVERIFIED proposal (gate unchanged)', async () => {
+    const { id } = await provider.capture({
+      type: 'user-directive',
+      title: 'Directive via provider',
+      summary: 'A directive routed straight through the provider',
+      content: 'Attempted active directive.',
+      source_files: [],
+      symbols: [],
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      author: 'doer',
+      source: 'user-directive',
+      confidence: 'CONFIRMED',
+    });
+
+    const entry = await fetchEntry(id);
+    expect(entry.confidence).toBe('UNVERIFIED');
+    expect(entry.flagged_for_review).toBe(true);
+    expect(entry.tags).toContain('directive:pending');
+    // The general clamp must NOT double-annotate a directive (the gate handled
+    // it first, so confidence was already UNVERIFIED, not CONFIRMED).
+    expect(entry.content).not.toContain('[confidence clamped:');
+  });
+
+  it('promote() still mints CONFIRMED after a provider-level capture (ladder intact)', async () => {
+    const { id } = await provider.capture({
+      type: 'learning',
+      title: 'Provider capture then promote',
+      summary: 'Captured INFERRED via provider, climbs to CONFIRMED via promote',
+      content: 'Ladder check.',
+      source_files: [],
+      symbols: ['ladderProviderSymbol'],
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      author: 'doer',
+      source: 'session',
+      confidence: 'INFERRED',
+    });
+
+    const promoted = await provider.promote(id, 'verified against merged code');
+    expect(promoted.confidence_after).toBe('CONFIRMED');
+    const entry = await fetchEntry(id);
+    expect(entry.confidence).toBe('CONFIRMED');
+  });
+});

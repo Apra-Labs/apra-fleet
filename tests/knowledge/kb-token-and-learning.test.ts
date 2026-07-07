@@ -153,12 +153,14 @@ describe('KB learning -- capture and recall CI guards', () => {
   });
 
   it('CONFIRMED learning stored appears in query results', async () => {
-    await provider.capture({
+    // R5 (T1.2): provider.capture() clamps CONFIRMED -> INFERRED; promote to
+    // CONFIRMED via the real ladder to model a confirmed learning.
+    const { id } = await provider.capture({
       type: 'knowledge',
       title: 'ci-test: extend Parser not Evaluator for token processors',
       summary: 'All token-processing classes must extend Parser, not Evaluator.',
       content: 'Reviewer correction: Lexer, Validator, Serializer all extend Parser.',
-      confidence: 'CONFIRMED',
+      confidence: 'INFERRED',
       symbols: ['Parser', 'Evaluator', 'Lexer'],
       source_files: ['src/parser.ts'],
       source: 'kb_agent_harvest',
@@ -168,6 +170,7 @@ describe('KB learning -- capture and recall CI guards', () => {
       flagged_for_review: false,
       author: 'kb-token-test',
     });
+    await provider.promote(id, 'confirmed learning');
 
     const result = await provider.query({ query: 'Parser Evaluator inheritance' });
     expect(result.results.length).toBeGreaterThan(0);
@@ -198,13 +201,15 @@ describe('KB learning -- capture and recall CI guards', () => {
   });
 
   it('cross-task: learning from Task A surfaces in prime for Task B via hint_symbols', async () => {
-    // Task A learning: symbols include Parser and Serializer
-    await provider.capture({
+    // Task A learning: symbols include Parser and Serializer.
+    // R5 (T1.2): provider.capture() clamps CONFIRMED -> INFERRED; promote via
+    // the real ladder to model a confirmed Task A correction.
+    const { id: taskAId } = await provider.capture({
       type: 'knowledge',
       title: 'ci-test: Serializer extends Parser (Task A correction)',
       summary: 'Token processors extend Parser. Confirmed during Serializer implementation.',
       content: 'Serializer extends Parser -- correct. Do not extend Evaluator for token processors.',
-      confidence: 'CONFIRMED',
+      confidence: 'INFERRED',
       symbols: ['Serializer', 'Parser', 'Evaluator'],
       source_files: ['src/parser.ts', 'src/serializer.ts'],
       source: 'kb_agent_harvest',
@@ -214,6 +219,7 @@ describe('KB learning -- capture and recall CI guards', () => {
       flagged_for_review: false,
       author: 'kb-token-test',
     });
+    await provider.promote(taskAId, 'confirmed Task A correction');
 
     // Also capture the 5 eval files so prime warm session works
     for (const f of EVAL_FILES) {
