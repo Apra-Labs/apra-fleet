@@ -1,0 +1,939 @@
+[
+  {
+    "id": "01ac9836-fa7c-4adc-af95-c2316e6d7cfe",
+    "type": "knowledge",
+    "title": "gitnexus 1.6.7 MCP child tool inventory (13 tools)",
+    "summary": "gitnexus 1.6.7 exposes exactly 13 MCP tools (confirmed via listTools() + source cross-check). Key tools: query, cypher, context, impact, detect_changes; NO direct call_graph, communities, flows, processes, or tests tools. cypher returns Markdown table {markdown, row_count}, NOT JSON rows -- composing providers must parse. Communities reachable via cypher over (c:Community) + MEMBER_OF edges; flows via cypher over (p:Process) + STEP_IN_PROCESS edges ordered by r.step.",
+    "symbols": [
+      "callGitNexus",
+      "GitNexusProvider",
+      "query",
+      "cypher",
+      "context",
+      "impact"
+    ],
+    "source_files": [
+      "docs/code-intelligence-child-surface.md",
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:02.771Z"
+  },
+  {
+    "id": "04e578fa-8ec8-4799-bcc6-aa00e9d67da2",
+    "type": "learning",
+    "title": "KB-integrity sprint capstone: trust model made real across 15 tasks (Phase 1-3, APPROVED)",
+    "summary": "The kb-integrity sprint implemented a real, enforced KB trust model across three phases and 15 tasks: confidence gate with INFERRED clamp (kb_promote sole path to CONFIRMED), promotion semantics (promote-then-supersede), cross-type contradiction flagging, OR-join FTS retrieval fix, auto-staleness keyed off source_files, tool-stamped provenance enums, the highest-trust user-directive type with its forgeable trust gap (yashr-9ha, design follow-up), honest low-trust autowired harvest (UNVERIFIED), and the shareable .fleet/kb-canonical.json bible with cold-seed. All tasks reviewer-APPROVED.",
+    "symbols": [],
+    "source_files": [
+      "feedback.md",
+      "PLAN.md",
+      "docs/architecture.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:29.833Z"
+  },
+  {
+    "id": "05480f94-abab-4752-bee7-116a7809e303",
+    "type": "knowledge",
+    "title": "CRITICAL BUG: call_graph tool does not exist in gitnexus 1.6.7",
+    "summary": "GitNexusProvider.graph() routes to callGitNexus('call_graph', params), but gitnexus 1.6.7 has NO tool named 'call_graph'. A live call always returns isError: true, text 'Error: Unknown tool: call_graph'. The fleet's code_graph tool is effectively broken against this gitnexus version. Tracked as yashr-5t9 (backlog). Intended call-graph data is available via context (categorized incoming/outgoing calls) or cypher on CALLS edges.",
+    "symbols": [
+      "GitNexusProvider.graph",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "docs/code-intelligence-child-surface.md",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:10.464Z"
+  },
+  {
+    "id": "15eabb3f-5fd6-49cc-b996-43d4e2abd1a7",
+    "type": "knowledge",
+    "title": "CALLS-edge cypher call-graph recipe: verified working on gitnexus 1.6.7",
+    "summary": "Durable recipe for querying call graphs on gitnexus 1.6.7: use depth-bounded cypher MATCH p = (a)-[:CodeRelation*1..2 {type:\"CALLS\"}]->(b) with symbol as $symbol PARAM (injection-safe). Returns markdown table with symbol + filePath + depth columns. Tested live: callers query returned 11 rows, callees returned 9 rows. CALLS edges only; does NOT exist as a standalone tool.",
+    "symbols": [
+      "GitNexusProvider.graph",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T20:30:49.302Z"
+  },
+  {
+    "id": "16e5b35a-cfbf-404a-9c5f-8171687d47df",
+    "type": "knowledge",
+    "title": "Freshness metadata appended to tool responses (F2.2)",
+    "summary": "When tool results depend on indexed state (like code intelligence), append a non-blocking freshness note when the index is stale. Pattern: pure comparison function in a separate module (to avoid circular imports), called after successful tool call, appended as extra text block when outdated.",
+    "symbols": [
+      "freshnessNote",
+      "appendFreshnessNote"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence-freshness.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:22.290Z"
+  },
+  {
+    "id": "1a585cf0-6313-41b7-9c15-f917ea84d536",
+    "type": "knowledge",
+    "title": "Cross-type contradiction now fires end-to-end via OR-join discovery (T2.1 + T1.4)",
+    "summary": "makeAudnDecision contradiction path (symbol-overlap + signal) is cross-type and cross-file; pre-T2.1 AND-join blocked discovery. T2.1's OR-join makes ANY symbol-match a candidate for contradiction detection, enabling real cross-type contradictions like 'code_graph broken' (knowledge) vs 'code_graph fixed' (learning).",
+    "symbols": [
+      "makeAudnDecision",
+      "hasContradictionKeywords",
+      "hasOppositePolarity"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:12.246Z"
+  },
+  {
+    "id": "1a9ef430-f258-497a-8702-c8fe44ec0df5",
+    "type": "knowledge",
+    "title": "code_flow tool: filtered Process node query + stepped step-in-process (T2.2)",
+    "summary": "Phase 2 T2.2 added code_flow(codeFlowSchema) to CodeIntelligenceProvider. Queries Process nodes via CONTAINS filters on name/from/to, then performs up to 5 STEP_IN_PROCESS queries per matched process to expand steps. Schema: {from?, to?, name?, repo?}. Implements flow() method reusing parseMarkdownTable + asciiSanitizeLabel. Row_count reflects pre-cap process count but only top-5 get steps (tracked as yashr-92q backlog item). Registered in src/index.ts; MCP description routes callers to code-intelligence over file search for data flow queries.",
+    "symbols": [
+      "code_flow",
+      "flow",
+      "codeFlowSchema",
+      "CodeIntelligenceProvider",
+      "Process",
+      "STEP_IN_PROCESS"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:35.142Z"
+  },
+  {
+    "id": "1fdb4588-b1f1-47a5-a45a-edac6fea9f35",
+    "type": "knowledge",
+    "title": "Freshness note wiring in callGitNexus (Phase 2 T2.1)",
+    "summary": "callGitNexus wires freshness reporting for all four GitNexusProvider methods. After successful callTool when params.repo is set and F3.1 pre-flight confirms index exists, reads meta.json.lastCommit + git rev-parse HEAD (execFileSync, 3s timeout, same as check-status.ts). If SHAs differ, appends freshness note as extra text block via appendFreshnessNote(); all IO try/caught with graceful degradation.",
+    "symbols": [
+      "callGitNexus",
+      "appendFreshnessNote",
+      "freshnessNote",
+      "GitNexusProvider"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence-freshness.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:25.361Z"
+  },
+  {
+    "id": "22818a94-5c57-42f8-83bc-6c8766217290",
+    "type": "knowledge",
+    "title": "Supersede now marks both superseded_at AND stale columns",
+    "summary": "When evaluateAudn's 'update' branch executes (T1.2), the old entry is marked with BOTH superseded_at=now AND stale=1. Consequence: any KB reader must now also pass include_stale:true to see a superseded row, not just check superseded_at. All existing readers (query, context, getLinked, prime) have been audited and re-imposing stale filters independently.",
+    "symbols": [
+      "evaluateAudn",
+      "query",
+      "context",
+      "getLinked",
+      "prime"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T22:18:57.907Z"
+  },
+  {
+    "id": "2577ebaa-2f13-4948-ab52-735c775d70e8",
+    "type": "knowledge",
+    "title": "fleetStatus code intelligence integration",
+    "summary": "fleetStatus() calls codeIntelligenceHealth(process.cwd()) once per invocation and includes the CodeIntelligenceHealth object in JSON output (codeIntelligence key). Compact format includes one trailing line via codeIntelligenceCompactLine(). Whole section wrapped in defensive catch to never fail fleet_status output.",
+    "symbols": [
+      "fleetStatus"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:25.651Z"
+  },
+  {
+    "id": "35899f07-32c2-4de5-82a5-abfb715d19e4",
+    "type": "knowledge",
+    "title": "isTestPath matcher: recognizing test files with critical negative cases (T4.3)",
+    "summary": "T4.3 exports pure isTestPath(path):boolean identifying test files. Returns true when ANY path segment is test/tests/spec (case-insensitive) OR filename matches /\\.(test|spec)\\.[^.]+$/. Handles / and \\\\ separators. CRITICAL: correctly rejects contest, attest, testfile, protest.spec, attestation, specimen\u2014these negative cases are non-obvious but essential.",
+    "symbols": [
+      "isTestPath"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:37.168Z"
+  },
+  {
+    "id": "369fb127-27d4-4f1d-9914-c6dc95663828",
+    "type": "learning",
+    "title": "Code intelligence surface: 7-tool ecosystem with telemetry + KB enrichment (Phase 4 sprint-capstone)",
+    "summary": "Sprint code-intelligence-power (4 phases, 17 tasks) APPROVED. The code intelligence surface now comprises 7 MCP tools (code_graph[known broken on 1.6.7, yashr-5t9], code_impact, code_query, code_context[+KB enrichment], code_map, code_flow, code_tests), with layered subsystems: freshness reporting (30d window), auto-reindex self-healing (cooldown+single-flight), KB enrichment (one-way handler layer), usage telemetry (handler-layer only), and semantic-search embeddings (LOCAL, opt-in). All subsystems are load-bearing non-blocking: failures degrade gracefully, never surface to caller.",
+    "symbols": [
+      "code_graph",
+      "code_impact",
+      "code_query",
+      "code_context",
+      "code_map",
+      "code_flow",
+      "code_tests"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:59:15.894Z"
+  },
+  {
+    "id": "3dc9718e-f242-4d2c-a89d-78ca534e9e6c",
+    "type": "knowledge",
+    "title": "LOW finding tracking: code_map/code_flow empty-string telemetry targets (yashr-h3v)",
+    "summary": "APPROVED LOW finding: code_map and code_flow tools do not require a symbol/target parameter (they take repo and filter options instead). When called argument-less, recordUsage receives empty string as target, resulting in blank-labelled entries in usage.jsonl and possible blank entries in top-symbols reporting. Tracked as yashr-h3v for future cleanup. Not critical (metrics still valid), but worth filtering or relabeling in analytics.",
+    "symbols": [
+      "recordUsage",
+      "code_map",
+      "code_flow"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:59:23.378Z"
+  },
+  {
+    "id": "3ed9cff8-c165-4769-a3e8-6adefcf97c29",
+    "type": "knowledge",
+    "title": "codeIntelligenceHealth graceful degradation (F3.3)",
+    "summary": "Read-only, fast health checker returning CodeIntelligenceHealth object with present flag, stats (nodes/edges/files), and HEAD comparison status. Every failure path (missing meta.json, unparseable JSON, git unavailable, unknown lastCommit) degrades gracefully to a usable state instead of throwing. Never spawns child process or network access.",
+    "symbols": [
+      "codeIntelligenceHealth",
+      "codeIntelligenceCompactLine",
+      "readGitNexusMeta",
+      "currentHead",
+      "commitsBehindCount"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:21.564Z"
+  },
+  {
+    "id": "3fa771af-e687-4978-ae6b-a741b3d6cf38",
+    "type": "runbook",
+    "title": "gitnexus analyze injects non-ASCII blocks into AGENTS.md and CLAUDE.md (recurring gotcha)",
+    "summary": "Running 'npx gitnexus analyze' injects non-ASCII gitnexus:start/end block markers into AGENTS.md and CLAUDE.md, violating ASCII-only convention. This happens in every VERIFY phase. Fix: run 'git checkout -- AGENTS.md CLAUDE.md' immediately after analyze to discard injected markers, keeping only the real code intelligence updates to other files.",
+    "symbols": [
+      "npx gitnexus analyze",
+      "gitnexus:start",
+      "gitnexus:end"
+    ],
+    "source_files": [
+      "skills/pm/doer-reviewer-loop.md",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".gitnexus/"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:41.674Z"
+  },
+  {
+    "id": "46e9af43-a304-4924-ac0a-97166019a783",
+    "type": "knowledge",
+    "title": "Top symbols reporting in fleet_status (T4.2: computeTopSymbols)",
+    "summary": "T4.2 extends check-status.ts with computeTopSymbols() parsing usage.jsonl + .1, filtering to 30-day window (boundary-inclusive), aggregating by target, returning top 5. JSON output + compact \\\"top symbols (30d): ...\\\" segment. Triple-nested degraded-safe: missing file/bad JSON lines/stale data -> segment omitted, never throws.",
+    "symbols": [
+      "computeTopSymbols"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:56.341Z"
+  },
+  {
+    "id": "492cabfd-6d5f-490a-b600-368564e85bb4",
+    "type": "knowledge",
+    "title": "Contradiction detection now fires cross-type without file overlap",
+    "summary": "makeAudnDecision flags contradictions on symbol-overlap + contradiction-signal (CONTRADICTION_KEYWORDS OR hasOppositePolarity antonym pair) regardless of file/type. findAudnCandidates dropped its type filter for discovery. Dedup/update re-impose same-type + file overlap. This catches live cross-file/cross-type pairs like 'code_graph broken' vs 'code_graph fixed'.",
+    "symbols": [
+      "makeAudnDecision",
+      "hasOppositePolarity",
+      "hasContradictionKeywords",
+      "findAudnCandidates"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T22:19:12.110Z"
+  },
+  {
+    "id": "4b3b8c9f-a2cc-4f43-b2a3-57a4a5f9f91f",
+    "type": "knowledge",
+    "title": "callGitNexus connection resilience pattern (F3.2)",
+    "summary": "Single guarded entry point for all GitNexusProvider methods with connection failure reset, transport/client death detection, and state recovery. Failure clears the poisoned connectionPromise (rethrowing to caller), allowing next call to retry fresh connection. Transport/client death handler guards on identity (sharedClient === client) to avoid clobbering newer connections.",
+    "symbols": [
+      "callGitNexus",
+      "resetConnection",
+      "getGitNexusClient"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:11.185Z"
+  },
+  {
+    "id": "4cdf2a5d-f29e-49d2-938e-329f16a4f8dd",
+    "type": "knowledge",
+    "title": "LOW carry-forward: hasOppositePolarity substring false-positive (yashr-hzd)",
+    "summary": "hasOppositePolarity uses String.includes on bare tokens ('fixed', 'resolved') which collide with superstrings ('prefixed', 'suffixed', 'unresolved'). T2.1's OR-join surfaces more symbol-overlap candidates, marginalizing broader surface area. Impact: bounded (requires symbol overlap + signal; consequence is review flag not data loss). Recommend word-boundary matching in follow-up.",
+    "symbols": [
+      "hasOppositePolarity",
+      "POLARITY_NEGATIVE",
+      "POLARITY_POSITIVE"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:31.192Z"
+  },
+  {
+    "id": "4e11460c-df2f-43ad-beed-0c031b4bf35c",
+    "type": "knowledge",
+    "title": "Code intelligence health surfacing in fleet_status (F3.3)",
+    "summary": "Expose tool health in status endpoints via read-only, degraded-safe health functions. Pattern: separate functions (codeIntelligenceHealth, codeIntelligenceCompactLine) read .gitnexus/meta.json and compare git HEAD, wrapping all I/O in try/catch, returning null on any failure. Never throw, never block status queries.",
+    "symbols": [
+      "codeIntelligenceHealth",
+      "codeIntelligenceCompactLine"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts",
+      "tests/fleet-status-code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:29.268Z"
+  },
+  {
+    "id": "4f9637b6-5309-4734-be12-3c72b1208f3c",
+    "type": "knowledge",
+    "title": "FTS OR-join applied at four sites closes yashr-5n2 (T2.1)",
+    "summary": "Shared orJoinFtsTerms helper (audn.ts) applied at all four implicit-AND sites: makeFtsQuery, sqlite-provider prime searchTerms, kb-session-prime neighbor batch, and kb-session-prime global-append. Each term still ftsSafeTerm-quoted; single-term unchanged. ORDER BY rank + LIMIT bound output so OR breadth does not flood.",
+    "symbols": [
+      "orJoinFtsTerms",
+      "ftsSafeTerm",
+      "makeFtsQuery"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-session-prime.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:10.152Z"
+  },
+  {
+    "id": "56ce0077-7b2f-478c-8e2d-b6baa59697fe",
+    "type": "knowledge",
+    "title": "callGitNexus resilience pattern for shared MCP client lifecycle",
+    "summary": "The shared GitNexus MCP client requires defensive lifecycle management: failed connection promises must be cleared for retry, client/connection must reset on transport close/error, and callTool errors must return structured results not throws. Pattern: guard all four code_* tool calls through a single callGitNexus helper that (1) pre-checks index existence, (2) clears rejected connectionPromise, (3) manages onclose/onerror event listeners on client+transport, (4) wraps callTool to return {isError, message} shape.",
+    "symbols": [
+      "callGitNexus",
+      "getGitNexusClient"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:09.764Z"
+  },
+  {
+    "id": "601c8a65-27c5-4b5b-af99-f89803d7b745",
+    "type": "knowledge",
+    "title": "Load-bearing safety invariant: subsystems cannot degrade tool calls",
+    "summary": "Design principle verified across Phase 3 (reindex-scheduling, freshness-suffix, KB-enrichment): none of the code-intelligence subsystems can make a code_* tool call throw, block, or return degraded core content when their subsystem fails. All three add metadata/scheduling off the critical path; all wrap IO in try/catch; all default to no-op on error. This is the consistent load-bearing invariant of the code-intelligence surface.",
+    "symbols": [
+      "shouldStartReindex",
+      "freshnessNote",
+      "enrichKBContext"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-reindex.ts",
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-kb-enrich.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:36.581Z"
+  },
+  {
+    "id": "61770438-29c0-4b63-b480-096fca805897",
+    "type": "knowledge",
+    "title": "user-directive: sole CONFIRMED clamp exemption (T3.1, D6)",
+    "summary": "type='user-directive' is the only ContentType that bypasses the kb_capture confidence clamp. When a caller specifies type='user-directive', kb_capture forces confidence=CONFIRMED without clamping, stamps author='user' and source='user-directive' server-side, and the entry is never auto-decayed (decayConceptEntries guard) and never agent-supersedable (makeAudnDecision guard). Relies on T1.4 cross-type findAudnCandidates.",
+    "symbols": [
+      "kbCaptureSchema",
+      "ContentType",
+      "user-directive"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts",
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/audn.ts",
+      "tests/kb-user-directive.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:22.609Z"
+  },
+  {
+    "id": "648d7411-14e8-44e1-8406-dd800c016ada",
+    "type": "knowledge",
+    "title": "Cypher composition toolkit: parseMarkdownTable + asciiSanitizeLabel + extractCypherPayload (T2.1/T2.2)",
+    "summary": "Phase 2 T2.1 and T2.2 introduced three reusable pure-function helpers in src/tools/code-intelligence-gitnexus.ts for parsing gitnexus Cypher query results. parseMarkdownTable() decodes the markdown table format returned by gitnexus child queries; asciiSanitizeLabel() transforms non-ASCII arrows to ASCII-safe equivalents (unicode -> \"->\", others -> \"?\"); extractCypherPayload() strips the \"\\n\\n---\\n**Next:**\" hint suffix before JSON.parse. All live-verified by reviewer spawning npx gitnexus mcp and testing against real index.",
+    "symbols": [
+      "parseMarkdownTable",
+      "asciiSanitizeLabel",
+      "extractCypherPayload"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:09.648Z"
+  },
+  {
+    "id": "6cdfb072-1472-48a4-9b83-c48d9ab58271",
+    "type": "knowledge",
+    "title": "GitNexusProvider routing pattern",
+    "summary": "All four GitNexusProvider methods (graph, impact, query, context) route through the single callGitNexus helper, passing method name and params. Returns callGitNexus result unchanged, which is either the MCP tool response or a structured error result with isError=true.",
+    "symbols": [
+      "GitNexusProvider",
+      "CodeIntelligenceProvider"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:28.461Z"
+  },
+  {
+    "id": "7080bb26-43d4-4ac9-a64d-0fb0bc6830b8",
+    "type": "knowledge",
+    "title": "Parameterized LIMIT binds on gitnexus 1.6.7 + LadybugDB (load-bearing risk CONFIRMED)",
+    "summary": "Reviewer live-verified that parameterized LIMIT clauses work with Kuzu/LadybugDB on gitnexus 1.6.7. This was a load-bearing risk: historically Kuzu rejects parameterized LIMIT, which would have made code_map and code_flow DOA. Reviewer spawned npx gitnexus mcp, ran real map()/flow() queries against the live index with LIMIT $top bindings -- ALL succeeded. This fact is CONFIRMED for the duration of gitnexus 1.6.7 and the LadybugDB version it ships.",
+    "symbols": [
+      "code_map",
+      "code_flow",
+      "LIMIT",
+      "parameterized"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:17.458Z"
+  },
+  {
+    "id": "75ade624-765b-4ac4-b595-999282cfd98e",
+    "type": "context-cache",
+    "title": "code intelligence health section in check-status",
+    "summary": "fleetStatus() integrates code intelligence health reporting via codeIntelligenceHealth()/codeIntelligenceCompactLine(). Helper functions read .gitnexus/meta.json and compare HEAD to indexed commit via git commands with 3s timeouts. All paths degrade gracefully, never throwing. Outputs CodeIntelligenceHealth object in JSON and one-line summary in compact format.",
+    "symbols": [
+      "codeIntelligenceHealth",
+      "codeIntelligenceCompactLine",
+      "CodeIntelligenceHealth"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:43.175Z"
+  },
+  {
+    "id": "7964b900-6a82-4daf-ad2f-992cb988db5f",
+    "type": "knowledge",
+    "title": "kb_list: read-only audit via dedicated SqliteProvider.list() (T3.3, D8)",
+    "summary": "kb_list is a read-only audit tool that uses a dedicated SqliteProvider.list() method (NOT query()), which issues a pure SELECT without incrementing use_count or last_accessed telemetry. It filters by confidence, type, module, symbol (via json_each) and supports limit. Always excludes superseded and stale entries by default (no override). Returns stable reduced field set {id, type, confidence, title, summary, symbols, source_files} + total, ordered deterministically by id ASC.",
+    "symbols": [
+      "SqliteProvider.list",
+      "kb_list"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-list.ts",
+      "tests/kb-list.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:25.190Z"
+  },
+  {
+    "id": "7b4b3b94-5e32-42d9-9fe9-2de50d07f4e8",
+    "type": "knowledge",
+    "title": "KB-enrichment layering: helper above provider (D4 design)",
+    "summary": "T3.3 (P4a) adds src/tools/code-intelligence-kb-enrich.ts imported ONLY by code_context handler in src/index.ts (not by gitnexus provider). After successful code_context, queries KB via getKbProviders() filtering to CONFIRMED entries whose symbols array contains exact name. Appends \\\"[knowledge-bank] N confirmed entries for <name>:\\\" block. Zero matches or KB errors -> no block, never fails the call. One-way dependency: index.ts -> kb-enrich -> KB; never: provider -> kb-enrich.",
+    "symbols": [
+      "enrichKBContext",
+      "code_context"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-kb-enrich.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:28.715Z"
+  },
+  {
+    "id": "83726d75-4af9-442c-abf2-0f215fb19c77",
+    "type": "knowledge",
+    "title": "FTS5 implicit-AND gotcha in KB multi-neighbor queries",
+    "summary": "SqliteProvider.query() passes the query string verbatim into FTS5 MATCH, treating space-separated terms as implicit AND. When kb-session-prime batches multiple neighbor names (e.g., 'nbrA' 'nbrB'), entries must contain ALL tokens to match, usually returning nothing. Common case (2+ unrelated neighbors) under-delivers on P4b intent. Non-blocking safety-wise (only yields fewer additions), but clean backlog follow-up: OR-join sanitized terms (neighbors.join(' OR ')) so entries matching ANY neighbor surface.",
+    "symbols": [
+      "SqliteProvider.query",
+      "entries_fts",
+      "ftsSafeTerm",
+      "kbSessionPrime"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-session-prime.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:56.752Z"
+  },
+  {
+    "id": "83a5a04a-df62-4689-a736-7dc080a78220",
+    "type": "knowledge",
+    "title": "Auto-reindex self-healing design: in-memory single-flight + cooldown",
+    "summary": "T3.1 implements fire-and-forget reindexing off the critical path. Module-level Map tracks per-repo state (runningChild, lastFinishedAt). shouldStartReindex(entry, now, cooldownMs) is pure decision fn checking cooldown + single-flight. maybeScheduleReindex spawns npx gitnexus analyze detached, never awaits, never throws, logs stderr on non-zero exit. Windows: shell:true flag. Design: reindex is self-healing background process that cannot block or degrade tool calls.",
+    "symbols": [
+      "shouldStartReindex",
+      "maybeScheduleReindex",
+      "code-intelligence-reindex.ts"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-reindex.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:12.233Z"
+  },
+  {
+    "id": "89420324-f971-46b4-9592-a324c6f992f9",
+    "type": "runbook",
+    "title": "Child-tool surface guard: regression test pattern against MCP child tool drift",
+    "summary": "Reusable defense pattern from yashr-5t9 fix: Exercise every provider method reaching the child tool, collect invoked tool names, assert each exists in mocked listTools surface. Catches fleet-side incorrect mapping; delegates real child-side renames to out-of-band probes. Exemplified in tests/code-intelligence.test.ts for all 7 code-intelligence tools.",
+    "symbols": [
+      "callGitNexus",
+      "GitNexusProvider"
+    ],
+    "source_files": [
+      "tests/code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T20:30:38.096Z"
+  },
+  {
+    "id": "979b52ae-e983-41da-9f04-8de47d98dd7d",
+    "type": "knowledge",
+    "title": "code_map tool: Cypher-backed Community node query (T2.1)",
+    "summary": "Phase 2 T2.1 added code_map(codeMapSchema) to CodeIntelligenceProvider and GitNexusProvider. Queries Community nodes via callGitNexus('cypher', ...) with optional repo/top filters. Returns list of code communities (e.g., function groups, module clusters) from the indexed graph. Implements map() method reusing parseMarkdownTable + asciiSanitizeLabel. Registered in src/index.ts; schema validates {repo?, top?}; MCP description routes callers to prefer this over Glob/Grep for structural queries.",
+    "symbols": [
+      "code_map",
+      "map",
+      "codeMapSchema",
+      "CodeIntelligenceProvider",
+      "GitNexusProvider"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:25.356Z"
+  },
+  {
+    "id": "a6f9d52f-3227-4390-8eee-52d64f047344",
+    "type": "knowledge",
+    "title": "VERIFY sequence includes automatic incremental re-index (Phase 2 T2.2)",
+    "summary": "doer-reviewer-loop.md and index.md updated to include 'npx gitnexus analyze' as non-fatal step in VERIFY sequence (between tests and push). This performs automatic incremental re-indexing when code changes, keeping .gitnexus/meta.json fresh without requiring manual '/pm index' during VERIFY.",
+    "symbols": [
+      "npx gitnexus analyze",
+      "VERIFY"
+    ],
+    "source_files": [
+      "skills/pm/doer-reviewer-loop.md",
+      "skills/pm/index.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:49.005Z"
+  },
+  {
+    "id": "b7a35cbf-d7f5-44a4-b2de-f882460b0b54",
+    "type": "knowledge",
+    "title": "missingIndexResult pre-flight check (F3.1)",
+    "summary": "Pre-flight index check runs fs.existsSync(<repo>/.gitnexus/meta.json) at the top of callGitNexus BEFORE awaiting getGitNexusClient(). Missing index never spawns the child process, returns actionable error message. Calls without repo param are forwarded untouched.",
+    "symbols": [
+      "missingIndexResult",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:15.438Z"
+  },
+  {
+    "id": "b9df569a-bb5c-4922-a123-7ed28a1a9803",
+    "type": "knowledge",
+    "title": "kb_export + cold-seed: CONFIRMED KB to .fleet/kb-canonical.json (T3.4/T3.5, D8)",
+    "summary": "kb_export writes all live CONFIRMED entries to &lt;repo&gt;/.fleet/kb-canonical.json in a stable, deterministic, ASCII-safe format. kb_session_prime cold-seeds from this canonical bible when the session KB is sparse (fewer than 3 live hits), merging canonical entries marked via:'canonical-bible' BELOW live hits. Non-fatal: missing file/JSON/entries are handled gracefully with hard-skip contract.",
+    "symbols": [
+      "kb_export",
+      "kb_session_prime",
+      "asciiSafeStringify"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/services/knowledge/kb-session-prime.ts",
+      "tests/kb-export.test.ts",
+      "tests/kb-session-prime.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:27.334Z"
+  },
+  {
+    "id": "c1184f49-b52b-4050-beaf-db517d17ea33",
+    "type": "knowledge",
+    "title": "Code intelligence telemetry: handler-layer placement (D8 principle, T4.1)",
+    "summary": "T4.1 introduces recordUsage(tool, target, repo) appended to ~/.apra-fleet/data/code-intelligence/usage.jsonl with fire-and-forget error handling. Telemetry wired exclusively in src/index.ts HANDLER LAYER for all 7 code_* tools; provider file code-intelligence-gitnexus.ts is pure proxy. Rotation at 5MB via fs.rename to usage.jsonl.1. Telemetry failure never surfaces to caller\u2014exemplifies D8: telemetry lives in handler, provider stays pure.",
+    "symbols": [
+      "recordUsage",
+      "recordUsageSync",
+      "recordUsageAsync",
+      "code-intelligence-telemetry.ts"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:27.390Z"
+  },
+  {
+    "id": "c19d9cb5-469a-474f-b71a-762ab472e5ff",
+    "type": "knowledge",
+    "title": "FIX VERIFIED: code_graph now works via cypher CALLS-edge traversal on gitnexus 1.6.7",
+    "summary": "yashr-5t9 FIXED: GitNexusProvider.graph() retargeted from non-existent 'call_graph' to depth-bounded cypher CALLS-edge traversals. Reviewer LIVE-VERIFIED against real child: both callers + callees queries returned correctly (11 + 9 rows depth-1/2). call_graph never existed on gitnexus 1.6.7 and must not be used. code_graph now returns {symbol, maxDepth, callers[], callees[]} with depth column per row.",
+    "symbols": [
+      "GitNexusProvider.graph",
+      "callGitNexus",
+      "code_graph"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence.test.ts",
+      "docs/code-intelligence-child-surface.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T20:30:27.339Z"
+  },
+  {
+    "id": "c275ca15-563d-477f-b43e-bdd14965fe73",
+    "type": "context-cache",
+    "title": "code-intelligence-gitnexus module structure",
+    "summary": "GitNexus MCP client wrapper with module-level sharedClient/connectionPromise singletons. Exports GitNexusProvider class implementing CodeIntelligenceProvider. Contains callGitNexus helper with connection resilience (F3.2) and pre-flight index check (F3.1), plus helper functions for connection lifecycle and error handling.",
+    "symbols": [
+      "GitNexusProvider",
+      "callGitNexus",
+      "getGitNexusClient",
+      "missingIndexResult",
+      "resetConnection"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:36.788Z"
+  },
+  {
+    "id": "c35f1927-6662-48ff-8e37-0a9bc5a5e752",
+    "type": "knowledge",
+    "title": "Pre-commit-hook ASCII scope: .md/.yml/.sh only (NOT .ts/.js) - permits Unicode in code (T2.2 finding)",
+    "summary": "Phase 2 LOW finding clarifies pre-commit-hook behavior: ASCII-only enforcement applies to .md, .yml, .yaml, .sh files only, NOT .ts/.js. This explains why asciiSanitizeLabel is about OUTPUT correctness (MCP responses must be ASCII) not INPUT validation (source code can carry Unicode arrows). Policy-permitted: unicode arrows in .ts source files; requirement: sanitize when emitting to tools or documentation.",
+    "symbols": [
+      "asciiSanitizeLabel",
+      "pre-commit",
+      "ASCII"
+    ],
+    "source_files": [
+      ".husky/pre-commit",
+      ".git/hooks/pre-commit",
+      "CLAUDE.md",
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:40.275Z"
+  },
+  {
+    "id": "c6789713-15f5-4b5e-96fd-59062fa22212",
+    "type": "knowledge",
+    "title": "Pre-flight validation pattern for external tooling (F3.1)",
+    "summary": "When wrapping external tools (like GitNexus), validate preconditions cheaply (fs.existsSync) BEFORE spawning or connecting. Pattern: pre-flight check in the guard function, before any async operation. Absent precondition returns a structured error (not empty result). Calls without the checked parameter bypass the check.",
+    "symbols": [
+      "missingIndexResult",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:15.749Z"
+  },
+  {
+    "id": "cbc2e7ff-5e79-4c02-9f08-7bf00b0ecc1c",
+    "type": "knowledge",
+    "title": "P4b graph-neighbor expansion design in kb-session-prime wrapper",
+    "summary": "T1.3 P4b graph-neighbor expansion locates above kb-session-prime wrapper (NOT in SqliteProvider.prime/HttpKbProvider.prime, works for both). After prime, sweeps hint_symbols through getProvider().context() to get neighbor symbols. Defensive parsing handles isError/missing/unparseable. ONE batch KB query over neighbors; merges into top_entries with via:'graph-neighbor' marker ranked below direct hits. Caps: NEIGHBOR_CAP=10, ADDED_ENTRY_CAP=5. Entire block try/catch hard-skip -> prime output identical on failure. 13/13 tests green (vi.resetModules + dynamic import pattern).",
+    "symbols": [
+      "kbSessionPrime",
+      "parseContextNeighbors",
+      "ftsSafeTerm",
+      "NEIGHBOR_CAP",
+      "ADDED_ENTRY_CAP"
+    ],
+    "source_files": [
+      "src/tools/kb-session-prime.ts",
+      "tests/knowledge/kb-session-prime.test.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:47.401Z"
+  },
+  {
+    "id": "cf0ce11e-1565-480c-9504-361c38a1ac42",
+    "type": "knowledge",
+    "title": "kb_capture confidence gate is enforced server-side",
+    "summary": "kb_capture handler now clamps any incoming CONFIRMED to INFERRED and appends a bracketed note, returning confidence_clamped flag. kb_promote is the sole path to CONFIRMED. Exception: 'user-directive' type (forward-compat, T3.1). Enforcement is server-side at tool handler layer; direct provider.capture() not clamped.",
+    "symbols": [
+      "kbCapture",
+      "promote"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T22:18:45.991Z"
+  },
+  {
+    "id": "d137252c-4bd7-4c0f-896b-869a4c3ec994",
+    "type": "knowledge",
+    "title": "Embeddings LOCAL classification: --embeddings flag + local ONNX model",
+    "summary": "gitnexus 1.6.7 --embeddings flag populates embeddings via a local ONNX CPU model (Snowflake/snowflake-arctic-embed-xs, 384-dim), ~87MB one-time HuggingFace download then fully offline. OFF by default, preserved across plain re-index, only cleared by --drop-embeddings. Platform caveat: LadybugDB VECTOR index unavailable on win32 -> semantic query falls back to exact-scan (capped 10000 chunks), still works. T2.3 LOCAL branch wires --embeddings into /pm index step; remote opt-in path exists via env vars (GITNEXUS_EMBEDDING_URL/_MODEL/_API_KEY) but not required.",
+    "symbols": [
+      "analyze",
+      "embeddings",
+      "gitnexus"
+    ],
+    "source_files": [
+      "docs/code-intelligence-embeddings.md",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:27.302Z"
+  },
+  {
+    "id": "d1c6f758-bc58-4bdd-a016-ea0f6bfe82e3",
+    "type": "knowledge",
+    "title": "Auto-staleness at prime via checkFreshness (T2.2, F3)",
+    "summary": "source_file_hashes column stores per-file hash basis at capture time; checkFreshness() at prime time re-hashes the basis files union (once, bounded to primed set) and marks stale=1 if any basis file changed or disappeared. Empty-basis entries never falsely stale. Non-fatal: wrapped in try/catch.",
+    "symbols": [
+      "checkFreshness",
+      "computeSourceFileHashes",
+      "computeFileHashBatch"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/file-hash.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:14.657Z"
+  },
+  {
+    "id": "d9ba91ac-73fa-4cc3-9b39-1f7ab626b8e9",
+    "type": "learning",
+    "title": "Code-intelligence-hardening sprint: 3-phase risk-frontload structure",
+    "summary": "Sprint delivered 8 fixes across 3 phases organized by risk. Phase 1 (riskiest): connection resilience + pre-flight checks + health surfacing. Phase 2 (mid-sprint staleness): VERIFY re-index + freshness metadata. Phase 3 (routing): tool description guidance + template reinforcement. APPROVED with 0 findings.",
+    "symbols": [],
+    "source_files": [
+      "PLAN.md",
+      "progress.json",
+      "feedback.md",
+      "requirements.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:37.757Z"
+  },
+  {
+    "id": "daf640f5-24ad-4b76-b481-48f3ade92f1d",
+    "type": "knowledge",
+    "title": "Provenance enums fixed via tool-layer validation (T2.3, F5/D5)",
+    "summary": "Author and CaptureSource are fixed union types in types.ts. Tool-layer (kb-capture, promote, kb-harvest) stamps them; zod schema removed free-string paths. Callers pass a role hint; validator derives source. Reads are tolerant of legacy values; no migration.",
+    "symbols": [
+      "validateAuthor",
+      "Author",
+      "CaptureSource"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts",
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:19.207Z"
+  },
+  {
+    "id": "dd85cf6e-00ec-4b56-a178-6931f9de6c4b",
+    "type": "knowledge",
+    "title": "code_tests tool: impact-based test discovery (T4.4)",
+    "summary": "T4.4 adds code_tests(symbol, repo?) using impact-based recipe: calls callGitNexus('impact', {target:symbol, direction:'upstream', maxDepth:2, includeTests:true, repo}), collects results from depth 1 and 2, filters to isTestPath(), returns test file dependencies. Schema registered in src/index.ts; telemetry wired; inherits pre-flight/resilience/freshness via callGitNexus.",
+    "symbols": [
+      "code_tests",
+      "codeTestsSchema"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:46.628Z"
+  },
+  {
+    "id": "deb2b048-c155-49bf-8783-1ae42709eb69",
+    "type": "learning",
+    "title": "Phase 2 verification: Cypher integration foundation proven under load (T2.1+T2.2 confirmed)",
+    "summary": "Phase 2 reviewer live-verified the entire Cypher integration foundation: parseMarkdownTable/asciiSanitizeLabel/extractCypherPayload helpers all work correctly on real gitnexus index; both code_map (Community nodes) and code_flow (Process nodes + steps) queries execute successfully with parameterized LIMIT binding; markdown parsing matches byte-for-byte. This unblocks Phase 3 code-intelligence routing guidance and confirms gitnexus 1.6.7 + LadybugDB foundation is stable for long-term use.",
+    "symbols": [
+      "code_map",
+      "code_flow",
+      "parseMarkdownTable",
+      "asciiSanitizeLabel",
+      "extractCypherPayload"
+    ],
+    "source_files": [
+      "feedback.md",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "PLAN.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:26:08.984Z"
+  },
+  {
+    "id": "e3fd3e49-4caf-435a-942d-dea4a38bb439",
+    "type": "knowledge",
+    "title": "Freshness suffix wiring: reindexScheduled param (T3.2)",
+    "summary": "T3.2 extends freshnessNote(lastCommit, head, reindexScheduled) with reindexScheduled boolean. When true, appends exact suffix \\\" A background re-index has been started.\\\" (leading space) to freshness message. computeFreshnessNote calls maybeScheduleReindex fire-and-forget, passes result to freshnessNote(). code_impact verified single trigger point: callGitNexus -> computeFreshnessNote. Suffixed message is non-blocking metadata; never degrades core result.",
+    "symbols": [
+      "freshnessNote",
+      "computeFreshnessNote",
+      "maybeScheduleReindex"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/tools/code-intelligence-reindex.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:19.458Z"
+  },
+  {
+    "id": "e4dc6485-8d5e-4a9e-bfac-263c8fcb8fc2",
+    "type": "knowledge",
+    "title": "Code intelligence routing in tool descriptions (Phase 3)",
+    "summary": "All four code_* tools (code_graph, code_impact, code_query, code_context) now carry the unified routing guidance: \"Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.\" This guidance is registered in MCP server tool descriptions and appears on every agent dispatch.",
+    "symbols": [
+      "code_graph",
+      "code_impact",
+      "code_query",
+      "code_context"
+    ],
+    "source_files": [
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:08:33.691Z"
+  },
+  {
+    "id": "e67ee0d8-789d-4a49-a022-88d3912dba31",
+    "type": "knowledge",
+    "title": "Tool descriptions as universal dispatch routing layer",
+    "summary": "Tool descriptions in MCP server registration are the ONLY instruction channel present on EVERY code intelligence dispatch path. Dispatch templates cover only the paths the PM remembers to patch. This is why routing guidance (prefer code_* over Glob/Grep) lives in tool descriptions as the base layer, with templates as reinforcement.",
+    "symbols": [],
+    "source_files": [
+      "src/index.ts",
+      "requirements.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:08:30.954Z"
+  },
+  {
+    "id": "e7da8cd0-5045-443a-b469-5ac53257cf83",
+    "type": "knowledge",
+    "title": "Embeddings support: LOCAL branch wiring + --embeddings flag (T2.3)",
+    "summary": "Phase 2 T2.3 (LOCAL branch) implements embeddings support. Changes: skills/pm/index.md step 3 documents --embeddings flag; skills/pm/doer-reviewer-loop.md VERIFY re-index step notes ~87MB one-time model download for embedding inference. Documentation + flag only; no src/ code builds analyze command line yet. Win32 caveat: exact-scan (requires long filename support) may fail on some Windows setups. Documented limitations; feature ready for src/ wiring in Phase 3 or later sprint.",
+    "symbols": [
+      "--embeddings",
+      "embedding",
+      "inference",
+      "exact-scan"
+    ],
+    "source_files": [
+      "skills/pm/index.md",
+      "skills/pm/doer-reviewer-loop.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:47.993Z"
+  },
+  {
+    "id": "e86910b8-9835-43ed-a106-67fcb6328f4d",
+    "type": "knowledge",
+    "title": "Circular-import avoidance: code-intelligence-freshness.ts kept separate (Phase 2 T2.1)",
+    "summary": "code-intelligence-freshness.ts is a separate module (not merged into code-intelligence.ts) to avoid circular import. code-intelligence-gitnexus.ts needs to import freshnessNote/appendFreshnessNote as values at module load time, but code-intelligence.ts re-exports GitNexusProvider from gitnexus, creating a cycle if freshness lived there.",
+    "symbols": [
+      "freshnessNote",
+      "appendFreshnessNote",
+      "code-intelligence-freshness.ts"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/tools/code-intelligence.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:33.121Z"
+  },
+  {
+    "id": "fccb50ff-4384-4d3c-8404-9684fcb53cc1",
+    "type": "knowledge",
+    "title": "Code intelligence guidance coverage across all role templates",
+    "summary": "All sprint role templates (planner, doer, reviewer in both fleet-mode and doer-reviewer-loop dispatch) now carry explicit code intelligence guidance + kb_session_prime instructions. Phase 3 completed coverage across all dispatch paths.",
+    "symbols": [],
+    "source_files": [
+      "skills/pm/tpl-planner.md",
+      "skills/pm/tpl-doer.md",
+      "skills/pm/tpl-reviewer.md",
+      "skills/pm/doer-reviewer-loop.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:08:39.110Z"
+  }
+]
