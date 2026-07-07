@@ -37,6 +37,10 @@ Usage:
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
+  apra-fleet kb directives                             List pending + active user-directives
+  apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
+  apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
+  apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
   process.exit(0);
@@ -113,6 +117,14 @@ Usage:
         process.exit(0);
       })
       .catch(err => { logError('cli', `kb invalidate failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'directives' || subCmd === 'approve-directive' || subCmd === 'reject-directive' || subCmd === 'add-directive') {
+    // F1 (D1): human-terminal directive activation surface -- the only
+    // unforgeable channel for turning a pending proposal into an active
+    // directive. Never exposed over MCP.
+    import('./cli/kb-directives.js')
+      .then(m => m.runKbDirectives(subCmd, process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb ${subCmd} failed: ${err.message}`); process.exit(1); });
   } else {
     console.error(`Error: unknown kb subcommand '${subCmd}'`);
     process.exit(1);
