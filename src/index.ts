@@ -134,6 +134,13 @@ Usage:
       .then(m => m.runKbCommit(process.argv.slice(4)))
       .then(code => process.exit(code))
       .catch(err => { logError('cli', `kb commit failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'import') {
+    // T2.2 (F4, D3): post-merge entry point for absorbing a merged bible into
+    // the local KB. Thin wrapper over the same kbImport the MCP tool uses.
+    import('./cli/kb-import.js')
+      .then(m => m.runKbImport(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb import failed: ${err.message}`); process.exit(1); });
   } else {
     console.error(`Error: unknown kb subcommand '${subCmd}'`);
     process.exit(1);
