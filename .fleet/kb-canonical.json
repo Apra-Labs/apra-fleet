@@ -51,6 +51,25 @@
     "updated_at": "2026-07-06T13:38:10.464Z"
   },
   {
+    "id": "08f903c1-2ad6-4072-b3f2-c486468d6773",
+    "type": "learning",
+    "title": "kb_import post-sweep stales pre-existing wrong-branch entries, not fresh imports",
+    "summary": "SqliteProvider.capture() always recomputes source_file_hashes from the CURRENT worktree, and the bible (CanonicalEntry) carries no hashes. So a freshly imported entry whose referenced file exists is FRESH by construction (basis == current). The post-import freshnessSweep()'s real value is retiring PRE-EXISTING (branch-A) entries whose files the merge changed -- the wrong-branch claims D3 targets -- and reviving matches. This is a documented deviation from T2.1 test-6's literal wording ('bible entry ends stale'); test 6 proves the pre-existing-entry staling instead.",
+    "symbols": [
+      "freshnessSweep",
+      "computeSourceFileHashes",
+      "kbImport",
+      "basisFullyMatches"
+    ],
+    "source_files": [
+      "src/tools/kb-import.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/file-hash.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:48:08.451Z"
+  },
+  {
     "id": "13ea4d65-72ef-4b68-b325-565f331446d5",
     "type": "knowledge",
     "title": "kb_export bible includes only CONFIRMED, stale=0, non-superseded entries",
@@ -589,6 +608,26 @@
     "updated_at": "2026-07-06T14:25:09.648Z"
   },
   {
+    "id": "66eea2fd-682a-4a8a-827a-afc4def098b5",
+    "type": "learning",
+    "title": "kb_import (T2.1): capture() import-mode is 2nd param, HTTP/MCP unreachable",
+    "summary": "The HTTP /api/kb/capture route calls provider.capture(JSON.parse(body)) with exactly ONE argument (kb-server.ts:139) and the kb_capture MCP handler builds the input from zod fields then calls target.capture({...}) one-arg (kb-capture.ts:118). So making import mode a SECOND parameter of SqliteProvider.capture (opts: {importMode, preferredId}) is structurally unreachable from any deserialized route -- R4 airtight. Kept opts on SqliteProvider only (not the MemoryProvider interface) since kb-import uses providers.project (concrete SqliteProvider); extra optional param still satisfies the interface.",
+    "symbols": [
+      "capture",
+      "hasEntry",
+      "freshnessSweep",
+      "kbImport",
+      "CaptureSource"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-import.ts",
+      "src/services/knowledge/types.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:30:44.242Z"
+  },
+  {
     "id": "6cdfb072-1472-48a4-9b83-c48d9ab58271",
     "type": "knowledge",
     "title": "GitNexusProvider routing pattern",
@@ -636,6 +675,22 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-07T11:26:56.645Z"
+  },
+  {
+    "id": "720d1482-bdb7-4f51-8c75-707bbdc96b93",
+    "type": "knowledge",
+    "title": "Design invariant: reconcile tools re-hash against process.cwd()",
+    "summary": "The reconcile tools (reconcilePrefilter, resolveContradiction winner un-stale) re-hash against process.cwd() by design. No repo param. Future hardening candidate for symmetry with kb_import sweep (which has explicit cwd anchor).",
+    "symbols": [
+      "reconcilePrefilter",
+      "resolveContradiction",
+      "computeFileHashBatch"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.758Z"
   },
   {
     "id": "75ade624-765b-4ac4-b595-999282cfd98e",
@@ -907,22 +962,6 @@
     "updated_at": "2026-07-06T10:51:49.005Z"
   },
   {
-    "id": "ac6cd709-dca9-4df7-8ce1-1e76759a7825",
-    "type": "knowledge",
-    "title": "LOW-1: kb_freshness_sweep hashes basis paths relative to process cwd (guidance for T2.1/T3.2)",
-    "summary": "freshnessSweep() re-hashes stored basis file paths via computeFileHashBatch with no repo anchoring; the tool exposes no repo/path parameter. Keep the invariant when wiring kb_import and kb_reconcile: both invoke sweep after resolving the repo, and /pm kb-reconcile runs in the merged worktree cwd, so both invoke it from the correct directory. Basis paths must remain worktree-relative so the sweep re-hash resolves the intended files. No change required in Phase 1.",
-    "symbols": [
-      "freshnessSweep",
-      "computeFileHashBatch"
-    ],
-    "source_files": [
-      "src/services/knowledge/sqlite-provider.ts",
-      "src/tools/kb-freshness-sweep.ts"
-    ],
-    "confidence": "CONFIRMED",
-    "updated_at": "2026-07-07T11:27:10.260Z"
-  },
-  {
     "id": "b7a35cbf-d7f5-44a4-b2de-f882460b0b54",
     "type": "knowledge",
     "title": "missingIndexResult pre-flight check (F3.1)",
@@ -936,6 +975,16 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T10:22:15.438Z"
+  },
+  {
+    "id": "b7bedf28-31b6-4e16-ae5d-0dbe96f071a5",
+    "type": "learning",
+    "title": "kb_import Phase 2 review findings",
+    "summary": "Reviewer findings from Phase 2 review of kb-branch-reconcile import trust surface.",
+    "symbols": [],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T13:42:47.748Z"
   },
   {
     "id": "b9df569a-bb5c-4922-a123-7ed28a1a9803",
@@ -1156,6 +1205,21 @@
     "updated_at": "2026-07-07T10:02:51.566Z"
   },
   {
+    "id": "d11067ac-bb1b-4081-8a29-734f7c59d93b",
+    "type": "learning",
+    "title": "kb-branch-reconcile: Sprint capstone -- team-knowledge story complete",
+    "summary": "Sprint kb-branch-reconcile delivered the complete team-knowledge story: zero-failure suite, HTTP clamp closed, bidirectional staleness fixed, trusted-channel import with directive quarantine, code-arbitrated contradiction reconciliation. All 11 tasks APPROVED across 3 phases with 3 plan-review rounds and two live-attack reviews.",
+    "symbols": [],
+    "source_files": [
+      "PLAN.md",
+      "feedback.md",
+      "requirements.md",
+      "design.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.757Z"
+  },
+  {
     "id": "d137252c-4bd7-4c0f-896b-869a4c3ec994",
     "type": "knowledge",
     "title": "Embeddings LOCAL classification: --embeddings flag + local ONNX model",
@@ -1269,6 +1333,20 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T14:26:08.984Z"
+  },
+  {
+    "id": "e00d97f5-9e15-457e-9494-56a9c335363e",
+    "type": "learning",
+    "title": "kb-branch-reconcile: resolveContradiction is the SINGLE write path",
+    "summary": "The reconcile write path is hardened: resolveContradiction enforces linkage refusal, superseded refusal, and active-directive refusal BEFORE any write. Winner order is critical: CONFIRMED+note, flag-clear FIRST, THEN D2 predicate + full-basis re-hash.",
+    "symbols": [
+      "resolveContradiction"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.751Z"
   },
   {
     "id": "e3fd3e49-4caf-435a-942d-dea4a38bb439",
@@ -1470,6 +1548,19 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T11:08:39.110Z"
+  },
+  {
+    "id": "fdaf76cc-c574-4d9c-ad0c-cc868b091026",
+    "type": "runbook",
+    "title": "kb-branch-reconcile: /pm kb-reconcile full flow",
+    "summary": "The /pm kb-reconcile command runs a 5-step pipeline: kb_import -> kb_freshness_sweep -> kb_reconcile_prefilter -> reconciler agent -> kb_export. Each step has a trust boundary and no post-prefilter sweep is needed.",
+    "symbols": [],
+    "source_files": [
+      "docs/kb-reconcile.md",
+      "skills/fleet/knowledge-agent.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.755Z"
   },
   {
     "id": "ff1fc29f-fcbf-4c56-9daf-8bc8f594912a",
