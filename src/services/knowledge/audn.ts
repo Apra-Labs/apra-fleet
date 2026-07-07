@@ -21,17 +21,37 @@ const POLARITY_POSITIVE = [
   'is available', 'resolved',
 ];
 
+// F3 (D3, T1.5, KB 4cdf2a5d): word-boundary matching, not substring. The
+// former String.includes() check matched these phrases as bare substrings,
+// so words that merely CONTAIN a polarity phrase (e.g. "prefixed"/
+// "suffixed" contain "fixed"; "unresolved" contains "resolved") falsely
+// carried that phrase's polarity though they have nothing to do with
+// fix/break semantics. \b is anchored at the very start and end of each
+// (possibly multi-word, possibly apostrophe-containing) phrase rather than
+// per inner word, so "doesn't work" / "does not exist" style phrases still
+// match correctly -- the apostrophe sits inside the phrase, not at a
+// boundary we depend on. Case-insensitivity is now carried by the regex 'i'
+// flag rather than a pre-lowercase pass (equivalent behavior).
+function escapeRegExpLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function toWordBoundaryPattern(phrase: string): RegExp {
+  return new RegExp('\\b' + escapeRegExpLiteral(phrase) + '\\b', 'i');
+}
+
+const NEGATIVE_PATTERNS = POLARITY_NEGATIVE.map(toWordBoundaryPattern);
+const POSITIVE_PATTERNS = POLARITY_POSITIVE.map(toWordBoundaryPattern);
+
 /**
  * Light opposite-polarity check between two texts: true when one carries
  * negative polarity and the other positive polarity. Pure and case-insensitive.
  */
 export function hasOppositePolarity(a: string, b: string): boolean {
-  const la = a.toLowerCase();
-  const lb = b.toLowerCase();
-  const aNeg = POLARITY_NEGATIVE.some(p => la.includes(p));
-  const aPos = POLARITY_POSITIVE.some(p => la.includes(p));
-  const bNeg = POLARITY_NEGATIVE.some(p => lb.includes(p));
-  const bPos = POLARITY_POSITIVE.some(p => lb.includes(p));
+  const aNeg = NEGATIVE_PATTERNS.some(p => p.test(a));
+  const aPos = POSITIVE_PATTERNS.some(p => p.test(a));
+  const bNeg = NEGATIVE_PATTERNS.some(p => p.test(b));
+  const bPos = POSITIVE_PATTERNS.some(p => p.test(b));
   return (aNeg && bPos) || (aPos && bNeg);
 }
 

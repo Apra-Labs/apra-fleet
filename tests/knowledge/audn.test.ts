@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   makeAudnDecision,
   hasContradictionKeywords,
+  hasOppositePolarity,
   symbolsOverlap,
   filesOverlap,
   CONTRADICTION_KEYWORDS,
@@ -50,6 +51,71 @@ describe('filesOverlap', () => {
   it('returns false when either array is empty', () => {
     expect(filesOverlap([], ['src/foo.ts'])).toBe(false);
     expect(filesOverlap(['src/foo.ts'], [])).toBe(false);
+  });
+});
+
+// -- hasOppositePolarity (F3/D3): word-boundary matching, not substring --
+//
+// The old String.includes() implementation matches antonym-pair phrases as
+// bare substrings, so words that merely CONTAIN a polarity phrase (e.g.
+// "prefixed"/"suffixed" contain "fixed"; "unresolved" contains "resolved")
+// falsely carry that phrase's polarity even though they have nothing to do
+// with fix/break semantics. Paired against genuinely opposite-signal text,
+// this produces a spurious opposite-polarity signal. These three tests MUST
+// FAIL on the pre-fix includes() implementation and PASS once matching is
+// tightened to word boundaries.
+describe('hasOppositePolarity (F3/D3): word-boundary, not substring', () => {
+  it('"prefixed" is not a polarity signal -- no false opposite-polarity vs genuine "is broken"', () => {
+    // Pre-fix: 'prefixed'.includes('fixed') -> false-positive POSITIVE on
+    // side A; 'is broken' -> genuine NEGATIVE on side B -> old code wrongly
+    // returns true. Post-fix: \bfixed\b does not match inside "prefixed".
+    expect(hasOppositePolarity(
+      'The config key is prefixed with FOO_',
+      'The service is broken',
+    )).toBe(false);
+  });
+
+  it('"unresolved" is not a polarity signal -- no false opposite-polarity vs genuine "is broken"', () => {
+    // Pre-fix: 'unresolved'.includes('resolved') -> false-positive POSITIVE
+    // on side A; 'is broken' -> genuine NEGATIVE on side B -> old code
+    // wrongly returns true. Post-fix: \bresolved\b does not match inside
+    // "unresolved".
+    expect(hasOppositePolarity(
+      'The ticket remains unresolved',
+      'The endpoint is broken',
+    )).toBe(false);
+  });
+
+  it('"suffixed" is not a polarity signal -- no false opposite-polarity vs genuine "is broken"', () => {
+    // Pre-fix: 'suffixed'.includes('fixed') -> false-positive POSITIVE on
+    // side A; 'is broken' -> genuine NEGATIVE on side B -> old code wrongly
+    // returns true. Post-fix: \bfixed\b does not match inside "suffixed".
+    expect(hasOppositePolarity(
+      'The parameter name is suffixed with _v2',
+      'The migration is broken',
+    )).toBe(false);
+  });
+
+  // -- Regression guard: genuine antonym pairs must still signal, both
+  // before and after the fix. --
+
+  it('genuine "fixed" vs "broken" pair still signals opposite polarity', () => {
+    expect(hasOppositePolarity('The bug is fixed', 'The bug is broken')).toBe(true);
+  });
+
+  it('genuine "doesn\'t work" vs "now works" pair still signals opposite polarity', () => {
+    expect(hasOppositePolarity(
+      "The API doesn't work anymore",
+      'The API now works',
+    )).toBe(true);
+  });
+
+  it('case-insensitive: "IS BROKEN" vs "Now Works" still signals opposite polarity', () => {
+    expect(hasOppositePolarity('The service IS BROKEN', 'The service Now Works')).toBe(true);
+  });
+
+  it('no polarity words on either side -> false', () => {
+    expect(hasOppositePolarity('The registry initializes lazily.', 'The cache is populated on demand.')).toBe(false);
   });
 });
 
