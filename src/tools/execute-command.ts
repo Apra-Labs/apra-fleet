@@ -122,7 +122,8 @@ function redactOutput(output: string, credentials: ResolvedCredential[]): string
   return redacted;
 }
 
-export async function executeCommand(input: ExecuteCommandInput, extra?: any): Promise<string> {
+export async function executeCommand(input: ExecuteCommandInput & { cwd?: string }, extra?: any): Promise<string> {
+  if (input.cwd && !input.run_from) input.run_from = input.cwd;
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
