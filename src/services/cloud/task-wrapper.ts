@@ -100,7 +100,7 @@ export function generateTaskWrapper(config: TaskConfig): string {
       '    for i in "' + D + '{!SECRET_NAMES[@]}"; do',
       '      secret="' + D + '{SECRETS[' + D + 'i]}"',
       '      name="' + D + '{SECRET_NAMES[' + D + 'i]}"',
-      '      [ -n "' + D + 'secret" ] && line="' + D + '{line//' + D + 'secret/[REDACTED:' + D + 'name]}"',
+      '      [ -n "' + D + 'secret" ] && line="' + D + '{line//"' + D + 'secret"/[REDACTED:' + D + 'name]}"',
       '    done',
       '    printf \'%s\\n\' "' + D + 'line"',
       '  done',

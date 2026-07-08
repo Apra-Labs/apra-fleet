@@ -121,6 +121,21 @@ describe('generateTaskWrapper - task.log redaction (source-side, watch has no cr
     expect(log).toContain('[REDACTED:API_KEY]');
   });
 
+  it('redacts a secret containing glob metacharacters literally, not as a pattern', () => {
+    // ${line//pattern/repl} treats an UNQUOTED pattern as a glob -- quoting the
+    // operand ("$secret") is what makes this a literal string match instead.
+    const secret = 'a[bc]*d\\e?f';
+    const { log } = runWrapper({
+      taskId: 'task-redact-glob',
+      command: `echo "leak ${secret} here"`,
+      maxRetries: 0,
+      activityIntervalSec: 300,
+      credentials: [{ name: 'GLOB_SECRET', plaintext: secret }],
+    });
+    expect(log).not.toContain(secret);
+    expect(log).toContain('[REDACTED:GLOB_SECRET]');
+  });
+
   it('propagates the real (non-zero) command exit code through the redaction pipe', () => {
     const { status, exitCode } = runWrapper({
       taskId: 'task-redact2',
