@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { getAllAgents } from '../services/registry.js';
 import { resolveSessionLogDir } from '../services/stall/index.js';
@@ -35,7 +36,7 @@ const YELLOW = '\x1b[33m';
 const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO_COLOR;
 
 // ---------------------------------------------------------------------------
-// Sources. Three kinds of activity are merged per member:
+// Sources. Four kinds of activity are merged per member:
 //   1. Fleet activity log (universal spine) -- every dispatch the server makes,
 //      for local AND remote members, tailed once from the local fleet log.
 //   2. Provider transcript (local members) -- the LLM session's rich
@@ -43,7 +44,19 @@ const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO
 //   3. Remote provider transcript (remote Claude members) -- the same rich
 //      session detail, streamed over a dedicated long-lived `tail -F` SSH
 //      channel since the .jsonl lives on the member's own disk (ensureRemoteTail).
+//   4. Long-running task logs (execute_command with long_running=true) -- each
+//      active task's ~/.fleet-tasks/<id>/task.log, tailed the same way as the
+//      transcript: local FS polling for local members, a `tail -F` SSH channel
+//      for remote members. A member may run several tasks concurrently.
 // ---------------------------------------------------------------------------
+
+/** Tail state for one long-running task's ~/.fleet-tasks/<id>/task.log. */
+interface TaskTailState {
+  offset: number;             // local: byte offset already read
+  leftover: string;           // trailing partial line carried across reads/chunks
+  backfilled: boolean;        // first read primes to EOF so history is not dumped
+  stream: SSHStream | null;   // remote: live `tail -F` channel; null for local tasks
+}
 
 interface Follower {
   agent: Agent;
@@ -62,6 +75,9 @@ interface Follower {
   rtLeftover: string;           // trailing partial line carried across chunks
   rtStarted: boolean;           // first tail primes to EOF; rotations read from top
   rtBusy: boolean;              // an open/rotate check is in progress -- do not stack
+  // long-running task log state -- a member may have MULTIPLE concurrent tasks
+  taskTails: Map<string, TaskTailState>; // taskId -> tail state
+  taskBusy: boolean;             // remote task discovery/rotate check in progress -- do not stack
 }
 
 interface FleetLogState {
@@ -243,6 +259,8 @@ export async function runWatch(args: string[]): Promise<void> {
       rtLeftover: '',
       rtStarted: false,
       rtBusy: false,
+      taskTails: new Map(),
+      taskBusy: false,
     };
     followers.push(f);
     byKey.set(ctx.agent.friendlyName.toLowerCase(), f);
@@ -265,6 +283,12 @@ export async function runWatch(args: string[]): Promise<void> {
   for (const f of followers) pumpTranscript(f, single, tailN, verbose);
   // Open the remote tail channels immediately (they stream on their own after this).
   for (const f of followers) void ensureRemoteTail(f, single, verbose);
+  // Same for long-running task logs: local members poll ~/.fleet-tasks locally,
+  // remote members get their task.log(s) tailed over a dedicated SSH channel.
+  for (const f of followers) {
+    if (f.agent.agentType === 'remote') void ensureRemoteTaskTails(f, single);
+    else pumpLocalTaskTails(f, single);
+  }
 
   // Remote tails push content on their own; we only periodically check whether a
   // channel died or the session rotated (a cheap `ls`), not every poll tick.
@@ -296,12 +320,23 @@ export async function runWatch(args: string[]): Promise<void> {
         pumpTranscript(f, single, 0, verbose);
       }
       if (tick % RT_CHECK_EVERY_TICKS === 0) void ensureRemoteTail(f, single, verbose);
+
+      if (f.agent.agentType === 'remote') {
+        if (tick % RT_CHECK_EVERY_TICKS === 0) void ensureRemoteTaskTails(f, single);
+      } else {
+        pumpLocalTaskTails(f, single); // cheap fs polling -- every tick, like pumpTranscript
+      }
     }
   }, POLL_INTERVAL_MS);
 
   const stop = () => {
     clearInterval(timer);
-    for (const f of followers) { if (f.rtStream) { try { f.rtStream.close(); } catch { /* best-effort */ } } }
+    for (const f of followers) {
+      if (f.rtStream) { try { f.rtStream.close(); } catch { /* best-effort */ } }
+      for (const state of f.taskTails.values()) {
+        if (state.stream) { try { state.stream.close(); } catch { /* best-effort */ } }
+      }
+    }
     console.log('');
     process.exit(0);
   };
@@ -451,6 +486,141 @@ async function ensureRemoteTail(f: Follower, single: boolean, verbose: boolean):
     if (f.rtStream) { try { f.rtStream.close(); } catch { /* best-effort */ } f.rtStream = null; }
   } finally {
     f.rtBusy = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Long-running task log tailing (execute_command with long_running=true).
+// A task's ~/.fleet-tasks/<id>/status.json flips through running -> retrying*
+// -> completed|failed; task.log accumulates its stdout/stderr for the whole
+// lifetime. `monitor_task` reads a snapshot of that log; `watch` streams it
+// live, mirroring the transcript-tail design (poll for local, `tail -F` SSH
+// channel for remote).
+// ---------------------------------------------------------------------------
+
+function fleetTasksDir(): string {
+  return path.join(os.homedir(), '.fleet-tasks');
+}
+
+function nowTime(): string {
+  return new Date().toTimeString().slice(0, 8);
+}
+
+function taskHeaderEvent(taskId: string): FormattedEvent {
+  return { time: nowTime(), marker: '$', kind: 'info', text: `task ${taskId} output:` };
+}
+
+function taskLogLineEvent(line: string): FormattedEvent {
+  return { time: null, marker: '', kind: 'out', detail: true, text: line };
+}
+
+function taskEndEvent(taskId: string): FormattedEvent {
+  return { time: null, marker: '', kind: 'dim', detail: true, text: `-> task ${taskId} finished` };
+}
+
+/** Local ~/.fleet-tasks/<id>/status.json entries whose status is running or retrying. */
+function listLocalActiveTasks(): Set<string> {
+  const out = new Set<string>();
+  let entries: string[];
+  try { entries = fs.readdirSync(fleetTasksDir()); } catch { return out; }
+  for (const taskId of entries) {
+    try {
+      const raw = fs.readFileSync(path.join(fleetTasksDir(), taskId, 'status.json'), 'utf-8');
+      const status = JSON.parse(raw).status;
+      if (status === 'running' || status === 'retrying') out.add(taskId);
+    } catch { /* not a task dir yet, or status.json not written yet */ }
+  }
+  return out;
+}
+
+/** Poll local ~/.fleet-tasks for one member's active tasks, opening/closing per-task tails as needed. */
+function pumpLocalTaskTails(f: Follower, single: boolean): void {
+  const active = listLocalActiveTasks();
+
+  for (const taskId of f.taskTails.keys()) {
+    if (!active.has(taskId)) {
+      emit(f, taskEndEvent(taskId), single);
+      f.taskTails.delete(taskId);
+    }
+  }
+
+  for (const taskId of active) {
+    let state = f.taskTails.get(taskId);
+    if (!state) {
+      state = { offset: 0, leftover: '', backfilled: false, stream: null };
+      f.taskTails.set(taskId, state);
+      emit(f, taskHeaderEvent(taskId), single); // first open primes to EOF below -- no history dumped
+    }
+    const lines = readNewLines(path.join(fleetTasksDir(), taskId, 'task.log'), state, 0);
+    if (!lines) continue;
+    for (const line of lines) emit(f, taskLogLineEvent(line), single);
+  }
+}
+
+/** Feed a chunk of tailed task-log bytes out as formatted lines, keeping any trailing partial line. */
+function processTaskChunk(f: Follower, state: TaskTailState, chunk: string, single: boolean): void {
+  const parts = (state.leftover + chunk).split('\n');
+  state.leftover = parts.pop() ?? '';
+  for (const line of parts) emit(f, taskLogLineEvent(line), single);
+}
+
+/**
+ * Ensure a remote member's active long-running tasks each have a live `tail -F`
+ * channel on their task.log. Discovers active tasks with a cheap shell scan of
+ * ~/.fleet-tasks/*\/status.json (running or retrying), printing `taskId|logPath`
+ * pairs so the remote shell resolves $HOME itself -- logPath is then a plain
+ * absolute path, safe to hand to buildTailCommand's shell-escaping. Opens a
+ * channel for each newly-seen task; closes + drops any task that is no longer
+ * active. Fails soft, like ensureRemoteTail.
+ */
+async function ensureRemoteTaskTails(f: Follower, single: boolean): Promise<void> {
+  if (f.taskBusy) return;
+  f.taskBusy = true;
+  try {
+    const scan =
+      'for d in "$HOME"/.fleet-tasks/*/; do ' +
+      's=$(cat "${d}status.json" 2>/dev/null); ' +
+      'case "$s" in *\'"status":"running"\'*|*\'"status":"retrying"\'*) printf \'%s|%s\\n\' "$(basename "$d")" "${d}task.log";; esac; ' +
+      'done';
+    const res = await execCommand(f.agent, scan, 8000);
+    const active = new Map<string, string>(); // taskId -> absolute task.log path
+    for (const line of res.stdout.split('\n')) {
+      const idx = line.indexOf('|');
+      if (idx === -1) continue;
+      const taskId = line.slice(0, idx).trim();
+      const logPath = line.slice(idx + 1).trim();
+      if (taskId && logPath) active.set(taskId, logPath);
+    }
+
+    for (const [taskId, state] of f.taskTails) {
+      if (!active.has(taskId)) {
+        if (state.stream) { try { state.stream.close(); } catch { /* best-effort */ } }
+        emit(f, taskEndEvent(taskId), single);
+        f.taskTails.delete(taskId);
+      }
+    }
+
+    for (const [taskId, logPath] of active) {
+      if (f.taskTails.has(taskId)) continue; // already tailing
+      const state: TaskTailState = { offset: 0, leftover: '', backfilled: true, stream: null };
+      f.taskTails.set(taskId, state);
+      emit(f, taskHeaderEvent(taskId), single);
+      const onEnd = () => { if (f.taskTails.get(taskId) === state) state.stream = null; };
+      try {
+        state.stream = await execStream(
+          f.agent,
+          buildTailCommand('-n0', logPath), // first (only) open of a task log always primes to EOF
+          (chunk) => processTaskChunk(f, state, chunk, single),
+          onEnd,
+        );
+      } catch {
+        f.taskTails.delete(taskId); // couldn't open -- next check retries
+      }
+    }
+  } catch {
+    // Member asleep / connection dropped -- leave existing channels as-is; the next check retries.
+  } finally {
+    f.taskBusy = false;
   }
 }
 
