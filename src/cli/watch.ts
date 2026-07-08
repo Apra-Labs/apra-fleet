@@ -20,6 +20,7 @@ import {
   type RecentActivity,
 } from '../services/watch/fleet-log.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { getTaskCredentials } from '../services/credential-store.js';
 import type { Agent } from '../types.js';
 
 const ACTIVE_WINDOW_MS = 90_000; // a member is "active" if it produced activity within this window
@@ -47,7 +48,11 @@ const useColor = (): boolean => process.stdout.isTTY === true && !process.env.NO
 //   4. Long-running task logs (execute_command with long_running=true) -- each
 //      active task's ~/.fleet-tasks/<id>/task.log, tailed the same way as the
 //      transcript: local FS polling for local members, a `tail -F` SSH channel
-//      for remote members. A member may run several tasks concurrently.
+//      for remote members. A member may run several tasks concurrently. The
+//      LOCAL ~/.fleet-tasks dir is a single shared directory (the operator's
+//      own home), not per-member, so local tasks are tailed ONCE per watch
+//      process (not once per local follower) and printed under a neutral
+//      label -- the directory carries no member attribution to trust.
 // ---------------------------------------------------------------------------
 
 /** Tail state for one long-running task's ~/.fleet-tasks/<id>/task.log. */
@@ -56,7 +61,11 @@ interface TaskTailState {
   leftover: string;           // trailing partial line carried across reads/chunks
   backfilled: boolean;        // first read primes to EOF so history is not dumped
   stream: SSHStream | null;   // remote: live `tail -F` channel; null for local tasks
+  headerShown: boolean;       // "task <id> output:" is deferred until real output exists
 }
+
+/** Whatever emit() needs to attribute and color a line -- a Follower, or a neutral stand-in. */
+type Emittable = { agent: Pick<Agent, 'friendlyName' | 'icon'>; color: string };
 
 interface Follower {
   agent: Agent;
@@ -75,7 +84,9 @@ interface Follower {
   rtLeftover: string;           // trailing partial line carried across chunks
   rtStarted: boolean;           // first tail primes to EOF; rotations read from top
   rtBusy: boolean;              // an open/rotate check is in progress -- do not stack
-  // long-running task log state -- a member may have MULTIPLE concurrent tasks
+  // long-running task log state (REMOTE members only -- local tasks are tailed
+  // once globally, see localTaskTails in runWatch). A member may have MULTIPLE
+  // concurrent tasks.
   taskTails: Map<string, TaskTailState>; // taskId -> tail state
   taskBusy: boolean;             // remote task discovery/rotate check in progress -- do not stack
 }
@@ -278,17 +289,22 @@ export async function runWatch(args: string[]): Promise<void> {
     mtime: fleetLogFile ? mtimeOf(fleetLogFile) : 0,
   };
 
+  // Local ~/.fleet-tasks is a single shared directory (the operator's own home),
+  // not per-member -- tail it ONCE for the whole process, under a neutral label,
+  // regardless of how many local members are in scope.
+  const localTaskTails = new Map<string, TaskTailState>();
+  const localTaskLabel: Emittable = { agent: { friendlyName: 'local-tasks' }, color: DIM };
+  const hasLocalFollower = followers.some((f) => f.agent.agentType !== 'remote');
+
   // Prime (with optional backfill), then poll.
   pumpFleetLog(fl, byKey, single, tailN, verbose);
   for (const f of followers) pumpTranscript(f, single, tailN, verbose);
   // Open the remote tail channels immediately (they stream on their own after this).
   for (const f of followers) void ensureRemoteTail(f, single, verbose);
-  // Same for long-running task logs: local members poll ~/.fleet-tasks locally,
-  // remote members get their task.log(s) tailed over a dedicated SSH channel.
-  for (const f of followers) {
-    if (f.agent.agentType === 'remote') void ensureRemoteTaskTails(f, single);
-    else pumpLocalTaskTails(f, single);
-  }
+  // Same for long-running task logs: remote members get their task.log(s) tailed
+  // over a dedicated SSH channel; local tasks are polled from the shared dir above.
+  for (const f of followers) if (f.agent.agentType === 'remote') void ensureRemoteTaskTails(f, single);
+  if (hasLocalFollower) pumpLocalTaskTails(localTaskTails, localTaskLabel, single);
 
   // Remote tails push content on their own; we only periodically check whether a
   // channel died or the session rotated (a cheap `ls`), not every poll tick.
@@ -320,13 +336,9 @@ export async function runWatch(args: string[]): Promise<void> {
         pumpTranscript(f, single, 0, verbose);
       }
       if (tick % RT_CHECK_EVERY_TICKS === 0) void ensureRemoteTail(f, single, verbose);
-
-      if (f.agent.agentType === 'remote') {
-        if (tick % RT_CHECK_EVERY_TICKS === 0) void ensureRemoteTaskTails(f, single);
-      } else {
-        pumpLocalTaskTails(f, single); // cheap fs polling -- every tick, like pumpTranscript
-      }
+      if (f.agent.agentType === 'remote' && tick % RT_CHECK_EVERY_TICKS === 0) void ensureRemoteTaskTails(f, single);
     }
+    if (hasLocalFollower) pumpLocalTaskTails(localTaskTails, localTaskLabel, single); // cheap fs polling -- every tick, like pumpTranscript
   }, POLL_INTERVAL_MS);
 
   const stop = () => {
@@ -518,6 +530,25 @@ function taskEndEvent(taskId: string): FormattedEvent {
   return { time: null, marker: '', kind: 'dim', detail: true, text: `-> task ${taskId} finished` };
 }
 
+/** Redact registered task credentials from task-log output, same as monitor_task does for its snapshot. */
+function redactTaskOutput(taskId: string, text: string): string {
+  return getTaskCredentials(taskId).reduce(
+    (out, c) => (c.plaintext.length > 0 ? out.replaceAll(c.plaintext, `[REDACTED:${c.name}]`) : out),
+    text,
+  );
+}
+
+/**
+ * Emit newly-read task-log lines, redacted, deferring the "task <id> output:"
+ * header until the first real line so a task that finishes without producing
+ * output never gets a bare header immediately followed by "finished".
+ */
+function emitTaskLines(target: Emittable, taskId: string, state: TaskTailState, lines: string[] | null, single: boolean): void {
+  if (!lines || lines.length === 0) return;
+  if (!state.headerShown) { emit(target, taskHeaderEvent(taskId), single); state.headerShown = true; }
+  for (const line of lines) emit(target, taskLogLineEvent(redactTaskOutput(taskId, line)), single);
+}
+
 /** Local ~/.fleet-tasks/<id>/status.json entries whose status is running or retrying. */
 function listLocalActiveTasks(): Set<string> {
   const out = new Set<string>();
@@ -533,35 +564,43 @@ function listLocalActiveTasks(): Set<string> {
   return out;
 }
 
-/** Poll local ~/.fleet-tasks for one member's active tasks, opening/closing per-task tails as needed. */
-function pumpLocalTaskTails(f: Follower, single: boolean): void {
+/**
+ * Poll the shared local ~/.fleet-tasks dir for active tasks, opening/closing
+ * per-task tails as needed. Runs ONCE per watch process (not once per local
+ * follower): the directory is the operator's own home, shared by every local
+ * member, and carries no per-task member attribution -- callers pass a neutral
+ * `target` rather than a specific follower.
+ */
+function pumpLocalTaskTails(state: Map<string, TaskTailState>, target: Emittable, single: boolean): void {
   const active = listLocalActiveTasks();
 
-  for (const taskId of f.taskTails.keys()) {
-    if (!active.has(taskId)) {
-      emit(f, taskEndEvent(taskId), single);
-      f.taskTails.delete(taskId);
-    }
+  for (const [taskId, ts] of state) {
+    if (active.has(taskId)) continue;
+    // Flush output written between the last poll and the status flip (often the
+    // task's final result/error) before announcing it's done, so it isn't lost.
+    const finalLines = readNewLines(path.join(fleetTasksDir(), taskId, 'task.log'), ts, 0);
+    emitTaskLines(target, taskId, ts, finalLines, single);
+    if (ts.leftover) { emitTaskLines(target, taskId, ts, [ts.leftover], single); ts.leftover = ''; }
+    state.delete(taskId);
+    emit(target, taskEndEvent(taskId), single);
   }
 
   for (const taskId of active) {
-    let state = f.taskTails.get(taskId);
-    if (!state) {
-      state = { offset: 0, leftover: '', backfilled: false, stream: null };
-      f.taskTails.set(taskId, state);
-      emit(f, taskHeaderEvent(taskId), single); // first open primes to EOF below -- no history dumped
+    let ts = state.get(taskId);
+    if (!ts) {
+      ts = { offset: 0, leftover: '', backfilled: false, stream: null, headerShown: false };
+      state.set(taskId, ts);
     }
-    const lines = readNewLines(path.join(fleetTasksDir(), taskId, 'task.log'), state, 0);
-    if (!lines) continue;
-    for (const line of lines) emit(f, taskLogLineEvent(line), single);
+    const lines = readNewLines(path.join(fleetTasksDir(), taskId, 'task.log'), ts, 0);
+    emitTaskLines(target, taskId, ts, lines, single);
   }
 }
 
 /** Feed a chunk of tailed task-log bytes out as formatted lines, keeping any trailing partial line. */
-function processTaskChunk(f: Follower, state: TaskTailState, chunk: string, single: boolean): void {
+function processTaskChunk(f: Follower, taskId: string, state: TaskTailState, chunk: string, single: boolean): void {
   const parts = (state.leftover + chunk).split('\n');
   state.leftover = parts.pop() ?? '';
-  for (const line of parts) emit(f, taskLogLineEvent(line), single);
+  emitTaskLines(f, taskId, state, parts, single);
 }
 
 /**
@@ -569,9 +608,14 @@ function processTaskChunk(f: Follower, state: TaskTailState, chunk: string, sing
  * channel on their task.log. Discovers active tasks with a cheap shell scan of
  * ~/.fleet-tasks/*\/status.json (running or retrying), printing `taskId|logPath`
  * pairs so the remote shell resolves $HOME itself -- logPath is then a plain
- * absolute path, safe to hand to buildTailCommand's shell-escaping. Opens a
- * channel for each newly-seen task; closes + drops any task that is no longer
- * active. Fails soft, like ensureRemoteTail.
+ * absolute path, safe to hand to buildTailCommand's shell-escaping.
+ *
+ * A task keeps its TaskTailState entry across a dropped channel (stream=null
+ * but the task is still running/retrying) so a dead `tail -F` gets reopened on
+ * the next check instead of being abandoned for the task's remaining lifetime;
+ * only a task that has actually left running/retrying is dropped. Every (re)open
+ * re-primes to EOF (`-n0`) -- accepting a small gap in a reconnect scenario
+ * rather than risking duplicated output. Fails soft, like ensureRemoteTail.
  */
 async function ensureRemoteTaskTails(f: Follower, single: boolean): Promise<void> {
   if (f.taskBusy) return;
@@ -593,28 +637,32 @@ async function ensureRemoteTaskTails(f: Follower, single: boolean): Promise<void
     }
 
     for (const [taskId, state] of f.taskTails) {
-      if (!active.has(taskId)) {
-        if (state.stream) { try { state.stream.close(); } catch { /* best-effort */ } }
-        emit(f, taskEndEvent(taskId), single);
-        f.taskTails.delete(taskId);
-      }
+      if (active.has(taskId)) continue;
+      // Flush a dangling partial line before announcing the task is done.
+      if (state.leftover) { emitTaskLines(f, taskId, state, [state.leftover], single); state.leftover = ''; }
+      if (state.stream) { try { state.stream.close(); } catch { /* best-effort */ } }
+      f.taskTails.delete(taskId);
+      emit(f, taskEndEvent(taskId), single);
     }
 
     for (const [taskId, logPath] of active) {
-      if (f.taskTails.has(taskId)) continue; // already tailing
-      const state: TaskTailState = { offset: 0, leftover: '', backfilled: true, stream: null };
+      const existing = f.taskTails.get(taskId);
+      if (existing?.stream) continue; // already tailing live -- only a dead channel gets reopened
+
+      const state: TaskTailState = existing ?? { offset: 0, leftover: '', backfilled: true, stream: null, headerShown: false };
+      state.leftover = ''; // (re)opening -- discard any stale partial line, re-prime from EOF
       f.taskTails.set(taskId, state);
-      emit(f, taskHeaderEvent(taskId), single);
-      const onEnd = () => { if (f.taskTails.get(taskId) === state) state.stream = null; };
+      const onEnd = () => { if (f.taskTails.get(taskId) === state) state.stream = null; }; // channel died -> next check reopens
       try {
         state.stream = await execStream(
           f.agent,
-          buildTailCommand('-n0', logPath), // first (only) open of a task log always primes to EOF
-          (chunk) => processTaskChunk(f, state, chunk, single),
+          buildTailCommand('-n0', logPath),
+          (chunk) => processTaskChunk(f, taskId, state, chunk, single),
           onEnd,
         );
       } catch {
-        f.taskTails.delete(taskId); // couldn't open -- next check retries
+        // Leave the entry in place (stream stays null) so the next check retries
+        // without losing headerShown state or re-announcing an already-seen task.
       }
     }
   } catch {
@@ -645,7 +693,7 @@ function paintMarker(marker: string): string {
   }
 }
 
-function emit(f: Follower, ev: FormattedEvent, single: boolean): void {
+function emit(f: Emittable, ev: FormattedEvent, single: boolean): void {
   const color = useColor();
 
   if (!color) {
