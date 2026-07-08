@@ -6,7 +6,21 @@
  *   F3: background activity loop touches ~/.fleet-tasks/<taskId>/activity every
  *       activityIntervalSec while the main PID is alive — keeps idle manager from
  *       stopping the instance during active work.
+ *
+ * Secrets are redacted at the SOURCE: task.log must never contain a resolved
+ * credential's plaintext, since both monitor_task and `apra-fleet watch` read
+ * it directly (watch runs as a separate CLI process with no access to the MCP
+ * server's in-memory credential store). Each credential's name+plaintext is
+ * base64-embedded in the wrapper (same treatment as MAIN_CMD/RESTART_CMD, so
+ * no new plaintext form and no separate secret file on disk) and decoded into
+ * bash arrays at runtime; command output is piped through a literal
+ * find-and-replace filter before it ever touches task.log.
  */
+
+export interface TaskCredential {
+  name: string;
+  plaintext: string;
+}
 
 export interface TaskConfig {
   taskId: string;
@@ -14,6 +28,7 @@ export interface TaskConfig {
   restartCommand?: string;  // F1: different cmd on retry (checkpoint resume)
   maxRetries: number;
   activityIntervalSec: number;  // F3: background marker touch interval
+  credentials?: TaskCredential[]; // redact these values out of task.log at write time
 }
 
 /**
@@ -26,12 +41,20 @@ export interface TaskConfig {
  *   3. Writes JSON status to status.json
  *   4. Background loop: touches activity file every activityIntervalSec while PID alive (F3)
  *   5. Runs command; on non-zero exit retries up to maxRetries using restartCommand (F1)
+ *      — output is redacted in-flight (a `redact` filter) when credentials were supplied
  *   6. On success or max retries: updates status.json, removes task.pid
  */
 export function generateTaskWrapper(config: TaskConfig): string {
   const cmdB64 = Buffer.from(config.command).toString('base64');
   const restartB64 = Buffer.from(config.restartCommand ?? config.command).toString('base64');
   const taskDir = `$HOME/.fleet-tasks/${config.taskId}`;
+  const credentials = config.credentials ?? [];
+  const hasCredentials = credentials.length > 0;
+  // Each name/secret is individually base64-encoded (no embedded newlines), then
+  // joined with '\n' -- a single-quoted multi-line bash literal is fine since the
+  // alphabet is [A-Za-z0-9+/=\n], nothing that needs escaping.
+  const namesB64Blob = credentials.map((c) => Buffer.from(c.name).toString('base64')).join('\n');
+  const secretsB64Blob = credentials.map((c) => Buffer.from(c.plaintext).toString('base64')).join('\n');
 
   // We build the bash script as an array of lines then join, using
   // plain string concatenation for shell $VAR references to avoid
@@ -52,6 +75,41 @@ export function generateTaskWrapper(config: TaskConfig): string {
     'MAIN_CMD=$(printf \'%s\' \'' + cmdB64 + '\' | base64 -d)',
     'RESTART_CMD=$(printf \'%s\' \'' + restartB64 + '\' | base64 -d)',
     '',
+  ];
+
+  if (hasCredentials) {
+    lines.push(
+      '# Decode task credentials for output redaction -- task.log must never see plaintext secrets',
+      'SECRET_NAMES=()',
+      'SECRETS=()',
+      "NAMES_B64='" + namesB64Blob + "'",
+      "SECRETS_B64='" + secretsB64Blob + "'",
+      'while IFS= read -r _enc || [ -n "' + D + '_enc" ]; do',
+      '  SECRET_NAMES+=("' + D + '(printf \'%s\' "' + D + '_enc" | base64 -d)")',
+      'done <<< "' + D + 'NAMES_B64"',
+      'while IFS= read -r _enc || [ -n "' + D + '_enc" ]; do',
+      '  SECRETS+=("' + D + '(printf \'%s\' "' + D + '_enc" | base64 -d)")',
+      'done <<< "' + D + 'SECRETS_B64"',
+      '',
+      '# Line-based literal redaction filter -- a secret spanning a newline is an',
+      '# accepted edge case (task.log lines are redacted independently as they arrive).',
+      'redact() {',
+      '  local line',
+      '  while IFS= read -r line || [ -n "' + D + 'line" ]; do',
+      '    local i secret name',
+      '    for i in "' + D + '{!SECRET_NAMES[@]}"; do',
+      '      secret="' + D + '{SECRETS[' + D + 'i]}"',
+      '      name="' + D + '{SECRET_NAMES[' + D + 'i]}"',
+      '      [ -n "' + D + 'secret" ] && line="' + D + '{line//' + D + 'secret/[REDACTED:' + D + 'name]}"',
+      '    done',
+      '    printf \'%s\\n\' "' + D + 'line"',
+      '  done',
+      '}',
+      '',
+    );
+  }
+
+  lines.push(
     '# Write / update status.json',
     'write_status() {',
     '  local status="' + D + '1"',
@@ -96,7 +154,25 @@ export function generateTaskWrapper(config: TaskConfig): string {
     'EXIT_CODE=0',
     '',
     '# First run: use MAIN_CMD',
-    'bash -c "' + D + 'MAIN_CMD" >> "' + D + 'TASK_DIR/task.log" 2>&1 || EXIT_CODE=' + D + '?',
+  );
+
+  if (hasCredentials) {
+    lines.push(
+      // `set +e` around the pipeline stops `set -e` from aborting on a non-zero
+      // exit before PIPESTATUS is read. `|| true` would NOT work here: bash
+      // resets PIPESTATUS after every command it runs, including a `true` that
+      // only executes because the pipeline failed -- clobbering the real exit
+      // code we are trying to capture.
+      'set +e',
+      'bash -c "' + D + 'MAIN_CMD" 2>&1 | redact >> "' + D + 'TASK_DIR/task.log"',
+      'EXIT_CODE=' + D + '{PIPESTATUS[0]}',
+      'set -e',
+    );
+  } else {
+    lines.push('bash -c "' + D + 'MAIN_CMD" >> "' + D + 'TASK_DIR/task.log" 2>&1 || EXIT_CODE=' + D + '?');
+  }
+
+  lines.push(
     '',
     'while [ ' + D + 'EXIT_CODE -ne 0 ] && [ ' + D + 'RETRIES -lt ' + D + 'MAX_RETRIES ]; do',
     '  RETRIES=$((' + D + 'RETRIES + 1))',
@@ -104,7 +180,20 @@ export function generateTaskWrapper(config: TaskConfig): string {
     '  echo "[fleet-task] retry ' + D + 'RETRIES/' + D + 'MAX_RETRIES at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "' + D + 'TASK_DIR/task.log"',
     '  EXIT_CODE=0',
     '  # F1: use restart command on retries',
-    '  bash -c "' + D + 'RESTART_CMD" >> "' + D + 'TASK_DIR/task.log" 2>&1 || EXIT_CODE=' + D + '?',
+  );
+
+  if (hasCredentials) {
+    lines.push(
+      '  set +e',
+      '  bash -c "' + D + 'RESTART_CMD" 2>&1 | redact >> "' + D + 'TASK_DIR/task.log"',
+      '  EXIT_CODE=' + D + '{PIPESTATUS[0]}',
+      '  set -e',
+    );
+  } else {
+    lines.push('  bash -c "' + D + 'RESTART_CMD" >> "' + D + 'TASK_DIR/task.log" 2>&1 || EXIT_CODE=' + D + '?');
+  }
+
+  lines.push(
     'done',
     '',
     '# Kill activity loop',
@@ -120,7 +209,7 @@ export function generateTaskWrapper(config: TaskConfig): string {
     'fi',
     '',
     'exit ' + D + 'EXIT_CODE',
-  ];
+  );
 
   return lines.join('\n') + '\n';
 }

@@ -211,15 +211,20 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       restartCommand: resolvedRestartCommand,
       maxRetries: input.max_retries ?? 3,
       activityIntervalSec: 300,
+      // Redact at the source: task.log is read by both monitor_task and the
+      // separate `apra-fleet watch` CLI process, neither of which shares this
+      // process's in-memory credential store.
+      credentials: credentials.map((c) => ({ name: c.name, plaintext: c.plaintext })),
     });
     const scriptB64 = Buffer.from(wrapperScript).toString('base64');
 
-    // Create task dir, decode + write wrapper script, chmod, launch with nohup
+    // Create task dir, decode + write wrapper script, chmod, launch with nohup.
+    // 700 keeps the base64'd secrets embedded in run.sh from being world-readable.
     const launchCmd = cmds.wrapInWorkFolder(
       folder,
-      `mkdir -p ~/.fleet-tasks/${taskId} && ` +
+      `mkdir -p ~/.fleet-tasks/${taskId} && chmod 700 ~/.fleet-tasks/${taskId} && ` +
       `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
-      `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
+      `chmod 700 ~/.fleet-tasks/${taskId}/run.sh && ` +
       `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
     );
 

@@ -20,7 +20,6 @@ import {
   type RecentActivity,
 } from '../services/watch/fleet-log.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
-import { getTaskCredentials } from '../services/credential-store.js';
 import type { Agent } from '../types.js';
 
 const ACTIVE_WINDOW_MS = 90_000; // a member is "active" if it produced activity within this window
@@ -530,23 +529,18 @@ function taskEndEvent(taskId: string): FormattedEvent {
   return { time: null, marker: '', kind: 'dim', detail: true, text: `-> task ${taskId} finished` };
 }
 
-/** Redact registered task credentials from task-log output, same as monitor_task does for its snapshot. */
-function redactTaskOutput(taskId: string, text: string): string {
-  return getTaskCredentials(taskId).reduce(
-    (out, c) => (c.plaintext.length > 0 ? out.replaceAll(c.plaintext, `[REDACTED:${c.name}]`) : out),
-    text,
-  );
-}
-
 /**
- * Emit newly-read task-log lines, redacted, deferring the "task <id> output:"
- * header until the first real line so a task that finishes without producing
- * output never gets a bare header immediately followed by "finished".
+ * Emit newly-read task-log lines, deferring the "task <id> output:" header
+ * until the first real line so a task that finishes without producing output
+ * never gets a bare header immediately followed by "finished". Lines are
+ * already redacted at the source (the task wrapper never writes plaintext
+ * secrets to task.log) -- watch has no access to the MCP server's in-memory
+ * credential store anyway, since it runs as a separate CLI process.
  */
 function emitTaskLines(target: Emittable, taskId: string, state: TaskTailState, lines: string[] | null, single: boolean): void {
   if (!lines || lines.length === 0) return;
   if (!state.headerShown) { emit(target, taskHeaderEvent(taskId), single); state.headerShown = true; }
-  for (const line of lines) emit(target, taskLogLineEvent(redactTaskOutput(taskId, line)), single);
+  for (const line of lines) emit(target, taskLogLineEvent(line), single);
 }
 
 /** Local ~/.fleet-tasks/<id>/status.json entries whose status is running or retrying. */
