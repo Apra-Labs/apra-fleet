@@ -391,6 +391,49 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
   });
 });
 
+describe('composePermissions -- preserves register_member mcpServers entry (apra-fleet-2xs.1)', () => {
+  it('does not destroy mcpServers["apra-fleet-member"] (the JWT-bearing entry register_member wrote) on first compose', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Simulates the file exactly as register_member leaves it: an mcpServers
+    // entry carrying the member's live JWT, and nothing else yet.
+    const registeredByMember = JSON.stringify({
+      mcpServers: {
+        'apra-fleet-member': {
+          type: 'http',
+          url: 'http://localhost:1234/mcp?member=abc-123',
+          headers: { Authorization: 'Bearer super-secret-jwt' },
+        },
+      },
+    });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('cat .claude/settings.local.json') || cmd.includes('cat .claude\\settings.local.json')) {
+        return { stdout: registeredByMember, stderr: '', code: 0 };
+      }
+      return OK;
+    });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+
+    const heredocBody = writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0];
+    const written = JSON.parse(heredocBody);
+
+    // The register_member entry -- including its live JWT -- must survive.
+    expect(written.mcpServers['apra-fleet-member']).toEqual({
+      type: 'http',
+      url: 'http://localhost:1234/mcp?member=abc-123',
+      headers: { Authorization: 'Bearer super-secret-jwt' },
+    });
+    // compose_permissions' own mcpServers.apra-fleet.disabled must also be present.
+    expect(written.mcpServers['apra-fleet']).toEqual({ disabled: true });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Task T4: deliverConfigFile() BOM-free Windows write (#219)
 // ---------------------------------------------------------------------------
@@ -404,7 +447,9 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
     await composePermissions({ member_id: member.id, role: 'doer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const settingsWrite = allCmds.find(cmd => cmd.includes('.gemini\\settings.json') || cmd.includes('.gemini/settings.json'));
+    const settingsWrite = allCmds.find(cmd =>
+      (cmd.includes('.gemini\\settings.json') || cmd.includes('.gemini/settings.json')) && cmd.includes('WriteAllText')
+    );
     expect(settingsWrite).toBeDefined();
     expect(settingsWrite).toContain('WriteAllText');
     expect(settingsWrite).toContain('UTF8Encoding($false)');
@@ -589,7 +634,7 @@ describe('composePermissions -- tag-aware: role:doer backward compat', () => {
     expect(result).toContain('doer');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const writeCmd = allCmds.find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    const writeCmd = allCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('cat >'))!;
     expect(writeCmd).toBeDefined();
     expect(writeCmd).toContain('"permissions"');
     expect(writeCmd).toContain('"allow"');

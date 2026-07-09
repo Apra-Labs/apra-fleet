@@ -70,13 +70,32 @@ The codebase follows a strict layering:
 
 Each layer only depends on the layers below it. Tools never import other tools. Services don't know about the MCP protocol.
 
+## HTTP Transport & Interactive Sessions
+
+Alongside the stdio MCP transport, the server exposes a `StreamableHTTPServerTransport` on `POST/GET/DELETE /mcp` (`src/services/http-transport.ts`), bound to `127.0.0.1` only. This is what lets a member's own `apra-fleet` MCP server connect back interactively -- distinct from the subprocess/SSH-driven `execute_prompt` path, which stays subprocess-only. See `docs/hub-spoke-wire-protocol.md` for the full wire-level design.
+
+Each `/mcp` connection carries one of two identities:
+
+- **JWT-authenticated** -- a `Bearer` token (`src/services/jwt.ts`, HS256, signed with `~/.apra-fleet/fleet.key`) verified via the pluggable `TokenIssuer` (`src/services/token-issuer.ts`). The token's `workspace_id` claim is the hard security boundary (never `project_id`, which is an optional non-security label) -- Phase 1 uses a local dev-mode issuer (one machine == one implicit workspace); a hub-era issuer swaps in behind the same interface with no token-shape change.
+- **Unauthenticated URL-param fallback** -- a `?member=<id>` query param, trusted only because the server binds to loopback. Legacy friendly-name params are resolved to the member's UUID via the agent registry.
+
+A connected member is tracked in the in-memory `sessionRegistry` (`src/services/session-registry.ts`), keyed on the composite `(workspace_id, member_id)` -- every lookup is workspace-scoped, so a member connected under a different workspace is indistinguishable from "not connected" (existence is never leaked across the boundary). `send_message` (`src/tools/send-message.ts`) uses this registry to push a `notifications/claude/channel` MCP notification to a connected member's live session, flipping its status to `busy`.
+
+That flip is closed by `report_status` (`src/tools/report-status.ts`): a connected member's OWN session calls it (`online` or `idle`) to report it's done responding. There is no `member_id` parameter -- identity comes entirely from the live MCP session the call arrives on, resolved via `sessionRegistry.findBySessionId(extra.sessionId)` (the SDK populates `sessionId` on every tool call's `extra`). This is the tier-2-local status state machine `docs/hub-spoke-wire-protocol.md` section 4 reserves the `presence.member_status` envelope name for, once a hub relays it upward.
+
+Fleet events (`credential:stored`, `task:completed`, `member:status-changed`, `stall:detected`) broadcast only to sessions in the same workspace as the local orchestrator -- never across a workspace wall.
+
+`execute_prompt` (`src/tools/execute-prompt.ts`) itself is dual-path: for a member with NO live interactive session, it behaves exactly as before (subprocess/SSH, unchanged). For a member that IS interactively connected, it routes through the same channel instead of spawning anything -- `send_message` pushes the prompt and the caller awaits the member's `respond_to_message({reply_to, content})` call, correlated purely in-memory by `src/services/pending-responses.ts` (a `msgid` -> pending-promise map, timeout-bound by the same `timeout_s` the subprocess path uses). Mode selection is decided tier-2-locally against this machine's own `sessionRegistry` -- never from caller-side or (future) hub-side state -- so it is unaffected by whether `execute_prompt` is invoked directly or eventually relayed through a hub. This interactive mode is gated to Claude members only: `docs/interactive-injection-provider-survey.md` confirms it is POC-proven on Claude alone (the other five providers are confirmed unsupported or unconfirmed) -- a non-Claude member with a live session (e.g. from `registerMcpEndpoint`, which gives several providers basic MCP tool access) still falls through to the subprocess path.
+
 ## Provider Abstraction
 
-Fleet supports six LLM providers: Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, Gemini CLI, and OpenCode. Members can mix providers within a single fleet.
+Fleet supports six LLM providers -- Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, Gemini CLI, and OpenCode -- plus a seventh null option, `'none'`, for a plain command executor with no LLM at all (`src/providers/none.ts`). Members can mix providers within a single fleet.
 
 ### How It Works
 
-Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini' | 'opencode'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini' | 'opencode' | 'none'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+
+A `'none'` member supports `execute_command` (already fully provider-agnostic, no changes needed) but never `execute_prompt` in either mode -- rejected immediately with a clear error rather than reaching `NoneProvider`'s methods, most of which throw by design (there is no CLI, no prompt, no model to build a command from). `register_member` skips CLI/auth verification entirely for these members, and status/detail views show `compute only` in place of a token count.
 
 ```
 +----------+     getProvider()     +-----------------+

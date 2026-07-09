@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { Agent } from '../types.js';
@@ -18,6 +19,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
+import { checkRunningInstance } from '../services/singleton.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -43,7 +45,7 @@ export const registerMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name (e.g. "apra")'),
   cloud_idle_timeout_min: z.number().min(1, 'cloud_idle_timeout_min must be at least 1 minute').max(1440, 'cloud_idle_timeout_min must be at most 1440 minutes (24 hours)').optional().default(30).describe('Minutes of inactivity before auto-stop (default: 30)'),
   cloud_activity_command: z.string().min(1).optional().describe('Custom shell command for workload detection. Must output "busy" or "idle" on stdout. Checked after GPU, before process check. Useful for CPU-intensive tasks, downloads, or any non-GPU workload.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli.'),
+  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode', 'none']).optional().default('claude').describe('LLM provider for this member (default: "claude"). Determines which CLI is used for execute_prompt, provision_llm_auth, and update_llm_cli. Use "none" for a plain command executor with no LLM at all -- execute_prompt is rejected for these members; use execute_command instead.'),
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Custom cheap model choice from a curated list'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Custom standard model choice from a curated list'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Custom premium model choice from a curated list'),
@@ -64,6 +66,46 @@ export const registerMemberSchema = z.object({
 });
 
 export type RegisterMemberInput = z.infer<typeof registerMemberSchema>;
+
+// --- Interactive-session bootstrap: injectable deps + explicit gate ---
+//
+// The local-Claude bootstrap below does a REAL HTTP GET (via checkRunningInstance)
+// and, if a fleet server happens to be running on the machine, writes
+// settings.local.json and spawns a REAL `claude` process. That is correct
+// behavior in production but dangerous to run unconditionally from unit tests
+// (a dev machine with `apra-fleet start` running in the background would have
+// tests silently spawn real claude processes). Two safeguards:
+//
+// 1. Dependency injection: bootstrapDeps.checkRunningInstance / .spawn default to
+//    the real implementations but can be swapped for fakes in tests.
+// 2. Explicit gate: in NODE_ENV=test (set globally by tests/setup.ts), the whole
+//    block is skipped UNLESS APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP=1 is also
+//    set -- an explicit, opt-in escape hatch for tests that specifically want to
+//    exercise this path (and are expected to inject fakes via
+//    __setInteractiveBootstrapDeps when they do).
+export interface InteractiveBootstrapDeps {
+  checkRunningInstance: typeof checkRunningInstance;
+  spawn: typeof spawn;
+  getProvider: typeof getProvider;
+}
+
+const realInteractiveBootstrapDeps: InteractiveBootstrapDeps = { checkRunningInstance, spawn, getProvider };
+let interactiveBootstrapDeps: InteractiveBootstrapDeps = realInteractiveBootstrapDeps;
+
+/** Test-only: inject fakes for the interactive-session bootstrap's HTTP check and process spawn. */
+export function __setInteractiveBootstrapDeps(overrides: Partial<InteractiveBootstrapDeps>): void {
+  interactiveBootstrapDeps = { ...realInteractiveBootstrapDeps, ...overrides };
+}
+
+/** Test-only: restore the real (non-mocked) bootstrap dependencies. */
+export function __resetInteractiveBootstrapDeps(): void {
+  interactiveBootstrapDeps = realInteractiveBootstrapDeps;
+}
+
+function interactiveBootstrapEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP === '1';
+}
 
 export async function registerMember(input: RegisterMemberInput): Promise<string> {
   const warnings: string[] = [];
@@ -266,8 +308,12 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     const cmds = getOsCommands(detectedOS);
     const provider = getProvider(input.llm_provider ?? 'claude');
     const providerName = provider.name;
+    // No-LLM members (apra-fleet-us9.14) have no CLI to verify or authenticate --
+    // NoneProvider.versionCommand() throws by design (see providers/none.ts), so
+    // this must be skipped entirely rather than merely tolerating a rejection.
+    const isNoLlm = providerName === 'none';
 
-    const versionCheck = strategy.execCommand(cmds.agentVersion(provider), 15000)
+    const versionCheck = isNoLlm ? Promise.resolve() : strategy.execCommand(cmds.agentVersion(provider), 15000)
       .then(r => {
         r.code === 0
           ? (claudeVersion = r.stdout.trim())
@@ -275,11 +321,11 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
       })
       .catch(() => { warnings.push(`Could not verify ${providerName} CLI availability`); });
 
-    const authCheck = !isLocal
+    const authCheck = isNoLlm ? Promise.resolve() : (!isLocal
       ? strategy.execCommand(cmds.agentVersion(provider), 60000)
           .then(r => { r.code !== 0 && warnings.push(`${providerName} CLI not available — you may need to run provision_llm_auth`); })
           .catch(() => { warnings.push(`${providerName} CLI check timed out or failed — run provision_llm_auth to set up authentication`); })
-      : Promise.resolve();
+      : Promise.resolve());
 
     const mkdirCheck = isLocal
       ? import('node:fs').then(({ mkdirSync }) => {
@@ -297,7 +343,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     }
   } else {
     tempAgent.os = detectedOS;
-    if (isCloud) {
+    if (isCloud && (input.llm_provider ?? 'claude') !== 'none') {
       warnings.push(`${input.llm_provider ?? 'claude'} CLI and auth not verified — run provision_llm_auth after the instance starts.`);
     }
   }
@@ -319,6 +365,87 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   // Block global apra-fleet MCP + skills inside local agy member workspaces
   if (isLocal && (input.llm_provider ?? 'claude') === 'agy') {
     writeAgyWorkspaceOverlays(input.work_folder);
+  }
+
+  // Interactive session bootstrap for local Claude members
+  const name = input.friendly_name;
+  const memberProvider = input.llm_provider ?? 'claude';
+  if (isLocal && memberProvider === 'claude' && interactiveBootstrapEnabled()) {
+    // HIGH-1: Verify fleet server is running before spawning.
+    // Resolve the ACTUAL running instance (server.json, singleton-managed) instead of
+    // assuming DEFAULT_PORT -- this respects APRA_FLEET_PORT and EADDRINUSE fallback.
+    const instance = await interactiveBootstrapDeps.checkRunningInstance();
+    if (!instance.running) {
+      return `❌ Fleet server not running. Start it first with apra-fleet start, then re-run register_member.`;
+    }
+    const mcpUrl = instance.url; // e.g. http://127.0.0.1:<actual-port>/mcp
+
+    // Mint through the pluggable issuer: workspace_id is the hard security
+    // boundary (docs/hub-spoke-master-plan.md section 3); the local dev-mode
+    // issuer derives it from this install's identity (one machine == one
+    // workspace). A hub-era issuer swaps in behind the same interface.
+    const { getTokenIssuer } = await import('../services/token-issuer.js');
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({
+      member_id: tempAgent.id,
+      role: 'doer',
+      work_folder: input.work_folder,
+    });
+
+    // Registration uses the provider's OWN native mechanism (apra-fleet-fnz.1,
+    // docs/member-onboarding-journey.md section 3/4 Journey A) rather than
+    // hand-writing a config file -- this is also what makes the mechanism
+    // provider-agnostic (AGY/OpenCode implement the same interface method with
+    // their own native paths) and avoids fighting compose_permissions' own
+    // writes to the same provider config (apra-fleet-2xs.1).
+    const memberProviderAdapter = interactiveBootstrapDeps.getProvider(tempAgent.llmProvider);
+    if (memberProviderAdapter.registerMcpEndpoint) {
+      try {
+        await memberProviderAdapter.registerMcpEndpoint({
+          // Identity is keyed on the member UUID everywhere -- the URL fallback
+          // param carries the UUID, matching the JWT's member_id claim.
+          url: mcpUrl + '?member=' + tempAgent.id,
+          token,
+          workFolder: input.work_folder,
+          scope: 'project',
+        });
+      } catch (e: any) {
+        warnings.push(`Could not register MCP endpoint: ${e.message}`);
+      }
+    } else {
+      warnings.push(`Provider "${memberProviderAdapter.name}" has no registerMcpEndpoint() -- interactive session bootstrap skipped.`);
+    }
+
+    // CRITICAL-2: Kill existing claude process for this member before re-spawning
+    const { sessionRegistry } = await import('../services/session-registry.js');
+    const existingSession = sessionRegistry.get(issuer.workspaceId(), tempAgent.id);
+    if (existingSession?.pid) {
+      try {
+        process.kill(existingSession.pid);
+        logLine('register_member', `Killed existing claude pid=${existingSession.pid} for member ${name}`);
+      } catch {
+        // Process already gone -- ignore
+      }
+    }
+
+    try {
+      const proc = interactiveBootstrapDeps.spawn('claude', ['--dangerously-load-development-channels'], { cwd: input.work_folder, detached: true, stdio: 'ignore', shell: true });
+      proc.unref();
+      if (proc.pid) {
+        sessionRegistry.register({
+          member_id: tempAgent.id,
+          workspace_id: issuer.workspaceId(),
+          role: 'doer',
+          work_folder: input.work_folder,
+          server: null,
+          pid: proc.pid,
+          status: 'idle',
+        });
+      }
+      logLine('register_member', `Launched claude for member ${name}, pid ${proc.pid}`);
+    } catch (e: any) {
+      warnings.push(`Could not launch claude: ${e.message}`);
+    }
   }
 
   let result = `✅ Member registered successfully!\n\n`;

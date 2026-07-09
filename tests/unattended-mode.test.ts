@@ -6,7 +6,7 @@ import { updateMember } from '../src/tools/update-member.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
-// ─── Mocks ────────────────────────────────────────────────────────────────────
+// --- Mocks --------------------------------------------------------------------
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number, maxTotalMs?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
@@ -30,7 +30,7 @@ vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
 }));
 
-// ─── register_member: unattended persistence ──────────────────────────────────
+// --- register_member: unattended persistence ----------------------------------
 
 describe('register_member: unattended field persistence', () => {
   beforeEach(() => {
@@ -98,7 +98,7 @@ describe('register_member: unattended field persistence', () => {
   });
 });
 
-// ─── update_member: unattended set and change ─────────────────────────────────
+// --- update_member: unattended set and change ---------------------------------
 
 describe('update_member: unattended field', () => {
   beforeEach(() => {
@@ -146,9 +146,11 @@ describe('update_member: unattended field', () => {
   });
 });
 
-// ─── execute_prompt: dangerously_skip_permissions deprecation ─────────────────
+// --- execute_prompt: dangerously_skip_permissions removed ---------------------
 
-describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
+import { executePromptSchema } from '../src/tools/execute-prompt.js';
+
+describe('execute_prompt: dangerously_skip_permissions removed', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
@@ -160,72 +162,15 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
     vi.useRealTimers();
   });
 
-  it('returns deprecation warning when dangerously_skip_permissions=true', async () => {
-    const member = makeTestAgent({ friendlyName: 'dep-member', unattended: false });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({
-      stdout: JSON.stringify({ result: 'done', session_id: 'sess-dep' }),
-      stderr: '',
-      code: 0,
-    });
-
-    const result = await executePrompt({
-      member_id: member.id,
+  it('schema rejects dangerously_skip_permissions with a validation error (not silent no-op)', () => {
+    const result = executePromptSchema.safeParse({
       prompt: 'do something',
-      resume: false,
-      timeout_s: 5,
       dangerously_skip_permissions: true,
     });
-
-    expect(result).toContain('DEPRECATION');
-    expect(result).toContain('dangerously_skip_permissions');
-    expect(result).toContain('update_member');
+    expect(result.success).toBe(false);
   });
 
-  it('does not include deprecation warning when dangerously_skip_permissions is false', async () => {
-    const member = makeTestAgent({ friendlyName: 'no-dep-member', unattended: false });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({
-      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-nodep' }),
-      stderr: '',
-      code: 0,
-    });
-
-    const result = await executePrompt({
-      member_id: member.id,
-      prompt: 'do something',
-      resume: false,
-      timeout_s: 5,
-      dangerously_skip_permissions: false,
-    });
-
-    expect(result).not.toContain('DEPRECATION');
-  });
-
-  it('does NOT pass --dangerously-skip-permissions when dangerously_skip_permissions=true but member.unattended=false', async () => {
-    const member = makeTestAgent({ friendlyName: 'no-bypass-member', unattended: false });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({
-      stdout: JSON.stringify({ result: 'done', session_id: 'sess-nobypass' }),
-      stderr: '',
-      code: 0,
-    });
-
-    await executePrompt({
-      member_id: member.id,
-      prompt: 'do something',
-      resume: false,
-      timeout_s: 5,
-      dangerously_skip_permissions: true,
-    });
-
-    // calls[0]=writePromptFile, calls[1]=main command
-    const mainCmd = mockExecCommand.mock.calls[1][0];
-    expect(mainCmd).not.toContain('--dangerously-skip-permissions');
-    expect(mainCmd).not.toContain('--permission-mode');
-  });
-
-  it('passes --dangerously-skip-permissions when member.unattended="dangerous" regardless of deprecated flag', async () => {
+  it('passes --dangerously-skip-permissions when member.unattended="dangerous"', async () => {
     const member = makeTestAgent({ friendlyName: 'bypass-via-unattended', unattended: 'dangerous' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -239,7 +184,6 @@ describe('execute_prompt: dangerously_skip_permissions deprecation', () => {
       prompt: 'do something',
       resume: false,
       timeout_s: 5,
-      dangerously_skip_permissions: false,
     });
 
     // calls[0]=writePromptFile, calls[1]=main command

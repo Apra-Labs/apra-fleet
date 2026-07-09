@@ -12,6 +12,9 @@
     "url": "https://github.com/Apra-Labs/apra-fleet/issues"
   },
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "main": "dist/index.js",
   "bin": {
     "apra-fleet": "dist/index.js"
@@ -32,18 +35,21 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:contract && tsc",
+    "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
+    "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
     "build:sea": "node scripts/build-sea.mjs",
     "build:sea-config": "node scripts/gen-sea-config.mjs",
     "build:sea-package": "node scripts/package-sea.mjs",
     "build:binary": "npm run build && npm run build:sea && npm run build:sea-config && npm run build:sea-package",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "pretest": "git submodule update --init --recursive",
+    "pretest": "git submodule update --init --recursive && npm run build:contract",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
+    "verify:submodule": "node scripts/check-vendor-submodule.mjs",
     "prepare": "node scripts/install-hooks.mjs",
     "prepublishOnly": "node scripts/vendor-pm.mjs && npm run build"
   },
@@ -66,16 +72,20 @@
   "dependencies": {
     "@inquirer/password": "^5.0.11",
     "@modelcontextprotocol/sdk": "^1.27.0",
+    "pg": "^8.22.0",
     "smol-toml": "^1.6.1",
     "ssh2": "^1.17.0",
     "uuid": "^14.0.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@apralabs/fleet-api-contract": "^0.1.0",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
     "@types/ssh2": "^1.15.0",
     "@types/uuid": "^10.0.0",
     "esbuild": "^0.27.4",
+    "pg-mem": "^3.0.14",
     "postject": "^1.0.0-alpha.6",
     "typescript": "^5.5.0",
     "vitest": "^4.0.18"

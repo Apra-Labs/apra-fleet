@@ -2,6 +2,89 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- chore/hub-service-retire-and-docs
+
+Sprint goals: `apra-fleet-yp3` (P2, retire `src/hub-service/` to reference-only status) and `apra-fleet-qaz` (P3, record the final tier-ownership decision in the architecture docs), both children of epic `apra-fleet-yeb`. Both goals met. This sprint follows a product-owner directive that resolved a divergence from the prior hub-spoke migration sprint: `fleet-dashboard` is the sole tier-3 persistence layer for workspace/project/member/secret configuration, and `apra-fleet.exe` is either a SaaS-connected client of fleet-dashboard's contract or a standalone client backed by local JSON files -- never a competing relational database of its own. Accordingly, `src/hub-service/` (the Postgres-backed service built during the prior hub-spoke migration sprint) is retired to reference-only: no code or tests were deleted (all 2133 tests remain green, verified as a specification of wire-protocol/security-isolation semantics), but `src/hub-service/main.ts`, `docs/hub-service-deployment.md`, `Dockerfile.hub-service`, and `docker-compose.hub-service.yml` now carry explicit reference-only/dev-only banners so nobody ships it to fleet.apralabs.com. `docs/adr-hub-persistence.md` and `docs/hub-spoke-master-plan.md` are annotated as superseded on tier-3 ownership, with a correction that SSH is NOT deprecated (it remains a permanent execution transport) and that relay/NAT-traversal work is explicitly deferred (`apra-fleet-8rs`), not abandoned. The new `docs/api-contract-reconciliation.md` records the verbatim product-owner directive and a 22-item hub<->dashboard API gap analysis; a documentation-integrity self-correction during the sprint stripped a fabricated "confirmed by direct code inspection" claim about fleet-dashboard's private (unseen) code from that document, replacing it with an explicit sourcing note. A new durable `docs/adr-tier3-ownership.md` distills the decision for future readers without the full negotiation history.
+
+Carried forward: none from this sprint's named goals (both closed). Deferred, non-blocking cleanup identified by review: normalize 14 non-ASCII em-dash characters in `docs/api-contract-reconciliation.md` to the project's ASCII-only convention.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     17,909 |   n/a |   $0.000 |   $0.269 |
+| reviewer   |          0 |      4,513 |   n/a |   $0.000 |   $0.068 |
+| overhead   |      7,150 |     28,697 | +301% |   $0.121 |   $0.365 |
+| TOTAL      |      7,150 |     51,119 | +615% |   $0.121 |   $0.702 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): none
+
+### Final review notes
+
+Reviewed sprint work on chore/hub-service-retire-and-docs (5 commits atop feat/hub-spoke-migration: cae75fd..4b649af). Sprint goals apra-fleet-yp3 (P2) and apra-fleet-qaz (P3), both children of epic apra-fleet-yeb, are met. Build (tsc) clean; full suite 2133 passed / 18 skipped (docker/terminal-gated) / 0 failed. Git tree clean apart from the durable sprint-logs jsonl (not flagged, per workflow). No lint script configured in package.json.
+
+apra-fleet-yp3 (retire src/hub-service to reference-only) -- acceptance criteria fully met:
+- src/hub-service/main.ts: clear top-of-file STATUS: REFERENCE IMPLEMENTATION ONLY banner with pointer to api-contract-reconciliation.md 1.5 and hub-service-deployment.md.
+- docs/hub-service-deployment.md: retitled "(Reference Implementation -- Not a Deployment Target)", one-paragraph status block at top; a new contributor understands reference-only status immediately (criterion satisfied).
+- Dockerfile.hub-service and docker-compose.hub-service.yml: both prepended with "REFERENCE/DEV-ONLY -- NOT a production deployment target" and the stale production-deployment guidance was removed/reframed, so nobody ships it as fleet.apralabs.com.
+- docs/adr-hub-persistence.md marked Superseded; docs/hub-spoke-master-plan.md annotated with the tier-3 ownership + SSH-stays/relay-deferred correction.
+- No hub-service code or tests deleted (verified: only a 13-line comment added to main.ts; 2133 tests still green, matching the doc's cited count).
+
+apra-fleet-qaz (record final tier-ownership decision) -- acceptance criteria met:
+- docs/api-contract-reconciliation.md (new, 608 lines) sections 1.5/1.6 carry the verbatim product-owner directive and corrected per-item verdicts; adr and master-plan cross-link to it. A cold reader grasps reference-only status and bootstrap/sync-first scope without needing session history.
+- Documentation-integrity self-correction (commit 4b649af): the doer caught and stripped a fabricated "fleet-dashboard implementer / confirmed by direct code inspection" persona from the reconciliation doc and added an explicit sourcing note distinguishing this repo's verified source from inferences about fleet-dashboard's private (unseen) code. Verified no residual "confirmed by code inspection"-style fabricated claims remain. This is a good catch.
+
+File hygiene: all changed files justify against the epic. docs/bootstrap-sync-design-proposal.md and docs/cross-repo-design-protocol.md are legitimate deliverables of closed sibling task apra-fleet-48p (referenced by the qaz docs so links resolve). .gitignore additions (.agents/, .codex/) correctly exclude local tool scaffolding. No temp files or stray tool config slipped in.
+
+Minor issue (non-blocking, recommend cleaning before merge): docs/api-contract-reconciliation.md contains 14 lines with non-ASCII em-dashes (U+2014 "--", e.g. lines 38, 42, 44-46, 48, 50, 52), which violates the project's checked-in ASCII-only convention in CLAUDE.md ("never write non-ASCII characters to any file; use `-` for dashes"). Line 38 is arguably a verbatim directive quote, but lines 42/44/45/46/48/50/52 are the author's own prose. No functional impact (docs only, build/tests unaffected), so not reopening the task -- but the em-dashes should be normalized to ASCII "--" in a follow-up or before raising the PR. No security issues, no regressions in adjacent code. Work is releasable/harvestable.
+
+## [Unreleased] -- feat/hub-spoke-migration (hub-spoke cloud migration groundwork, sprint 2)
+
+Sprint goal (P1/P2): apra-fleet-us9 (hub-spoke cloud migration epic) and apra-fleet-20o (shared hub<->dashboard API contract). Goal not fully met -- apra-fleet-20o (P1) and several other P1/P2 tasks closed this sprint, but apra-fleet-us9 is a multi-sprint epic and remains open by design; several of its P1/P2 sub-tasks (hub service MVP, cloud JWT issuance, spoke mode, RBAC, SSH-to-relay migration) are carried forward to next sprint.
+
+Completed this sprint: extracted `@apralabs/fleet-api-contract`, a versioned npm workspace package holding the Zod schemas (Workspace, Project, Member, JWTClaims, UsageRecord, ActivityEvent, Installer, AdminUser) and generated OpenAPI 3.1 spec shared between the future hub service and dashboard, with `JWTClaims` as the explicit auth anchor and a runtime contract test validating a real handler response against the schema; unified identity on the member UUID with `workspace_id` promoted to the hard security-boundary claim behind a pluggable `TokenIssuer` (local dev-mode issuer today, cloud-dashboard issuer later, no token migration needed), with `session-registry`, `send-message`, and `http-transport` scoped end-to-end so cross-workspace traffic is indistinguishable from "not connected"; implemented and live-verified `registerMcpEndpoint()` for the AGY and OpenCode providers (read-modify-write of each provider's own MCP config file, non-destructive to sibling entries); closed a stale-close session-unregister race in `http-transport.ts` and required the local admin key on `/shutdown`; de-hardcoded the port and gated interactive bootstrap behind an explicit flag in `register_member`; fixed suite-wide test pollution from shared fixed-path fixtures under concurrent test runs. Full vitest suite: 1816 passed / 14 skipped / 114 files.
+
+Carried forward: apra-fleet-us9 epic and its P1/P2 sub-tasks (hub service MVP, cloud JWT issuance + `apra-fleet join` enrollment, spoke mode in apra-fleet.exe, workspace iron-wall security review, dashboard OAuth/RBAC), plus apra-fleet-fnz.1/.4 (registerMcpEndpoint wiring into register_member's same-machine path, and the LAN enrollment-token join flow) and apra-fleet-2xs.1 (compose_permissions deep-merge fix).
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     32,374 |   n/a |   $0.000 |   $0.486 |
+| reviewer   |          0 |     10,421 |   n/a |   $0.000 |   $0.156 |
+| overhead   |      7,150 |     74,090 | +936% |   $0.121 |   $0.677 |
+| TOTAL      |      7,150 |    116,885 | +1535% |   $0.121 |   $1.320 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Final review notes
+
+Scope reviewed: origin/main..feat/hub-spoke-migration (21 commits, 107 files). Named sprint goals: apra-fleet-20o (P1, closed) and epic apra-fleet-us9 (parent, expectedly still open).
+
+VERIFICATION
+- Build: `npm run build` and `npm run build:contract` both exit 0.
+- OpenAPI: `npm run gen:openapi` regenerates packages/fleet-api-contract/openapi.json byte-identical to the committed copy (no dual-maintenance drift).
+- Tests: `npm test` = 1816 passed / 14 skipped / 114 files. No lint script is configured in this repo (n/a).
+
+ACCEPTANCE CRITERIA (apra-fleet-20o) - all met:
+- Zod schemas for Workspace/Project/Member/JWTClaims/UsageRecord/ActivityEvent/Installer/AdminUser (packages/fleet-api-contract/src/schemas/*).
+- JWTClaimsSchema is the explicit anchor; every auth-gated route in src/endpoints.ts carries `auth: JWTClaimsSchema`, never redefined. Member.provider enum includes 'none' per us9.14.
+- OpenAPI 3.1 generated from the same schemas via src/scripts/gen-openapi.ts.
+- Versioned public workspace package (@apralabs/fleet-api-contract@0.1.0, workspaces:[packages/*], README consumption path documented).
+- Runtime contract test present (tests/hub-service/installers.contract.test.ts) validating getInstallersHandler() output against InstallerSchema.
+Other closed P1/P2 tasks (workspace_id/UUID identity, /shutdown auth, provider MCP registration, port de-hardcode, bootstrap gating, test-pollution and stale-close race fixes) all ship with tests that pass.
+
+MINOR (optional, not blocking):
+- tests/hub-service/installers.contract.test.ts second case is named "rejects a response with an extra/unexpected field (drift guard)" but InstallerSchema is non-strict, so it does not actually reject -- it only asserts the unknown key is dropped. For a true drift guard, use `.strict()` on the schema (or `InstallerSchema.strict().parse(...)`) so an unexpected wire field fails loudly.
+
+Committed work is buildable, fully tested, and matches the acceptance criteria for what was completed; ready to harvest as a PR once the untracked root artifacts (recovery-backup tarball, local .agents/.codex tool config dirs) are removed from the working tree -- done as part of this harvest.
+
 ## [v0.3.3] -- feat/install-default
 
 ### Breaking change -- MCP server start command changed

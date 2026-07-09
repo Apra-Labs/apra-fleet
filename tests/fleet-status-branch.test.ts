@@ -41,6 +41,43 @@ describe('fleetStatus branch display', () => {
   });
 });
 
+describe('fleetStatus no-LLM member display (apra-fleet-us9.14)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('shows "compute only" instead of a token count for a member with llm_provider "none"', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'plain-executor',
+      llmProvider: 'none',
+      tokenUsage: { input: 0, output: 0 },
+    });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'compact' });
+    expect(result).toContain('compute only');
+    expect(result).not.toContain('tokens=in:');
+  });
+
+  it('still shows real token counts for a normal (claude) member', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'claude-member',
+      tokenUsage: { input: 100, output: 50 },
+    });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'compact' });
+    expect(result).toContain('tokens=in:100 out:50');
+    expect(result).not.toContain('compute only');
+  });
+});
+
 describe('fleetStatus log file reporting', () => {
   beforeEach(() => {
     backupAndResetRegistry();

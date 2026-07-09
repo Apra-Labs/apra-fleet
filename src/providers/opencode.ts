@@ -1,8 +1,11 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 export class OpenCodeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'opencode';
@@ -197,5 +200,49 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, _sessionId?: string, _model?: string): string {
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+  }
+
+  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
+    // OpenCode has no non-interactive registration verb for token-based auth --
+    // `opencode mcp auth <server>` is for interactive OAuth entry only, not a
+    // pre-minted bearer token from the hub/local server. Its native config file
+    // (opencode.json) supports remote MCP servers with bearer-auth headers
+    // natively: { type: 'remote', url, headers: { Authorization: 'Bearer ...' } }.
+    // Live-verified: a local HTTP listener confirmed OpenCode sends the
+    // Authorization header exactly as configured (see docs/member-onboarding-journey.md
+    // 3a and apra-fleet-fnz.3). Read-modify-write, same shape as AGY, scoped by
+    // `opts.scope`: 'project' writes workFolder/opencode.json, 'user' writes the
+    // global ~/.config/opencode/opencode.json.
+    const configFile = opts.scope === 'project'
+      ? path.join(opts.workFolder, 'opencode.json')
+      : path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
+
+    fs.mkdirSync(path.dirname(configFile), { recursive: true });
+
+    let settings: Record<string, unknown> = {};
+    if (fs.existsSync(configFile)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      } catch {
+        // malformed file -- start fresh rather than write on top of unparseable state
+        settings = {};
+      }
+    }
+
+    const mcp = (settings.mcp as Record<string, unknown> | undefined) ?? {};
+    mcp['apra-fleet-member'] = {
+      type: 'remote',
+      url: opts.url,
+      enabled: true,
+      headers: { Authorization: `Bearer ${opts.token}` },
+    };
+    settings.mcp = mcp;
+
+    fs.writeFileSync(configFile, JSON.stringify(settings, null, 2) + '\n');
+
+    return {
+      mechanism: 'config-file-merge',
+      detail: `merged apra-fleet-member into ${configFile} (mcp.apra-fleet-member, remote+bearer-auth headers)`,
+    };
   }
 }
