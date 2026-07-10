@@ -22,8 +22,8 @@ async function main(opts = {}) {
         await new Promise(r => setTimeout(r, 2000));
         phase(`Sprint Cycle ${cycleCount}`);
         
-        // Use pipeline to route the issues through phases: Plan -> Develop -> Test -> Harvest
-        const cycleResults = await pipeline(
+        // Use Sequential to route the issues through phases: Plan -> Develop -> Test -> Harvest
+        const cycleResults = await sequential(
             issues,
             
             // 1. Plan Phase

@@ -1,12 +1,12 @@
-// examples/03-transform-pipeline.js
+// examples/03-transform-Sequential.js
 export const meta = {
-    name: "Data Transform Pipeline Example",
+    name: "Data Transform Sequential Example",
     description: "Demonstrates using transform() to parse strings into JSON and chain results into the next command step."
 };
 
 export async function main() {
     phase('Initialization');
-    log('Starting pipeline with transform mapping...');
+    log('Starting Sequential with transform mapping...');
 
     const memberName = args.member_name || 'apra-pm';
 
@@ -15,12 +15,12 @@ export async function main() {
         "List the current directory contents"
     ];
 
-    // Pipeline mapping: 
+    // Sequential mapping: 
     // 1. LLM Agent (Input: string instruction) -> Output: structured JSON
     // 2. Transform (Input: JSON) -> Output: Bash Command string
     // 3. Command (Input: string) -> Execution output
     
-    await pipeline(items, async (instruction, index) => {
+    await sequential(items, async (instruction, index) => {
         phase(`Processing Item ${index + 1}`);
 
         // Step 1: Agent string -> JSON
@@ -59,5 +59,5 @@ export async function main() {
     }, { continueOnError: true });
 
     phase('Complete');
-    log('Transform pipeline finished.');
+    log('Transform Sequential finished.');
 }

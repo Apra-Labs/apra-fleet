@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { FleetWorkflow } from '../lib/apra-fleet-workflow/index.mjs';
 
 describe('FleetWorkflow', () => {
-    test('pipeline() executes stages sequentially per item', async () => {
+    test('sequential() executes stages sequentially per item', async () => {
         const wf = new FleetWorkflow({});
         const items = [10, 20];
 
@@ -18,7 +18,7 @@ describe('FleetWorkflow', () => {
             return prev * original;
         };
 
-        const result = await wf.pipeline(items, stage1, stage2);
+        const result = await wf.sequential(items, stage1, stage2);
 
         // (10 + 1) * 10 = 110
         // (20 + 1) * 20 = 420
@@ -42,7 +42,7 @@ describe('FleetWorkflow', () => {
         const ctx = wf.createContext();
 
         assert.strictEqual(typeof ctx.agent, 'function');
-        assert.strictEqual(typeof ctx.pipeline, 'function');
+        assert.strictEqual(typeof ctx.sequential, 'function');
         assert.strictEqual(typeof ctx.parallel, 'function');
         assert.strictEqual(typeof ctx.log, 'function');
         assert.strictEqual(typeof ctx.phase, 'function');

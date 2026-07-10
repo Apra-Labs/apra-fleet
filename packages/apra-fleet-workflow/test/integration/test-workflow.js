@@ -25,14 +25,14 @@ async function main() {
   
   log(`Parallel array returned: ${JSON.stringify(results)}`);
   
-  log("Running pipeline on items [1, 2]");
-  const processed = await pipeline(
+  log("Running Sequential on items [1, 2]");
+  const processed = await sequential(
       [1, 2],
-      async (item) => { log(`Pipeline stage 1 for ${item}`); return item + 10; },
-      async (item) => { log(`Pipeline stage 2 for ${item}`); return item * 2; }
+      async (item) => { log(`Sequential stage 1 for ${item}`); return item + 10; },
+      async (item) => { log(`Sequential stage 2 for ${item}`); return item * 2; }
   );
   
-  log(`Pipeline returned: ${JSON.stringify(processed)}`);
+  log(`Sequential returned: ${JSON.stringify(processed)}`);
   
   log(`Passed args were: ${JSON.stringify(args)}`);
   return { status: 'success', name: meta.name };

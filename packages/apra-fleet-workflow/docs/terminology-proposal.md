@@ -1,7 +1,7 @@
 # Workflow Terminology Standardization Proposal
 
 ## Background
-Currently, our workflow engine uses varied terminology: `workflow.phase()`, `pipeline()`, `parallel()`, `agent()`, `command()`, and `transform()`. A user raised the question: *"What is the unit of work within a phase? Is it an activity, a step, or a job?"*
+Currently, our workflow engine uses varied terminology: `workflow.phase()`, `sequential()`, `parallel()`, `agent()`, `command()`, and `transform()`. A user raised the question: *"What is the unit of work within a phase? Is it an activity, a step, or a job?"*
 
 To establish a consistent vocabulary, we reviewed standard process execution frameworks (BPEL, BPMN, Temporal, Airflow, and AWS Step Functions). This document proposes a standardized ontology aligned with industry standards, specifically focusing on BPEL and modern code-first orchestrators like Temporal.
 
@@ -33,9 +33,9 @@ We recommend standardizing on the following terminology:
   - **API/UI Impact:** We highly recommend renaming UI elements and API parameters from `action` (or `step`) to `activity`. Specific execution methods like `agent()`, `command()`, and `transform()` should be conceptually treated and documented as concrete subtypes of an Activity (e.g., `AgentActivity`, `CommandActivity`).
 
 ### 4. Control Flow: **Sequence** and **Parallel**
-- **Current:** `pipeline()` and `parallel()`
+- **Current:** `sequential()` and `parallel()`
 - **Recommendation:** 
-  - Rename `pipeline()` to **Sequence**. BPEL uses `<sequence>` to dictate strictly ordered execution. `Pipeline` implies continuous data flow, which may misrepresent execution flow.
+  - Rename `sequential()` to **Sequence**. BPEL uses `<sequence>` to dictate strictly ordered execution. `Sequential` implies continuous data flow, which may misrepresent execution flow.
   - Retain **Parallel**. Although BPEL uses `<flow>` for concurrency, "Parallel" is universally understood and matches AWS Step Functions.
 
 ## Summary of Recommendations
@@ -45,6 +45,6 @@ We recommend standardizing on the following terminology:
 | Top level | `Workflow` | **Workflow** | Temporal, modern orchestrators |
 | Logical grouping | `Phase` | **Scope** (or **Stage**) | BPEL (`Scope`), CI/CD (`Stage`) |
 | Unit of work | `Action` | **Activity** | BPEL, Temporal |
-| Sequential flow | `pipeline()` | **Sequence** | BPEL (`<sequence>`) |
+| Sequential flow | `sequential()` | **Sequence** | BPEL (`<sequence>`) |
 | Concurrent flow | `parallel()` | **Parallel** | Step Functions |
 | Implementations | `agent()`, `command()` | **Activity Subtypes** | BPEL Basic Activities (`<invoke>`, `<assign>`) |

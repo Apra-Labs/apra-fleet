@@ -61,7 +61,7 @@ By standardizing on the `args` object in the context, workflows remain flexible 
 
 Workflows often need to manipulate data between LLM inferences and command executions (e.g., parsing JSON strings, extracting text, sanitizing variables).
 
-The \`transform(label, func, context)\` primitive securely executes Javascript mappings within the workflow pipeline while simultaneously emitting full tracking telemetry to the Workflow Dashboard UI. 
+The \`transform(label, func, context)\` primitive securely executes Javascript mappings within the workflow Sequential while simultaneously emitting full tracking telemetry to the Workflow Dashboard UI. 
 
 ### Features
 * **Telemetry**: Errors, execution durations, stringified Inputs, and stringified Outputs are logged exactly like \`agent()\` actions.
@@ -89,12 +89,12 @@ await command(cmdString, { ... });
 
 ## Error Handling (\`continueOnError\`)
 
-By default, any error thrown within a \`pipeline()\` or \`parallel()\` block halts execution of the sequence.
+By default, any error thrown within a \`sequential()\` or \`parallel()\` block halts execution of the sequence.
 If you need partial success, pass \`{ continueOnError: true }\`:
 
 \`\`\`javascript
-await pipeline(items, async (item) => {
-    // If one item fails, the pipeline logs the error but continues with the rest
+await sequential(items, async (item) => {
+    // If one item fails, the Sequential logs the error but continues with the rest
     await transform('Risky map', riskyFunc, item);
 }, { continueOnError: true });
 \`\`\`

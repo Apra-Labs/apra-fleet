@@ -45,26 +45,26 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
     .log-time { color: #52525b; width: 60px; flex-shrink: 0; user-select: none; }
     .log-msg { white-space: pre-wrap; word-break: break-word; }
     
-    details.event-action { border: 1px solid rgba(255,255,255,0.05); border-radius: 4px; background: rgba(255,255,255,0.02); font-family: monospace; margin: 2px 0; }
-    details.event-action.log-multiline { border-color: rgba(255,255,255,0.02); background: transparent; }
-    details.event-action.log-multiline summary { padding: 4px 8px; }
+    details.event-activity { border: 1px solid rgba(255,255,255,0.05); border-radius: 4px; background: rgba(255,255,255,0.02); font-family: monospace; margin: 2px 0; }
+    details.event-activity.log-multiline { border-color: rgba(255,255,255,0.02); background: transparent; }
+    details.event-activity.log-multiline summary { padding: 4px 8px; }
     
-    summary.action-header { display: flex; align-items: center; padding: 6px 8px; font-size: 12px; gap: 8px; cursor: pointer; user-select: none; list-style: none; outline: none; }
-    summary.action-header::-webkit-details-marker { display: none; }
-    summary.action-header:hover { background: rgba(255,255,255,0.04); }
+    summary.activity-header { display: flex; align-items: center; padding: 6px 8px; font-size: 12px; gap: 8px; cursor: pointer; user-select: none; list-style: none; outline: none; }
+    summary.activity-header::-webkit-details-marker { display: none; }
+    summary.activity-header:hover { background: rgba(255,255,255,0.04); }
     
-    .action-title { flex: 1; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .action-title .muted { color: #a1a1aa; font-weight: normal; font-size: 11px; margin-left: 6px; }
-    .action-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: #a1a1aa; flex-shrink: 0; }
+    .activity-title { flex: 1; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .activity-title .muted { color: #a1a1aa; font-weight: normal; font-size: 11px; margin-left: 6px; }
+    .activity-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: #a1a1aa; flex-shrink: 0; }
     
     .toggle-icon { margin-left: 8px; font-family: monospace; font-size: 14px; color: var(--text-muted); width: 14px; text-align: center; }
     details:not([open]) > summary .toggle-icon::after { content: "+"; }
     details[open] > summary .toggle-icon::after { content: "-"; }
     
-    .action-body { padding: 0; background: #050505; border-top: 1px solid rgba(255,255,255,0.05); }
-    .action-child { padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; }
-    .action-child.output { color: #a1a1aa; border-left: 2px solid var(--accent); }
-    .action-child.error { background: rgba(239, 68, 68, 0.05); color: var(--danger); border-left: 2px solid var(--danger); }
+    .activity-body { padding: 0; background: #050505; border-top: 1px solid rgba(255,255,255,0.05); }
+    .activity-child { padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; }
+    .activity-child.output { color: #a1a1aa; border-left: 2px solid var(--accent); }
+    .activity-child.error { background: rgba(239, 68, 68, 0.05); color: var(--danger); border-left: 2px solid var(--danger); }
     
     .status-badge { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
     .status-running { background: var(--accent-glow); color: var(--accent); animation: pulse 2s infinite; }
@@ -155,7 +155,7 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
     let allExpanded = false;
     function toggleAllGlobal() {
       allExpanded = !allExpanded;
-      document.querySelectorAll('details.event-action').forEach(d => {
+      document.querySelectorAll('details.event-activity').forEach(d => {
         if (allExpanded) d.setAttribute('open', '');
         else d.removeAttribute('open');
       });
@@ -188,7 +188,7 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
         
         const dur = state.status === 'running' ? Date.now() - state.stats.startTime : state.stats.durationMs;
         document.getElementById('stats-banner').innerHTML = 
-          \`<span><strong>\${state.stats.actionsCount}</strong> Actions</span>
+          \`<span><strong>\${state.stats.activitiesCount}</strong> Activities</span>
            <span><strong class="spent">$\${state.stats.totalCost.toFixed(3)}</strong> Spent</span>
            <span><strong>\${state.stats.totalTokens.toLocaleString()}</strong> Tokens</span>
            <span><strong>\${formatUptime(dur)}</strong> Uptime</span>\`;
@@ -211,24 +211,24 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
               const lines = ev.msg.split('\\n');
               const firstLine = lines[0];
               const rest = lines.slice(1).join('\\n');
-              div.innerHTML = \`<details class="event-action log-multiline">
-                <summary class="action-header">
+              div.innerHTML = \`<details class="event-activity log-multiline">
+                <summary class="activity-header">
                   <span class="log-time">\${t}</span>
-                  <span class="action-title" style="font-family:monospace; font-size:12px; color:#d4d4d8;">
+                  <span class="activity-title" style="font-family:monospace; font-size:12px; color:#d4d4d8;">
                     [\${escapeHtml(ev.phase)}] \${escapeHtml(firstLine)} <em style="color:#a1a1aa">...</em>
                   </span>
-                  <div class="action-meta">
+                  <div class="activity-meta">
                     <span class="toggle-icon"></span>
                   </div>
                 </summary>
-                <div class="action-body">
-                  <div class="action-child" style="color:#d4d4d8;">\${escapeHtml(rest)}</div>
+                <div class="activity-body">
+                  <div class="activity-child" style="color:#d4d4d8;">\${escapeHtml(rest)}</div>
                 </div>
               </details>\`;
             } else {
               div.innerHTML = \`<div class="event-log"><span class="log-time">\${t}</span><span class="log-msg">[\${escapeHtml(ev.phase)}] \${escapeHtml(ev.msg)}</span></div>\`;
             }
-          } else if (ev.type === 'action') {
+          } else if (ev.type === 'activity') {
             const act = ev.data;
             const dateObj = new Date(act.startTime || Date.now());
             const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
@@ -241,9 +241,9 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
             let childrenHtml = '';
             if (!act.isRunning) {
               if (act.error) {
-                childrenHtml = \`<div class="action-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
+                childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
               } else if (act.output) {
-                childrenHtml = \`<div class="action-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
+                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
               }
             }
             
@@ -251,17 +251,17 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
             const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
             const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
             
-            div.innerHTML = \`<details class="event-action" id="action-\${act.id}">
-              <summary class="action-header">
+            div.innerHTML = \`<details class="event-activity" id="activity-\${act.id}">
+              <summary class="activity-header">
                 <span class="log-time">\${t}</span>
-                <span class="action-title"><strong>\${escapeHtml(act.type.toUpperCase())}</strong>: \${escapeHtml(act.label)} \${memberHtml}</span>
-                <div class="action-meta" id="meta-\${act.id}">
+                <span class="activity-title"><strong>\${escapeHtml(act.type.toUpperCase())}</strong>: \${escapeHtml(act.label)} \${memberHtml}</span>
+                <div class="activity-meta" id="meta-\${act.id}">
                   \${tokensHtml}
                   \${act.duration ? formatTime(act.duration) : ''} \${badge}
                   <span class="toggle-icon"></span>
                 </div>
               </summary>
-              \${childrenHtml ? \`<div class="action-body" id="body-\${act.id}">\${childrenHtml}</div>\` : ''}
+              \${childrenHtml ? \`<div class="activity-body" id="body-\${act.id}">\${childrenHtml}</div>\` : ''}
             </details>\`;
           }
           
@@ -270,7 +270,7 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
         
         for (let i = 0; i < renderedEventsCount; i++) {
             const ev = state.events[i];
-            if (ev.type === 'action') {
+            if (ev.type === 'activity') {
                 const act = ev.data;
                 const el = document.getElementById(\`action-\${act.id}\`);
                 if (el) {
@@ -285,13 +285,13 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
                     if (!act.isRunning && !bodyEl) {
                         let childrenHtml = '';
                         if (act.error) {
-                            childrenHtml = \`<div class="action-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
+                            childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
                         } else if (act.output) {
-                            childrenHtml = \`<div class="action-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
+                            childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
                         }
                         if (childrenHtml) {
                             const bodyContainer = document.createElement('div');
-                            bodyContainer.className = 'action-body';
+                            bodyContainer.className = 'activity-body';
                             bodyContainer.id = \`body-\${act.id}\`;
                             bodyContainer.innerHTML = childrenHtml;
                             el.appendChild(bodyContainer);
@@ -327,7 +327,7 @@ export function startViewer(workflow, options = {}) {
         events: [],
         status: 'running',
         stats: {
-            actionsCount: 0,
+            activitiesCount: 0,
             totalTokens: 0,
             totalCost: 0,
             startTime: Date.now(),
@@ -342,17 +342,17 @@ export function startViewer(workflow, options = {}) {
         }
     });
 
-    workflow.on('action:start', (meta) => {
-        state.stats.actionsCount++;
+    workflow.on('activity:start', (meta) => {
+        state.stats.activitiesCount++;
         state.events.push({
-            type: 'action',
+            type: 'activity',
             id: meta.id,
             data: { ...meta, isRunning: true }
         });
     });
 
-    workflow.on('action:end', (meta) => {
-        const idx = state.events.findIndex(e => e.type === 'action' && e.id === meta.id);
+    workflow.on('activity:end', (meta) => {
+        const idx = state.events.findIndex(e => e.type === 'activity' && e.id === meta.id);
         if (idx >= 0) {
             state.events[idx].data = { ...state.events[idx].data, ...meta, isRunning: false };
         }

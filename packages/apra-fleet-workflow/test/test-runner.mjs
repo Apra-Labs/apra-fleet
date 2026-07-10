@@ -38,9 +38,9 @@ async function main() {
         console.error('FAIL: Vetting override failed:', e.message);
     }
 
-    console.log('\n--- Running Edge Case: Pipeline Isolation (Expected: Success) ---');
-    const pipelineRes = await engine.executeFile(path.join(__dirname, 'test-edge-pipeline.js'));
-    console.log('Pipeline test returned successfully.');
+    console.log('\n--- Running Edge Case: Sequential Isolation (Expected: Success) ---');
+    const SequentialRes = await engine.executeFile(path.join(__dirname, 'test-edge-sequential.js'));
+    console.log('Sequential test returned successfully.');
 
     console.log('\n--- Running Edge Case: Agent Missing Args (Expected: Fail) ---');
     try {

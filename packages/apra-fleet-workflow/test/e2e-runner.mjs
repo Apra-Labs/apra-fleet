@@ -17,7 +17,7 @@ async function main() {
     }
 
     phase("Non-Destructive Execution");
-    const results = await pipeline(args.targets, async (target) => {
+    const results = await sequential(args.targets, async (target) => {
         log("Testing command on " + target.name);
         
         // 1. A safe echo command

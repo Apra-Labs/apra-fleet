@@ -4,14 +4,14 @@ The `apra-fleet-workflow` engine is a declarative, infrastructure-as-code orches
 
 ## 1. Design & Core Philosophy
 
-The engine is built around a functional pipeline approach. Instead of hardcoding branching logic inside Node.js, users construct arrays of AI tasks and pass them through parallel barriers and stage pipelines. 
+The engine is built around a functional Sequential approach. Instead of hardcoding branching logic inside Node.js, users construct arrays of AI tasks and pass them through parallel barriers and stage Sequentials. 
 
 **Available Workflow Globals:**
 - `agent(prompt, opts)`: Directly dispatches a task to a fleet member's LLM via `executePrompt`.
 - `command(cmd, opts)`: Dispatches a pure shell command via `executeCommand`.
-- `pipeline(items, ...stages)`: Processes an array of items sequentially through distinct functional stages.
+- `sequential(items, ...stages)`: Processes an array of items sequentially through distinct functional stages.
 - `parallel(thunks)`: Acts as a synchronization barrier, running tasks concurrently across members.
-- `transform(fn)`: A string-to-string mapping idiom to cleanly format outputs between pipeline stages.
+- `transform(fn)`: A string-to-string mapping idiom to cleanly format outputs between Sequential stages.
 - `phase(title)` and `log(message)`: Structured telemetry and UX tracking.
 
 ## 2. Robustness & Reliability
@@ -19,7 +19,7 @@ The engine is built around a functional pipeline approach. Instead of hardcoding
 Workflows operating in a multi-node, AI-driven environment must assume that network requests drop, LLMs hallucinate, and commands crash. The engine ensures reliability through the following guarantees:
 
 1. **Parallel Fallbacks:** Any thunk inside a `parallel()` block that throws an exception (due to network failure, API crash, etc.) is gracefully caught. The engine returns `null` for that specific index in the barrier array, rather than crashing the orchestrator and abandoning the other successful concurrent tasks.
-2. **Sequential Pipelines:** If a specific stage inside a `pipeline()` fails for an item, the engine catches the error, aborts further processing for *that specific item*, and logs it. Surviving items continue their journey through the pipeline.
+2. **Sequential Sequentials:** If a specific stage inside a `sequential()` fails for an item, the engine catches the error, aborts further processing for *that specific item*, and logs it. Surviving items continue their journey through the Sequential.
 3. **Structured Output (Schema Validation):**
    - **Pre-Condition**: When `opts.schema` is provided to an `agent()`, the engine first compiles the JSON Schema using `ajv` (JSON Schema draft-07 standard). If the user provided a malformed schema, the engine halts immediately rather than wasting LLM compute.
    - **Post-Condition**: When the LLM responds, the engine attempts to scrape and parse the JSON. It then strictly validates the parsed object against the compiled `ajv` schema. A non-compliant response is treated as a fatal stage error, preventing downstream systems from processing malformed data.

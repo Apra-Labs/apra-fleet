@@ -28,15 +28,15 @@ async function main() {
 
     log(`Agent structured output: ${JSON.stringify(jsonResult)}`);
 
-    phase('Test Pipeline with Transform');
-    const processed = await pipeline(
+    phase('Test Sequential with Transform');
+    const processed = await sequential(
         ['apra', 'fleet'],
         async (item) => `Input word: ${item}`,
         transform((str) => str.toUpperCase() + ' (TRANSFORMED)'),
         async (item) => `Final Result -> ${item}`
     );
     
-    log(`Pipeline transform result: ${JSON.stringify(processed)}`);
+    log(`Sequential transform result: ${JSON.stringify(processed)}`);
 
     return { status: 'success' };
 }

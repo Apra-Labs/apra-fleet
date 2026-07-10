@@ -85,7 +85,7 @@ export class FleetWorkflow extends EventEmitter {
             finalPrompt += `\n\nOnly provide your response strictly as per this JSON schema:\n${JSON.stringify(opts.schema, null, 2)}`;
         }
 
-        const actionMeta = {
+        const activityMeta = {
             id: Math.random().toString(36).substring(2, 9),
             type: 'agent',
             phase: effectivePhase,
@@ -94,7 +94,7 @@ export class FleetWorkflow extends EventEmitter {
             model: opts.model || 'default',
             startTime: Date.now()
         };
-        this.emit('action:start', actionMeta);
+        this.emit('activity:start', activityMeta);
 
         const payload = {
             prompt: finalPrompt,
@@ -118,14 +118,14 @@ export class FleetWorkflow extends EventEmitter {
             }
 
             const cost = calculateCost(opts.model || 'default', result.usage);
-            const duration = Date.now() - actionMeta.startTime;
+            const duration = Date.now() - activityMeta.startTime;
             
             if (result && result.content && result.content.length > 0) {
                 const text = result.content[0].text;
                 
                 if (text.startsWith('Member "') && text.includes('" not found.')) {
                     console.error(`[Agent API Error]`, text);
-                    this.emit('action:end', { ...actionMeta, error: text, duration: Date.now() - actionMeta.startTime, success: false });
+                    this.emit('activity:end', { ...activityMeta, error: text, duration: Date.now() - activityMeta.startTime, success: false });
                     return null;
                 }
 
@@ -140,7 +140,7 @@ export class FleetWorkflow extends EventEmitter {
                         }
                     } catch (e) {
                         const err = new Error(`[Workflow Error] LLM failed to return parseable JSON for structured output.`);
-                        this.emit('action:end', { ...actionMeta, error: err.message, output: text, duration, usage: result.usage, cost });
+                        this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost });
                         throw err;
                     }
 
@@ -148,21 +148,21 @@ export class FleetWorkflow extends EventEmitter {
                     if (!isValid) {
                         const errors = ajv.errorsText(compiledSchema.errors);
                         const err = new Error(`[Workflow Error] LLM returned non-compliant JSON. Validation failed: ${errors}`);
-                        this.emit('action:end', { ...actionMeta, error: err.message, output: text, duration, usage: result.usage, cost });
+                        this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost });
                         throw err;
                     }
 
-                    this.emit('action:end', { ...actionMeta, duration, success: true, usage: result.usage, cost, output: JSON.stringify(parsedJson, null, 2) });
+                    this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: JSON.stringify(parsedJson, null, 2) });
                     return parsedJson;
                 }
-                this.emit('action:end', { ...actionMeta, duration, success: true, usage: result.usage, cost, output: text });
+                this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: text });
                 return text;
             }
-            this.emit('action:end', { ...actionMeta, duration, success: false });
+            this.emit('activity:end', { ...activityMeta, duration, success: false });
             return null;
         } catch (error) {
             console.error(`[Agent API Error]`, error.message || error);
-            this.emit('action:end', { ...actionMeta, error: error.message || error, duration: Date.now() - actionMeta.startTime, success: false });
+            this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
             throw error;
         }
     }
@@ -188,7 +188,7 @@ export class FleetWorkflow extends EventEmitter {
             }
         }
 
-        const actionMeta = {
+        const activityMeta = {
             id: Math.random().toString(36).substring(2, 9),
             type: 'command',
             phase: effectivePhase,
@@ -197,7 +197,7 @@ export class FleetWorkflow extends EventEmitter {
             command: finalCmd,
             startTime: Date.now()
         };
-        this.emit('action:start', actionMeta);
+        this.emit('activity:start', activityMeta);
 
         const payload = {
             command: finalCmd,
@@ -210,25 +210,25 @@ export class FleetWorkflow extends EventEmitter {
         try {
             const result = await this.fleetApi.executeCommand(payload);
             const outText = result.content && result.content.length > 0 ? result.content[0].text : '';
-            const duration = Date.now() - actionMeta.startTime;
+            const duration = Date.now() - activityMeta.startTime;
 
             if (outText.startsWith('Member "') && outText.includes('" not found.')) {
                 console.error(`[Command API Error]`, outText);
-                this.emit('action:end', { ...actionMeta, error: outText, duration, success: false });
+                this.emit('activity:end', { ...activityMeta, error: outText, duration, success: false });
                 return null;
             }
             
             if (result.isError) {
                 const err = new Error(`[Command Failed] ${outText}`);
-                this.emit('action:end', { ...actionMeta, error: err.message, duration, success: false });
+                this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
                 throw err;
             }
 
-            this.emit('action:end', { ...actionMeta, duration, success: true, output: outText });
+            this.emit('activity:end', { ...activityMeta, duration, success: true, output: outText });
             return outText;
         } catch (error) {
             console.error(`[Command API Error]`, error.message || error);
-            this.emit('action:end', { ...actionMeta, error: error.message || error, duration: Date.now() - actionMeta.startTime, success: false });
+            this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
             throw error;
         }
     }
@@ -236,14 +236,14 @@ export class FleetWorkflow extends EventEmitter {
     /**
      * Executes the given async processor function for each item sequentially.
      */
-    async pipeline(items, processor, opts = {}) {
+    async sequential(items, processor, opts = {}) {
         const results = [];
         for (let i = 0; i < items.length; i++) {
             try {
                 const res = await processor(items[i], i, items);
                 results.push(res);
             } catch (err) {
-                this.log(`[Pipeline Error] item ${i} failed at a stage: ${err.message}`);
+                this.log(`[Sequential Error] item ${i} failed at a stage: ${err.message}`);
                 results.push(null);
                 if (!opts.continueOnError) {
                     throw err;
@@ -272,16 +272,16 @@ export class FleetWorkflow extends EventEmitter {
 
     async transform(label, func, context) {
         const id = randomUUID();
-        const actionMeta = {
+        const activityMeta = {
             id, type: 'transform', label, phase: this.currentPhase, startTime: Date.now()
         };
-        this.emit('action:start', actionMeta);
+        this.emit('activity:start', activityMeta);
 
         const transformationFn = func || ((data) => data); // pass as-is default
 
         try {
             let result = await transformationFn(context);
-            const duration = Date.now() - actionMeta.startTime;
+            const duration = Date.now() - activityMeta.startTime;
             
             let stringifiedOutput = result;
             if (typeof result !== 'string' && result !== undefined && result !== null) {
@@ -293,16 +293,16 @@ export class FleetWorkflow extends EventEmitter {
                 try { stringifiedInput = JSON.stringify(context, null, 2); } catch(e) {}
             }
 
-            this.emit('action:end', { ...actionMeta, duration, success: true, input: stringifiedInput, output: stringifiedOutput });
+            this.emit('activity:end', { ...activityMeta, duration, success: true, input: stringifiedInput, output: stringifiedOutput });
             return result;
         } catch (e) {
-            const duration = Date.now() - actionMeta.startTime;
+            const duration = Date.now() - activityMeta.startTime;
             let stringifiedInput = context;
             if (typeof context !== 'string' && context !== undefined && context !== null) {
                 try { stringifiedInput = JSON.stringify(context, null, 2); } catch(e) {}
             }
 
-            this.emit('action:end', { ...actionMeta, duration, success: false, error: e.message, input: stringifiedInput });
+            this.emit('activity:end', { ...activityMeta, duration, success: false, error: e.message, input: stringifiedInput });
             const err = new Error(`[Workflow Error] Transform failed: ${e.message}`);
             throw err;
         }
@@ -318,7 +318,7 @@ export class FleetWorkflow extends EventEmitter {
         return {
             agent: this.agent.bind(this),
             command: this.command.bind(this),
-            pipeline: this.pipeline.bind(this),
+            sequential: this.sequential.bind(this),
             parallel: this.parallel.bind(this),
             transform: this.transform.bind(this),
             nullTransform: () => null,
