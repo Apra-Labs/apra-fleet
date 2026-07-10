@@ -1,0 +1,26 @@
+[
+  {
+    "id": "fx-kb-1",
+    "type": "knowledge",
+    "title": "GET /api/notes default filter excludes archived",
+    "summary": "Listing route filters out archived=true notes by default; include_archived=true opts back in.",
+    "confidence": "CONFIRMED",
+    "symbols": ["listNotes", "archiveNote"],
+    "source_files": ["src/routes/notes.ts"],
+    "tags": ["sprint:demo-upgrade"],
+    "created_at": "2026-07-08T10:00:00.000Z",
+    "updated_at": "2026-07-08T10:00:00.000Z"
+  },
+  {
+    "id": "fx-kb-2",
+    "type": "learning",
+    "title": "Pagination must compose after the archived filter, not before",
+    "summary": "Sprint 2 doer applied page/limit slicing after the archived exclusion so counts/total stay correct.",
+    "confidence": "CONFIRMED",
+    "symbols": ["listNotes"],
+    "source_files": ["src/routes/notes.ts"],
+    "tags": ["sprint:demo-upgrade"],
+    "created_at": "2026-07-09T09:30:00.000Z",
+    "updated_at": "2026-07-09T09:30:00.000Z"
+  }
+]

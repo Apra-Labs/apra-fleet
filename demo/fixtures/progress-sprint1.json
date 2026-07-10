@@ -1,0 +1,22 @@
+{
+  "sprint": "sprint1-note-archiving",
+  "track": "main",
+  "branch": "feat/note-archiving",
+  "base": "main",
+  "worktree": "<fixture-sandbox>",
+  "transport": "local",
+  "sprint_root": "fixture-epic-1",
+  "lastDispatchedPhase": 1,
+  "tasks": [
+    { "id": "T1.1", "phase": 1, "title": "Add archived field + archive endpoints", "model": "claude-sonnet-4-5", "type": "work", "status": "completed", "bead": "fx-1", "commit": "abc1111", "notes": "" },
+    { "id": "T1.2", "phase": 1, "title": "Exclude archived from default GET /api/notes", "model": "claude-sonnet-4-5", "type": "work", "status": "completed", "bead": "fx-2", "commit": "abc2222", "notes": "" },
+    { "id": "T1.3", "phase": 1, "title": "Verify archiving behavior end to end", "model": "claude-opus-4-1", "type": "verify", "status": "completed", "bead": "fx-3", "commit": "abc3333", "notes": "" }
+  ],
+  "dispatches": [
+    { "seq": 1, "role": "planner", "model": "claude-opus-4-1", "phase": 0, "tasks": [], "tokens": 18400, "toolUses": 22, "ms": 41000 },
+    { "seq": 2, "role": "plan-reviewer", "model": "claude-opus-4-1", "phase": 0, "tasks": [], "tokens": 6100, "toolUses": 5, "ms": 12000 },
+    { "seq": 3, "role": "doer", "model": "claude-sonnet-4-5", "phase": 1, "tasks": ["T1.1", "T1.2"], "tokens": 27300, "toolUses": 34, "ms": 96000 },
+    { "seq": 4, "role": "doer", "model": "claude-opus-4-1", "phase": 1, "tasks": ["T1.3"], "tokens": 9800, "toolUses": 11, "ms": 30000 },
+    { "seq": 5, "role": "reviewer", "model": "claude-opus-4-1", "phase": 1, "tasks": ["T1.1", "T1.2", "T1.3"], "tokens": 11200, "toolUses": 9, "ms": 25000 }
+  ]
+}

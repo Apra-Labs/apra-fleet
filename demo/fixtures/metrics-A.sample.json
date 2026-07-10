@@ -1,0 +1,58 @@
+[
+  {
+    "env": "A",
+    "sprint": "sprint1",
+    "collected_at": "2026-07-10T10:00:00.000Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-a",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-a",
+    "git": { "available": true, "commit_count": 4, "recent": [], "notes": [] },
+    "progress": {
+      "found": true,
+      "path": "C:\\ws_yash\\demo-upgrade\\sandbox-a\\progress.json",
+      "totals": { "tokens": 72800, "toolUses": 81, "ms": 204000, "count": 5 },
+      "by_role": {
+        "planner": { "tokens": 18400, "toolUses": 22, "ms": 41000, "count": 1 },
+        "plan-reviewer": { "tokens": 6100, "toolUses": 5, "ms": 12000, "count": 1 },
+        "doer": { "tokens": 37100, "toolUses": 45, "ms": 126000, "count": 2 },
+        "reviewer": { "tokens": 11200, "toolUses": 9, "ms": 25000, "count": 1 }
+      },
+      "doer_model_mix": [
+        { "model": "claude-sonnet-4-5", "tokens": 27300, "count": 1 },
+        { "model": "claude-opus-4-1", "tokens": 9800, "count": 1 }
+      ],
+      "notes": []
+    },
+    "kb": null,
+    "bible": null,
+    "usage": null,
+    "notes": ["Env A: skipping KB/bible/usage collection -- released v0.3.4 has no KB/code-intelligence layer"]
+  },
+  {
+    "env": "A",
+    "sprint": "sprint2",
+    "collected_at": "2026-07-10T11:30:00.000Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-a",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-a",
+    "git": { "available": true, "commit_count": 7, "recent": [], "notes": [] },
+    "progress": {
+      "found": true,
+      "path": "C:\\ws_yash\\demo-upgrade\\sandbox-a\\progress.json",
+      "totals": { "tokens": 34700, "toolUses": 41, "ms": 94000, "count": 5 },
+      "by_role": {
+        "planner": { "tokens": 9200, "toolUses": 10, "ms": 20000, "count": 1 },
+        "plan-reviewer": { "tokens": 3100, "toolUses": 3, "ms": 7000, "count": 1 },
+        "doer": { "tokens": 15600, "toolUses": 22, "ms": 52000, "count": 2 },
+        "reviewer": { "tokens": 6800, "toolUses": 6, "ms": 15000, "count": 1 }
+      },
+      "doer_model_mix": [
+        { "model": "claude-haiku-4-5", "tokens": 11400, "count": 1 },
+        { "model": "claude-opus-4-1", "tokens": 4200, "count": 1 }
+      ],
+      "notes": []
+    },
+    "kb": null,
+    "bible": null,
+    "usage": null,
+    "notes": ["Env A: skipping KB/bible/usage collection -- released v0.3.4 has no KB/code-intelligence layer"]
+  }
+]
