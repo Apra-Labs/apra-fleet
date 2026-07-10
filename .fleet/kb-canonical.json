@@ -740,6 +740,28 @@
     "updated_at": "2026-07-06T23:55:25.190Z"
   },
   {
+    "id": "7b1aea53-b060-454f-9fd1-130c4d61d527",
+    "type": "learning",
+    "title": "main install/dispatch refactor changed CLI defaults + install step counting (merge gotcha)",
+    "summary": "Merging origin/main into feat/code-intelligence-abstraction surfaced two structural changes in main that any KB/code-intel feature must reconcile: (1) main's #315 dispatch refactor made `arg===undefined` mean install-default and moved MCP-server startup behind a `run`/`start`/`--stdio` branch, so .mcp.json must invoke `[\"dist/index.js\",\"run\"]`; (2) main added an extra install progress step via `if (installPm) totalSteps++` for cost.js/workflow, so our KB step count must layer on top of that.",
+    "symbols": [
+      "runInstall",
+      "startServer",
+      "beadsStep",
+      "totalSteps",
+      "runWatch",
+      "kbHarvest"
+    ],
+    "source_files": [
+      "src/index.ts",
+      "src/cli/install.ts",
+      "src/tools/execute-prompt.ts",
+      ".mcp.json"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T15:53:52.607Z"
+  },
+  {
     "id": "7b4b3b94-5e32-42d9-9fe9-2de50d07f4e8",
     "type": "knowledge",
     "title": "KB-enrichment layering: helper above provider (D4 design)",
@@ -1300,6 +1322,18 @@
     ],
     "confidence": "CONFIRMED",
     "updated_at": "2026-07-06T23:00:19.207Z"
+  },
+  {
+    "id": "dce15085-c54a-4708-afa5-6fbc8e6bc891",
+    "type": "knowledge",
+    "title": "CI pins Windows runner to windows-2022 (node-gyp vs VS 18)",
+    "summary": ".github/workflows/ci.yml pins the Windows CI runner to windows-2022 instead of windows-latest. Rationale (commit 2ff1a5a, 2026-06-12): GitHub's windows-latest migrated to windows-2025-vs2026 (Visual Studio 18); node-gyp 11.5.0 fails VS detection against VS 18 with a maxBuffer error, breaking native module compilation. windows-2022 ships VS 17, which node-gyp fully supports. The same commit also switched GYP_MSVS_VERSION (a Python gyp var) to npm_config_msvs_version (read by node-gyp via npm env) as a source-compile fallback if the prebuild download fails.",
+    "symbols": [],
+    "source_files": [
+      ".github/workflows/ci.yml"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T16:16:55.101Z"
   },
   {
     "id": "dd85cf6e-00ec-4b56-a178-6931f9de6c4b",
