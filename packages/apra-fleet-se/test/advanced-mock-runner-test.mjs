@@ -5,7 +5,8 @@ import { exec } from 'child_process';
 import os from 'os';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
-import { SprintPlanRejectedError } from '../auto-sprint/errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError } from '../auto-sprint/errors.mjs';
+import { parseBdJson } from '../auto-sprint/runner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,7 +76,11 @@ async function setupMinimal(tempDirSuffix, taskSpecs) {
 
     const tasks = [];
     for (const spec of taskSpecs) {
-        const createRes = await runCmd(`bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}" --silent`, tempDir);
+        // apra-fleet-unw.17: `spec.priority` (e.g. 'P3') lets a scenario
+        // create a task below the sprint's goal priority, for the A5
+        // goal-priority exit-condition scenarios below.
+        const priorityFlag = spec.priority ? ` -p ${spec.priority}` : '';
+        const createRes = await runCmd(`bd create "${spec.title}" -d "${spec.description || 'Scenario task.'}"${priorityFlag} --silent`, tempDir);
         const id = createRes.stdout.trim();
         await runCmd(`bd update ${id} --parent ${epicBead.id}`, tempDir);
         tasks.push({ id, title: spec.title });
@@ -132,6 +137,17 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
         doerHandler = null,
         reviewerHandler = null,
         addExtraTaskDuringPlan = true,
+        // apra-fleet-unw.17 additions:
+        deployHandler = null,
+        integHandler = null,
+        finalReviewHandler = null,
+        // Optional (cmd: string) => boolean predicate: when it returns
+        // true for a given executeCommand() invocation, the mock returns
+        // `{ isError: true, ... }` instead of actually running the command
+        // -- used to simulate a probe (or any other command()) failure
+        // deterministically, without depending on real filesystem/process
+        // flakiness.
+        commandFailurePattern = null,
     } = options;
 
     let planRound = 0;
@@ -208,6 +224,13 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
                 return { content: [{ text: 'ok (mocked -- no real git remote in this mock sprint)' }] };
             }
 
+            // apra-fleet-unw.17, A4 acceptance criterion 5: deterministic
+            // command-failure injection for probe/other command() calls,
+            // used by the probe-failure-skips-phase scenario below.
+            if (commandFailurePattern && commandFailurePattern.test(opts.command)) {
+                return { isError: true, content: [{ text: `mock command failure (injected) for: ${opts.command}` }] };
+            }
+
             // No stale intercepts here otherwise: runner.js's Deploy/Integ
             // probes, `bd show`/`bd update`/`bd create` reopen/newTasks
             // calls, etc. are executed for real against tempDir, same as
@@ -226,8 +249,9 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
             // Review phase cannot be distinguished from the regular
             // per-round review via opts.label here. Both share agentType
             // 'reviewer'; distinguish by the (fixed, runner.js-authored)
-            // prompt text instead.
-            const isFinalReview = opts.agent === 'reviewer' && opts.prompt.trim() === 'Pass or Fail?';
+            // prompt text instead -- apra-fleet-unw.17's buildFinalVerdictPrompt()
+            // always starts with this exact prefix.
+            const isFinalReview = opts.agent === 'reviewer' && opts.prompt.startsWith('Final review for sprint scope issue id(s):');
             const isStreakAssignment = opts.agent === 'planner' && opts.prompt.includes('Ready bead ids:');
             dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name });
             await sleep(DELAY_MS);
@@ -316,24 +340,85 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
                 return handler({ opts, tempDir, runCmd, epicBead, reviewRound });
             }
 
-            // --- final review ---
+            // --- final review (apra-fleet-unw.17, A6) ---
+            //
+            // Default mock: an EVIDENCE-BASED final reviewer, not a blind
+            // rubber stamp. It parses the real evidence runner.js's
+            // buildFinalVerdictPrompt() embeds in the prompt text (open
+            // goal-priority bead count, deploy/integ failure markers) and
+            // returns a verdict actually derived from that evidence --
+            // deliberately NOT a hardcoded PASS -- so this mock can never
+            // accidentally paper over the exact "rubber-stamped success" bug
+            // (A6) this test suite exists to catch. `finalReviewHandler`
+            // lets a scenario override this when it wants to control the
+            // verdict directly instead (e.g. to test a hard-FAIL response).
             if (isFinalReview) {
-                return { content: [{ text: 'Pass! Excellent velocity and solid implementation.' }] };
+                if (finalReviewHandler) {
+                    return finalReviewHandler({ opts, tempDir, runCmd, epicBead });
+                }
+                const openMatch = opts.prompt.match(/(\d+) bead\(s\) still open at or above goal priority/);
+                const openCount = openMatch ? Number(openMatch[1]) : 0;
+                const hasDeployFailure = opts.prompt.includes('Deploy phase FAILED');
+                const hasIntegFailure = opts.prompt.includes('Integration tests FAILED');
+                if (openCount > 0 || hasDeployFailure || hasIntegFailure) {
+                    return {
+                        content: [{
+                            text: JSON.stringify({
+                                verdict: 'FAIL',
+                                notes: `Evidence-based FAIL: ${openCount} open goal-priority bead(s), deployFailure=${hasDeployFailure}, integFailure=${hasIntegFailure}.`,
+                            })
+                        }]
+                    };
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'PASS',
+                            notes: 'All goal-priority beads closed, last review APPROVED, deploy/integ phases (if any) succeeded. Excellent velocity and solid implementation.',
+                        })
+                    }]
+                };
             }
 
-            // --- deploy phase ---
+            // --- deploy phase (apra-fleet-unw.17, A4: schema-validated) ---
             if (opts.agent === 'deployer') {
-                return { content: [{ text: 'Successfully ran `npm publish` and published @apralabs/apra-fleet-client to the local registry.' }] };
+                if (deployHandler) return deployHandler({ opts, tempDir, runCmd, epicBead });
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            deployed: true,
+                            notes: 'Successfully ran `npm publish` and published @apralabs/apra-fleet-client to the local registry.',
+                        })
+                    }]
+                };
             }
 
-            // --- integ test phase ---
+            // --- integ test phase (apra-fleet-unw.17, A4: schema-validated) ---
             if (opts.agent === 'integ-test-runner') {
-                return { content: [{ text: 'All vitest e2e specs passed successfully.' }] };
+                if (integHandler) return integHandler({ opts, tempDir, runCmd, epicBead });
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            featuresClosed: 2,
+                            issuesCreated: 0,
+                            passed: true,
+                            bugsFiled: [],
+                            summary: 'All vitest e2e specs passed successfully.',
+                        })
+                    }]
+                };
             }
 
-            // --- harvest phase ---
+            // --- harvest phase (apra-fleet-unw.17, A6: schema-validated) ---
             if (opts.agent === 'harvester') {
-                return { content: [{ text: 'Harvested API usage patterns to memory. Updated context docs.' }] };
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            status: 'OK',
+                            notes: 'Harvested API usage patterns to memory. Updated context docs.',
+                        })
+                    }]
+                };
             }
 
             // Any agentType reaching here means runner.js dispatched something
@@ -449,8 +534,29 @@ async function runRejectedPlanScenario(tag) {
  * having to reverse-engineer internal round-counting), and pass-through
  * doer/reviewer handler overrides.
  */
-async function runDevelopLoopScenario(tag, { members, taskSpecs, doerHandler, reviewerHandler }) {
+async function runDevelopLoopScenario(tag, {
+    members, taskSpecs, doerHandler, reviewerHandler,
+    // apra-fleet-unw.17 additions:
+    deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
+    goal = 'P1/P2', maxCycles = 1,
+    // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
+    // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
+    // used by scenarios that need extra beads/dependency wiring not covered
+    // by plain taskSpecs (e.g. a permanently-blocked bead for the A5
+    // goal-priority exit-condition scenarios below).
+    beforeSprint,
+    // deploy.md / integ-test-playbook.md are NOT written by setupMinimal();
+    // set true to write them (enabling the Deploy/Integ phases).
+    withRunbooks = false,
+}) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
+    if (withRunbooks) {
+        await fs.writeFile(path.join(tempDir, 'deploy.md'), '# Deploy\nrun `npm publish`');
+        await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), '# Integ Test\nRun `vitest e2e`');
+    }
+    if (beforeSprint) {
+        await beforeSprint({ tempDir, runCmd, epicBead, tasks });
+    }
     const dispatched = [];
     const commandLog = [];
     const logs = [];
@@ -460,6 +566,10 @@ async function runDevelopLoopScenario(tag, { members, taskSpecs, doerHandler, re
             addExtraTaskDuringPlan: false,
             doerHandler,
             reviewerHandler,
+            deployHandler,
+            integHandler,
+            finalReviewHandler,
+            commandFailurePattern,
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
@@ -474,8 +584,8 @@ async function runDevelopLoopScenario(tag, { members, taskSpecs, doerHandler, re
                 members,
                 branch: `auto-sprint/mock-${tag}`,
                 base_branch: 'main',
-                goal: 'P1/P2',
-                max_cycles: 1,
+                goal,
+                max_cycles: maxCycles,
             }, true);
         } catch (err) {
             error = err;
@@ -687,7 +797,14 @@ async function main() {
         }),
     });
     check(!isolation.error, `Doer-failure-isolation scenario should not abort the whole sprint: ${isolation.error ? isolation.error.message : ''}`);
-    check(isolation.result && isolation.result.status === 'success', `Doer-failure-isolation scenario did not resolve success: ${JSON.stringify(isolation.result)}`);
+    // apra-fleet-unw.17 (A5/A6): the always-throwing bead never closes, so
+    // it remains an open goal-priority bead at Finalization -- the
+    // evidence-based final verdict now correctly reports FAIL (status:
+    // 'failed') for this scenario instead of the old blanket 'success'.
+    // The important property under test here is isolation (the sprint
+    // resolves at all, rather than rejecting/throwing), not that an
+    // unclosed bead is rubber-stamped as a pass.
+    check(isolation.result && isolation.result.status === 'failed', `Doer-failure-isolation scenario should resolve with a FAIL verdict (one bead never closed): ${JSON.stringify(isolation.result)}`);
     const throwsTaskId = isolation.tasks.find((t) => t.title === 'Task: Always throws').id;
     const succeedsTaskId = isolation.tasks.find((t) => t.title === 'Task: Always succeeds').id;
     // The always-throwing bead is never closed, so it stays `ready` and is
@@ -821,6 +938,230 @@ async function main() {
     // discarded and replaced unconditionally by the one-bead fallback).
     const multiDoerStreakCalls = multiDoer.dispatched.filter((d) => d.agent === 'planner' && d.prompt.includes('Ready bead ids:'));
     check(multiDoerStreakCalls.length === 1, `Expected exactly 1 streak-assignment dispatch in the multi-doer scenario (single dev round), got ${multiDoerStreakCalls.length}`);
+
+    // =========================================================================
+    // apra-fleet-unw.17 (A5) acceptance criterion 1: an orphaned in_progress
+    // bead must NOT be read as sprint success
+    // =========================================================================
+    // Root-cause regression test for the exact A5 bug: `bd list --ready == []`
+    // used to be equated with "the sprint is done", even when a bead was
+    // left permanently in_progress/blocked (never picked up by any doer
+    // because it's not in `--ready`). Here one task is force-set to
+    // `in_progress` before the sprint runs (simulating an orphaned bead --
+    // e.g. a doer that claimed it in an earlier, now-dead run) and is never
+    // touched again; a sibling, independent task closes normally. The
+    // sprint must complete (not throw) but its evidence-based final verdict
+    // must be FAIL, and the workflow's returned status must be 'failed', not
+    // a blanket 'success'.
+    console.log('Running mock sprint scenario (orphaned in_progress bead -> not success)...');
+    const orphaned = await runDevelopLoopScenario('orphaned', {
+        members: ['local'],
+        taskSpecs: [
+            { title: 'Task: Orphaned in_progress' },
+            { title: 'Task: Closes normally (orphaned scenario)' },
+        ],
+        maxCycles: 1,
+        beforeSprint: async ({ tempDir: td, tasks: ts }) => {
+            const orphanedTask = ts.find((t) => t.title === 'Task: Orphaned in_progress');
+            await runCmd(`bd update ${orphanedTask.id} --status=in_progress`, td);
+        },
+    });
+    check(!orphaned.error, `Orphaned-bead scenario should not throw/reject: ${orphaned.error ? orphaned.error.message : ''}`);
+    check(
+        orphaned.result && orphaned.result.status !== 'success',
+        `Orphaned in_progress bead must NOT be read as sprint success (A5 dead code path), got: ${JSON.stringify(orphaned.result)}`
+    );
+    check(
+        orphaned.result && orphaned.result.verdict === 'FAIL',
+        `Expected the evidence-based final verdict to be FAIL, got: ${JSON.stringify(orphaned.result)}`
+    );
+    const closesNormallyId = orphaned.tasks.find((t) => t.title === 'Task: Closes normally (orphaned scenario)').id;
+    check(
+        orphaned.finalBeadsById.get(closesNormallyId) && orphaned.finalBeadsById.get(closesNormallyId).status === 'closed',
+        `Expected the sibling (non-orphaned) bead to still close normally, got: ${JSON.stringify(orphaned.finalBeadsById.get(closesNormallyId))}`
+    );
+    const orphanedTaskId = orphaned.tasks.find((t) => t.title === 'Task: Orphaned in_progress').id;
+    check(
+        orphaned.finalBeadsById.get(orphanedTaskId) && orphaned.finalBeadsById.get(orphanedTaskId).status === 'in_progress',
+        `Expected the orphaned bead to remain in_progress (never touched), got: ${JSON.stringify(orphaned.finalBeadsById.get(orphanedTaskId))}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw.17 (A5) acceptance criterion 2: stall-abort after 2
+    // consecutive zero-progress cycles
+    // =========================================================================
+    // A doer that always claims success but never actually runs `bd close`
+    // (so the assigned bead is never verified-closed -- see the "doer lies"
+    // FAILED-streak handling in the Develop loop) keeps the same bead ready
+    // forever: the closed-bead count in scope never changes cycle over
+    // cycle. With max_cycles=5, the sprint must abort via a typed
+    // StalledSprintError well before cycle 5 (after 2 consecutive
+    // zero-progress cycles), rather than silently burning every remaining
+    // cycle.
+    console.log('Running mock sprint scenario (stall-abort: zero progress every cycle)...');
+    const stalled = await runDevelopLoopScenario('stalled', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: Never actually closes' }],
+        maxCycles: 5,
+        doerHandler: async ({ opts }) => {
+            const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+            const ids = match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+            // Deliberately never runs `bd close` -- the bead stays ready
+            // forever and the closed-bead count in scope never advances.
+            return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Claims done, never actually closes.' }) }] };
+        },
+        reviewerHandler: async () => ({
+            content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved (mock never inspects real state).', reopenIds: [], newTasks: [] }) }]
+        }),
+    });
+    check(!!stalled.error, 'Expected engine.executeFile() to reject with a stall abort, but it resolved successfully');
+    check(
+        stalled.error instanceof StalledSprintError,
+        `Expected a StalledSprintError, got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'no error'}`
+    );
+    check(
+        stalled.error && stalled.error.staleCycles === 2,
+        `Expected the StalledSprintError to report staleCycles === 2, got: ${stalled.error ? JSON.stringify(stalled.error.staleCycles) : 'n/a'}`
+    );
+    // The abort must land well before the max_cycles=5 ceiling -- assert the
+    // "Sprint Cycle N" group-start count implied by the closed-count history
+    // recorded on the error is short (<=3 cycles), not 5.
+    check(
+        stalled.error && Array.isArray(stalled.error.closedCountHistory) && stalled.error.closedCountHistory.length <= 3,
+        `Expected the stall abort to fire within 3 cycles (well before max_cycles=5), got closedCountHistory: ${stalled.error ? JSON.stringify(stalled.error.closedCountHistory) : 'n/a'}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw.17 (A5) acceptance criterion 3: goal-priority exit --
+    // a P3 open bead does not block P1/P2 goal completion
+    // =========================================================================
+    console.log('Running mock sprint scenario (goal-priority exit: P3 bead left open)...');
+    const goalPriority = await runDevelopLoopScenario('goalpriority', {
+        members: ['local'],
+        taskSpecs: [
+            { title: 'Task: In-goal P2 work' },
+            { title: 'Task: Out-of-goal P3 work', priority: 'P3' },
+        ],
+        maxCycles: 1,
+        // Close only the in-goal (P2, default-priority) task; deliberately
+        // leave the P3 task open every round -- it must never be dispatched
+        // as "blocking" the P1/P2 goal from completing.
+        doerHandler: async ({ opts, tempDir: td }) => {
+            const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+            const ids = match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+            const listRes = JSON.parse((await runCmd('bd list --json', td)).stdout || '[]');
+            const p3Task = listRes.find((b) => b.title === 'Task: Out-of-goal P3 work');
+            for (const id of ids) {
+                if (p3Task && id === p3Task.id) continue; // never close the out-of-goal task
+                await runCmd(`bd close ${id}`, td);
+            }
+            return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids.filter((id) => !p3Task || id !== p3Task.id), notes: 'Closed in-goal work only.' }) }] };
+        },
+        reviewerHandler: async () => ({
+            content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'In-goal work approved.', reopenIds: [], newTasks: [] }) }]
+        }),
+    });
+    check(!goalPriority.error, `Goal-priority scenario should not throw: ${goalPriority.error ? goalPriority.error.message : ''}`);
+    check(
+        goalPriority.result && goalPriority.result.status === 'success',
+        `Expected goal-priority completion (P1/P2) despite an open P3 bead, got: ${JSON.stringify(goalPriority.result)}`
+    );
+    const inGoalId = goalPriority.tasks.find((t) => t.title === 'Task: In-goal P2 work').id;
+    const outOfGoalId = goalPriority.tasks.find((t) => t.title === 'Task: Out-of-goal P3 work').id;
+    check(
+        goalPriority.finalBeadsById.get(inGoalId) && goalPriority.finalBeadsById.get(inGoalId).status === 'closed',
+        `Expected the in-goal (P2) bead to be closed, got: ${JSON.stringify(goalPriority.finalBeadsById.get(inGoalId))}`
+    );
+    check(
+        goalPriority.finalBeadsById.get(outOfGoalId) && goalPriority.finalBeadsById.get(outOfGoalId).status !== 'closed',
+        `Expected the out-of-goal (P3) bead to remain open (never blocking completion), got: ${JSON.stringify(goalPriority.finalBeadsById.get(outOfGoalId))}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw.17 (A6) acceptance criterion 4: a final verdict of FAIL
+    // propagates to the workflow's returned status, and no unconditional
+    // {status:'success'} exists in runner.js's source
+    // =========================================================================
+    console.log('Running mock sprint scenario (explicit final verdict FAIL propagates)...');
+    const explicitFail = await runDevelopLoopScenario('explicitfail', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: Fully closed but explicitly failed by final review' }],
+        maxCycles: 1,
+        finalReviewHandler: async () => ({
+            content: [{ text: JSON.stringify({ verdict: 'FAIL', notes: 'Explicit test-injected FAIL despite all beads closing.' }) }]
+        }),
+    });
+    check(!explicitFail.error, `Explicit-FAIL scenario should not throw: ${explicitFail.error ? explicitFail.error.message : ''}`);
+    check(
+        explicitFail.result && explicitFail.result.status === 'failed',
+        `Expected a FAIL final verdict to produce status:'failed', got: ${JSON.stringify(explicitFail.result)}`
+    );
+    check(
+        explicitFail.result && explicitFail.result.verdict === 'FAIL' && explicitFail.result.notes === 'Explicit test-injected FAIL despite all beads closing.',
+        `Expected the final verdict/notes to be surfaced on the result, got: ${JSON.stringify(explicitFail.result)}`
+    );
+
+    const runnerSource = await fs.readFile(path.join(__dirname, '../auto-sprint/runner.js'), 'utf-8');
+    check(
+        !/return\s*\{\s*status:\s*'success'/.test(runnerSource),
+        'runner.js source must not contain an unconditional return { status: \'success\', ... } -- the return value must be verdict-driven (A6)'
+    );
+    check(
+        /status:\s*finalVerdictResult\.verdict\s*===\s*'PASS'\s*\?\s*'success'\s*:\s*'failed'/.test(runnerSource),
+        'runner.js source must derive the returned status from the final verdict (A6)'
+    );
+
+    // =========================================================================
+    // apra-fleet-unw.17 (A4) acceptance criterion 5: a probe failure SKIPS
+    // the dependent phase instead of throwing/killing the sprint
+    // =========================================================================
+    console.log('Running mock sprint scenario (deploy.md probe command fails -> phase skipped, no throw)...');
+    const probeFailure = await runDevelopLoopScenario('probefailure', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: Probe-failure scenario work' }],
+        maxCycles: 1,
+        withRunbooks: true,
+        // Fail only the deploy.md existence probe; the integ-test-playbook.md
+        // probe (and every other command) runs normally.
+        commandFailurePattern: /node -e .*deploy\.md/,
+    });
+    check(!probeFailure.error, `Probe-failure scenario should not throw/kill the sprint: ${probeFailure.error ? probeFailure.error.message : ''}`);
+    check(
+        !probeFailure.dispatched.some((d) => d.agent === 'deployer'),
+        `Expected the Deploy phase to be skipped after the probe failure (no deployer dispatch), got: ${JSON.stringify(probeFailure.dispatched.map((d) => d.agent))}`
+    );
+    check(
+        !probeFailure.dispatched.some((d) => d.agent === 'integ-test-runner'),
+        `Expected the Integ Test phase to also be skipped (deploy never ran), got: ${JSON.stringify(probeFailure.dispatched.map((d) => d.agent))}`
+    );
+    check(
+        probeFailure.logs.some((m) => m.includes("Probe for 'deploy.md' failed")),
+        `Expected a logged warning naming the failed probe, logs: ${JSON.stringify(probeFailure.logs)}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw.17 (A5) acceptance criterion 6: bd JSON noise produces a
+    // diagnostic error naming the command, not a bare SyntaxError
+    // =========================================================================
+    let bdJsonNoiseError = null;
+    try {
+        parseBdJson('WARN: some deprecation notice\n[]', 'bd list --parent bd-1 --ready --json');
+    } catch (err) {
+        bdJsonNoiseError = err;
+    }
+    check(!!bdJsonNoiseError, 'Expected parseBdJson() to throw on noisy (non-JSON) bd output');
+    check(
+        !(bdJsonNoiseError instanceof SyntaxError),
+        `Expected a diagnostic Error, not a bare SyntaxError, got: ${bdJsonNoiseError ? bdJsonNoiseError.constructor.name : 'n/a'}`
+    );
+    check(
+        bdJsonNoiseError && bdJsonNoiseError.message.includes("bd list --parent bd-1 --ready --json"),
+        `Expected the diagnostic error to name the offending command, got: ${bdJsonNoiseError ? bdJsonNoiseError.message : 'n/a'}`
+    );
+    check(
+        bdJsonNoiseError && bdJsonNoiseError.message.includes('WARN: some deprecation notice'),
+        `Expected the diagnostic error to include a raw-output snippet, got: ${bdJsonNoiseError ? bdJsonNoiseError.message : 'n/a'}`
+    );
 
     if (failures.length > 0) {
         console.error('\nFAIL advanced-mock-runner-test.mjs:');

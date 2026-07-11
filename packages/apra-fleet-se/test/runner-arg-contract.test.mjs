@@ -220,7 +220,33 @@ function buildSpyFleetApi() {
                 };
             }
             if (opts.agent === 'reviewer') {
-                return { content: [{ text: 'Approved. Pass.' }] };
+                // apra-fleet-unw.17: the Final Review dispatch (agentType
+                // 'reviewer', finalVerdict schema) is distinguished from a
+                // regular per-round review (reviewerVerdict schema) by its
+                // fixed prompt prefix (buildFinalVerdictPrompt) -- both are
+                // schema-validated JSON now, not free text.
+                if (opts.prompt.startsWith('Final review for sprint scope issue id(s):')) {
+                    return { content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'Looks good.' }) }] };
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'APPROVED',
+                            notes: 'Approved.',
+                            reopenIds: [],
+                            newTasks: [],
+                        })
+                    }]
+                };
+            }
+            if (opts.agent === 'deployer') {
+                return { content: [{ text: JSON.stringify({ deployed: true, notes: 'Deployed.' }) }] };
+            }
+            if (opts.agent === 'integ-test-runner') {
+                return { content: [{ text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'OK.' }) }] };
+            }
+            if (opts.agent === 'harvester') {
+                return { content: [{ text: JSON.stringify({ status: 'OK', notes: 'Harvested.' }) }] };
             }
             return { content: [{ text: 'ok' }] };
         },

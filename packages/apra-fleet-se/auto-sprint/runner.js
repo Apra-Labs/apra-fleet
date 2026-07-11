@@ -1,7 +1,10 @@
 import fs from 'fs/promises';
 import { AgentOutputError } from '@apralabs/apra-fleet-workflow';
-import { ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment, wrapUntrustedBlock } from './contracts.mjs';
-import { SprintPlanRejectedError } from './errors.mjs';
+import {
+    ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
+    deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
+} from './contracts.mjs';
+import { SprintPlanRejectedError, StalledSprintError } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop (apra-fleet-unw.16)
@@ -28,6 +31,67 @@ const ROLE_DOER = roleConst('doer');
 const ROLE_REVIEWER = roleConst('reviewer');
 
 export const meta = { name: 'auto-sprint-runner' };
+
+// ---------------------------------------------------------------------------
+// bd JSON-parse helper (apra-fleet-unw.17, A5 work item 3)
+// ---------------------------------------------------------------------------
+//
+// Before this issue, every `bd list ... --json` call site did a bare
+// `JSON.parse(res || '[]')`. Any noise on stdout ahead of the JSON payload
+// (a stray warning line, a deprecation notice, etc. -- anything that isn't
+// itself valid JSON) produced a bare `SyntaxError: Unexpected token ...`
+// with no indication of which `bd` command produced it, deep inside a
+// multi-cycle sprint run. This helper names the offending command and
+// includes a snippet of the raw output in the thrown error so a human/CI
+// reading the failure can immediately tell what went wrong and why, instead
+// of just seeing "SyntaxError" and having to bisect the whole run.
+/**
+ * @param {string} raw - the raw text returned by `command()`
+ * @param {string} commandLabel - the `bd` command that produced `raw`, for diagnostics
+ * @returns {any}
+ */
+export function parseBdJson(raw, commandLabel) {
+    const text = raw === undefined || raw === null || raw === '' ? '[]' : raw;
+    try {
+        return JSON.parse(text);
+    } catch (err) {
+        const snippet = text.length > 500 ? `${text.slice(0, 500)}... (truncated, ${text.length} chars total)` : text;
+        throw new Error(
+            `[bd JSON Parse Error] Failed to parse JSON output from '${commandLabel}': ${err.message}. ` +
+            `Raw output snippet: ${JSON.stringify(snippet)}`
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Goal-priority helpers (apra-fleet-unw.17, A5 work item 3)
+// ---------------------------------------------------------------------------
+//
+// `validated.goal` is a slash-separated list of priorities (e.g. 'P1',
+// 'P1/P2', 'P1/P2/P3'), already validated against GOAL_PATTERN above. The
+// sprint's real completion/exit condition (as opposed to "is there ready
+// work to dispatch RIGHT NOW", which `--ready` still answers correctly for
+// within-cycle dispatch purposes) is: are there any NOT-YET-CLOSED beads in
+// scope at or above (numerically <=) the worst priority named in the goal?
+// `bd list --priority-max=Pn` is inclusive of Pn, so the "worst" (highest
+// numeric) priority in the goal is exactly the right `--priority-max` value.
+/**
+ * @param {string} goal - e.g. 'P1', 'P1/P2', 'P1/P2/P3'
+ * @returns {string} the lowest-priority (highest 'Pn' number) tier named in `goal`, e.g. 'P2'
+ */
+export function goalPriorityMax(goal) {
+    const tiers = goal.split('/').map((p) => Number(p.slice(1)));
+    const worst = Math.max(...tiers);
+    return `P${worst}`;
+}
+
+// Every status that means "not yet done" for exit-condition purposes --
+// deliberately NOT `--ready`, which only reflects "dispatchable right now"
+// and silently excludes blocked/orphaned in_progress beads (the exact A5
+// bug: `bd list --ready == []` used to be misread as "the sprint is done"
+// even when a bead was stuck blocked or left in_progress with no doer ever
+// finishing it).
+const NOT_DONE_STATUSES = 'open,in_progress,blocked';
 
 // We can import standard node modules in workflows if needed, or pass them in context.
 // For now, we'll assume we check runbooks via command() since we are in the workflow engine.
@@ -392,6 +456,75 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
     ].join('\n\n');
 }
 
+// ---------------------------------------------------------------------------
+// Finalization prompt builders (apra-fleet-unw.17, A6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the self-contained Final Review prompt (finalVerdict schema). Per
+ * the A6 finding, the old prompt was the literal string 'Pass or Fail?' with
+ * no context at all -- the reviewer had nothing to actually evaluate, so its
+ * answer was necessarily a rubber stamp. This prompt instead embeds the real
+ * evidence gathered by the orchestrator over the run: the sprint scope,
+ * branch/base-branch (so the reviewer can diff for itself), and the actual
+ * bead-count / deploy / integ-test evidence -- so a returned PASS reflects
+ * something concrete rather than being unconditionally assumed.
+ * @param {{
+ *   targetIssues: string[], branch: string, baseBranch: string, goal: string,
+ *   cyclesRun: number, closedCount: number, openAtGoalCount: number,
+ *   deployFailures: Array<{cycle: number, notes: string}>,
+ *   integFailures: Array<{cycle: number, notes: string, bugsFiled: string[]}>,
+ * }} opts
+ * @returns {string}
+ */
+function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures }) {
+    const lines = [
+        `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
+        `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
+        `Evidence: ${closedCount} bead(s) closed in scope; ${openAtGoalCount} bead(s) still open at or above goal priority ${goal}.`,
+        `Diff range to review if useful: ${baseBranch}..${branch} (base_branch..branch).`,
+    ];
+    if (deployFailures.length > 0) {
+        lines.push(
+            `Deploy phase FAILED in ${deployFailures.length} cycle(s): ` +
+            deployFailures.map((d) => `C${d.cycle}: ${d.notes}`).join(' | ')
+        );
+    }
+    if (integFailures.length > 0) {
+        lines.push(
+            `Integration tests FAILED in ${integFailures.length} cycle(s): ` +
+            integFailures.map((d) => `C${d.cycle} (bugsFiled: ${d.bugsFiled.join(', ') || 'none'}): ${d.notes}`).join(' | ')
+        );
+    }
+    lines.push(
+        'Return a PASS/FAIL verdict per your agent contract, grounded in the evidence above -- ' +
+        'never rubber-stamp PASS regardless of open goal-priority beads or deploy/integration failures.'
+    );
+    return lines.join('\n\n');
+}
+
+/**
+ * Builds the self-contained Harvester dispatch prompt, per the vendored
+ * harvester.md contract's documented inputs (branch/base-branch). This
+ * runner does not currently wire real per-run journal/cost-accounting data
+ * into the dispatch (that would require threading FleetWorkflow's budget
+ * object and journal state through to this prompt, out of scope for this
+ * issue) -- rather than fabricate an analysisText/costAnalysis, the prompt
+ * explicitly tells the harvester those inputs are unavailable so it marks
+ * the steps that depend on them as skipped instead of inventing numbers.
+ * @param {{ branch: string, baseBranch: string, targetIssues: string[] }} opts
+ * @returns {string}
+ */
+function buildHarvesterPrompt({ branch, baseBranch, targetIssues }) {
+    return [
+        `Harvest durable knowledge for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
+        `Branch: ${branch} (base: ${baseBranch}).`,
+        'Update docs/, README/CHANGELOG (including a cost-analysis block), and defer low-priority issues, per your agent contract.',
+        'This run did not wire real per-run journal/cost-accounting data into this dispatch: treat analysisText/costAnalysis ' +
+        'inputs as UNAVAILABLE, and explicitly mark any harvester step that depends on them as skipped rather than fabricating figures.',
+    ].join('\n\n');
+}
+
 // Mechanical migration to the WorkflowEngine's ES-module entry-point contract
 // (apra-fleet-unw.7): the engine now calls `main(context)` instead of
 // injecting bare globals into an AsyncFunction scope. This destructure is the
@@ -481,7 +614,7 @@ export async function main(context) {
     async function updateDashboard() {
         try {
             const listRes = await command(`bd list ${sprintFilter} --json`, { member_name: orchestratorMember, silent: true });
-            const tasks = JSON.parse(listRes || '[]');
+            const tasks = parseBdJson(listRes, `bd list ${sprintFilter} --json`);
             if (typeof publishState === 'function') {
                 publishState('beads', { tasks });
             }
@@ -490,13 +623,69 @@ export async function main(context) {
         }
     }
 
+    // Runbook-file probe (apra-fleet-unw.17, A4): a single, platform-
+    // agnostic probe -- one `node -e` invocation with plain, non-nested
+    // single-quoted JS string literals inside a double-quoted shell
+    // argument (no backslash-escaped-quote-inside-quote traps), dispatched
+    // via `command(..., { failSoft: true })` so a probe failure (transient
+    // error, a member-side portability quirk, etc.) can NEVER throw and
+    // kill the sprint -- it just means "skip the dependent phase", logged
+    // as a warning. A first-class fileExists fleet API is descoped
+    // (server-side change; see docs/plan.md) -- this is the client-side
+    // best-effort substitute.
+    async function probeFileExists(filename) {
+        const res = await command(
+            `node -e "console.log(require('fs').existsSync('${filename}') ? 'found' : 'not found')"`,
+            { member_name: orchestratorMember, silent: true, label: `Probe for '${filename}'`, failSoft: true }
+        );
+        if (!res.ok) {
+            log(`Probe for '${filename}' failed (treating as not-found, skipping the dependent phase): ${res.error}`);
+            return false;
+        }
+        return res.output.trim() === 'found';
+    }
+
     await updateDashboard();
 
     const initialList = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-    const initialBeads = JSON.parse(initialList || '[]');
+    const initialBeads = parseBdJson(initialList, `bd list ${sprintFilter} --ready --json`);
     if (initialBeads.length === 0) {
         throw new Error(`Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}'. Ensure beads are in 'open' or 'ready' status.`);
     }
+
+    // =======================
+    // A5: goal-priority exit condition + stall-abort bookkeeping
+    // =======================
+    //
+    // `goalMax` is the worst ('Pn' with the highest n) priority tier named
+    // in the sprint's `goal` -- the real completion check below is "zero
+    // NOT_DONE_STATUSES beads in scope at or above (numerically <=) this
+    // priority", NOT "bd list --ready returned []" (see NOT_DONE_STATUSES
+    // comment above and the Cycle Evaluation section below).
+    const goalMax = goalPriorityMax(validated.goal);
+
+    // Stall detection: per the pm skill mandate cited in the issue text,
+    // abort with a typed StalledSprintError after two consecutive cycles
+    // that closed zero net NEW beads in scope -- rather than silently
+    // burning every remaining cycle up to max_cycles on a sprint that has
+    // stopped making forward progress (e.g. a develop/review loop that
+    // keeps reopening and re-failing the exact same bead(s)).
+    const STALL_CYCLE_LIMIT = 2;
+    let staleCycles = 0;
+    let lastClosedCount = null;
+    const closedCountHistory = [];
+
+    // Deploy/Integration failure evidence (A4), threaded into the Final
+    // Review's evidence-based prompt (A6) below -- never silently swallowed.
+    const deployFailures = [];
+    const integFailures = [];
+
+    // Populated with the last Develop/Review loop's reviewer verdict for
+    // each cycle (A5 work item 3: goal-priority completion requires BOTH
+    // zero open goal-priority beads AND an APPROVED last reviewer verdict --
+    // a cycle where the ready-bead list happened to empty out while the
+    // last review round was still CHANGES_NEEDED must not be read as done).
+    let lastReviewVerdict = null;
 
     while (cycle <= MAX_CYCLES) {
         group(`Sprint Cycle ${cycle}`);
@@ -596,13 +785,21 @@ export async function main(context) {
         // 2. Execution Prep
         // =======================
         const listRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-        const readyBeads = JSON.parse(listRes || '[]');
+        const readyBeads = parseBdJson(listRes, `bd list ${sprintFilter} --ready --json`);
 
+        // A5: an empty `--ready` list is NOT, by itself, evidence the sprint
+        // is complete -- it only means there's nothing dispatchable to a
+        // doer THIS cycle (e.g. everything is currently blocked or
+        // in_progress). The real completion decision happens in the Cycle
+        // Evaluation section below, using the goal-priority `--status`
+        // check. Here we simply skip the Develop/Review loop for this cycle
+        // when there's nothing ready, and still run Deploy/Integration +
+        // Cycle Evaluation so a permanently-blocked bead is surfaced by the
+        // stall-abort / final-verdict evidence rather than by this loop
+        // silently `break`-ing out and being mistaken for success.
         if (readyBeads.length === 0) {
-            log("No ready beads found. Sprint may be complete.");
-            break;
-        }
-
+            log('No ready beads to dispatch this cycle (may be blocked/in_progress work remaining) -- skipping Develop/Review loop for this cycle.');
+        } else {
         // =======================
         // 3. Develop & Review Loop (apra-fleet-unw.16)
         // =======================
@@ -626,7 +823,7 @@ export async function main(context) {
 
         while (devRounds < 3) {
             const currentListRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-            const currentReady = JSON.parse(currentListRes || '[]');
+            const currentReady = parseBdJson(currentListRes, `bd list ${sprintFilter} --ready --json`);
 
             if (currentReady.length === 0) break;
 
@@ -721,7 +918,7 @@ export async function main(context) {
                 // success-looking text/report but leaves a bead open is
                 // treated as a FAILED streak regardless of what it said.
                 const showRes = await command(`bd show ${beadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true });
-                const showBeads = JSON.parse(showRes || '[]');
+                const showBeads = parseBdJson(showRes, `bd show ${beadIds.join(' ')} --json`);
                 const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
                 const unclosedIds = beadIds.filter((id) => statusById.get(id) !== 'closed');
 
@@ -774,6 +971,11 @@ export async function main(context) {
                 }
             }
             log(`Reviewer: ${JSON.stringify(verdict)}`);
+            // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
+            // Evaluation section's completion check below -- goal-priority
+            // completion requires this to be exactly 'APPROVED', not just
+            // an empty ready-bead list.
+            lastReviewVerdict = verdict.verdict;
 
             // Orchestrator (this code) -- NOT the LLM -- applies every
             // structured transition: reopenIds via `bd update --status=open`,
@@ -803,7 +1005,7 @@ export async function main(context) {
             await updateDashboard();
 
             const checkRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-            const stillOpen = JSON.parse(checkRes || '[]');
+            const stillOpen = parseBdJson(checkRes, `bd list ${sprintFilter} --ready --json`);
 
             if (stillOpen.length === 0) {
                 break;
@@ -811,59 +1013,203 @@ export async function main(context) {
                 log(`System found ${stillOpen.length} beads still open/ready. Looping back to develop.`);
             }
         }
+        } // end Develop & Review loop (skipped when readyBeads.length === 0)
 
         // =======================
-        // 4. Deploy & Integration
+        // 4. Deploy & Integration (A4: real dispatch, honest propagation)
         // =======================
-        const deployCheck = await command('node -e "require(\'fs\').existsSync(\'deploy.md\') ? console.log(\'found\') : console.log(\'not found\')"', { member_name: orchestratorMember, silent: true });
-        const hasDeploy = !deployCheck.includes('not found');
-        const playCheck = await command('node -e "require(\'fs\').existsSync(\'integ-test-playbook.md\') ? console.log(\'found\') : console.log(\'not found\')"', { member_name: orchestratorMember, silent: true });
-        const hasPlaybook = !playCheck.includes('not found');
+        //
+        // Runbook probes (feedback.md A4): a single platform-agnostic probe
+        // helper, dispatched via `command(..., { failSoft: true })`. A probe
+        // failure (transient error, portability quirk on a given member,
+        // etc.) SKIPS the dependent phase with a logged warning -- it must
+        // never throw and kill the sprint (that was the old behavior: a
+        // transient probe hiccup took down the whole run). A first-class
+        // fileExists fleet API is descoped (server-side; see docs/plan.md).
+        const hasDeploy = await probeFileExists('deploy.md');
+        const hasPlaybook = await probeFileExists('integ-test-playbook.md');
+
+        let deployedThisCycle = hasDeploy ? null : false; // null = not attempted yet
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
-            await agent('Deploy to test env using deploy.md.', { member_name: getMemberForRole('deployer'), agentType: 'deployer' });
+            let deployResult;
+            try {
+                deployResult = await agent(
+                    'Deploy to test env using deploy.md.',
+                    { member_name: getMemberForRole('deployer'), agentType: 'deployer', schema: deployerReport }
+                );
+            } catch (err) {
+                if (err instanceof AgentOutputError) {
+                    log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
+                    deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
+                } else {
+                    throw err;
+                }
+            }
+            log(`Deployer: ${JSON.stringify(deployResult)}`);
+            deployedThisCycle = deployResult.deployed === true;
+            if (!deployedThisCycle) {
+                deployFailures.push({ cycle, notes: deployResult.notes });
+                log(`Deploy FAILED this cycle (C${cycle}): ${deployResult.notes}. Skipping Integration Test phase.`);
+            }
         } else {
-            log('Skipping Deploy Phase (no deploy.md found)');
+            log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
 
-        if (hasPlaybook) {
+        if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
-            await agent(
-                'Run tests using integ-test-playbook.md. Add bug beads if needed.',
-                { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner' }
-            );
+            let integResult;
+            try {
+                integResult = await agent(
+                    'Run tests using integ-test-playbook.md. Add bug beads if needed.',
+                    { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner', schema: integReport }
+                );
+            } catch (err) {
+                if (err instanceof AgentOutputError) {
+                    log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
+                    integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
+                } else {
+                    throw err;
+                }
+            }
+            log(`Integ Test Runner: ${JSON.stringify(integResult)}`);
+            // A4: never swallow a failure just because the agent chose to
+            // (or didn't) file bugs -- `passed` is the honest source of
+            // truth, checked explicitly and propagated below regardless of
+            // `bugsFiled.length`.
+            if (integResult.passed !== true) {
+                integFailures.push({ cycle, notes: integResult.summary, bugsFiled: integResult.bugsFiled });
+                log(`Integration tests FAILED this cycle (C${cycle}, bugsFiled: ${integResult.bugsFiled.join(', ') || 'none'}): ${integResult.summary}`);
+            }
             await updateDashboard();
+        } else if (hasPlaybook && !deployedThisCycle) {
+            log('Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)');
         } else {
-            log('Skipping Integration Test Phase (no playbook found)');
+            log('Skipping Integration Test Phase (no playbook found, or the probe itself failed -- see prior log line)');
         }
 
         // =======================
-        // 5. Cycle Evaluation
+        // 5. Cycle Evaluation (A5: goal-priority exit + stall-abort)
         // =======================
-        const remainingRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-        const remaining = JSON.parse(remainingRes || '[]');
-        
-        if (remaining.length === 0) {
-            log("All beads closed. Exiting cycle loop.");
+        //
+        // Real completion is "zero NOT_DONE_STATUSES beads in scope at or
+        // above the goal priority AND the last reviewer verdict this cycle
+        // was APPROVED" -- deliberately NOT `bd list --ready == []`, which
+        // reads a permanently-blocked or orphaned in_progress bead as
+        // success (A5 bug). See goalPriorityMax()/NOT_DONE_STATUSES above.
+        const openAtGoalRes = await command(
+            `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`,
+            { member_name: orchestratorMember, silent: true, label: `Goal-priority open-bead check (<=${goalMax})` }
+        );
+        const openAtGoal = parseBdJson(openAtGoalRes, `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
+
+        // Stall detection: track the closed-bead count for the WHOLE sprint
+        // scope (not just goal-priority) so zero forward progress on ANY
+        // bead -- not only goal-priority ones -- is caught, per the issue
+        // text ("N consecutive iterations making no forward progress on any
+        // bead").
+        const closedRes = await command(
+            `bd list ${sprintFilter} --status=closed --json`,
+            { member_name: orchestratorMember, silent: true, label: 'Closed-bead count for stall detection' }
+        );
+        const closedCount = parseBdJson(closedRes, `bd list ${sprintFilter} --status=closed --json`).length;
+        closedCountHistory.push(closedCount);
+        if (lastClosedCount !== null && closedCount === lastClosedCount) {
+            staleCycles++;
+        } else {
+            staleCycles = 0;
+        }
+        lastClosedCount = closedCount;
+
+        if (staleCycles >= STALL_CYCLE_LIMIT) {
+            throw new StalledSprintError(
+                `Sprint stalled: ${staleCycles} consecutive cycle(s) closed zero net new bead(s) in scope '${sprintFilter}'. ` +
+                `Closed-count history: [${closedCountHistory.join(', ')}]. Aborting rather than burning the remaining cycles.`,
+                { staleCycles, closedCountHistory, cycle }
+            );
+        }
+
+        if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED') {
+            log(`Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.`);
             endGroup();
             break;
         }
-        
+
+        log(`Cycle ${cycle} evaluation: ${openAtGoal.length} bead(s) still open at/above goal priority ${goalMax}, last reviewer verdict: ${lastReviewVerdict ?? '(none this cycle)'}. Continuing.`);
+
         cycle++;
         endGroup();
     }
 
+    // A5: fix the cycle-label off-by-one -- when the loop exits because
+    // `cycle` exceeded MAX_CYCLES (rather than via an early `break`),
+    // `cycle` is MAX_CYCLES + 1 at this point; the labels below should
+    // report the last cycle actually run.
+    const finalCycleLabel = Math.min(cycle, MAX_CYCLES);
+
     // =======================
-    // 6. Finalization
+    // 6. Finalization (A6: evidence-based final verdict drives the return value)
     // =======================
     group('Finalization');
-    phase(`Final Review C${cycle}`);
-    const finalRes = await agent('Pass or Fail?', { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', label: 'Final Review' });
-    log(`Final Verdict: ${finalRes}`);
+    phase(`Final Review C${finalCycleLabel}`);
 
-    phase(`Harvest C${cycle}`);
-    await agent('Update memories and retrospectives.', { member_name: getMemberForRole('harvester'), agentType: 'harvester' });
+    const finalOpenAtGoalRes = await command(
+        `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`,
+        { member_name: orchestratorMember, silent: true, label: `Final goal-priority open-bead check (<=${goalMax})` }
+    );
+    const finalOpenAtGoal = parseBdJson(finalOpenAtGoalRes, `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
+    const finalClosedRes = await command(
+        `bd list ${sprintFilter} --status=closed --json`,
+        { member_name: orchestratorMember, silent: true, label: 'Final closed-bead count' }
+    );
+    const finalClosedCount = parseBdJson(finalClosedRes, `bd list ${sprintFilter} --status=closed --json`).length;
+
+    let finalVerdictResult;
+    try {
+        finalVerdictResult = await agent(
+            buildFinalVerdictPrompt({
+                targetIssues,
+                branch: validated.branch,
+                baseBranch: validated.baseBranch,
+                goal: validated.goal,
+                cyclesRun: finalCycleLabel,
+                closedCount: finalClosedCount,
+                openAtGoalCount: finalOpenAtGoal.length,
+                deployFailures,
+                integFailures,
+            }),
+            { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review' }
+        );
+    } catch (err) {
+        if (err instanceof AgentOutputError) {
+            log(`Final Review: schema-repair exhausted, treating as FAIL: ${err.message}`);
+            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}` };
+        } else {
+            throw err;
+        }
+    }
+    log(`Final Verdict: ${JSON.stringify(finalVerdictResult)}`);
+
+    phase(`Harvest C${finalCycleLabel}`);
+    const harvesterPrompt = buildHarvesterPrompt({ branch: validated.branch, baseBranch: validated.baseBranch, targetIssues });
+    let harvesterResult = null;
+    try {
+        harvesterResult = await agent(
+            harvesterPrompt,
+            { member_name: getMemberForRole('harvester'), agentType: 'harvester', schema: harvesterReport }
+        );
+        log(`Harvester: ${JSON.stringify(harvesterResult)}`);
+        if (harvesterResult.status !== 'OK') {
+            log(`Harvester reported FAILED: ${harvesterResult.notes}`);
+        }
+    } catch (err) {
+        if (err instanceof AgentOutputError) {
+            log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
+        } else {
+            throw err;
+        }
+    }
 
     // =======================
     // 7. Publish: push the sprint branch and raise (but do NOT merge) a PR
@@ -871,7 +1217,7 @@ export async function main(context) {
     // Per the pm skill's R12 rule (never auto-merge), this only pushes and
     // opens the PR -- a human (or a later, explicitly-scoped issue) must
     // review and merge it.
-    phase(`Publish PR C${cycle}`);
+    phase(`Publish PR C${finalCycleLabel}`);
     await command(
         `git push -u origin ${validated.branch}`,
         {
@@ -893,8 +1239,15 @@ export async function main(context) {
 
     endGroup();
 
+    // A6: the final verdict -- not a blanket, unconditional 'success' --
+    // drives the return value. A downstream caller (CLI, CI, a human
+    // reading the run) can now tell a genuinely-passing sprint from one
+    // that ran to completion but left goal-priority work open, a deploy
+    // failing, or integration tests red.
     return {
-        status: 'success',
+        status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
+        verdict: finalVerdictResult.verdict,
+        notes: finalVerdictResult.notes,
         branch: validated.branch,
         baseBranch: validated.baseBranch,
         goal: validated.goal,

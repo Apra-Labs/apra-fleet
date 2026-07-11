@@ -314,6 +314,15 @@ function buildRepairPrompt(originalPrompt, invalidOutput, errorsText) {
  * @property {AbortSignal} [signal] - Optional AbortSignal, passed through to
  *   ApraFleet.executeCommand / McpClient.request. See AgentOptions.signal above for details.
  *   (apra-fleet-unw.5)
+ * @property {boolean} [failSoft] - When true, command() never throws for a
+ *   command-level failure (CommandError / MemberNotFoundError /
+ *   FleetTransportError); it instead resolves to
+ *   `{ ok: boolean, output: string, error: string|null }`. A success also
+ *   resolves to that shape (`{ ok: true, output: <text>, error: null }`)
+ *   instead of the bare string, so callers don't have to branch on the
+ *   return type. `CancelledError` (cooperative `requestStop()`) is never
+ *   soft-caught -- it always throws, regardless of this option.
+ *   (apra-fleet-unw.17)
  */
 
 export class FleetWorkflow extends EventEmitter {
@@ -761,10 +770,32 @@ export class FleetWorkflow extends EventEmitter {
     }
 
     /**
-     * @param {string} cmd 
-     * @param {CommandOptions} [opts] 
+     * @param {string} cmd
+     * @param {CommandOptions} [opts]
      */
     async command(cmd, opts = {}) {
+        // (apra-fleet-unw.17, A4) `opts.failSoft`: when set, a command
+        // failure that would otherwise throw (a well-formed `isError`
+        // result -> CommandError, a "Member not found" text sniff ->
+        // MemberNotFoundError, or a transport-level rejection ->
+        // FleetTransportError) is instead returned to the caller as
+        // `{ ok: false, output: '', error: <message> }` -- and a success is
+        // returned as `{ ok: true, output: <text>, error: null }` instead of
+        // the bare string. This exists for callers like runner.js's
+        // deploy.md/integ-test-playbook.md file-existence probes, which must
+        // never let a transient/portability probe failure (e.g. a
+        // node-not-on-PATH quirk on some member) kill the whole sprint --
+        // the probe is best-effort; a failure just means "treat as not
+        // found" (skip the dependent phase), not "abort everything".
+        // Deliberately does NOT catch CancelledError (cooperative
+        // requestStop() cancellation must still unwind the run even for a
+        // failSoft caller -- swallowing that would defeat requestStop()).
+        const failSoft = !!opts.failSoft;
+        const softFail = (err) => {
+            if (err instanceof CancelledError) throw err;
+            if (!failSoft) throw err;
+            return { ok: false, output: '', error: err.message };
+        };
         if (!opts.member_name && !opts.member_id) {
             throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
         }
@@ -879,12 +910,12 @@ export class FleetWorkflow extends EventEmitter {
             }
 
             this.emit('activity:end', { ...activityMeta, duration, success: true, output: outText });
-            return outText;
+            return failSoft ? { ok: true, output: outText, error: null } : outText;
         } catch (error) {
             console.error(`[Command API Error]`, error.message || error);
             if (error instanceof WorkflowError) {
                 this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
-                throw error;
+                return softFail(error);
             }
             const duration = Date.now() - activityMeta.startTime;
             // apra-fleet-unw.10: see the matching comment in agent() above.
@@ -894,7 +925,7 @@ export class FleetWorkflow extends EventEmitter {
                 throw cancelErr;
             }
             this.emit('activity:end', { ...activityMeta, error: error.message || error, duration, success: false });
-            throw new FleetTransportError(`[Workflow Error] Transport failure while executing command: ${error.message || error}`, { details: { payload }, cause: error });
+            return softFail(new FleetTransportError(`[Workflow Error] Transport failure while executing command: ${error.message || error}`, { details: { payload }, cause: error }));
         }
     }
 
