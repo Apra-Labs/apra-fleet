@@ -168,8 +168,14 @@ async function teardown(tempDir, server) {
         } catch(e) {}
     }
     if (tempDir) {
-        await fs.rm(tempDir, { recursive: true, force: true });
-        console.log("Cleaned up temp DB at: " + tempDir);
+        try {
+            if (fsSync.existsSync(tempDir)) {
+                fsSync.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+                console.log("Cleaned up temp DB at: " + tempDir);
+            }
+        } catch(e) {
+            console.warn("Could not fully clean up temp dir:", e);
+        }
     }
     process.exit(0);
 }
