@@ -1,6 +1,8 @@
 export const meta = { name: 'test-schema-garbage' };
 
-async function main() {
+export async function main(context) {
+    const { agent, phase } = context;
+
     phase('Test Edge Case: LLM Parse Failure');
     
     // We explicitly bait the LLM to return non-JSON plain text,

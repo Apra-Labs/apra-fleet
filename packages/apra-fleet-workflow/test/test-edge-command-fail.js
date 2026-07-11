@@ -1,6 +1,8 @@
 export const meta = { name: 'test-edge-command-fail' };
 
-async function main() {
+export async function main(context) {
+    const { command, phase } = context;
+
     phase('Test Edge Case: Command failure');
     
     // We execute a completely non-existent binary to force the command dispatcher to fail

@@ -3,7 +3,10 @@ export const meta = {
     description: 'A skeleton sprint runner workflow imitating the core logic of auto-sprint runner.js using new workflow primitives' 
 };
 
-async function main(opts = {}) {
+export async function main(context) {
+    const { agent, command, log, phase, pipeline, args } = context;
+
+    const opts = args || {};
     const issues = opts.issues || ['BD-1', 'BD-2'];
     const maxCycles = opts.max_cycles || 2;
     const memberName = opts.member_name || 'apra-pm';

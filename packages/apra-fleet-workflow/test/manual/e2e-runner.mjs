@@ -3,6 +3,8 @@
 // online local member. See test/manual/README.md for details and the beads
 // issue that tracks real live-fleet E2E coverage (currently untracked -- see
 // README gap note).
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
@@ -10,52 +12,12 @@ import { FleetWorkflow } from '../../src/workflow/index.mjs';
 import { WorkflowEngine } from '../../src/workflow/engine.mjs';
 import { createDashboardViewer } from '../../src/viewer/index.mjs';
 
-const e2eScript = `
-export const meta = { name: "E2E Safe Harness", phases: ["Discovery", "Non-Destructive Execution"] };
-
-async function main() {
-    phase("Discovery");
-    log("Available targets: " + args.targets.map(t => t.name).join(", "));
-    
-    if (args.targets.length === 0) {
-        throw new Error("No active members found on the Apra Fleet grid. Cannot run E2E.");
-    }
-
-    phase("Non-Destructive Execution");
-    const results = await sequential(args.targets, async (target) => {
-        log("Testing command on " + target.name);
-        
-        // 1. A safe echo command
-        const cmdRes = await command('echo "E2E Validation for " {{name}}', { 
-            member_name: target.name, 
-            substitutions: { name: target.name }
-        });
-        
-        if (!cmdRes.includes("E2E Validation")) {
-            throw new Error("Command output validation failed on " + target.name);
-        }
-        
-        log("Command test passed on " + target.name);
-        
-        // 2. A safe LLM prompt asking for a specific string
-        log("Testing agent prompt on " + target.name);
-        const agentRes = await agent("Reply exactly with the word: E2ESAFE", { 
-            member_name: target.name, 
-            effort: "low" 
-        });
-        
-        if (!agentRes || !agentRes.includes("E2ESAFE")) {
-            log("Warning: Agent prompting validation failed or returned unexpected data on " + target.name + ". (Could be mock limitations)");
-        } else {
-            log("Agent test passed on " + target.name);
-        }
-
-        return target.name;
-    });
-    
-    return { status: "success", testedMembers: results };
-}
-`;
+// executeSource() (inline string execution) was removed in apra-fleet-unw.7 --
+// workflow scripts are now loaded as real ES modules via import(), which
+// requires an actual file. The script previously inlined here as a template
+// string now lives at ./e2e-harness-script.mjs and is run via executeFile().
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const e2eScriptPath = path.join(__dirname, 'e2e-harness-script.mjs');
 
 async function main() {
     console.log('Connecting to apra-fleet...');
@@ -92,7 +54,7 @@ async function main() {
         console.log(`Found ${activeMembers.length} valid target members:`, activeMembers.map(m => m.name));
 
         console.log('\n--- Executing E2E Workflow ---');
-        const finalResult = await engine.executeSource(e2eScript, { targets: activeMembers });
+        const finalResult = await engine.executeFile(e2eScriptPath, { targets: activeMembers });
         
         console.log('\n--- E2E Complete ---');
         console.log(finalResult);

@@ -74,18 +74,32 @@ function createEngine() {
 const fixture = (name) => path.join(__dirname, name);
 
 describe('WorkflowEngine executing fixture scripts against a mock fleet API', () => {
-    test('vetting rejects a risky script by default', async () => {
+    test('vetting warns but never blocks a risky script by default (advisory only, apra-fleet-unw.7)', async () => {
         const { engine } = createEngine();
-        await assert.rejects(
-            () => engine.executeFile(fixture('test-vetting.js')),
-            /rejected by VettingEngine/
-        );
+        const originalWarn = console.warn;
+        const warnings = [];
+        console.warn = (...args) => warnings.push(args.join(' '));
+        try {
+            const result = await engine.executeFile(fixture('test-vetting.js'));
+            assert.strictEqual(result.status, 'success');
+        } finally {
+            console.warn = originalWarn;
+        }
+        assert.ok(warnings.some((w) => w.includes('VettingEngine') && w.includes('flagged')), 'expected a VettingEngine warning to be logged even though execution proceeded');
     });
 
-    test('vetting can be bypassed with forceOverrideRisk', async () => {
+    test('vetting still runs and does not block when the legacy boolean forceOverrideRisk arg is passed', async () => {
         const { engine } = createEngine();
         await assert.doesNotReject(
             () => engine.executeFile(fixture('test-vetting.js'), {}, true)
+        );
+    });
+
+    test('strict mode ({ strictVetting: true }) blocks a script flagged above the risk threshold', async () => {
+        const { engine } = createEngine();
+        await assert.rejects(
+            () => engine.executeFile(fixture('test-vetting.js'), {}, { strictVetting: true }),
+            /rejected by VettingEngine in strict mode/
         );
     });
 

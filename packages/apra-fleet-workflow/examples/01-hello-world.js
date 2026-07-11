@@ -3,7 +3,9 @@ export const meta = {
     description: 'A simple hello world workflow demonstrating agent and command primitives' 
 };
 
-async function main() {
+export async function main(context) {
+    const { agent, command, log, phase } = context;
+
     phase('Hello World Setup');
     log('Starting the hello world workflow...');
     

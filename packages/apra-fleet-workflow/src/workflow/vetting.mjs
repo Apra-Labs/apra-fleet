@@ -19,8 +19,13 @@ export class WorkflowAnalyzer {
 }
 
 /**
- * A basic analyzer that scans for obvious malicious patterns like fs/child_process imports
- * or process.env access, which shouldn't be in a declarative workflow script.
+ * A basic analyzer that scans for patterns worth a developer's attention --
+ * fs/child_process imports, process.env access, dynamic eval -- in a
+ * workflow script. This is a heuristic lint for code review purposes, not an
+ * enforcement mechanism: workflow scripts are trusted code that already runs
+ * with full Node.js privileges (see engine.mjs), so none of these patterns
+ * are actually "not allowed"; they're just worth a human glancing at before
+ * running an unfamiliar script.
  */
 export class BasicSecurityAnalyzer extends WorkflowAnalyzer {
     async analyze(sourceCode) {
@@ -29,11 +34,13 @@ export class BasicSecurityAnalyzer extends WorkflowAnalyzer {
 
         // In a real system, we'd use an AST parser (like Acorn or Babel) to inspect imports and globals.
         // For this first implementation, we use simple heuristic regex matching.
-        
+        // NOTE: as regex matching over source text, this is trivially bypassable (string
+        // concatenation, indirect references, etc.) -- it is not a security control, only a lint.
+
         if (/(?:import|require)\s*\(\s*(?:'|")(?:fs|child_process|crypto|os|net|http)(?:'|")\s*\)/i.test(sourceCode) ||
             /import\s+.*(?:'|")(?:fs|child_process|crypto|os|net|http)(?:'|")/i.test(sourceCode)) {
             riskScore = Math.max(riskScore, 80);
-            warnings.push("Imports a core Node.js system module which is not allowed in pure workflows.");
+            warnings.push("Imports a core Node.js system module -- worth a review pass, but not blocked (workflow scripts are trusted code with full Node privileges).");
         }
 
         if (/process\.env/i.test(sourceCode)) {
@@ -53,6 +60,14 @@ export class BasicSecurityAnalyzer extends WorkflowAnalyzer {
 /**
  * The Vetting Engine runs workflow scripts through all registered analyzers
  * to generate a cumulative risk assessment before execution.
+ *
+ * NOTE: this is an advisory lint, not a security boundary. Workflow scripts
+ * are TRUSTED code loaded as real ES modules with full Node.js privileges
+ * (see engine.mjs); a regex-based heuristic scan cannot meaningfully sandbox
+ * arbitrary JavaScript, and this class does not attempt to. Findings are
+ * logged as warnings; by default WorkflowEngine.executeFile() never blocks
+ * on them. Pass `{ strictVetting: true }` to executeFile() if you want
+ * high-risk scripts (riskScore > 50) to throw instead of just warn.
  */
 export class VettingEngine {
     constructor() {

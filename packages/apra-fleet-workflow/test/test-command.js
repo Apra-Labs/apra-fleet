@@ -1,6 +1,8 @@
 export const meta = { name: 'test-command' };
 
-async function main() {
+export async function main(context) {
+    const { agent, command, log, phase, sequential, transform } = context;
+
     phase('Test Command');
     
     // Testing command execution with substitutions

@@ -9,7 +9,9 @@ export const meta = { name: 'test-edge-missing-member' };
 // exercised by test-runner.test.mjs) to prove the thrown error propagates
 // out of the WorkflowEngine.
 
-async function main() {
+export async function main(context) {
+    const { command, phase } = context;
+
     phase('Test Edge Case: Missing Member Typed Error');
 
     // We explicitly target a member name that does not exist in the fleet.

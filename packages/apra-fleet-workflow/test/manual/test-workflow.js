@@ -4,9 +4,11 @@ export const meta = {
   phases: [{ title: 'Init', detail: 'Say hello' }, { title: 'Process', detail: 'Do work concurrently' }]
 };
 
-async function main() {
+export async function main(context) {
+  const { agent, log, phase, parallel, sequential, args } = context;
+
   log("Starting the workflow execution...");
-  
+
   phase('Init');
   const response = await agent('Say a nice short greeting', { 
     member_name: 'apra-pm', 

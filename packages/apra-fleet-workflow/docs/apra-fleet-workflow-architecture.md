@@ -26,18 +26,22 @@ Workflows operating in a multi-node, AI-driven environment must assume that netw
    - **Pre-Condition**: When `opts.schema` is provided to an `agent()`, the engine first compiles the JSON Schema using `ajv` (JSON Schema draft-07 standard). If the user provided a malformed schema, the engine halts immediately rather than wasting LLM compute.
    - **Post-Condition**: When the LLM responds, the engine attempts to scrape and parse the JSON. It then strictly validates the parsed object against the compiled `ajv` schema. A non-compliant response is treated as a fatal stage error, preventing downstream systems from processing malformed data.
 
-## 3. Safety & The Vetting Engine
+## 3. Trust Model: Workflow Scripts Are Trusted Code
 
-Because the workflow files are written in pure JavaScript, they introduce an inherent remote-code-execution risk if users pull unverified workflows from public repositories.
+Workflow scripts are **trusted code**, loaded and executed the same way any other Node.js ES module is: `WorkflowEngine.executeFile()` resolves the script path and runs `import(pathToFileURL(fullPath))` on it, then calls the module's exported `main(context)` (or `run(context)`/`default(context)`) entry point. There is no sandbox, no restricted global scope, and no interception of Node.js APIs. A workflow script has full access to `globalThis`, `process` (including `process.env`), the filesystem, the network (`fetch`), `child_process`, and dynamic `import()` -- exactly like any other module you `import` into a Node.js program.
 
-To mitigate this, the execution is protected by the **Vetting Engine** (`vetting.mjs`).
+**Only run workflow scripts you trust**, the same way you'd only `npm install` or `import` packages you trust. Do not execute unreviewed workflow scripts pulled from untrusted sources.
 
-1. **Sandboxing:** Workflows are executed via the `AsyncFunction` constructor, preventing them from bleeding into the parent module scope. Node.js core modules are not injected.
-2. **Static Assessment:** Before the engine attempts execution, the workflow source is passed to a series of registered `WorkflowAnalyzer` instances.
-3. **Malicious Pattern Detection:** The default `BasicSecurityAnalyzer` strictly prohibits:
-   - Dynamic or static imports of Node.js system modules (`fs`, `child_process`, `crypto`, `net`).
-   - Access to `process.env`.
-   - Dynamic code evaluation (`eval`, `new Function`).
-4. **Enforced Boundaries:** If any analyzer flags a script with a risk score `> 50`, the engine outright refuses to execute the script and throws a clear security warning. A user must explicitly acknowledge the danger by passing `forceOverrideRisk=true` to bypass the boundary.
+### The Vetting Engine is advisory, not a security boundary
 
-This vetting infrastructure is fully extensible. Community developers can drop in advanced AST parsers (like Babel or Acorn) to build highly sophisticated linting and security rules to secure their fleet grids.
+`VettingEngine` (`vetting.mjs`) runs a `BasicSecurityAnalyzer` heuristic (plain regex matching, no AST parsing) over the script source before it loads, and logs warnings for patterns that are often worth a second look: imports of Node.js system modules (`fs`, `child_process`, `crypto`, `net`, `http`), `process.env` access, or dynamic code evaluation (`eval`, `new Function`). These warnings are printed to the console for every run, but **`WorkflowEngine.executeFile()` never blocks execution based on them by default** -- vetting cannot meaningfully sandbox arbitrary JavaScript (it's trivially bypassed by indirection, string concatenation, etc.), so treating it as an enforcement mechanism would be misleading.
+
+If you want vetting to block high-risk scripts (`riskScore > 50`) instead of just warning, opt in explicitly:
+
+```js
+await engine.executeFile(scriptPath, args, { strictVetting: true });
+```
+
+This is an opt-in lint gate for teams that want a speed bump before running scripts from less-trusted sources, not a substitute for actually trusting the code you run.
+
+This vetting infrastructure is extensible: register additional `WorkflowAnalyzer` instances via `VettingEngine.registerAnalyzer()` to add project-specific lint rules.
