@@ -109,6 +109,24 @@ const FIXTURES = {
             notes: 'x',
         },
     },
+    // apra-fleet-unw.16: schema for the Develop-phase "group ready beads
+    // into streaks" call in runner.js -- see the DIVERGENCE-style note
+    // above streakAssignment in contracts.mjs for why this schema exists
+    // (no vendored agents/*.md counterpart; it's the orchestrator's own
+    // contract for a call that used to be dispatched and its result
+    // discarded).
+    streakAssignment: {
+        valid: {
+            streaks: [['BD-2'], ['BD-3', 'BD-4']],
+        },
+        invalid: {
+            // a streak entry must be a non-empty array of strings; here
+            // one entry is an empty array, which selectStreaks() in
+            // runner.js treats the same as any other invalid shape
+            // (fall back to one-bead-per-streak).
+            streaks: [[], ['BD-3']],
+        },
+    },
     deployerReport: {
         valid: { deployed: true, notes: 'smoke test exit 0' },
         invalid: { deployed: 'yes', notes: 'wrong type' },
@@ -144,11 +162,12 @@ const FIXTURES = {
 };
 
 describe('verdict schemas', () => {
-    test('SCHEMAS and VALIDATORS export exactly the eight documented verdict names', () => {
+    test('SCHEMAS and VALIDATORS export exactly the nine documented verdict names', () => {
         const expected = [
             'planReviewerVerdict',
             'reviewerVerdict',
             'doerReport',
+            'streakAssignment',
             'deployerReport',
             'integReport',
             'ciReport',

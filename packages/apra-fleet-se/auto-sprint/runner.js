@@ -1,7 +1,31 @@
 import fs from 'fs/promises';
 import { AgentOutputError } from '@apralabs/apra-fleet-workflow';
-import { planReviewerVerdict, wrapUntrustedBlock } from './contracts.mjs';
+import { ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment, wrapUntrustedBlock } from './contracts.mjs';
 import { SprintPlanRejectedError } from './errors.mjs';
+
+// ---------------------------------------------------------------------------
+// Canonical role-name constants for the Develop/Review loop (apra-fleet-unw.16)
+// ---------------------------------------------------------------------------
+//
+// Root-cause fix for the A2 "Doer/doer casing" pool-collapse bug: before
+// this issue, `getMembersForRole` special-cased the CAPITALIZED strings
+// 'Doer'/'Reviewer' while every call site below passed the lowercase
+// 'doer'/'reviewer' -- so the special case never matched and the doer pool
+// silently collapsed to a single member (`[physicalMembers[0]]`), and the
+// "multiple members work in parallel" feature the sprint runner advertises
+// never actually happened. `roleConst()` below pulls the value straight out
+// of `contracts.ROLES` (the single canonical, lowercase role enum) and
+// throws at module-load time if it's ever not a member of that enum, so a
+// future rename of the enum can't silently reintroduce a casing/typo
+// mismatch here.
+function roleConst(name) {
+    if (!ROLES.includes(name)) {
+        throw new Error(`[Role Contract] '${name}' is not a member of contracts.ROLES: ${ROLES.join(', ')}`);
+    }
+    return name;
+}
+const ROLE_DOER = roleConst('doer');
+const ROLE_REVIEWER = roleConst('reviewer');
 
 export const meta = { name: 'auto-sprint-runner' };
 
@@ -232,6 +256,142 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
     return lines.join('\n\n');
 }
 
+// ---------------------------------------------------------------------------
+// Develop/Review loop prompt builders + pure helpers (apra-fleet-unw.16)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the self-contained "group ready beads into streaks" prompt.
+ * @param {{ readyBeadIds: string[] }} opts
+ * @returns {string}
+ */
+function buildStreakAssignmentPrompt({ readyBeadIds }) {
+    return [
+        'Group the following ready beads into logical development streaks ' +
+        '(beads that must be worked sequentially by the SAME streak; ' +
+        'independent beads should be their own streak so they can be worked ' +
+        'in parallel by different doers).',
+        `Ready bead ids: ${readyBeadIds.join(', ')}`,
+        'Every ready bead id listed above must appear in exactly one streak -- ' +
+        'no bead id may be omitted, duplicated, or invented.',
+    ].join('\n\n');
+}
+
+/**
+ * Validates a streak-assignment agent() result against the set of currently
+ * ready bead objects and returns the resolved streaks (arrays of the
+ * original bead objects, not just ids). Falls back to one-bead-per-streak
+ * (the previous, always-correct-by-construction behavior) whenever the
+ * candidate doesn't cover every ready bead id EXACTLY once -- this is the
+ * safety net called for by apra-fleet-unw.16 Work item 2(a): a real LLM
+ * result is consumed when valid, but an invalid one can never drop or
+ * duplicate a bead's assignment.
+ *
+ * Pure function: no I/O, no agent() calls -- easy to unit test directly and
+ * to reason about independently of the schema-repair loop that produces
+ * `candidate`.
+ * @param {{streaks: string[][]}|null|undefined} candidate
+ * @param {Array<{id: string}>} currentReady
+ * @returns {{ streaks: Array<Array<{id: string}>>, usedFallback: boolean, reason: string|null }}
+ */
+function selectStreaks(candidate, currentReady) {
+    const fallback = () => ({
+        streaks: currentReady.map((b) => [b]),
+        usedFallback: true,
+    });
+
+    if (!candidate || !Array.isArray(candidate.streaks)) {
+        return { ...fallback(), reason: 'no candidate or candidate.streaks was not an array' };
+    }
+
+    const byId = new Map(currentReady.map((b) => [b.id, b]));
+    const readyIds = currentReady.map((b) => b.id);
+    const seen = new Set();
+    const resolvedStreaks = [];
+
+    for (const streakIds of candidate.streaks) {
+        if (!Array.isArray(streakIds) || streakIds.length === 0) {
+            return { ...fallback(), reason: 'a streak entry was not a non-empty array' };
+        }
+        const resolvedStreak = [];
+        for (const id of streakIds) {
+            if (!byId.has(id)) {
+                return { ...fallback(), reason: `streak referenced unknown/non-ready bead id '${id}'` };
+            }
+            if (seen.has(id)) {
+                return { ...fallback(), reason: `bead id '${id}' appeared in more than one streak` };
+            }
+            seen.add(id);
+            resolvedStreak.push(byId.get(id));
+        }
+        resolvedStreaks.push(resolvedStreak);
+    }
+
+    if (seen.size !== readyIds.length) {
+        return { ...fallback(), reason: `candidate covered ${seen.size} of ${readyIds.length} ready bead id(s)` };
+    }
+
+    return { streaks: resolvedStreaks, usedFallback: false, reason: null };
+}
+
+/**
+ * Builds the self-contained doer dispatch prompt for one streak. Per-bead
+ * feedback (apra-fleet-unw.16 Work item 5) is routed here ONLY for the
+ * bead(s) this streak actually owns -- never a blanket broadcast of the
+ * entire reviewer verdict to every doer -- and is wrapped as untrusted
+ * inter-agent content (feedback.md A7, contracts.mjs `wrapUntrustedBlock`).
+ * @param {{ beadIds: string[], feedback: string|null }} opts
+ * @returns {string}
+ */
+function buildDoerPrompt({ beadIds, feedback }) {
+    const lines = [
+        `Assigned bead ids (comma-separated): ${beadIds.join(', ')}`,
+        'Work each assigned bead per your agent contract: read `bd show <id>` for its ' +
+        'full acceptance criteria, implement and verify the change, then `bd close <id>` ' +
+        'once it is done. Return your report strictly as the required JSON schema ' +
+        '(status, closedIds, notes).',
+    ];
+    if (feedback) {
+        lines.push(
+            'Feedback from the previous review round for these specific bead(s) -- ' +
+            'address every point before closing again:'
+        );
+        lines.push(wrapUntrustedBlock('reviewer.notes', feedback));
+    }
+    return lines.join('\n\n');
+}
+
+/**
+ * Builds the self-contained reviewer dispatch prompt (apra-fleet-unw.16
+ * Work item 4). Self-contained per apra-fleet-unw.3's `resume: false`
+ * default: the reviewer has no memory of this conversation, so the exact
+ * bead ids just worked, their full `bd show` detail (acceptance criteria),
+ * and the diff range are all spelled out here rather than assumed.
+ *
+ * CRITICAL: explicitly, redundantly forbids the reviewer from mutating
+ * beads itself (contradicts the vendored agents/reviewer.md Step 5 prose,
+ * which tells the reviewer to run `bd update` itself -- see contracts.mjs's
+ * DIVERGENCE NOTE above `reviewerVerdict`). Per this issue's instructions,
+ * the dispatch-prompt text is what's authoritative/validated today (the
+ * schema alone doesn't stop the reviewer from ALSO shelling out `bd`
+ * commands on the member side), so the prohibition must be stated here too.
+ * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string }} opts
+ * @returns {string}
+ */
+function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch }) {
+    return [
+        `Review the work just done for the following bead id(s): ${beadIds.join(', ')}.`,
+        'Full task detail (including acceptance criteria), from `bd show --json`:',
+        acceptanceCriteriaJson,
+        `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
+        'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
+        '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
+        '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
+        '`bd create`. Return ONLY your structured verdict (verdict, notes, reopenIds, ' +
+        'newTasks) strictly as the required JSON schema; never touch beads yourself.',
+    ].join('\n\n');
+}
+
 // Mechanical migration to the WorkflowEngine's ES-module entry-point contract
 // (apra-fleet-unw.7): the engine now calls `main(context)` instead of
 // injecting bare globals into an AsyncFunction scope. This destructure is the
@@ -266,7 +426,12 @@ export async function main(context) {
         if (validated.roleMap && validated.roleMap[role]) {
             return validated.roleMap[role];
         }
-        if (role === 'Doer' || role === 'Reviewer') {
+        // apra-fleet-unw.16: keys here MUST be the canonical lowercase
+        // contracts.ROLES strings (ROLE_DOER/ROLE_REVIEWER, both === the
+        // exact 'doer'/'reviewer' values every call site below already
+        // passes) -- see the roleConst() comment above for why the old
+        // 'Doer'/'Reviewer' capitalized special-case never matched.
+        if (role === ROLE_DOER || role === ROLE_REVIEWER) {
             return physicalMembers; // All members act as Doers/Reviewers by default
         }
         return [physicalMembers[0]];
@@ -439,58 +604,210 @@ export async function main(context) {
         }
 
         // =======================
-        // 3. Develop & Review Loop
+        // 3. Develop & Review Loop (apra-fleet-unw.16)
         // =======================
+        //
+        // Every agent() dispatch below is consumed by the orchestrator --
+        // no result is ever logged-and-discarded. Role-casing is fixed at
+        // the source (getMembersForRole above), so `doerPool` genuinely
+        // contains every configured member when more than one is
+        // registered, and each parallel() doer branch below round-robins
+        // across the full pool instead of collapsing to member #1.
         let devRounds = 0;
-        let doerFeedback = '';
-        
-        const doerPool = getMembersForRole('doer');
-        const reviewerPool = getMembersForRole('reviewer');
-        
+
+        // beadId -> reviewer feedback text for the NEXT round, populated
+        // only for beads actually named in a CHANGES_NEEDED verdict's
+        // `reopenIds` (Work item 5: per-bead routing, not a blanket
+        // broadcast of the whole reviewer verdict to every doer).
+        const perBeadFeedback = new Map();
+
+        const doerPool = getMembersForRole(ROLE_DOER);
+        const reviewerPool = getMembersForRole(ROLE_REVIEWER);
+
         while (devRounds < 3) {
             const currentListRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
             const currentReady = JSON.parse(currentListRes || '[]');
-            
+
             if (currentReady.length === 0) break;
 
             devRounds++;
             phase(`Develop C${cycle} R${devRounds}`);
-            
-            const streakRes = await agent(
-                `Group the following ready beads into logical development streaks (currently sequential): ${currentReady.map(b=>b.id).join(', ')}`,
-                { member_name: getMemberForRole('planner'), agentType: 'planner', label: 'Streak Assignment' }
-            );
-            log(`Streak Assignment: ${streakRes}`);
-            
-            const streaks = currentReady.map(b => [b]); 
-            
-            await parallel(streaks, async (streak, index) => {
-                const beadIds = streak.map(b => b.id).join(', ');
-                const doerMember = doerPool[index % doerPool.length];
-                const doerRes = await agent(
-                    `Close the assigned beads: ${beadIds}. ${doerFeedback ? 'Feedback to fix: ' + doerFeedback : ''}`,
-                    { member_name: doerMember, agentType: 'doer', label: `Streak [${beadIds}]` }
-                );
-                log(`Doer [${beadIds}] on [${doerMember}]: ${doerRes}`);
-                await updateDashboard();
-            });
 
-            // Review
+            // --- Streak assignment: consumed for real (Work item 2a) -----
+            // Schema-validated {streaks: string[][]}; falls back to
+            // deterministic one-bead-per-streak whenever the candidate
+            // doesn't cover every ready bead id exactly once (invalid
+            // output, or agent()'s own bounded schema-repair loop was
+            // exhausted) -- see selectStreaks() above.
+            let streakCandidate = null;
+            try {
+                streakCandidate = await agent(
+                    buildStreakAssignmentPrompt({ readyBeadIds: currentReady.map((b) => b.id) }),
+                    {
+                        member_name: getMemberForRole('planner'),
+                        agentType: 'planner',
+                        label: 'Streak Assignment',
+                        schema: streakAssignment,
+                    }
+                );
+                log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
+            } catch (err) {
+                if (err instanceof AgentOutputError) {
+                    log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
+                } else {
+                    throw err;
+                }
+            }
+            const { streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady);
+            if (usedFallback) {
+                log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
+            }
+
+            // --- Doer barrier: isolated failures, one retry, verified closes (Work item 3) ---
+            // continueOnError: true so one doer streak's exception can never
+            // abort sibling streaks mid-flight (the old parallel() call had
+            // no such option and one throw killed the whole cycle).
+            const streakOutcomes = [];
+            await parallel(streaks, async (streak, index) => {
+                const beadIds = streak.map((b) => b.id);
+                const doerMember = doerPool[index % doerPool.length];
+                const feedbackForStreak = beadIds
+                    .map((id) => perBeadFeedback.get(id))
+                    .filter(Boolean)
+                    .join('\n\n');
+
+                const dispatchDoer = () => agent(
+                    buildDoerPrompt({ beadIds, feedback: feedbackForStreak || null }),
+                    {
+                        member_name: doerMember,
+                        agentType: 'doer',
+                        label: `Streak [${beadIds.join(', ')}]`,
+                        schema: doerReport,
+                    }
+                );
+
+                let report = null;
+                let wasRetried = false;
+                let dispatchError = null;
+                try {
+                    report = await dispatchDoer();
+                } catch (err) {
+                    log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
+                    wasRetried = true;
+                    try {
+                        report = await dispatchDoer();
+                    } catch (err2) {
+                        dispatchError = err2;
+                    }
+                }
+
+                if (dispatchError) {
+                    streakOutcomes.push({
+                        beadIds, doerMember, outcome: 'failed', wasRetried,
+                        report: null, unclosedIds: beadIds, error: dispatchError.message,
+                    });
+                    // Rethrow so parallel()'s continueOnError:true isolates
+                    // this failure from sibling streaks (the outcome above
+                    // is already recorded via closure, so no information is
+                    // lost when parallel() substitutes `null` for this branch).
+                    throw dispatchError;
+                }
+
+                log(`Doer [${beadIds.join(', ')}] on [${doerMember}]: ${JSON.stringify(report)}`);
+
+                // CRITICAL (Work item 3): never trust the doer's own
+                // success claim -- verify via `bd show` that the assigned
+                // bead ids are actually closed. A doer that returns
+                // success-looking text/report but leaves a bead open is
+                // treated as a FAILED streak regardless of what it said.
+                const showRes = await command(`bd show ${beadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true });
+                const showBeads = JSON.parse(showRes || '[]');
+                const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
+                const unclosedIds = beadIds.filter((id) => statusById.get(id) !== 'closed');
+
+                if (unclosedIds.length > 0) {
+                    log(`Doer streak [${beadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
+                }
+
+                streakOutcomes.push({
+                    beadIds, doerMember, wasRetried, report, unclosedIds,
+                    outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                });
+                await updateDashboard();
+            }, { continueOnError: true });
+
+            log(`Develop C${cycle} R${devRounds} streak outcomes: ${JSON.stringify(streakOutcomes.map((o) => ({ beadIds: o.beadIds, outcome: o.outcome })))}`);
+
+            // --- Review (Work item 4): self-contained, schema-validated, orchestrator-applied ---
             phase(`Review C${cycle} R${devRounds}`);
-            const codeReviewRes = await agent(
-                'Verify closed beads. Reopen if flawed, else approve. Return text feedback.',
-                { member_name: reviewerPool[0], agentType: 'reviewer' }
-            );
-            log(`Reviewer: ${codeReviewRes}`);
+            const assignedBeadIds = streakOutcomes.flatMap((o) => o.beadIds);
+            const acceptanceCriteriaJson = assignedBeadIds.length > 0
+                ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true })
+                : '[]';
+
+            let verdict;
+            try {
+                verdict = await agent(
+                    buildReviewerPrompt({
+                        beadIds: assignedBeadIds,
+                        acceptanceCriteriaJson,
+                        baseBranch: validated.baseBranch,
+                        branch: validated.branch,
+                    }),
+                    {
+                        member_name: reviewerPool[0],
+                        agentType: 'reviewer',
+                        schema: reviewerVerdict,
+                    }
+                );
+            } catch (err) {
+                if (err instanceof AgentOutputError) {
+                    log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
+                    verdict = {
+                        verdict: 'CHANGES_NEEDED',
+                        notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                        reopenIds: [],
+                        newTasks: [],
+                    };
+                } else {
+                    throw err;
+                }
+            }
+            log(`Reviewer: ${JSON.stringify(verdict)}`);
+
+            // Orchestrator (this code) -- NOT the LLM -- applies every
+            // structured transition: reopenIds via `bd update --status=open`,
+            // newTasks via `bd create`. The reviewer's dispatch prompt above
+            // explicitly forbade it from mutating beads itself; this is the
+            // enforcement side of that contract (V1 resolution, SKILL.md).
+            for (const id of verdict.reopenIds) {
+                await command(
+                    `bd update ${id} --status=open`,
+                    { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per reviewer verdict` }
+                );
+                // Per-bead feedback routing (Work item 5): only beads named
+                // in reopenIds carry this round's feedback into the next
+                // round's doer prompt -- never a blanket broadcast.
+                perBeadFeedback.set(id, verdict.notes);
+            }
+            for (const newTask of verdict.newTasks) {
+                const title = String(newTask.title).replace(/"/g, '\\"');
+                const description = String(newTask.description).replace(/"/g, '\\"');
+                const priority = String(newTask.priority).replace(/"/g, '\\"');
+                await command(
+                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues.join(',')} --silent`,
+                    { member_name: orchestratorMember, silent: true, label: `Create follow-up task from reviewer newTasks: ${newTask.title}` }
+                );
+            }
+
             await updateDashboard();
-            
+
             const checkRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
             const stillOpen = JSON.parse(checkRes || '[]');
-            
+
             if (stillOpen.length === 0) {
                 break;
             } else {
-                doerFeedback = codeReviewRes; // Pass feedback to doer
                 log(`System found ${stillOpen.length} beads still open/ready. Looping back to develop.`);
             }
         }
