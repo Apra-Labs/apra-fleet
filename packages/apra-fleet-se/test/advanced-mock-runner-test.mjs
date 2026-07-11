@@ -5,10 +5,18 @@ import { exec } from 'child_process';
 import os from 'os';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
-import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Deterministic, CI-friendly mock of a full auto-sprint cycle driven against
+// packages/apra-fleet-se/auto-sprint/runner.js. No live MCP server, no
+// Math.random(), no fixed multi-second sleeps -- every branch below matches
+// the EXACT lowercase `agentType` strings runner.js dispatches:
+//   planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, harvester
+//
+// Set MOCK_SPRINT_DELAY_MS to simulate LLM latency locally; defaults to 0 for CI.
+const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 
 // Helper to run shell commands in JS
 const runCmd = (cmd, cwd) => new Promise((resolve) => {
@@ -17,47 +25,53 @@ const runCmd = (cmd, cwd) => new Promise((resolve) => {
     });
 });
 
-import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
+const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
-async function setup() {
-    const tempDir = path.join(os.tmpdir(), 'apra-fleet-mock-sprint-' + Date.now());
+async function setup(tempDirSuffix) {
+    const tempDir = path.join(os.tmpdir(), `apra-fleet-mock-sprint-${tempDirSuffix}-${Date.now()}-${process.pid}`);
     await fs.mkdir(tempDir, { recursive: true });
-    
-    console.log("Initializing fresh beads DB at " + tempDir);
+
     await runCmd('bd init', tempDir);
-    
-    console.log("Seeding beads tasks for toy project...");
+
     await runCmd('bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary."', tempDir);
     await runCmd('bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool."', tempDir);
     await runCmd('bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members."', tempDir);
-    
+
     const initialList = await runCmd('bd list --json', tempDir);
     const allBeads = JSON.parse(initialList.stdout || '[]');
-    const epicBead = allBeads.find(b => b.title.includes('Epic:'));
-    const task1 = allBeads.find(b => b.title.includes('registerMember'));
-    const task2 = allBeads.find(b => b.title.includes('listMembers'));
-    
+    const epicBead = allBeads.find((b) => b.title.includes('Epic:'));
+    const task1 = allBeads.find((b) => b.title.includes('registerMember'));
+    const task2 = allBeads.find((b) => b.title.includes('listMembers'));
+
     await runCmd(`bd update ${task1.id} --parent ${epicBead.id}`, tempDir);
     await runCmd(`bd update ${task2.id} --parent ${epicBead.id}`, tempDir);
-    
-    // Create dummy runbooks so Deploy/Integ phases run conditionally
-    await fs.writeFile(path.join(tempDir, 'deploy.md'), '# Deploy Apra Fleet Client\\nrun `npm publish`');
-    await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), '# Integ Test\\nRun `vitest e2e`');
+
+    // deploy.md / integ-test-playbook.md let runner.js's fs.existsSync probes
+    // (via `node -e "require('fs').existsSync(...)"`) resolve to "found",
+    // enabling the Deploy and Integ Test phases deterministically.
+    await fs.writeFile(path.join(tempDir, 'deploy.md'), '# Deploy Apra Fleet Client\nrun `npm publish`');
+    await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), '# Integ Test\nRun `vitest e2e`');
 
     return { tempDir, epicBead };
 }
 
-async function run_test(tempDir, epicBead) {
+/**
+ * Builds a deterministic mock FleetApi. Every executePrompt() call is
+ * recorded into `dispatched` so the caller can assert on the exact sequence
+ * of agentType dispatches, and can diff that sequence across repeated runs.
+ */
+function buildMockFleetApi(tempDir, epicBead, dispatched) {
     let planRound = 0;
+    let reviewRound = 0;
+    let extraTaskAdded = false;
 
-    const mockFleetApi = {
+    return {
         executeCommand: async (opts) => {
-            if (opts.command.startsWith('ls deploy.md')) {
-                return { content: [{ text: 'found' }] };
-            }
-            if (opts.command.startsWith('ls integ-test-playbook.md')) {
-                return { content: [{ text: 'found' }] };
-            }
+            // No stale intercepts here: runner.js's Deploy/Integ probes are
+            // `node -e "require('fs').existsSync(...)"` commands, which are
+            // executed for real against tempDir (where setup() wrote
+            // deploy.md / integ-test-playbook.md), same as every other
+            // bd/node command below.
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) {
                 return { isError: true, content: [{ text: stderr || err.message }] };
@@ -65,141 +79,213 @@ async function run_test(tempDir, epicBead) {
             return { content: [{ text: stdout }] };
         },
         executePrompt: async (opts) => {
-            // Simulated wait to feel like an LLM
-            await new Promise(r => setTimeout(r, 2000));
-            
+            // Note: the workflow layer's agent() payload does NOT forward
+            // opts.label into executePrompt (see
+            // packages/apra-fleet-workflow/src/workflow/index.mjs, payload
+            // only carries prompt/model/member/agent/etc.), so the Final
+            // Review phase cannot be distinguished from the regular
+            // per-round review via opts.label here. Both share agentType
+            // 'reviewer'; distinguish by the (fixed, runner.js-authored)
+            // prompt text instead.
+            const isFinalReview = opts.agent === 'reviewer' && opts.prompt.trim() === 'Pass or Fail?';
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null });
+            await sleep(DELAY_MS);
+
+            // --- plan phase ---
             if (opts.agent === 'planner' && !opts.prompt.includes('Group')) {
-                await runCmd('bd create "Task: Add tests for API endpoints" -t task', tempDir);
-                const list = JSON.parse((await runCmd('bd list --json', tempDir)).stdout);
-                const newT = list.find(i => i.title.includes('Add tests for API endpoints'));
-                await runCmd(`bd update ${newT.id} --parent ${epicBead.id}`, tempDir);
-                return { content: [{ text: 'Analyzed the Fleet Member API epic. Added a new task to ensure we have adequate e2e tests for registerMember and listMembers.' }] };
+                if (!extraTaskAdded) {
+                    extraTaskAdded = true;
+                    await runCmd('bd create -t task "Task: Add tests for API endpoints"', tempDir);
+                    const list = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
+                    const newTask = list.find((i) => i.title.includes('Add tests for API endpoints'));
+                    if (newTask) {
+                        await runCmd(`bd update ${newTask.id} --parent ${epicBead.id}`, tempDir);
+                    }
+                }
+                return {
+                    content: [{
+                        text: 'Analyzed the Fleet Member API epic. Ensured tasks exist for implementation and for e2e tests covering registerMember and listMembers.'
+                    }]
+                };
             }
-            
+
             if (opts.agent === 'plan-reviewer') {
                 planRound++;
                 if (planRound < 2) {
                     return { content: [{ text: 'CHANGES_NEEDED: Ensure you also add a documentation task.' }] };
                 }
-                return { content: [{ text: 'Code looks solid. We have tasks for implementation, tests, and documentation. APPROVED.' }] };
+                return { content: [{ text: 'Code looks solid. We have tasks for implementation and tests. APPROVED.' }] };
             }
-            
+
+            // --- develop phase: streak grouping (still agentType 'planner') ---
             if (opts.agent === 'planner' && opts.prompt.includes('Group')) {
-                return { content: [{ text: 'Assigned implementation tasks into Streak 1 and test/doc tasks into Streak 2.' }] };
+                return { content: [{ text: 'Assigned implementation and test tasks into sequential streaks.' }] };
             }
-            
+
+            // --- develop phase: doer ---
             if (opts.agent === 'doer') {
                 const match = opts.prompt.match(/Close the assigned beads:\s*([^.]+)/i);
                 if (match) {
-                    const ids = match[1].split(',').map(s => s.trim());
+                    const ids = match[1].split(',').map((s) => s.trim()).filter(Boolean);
                     for (const id of ids) {
-                        if (Math.random() > 0.1) { 
-                            await runCmd(`bd update ${id} --close`, tempDir);
-                        }
+                        await runCmd(`bd close ${id}`, tempDir);
                     }
                 }
-                return { content: [{ text: 'Implemented the requested fleet client methods (registerMember, listMembers) using fetch to hit the MCP JSON-RPC endpoints. I have closed the assigned beads.' }] };
+                return { content: [{ text: 'Implemented the requested fleet client methods using fetch to hit the MCP JSON-RPC endpoints. Closed the assigned beads.' }] };
             }
-            
+
+            // --- review phase: reviewer (dev-loop review AND final review share agentType 'reviewer') ---
             if (opts.agent === 'reviewer') {
-                if (Math.random() > 0.8) {
-                    const closed = await runCmd(`bd list --parent ${epicBead.id} --status=closed --json`, tempDir);
-                    const closedLines = JSON.parse(closed.stdout || '[]');
-                    if (closedLines.length > 0) {
-                        const lastClosed = closedLines[closedLines.length - 1];
-                        await runCmd(`bd update ${lastClosed.id} --status ready`, tempDir);
-                        return { content: [{ text: `Reopened bead ${lastClosed.id}. The implementation is missing error handling for 401 Unauthorized responses. Please fix.` }] };
+                if (isFinalReview) {
+                    return { content: [{ text: 'Pass! Excellent velocity and solid implementation.' }] };
+                }
+
+                reviewRound++;
+                // Scripted, deterministic scenario: reopen exactly once, on
+                // the first review round, then approve on every subsequent
+                // round. No Math.random() -- identical on every run.
+                if (reviewRound === 1) {
+                    const closedRes = await runCmd(`bd list --parent ${epicBead.id} --status=closed --json`, tempDir);
+                    const closedBeads = JSON.parse(closedRes.stdout || '[]').sort((a, b) => a.id.localeCompare(b.id));
+                    if (closedBeads.length > 0) {
+                        const target = closedBeads[0];
+                        await runCmd(`bd update ${target.id} --status open`, tempDir);
+                        return { content: [{ text: `Reopened bead ${target.id}. The implementation is missing error handling for 401 Unauthorized responses. Please fix.` }] };
                     }
                 }
                 return { content: [{ text: 'Code logic is sound. Error handling and type definitions match the spec. Approved.' }] };
             }
-            
-            if (opts.agent === 'Integration Test Runner') {
-                if (Math.random() > 0.7) {
-                    await runCmd('bd create -t task "Bug: listMembers returns empty array unexpectedly"', tempDir);
-                    const list = JSON.parse((await runCmd('bd list --json', tempDir)).stdout);
-                    const bug = list.find(i => i.title.includes('Bug:'));
-                    await runCmd(`bd update ${bug.id} --parent ${epicBead.id}`, tempDir);
-                    return { content: [{ text: 'Integration test failed: listMembers returns empty array. I added a bug bead.' }] };
-                }
-                return { content: [{ text: 'All vitest e2e specs passed successfully.' }] };
-            }
-            
-            if (opts.agent === 'Deployer') {
+
+            // --- deploy phase ---
+            if (opts.agent === 'deployer') {
                 return { content: [{ text: 'Successfully ran `npm publish` and published @apralabs/apra-fleet-client to the local registry.' }] };
             }
-            
-            if (opts.agent === 'Final Reviewer') {
-                return { content: [{ text: 'Pass! Excellent velocity and solid implementation.' }] };
+
+            // --- integ test phase ---
+            if (opts.agent === 'integ-test-runner') {
+                return { content: [{ text: 'All vitest e2e specs passed successfully.' }] };
             }
-            
-            if (opts.agent === 'Harvester') {
+
+            // --- harvest phase ---
+            if (opts.agent === 'harvester') {
                 return { content: [{ text: 'Harvested API usage patterns to memory. Updated context docs.' }] };
             }
-            
-            return { content: [{ text: 'Agent executed successfully.' }] };
+
+            // Any agentType reaching here means runner.js dispatched something
+            // this mock doesn't know about -- fail loudly instead of silently
+            // falling through to a generic stub (that's exactly the bug this
+            // test exists to catch).
+            throw new Error(`advanced-mock-runner-test: unhandled agentType '${opts.agent}' (label=${opts.label})`);
         }
     };
-
-    const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
-    const engine = new WorkflowEngine(workflow);
-
-    const server = createDashboardViewer(workflow, {
-        port: 8080,
-        name: 'Auto-Sprint (Advanced Mock)',
-        dashboardExtensions: [beadsExtension]
-    });
-
-    console.log("Waiting 10 seconds for you to open http://localhost:8080 ...");
-    await new Promise(resolve => setTimeout(resolve, 10000));
-
-    const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
-    const res = await engine.executeFile(scriptPath, { target_issue: epicBead.id }, true);
-    console.log("Mock sprint finished with result:", res);
-    
-    return server;
 }
 
-async function teardown(tempDir, server) {
-    console.log("Tearing down mock environment...");
-    if (server) {
+async function teardown(tempDir) {
+    if (!tempDir) return;
+    let retries = 8;
+    while (retries > 0) {
         try {
-            server.close();
-        } catch(e) {}
-    }
-    if (tempDir) {
-        try {
-            // Windows EBUSY retry loop
-            let retries = 5;
-            while (retries > 0) {
-                try {
-                    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 3 });
-                    break;
-                } catch(e) {
-                    if (e.code === 'EBUSY') {
-                        retries--;
-                        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
-                    } else throw e;
-                }
+            // Windows can hold file handles open briefly after child
+            // processes (bd CLI) exit; retry on EBUSY.
+            await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 3 });
+            return;
+        } catch (e) {
+            if (e.code === 'EBUSY' && retries > 1) {
+                retries--;
+                await sleep(400);
+            } else {
+                console.error('Could not fully clean up temp dir:', tempDir, e.message);
+                return;
             }
-        } catch(e) {
-            console.error("Could not fully clean up temp dir:", e);
         }
     }
-    process.exit(0);
 }
 
-async function main() {
-    let tempDir, server;
+async function runOnce(tag) {
+    const { tempDir, epicBead } = await setup(tag);
+    const dispatched = [];
     try {
-        const setupState = await setup();
-        tempDir = setupState.tempDir;
-        server = await run_test(tempDir, setupState.epicBead);
-    } catch (err) {
-        console.error("Mock sprint test failed:", err);
+        const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched);
+        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+        const engine = new WorkflowEngine(workflow);
+
+        const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+        const result = await engine.executeFile(scriptPath, { target_issue: epicBead.id }, true);
+
+        // bd list hides closed issues by default -- pass --all so the final
+        // state assertion actually sees closed beads.
+        const finalBeadsRaw = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
+        const finalBeads = finalBeadsRaw
+            .map((b) => ({ title: b.title, status: b.status }))
+            .sort((a, b) => a.title.localeCompare(b.title));
+
+        return { dispatched, result, finalBeads };
     } finally {
-        await teardown(tempDir, server);
+        await teardown(tempDir);
     }
 }
 
-main();
+const REQUIRED_AGENT_TYPES = ['planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer', 'integ-test-runner', 'harvester'];
+
+async function main() {
+    const failures = [];
+    const check = (cond, msg) => { if (!cond) failures.push(msg); };
+
+    console.log('Running mock sprint scenario (pass 1)...');
+    const run1 = await runOnce('run1');
+    console.log('Running mock sprint scenario (pass 2)...');
+    const run2 = await runOnce('run2');
+
+    check(run1.result && run1.result.status === 'success', `Run1 did not succeed: ${JSON.stringify(run1.result)}`);
+    check(run2.result && run2.result.status === 'success', `Run2 did not succeed: ${JSON.stringify(run2.result)}`);
+
+    const seq1 = run1.dispatched.map((d) => `${d.agent}${d.label ? ':' + d.label : ''}`);
+    const seq2 = run2.dispatched.map((d) => `${d.agent}${d.label ? ':' + d.label : ''}`);
+    check(
+        JSON.stringify(seq1) === JSON.stringify(seq2),
+        `Dispatched agent sequences differ between runs (non-deterministic).\nRun1: ${seq1.join(', ')}\nRun2: ${seq2.join(', ')}`
+    );
+
+    for (const type of REQUIRED_AGENT_TYPES) {
+        check(run1.dispatched.some((d) => d.agent === type), `Phase for agentType '${type}' was never dispatched (run1)`);
+        check(run2.dispatched.some((d) => d.agent === type), `Phase for agentType '${type}' was never dispatched (run2)`);
+    }
+    check(
+        run1.dispatched.some((d) => d.agent === 'reviewer' && d.label === 'Final Review'),
+        "Final Review phase (agentType 'reviewer', label 'Final Review') was not dispatched (run1)"
+    );
+
+    check(
+        JSON.stringify(run1.finalBeads) === JSON.stringify(run2.finalBeads),
+        `Final beads DB state differs between runs.\nRun1: ${JSON.stringify(run1.finalBeads)}\nRun2: ${JSON.stringify(run2.finalBeads)}`
+    );
+
+    const expectedClosedTitles = [
+        'Task: Implement registerMember in client.js',
+        'Task: Implement listMembers in client.js',
+        'Task: Add tests for API endpoints'
+    ];
+    for (const title of expectedClosedTitles) {
+        const bead = run1.finalBeads.find((b) => b.title === title);
+        check(!!bead && bead.status === 'closed', `Expected bead '${title}' to be closed at end of sprint, got: ${JSON.stringify(bead)}`);
+    }
+    check(!run1.finalBeads.some((b) => b.title.startsWith('Bug:')), 'Unexpected bug bead created despite deterministic passing integ test');
+    check(
+        run1.finalBeads.filter((b) => b.title === 'Task: Add tests for API endpoints').length === 1,
+        'Duplicate "Add tests" bead created (planner mock branch not idempotent across plan-review rounds)'
+    );
+
+    if (failures.length > 0) {
+        console.error('\nFAIL advanced-mock-runner-test.mjs:');
+        for (const f of failures) console.error(' - ' + f);
+        process.exitCode = 1;
+    } else {
+        console.log('\nPASS advanced-mock-runner-test.mjs: deterministic across 2 runs, all runner.js phases exercised.');
+        process.exitCode = 0;
+    }
+}
+
+main().catch((err) => {
+    console.error('advanced-mock-runner-test.mjs crashed:', err);
+    process.exitCode = 1;
+});

@@ -6,6 +6,9 @@
   "bin": {
     "auto-sprint": "./bin/cli.mjs"
   },
+  "scripts": {
+    "test": "node test/advanced-mock-runner-test.mjs"
+  },
   "dependencies": {
     "@apralabs/apra-fleet-workflow": "*",
     "@apralabs/apra-fleet-client": "*"
