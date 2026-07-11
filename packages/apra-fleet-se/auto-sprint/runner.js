@@ -785,7 +785,26 @@ export async function main(context) {
         // 2. Execution Prep
         // =======================
         const listRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-        const readyBeads = parseBdJson(listRes, `bd list ${sprintFilter} --ready --json`);
+        // apra-fleet-unw.19: `bd list --ready --json` does not guarantee a
+        // stable ordering. It appears to return beads by `created_at`
+        // descending, but `created_at` only has 1-SECOND resolution -- two
+        // beads created within the same second (routine for a fast
+        // planner/doer pass, and for the deterministic mock fleet used in
+        // this package's own tests) tie, and the tie-break order is not
+        // reproducible run-to-run. Bead `id` is also not a safe sort key: it
+        // carries a random per-scratch-dir suffix. `title` is the only
+        // field guaranteed both present and stable, so it is used here as a
+        // deterministic tie-break/ordering key (with `id` as a final
+        // tie-break for the (rare) case of two identical titles), so this
+        // run's dispatch order -- and, further down, which physical doer
+        // member each streak round-robins to -- never depends on incidental
+        // `bd` output ordering. Root-caused via the new golden-transcript
+        // test, which caught this exact class of drift (identical inputs,
+        // different streak-assignment prompt text between two runs) that
+        // the older agentType-only sequence comparison in
+        // test/advanced-mock-runner-test.mjs could not see.
+        const readyBeads = parseBdJson(listRes, `bd list ${sprintFilter} --ready --json`)
+            .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
         // A5: an empty `--ready` list is NOT, by itself, evidence the sprint
         // is complete -- it only means there's nothing dispatchable to a
@@ -823,7 +842,13 @@ export async function main(context) {
 
         while (devRounds < 3) {
             const currentListRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-            const currentReady = parseBdJson(currentListRes, `bd list ${sprintFilter} --ready --json`);
+            // apra-fleet-unw.19: same non-deterministic-ordering fix as
+            // `readyBeads` above -- this is the list that actually feeds the
+            // streak-assignment prompt and the doerPool round-robin index
+            // below, so an unstable order here was directly observable as
+            // prompt drift between two otherwise-identical runs.
+            const currentReady = parseBdJson(currentListRes, `bd list ${sprintFilter} --ready --json`)
+                .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReady.length === 0) break;
 
@@ -859,6 +884,16 @@ export async function main(context) {
             if (usedFallback) {
                 log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
             }
+            // apra-fleet-unw.19: title lookup for the assignedBeadIds sort
+            // below -- streaks/doer dispatches themselves run in `parallel`,
+            // and the ORDER their outcomes are recorded in is completion-
+            // order (genuinely, correctly non-deterministic -- that's what
+            // "parallel" means). But the Review phase's `bd show` evidence
+            // command and reviewer prompt below must not inherit that race
+            // as prompt drift; see the readyBeads/currentReady sort-by-title
+            // comment above for why `title` (not `id`, not arrival order) is
+            // the only field that's both present and stable across runs.
+            const readyTitleById = new Map(currentReady.map((b) => [b.id, b.title]));
 
             // --- Doer barrier: isolated failures, one retry, verified closes (Work item 3) ---
             // continueOnError: true so one doer streak's exception can never
@@ -937,7 +972,16 @@ export async function main(context) {
 
             // --- Review (Work item 4): self-contained, schema-validated, orchestrator-applied ---
             phase(`Review C${cycle} R${devRounds}`);
-            const assignedBeadIds = streakOutcomes.flatMap((o) => o.beadIds);
+            // apra-fleet-unw.19: sort by (title, id) -- not raw completion
+            // order -- so this evidence-gathering step is deterministic even
+            // though the doer streaks it aggregates ran concurrently. See
+            // the readyTitleById comment just above.
+            const assignedBeadIds = streakOutcomes.flatMap((o) => o.beadIds)
+                .slice().sort((a, b) => {
+                    const ta = readyTitleById.get(a) || a;
+                    const tb = readyTitleById.get(b) || b;
+                    return ta.localeCompare(tb) || a.localeCompare(b);
+                });
             const acceptanceCriteriaJson = assignedBeadIds.length > 0
                 ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true })
                 : '[]';
