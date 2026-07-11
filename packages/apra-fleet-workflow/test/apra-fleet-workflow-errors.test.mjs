@@ -114,6 +114,34 @@ describe('agent() typed error classification', () => {
         const result = await wf.agent('hello', { member_name: KNOWN_MEMBER });
         assert.strictEqual(result, 'Mock response to: hello');
     });
+
+    test('F6: an MCP client-side timeout (non-response) rejects with a typed FleetTransportError instead of hanging', async () => {
+        // Simulates McpClient.request() giving up on a non-responding MCP
+        // server: it rejects synchronously with an ETIMEDOUT-style error
+        // (see packages/apra-fleet-client/src/client/api.mjs's
+        // deriveTimeoutMs/timeoutMs plumbing) rather than the call ever
+        // hanging indefinitely. Deliberately not code 'ABORTED' (that path
+        // is reserved for cooperative requestStop() cancellation and is
+        // covered separately, apra-fleet-unw.10) -- a real non-response
+        // timeout must fall through to the generic transport-failure
+        // classification, not silently resolve or leave the caller waiting.
+        const timeoutFailure = Object.assign(new Error('Request timed out after 30000ms'), { code: 'ETIMEDOUT' });
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => { throw timeoutFailure; }
+        }));
+
+        await assert.rejects(
+            () => wf.agent('hello', { member_name: KNOWN_MEMBER, timeoutMs: 30000 }),
+            (err) => {
+                assert.ok(err instanceof FleetTransportError);
+                assert.ok(err instanceof WorkflowError);
+                assert.strictEqual(err.code, 'TRANSPORT_ERROR');
+                assert.strictEqual(err.cause, timeoutFailure);
+                assert.notStrictEqual(err.code, 'CANCELLED', 'a non-response timeout must not be misclassified as a cooperative CancelledError');
+                return true;
+            }
+        );
+    });
 });
 
 describe('command() typed error classification', () => {
