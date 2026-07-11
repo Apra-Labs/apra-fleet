@@ -1,12 +1,58 @@
 import Ajv from 'ajv';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
 import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError } from './errors.mjs';
 
 export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError } from './errors.mjs';
 
 const ajv = new Ajv({ strict: false });
+
+// --- Per-run execution context (apra-fleet-unw.9, F11) --------------------
+//
+// Before this change, `FleetWorkflow` kept its "current run" state --
+// `args`, `currentPhase`, `currentGroup`, `budget` -- as plain mutable
+// instance fields. `WorkflowEngine.executeFile()` mutated `this.wf.args` on
+// every call, and `phase()`/`group()` mutated a single shared
+// `currentPhase`/`currentGroup`. That's fine for exactly one execution at a
+// time, but breaks as soon as:
+//   (a) two concurrent `executeFile()` calls run on the same `FleetWorkflow`
+//       instance -- their `args` and phase attribution stomp on each other, or
+//   (b) a single run's `parallel()` branches each call `phase()` with a
+//       different value -- every branch (and every activity emitted from any
+//       branch, including ones dispatched before the racing `phase()` call
+//       resolves) ends up labeled with whichever branch's `phase()` call
+//       happened to run last, not its own.
+//
+// `runStorage` (an AsyncLocalStorage) holds a small per-run store --
+// `{ runId, args, phase, group, budget }` -- that is threaded automatically
+// through the async call graph of a single `executeFile()` invocation:
+//   - `WorkflowEngine.executeFile()` creates a fresh store via
+//     `FleetWorkflow.runWithContext(args, entryFn)` and runs the whole script
+//     inside `runStorage.run(store, ...)`. Every `agent()`/`command()`/
+//     `phase()`/etc. call made anywhere inside that script -- including
+//     across `await` boundaries -- automatically sees that run's store via
+//     `runStorage.getStore()`, with no explicit threading required in the
+//     workflow script itself.
+//   - `parallel()` forks a *shallow copy* of the current store for each
+//     branch before invoking its processor. `phase`/`group` are copied by
+//     value, so a `phase()` call inside one branch only mutates that
+//     branch's own copy and can never leak into a sibling branch or the
+//     parent. `args`/`budget` are copied by reference, so budget spend is
+//     still aggregated for the whole run and `args` stays consistent.
+//   - Every activity/log/state event still carries the store's `runId`, so
+//     even though the shared `EventEmitter` on `FleetWorkflow` fans events
+//     out to a single global listener (the dashboard viewer subscribes
+//     once), events from concurrent runs remain distinguishable.
+//
+// Direct, non-`executeFile()` usage (e.g. calling `wf.agent()`/`wf.phase()`
+// straight off a `FleetWorkflow` instance, as several unit tests do) is
+// preserved unchanged: when there is no active `runStorage` store (i.e.
+// `runStorage.getStore()` returns `undefined`), every primitive falls back
+// to the legacy instance-level fields (`this.args`, `this.currentPhase`,
+// `this.currentGroup`, `this.budget`), exactly as before this change.
+const runStorage = new AsyncLocalStorage();
 
 // --- Structured-output extraction (apra-fleet-unw.8) ---------------------
 //
@@ -272,31 +318,90 @@ export class FleetWorkflow extends EventEmitter {
         };
     }
 
+    // Returns the active per-run store (see runStorage above), or
+    // `undefined` when called outside of `WorkflowEngine.executeFile()` /
+    // `runWithContext()` -- e.g. direct `wf.method()` calls in unit tests.
+    _store() {
+        return runStorage.getStore();
+    }
+
+    // Effective phase: the current run's store.phase if one is active,
+    // otherwise the legacy instance-level `this.currentPhase`.
+    _currentPhase() {
+        const store = this._store();
+        return store ? store.phase : this.currentPhase;
+    }
+
+    _currentGroup() {
+        const store = this._store();
+        return store ? store.group : this.currentGroup;
+    }
+
+    _currentArgs() {
+        const store = this._store();
+        return store ? store.args : this.args;
+    }
+
+    _currentBudget() {
+        const store = this._store();
+        return store ? store.budget : this.budget;
+    }
+
+    _currentRunId() {
+        const store = this._store();
+        return store ? store.runId : null;
+    }
+
     log(msg) {
         console.log(`[Workflow Log] ${msg}`);
-        this.emit('log', { phase: this.currentPhase, msg });
+        this.emit('log', { phase: this._currentPhase(), msg, runId: this._currentRunId() });
     }
 
     group(title) {
-        this.currentGroup = title;
+        const store = this._store();
+        if (store) {
+            store.group = title;
+        } else {
+            this.currentGroup = title;
+        }
         console.log(`\n=== Group: ${title} ===`);
-        this.emit('group:start', { title });
+        this.emit('group:start', { title, runId: this._currentRunId() });
     }
 
     endGroup() {
-        this.emit('group:end', { title: this.currentGroup });
-        this.currentGroup = null;
+        this.emit('group:end', { title: this._currentGroup(), runId: this._currentRunId() });
+        const store = this._store();
+        if (store) {
+            store.group = null;
+        } else {
+            this.currentGroup = null;
+        }
     }
 
+    // NOTE: `title` set inside a `parallel()` branch only mutates that
+    // branch's own forked store copy (see `parallel()` below and the
+    // runStorage comment above this class) -- it never leaks to sibling
+    // branches or the parent run.
     phase(title) {
-        this.currentPhase = title;
+        const store = this._store();
+        if (store) {
+            store.phase = title;
+        } else {
+            this.currentPhase = title;
+        }
         console.log(`--- Phase: ${title} ---`);
+        // Event payload deliberately kept as the bare `title` string (not an
+        // object) -- the dashboard viewer subscribes to this event and
+        // single-run rendering must stay byte-identical (apra-fleet-unw.9
+        // acceptance criteria #3). Concurrent-run disambiguation is carried
+        // on activity/log/state events instead, which already have an
+        // object payload.
         this.emit('phase', title);
     }
 
 
     publishState(namespace, data) {
-        this.emit('state', { namespace, data, phase: this.currentPhase });
+        this.emit('state', { namespace, data, phase: this._currentPhase(), runId: this._currentRunId() });
     }
 
     /**
@@ -308,7 +413,8 @@ export class FleetWorkflow extends EventEmitter {
             throw new Error(`[Workflow Error] agent() requires either member_name or member_id`);
         }
 
-        const effectivePhase = opts.phase || this.currentPhase;
+        const effectivePhase = opts.phase || this._currentPhase();
+        const runId = this._currentRunId();
         if (effectivePhase) {
             console.log(`[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
         }
@@ -343,20 +449,22 @@ export class FleetWorkflow extends EventEmitter {
 
         let currentPrompt = initialPrompt;
         let lastActivityMeta = null;
+        const budget = this._currentBudget();
 
         for (let attempt = 0; attempt <= maxRepairs; attempt++) {
-            if (this.budget.total !== null && this.budget.remaining() <= 0) {
+            if (budget.total !== null && budget.remaining() <= 0) {
                 throw new BudgetExceededError(
-                    `[Workflow Error] Budget exceeded: spent $${this.budget._spent.toFixed(4)} of $${this.budget.total.toFixed(4)} total. Aborting agent() dispatch.`,
-                    { details: { spent: this.budget._spent, total: this.budget.total, member: opts.member_name || opts.member_id } }
+                    `[Workflow Error] Budget exceeded: spent $${budget._spent.toFixed(4)} of $${budget.total.toFixed(4)} total. Aborting agent() dispatch.`,
+                    { details: { spent: budget._spent, total: budget.total, member: opts.member_name || opts.member_id } }
                 );
             }
 
             const isRepair = attempt > 0;
             const activityMeta = {
-                id: Math.random().toString(36).substring(2, 9),
+                id: randomUUID(),
                 type: 'agent',
                 phase: effectivePhase,
+                runId,
                 label: (opts.label || prompt.split('\n')[0].substring(0, 50) + (prompt.length > 50 ? '...' : ''))
                     + (isRepair ? ` [schema repair ${attempt}/${maxRepairs}]` : ''),
                 member: opts.member_name || opts.member_id,
@@ -405,7 +513,7 @@ export class FleetWorkflow extends EventEmitter {
 
                 const cost = hasRealUsage ? calculateCost(opts.model, result.usage) : null;
                 if (cost !== null) {
-                    this.budget._spent += cost;
+                    budget._spent += cost;
                 }
                 const duration = Date.now() - activityMeta.startTime;
 
@@ -516,7 +624,8 @@ export class FleetWorkflow extends EventEmitter {
             throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
         }
 
-        const effectivePhase = opts.phase || this.currentPhase;
+        const effectivePhase = opts.phase || this._currentPhase();
+        const runId = this._currentRunId();
         if (!opts.silent) {
             console.log(`[Command] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
         }
@@ -529,9 +638,10 @@ export class FleetWorkflow extends EventEmitter {
         }
 
         const activityMeta = {
-            id: Math.random().toString(36).substring(2, 9),
+            id: randomUUID(),
             type: 'command',
             phase: effectivePhase,
+            runId,
             label: opts.label || finalCmd.substring(0, 60),
             member: opts.member_name || opts.member_id,
             command: finalCmd,
@@ -686,25 +796,45 @@ export class FleetWorkflow extends EventEmitter {
 
     /**
      * Executes the given async processor function for each item in parallel.
+     *
+     * (apra-fleet-unw.9, F11) Each branch runs against its own shallow-copied
+     * fork of the current run's store (see runStorage comment above): `phase`
+     * and `group` are copied by value, so a `phase()` call made inside one
+     * branch's processor mutates only that branch's copy and can never leak
+     * into a sibling branch (or into activities dispatched from a sibling
+     * branch that happens to still be in flight) -- this is the exact F11
+     * "concurrent branches inherit whichever phase() was called last" bug.
+     * `args`/`budget`/`runId` are copied by reference so they stay shared and
+     * consistent across every branch of the same run. When `parallel()` is
+     * called outside of any active run store (legacy direct-call usage),
+     * branches simply run without forking anything, matching prior behavior.
      */
     async parallel(items, processor, opts = {}) {
-        return Promise.all(items.map(async (item, i) => {
-            try {
-                return await processor(item, i, items);
-            } catch(err) {
-                this.log(`[Parallel Error] item ${i} failed: ${err.message}`);
-                if (!opts.continueOnError) {
-                    throw err;
+        const parentStore = this._store();
+        return Promise.all(items.map((item, i) => {
+            const runBranch = async () => {
+                try {
+                    return await processor(item, i, items);
+                } catch (err) {
+                    this.log(`[Parallel Error] item ${i} failed: ${err.message}`);
+                    if (!opts.continueOnError) {
+                        throw err;
+                    }
+                    return null;
                 }
-                return null;
+            };
+            if (parentStore) {
+                const branchStore = { ...parentStore };
+                return runStorage.run(branchStore, runBranch);
             }
+            return runBranch();
         }));
     }
 
     async transform(label, func, context) {
         const id = randomUUID();
         const activityMeta = {
-            id, type: 'transform', label, phase: this.currentPhase, startTime: Date.now()
+            id, type: 'transform', label, phase: this._currentPhase(), runId: this._currentRunId(), startTime: Date.now()
         };
         this.emit('activity:start', activityMeta);
 
@@ -744,8 +874,15 @@ export class FleetWorkflow extends EventEmitter {
         throw new Error("Nested workflows not yet implemented");
     }
 
-    // A helper to inject the workflow globals into a user script context.
-    createContext() {
+    // Shared primitive bindings (agent/command/parallel/etc.) used by both
+    // the legacy `createContext()` and the per-run `runWithContext()` below.
+    // The primitives themselves are always bound to `this` -- they don't
+    // capture `args`/`phase`/`budget` directly; instead they look those up
+    // dynamically via `this._store()`/`this._current*()` at call time (see
+    // the runStorage comment above this class), so the SAME bound functions
+    // correctly resolve to whichever run (or the legacy instance-level
+    // fields) is active when they're actually invoked.
+    _bindPrimitives() {
         return {
             agent: this.agent.bind(this),
             command: this.command.bind(this),
@@ -759,9 +896,66 @@ export class FleetWorkflow extends EventEmitter {
             publishState: this.publishState.bind(this),
             workflow: this.workflow.bind(this),
             group: this.group.bind(this),
-            endGroup: this.endGroup.bind(this),
-            args: this.args,
+            endGroup: this.endGroup.bind(this)
+        };
+    }
+
+    // A helper to inject the workflow globals into a user script context.
+    //
+    // Legacy / direct-call form: NOT run-scoped. `args`/`budget` here are the
+    // legacy instance-level fields (`this.args`/`this.budget`), exactly as
+    // before apra-fleet-unw.9 -- preserved for existing direct `wf.method()`
+    // callers and tests that never go through `WorkflowEngine.executeFile()`.
+    // For per-run isolation (the fix for the concurrent-execution bug this
+    // context object exists to prevent), use `runWithContext()` instead,
+    // which `WorkflowEngine.executeFile()` calls internally.
+    createContext(args = this.args) {
+        return {
+            ...this._bindPrimitives(),
+            args,
             budget: this.budget
         };
+    }
+
+    /**
+     * Runs `entryFn(context)` inside a fresh, isolated per-run store (see the
+     * runStorage comment above this class): its own `args`, `phase`, `group`,
+     * and `budget` accounting, plus a unique `runId` carried on every
+     * activity/log/state event emitted during the run. Concurrent calls to
+     * `runWithContext()` (e.g. two overlapping `WorkflowEngine.executeFile()`
+     * calls) on the SAME `FleetWorkflow` instance no longer corrupt each
+     * other's `args` or phase attribution -- each gets its own store, and
+     * `runStorage` (an `AsyncLocalStorage`) threads it automatically through
+     * every `await` inside `entryFn`.
+     *
+     * The `FleetWorkflow`'s `EventEmitter` remains shared (a dashboard viewer
+     * subscribes to it once, globally); every event carries the originating
+     * run's `runId` so concurrent runs' events stay distinguishable there.
+     *
+     * @param {any} args - Arguments for this run, exposed as `context.args`.
+     * @param {(context: object) => Promise<any>} entryFn - The workflow
+     *   script's entry point (`main`/`run`/`default`), called with this run's
+     *   context object.
+     */
+    async runWithContext(args, entryFn) {
+        const budget = {
+            total: null,
+            _spent: 0,
+            spent: () => budget._spent,
+            remaining: () => budget.total === null ? Infinity : (budget.total - budget._spent)
+        };
+        const store = {
+            runId: randomUUID(),
+            args,
+            phase: null,
+            group: null,
+            budget
+        };
+        const context = {
+            ...this._bindPrimitives(),
+            args,
+            budget
+        };
+        return runStorage.run(store, () => entryFn(context));
     }
 }
