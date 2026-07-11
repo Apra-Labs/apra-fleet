@@ -1,4 +1,5 @@
 import http from 'http';
+import { escapeHtml } from './html-utils.mjs';
 
 const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
 <html lang="en">
@@ -158,15 +159,10 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       return out.join(' ');
     }
     
-    function escapeHtml(unsafe) {
-      return (unsafe || '').toString()
-           .replace(/&/g, "&amp;")
-           .replace(/</g, "&lt;")
-           .replace(/>/g, "&gt;")
-           .replace(/"/g, "&quot;")
-           .replace(/'/g, "&#039;");
-    }
-    
+    // Shared with dashboard extensions -- see src/viewer/html-utils.mjs for
+    // why this is embedded via escapeHtml.toString() instead of duplicated.
+    ${escapeHtml.toString()}
+
     function saveState() {
       if (!globalState) return;
       const blob = new Blob([JSON.stringify(globalState, null, 2)], { type: "application/json" });
@@ -335,6 +331,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
         const ind = document.getElementById('status-indicator');
         if (state.status === 'running') { ind.innerHTML = '<div class="status-live-indicator"><div class="led"></div> LIVE</div>'; }
         else if (state.status === 'success') { ind.innerHTML = '<span style="color:var(--success)">DONE</span>'; }
+        else if (state.status === 'cancelled') { ind.innerHTML = '<span style="color:var(--warning)">CANCELLED</span>'; }
         else { ind.innerHTML = '<span style="color:var(--danger)">FAILED</span>'; }
         
         const dur = state.status === 'running' ? Date.now() - state.stats.startTime : state.stats.durationMs;
@@ -478,10 +475,34 @@ export function createDashboardViewer(workflow, opts = {}) {
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
             res.end(JSON.stringify(state));
         } else if (req.url === '/stop' && req.method === 'POST') {
-            console.log('[Viewer] Stop signal received.');
+            // (apra-fleet-unw.10) Cooperative stop -- no process.exit(). The
+            // old handler killed the whole Node process immediately, with no
+            // state flush and any mid-dispatch agent() /command() call left
+            // orphaned (its promise simply never settles because the process
+            // is gone). Instead, ask the workflow to cancel itself: this
+            // aborts the active run's AbortController (FleetWorkflow
+            // .requestStop(), src/workflow/index.mjs), which rejects every
+            // in-flight and future agent()/command() dispatch for that run
+            // via the apra-fleet-unw.5 client-side signal plumbing with a
+            // typed CancelledError. The run then unwinds normally and
+            // WorkflowEngine.executeFile() emits 'end' with status
+            // 'cancelled' from its own finally block, same as any other
+            // failure path -- the viewer transitions to CANCELLED/FAILED and
+            // closes after the usual grace period, and the Node process
+            // stays alive throughout.
+            //
+            // NOTE: this is local/client-side cancellation only. A remote
+            // fleet member that already accepted a job may keep running to
+            // completion even after this run unwinds as cancelled --
+            // true server-side cancellation would require changes to the
+            // external apra-fleet MCP server (apra-fleet.exe) and is out of
+            // scope here.
+            console.log('[Viewer] Stop signal received -- requesting cooperative cancellation.');
+            if (typeof workflow.requestStop === 'function') {
+                workflow.requestStop('Stop requested via dashboard /stop endpoint');
+            }
             res.writeHead(200);
             res.end();
-            process.exit(1);
         } else {
             res.writeHead(404);
             res.end();

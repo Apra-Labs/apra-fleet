@@ -97,3 +97,29 @@ export class BudgetExceededError extends WorkflowError {
         super(message, { code: 'BUDGET_EXCEEDED', ...opts });
     }
 }
+
+/**
+ * Thrown when a run is cooperatively cancelled via
+ * `FleetWorkflow.requestStop()` (apra-fleet-unw.10, viewer `/stop` handler).
+ *
+ * `requestStop()` aborts a per-run `AbortController` whose `signal` is
+ * threaded into every in-flight and future `agent()`/`command()` call for
+ * that run (via the apra-fleet-unw.5 client-side signal plumbing). The
+ * underlying rejection surfaces at the transport layer as a client-side
+ * `AbortError` (`.code === 'ABORTED'`, packages/apra-fleet-client/src/client
+ * /errors.mjs); `agent()`/`command()` recognize that code and re-wrap it as
+ * this typed `CancelledError` instead of a generic `FleetTransportError`, so
+ * callers/tests can distinguish "the user asked to stop" from "the network
+ * broke".
+ *
+ * NOTE: this is client-side/local cancellation only. A remote fleet member
+ * that already accepted a job may keep running to completion even after the
+ * workflow run itself unwinds as cancelled -- true server-side cancellation
+ * would require changes to the external apra-fleet MCP server and is out of
+ * scope here.
+ */
+export class CancelledError extends WorkflowError {
+    constructor(message, opts = {}) {
+        super(message, { code: 'CANCELLED', ...opts });
+    }
+}

@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
+import { randomUUID } from 'crypto';
 import { VettingEngine } from './vetting.mjs';
 
 /**
@@ -81,11 +82,36 @@ export class WorkflowEngine {
         // FleetWorkflow instance safe: they no longer stomp on each other's
         // args or phase attribution. See the runStorage comment in
         // src/workflow/index.mjs for the full mechanism.
+        //
+        // (apra-fleet-unw.10) A `runId` is generated here (rather than left
+        // to runWithContext()'s internal default) so it's known up front and
+        // can be attached to the `end` event emitted from the `finally`
+        // block below on BOTH the success and failure/throw paths -- this is
+        // what lets the dashboard viewer (src/viewer/index.mjs) finally
+        // leave its perpetual "LIVE" state and transition to DONE/FAILED,
+        // and is also the runId a script's own `requestStop()`-triggered
+        // CancelledError (errors.mjs) will carry.
+        const runId = randomUUID();
+        let status = 'success';
+        let result;
+        let error;
         try {
-            return await this.wf.runWithContext(args, entry);
+            result = await this.wf.runWithContext(args, entry, { runId });
+            return result;
         } catch (err) {
             console.error('[WorkflowEngine] Execution Failed:', err);
+            error = err;
+            status = err && err.code === 'CANCELLED' ? 'cancelled' : 'failed';
             throw err;
+        } finally {
+            this.wf.emit('end', {
+                runId,
+                status,
+                result: status === 'success' ? result : undefined,
+                error: error
+                    ? { message: error.message, code: error.code, name: error.name }
+                    : undefined
+            });
         }
     }
 
