@@ -59,19 +59,37 @@ async function setup(tempDirSuffix) {
  * Builds a deterministic mock FleetApi. Every executePrompt() call is
  * recorded into `dispatched` so the caller can assert on the exact sequence
  * of agentType dispatches, and can diff that sequence across repeated runs.
+ *
+ * Every executeCommand() call is additionally recorded into `commandLog` in
+ * dispatch order -- used to assert on the git/gh command-call log added by
+ * apra-fleet-unw.14 (branch creation at sprint start, push + PR raise at
+ * finalization).
  */
-function buildMockFleetApi(tempDir, epicBead, dispatched) {
+function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog) {
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
 
     return {
         executeCommand: async (opts) => {
-            // No stale intercepts here: runner.js's Deploy/Integ probes are
-            // `node -e "require('fs').existsSync(...)"` commands, which are
-            // executed for real against tempDir (where setup() wrote
-            // deploy.md / integ-test-playbook.md), same as every other
-            // bd/node command below.
+            commandLog.push(opts.command);
+
+            // git/gh commands (apra-fleet-unw.14's branch-ensure/push/PR
+            // steps) are intercepted rather than run for real: tempDir is a
+            // bare `bd init` scratch directory, not a git repo with an
+            // 'origin' remote, so there is nothing real to git-fetch/push/
+            // gh-pr-create against here. This keeps the mock hermetic while
+            // still exercising and asserting on runner.js's dispatch of
+            // these commands.
+            if (/^(git|gh)\s/.test(opts.command)) {
+                return { content: [{ text: 'ok (mocked -- no real git remote in this mock sprint)' }] };
+            }
+
+            // No stale intercepts here otherwise: runner.js's Deploy/Integ
+            // probes are `node -e "require('fs').existsSync(...)"`
+            // commands, which are executed for real against tempDir (where
+            // setup() wrote deploy.md / integ-test-playbook.md), same as
+            // every other bd/node command below.
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) {
                 return { isError: true, content: [{ text: stderr || err.message }] };
@@ -204,13 +222,25 @@ async function teardown(tempDir) {
 async function runOnce(tag) {
     const { tempDir, epicBead } = await setup(tag);
     const dispatched = [];
+    const commandLog = [];
     try {
-        const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched);
+        const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog);
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         const engine = new WorkflowEngine(workflow);
 
+        // apra-fleet-unw.14: runner.js now validates a full CLI->runner arg
+        // contract (branch/base_branch/members are required; goal/max_cycles
+        // are optional with defaults) before any dispatch, and uses
+        // branch/base_branch for the git checkout/push/PR steps below.
         const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
-        const result = await engine.executeFile(scriptPath, { target_issue: epicBead.id }, true);
+        const result = await engine.executeFile(scriptPath, {
+            target_issue: epicBead.id,
+            members: ['local'],
+            branch: 'auto-sprint/mock-sprint',
+            base_branch: 'main',
+            goal: 'P1/P2',
+            max_cycles: 5,
+        }, true);
 
         // bd list hides closed issues by default -- pass --all so the final
         // state assertion actually sees closed beads.
@@ -219,7 +249,7 @@ async function runOnce(tag) {
             .map((b) => ({ title: b.title, status: b.status }))
             .sort((a, b) => a.title.localeCompare(b.title));
 
-        return { dispatched, result, finalBeads };
+        return { dispatched, result, finalBeads, commandLog };
     } finally {
         await teardown(tempDir);
     }
@@ -238,6 +268,36 @@ async function main() {
 
     check(run1.result && run1.result.status === 'success', `Run1 did not succeed: ${JSON.stringify(run1.result)}`);
     check(run2.result && run2.result.status === 'success', `Run2 did not succeed: ${JSON.stringify(run2.result)}`);
+
+    // apra-fleet-unw.14: branch/base_branch/goal/max_cycles values passed
+    // into executeFile() must actually reach and be exposed by the runner,
+    // not just be parsed and dropped.
+    check(run1.result && run1.result.branch === 'auto-sprint/mock-sprint', `Run1 result did not expose branch: ${JSON.stringify(run1.result)}`);
+    check(run1.result && run1.result.baseBranch === 'main', `Run1 result did not expose baseBranch: ${JSON.stringify(run1.result)}`);
+    check(run1.result && run1.result.goal === 'P1/P2', `Run1 result did not expose goal: ${JSON.stringify(run1.result)}`);
+    check(run1.result && run1.result.maxCycles === 5, `Run1 result did not expose maxCycles: ${JSON.stringify(run1.result)}`);
+
+    // apra-fleet-unw.14: git semantics -- ensure/create the sprint branch is
+    // the very first command dispatched (before any bd/node command), and
+    // push + PR-raise are the last two commands dispatched (finalization).
+    check(
+        run1.commandLog.length >= 3 && /^git fetch /.test(run1.commandLog[0]) && run1.commandLog[0].includes('git checkout -B auto-sprint/mock-sprint'),
+        `Expected first commandLog entry to be the sprint-branch-ensure git command, got: ${JSON.stringify(run1.commandLog[0])}`
+    );
+    const pushIdx = run1.commandLog.length - 2;
+    const prIdx = run1.commandLog.length - 1;
+    check(
+        run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith('git push -u origin auto-sprint/mock-sprint'),
+        `Expected second-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+    );
+    check(
+        run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('gh pr create') && run1.commandLog[prIdx].includes('--base "main"') && run1.commandLog[prIdx].includes('--head "auto-sprint/mock-sprint"'),
+        `Expected last commandLog entry to be the PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
+    );
+    check(
+        !run1.commandLog.some((c) => /^git\s+merge|gh\s+pr\s+merge/.test(c)),
+        `Runner must never auto-merge (pm skill R12); found a merge command in the log: ${JSON.stringify(run1.commandLog)}`
+    );
 
     const seq1 = run1.dispatched.map((d) => `${d.agent}${d.label ? ':' + d.label : ''}`);
     const seq2 = run2.dispatched.map((d) => `${d.agent}${d.label ? ':' + d.label : ''}`);
