@@ -1,9 +1,14 @@
+// MANUAL / LIVE E2E FIXTURE -- not part of `npm test`.
+// Requires a live apra-fleet MCP server on 127.0.0.1:7523 with at least one
+// online local member. See test/manual/README.md for details and the beads
+// issue that tracks real live-fleet E2E coverage (currently untracked -- see
+// README gap note).
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { FleetWorkflow } from '../src/workflow/index.mjs';
-import { WorkflowEngine } from '../src/workflow/engine.mjs';
-import { startViewer } from '../src/viewer/index.mjs';
+import { FleetWorkflow } from '../../src/workflow/index.mjs';
+import { WorkflowEngine } from '../../src/workflow/engine.mjs';
+import { createDashboardViewer } from '../../src/viewer/index.mjs';
 
 const e2eScript = `
 export const meta = { name: "E2E Safe Harness", phases: ["Discovery", "Non-Destructive Execution"] };
@@ -64,7 +69,9 @@ async function main() {
     const api = new ApraFleet(client);
     const wf = new FleetWorkflow(api);
     const engine = new WorkflowEngine(wf);
-    const viewer = startViewer(wf, { name: 'E2E Fleet Harness' });
+    // createDashboardViewer returns a plain http.Server; there is no
+    // markComplete()/stop() API (that was the original dead-import bug).
+    const viewer = createDashboardViewer(wf, { port: 18081, name: 'E2E Fleet Harness' });
 
     try {
         console.log('\n--- Discovering Members ---');
@@ -89,13 +96,11 @@ async function main() {
         
         console.log('\n--- E2E Complete ---');
         console.log(finalResult);
-        viewer.markComplete(true);
     } catch (e) {
         console.error('\nFAIL: E2E Harness threw an error:', e);
-        viewer.markComplete(false);
     } finally {
         await new Promise(r => setTimeout(r, 2000));
-        viewer.stop();
+        viewer.close();
         transport.stop();
     }
 }

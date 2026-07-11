@@ -1,6 +1,11 @@
-import { McpClient } from './lib/fleet-client/client.mjs';
-import { StreamableHttpTransport } from './lib/fleet-client/transport.mjs';
-import { ApraFleet } from './lib/fleet-client/api.mjs';
+// MANUAL / LIVE E2E FIXTURE -- not part of `npm test`.
+// Requires a live apra-fleet MCP server on 127.0.0.1:7523 with an online
+// member named 'apra-pm'. See test/manual/README.md for details and the
+// beads issue that tracks real live-fleet E2E coverage (currently untracked
+// -- see README gap note).
+import { McpClient } from '@apralabs/apra-fleet-client/client';
+import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
+import { ApraFleet } from '@apralabs/apra-fleet-client';
 import * as fs from 'fs';
 import * as path from 'path';
 
