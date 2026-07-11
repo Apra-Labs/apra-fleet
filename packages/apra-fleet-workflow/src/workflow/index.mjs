@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
 import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+import { hashText, computeActivityKey } from './journal.mjs';
 
 export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
@@ -495,6 +496,77 @@ export class FleetWorkflow extends EventEmitter {
         let lastActivityMeta = null;
         const budget = this._currentBudget();
 
+        // (apra-fleet-unw.11, F6) Journal replay. `replayKey` is computed
+        // ONCE per logical agent() call (not per schema-repair attempt) from
+        // this run's monotonic activity sequence counter + call type +
+        // member + a hash of the fully-resolved initial prompt (including
+        // any appended schema instructions), so it's stable across repair
+        // attempts and deterministic across an uninterrupted-vs-resumed run
+        // of the SAME script with the SAME args. `store.activitySeq` is only
+        // non-null when the caller opted into journaling at all (see
+        // runWithContext()); a normal call with no journal/resumeJournal
+        // option never enters this block and never attaches
+        // sequence/replayKey to its activity events, so behavior/output are
+        // unchanged from before this feature existed.
+        const store = this._store();
+        let sequence = null;
+        let replayKey = null;
+        if (store && store.activitySeq) {
+            sequence = store.activitySeq.value++;
+            replayKey = computeActivityKey({
+                sequence,
+                type: 'agent',
+                member: opts.member_name || opts.member_id,
+                textHash: hashText(initialPrompt)
+            });
+        }
+
+        const replay = store && store.replay;
+        if (replay && !replay.diverged && replayKey) {
+            const cached = replay.completedByKey.get(replayKey);
+            if (cached && cached.success) {
+                // Cache hit: return the journaled result WITHOUT dispatching
+                // to the fleet at all. Still emit activity:start/activity:end
+                // (marked `replayed: true`) so a listening dashboard/journal
+                // writer sees this step as part of the run.
+                const cachedActivityMeta = {
+                    id: randomUUID(),
+                    type: 'agent',
+                    phase: effectivePhase,
+                    runId,
+                    label: (opts.label || prompt.split('\n')[0].substring(0, 50) + (prompt.length > 50 ? '...' : '')),
+                    member: opts.member_name || opts.member_id,
+                    model: opts.model || 'default',
+                    repairAttempt: 0,
+                    startTime: Date.now(),
+                    sequence,
+                    replayKey,
+                    replayed: true
+                };
+                this.emit('activity:start', cachedActivityMeta);
+                if (typeof cached.cost === 'number') {
+                    budget._spent += cached.cost;
+                }
+                const cachedOutput = opts.schema ? JSON.parse(cached.output) : cached.output;
+                this.emit('activity:end', {
+                    ...cachedActivityMeta,
+                    duration: 0,
+                    success: true,
+                    usage: cached.usage ?? null,
+                    cost: cached.cost ?? null,
+                    output: cached.output,
+                    replayed: true
+                });
+                return cachedOutput;
+            }
+            // First mismatch or first missing entry for this run: stop
+            // replay and switch to live execution from here onward (partial
+            // replay, not all-or-nothing).
+            replay.diverged = true;
+            console.warn(`[Journal] Replay divergence at sequence ${sequence} (agent, member: ${opts.member_name || opts.member_id}) -- switching to live execution from this point onward.`);
+            this.emit('journal:diverged', { runId, sequence, type: 'agent', replayKey });
+        }
+
         for (let attempt = 0; attempt <= maxRepairs; attempt++) {
             if (budget.total !== null && budget.remaining() <= 0) {
                 throw new BudgetExceededError(
@@ -514,7 +586,8 @@ export class FleetWorkflow extends EventEmitter {
                 member: opts.member_name || opts.member_id,
                 model: opts.model || 'default',
                 repairAttempt: attempt,
-                startTime: Date.now()
+                startTime: Date.now(),
+                ...(replayKey !== null ? { sequence, replayKey } : {})
             };
             lastActivityMeta = activityMeta;
             this.emit('activity:start', activityMeta);
@@ -694,6 +767,56 @@ export class FleetWorkflow extends EventEmitter {
             }
         }
 
+        // (apra-fleet-unw.11, F6) Journal replay -- see the matching, more
+        // detailed comment in agent() above. `command()`'s activity events
+        // already carry the raw, substituted command text (the `command`
+        // field above), so the replay key hashes that same text rather than
+        // requiring a second copy.
+        const store = this._store();
+        let sequence = null;
+        let replayKey = null;
+        if (store && store.activitySeq) {
+            sequence = store.activitySeq.value++;
+            replayKey = computeActivityKey({
+                sequence,
+                type: 'command',
+                member: opts.member_name || opts.member_id,
+                textHash: hashText(finalCmd)
+            });
+        }
+
+        const replay = store && store.replay;
+        if (replay && !replay.diverged && replayKey) {
+            const cached = replay.completedByKey.get(replayKey);
+            if (cached && cached.success) {
+                const cachedActivityMeta = {
+                    id: randomUUID(),
+                    type: 'command',
+                    phase: effectivePhase,
+                    runId,
+                    label: opts.label || finalCmd.substring(0, 60),
+                    member: opts.member_name || opts.member_id,
+                    command: finalCmd,
+                    startTime: Date.now(),
+                    sequence,
+                    replayKey,
+                    replayed: true
+                };
+                this.emit('activity:start', cachedActivityMeta);
+                this.emit('activity:end', {
+                    ...cachedActivityMeta,
+                    duration: 0,
+                    success: true,
+                    output: cached.output,
+                    replayed: true
+                });
+                return cached.output;
+            }
+            replay.diverged = true;
+            console.warn(`[Journal] Replay divergence at sequence ${sequence} (command, member: ${opts.member_name || opts.member_id}) -- switching to live execution from this point onward.`);
+            this.emit('journal:diverged', { runId, sequence, type: 'command', replayKey });
+        }
+
         const activityMeta = {
             id: randomUUID(),
             type: 'command',
@@ -702,7 +825,8 @@ export class FleetWorkflow extends EventEmitter {
             label: opts.label || finalCmd.substring(0, 60),
             member: opts.member_name || opts.member_id,
             command: finalCmd,
-            startTime: Date.now()
+            startTime: Date.now(),
+            ...(replayKey !== null ? { sequence, replayKey } : {})
         };
         this.emit('activity:start', activityMeta);
 
@@ -1002,12 +1126,27 @@ export class FleetWorkflow extends EventEmitter {
      * @param {(context: object) => Promise<any>} entryFn - The workflow
      *   script's entry point (`main`/`run`/`default`), called with this run's
      *   context object.
-     * @param {{ runId?: string }} [opts] - (apra-fleet-unw.10) Optional
-     *   caller-supplied `runId`, so `WorkflowEngine.executeFile()` can know
-     *   the run's id up front (to attach it to the `end` event it emits from
-     *   its own try/finally) without this method having to report it back
-     *   out-of-band. Defaults to a fresh UUID when omitted, matching the
-     *   pre-unw.10 behavior for any other/legacy caller.
+     * @param {{ runId?: string, journalEnabled?: boolean, replay?: {completedByKey: Map<string,object>, diverged: boolean} }} [opts] -
+     *   (apra-fleet-unw.10) `runId`: optional caller-supplied run id, so
+     *   `WorkflowEngine.executeFile()` can know the run's id up front (to
+     *   attach it to the `end` event it emits from its own try/finally)
+     *   without this method having to report it back out-of-band. Defaults
+     *   to a fresh UUID when omitted, matching the pre-unw.10 behavior for
+     *   any other/legacy caller.
+     *   (apra-fleet-unw.11, F6) `journalEnabled`/`replay`: journal/resume
+     *   wiring from `WorkflowEngine.executeFile()`. `journalEnabled` gates
+     *   the per-run activity sequence counter (`store.activitySeq`) that
+     *   `agent()`/`command()` use to compute deterministic replay keys --
+     *   when omitted/false, that counter is never created and
+     *   `agent()`/`command()` never compute or attach replay-related fields
+     *   to their activity events, so behavior/output is unchanged from
+     *   before this feature existed. `replay` (only meaningful when
+     *   `journalEnabled` is true) is the loaded journal's
+     *   `completedByKey`/`diverged` state (see journal.mjs `loadJournal()`);
+     *   `diverged` is mutated in place by `agent()`/`command()` the first
+     *   time a call's replay key isn't found as a completed/successful
+     *   record in the journal, permanently switching the rest of the run to
+     *   live execution (partial replay, Claude-CLI style).
      */
     async runWithContext(args, entryFn, opts = {}) {
         const runId = opts.runId || randomUUID();
@@ -1033,7 +1172,14 @@ export class FleetWorkflow extends EventEmitter {
             phase: null,
             group: null,
             budget,
-            signal: controller.signal
+            signal: controller.signal,
+            // (apra-fleet-unw.11, F6) Shared-by-reference across parallel()
+            // branch store forks (see parallel() below), same as `budget` --
+            // a single monotonic counter for the whole run so replay keys
+            // stay unique/ordered regardless of which branch increments it.
+            // `null` unless journaling was requested for this run at all.
+            activitySeq: opts.journalEnabled ? { value: 0 } : null,
+            replay: opts.journalEnabled ? (opts.replay || null) : null
         };
         const context = {
             ...this._bindPrimitives(),

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { randomUUID } from 'crypto';
 import { VettingEngine } from './vetting.mjs';
+import { JournalWriter, loadJournal, resolveJournalWritePath } from './journal.mjs';
 
 /**
  * Loads and runs user-authored workflow scripts.
@@ -44,16 +45,40 @@ export class WorkflowEngine {
      *
      * @param {string} scriptPath
      * @param {any} args
-     * @param {boolean|{strictVetting?: boolean}} [vettingOpts] - Either a
-     *   plain options object (`{ strictVetting: true }` opts in to blocking
-     *   execution of high-risk scripts), or -- for backward compatibility
-     *   with the old `forceOverrideRisk` boolean parameter -- a boolean,
-     *   which is now a no-op (vetting never blocks by default, so there is
-     *   nothing left to "force override").
+     * @param {boolean|{strictVetting?: boolean, journal?: boolean|string|{path:string}, resumeJournal?: string}} [vettingOpts] -
+     *   Either a plain options object, or -- for backward compatibility with
+     *   the old `forceOverrideRisk` boolean parameter -- a boolean, which is
+     *   now a no-op (vetting never blocks by default, so there is nothing
+     *   left to "force override"). Recognized object fields:
+     *   - `strictVetting` (boolean): opts in to blocking execution of
+     *     high-risk scripts.
+     *   - `journal` (apra-fleet-unw.11, F6): opts in to persisting this run's
+     *     `activity:start`/`activity:end`/`end` events as an append-only
+     *     JSONL journal (see journal.mjs). `true` -> default path
+     *     `.fleet-workflow/journal-<runId>.jsonl`; a string or
+     *     `{ path: string }` -> explicit path. OFF BY DEFAULT: omitting this
+     *     (and `resumeJournal`) produces zero journal-related I/O and zero
+     *     change to emitted event shapes.
+     *   - `resumeJournal` (string path): resumes a previous (possibly
+     *     crashed) run from an existing journal file. For each
+     *     `agent()`/`command()` call, a deterministic activity key (sequence
+     *     index within the run + call type + a hash of the dispatched
+     *     prompt/command text + member) is looked up in the journal; a
+     *     matching COMPLETED (successful) record is returned directly
+     *     without dispatching to the fleet. The FIRST mismatch or missing
+     *     entry stops replay and switches to live execution from that point
+     *     onward (partial replay, not all-or-nothing -- Claude-CLI style).
+     *     Journal records that were started but never finished (a crash
+     *     mid-dispatch) are surfaced via a `journal:ambiguous` event and a
+     *     console warning as possibly-double-dispatched; they are never
+     *     auto-resolved (true idempotency requires fleet-server-side keys,
+     *     descoped -- see plan.md). Unless `journal` is also given, the
+     *     resumed run continues writing to the SAME file it resumed from.
      */
     async executeFile(scriptPath, args = {}, vettingOpts = {}) {
         const fullPath = path.resolve(scriptPath);
-        const strictVetting = typeof vettingOpts === 'boolean' ? false : !!vettingOpts.strictVetting;
+        const opts = typeof vettingOpts === 'boolean' ? {} : (vettingOpts || {});
+        const strictVetting = typeof vettingOpts === 'boolean' ? false : !!opts.strictVetting;
 
         const source = await fs.readFile(fullPath, 'utf-8');
         const vettingResult = await this.vetting.assessRisk(source);
@@ -92,11 +117,48 @@ export class WorkflowEngine {
         // and is also the runId a script's own `requestStop()`-triggered
         // CancelledError (errors.mjs) will carry.
         const runId = randomUUID();
+
+        // (apra-fleet-unw.11, F6) Journal setup. `journalEnabled` gates
+        // EVERYTHING journal-related in FleetWorkflow (the per-run activity
+        // sequence counter, replay-key computation) so that a normal call
+        // with neither `journal` nor `resumeJournal` set is byte-for-byte
+        // identical, in behavior and in emitted event shape, to before this
+        // feature existed (acceptance criterion #4).
+        const journalEnabled = !!(opts.journal || opts.resumeJournal);
+        let replay = null;
+        if (opts.resumeJournal) {
+            const resumePath = path.resolve(opts.resumeJournal);
+            const loaded = await loadJournal(resumePath);
+            replay = { completedByKey: loaded.completedByKey, diverged: false };
+
+            // Ambiguity guard: surface (never auto-resolve) any activity
+            // that was dispatched but never recorded as finished in the
+            // journal being resumed from -- most likely because the prior
+            // run crashed mid-dispatch. True idempotency requires
+            // fleet-server-side keys and is explicitly descoped (plan.md).
+            for (const ambiguousRecord of loaded.ambiguous) {
+                console.warn(
+                    `[Journal] Ambiguous activity from a previous run (started but never recorded as finished -- ` +
+                    `possibly double-dispatched on resume): id=${ambiguousRecord.id} type=${ambiguousRecord.type} ` +
+                    `member=${ambiguousRecord.member} label=${ambiguousRecord.label || 'none'}`
+                );
+                this.wf.emit('journal:ambiguous', { runId, resumedFrom: resumePath, activity: ambiguousRecord });
+            }
+        }
+
+        const journalWritePath = journalEnabled ? resolveJournalWritePath(opts, runId) : null;
+        let journalWriter = null;
+        if (journalWritePath) {
+            journalWriter = new JournalWriter(this.wf, { runId, filePath: journalWritePath });
+            await journalWriter.init();
+            await journalWriter.writeRunStart({ scriptPath: fullPath, args });
+        }
+
         let status = 'success';
         let result;
         let error;
         try {
-            result = await this.wf.runWithContext(args, entry, { runId });
+            result = await this.wf.runWithContext(args, entry, { runId, journalEnabled, replay });
             return result;
         } catch (err) {
             console.error('[WorkflowEngine] Execution Failed:', err);
@@ -112,6 +174,9 @@ export class WorkflowEngine {
                     ? { message: error.message, code: error.code, name: error.name }
                     : undefined
             });
+            if (journalWriter) {
+                await journalWriter.close();
+            }
         }
     }
 
