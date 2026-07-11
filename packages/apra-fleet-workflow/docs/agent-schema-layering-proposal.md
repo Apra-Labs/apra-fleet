@@ -392,3 +392,97 @@ pushed upstream as-is.**
    structured JSON when a schema is in play, prose for humans.
 5. The workflow engine stays generic and untouched -- the fix lands entirely
    in the two layers that own the knowledge.
+
+---
+
+## 6. Extension: role-owned input schemas (pre-dispatch validation)
+
+Approved by the user as a follow-on to the recommendation above, with the
+explicit observation that it is a *cleaner* case than output schemas, not a
+harder one -- for a structural reason worth stating precisely.
+
+### 6.1 Why inputs are not subject to the double-specification danger
+
+Output schemas are dangerous when unowned because the **LLM** must resolve a
+conflict between two schema statements it is shown (the persona's and the
+call site's) -- see section 2. Inputs have no such actor: the input values
+are assembled entirely by the *caller* (`runner.js`, a workflow script, or a
+human) and simply inserted into the prompt. There is only one party, and it
+either supplied the right shape or it didn't. No model-side ambiguity is
+possible. So the urgency driving section 4 (stop a coin-flip the LLM makes)
+does not apply here -- but a different, still-real problem does.
+
+### 6.2 The problem: a deterministically-checkable property left to LLM judgment
+
+`apra-fleet-unw.13`'s V3 fix added an "Inputs" section to every role def,
+each with a **prose** "missing-input behavior" clause. Concrete examples
+audited directly from `C:\akhil\git\wt-unw13\vendor\apra-pm\agents\`:
+
+- `harvester.md`: requires `analysisArtifactFile`, `analysisText`,
+  `costAnalysis` (verbatim pre-computed content), `base-branch`, `branch`.
+  "If ... not supplied, do NOT fabricate ... Stop and return `status:
+  'FAILED'` with `notes` naming exactly which input was missing."
+- `reviewer.md`: requires `base-branch`, `branch`. "If ... not supplied (or
+  does not exist), do not guess a branch name. Return `verdict:
+  'CHANGES_NEEDED'` ..."
+- `doer.md`: requires `branch`. "If ... not supplied, do not guess or work
+  on whatever branch happens to be checked out. Return `status: 'BLOCKED'`
+  ..."
+
+This design is *correct* as a safety net -- it prevents the dangerous
+failure mode (an agent silently guessing a branch or fabricating an
+analysis block). But as the *primary* mechanism it has a cost this project
+has been eliminating everywhere else: it delegates a checkable fact
+("is `analysisArtifactFile` present and non-empty?") to LLM discretion, and
+only discovers the gap **after** a paid fleet dispatch. In the harvester
+case specifically, catching a missing `costAnalysis` this way burns a full
+dispatch merely to receive a structured "FAILED, you forgot X" reply that a
+plain object-key check could have produced for free, locally, before any
+network call.
+
+### 6.3 Recommendation: role-owned input schemas, caller-side pre-flight gate
+
+Extend section 4's design symmetrically:
+
+1. **apra-pm ships `agents/schemas/<role>-input.json`** alongside each
+   role's `-output.json` (naming: `agents/schemas/<role>.json` could hold
+   `{"input": {...}, "output": {...}}` as two named sub-schemas in one file,
+   or two sibling files -- implementer's choice, document whichever in the
+   eventual beads issue). Same versioning convention (`$id`, `version`) as
+   section 4.1.
+2. **The schema describes required context keys/types only** -- it is
+   never appended to the prompt and never shown to the LLM. It is consumed
+   exclusively by whichever caller assembles the dispatch context
+   (`runner.js` via its `contracts.mjs` adapter today; a future workflow
+   script tomorrow; the manual pm skill has no code path to run this check
+   and is unaffected, same as today).
+3. **The caller validates its assembled context against the role's input
+   schema BEFORE calling `agent()`.** On failure: throw/abort locally,
+   zero fleet dispatch, zero cost, fully deterministic -- no LLM judgment
+   involved in detecting the gap at all.
+4. **The persona's prose "missing-input behavior" clause stays, unchanged,
+   as defense-in-depth** for the one path that has no pre-flight
+   validator: a human or ad-hoc caller dispatching the role directly
+   without going through a schema-aware adapter. It does not become dead
+   weight -- it is exactly the safety net for the un-validated path.
+5. **No change to `agent()`'s runtime.** Same as the output-schema
+   recommendation (section 4.4): this is entirely caller-side, so the
+   generic workflow engine remains untouched.
+
+### 6.4 Where this actually matters most
+
+Ranked by how much a caller-side gate saves, based on the audited Inputs
+sections: `harvester` (4 required values, including two verbatim-content
+blocks that are the most expensive to silently omit) > `reviewer`/`doer`/
+`deployer` (1-2 required strings each, still worth the free check) >
+`ci-watcher`/`integ-test-runner`/`plan-reviewer` (lighter-weight, lower
+priority but same pattern for consistency).
+
+### 6.5 Migration note (folds into section 5, no changes made here)
+
+When `agents/unw.13`'s branch is reworked per section 5.1, add the sibling
+input-schema files and the pre-flight-validation adapter function to
+`contracts.mjs` (section 5.2) in the same pass -- both are additive,
+non-breaking changes to the same files already being touched, so there is
+no reason to split this into a separate future issue from the output-schema
+work once that work is scheduled.
