@@ -54,7 +54,7 @@ async function main() {
     }
 
     while (cycle <= MAX_CYCLES) {
-        log(`\n=== Starting Sprint Cycle ${cycle} ===`);
+        group(`Sprint Cycle ${cycle}`);
 
         // =======================
         // 1. Planning Loop
@@ -188,21 +188,26 @@ async function main() {
         
         if (remaining.length === 0) {
             log("All beads closed. Exiting cycle loop.");
+            endGroup();
             break;
         }
         
         cycle++;
+        endGroup();
     }
 
     // =======================
     // 6. Finalization
     // =======================
+    group('Finalization');
     phase(`Final Review C${cycle}`);
     const finalRes = await agent('Pass or Fail?', { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', label: 'Final Review' });
     log(`Final Verdict: ${finalRes}`);
 
     phase(`Harvest C${cycle}`);
     await agent('Update memories and retrospectives.', { member_name: getMemberForRole('harvester'), agentType: 'harvester' });
+    
+    endGroup();
     
     return { status: 'success' };
 }

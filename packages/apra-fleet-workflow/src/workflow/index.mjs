@@ -54,11 +54,23 @@ export class FleetWorkflow extends EventEmitter {
         this.emit('log', { phase: this.currentPhase, msg });
     }
 
+    group(title) {
+        this.currentGroup = title;
+        console.log(`\n=== Group: ${title} ===`);
+        this.emit('group:start', { title });
+    }
+
+    endGroup() {
+        this.emit('group:end', { title: this.currentGroup });
+        this.currentGroup = null;
+    }
+
     phase(title) {
         this.currentPhase = title;
-        console.log(`\n=== Phase: ${title} ===`);
+        console.log(`--- Phase: ${title} ---`);
         this.emit('phase', title);
     }
+
 
     publishState(namespace, data) {
         this.emit('state', { namespace, data, phase: this.currentPhase });
@@ -330,6 +342,8 @@ export class FleetWorkflow extends EventEmitter {
             phase: this.phase.bind(this),
             publishState: this.publishState.bind(this),
             workflow: this.workflow.bind(this),
+            group: this.group.bind(this),
+            endGroup: this.endGroup.bind(this),
             args: this.args,
             budget: this.budget
         };

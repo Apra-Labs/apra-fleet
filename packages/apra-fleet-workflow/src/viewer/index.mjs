@@ -29,16 +29,28 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
     
     .main-content { display: flex; flex: 1; overflow: hidden; }
-    .sidebar { width: 220px; border-right: 1px solid var(--border); padding: 20px; background: var(--bg-glass); overflow-y: auto; flex-shrink: 0; }
-    .phase-tracker { list-style: none; padding: 0; }
-    .phase-item { padding: 6px 10px; font-size: 13px; color: var(--text-muted); border-radius: 4px; margin-bottom: 2px; }
-    .phase-item.active { background: rgba(255,255,255,0.05); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
     
     .content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; }
     .panel { background: var(--bg-glass); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; flex: 1; overflow: hidden; }
     .panel-header { flex-shrink: 0; padding: 10px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); text-transform: uppercase; letter-spacing: 0.5px; }
     
-    .stream-list { flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; background: #000; }
+    .stream-list { flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; background: #000; }
+    
+    /* Tree Group */
+    .tree-group { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .group-header { padding: 12px 16px; background: rgba(0,0,0,0.4); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; outline: none; list-style: none; }
+    .group-header h3 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
+    .group-header:hover { background: rgba(0,0,0,0.6); }
+    .group-header::-webkit-details-marker { display: none; }
+    .group-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+    /* Tree Phase */
+    .tree-phase { background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; }
+    .phase-header { padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; border-bottom: 1px solid rgba(255,255,255,0.02); outline: none; list-style: none; }
+    .phase-header h4 { font-size: 13px; font-weight: 600; color: #e4e4e7; margin: 0; }
+    .phase-header:hover { background: rgba(255,255,255,0.05); }
+    .phase-header::-webkit-details-marker { display: none; }
+    .phase-body { padding: 8px; display: flex; flex-direction: column; gap: 4px; }
     
     .event-log { display: flex; gap: 8px; font-family: monospace; font-size: 12px; color: #d4d4d8; padding: 2px 4px; border-radius: 4px; }
     .event-log:hover { background: rgba(255,255,255,0.05); }
@@ -96,14 +108,10 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     </div>
   </div>
   <div class="main-content">
-    <div class="sidebar">
-      <div style="font-size: 11px; font-weight: 600; margin-bottom: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Phases</div>
-      <ul class="phase-tracker" id="phase-list"></ul>
-    </div>
     <div class="content-area">
       <div class="tab-bar" id="tab-bar">
-        <button class="tab-btn active" onclick="switchTab('core')">Timeline</button>
-        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\n')}
+        <button class="tab-btn active" onclick="switchTab('core')">Activity Tree</button>
+        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\\n')}
       </div>
       <div id="tab-core" class="tab-content active panel">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -117,10 +125,10 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
           <div class="panel-header">${ext.title}</div>
           <div id="extension-${ext.id}" style="padding: 12px; overflow-y: auto;"></div>
         </div>
-      `).join('\n')}
+      `).join('\\n')}
     </div>
   </div>
-  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\n')}
+  ${dashboardExtensions.map(ext => `<script>\\n${ext.js}\\n</script>`).join('\\n')}
   <script>
     let globalState = null;
     function switchTab(id) {
@@ -176,10 +184,10 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       }
     }
 
-    let allExpanded = false;
+    let allExpanded = true;
     function toggleAllGlobal() {
       allExpanded = !allExpanded;
-      document.querySelectorAll('details.event-activity').forEach(d => {
+      document.querySelectorAll('details').forEach(d => {
         if (allExpanded) d.setAttribute('open', '');
         else d.removeAttribute('open');
       });
@@ -195,8 +203,6 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       isAutoScrolling = (streamEl.scrollTop + streamEl.clientHeight >= streamEl.scrollHeight - 30);
     });
 
-    let renderedEventsCount = 0;
-
     const source = new EventSource('/events');
     source.onmessage = (e) => {
         const ev = JSON.parse(e.data);
@@ -204,9 +210,119 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
             const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
             document.dispatchEvent(extEvent);
         }
-        // Update logic same as poller
         poll();
     };
+
+    function renderTreeIncremental(tree) {
+        tree.forEach((group, gIdx) => {
+            let groupEl = document.getElementById('group-' + gIdx);
+            if (!groupEl) {
+                groupEl = document.createElement('details');
+                groupEl.id = 'group-' + gIdx;
+                groupEl.className = 'tree-group';
+                groupEl.open = true;
+                groupEl.innerHTML = \`<summary class="group-header"><h3>\${escapeHtml(group.title)}</h3><span class="toggle-icon"></span></summary><div class="group-body"></div>\`;
+                streamEl.appendChild(groupEl);
+            }
+            const groupBody = groupEl.querySelector('.group-body');
+            
+            group.phases.forEach((phase, pIdx) => {
+                const phaseId = \`phase-\${gIdx}-\${pIdx}\`;
+                let phaseEl = document.getElementById(phaseId);
+                if (!phaseEl) {
+                    phaseEl = document.createElement('details');
+                    phaseEl.id = phaseId;
+                    phaseEl.className = 'tree-phase';
+                    phaseEl.open = true;
+                    phaseEl.innerHTML = \`<summary class="phase-header"><h4>\${escapeHtml(phase.title)}</h4><span class="toggle-icon"></span></summary><div class="phase-body"></div>\`;
+                    groupBody.appendChild(phaseEl);
+                }
+                const phaseBody = phaseEl.querySelector('.phase-body');
+                
+                phase.events.forEach((ev, eIdx) => {
+                    const evId = \`ev-\${gIdx}-\${pIdx}-\${eIdx}\`;
+                    let evEl = document.getElementById(evId);
+                    
+                    if (ev.type === 'log') {
+                        if (!evEl) {
+                            evEl = document.createElement('div');
+                            evEl.id = evId;
+                            const dateObj = new Date(ev.time || Date.now());
+                            const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
+                            
+                            if (ev.msg && ev.msg.includes('\\n')) {
+                                const lines = ev.msg.split('\\n');
+                                const firstLine = lines[0];
+                                const rest = lines.slice(1).join('\\n');
+                                evEl.innerHTML = \`<details class="event-activity log-multiline">
+                                  <summary class="activity-header">
+                                    <span class="log-time">\${t}</span>
+                                    <span class="activity-title" style="font-family:monospace; font-size:12px; color:#d4d4d8;">
+                                      \${escapeHtml(firstLine)} <em style="color:#a1a1aa">...</em>
+                                    </span>
+                                    <div class="activity-meta"><span class="toggle-icon"></span></div>
+                                  </summary>
+                                  <div class="activity-body">
+                                    <div class="activity-child" style="color:#d4d4d8;">\${escapeHtml(rest)}</div>
+                                  </div>
+                                </details>\`;
+                            } else {
+                                evEl.className = 'event-log';
+                                evEl.innerHTML = \`<span class="log-time">\${t}</span><span class="log-msg">\${escapeHtml(ev.msg)}</span>\`;
+                            }
+                            phaseBody.appendChild(evEl);
+                        }
+                    } else if (ev.type === 'activity') {
+                        const act = ev.data;
+                        if (!evEl) {
+                            evEl = document.createElement('details');
+                            evEl.id = evId;
+                            evEl.className = 'event-activity';
+                            if (act.isRunning) {
+                                evEl.open = true;
+                            }
+                            phaseBody.appendChild(evEl);
+                        }
+                        
+                        // Update contents every tick to catch status changes
+                        const dateObj = new Date(act.startTime || Date.now());
+                        const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
+                        
+                        let badge = '';
+                        if (act.isRunning) badge = '<span class="status-badge status-running">Running</span>';
+                        else if (act.success) badge = '<span class="status-badge status-success">Success</span>';
+                        else badge = '<span class="status-badge status-error">Failed</span>';
+                        
+                        let childrenHtml = '';
+                        if (!act.isRunning) {
+                            if (act.error) {
+                                childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
+                            } else if (act.output) {
+                                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
+                            }
+                        }
+                        
+                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : '';
+                        const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
+                        const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
+                        
+                        evEl.innerHTML = \`
+                          <summary class="activity-header">
+                            <span class="log-time">\${t}</span>
+                            <span class="activity-title"><strong>\${escapeHtml(act.type.toUpperCase())}</strong>: \${escapeHtml(act.label)} \${memberHtml}</span>
+                            <div class="activity-meta">
+                              \${tokensHtml}
+                              \${act.duration ? formatTime(act.duration) : ''} \${badge}
+                              <span class="toggle-icon"></span>
+                            </div>
+                          </summary>
+                          \${childrenHtml ? \`<div class="activity-body">\${childrenHtml}</div>\` : ''}
+                        \`;
+                    }
+                });
+            });
+        });
+    }
 
     async function poll() {
       try {
@@ -228,125 +344,14 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
            <span><strong>\${state.stats.totalTokens.toLocaleString()}</strong> Tokens</span>
            <span><strong>\${formatUptime(dur)}</strong> Uptime</span>\`;
         
-        const phaseHtml = state.phases.map(p => 
-          \`<li class="phase-item \${p === state.currentPhase ? 'active' : ''}">\${escapeHtml(p)}</li>\`
-        ).join('');
-        document.getElementById('phase-list').innerHTML = phaseHtml;
+        renderTreeIncremental(state.tree);
         
-        // Update existing activities that have transitioned to complete
-        state.events.forEach(ev => {
-            if (ev.type === 'activity') {
-                const act = ev.data;
-                const existing = document.getElementById('activity-' + act.id);
-                if (existing) {
-                    let badge = '';
-                    if (act.isRunning) badge = '<span class="status-badge status-running">Running</span>';
-                    else if (act.success) badge = '<span class="status-badge status-success">Success</span>';
-                    else badge = '<span class="status-badge status-error">Failed</span>';
-                    
-                    const metaDiv = document.getElementById('meta-' + act.id);
-                    if (metaDiv) {
-                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : '';
-                        metaDiv.innerHTML = \`\${tokensHtml} \${act.duration ? formatTime(act.duration) : ''} \${badge} <span class="toggle-icon"></span>\`;
-                    }
-                    
-                    if (!act.isRunning && !document.getElementById('body-' + act.id)) {
-                        let childrenHtml = '';
-                        if (act.error) {
-                            childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
-                        } else if (act.output) {
-                            childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
-                        }
-                        if (childrenHtml) {
-                            const bodyDiv = document.createElement('div');
-                            bodyDiv.id = 'body-' + act.id;
-                            bodyDiv.className = 'activity-body';
-                            bodyDiv.innerHTML = childrenHtml;
-                            existing.appendChild(bodyDiv);
-                        }
-                    }
-                }
+        if (state.extensions) {
+            for (const [ns, data] of Object.entries(state.extensions)) {
+                const extEvent = new CustomEvent('workflow:state:' + ns, { detail: data });
+                document.dispatchEvent(extEvent);
             }
-        });
-        
-        // Append new events
-        for (let i = renderedEventsCount; i < state.events.length; i++) {
-          const ev = state.events[i];
-          const div = document.createElement('div');
-          
-          if (ev.type === 'log') {
-            const dateObj = new Date(ev.time || Date.now());
-            const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
-            
-            const hasNewlines = ev.msg && ev.msg.includes('\\n');
-            if (hasNewlines) {
-              const lines = ev.msg.split('\\n');
-              const firstLine = lines[0];
-              const rest = lines.slice(1).join('\\n');
-              div.innerHTML = \`<details class="event-activity log-multiline">
-                <summary class="activity-header">
-                  <span class="log-time">\${t}</span>
-                  <span class="activity-title" style="font-family:monospace; font-size:12px; color:#d4d4d8;">
-                    [\${escapeHtml(ev.phase)}] \${escapeHtml(firstLine)} <em style="color:#a1a1aa">...</em>
-                  </span>
-                  <div class="activity-meta">
-                    <span class="toggle-icon"></span>
-                  </div>
-                </summary>
-                <div class="activity-body">
-                  <div class="activity-child" style="color:#d4d4d8;">\${escapeHtml(rest)}</div>
-                </div>
-              </details>\`;
-            } else {
-              div.innerHTML = \`<div class="event-log"><span class="log-time">\${t}</span><span class="log-msg">[\${escapeHtml(ev.phase)}] \${escapeHtml(ev.msg)}</span></div>\`;
-            }
-          } else if (ev.type === 'activity') {
-            const act = ev.data;
-            const dateObj = new Date(act.startTime || Date.now());
-            const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
-            
-            let badge = '';
-            if (act.isRunning) badge = '<span class="status-badge status-running">Running</span>';
-            else if (act.success) badge = '<span class="status-badge status-success">Success</span>';
-            else badge = '<span class="status-badge status-error">Failed</span>';
-            
-            let childrenHtml = '';
-            if (!act.isRunning) {
-              if (act.error) {
-                childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
-              } else if (act.output) {
-                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
-              }
-            }
-            
-            let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : '';
-            const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
-            const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
-            
-            div.innerHTML = \`<details class="event-activity" id="activity-\${act.id}">
-              <summary class="activity-header">
-                <span class="log-time">\${t}</span>
-                <span class="activity-title"><strong>\${escapeHtml(act.type.toUpperCase())}</strong>: \${escapeHtml(act.label)} \${memberHtml}</span>
-                <div class="activity-meta" id="meta-\${act.id}">
-                  \${tokensHtml}
-                  \${act.duration ? formatTime(act.duration) : ''} \${badge}
-                  <span class="toggle-icon"></span>
-                </div>
-              </summary>
-              \${childrenHtml ? \`<div class="activity-body" id="body-\${act.id}">\${childrenHtml}</div>\` : ''}
-            </details>\`;
-          } else if (ev.type === 'state') {
-            // Dispatch historical state events for extensions loading late
-            const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
-            document.dispatchEvent(extEvent);
-          }
-          
-          if (div.firstElementChild) {
-              streamEl.appendChild(div.firstElementChild);
-          }
         }
-        
-        renderedEventsCount = state.events.length;
         
         if (isAutoScrolling) {
           streamEl.scrollTop = streamEl.scrollHeight;
@@ -372,9 +377,6 @@ export function createDashboardViewer(workflow, opts = {}) {
     
     const state = {
         workflowName: opts.name || 'Apra Fleet Workflow',
-        phases: opts.phases || ['init'],
-        currentPhase: 'init',
-        events: [],
         status: 'running',
         stats: {
             activitiesCount: 0,
@@ -382,8 +384,15 @@ export function createDashboardViewer(workflow, opts = {}) {
             totalCost: 0,
             startTime: Date.now(),
             durationMs: 0
-        }
+        },
+        tree: [],
+        extensions: {}
     };
+
+    let currentGroup = { title: 'Workflow', phases: [] };
+    let currentPhase = { title: 'Initialization', events: [] };
+    currentGroup.phases.push(currentPhase);
+    state.tree.push(currentGroup);
 
     const clients = new Set();
     const broadcast = (data) => {
@@ -391,33 +400,49 @@ export function createDashboardViewer(workflow, opts = {}) {
         clients.forEach(c => c.write(msg));
     };
 
+    workflow.on('group:start', (data) => {
+        currentGroup = { title: data.title, phases: [] };
+        state.tree.push(currentGroup);
+        broadcast({ type: 'update' });
+    });
+
     workflow.on('phase', (title) => {
-        state.currentPhase = title;
-        if (!state.phases.includes(title)) state.phases.push(title);
+        currentPhase = { title, events: [] };
+        if (!currentGroup) {
+            currentGroup = { title: 'Workflow', phases: [] };
+            state.tree.push(currentGroup);
+        }
+        currentGroup.phases.push(currentPhase);
         broadcast({ type: 'update' });
     });
 
     workflow.on('activity:start', (meta) => {
         state.stats.activitiesCount++;
-        state.events.push({ type: 'activity', id: meta.id, data: { ...meta, isRunning: true } });
+        currentPhase.events.push({ type: 'activity', id: meta.id, data: { ...meta, isRunning: true } });
         broadcast({ type: 'update' });
     });
 
     workflow.on('activity:end', (meta) => {
-        const idx = state.events.findIndex(e => e.type === 'activity' && e.id === meta.id);
-        if (idx >= 0) state.events[idx].data = { ...state.events[idx].data, ...meta, isRunning: false };
+        for (const g of state.tree) {
+            for (const p of g.phases) {
+                const ev = p.events.find(e => e.type === 'activity' && e.id === meta.id);
+                if (ev) {
+                    ev.data = { ...ev.data, ...meta, isRunning: false };
+                }
+            }
+        }
         if (meta.usage?.total_tokens) state.stats.totalTokens += meta.usage.total_tokens;
         if (meta.cost) state.stats.totalCost += meta.cost;
         broadcast({ type: 'update' });
     });
 
     workflow.on('log', (entry) => {
-        state.events.push({ type: 'log', time: entry.time || Date.now(), phase: entry.phase, msg: entry.msg });
+        currentPhase.events.push({ type: 'log', time: entry.time || Date.now(), msg: entry.msg });
         broadcast({ type: 'update' });
     });
 
     workflow.on('state', (stateData) => {
-        state.events.push({ type: 'state', payload: stateData, timestamp: Date.now() });
+        state.extensions[stateData.namespace] = stateData.data;
         broadcast({ type: 'state', payload: stateData });
     });
 

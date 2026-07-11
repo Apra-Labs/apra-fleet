@@ -169,12 +169,21 @@ async function teardown(tempDir, server) {
     }
     if (tempDir) {
         try {
-            if (fsSync.existsSync(tempDir)) {
-                fsSync.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-                console.log("Cleaned up temp DB at: " + tempDir);
+            // Windows EBUSY retry loop
+            let retries = 5;
+            while (retries > 0) {
+                try {
+                    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 3 });
+                    break;
+                } catch(e) {
+                    if (e.code === 'EBUSY') {
+                        retries--;
+                        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+                    } else throw e;
+                }
             }
         } catch(e) {
-            console.warn("Could not fully clean up temp dir:", e);
+            console.error("Could not fully clean up temp dir:", e);
         }
     }
     process.exit(0);

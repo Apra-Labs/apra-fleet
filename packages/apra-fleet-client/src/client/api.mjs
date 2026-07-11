@@ -52,6 +52,49 @@
  * @property {string} [member_name] - Friendly name of the member
  */
 
+/**
+ * @typedef {Object} RegisterMemberOptions
+ * @property {string} friendly_name - Human-friendly name for this member (required)
+ * @property {string} work_folder - Working directory on the target machine (required)
+ * @property {"local" | "remote"} [member_type] - Member type (default: "remote")
+ * @property {string} [host] - IP address or hostname of the remote machine
+ * @property {string} [username] - SSH username
+ * @property {number} [port] - SSH port (default: 22)
+ * @property {"password" | "key"} [auth_type] - Authentication method
+ * @property {string} [password] - SSH password
+ * @property {string} [key_path] - Path to SSH private key
+ * @property {string} [llm_provider] - LLM provider for this member
+ * @property {string} [category] - Optional group label
+ * @property {string[]} [tags] - Optional list of free-form labels
+ * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
+ */
+
+/**
+ * @typedef {Object} UpdateMemberOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} [friendly_name] - New friendly name
+ * @property {string} [work_folder] - New working directory
+ * @property {string} [host] - New host
+ * @property {string} [username] - New SSH username
+ * @property {number} [port] - New SSH port
+ * @property {"password" | "key"} [auth_type] - New auth method
+ * @property {string} [password] - New SSH password
+ * @property {string} [key_path] - New SSH private key path
+ * @property {string} [llm_provider] - Change the LLM provider
+ * @property {string} [category] - Group label
+ * @property {string[]} [tags] - Free-form labels
+ * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
+ */
+
+/**
+ * @typedef {Object} RemoveMemberOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {boolean} [force] - Remove even if the member is currently busy
+ */
+
+
 export class ApraFleet {
     /**
      * @param {{ callTool: (name: string, args: Record<string, any>) => Promise<any> }} mcpClient 
@@ -106,5 +149,29 @@ export class ApraFleet {
      */
     async receiveFiles(options) {
         return this.mcpClient.callTool('receive_files', options);
+    }
+
+    /**
+     * Add a machine to the fleet.
+     * @param {RegisterMemberOptions} options
+     */
+    async registerMember(options) {
+        return this.mcpClient.callTool('register_member', options);
+    }
+
+    /**
+     * Change a member's settings.
+     * @param {UpdateMemberOptions} options
+     */
+    async updateMember(options) {
+        return this.mcpClient.callTool('update_member', options);
+    }
+
+    /**
+     * Remove a member from the fleet.
+     * @param {RemoveMemberOptions} options
+     */
+    async removeMember(options) {
+        return this.mcpClient.callTool('remove_member', options);
     }
 }
