@@ -60,6 +60,10 @@ export class FleetWorkflow extends EventEmitter {
         this.emit('phase', title);
     }
 
+    publishState(namespace, data) {
+        this.emit('state', { namespace, data, phase: this.currentPhase });
+    }
+
     /**
      * @param {string} prompt 
      * @param {AgentOptions} [opts] 
@@ -89,7 +93,7 @@ export class FleetWorkflow extends EventEmitter {
             id: Math.random().toString(36).substring(2, 9),
             type: 'agent',
             phase: effectivePhase,
-            label: opts.label || 'none',
+            label: opts.label || prompt.split('\n')[0].substring(0, 50) + (prompt.length > 50 ? '...' : ''),
             member: opts.member_name || opts.member_id,
             model: opts.model || 'default',
             startTime: Date.now()
@@ -192,7 +196,7 @@ export class FleetWorkflow extends EventEmitter {
             id: Math.random().toString(36).substring(2, 9),
             type: 'command',
             phase: effectivePhase,
-            label: opts.label || 'none',
+            label: opts.label || finalCmd.substring(0, 60),
             member: opts.member_name || opts.member_id,
             command: finalCmd,
             startTime: Date.now()
@@ -324,6 +328,7 @@ export class FleetWorkflow extends EventEmitter {
             nullTransform: () => null,
             log: this.log.bind(this),
             phase: this.phase.bind(this),
+            publishState: this.publishState.bind(this),
             workflow: this.workflow.bind(this),
             args: this.args,
             budget: this.budget

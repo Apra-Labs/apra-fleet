@@ -1,6 +1,6 @@
 import http from 'http';
 
-const HTML_TEMPLATE = `<!DOCTYPE html>
+const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -76,6 +76,13 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
     .led { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px var(--success); animation: pulse 2s infinite; }
     
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+    
+    .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
+    .tab-btn { background: transparent; color: #a1a1aa; border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-size: 13px; }
+    .tab-btn:hover { background: rgba(255,255,255,0.05); }
+    .tab-btn.active { color: #fff; background: rgba(255,255,255,0.1); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
   </style>
 </head>
 <body>
@@ -94,17 +101,34 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
       <ul class="phase-tracker" id="phase-list"></ul>
     </div>
     <div class="content-area">
-      <div class="panel">
+      <div class="tab-bar" id="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('core')">Timeline</button>
+        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\n')}
+      </div>
+      <div id="tab-core" class="tab-content active panel">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
           <span>Activity</span>
           <button id="btn-toggle-all" onclick="toggleAllGlobal()" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-family: monospace; font-size: 14px; font-weight: bold; transition: color 0.2s;">[+]</button>
         </div>
         <div class="stream-list" id="stream-list"></div>
       </div>
+      ${dashboardExtensions.map(ext => `
+        <div id="tab-${ext.id}" class="tab-content panel">
+          <div class="panel-header">${ext.title}</div>
+          <div id="extension-${ext.id}" style="padding: 12px; overflow-y: auto;"></div>
+        </div>
+      `).join('\n')}
     </div>
   </div>
+  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\n')}
   <script>
     let globalState = null;
+    function switchTab(id) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      event.currentTarget.classList.add('active');
+      document.getElementById('tab-' + id).classList.add('active');
+    }
     
     function formatTime(ms) {
       if (!ms) return '-';
@@ -173,9 +197,20 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
 
     let renderedEventsCount = 0;
 
+    const source = new EventSource('/events');
+    source.onmessage = (e) => {
+        const ev = JSON.parse(e.data);
+        if (ev.type === 'state') {
+            const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
+            document.dispatchEvent(extEvent);
+        }
+        // Update logic same as poller
+        poll();
+    };
+
     async function poll() {
       try {
-        const res = await fetch('/state');
+        const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
         const state = await res.json();
         globalState = state;
         
@@ -198,6 +233,43 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
         ).join('');
         document.getElementById('phase-list').innerHTML = phaseHtml;
         
+        // Update existing activities that have transitioned to complete
+        state.events.forEach(ev => {
+            if (ev.type === 'activity') {
+                const act = ev.data;
+                const existing = document.getElementById('activity-' + act.id);
+                if (existing) {
+                    let badge = '';
+                    if (act.isRunning) badge = '<span class="status-badge status-running">Running</span>';
+                    else if (act.success) badge = '<span class="status-badge status-success">Success</span>';
+                    else badge = '<span class="status-badge status-error">Failed</span>';
+                    
+                    const metaDiv = document.getElementById('meta-' + act.id);
+                    if (metaDiv) {
+                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : '';
+                        metaDiv.innerHTML = \`\${tokensHtml} \${act.duration ? formatTime(act.duration) : ''} \${badge} <span class="toggle-icon"></span>\`;
+                    }
+                    
+                    if (!act.isRunning && !document.getElementById('body-' + act.id)) {
+                        let childrenHtml = '';
+                        if (act.error) {
+                            childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
+                        } else if (act.output) {
+                            childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
+                        }
+                        if (childrenHtml) {
+                            const bodyDiv = document.createElement('div');
+                            bodyDiv.id = 'body-' + act.id;
+                            bodyDiv.className = 'activity-body';
+                            bodyDiv.innerHTML = childrenHtml;
+                            existing.appendChild(bodyDiv);
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Append new events
         for (let i = renderedEventsCount; i < state.events.length; i++) {
           const ev = state.events[i];
           const div = document.createElement('div');
@@ -263,42 +335,15 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
               </summary>
               \${childrenHtml ? \`<div class="activity-body" id="body-\${act.id}">\${childrenHtml}</div>\` : ''}
             </details>\`;
+          } else if (ev.type === 'state') {
+            // Dispatch historical state events for extensions loading late
+            const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
+            document.dispatchEvent(extEvent);
           }
           
-          streamEl.appendChild(div.firstElementChild);
-        }
-        
-        for (let i = 0; i < renderedEventsCount; i++) {
-            const ev = state.events[i];
-            if (ev.type === 'activity') {
-                const act = ev.data;
-                const el = document.getElementById(\`action-\${act.id}\`);
-                if (el) {
-                    const badge = act.isRunning ? '<span class="status-badge status-running">Running</span>' : (act.success ? '<span class="status-badge status-success">Success</span>' : '<span class="status-badge status-error">Failed</span>');
-                    let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : '';
-                    
-                    const metaEl = document.getElementById(\`meta-\${act.id}\`);
-                    if (metaEl) {
-                        metaEl.innerHTML = \`\${tokensHtml} \${act.duration ? formatTime(act.duration) : ''} \${badge} <span class="toggle-icon"></span>\`;
-                    }
-                    let bodyEl = document.getElementById(\`body-\${act.id}\`);
-                    if (!act.isRunning && !bodyEl) {
-                        let childrenHtml = '';
-                        if (act.error) {
-                            childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
-                        } else if (act.output) {
-                            childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
-                        }
-                        if (childrenHtml) {
-                            const bodyContainer = document.createElement('div');
-                            bodyContainer.className = 'activity-body';
-                            bodyContainer.id = \`body-\${act.id}\`;
-                            bodyContainer.innerHTML = childrenHtml;
-                            el.appendChild(bodyContainer);
-                        }
-                    }
-                }
-            }
+          if (div.firstElementChild) {
+              streamEl.appendChild(div.firstElementChild);
+          }
         }
         
         renderedEventsCount = state.events.length;
@@ -307,22 +352,27 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
           streamEl.scrollTop = streamEl.scrollHeight;
         }
       } catch(e) {
-          document.getElementById('status-indicator').innerHTML = '<span class="status-badge status-offline">OFFLINE</span>';
+          console.error("Poll Error:", e);
+          if (globalState && (globalState.status === 'success' || globalState.status === 'failed')) {
+              // already done, ignore
+          } else {
+              document.getElementById('status-indicator').innerHTML = '<span class="status-badge status-offline">OFFLINE</span>';
+          }
       }
     }
     
-    setInterval(poll, 1000);
     poll();
   </script>
 </body>
 </html>`;
 
-export function startViewer(workflow, options = {}) {
-    const port = options.port || 8080;
+export function createDashboardViewer(workflow, opts = {}) {
+    const port = opts.port || 8080;
+    const dashboardExtensions = opts.dashboardExtensions || [];
     
     const state = {
-        workflowName: options.name || 'Apra Fleet Workflow',
-        phases: options.phases || ['init'],
+        workflowName: opts.name || 'Apra Fleet Workflow',
+        phases: opts.phases || ['init'],
         currentPhase: 'init',
         events: [],
         status: 'running',
@@ -335,55 +385,58 @@ export function startViewer(workflow, options = {}) {
         }
     };
 
+    const clients = new Set();
+    const broadcast = (data) => {
+        const msg = `data: ${JSON.stringify(data)}\n\n`;
+        clients.forEach(c => c.write(msg));
+    };
+
     workflow.on('phase', (title) => {
         state.currentPhase = title;
-        if (!state.phases.includes(title)) {
-            state.phases.push(title);
-        }
+        if (!state.phases.includes(title)) state.phases.push(title);
+        broadcast({ type: 'update' });
     });
 
     workflow.on('activity:start', (meta) => {
         state.stats.activitiesCount++;
-        state.events.push({
-            type: 'activity',
-            id: meta.id,
-            data: { ...meta, isRunning: true }
-        });
+        state.events.push({ type: 'activity', id: meta.id, data: { ...meta, isRunning: true } });
+        broadcast({ type: 'update' });
     });
 
     workflow.on('activity:end', (meta) => {
         const idx = state.events.findIndex(e => e.type === 'activity' && e.id === meta.id);
-        if (idx >= 0) {
-            state.events[idx].data = { ...state.events[idx].data, ...meta, isRunning: false };
-        }
-        if (meta.usage && meta.usage.total_tokens) {
-            state.stats.totalTokens += meta.usage.total_tokens;
-        }
-        if (meta.cost) {
-            state.stats.totalCost += meta.cost;
-        }
+        if (idx >= 0) state.events[idx].data = { ...state.events[idx].data, ...meta, isRunning: false };
+        if (meta.usage?.total_tokens) state.stats.totalTokens += meta.usage.total_tokens;
+        if (meta.cost) state.stats.totalCost += meta.cost;
+        broadcast({ type: 'update' });
     });
 
     workflow.on('log', (entry) => {
-        state.events.push({
-            type: 'log',
-            time: entry.time || Date.now(),
-            phase: entry.phase,
-            msg: entry.msg
-        });
+        state.events.push({ type: 'log', time: entry.time || Date.now(), phase: entry.phase, msg: entry.msg });
+        broadcast({ type: 'update' });
+    });
+
+    workflow.on('state', (stateData) => {
+        state.events.push({ type: 'state', payload: stateData, timestamp: Date.now() });
+        broadcast({ type: 'state', payload: stateData });
     });
 
     workflow.on('end', (res) => {
         state.status = res.status;
         state.stats.durationMs = Date.now() - state.stats.startTime;
+        broadcast({ type: 'update' });
     });
 
     const server = http.createServer((req, res) => {
         if (req.url === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(HTML_TEMPLATE);
-        } else if (req.url === '/state') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(HTML_TEMPLATE(dashboardExtensions));
+        } else if (req.url === '/events') {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Connection': 'keep-alive', 'Cache-Control': 'no-cache' });
+            clients.add(res);
+            req.on('close', () => clients.delete(res));
+        } else if (req.url.startsWith('/state')) {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
             res.end(JSON.stringify(state));
         } else if (req.url === '/stop' && req.method === 'POST') {
             console.log('[Viewer] Stop signal received.');

@@ -13,7 +13,10 @@
   },
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/apra-fleet-client",
+    "packages/apra-fleet-workflow",
+    "packages/apra-fleet-se",
+    "packages/fleet-api-contract"
   ],
   "main": "dist/index.js",
   "bin": {

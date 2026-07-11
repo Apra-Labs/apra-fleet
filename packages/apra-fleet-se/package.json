@@ -1,0 +1,13 @@
+{
+  "name": "@apralabs/apra-fleet-se",
+  "version": "1.0.0",
+  "description": "Apra Fleet Software Engineering (SE) Edition. Contains SE-specific workflows like auto-sprint.",
+  "type": "module",
+  "bin": {
+    "fleet-se": "./bin/cli.mjs"
+  },
+  "dependencies": {
+    "@apralabs/apra-fleet-workflow": "*",
+    "@apralabs/apra-fleet-client": "*"
+  }
+}
