@@ -162,6 +162,30 @@ export const doerReport = {
     required: ['status', 'closedIds', 'notes'],
 };
 
+// NEW (apra-fleet-unw.16): no corresponding vendored agents/*.md file --
+// this is the orchestrator's own schema for the Develop-phase "group ready
+// beads into streaks" call in runner.js. Before this issue, that call's
+// output was logged and discarded (streaks were hardcoded to one bead
+// each); this schema lets the runner actually consume the LLM's grouping
+// when it is valid, while still falling back deterministically to
+// one-bead-per-streak when it is not (missing/duplicate/extra bead ids, or
+// a schema-repair-loop exhaustion) -- see runner.js's `selectStreaks()`.
+export const streakAssignment = {
+    $id: 'streakAssignment',
+    type: 'object',
+    properties: {
+        streaks: {
+            type: 'array',
+            items: {
+                type: 'array',
+                items: { type: 'string' },
+                minItems: 1,
+            },
+        },
+    },
+    required: ['streaks'],
+};
+
 // agents/deployer.md: "Return `deployed: true` only if the smoke test
 // exits 0" / "return `deployed: false` ... include full error output in
 // `notes`". Matches the vendored prose as-is.
@@ -241,6 +265,7 @@ export const SCHEMAS = Object.freeze({
     planReviewerVerdict,
     reviewerVerdict,
     doerReport,
+    streakAssignment,
     deployerReport,
     integReport,
     ciReport,
