@@ -251,7 +251,22 @@ function buildRepairPrompt(originalPrompt, invalidOutput, errorsText) {
  * @typedef {Object} AgentOptions
  * @property {string} [label] - UI label for this run
  * @property {string} [phase] - Workflow phase grouping
- * @property {object} [schema] - JSON Schema for structured output
+ * @property {object} [schema] - JSON Schema for structured output. The dispatch-time
+ *   `schema` passed here is the one actually ajv-validated against the member's
+ *   response (see the compile/append/validate logic in agent() below) -- it is
+ *   therefore authoritative at the member, per each persona's precedence clause
+ *   ("if your dispatch prompt includes a JSON schema instruction, that schema is
+ *   authoritative"). When `agentType` names a role that publishes its own output
+ *   contract (apra-pm's role-owned schema design), callers MUST source this value
+ *   from that role's published schema via their application-layer adapter (e.g.
+ *   `contracts.mjs`'s `SCHEMAS.<name>` for auto-sprint) rather than authoring an
+ *   independent, parallel definition here. Two independently-authored schemas for
+ *   the same role is the double-specification hazard this single-source rule
+ *   exists to prevent; the workflow layer itself stays generic and does not (and
+ *   cannot) resolve or detect such drift -- see
+ *   `docs/agent-schema-layering-proposal.md` (section 4, recommendation item 4;
+ *   section 5.3) for the full rationale, and `docs/structured-errors-proposal.md`
+ *   for the sibling design-doc pattern this cross-reference follows.
  * @property {string} [model] - Overrides model for this call
  * @property {string} [member_name] - Apra-fleet member to dispatch to
  * @property {string} [member_id] - Specific member UUID
