@@ -7,7 +7,8 @@
     "auto-sprint": "./bin/cli.mjs"
   },
   "scripts": {
-    "test": "node test/advanced-mock-runner-test.mjs && node --test test/*.test.mjs"
+    "test": "node test/advanced-mock-runner-test.mjs && node --test test/*.test.mjs",
+    "update-golden": "node -e \"require('child_process').execFileSync(process.execPath,['--test','test/golden-transcript.test.mjs'],{stdio:'inherit',env:{...process.env,UPDATE_GOLDEN:'1'}})\""
   },
   "dependencies": {
     "@apralabs/apra-fleet-workflow": "*",
