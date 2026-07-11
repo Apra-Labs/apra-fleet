@@ -1,6 +1,8 @@
 export const meta = { name: 'test-schema-pre' };
 
-async function main() {
+export async function main(context) {
+    const { agent, phase } = context;
+
     phase('Test Invalid Schema Pre-condition');
     
     // Provide a structurally invalid JSON schema to trigger Ajv compile error

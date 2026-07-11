@@ -1,6 +1,8 @@
 export const meta = { name: 'test-schema-post' };
 
-async function main() {
+export async function main(context) {
+    const { agent, phase } = context;
+
     phase('Test Schema Post-condition Validation');
     
     // We provide a valid schema that requires a boolean, but prompt the LLM to output a string,

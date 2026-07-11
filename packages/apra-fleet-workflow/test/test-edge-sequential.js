@@ -1,6 +1,8 @@
 export const meta = { name: 'test-edge-sequential' };
 
-async function main() {
+export async function main(context) {
+    const { sequential, log, phase } = context;
+
     phase('Test Edge Case: Sequential Stage Failure');
     
     const items = [1, 2, 3];

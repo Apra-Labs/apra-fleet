@@ -2,6 +2,39 @@
 
 This guide explains how to work with and test workflows in the `fleet-client` architecture.
 
+## Writing a Workflow Script
+
+A workflow script is a real ES module. It must export an async entry point
+function named `main` (or `run`, or as the `default` export) that accepts a
+single `context` argument -- the object returned by
+`FleetWorkflow.createContext()`, containing `agent`, `command`, `sequential`,
+`pipeline`, `parallel`, `transform`, `nullTransform`, `log`, `phase`, `group`,
+`endGroup`, `publishState`, `args`, and `budget`. Destructure whatever
+primitives you need from `context`:
+
+```javascript
+export const meta = { name: 'my-workflow' };
+
+export async function main(context) {
+    const { agent, command, log, phase, args } = context;
+
+    phase('Greeting');
+    log(`Running for ${args.targetIssue}`);
+    await agent('Say hello', { member_name: 'apra-pm' });
+}
+```
+
+`WorkflowEngine.executeFile(scriptPath, args)` loads the script with a real
+`import()` and calls this entry point with the context built from `args`.
+There are no injected bare globals -- every example below that reads e.g.
+`agent(...)` or `sequential(...)` directly assumes it's inside a `main(context)`
+function that has already destructured those names from `context`, as shown
+above.
+
+Workflow scripts are **trusted code**: they run with full Node.js privileges,
+the same as any other module you `import`. See
+`docs/apra-fleet-workflow-architecture.md` section 3 for the trust model.
+
 ## Running Workflow Test Suites
 
 To ensure reliability and consistency, workflow test suites should be run in a single test harness. This approach provides a unified execution environment and comprehensive reporting.

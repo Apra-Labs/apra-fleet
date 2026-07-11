@@ -3,8 +3,16 @@ export const meta = { name: 'auto-sprint-runner' };
 // We can import standard node modules in workflows if needed, or pass them in context.
 // For now, we'll assume we check runbooks via command() since we are in the workflow engine.
 
+// Mechanical migration to the WorkflowEngine's ES-module entry-point contract
+// (apra-fleet-unw.7): the engine now calls `main(context)` instead of
+// injecting bare globals into an AsyncFunction scope. This destructure is the
+// only change to this file's wiring -- every name below (agent, command,
+// parallel, log, phase, group, endGroup, publishState, args) is the exact
+// same binding the old bare-global version referred to; no control-flow or
+// dispatch-order changes.
+export async function main(context) {
+    const { agent, command, parallel, log, phase, group, endGroup, publishState, args } = context;
 
-async function main() {
     let cycle = 1;
     const MAX_CYCLES = 5;
 

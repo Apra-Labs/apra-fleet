@@ -1,6 +1,8 @@
 export const meta = { name: 'test-edge-agent-args' };
 
-async function main() {
+export async function main(context) {
+    const { agent, phase } = context;
+
     phase('Test Edge Case: Agent missing args');
     
     // Deliberately calling agent without a member_name or member_id

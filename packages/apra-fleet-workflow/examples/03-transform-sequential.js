@@ -4,7 +4,9 @@ export const meta = {
     description: "Demonstrates using transform() to parse strings into JSON and chain results into the next command step."
 };
 
-export async function main() {
+export async function main(context) {
+    const { agent, command, log, phase, sequential, transform, nullTransform, args } = context;
+
     phase('Initialization');
     log('Starting Sequential with transform mapping...');
 
