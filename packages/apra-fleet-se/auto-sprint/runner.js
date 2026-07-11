@@ -1,3 +1,8 @@
+import fs from 'fs/promises';
+import { AgentOutputError } from '@apralabs/apra-fleet-workflow';
+import { planReviewerVerdict, wrapUntrustedBlock } from './contracts.mjs';
+import { SprintPlanRejectedError } from './errors.mjs';
+
 export const meta = { name: 'auto-sprint-runner' };
 
 // We can import standard node modules in workflows if needed, or pass them in context.
@@ -152,6 +157,81 @@ export function validateArgs(args) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Plan phase prompt builder (apra-fleet-unw.15)
+// ---------------------------------------------------------------------------
+//
+// Builds a self-contained planner prompt per the vendored
+// vendor/apra-pm/agents/planner.md contract: the planner has no memory of
+// this conversation, so every fact it needs (which sprint root issue(s) are
+// in scope, the goal priority, the requirements file content, and -- for a
+// re-planning cycle -- explicit "gaps only" framing) must be spelled out in
+// the prompt text itself rather than assumed.
+//
+// Model-tier convention: vendor/apra-pm/skills/pm/SKILL.md,
+// vendor/apra-pm/skills/pm/beads.md, and
+// vendor/apra-pm/skills/pm/doer-reviewer-loop.md all document the model
+// tier as living in a task's beads *notes* field, set via
+// `bd update <id> --notes="model: <tier>"`, and read back from there by
+// downstream roles. The vendored agents/plan-reviewer.md Step 3 also says
+// to read the model tier "from the task's METADATA section in `bd show
+// <id>` output", which is worded differently but -- per this repo's current
+// vendor/apra-pm submodule pointer (checked directly for this issue; no
+// separate `--metadata '{"model": ...}'` convention was found anywhere in
+// the vendored skills/agents docs) -- there is no distinct `--metadata`
+// flag/convention in this snapshot. We follow the concrete, repeatedly
+// documented `--notes="model: <tier>"` convention here. If a later issue
+// (e.g. apra-fleet-unw.13's vendor ruggedization) introduces a real
+// `--metadata` convention, this prompt should be updated to match.
+/**
+ * @param {{
+ *   isDeltaCycle: boolean,
+ *   targetIssues: string[],
+ *   goal: string,
+ *   requirementsFile: string|undefined,
+ *   requirementsContent: string|null,
+ *   feedback: string|null,
+ * }} opts
+ * @returns {string}
+ */
+function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback }) {
+    const lines = [];
+
+    if (isDeltaCycle) {
+        lines.push(
+            'This is a RE-PLANNING pass: a prior planning pass for this sprint was already ' +
+            'approved and at least one develop/review cycle has since run. Per the ' +
+            '"Re-planning behaviour" section of your agent contract: address GAPS ONLY. ' +
+            'Do NOT re-plan or recreate issues that are already closed. Do NOT add scope ' +
+            'beyond the original sprint goals and any open bugs/enhancements already in beads.'
+        );
+    } else {
+        lines.push('Analyze the sprint scope below and build a features+tasks DAG in beads, per your agent contract.');
+    }
+
+    lines.push(`Sprint root issue id(s) (--parent scope for this sprint): ${targetIssues.join(', ')}.`);
+    lines.push(`Goal priority for this sprint: ${goal}.`);
+    lines.push(
+        'For every task: set clear acceptance criteria in its description, and set its ' +
+        'model tier via `bd update <task-id> --notes="model: <tier>"` (tier is one of ' +
+        'cheap-tier, standard-tier, premium-tier), per the pm skill\'s beads/model-tier convention.'
+    );
+
+    if (requirementsFile && requirementsContent) {
+        lines.push(`Requirements file (${requirementsFile}) content, for reference:`);
+        lines.push(requirementsContent);
+    } else if (requirementsFile && !requirementsContent) {
+        lines.push(`Note: a requirementsFile ('${requirementsFile}') was configured for this sprint but could not be read; proceed without it.`);
+    }
+
+    if (feedback) {
+        lines.push('Feedback from the previous plan-review round -- address every point raised:');
+        lines.push(wrapUntrustedBlock('plan-reviewer.notes', feedback));
+    }
+
+    return lines.join('\n\n');
+}
+
 // Mechanical migration to the WorkflowEngine's ES-module entry-point contract
 // (apra-fleet-unw.7): the engine now calls `main(context)` instead of
 // injecting bare globals into an AsyncFunction scope. This destructure is the
@@ -193,6 +273,20 @@ export async function main(context) {
     };
 
     const orchestratorMember = getMemberForRole('Orchestrator');
+
+    // Read the requirementsFile (if any) once, up front, so its content can
+    // be threaded into every Plan-phase planner prompt (apra-fleet-unw.15).
+    // A missing/unreadable file is a warning, not a fatal error -- the
+    // planner prompt notes the omission and the sprint proceeds without it.
+    let requirementsContent = null;
+    if (validated.requirementsFile) {
+        try {
+            requirementsContent = await fs.readFile(validated.requirementsFile, 'utf-8');
+        } catch (err) {
+            log(`Warning: could not read requirementsFile '${validated.requirementsFile}': ${err.message}`);
+            requirementsContent = null;
+        }
+    }
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -245,31 +339,92 @@ export async function main(context) {
         // =======================
         // 1. Planning Loop
         // =======================
+        // apra-fleet-unw.15: approval is `verdict === 'APPROVED'` EXACTLY,
+        // decided from the plan-reviewer's schema-validated structured
+        // output (contracts.mjs `planReviewerVerdict`) -- no substring
+        // matching anywhere in this phase, so free text like "This can NOT
+        // be APPROVED" can never be misread as an approval. If the
+        // plan-reviewer persistently fails to return schema-valid JSON
+        // (agent()'s own bounded schema-repair loop, apra-fleet-unw.8,
+        // already retried and gave up), that is treated as a failed
+        // (CHANGES_NEEDED-equivalent) round rather than an approval.
+        //
+        // `cycle > 1` means this Plan phase is a RE-PLANNING pass after an
+        // earlier Develop/Review cycle needed more work -- distinct from
+        // `planningRounds`, which counts rounds *within* one Plan phase's
+        // planner<->plan-reviewer approval loop. Only the outer `cycle`
+        // controls the delta-vs-full prompt framing.
+        const isDeltaCycle = cycle > 1;
+
         let planApproved = false;
         let planningRounds = 0;
-        let plannerFeedback = '';
-        
+        let plannerFeedback = null;
+        let lastVerdict = null;
+
         while (!planApproved && planningRounds < 3) {
             planningRounds++;
             phase(`Plan C${cycle} R${planningRounds}`);
+
+            const plannerPrompt = buildPlannerPrompt({
+                isDeltaCycle,
+                targetIssues,
+                goal: validated.goal,
+                requirementsFile: validated.requirementsFile,
+                requirementsContent,
+                feedback: plannerFeedback,
+            });
             const plannerRes = await agent(
-                `Analyze features and build a DAG by adding beads. ${plannerFeedback ? 'Feedback from last review: ' + plannerFeedback : ''}`,
+                plannerPrompt,
                 { member_name: getMemberForRole('planner'), agentType: 'planner' }
             );
             log(`Planner: ${plannerRes}`);
-            
-            const reviewerRes = await agent(
-                'Review the plan. Reply APPROVED or CHANGES_NEEDED, and provide textual feedback.',
-                { member_name: getMemberForRole('plan-reviewer'), agentType: 'plan-reviewer' }
-            );
-            log(`Plan Reviewer: ${reviewerRes}`);
-            
-            if (reviewerRes.includes('APPROVED')) {
+
+            let verdict;
+            try {
+                verdict = await agent(
+                    'Review the plan per your agent contract.',
+                    {
+                        member_name: getMemberForRole('plan-reviewer'),
+                        agentType: 'plan-reviewer',
+                        schema: planReviewerVerdict,
+                    }
+                );
+            } catch (err) {
+                if (err instanceof AgentOutputError) {
+                    // Persistent non-JSON/non-schema-compliant output FAILS
+                    // this plan round -- it must never be treated as an
+                    // approval.
+                    log(`Plan Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
+                    verdict = {
+                        verdict: 'CHANGES_NEEDED',
+                        notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                        taskAssignments: [],
+                    };
+                } else {
+                    throw err;
+                }
+            }
+            lastVerdict = verdict;
+            log(`Plan Reviewer: ${JSON.stringify(verdict)}`);
+
+            if (verdict.verdict === 'APPROVED') {
                 planApproved = true;
             } else {
-                plannerFeedback = reviewerRes; // Pass textual feedback to planner
+                plannerFeedback = verdict.notes; // Pass textual feedback to planner, wrapped as untrusted by buildPlannerPrompt
             }
             await updateDashboard();
+        }
+
+        if (!planApproved) {
+            throw new SprintPlanRejectedError(
+                `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
+                'Refusing to proceed to Develop with an unapproved plan.',
+                {
+                    notes: lastVerdict ? lastVerdict.notes : null,
+                    cycle,
+                    planningRounds,
+                }
+            );
         }
 
         // =======================
