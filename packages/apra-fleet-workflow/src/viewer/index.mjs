@@ -302,7 +302,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
                             }
                         }
                         
-                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : '';
+                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : (act.type === 'agent' && !act.isRunning ? \`<span style="color:var(--text-muted)">n/a</span>\` : '');
                         const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
                         const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
                         
@@ -338,9 +338,10 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
         else { ind.innerHTML = '<span style="color:var(--danger)">FAILED</span>'; }
         
         const dur = state.status === 'running' ? Date.now() - state.stats.startTime : state.stats.durationMs;
-        document.getElementById('stats-banner').innerHTML = 
+        const unknownCostSuffix = state.stats.unknownCostCount > 0 ? \` <span style="color:var(--warning)">(+\${state.stats.unknownCostCount} unknown)</span>\` : '';
+        document.getElementById('stats-banner').innerHTML =
           \`<span><strong>\${state.stats.activitiesCount}</strong> Activities</span>
-           <span><strong class="spent">$\${state.stats.totalCost.toFixed(3)}</strong> Spent</span>
+           <span><strong class="spent">$\${state.stats.totalCost.toFixed(3)}</strong> Spent\${unknownCostSuffix}</span>
            <span><strong>\${state.stats.totalTokens.toLocaleString()}</strong> Tokens</span>
            <span><strong>\${formatUptime(dur)}</strong> Uptime</span>\`;
         
@@ -382,6 +383,11 @@ export function createDashboardViewer(workflow, opts = {}) {
             activitiesCount: 0,
             totalTokens: 0,
             totalCost: 0,
+            // apra-fleet-unw.4: count of completed activities whose usage/
+            // cost could not be determined (fleet result lacked usage, or
+            // calculateCost() couldn't price the model). These are excluded
+            // from totalCost/totalTokens rather than fabricated.
+            unknownCostCount: 0,
             startTime: Date.now(),
             durationMs: 0
         },
@@ -432,7 +438,15 @@ export function createDashboardViewer(workflow, opts = {}) {
             }
         }
         if (meta.usage?.total_tokens) state.stats.totalTokens += meta.usage.total_tokens;
-        if (meta.cost) state.stats.totalCost += meta.cost;
+        // apra-fleet-unw.4: `cost` is only added to the running total when
+        // it's a known number. When agent() explicitly reported cost: null
+        // (fleet result had no usage, or the model wasn't in the pricing
+        // table), tally it separately instead of fabricating a total.
+        if (typeof meta.cost === 'number') {
+            state.stats.totalCost += meta.cost;
+        } else if (meta.type === 'agent' && Object.prototype.hasOwnProperty.call(meta, 'cost') && meta.cost === null) {
+            state.stats.unknownCostCount++;
+        }
         broadcast({ type: 'update' });
     });
 
