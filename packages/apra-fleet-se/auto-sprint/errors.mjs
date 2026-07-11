@@ -38,3 +38,39 @@ export class SprintPlanRejectedError extends WorkflowError {
         this.notes = notes;
     }
 }
+
+/**
+ * apra-fleet-unw.17 (A5) -- thrown when the sprint's cycle loop detects N
+ * consecutive cycles (default 2, per the pm skill mandate cited in the
+ * issue text) with zero net change in the closed-bead count for the
+ * sprint's scope. Before this issue, a permanently blocked/orphaned
+ * in_progress bead (or a develop/review loop that keeps reopening and
+ * re-failing the same bead(s) without ever closing anything new) had no
+ * escape hatch other than burning every remaining cycle up to
+ * `max_cycles` -- this error aborts loudly and early instead, with the
+ * per-cycle closed-count history attached so a human/CI reading the
+ * failure can see exactly where progress stopped.
+ *
+ * Never caught inside runner.js's cycle loop -- it unwinds
+ * `runWithContext()`'s promise and fails the whole sprint run, the same
+ * way `SprintPlanRejectedError` does for an unapproved plan.
+ *
+ * @property {number} staleCycles - how many consecutive cycles showed zero progress
+ * @property {number[]} closedCountHistory - closed-bead count in scope, per cycle, in order
+ */
+export class StalledSprintError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { staleCycles = null, closedCountHistory = [], cycle, details, cause } = opts;
+        super(message, {
+            code: 'SPRINT_STALLED',
+            details: { staleCycles, closedCountHistory, cycle, ...details },
+            cause,
+        });
+        this.staleCycles = staleCycles;
+        this.closedCountHistory = closedCountHistory;
+    }
+}
