@@ -22,8 +22,11 @@ async function main(opts = {}) {
         await new Promise(r => setTimeout(r, 2000));
         phase(`Sprint Cycle ${cycleCount}`);
         
-        // Use Sequential to route the issues through phases: Plan -> Develop -> Test -> Harvest
-        const cycleResults = await sequential(
+        // Use pipeline() to route the issues through phases: Plan -> Develop -> Test -> Harvest.
+        // Each stage receives the previous stage's result for that issue (the
+        // first stage receives the raw issueId); pipeline() is the multi-stage
+        // primitive -- sequential() only accepts a single processor function.
+        const cycleResults = await pipeline(
             issues,
             
             // 1. Plan Phase
