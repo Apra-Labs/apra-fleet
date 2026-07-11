@@ -28,15 +28,23 @@ async function main() {
 
     log(`Agent structured output: ${JSON.stringify(jsonResult)}`);
 
-    phase('Test Sequential with Transform');
+    // NOTE: sequential(items, processor, opts) takes a single processor, not a
+    // variadic list of per-stage processors (that pre-rename multi-stage
+    // contract is tracked separately in beads issue apra-fleet-unw.6). transform()
+    // is a standalone activity with signature transform(label, func, context),
+    // not a sequential "stage".
+    phase('Test Sequential');
     const processed = await sequential(
         ['apra', 'fleet'],
-        async (item) => `Input word: ${item}`,
-        transform((str) => str.toUpperCase() + ' (TRANSFORMED)'),
-        async (item) => `Final Result -> ${item}`
+        async (item) => `Processed: ${item}`
     );
-    
-    log(`Sequential transform result: ${JSON.stringify(processed)}`);
 
-    return { status: 'success' };
+    log(`Sequential result: ${JSON.stringify(processed)}`);
+
+    phase('Test Transform');
+    const transformed = await transform('uppercase', (str) => str.toUpperCase(), 'apra');
+
+    log(`Transform result: ${transformed}`);
+
+    return { status: 'success', command: result, agent: jsonResult, sequential: processed, transform: transformed };
 }

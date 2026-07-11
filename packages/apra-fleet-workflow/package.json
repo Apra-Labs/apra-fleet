@@ -9,7 +9,7 @@
     "./viewer": "./src/viewer/index.mjs"
   },
   "scripts": {
-    "test": "node test/test-runner.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "type": "module",
   "dependencies": {
