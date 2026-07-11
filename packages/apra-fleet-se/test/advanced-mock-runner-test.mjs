@@ -5,6 +5,7 @@ import { exec } from 'child_process';
 import os from 'os';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
+import { SprintPlanRejectedError } from '../auto-sprint/errors.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -64,8 +65,20 @@ async function setup(tempDirSuffix) {
  * dispatch order -- used to assert on the git/gh command-call log added by
  * apra-fleet-unw.14 (branch creation at sprint start, push + PR raise at
  * finalization).
+ *
+ * `planReviewerMode` (apra-fleet-unw.15) controls the plan-reviewer mock's
+ * behaviour:
+ *   - 'reject-then-approve' (default): CHANGES_NEEDED (schema-valid JSON)
+ *     on round 1, APPROVED on round 2+. Exercises the normal happy path.
+ *   - 'always-reject-free-text': every round, the reviewer returns
+ *     free-text containing the literal substring "APPROVED" inside a
+ *     non-approving sentence ("This can NOT be APPROVED") and is never
+ *     valid JSON. This must never be misread as an approval (no substring
+ *     matching in runner.js's plan phase) and must exhaust the schema-repair
+ *     loop every round, ultimately aborting the sprint via
+ *     SprintPlanRejectedError with zero doer dispatches.
  */
-function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog) {
+function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, planReviewerMode = 'reject-then-approve') {
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
@@ -106,7 +119,7 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog) {
             // 'reviewer'; distinguish by the (fixed, runner.js-authored)
             // prompt text instead.
             const isFinalReview = opts.agent === 'reviewer' && opts.prompt.trim() === 'Pass or Fail?';
-            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null });
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt });
             await sleep(DELAY_MS);
 
             // --- plan phase ---
@@ -129,10 +142,39 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog) {
 
             if (opts.agent === 'plan-reviewer') {
                 planRound++;
-                if (planRound < 2) {
-                    return { content: [{ text: 'CHANGES_NEEDED: Ensure you also add a documentation task.' }] };
+
+                // apra-fleet-unw.15: plan-reviewer responses are now
+                // schema-validated JSON (contracts.mjs `planReviewerVerdict`)
+                // consumed via agent()'s { schema } option, not free text.
+                if (planReviewerMode === 'always-reject-free-text') {
+                    // Deliberately NOT JSON, and deliberately contains the
+                    // substring "APPROVED" inside a rejection sentence --
+                    // this must never be misread as an approval, and must
+                    // exhaust agent()'s bounded schema-repair loop (it can
+                    // never be coerced into schema-valid JSON) every round.
+                    return { content: [{ text: 'This can NOT be APPROVED: the DAG is still missing a documentation task.' }] };
                 }
-                return { content: [{ text: 'Code looks solid. We have tasks for implementation and tests. APPROVED.' }] };
+
+                if (planRound < 2) {
+                    return {
+                        content: [{
+                            text: JSON.stringify({
+                                verdict: 'CHANGES_NEEDED',
+                                notes: 'Ensure you also add a documentation task.',
+                                taskAssignments: [],
+                            })
+                        }]
+                    };
+                }
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'APPROVED',
+                            notes: 'Code looks solid. We have tasks for implementation and tests.',
+                            taskAssignments: [],
+                        })
+                    }]
+                };
             }
 
             // --- develop phase: streak grouping (still agentType 'planner') ---
@@ -219,12 +261,12 @@ async function teardown(tempDir) {
     }
 }
 
-async function runOnce(tag) {
+async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
     const { tempDir, epicBead } = await setup(tag);
     const dispatched = [];
     const commandLog = [];
     try {
-        const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog);
+        const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, planReviewerMode);
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         const engine = new WorkflowEngine(workflow);
 
@@ -249,7 +291,45 @@ async function runOnce(tag) {
             .map((b) => ({ title: b.title, status: b.status }))
             .sort((a, b) => a.title.localeCompare(b.title));
 
-        return { dispatched, result, finalBeads, commandLog };
+        return { dispatched, result, finalBeads, commandLog, epicBeadId: epicBead.id };
+    } finally {
+        await teardown(tempDir);
+    }
+}
+
+/**
+ * apra-fleet-unw.15 scenario: the plan-reviewer never approves (always
+ * returns non-JSON free text containing "APPROVED" inside a rejection
+ * sentence, exhausting the schema-repair loop every round). Expects
+ * engine.executeFile() to REJECT with a SprintPlanRejectedError, and
+ * expects zero doer dispatches -- the sprint must never reach Develop with
+ * an unapproved plan.
+ */
+async function runRejectedPlanScenario(tag) {
+    const { tempDir, epicBead } = await setup(tag);
+    const dispatched = [];
+    const commandLog = [];
+    try {
+        const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, 'always-reject-free-text');
+        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+        const engine = new WorkflowEngine(workflow);
+        const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+
+        let error = null;
+        try {
+            await engine.executeFile(scriptPath, {
+                target_issue: epicBead.id,
+                members: ['local'],
+                branch: 'auto-sprint/mock-sprint-rejected',
+                base_branch: 'main',
+                goal: 'P1/P2',
+                max_cycles: 5,
+            }, true);
+        } catch (err) {
+            error = err;
+        }
+
+        return { dispatched, error };
     } finally {
         await teardown(tempDir);
     }
@@ -334,6 +414,52 @@ async function main() {
         run1.finalBeads.filter((b) => b.title === 'Task: Add tests for API endpoints').length === 1,
         'Duplicate "Add tests" bead created (planner mock branch not idempotent across plan-review rounds)'
     );
+
+    // apra-fleet-unw.15, acceptance criterion 4: planner dispatch prompts
+    // are self-contained -- they must name the sprint root issue id(s) and
+    // the goal, and round-2+ prompts must carry the plan-reviewer's
+    // feedback wrapped in the untrusted-content delimiter (contracts.mjs
+    // wrapUntrustedBlock, feedback.md A7).
+    const planPhasePlannerCalls = run1.dispatched.filter((d) => d.agent === 'planner' && !d.prompt.includes('Group'));
+    check(planPhasePlannerCalls.length >= 2, `Expected at least 2 plan-phase planner dispatches (round 1 rejected, round 2 approved), got ${planPhasePlannerCalls.length}`);
+    if (planPhasePlannerCalls.length > 0) {
+        const round1Prompt = planPhasePlannerCalls[0].prompt;
+        check(round1Prompt.includes('P1/P2'), `Round-1 planner prompt did not include the goal 'P1/P2': ${round1Prompt}`);
+        check(
+            round1Prompt.includes(run1.epicBeadId),
+            `Round-1 planner prompt did not reference the sprint root issue id: ${round1Prompt}`
+        );
+    }
+    if (planPhasePlannerCalls.length > 1) {
+        const round2Prompt = planPhasePlannerCalls[1].prompt;
+        check(
+            round2Prompt.includes('untrusted-agent-output') && round2Prompt.includes('untrusted output from another agent'),
+            `Round-2 planner prompt did not include the wrapUntrustedBlock delimiter markers: ${round2Prompt}`
+        );
+        check(
+            round2Prompt.includes('Ensure you also add a documentation task.'),
+            `Round-2 planner prompt did not carry the round-1 plan-reviewer feedback text: ${round2Prompt}`
+        );
+    }
+
+    // apra-fleet-unw.15, acceptance criteria 1-3: a plan-reviewer that
+    // never returns an APPROVED schema-valid verdict (here: persistent
+    // non-JSON free text containing "APPROVED" inside a rejection sentence)
+    // must abort the sprint with SprintPlanRejectedError after 3 rounds,
+    // and must NEVER dispatch a doer.
+    console.log('Running mock sprint scenario (rejected plan, 3x CHANGES_NEEDED)...');
+    const rejected = await runRejectedPlanScenario('rejected');
+    check(!!rejected.error, 'Expected engine.executeFile() to reject when the plan is never approved, but it resolved successfully');
+    check(
+        rejected.error instanceof SprintPlanRejectedError,
+        `Expected a SprintPlanRejectedError, got: ${rejected.error ? rejected.error.constructor.name + ': ' + rejected.error.message : 'no error'}`
+    );
+    check(
+        !rejected.dispatched.some((d) => d.agent === 'doer'),
+        `Expected zero doer dispatches when the plan is never approved, got: ${JSON.stringify(rejected.dispatched.map((d) => d.agent))}`
+    );
+    const rejectedPlannerCalls = rejected.dispatched.filter((d) => d.agent === 'planner' && !d.prompt.includes('Group'));
+    check(rejectedPlannerCalls.length === 3, `Expected exactly 3 plan-phase planner dispatches (3 rejected rounds), got ${rejectedPlannerCalls.length}`);
 
     if (failures.length > 0) {
         console.error('\nFAIL advanced-mock-runner-test.mjs:');

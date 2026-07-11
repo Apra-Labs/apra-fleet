@@ -206,7 +206,18 @@ function buildSpyFleetApi() {
             promptLog.push({ agent: opts.agent, prompt: opts.prompt });
 
             if (opts.agent === 'plan-reviewer') {
-                return { content: [{ text: 'APPROVED' }] };
+                // apra-fleet-unw.15: plan-reviewer verdicts are now
+                // schema-validated JSON (contracts.mjs planReviewerVerdict),
+                // not free text.
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            verdict: 'APPROVED',
+                            notes: 'Looks good.',
+                            taskAssignments: [],
+                        })
+                    }]
+                };
             }
             if (opts.agent === 'reviewer') {
                 return { content: [{ text: 'Approved. Pass.' }] };
