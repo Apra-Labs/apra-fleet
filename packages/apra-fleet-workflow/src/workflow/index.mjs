@@ -3,9 +3,9 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
-import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError } from './errors.mjs';
+import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
-export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError } from './errors.mjs';
+export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
 const ajv = new Ajv({ strict: false });
 
@@ -316,6 +316,12 @@ export class FleetWorkflow extends EventEmitter {
             spent: () => this.budget._spent,
             remaining: () => this.budget.total === null ? Infinity : (this.budget.total - this.budget._spent)
         };
+        // (apra-fleet-unw.10) runId -> AbortController for every currently
+        // active runWithContext() run. requestStop() aborts every entry in
+        // this map; agent()/command() default to the current run's
+        // controller.signal (via _currentSignal()) when the caller doesn't
+        // pass its own opts.signal. See runWithContext()/requestStop() below.
+        this._activeControllers = new Map();
     }
 
     // Returns the active per-run store (see runStorage above), or
@@ -350,6 +356,44 @@ export class FleetWorkflow extends EventEmitter {
     _currentRunId() {
         const store = this._store();
         return store ? store.runId : null;
+    }
+
+    // The active run's cooperative-cancellation AbortSignal (apra-fleet-
+    // unw.10), or `undefined` outside of a runWithContext() run / when the
+    // run's controller has no signal for some reason. agent()/command()
+    // fall back to this when the caller doesn't pass its own opts.signal.
+    _currentSignal() {
+        const store = this._store();
+        return store ? store.signal : undefined;
+    }
+
+    /**
+     * Cooperatively requests cancellation of every currently active run
+     * (every `runWithContext()` invocation -- i.e. every in-flight
+     * `WorkflowEngine.executeFile()` call -- on this `FleetWorkflow`
+     * instance). Aborts each run's `AbortController`, which rejects any
+     * in-flight `agent()`/`command()` dispatch that is using that run's
+     * signal (either implicitly, via `_currentSignal()`, or because the
+     * script never overrode `opts.signal`) with a client-side `AbortError`;
+     * `agent()`/`command()` re-wrap that as a typed `CancelledError` (see
+     * errors.mjs) so the run unwinds as a cancellation failure rather than a
+     * generic transport error.
+     *
+     * This is the mechanism the dashboard viewer's `/stop` endpoint uses
+     * (packages/apra-fleet-workflow/src/viewer/index.mjs) instead of the old
+     * `process.exit(1)` -- no state flush, mid-dispatch agents orphaned.
+     *
+     * NOTE: local/client-side cancellation only. A remote fleet member that
+     * already accepted a job may keep running to completion even after this
+     * run unwinds -- true server-side cancellation would require changes to
+     * the external apra-fleet MCP server and is out of scope here.
+     *
+     * @param {string} [reason]
+     */
+    requestStop(reason = 'Workflow run cancelled via requestStop()') {
+        for (const controller of this._activeControllers.values()) {
+            controller.abort(new CancelledError(`[Workflow Error] ${reason}`));
+        }
     }
 
     log(msg) {
@@ -494,7 +538,10 @@ export class FleetWorkflow extends EventEmitter {
                 resume: opts.resume ?? false,
                 // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
                 timeoutMs: opts.timeoutMs,
-                signal: opts.signal
+                // apra-fleet-unw.10: defaults to the active run's cooperative
+                // -cancellation signal (set up by runWithContext()/
+                // requestStop()) when the caller doesn't supply its own.
+                signal: opts.signal ?? this._currentSignal()
             };
 
             try {
@@ -605,6 +652,16 @@ export class FleetWorkflow extends EventEmitter {
                     throw error;
                 }
                 const duration = Date.now() - activityMeta.startTime;
+                // apra-fleet-unw.10: a client-side AbortError (.code ===
+                // 'ABORTED', from McpClient.request() reacting to the
+                // signal above) means this dispatch was cooperatively
+                // cancelled via requestStop() -- surface it as a typed
+                // CancelledError, not a generic transport failure.
+                if (error && error.code === 'ABORTED') {
+                    const cancelErr = new CancelledError(`[Workflow Error] agent() dispatch cancelled: ${error.message || error}`, { details: { payload }, cause: error });
+                    this.emit('activity:end', { ...activityMeta, error: cancelErr.message, duration, success: false, cancelled: true });
+                    throw cancelErr;
+                }
                 this.emit('activity:end', { ...activityMeta, error: error.message || error, duration, success: false });
                 throw new FleetTransportError(`[Workflow Error] Transport failure while executing agent prompt: ${error.message || error}`, { details: { payload }, cause: error });
             }
@@ -657,7 +714,8 @@ export class FleetWorkflow extends EventEmitter {
             long_running: opts.long_running,
             // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
             timeoutMs: opts.timeoutMs,
-            signal: opts.signal
+            // apra-fleet-unw.10: see the matching comment in agent() above.
+            signal: opts.signal ?? this._currentSignal()
         };
 
         try {
@@ -685,10 +743,18 @@ export class FleetWorkflow extends EventEmitter {
             return outText;
         } catch (error) {
             console.error(`[Command API Error]`, error.message || error);
-            this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
             if (error instanceof WorkflowError) {
+                this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
                 throw error;
             }
+            const duration = Date.now() - activityMeta.startTime;
+            // apra-fleet-unw.10: see the matching comment in agent() above.
+            if (error && error.code === 'ABORTED') {
+                const cancelErr = new CancelledError(`[Workflow Error] command() dispatch cancelled: ${error.message || error}`, { details: { payload }, cause: error });
+                this.emit('activity:end', { ...activityMeta, error: cancelErr.message, duration, success: false, cancelled: true });
+                throw cancelErr;
+            }
+            this.emit('activity:end', { ...activityMeta, error: error.message || error, duration, success: false });
             throw new FleetTransportError(`[Workflow Error] Transport failure while executing command: ${error.message || error}`, { details: { payload }, cause: error });
         }
     }
@@ -936,26 +1002,48 @@ export class FleetWorkflow extends EventEmitter {
      * @param {(context: object) => Promise<any>} entryFn - The workflow
      *   script's entry point (`main`/`run`/`default`), called with this run's
      *   context object.
+     * @param {{ runId?: string }} [opts] - (apra-fleet-unw.10) Optional
+     *   caller-supplied `runId`, so `WorkflowEngine.executeFile()` can know
+     *   the run's id up front (to attach it to the `end` event it emits from
+     *   its own try/finally) without this method having to report it back
+     *   out-of-band. Defaults to a fresh UUID when omitted, matching the
+     *   pre-unw.10 behavior for any other/legacy caller.
      */
-    async runWithContext(args, entryFn) {
+    async runWithContext(args, entryFn, opts = {}) {
+        const runId = opts.runId || randomUUID();
         const budget = {
             total: null,
             _spent: 0,
             spent: () => budget._spent,
             remaining: () => budget.total === null ? Infinity : (budget.total - budget._spent)
         };
+        // (apra-fleet-unw.10) Per-run AbortController backing cooperative
+        // cancellation: agent()/command() default to `store.signal` (via
+        // _currentSignal()) so requestStop() can abort every in-flight and
+        // future dispatch of THIS run without the workflow script having to
+        // thread a signal through itself. Tracked in `_activeControllers` for
+        // the lifetime of the run only -- removed in `finally` below so a
+        // late requestStop() call after the run has already finished is a
+        // no-op instead of leaking controllers across runs.
+        const controller = new AbortController();
+        this._activeControllers.set(runId, controller);
         const store = {
-            runId: randomUUID(),
+            runId,
             args,
             phase: null,
             group: null,
-            budget
+            budget,
+            signal: controller.signal
         };
         const context = {
             ...this._bindPrimitives(),
             args,
             budget
         };
-        return runStorage.run(store, () => entryFn(context));
+        try {
+            return await runStorage.run(store, () => entryFn(context));
+        } finally {
+            this._activeControllers.delete(runId);
+        }
     }
 }

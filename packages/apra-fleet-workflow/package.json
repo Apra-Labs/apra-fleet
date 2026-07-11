@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/workflow/index.mjs",
     "./engine": "./src/workflow/engine.mjs",
-    "./viewer": "./src/viewer/index.mjs"
+    "./viewer": "./src/viewer/index.mjs",
+    "./viewer/html-utils": "./src/viewer/html-utils.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
