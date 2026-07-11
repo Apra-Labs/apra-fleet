@@ -27,6 +27,15 @@ const ajv = new Ajv({ strict: false });
  *   explicitly sends `resume: false` unless the caller sets this option, so that
  *   workflow-authored prompts are self-contained by default and don't silently inherit
  *   state from a prior session. (F10 / apra-fleet-unw.3)
+ * @property {number} [timeoutMs] - Client-side McpClient.request() timeout override (ms),
+ *   passed through to ApraFleet.executePrompt. Not sent to the server. When omitted, a
+ *   default is derived from timeout_s/max_total_s (see deriveTimeoutMs in
+ *   packages/apra-fleet-client/src/client/api.mjs). (apra-fleet-unw.5)
+ * @property {AbortSignal} [signal] - Optional AbortSignal, passed through to
+ *   ApraFleet.executePrompt / McpClient.request. Aborting rejects the pending client-side
+ *   wait for a response; it cannot cancel a job already accepted by the remote fleet-server.
+ *   Groundwork for the cooperative-stop work in apra-fleet-unw.10 -- no /stop UI wiring here.
+ *   (apra-fleet-unw.5)
  */
 
 /**
@@ -38,6 +47,12 @@ const ajv = new Ajv({ strict: false });
  * @property {Record<string, string>} [substitutions] - Template substitutions for command
  * @property {number} [timeout_s] - Execution timeout
  * @property {boolean} [long_running] - Run as background task
+ * @property {number} [timeoutMs] - Client-side McpClient.request() timeout override (ms),
+ *   passed through to ApraFleet.executeCommand. Not sent to the server. See AgentOptions
+ *   .timeoutMs above for details. (apra-fleet-unw.5)
+ * @property {AbortSignal} [signal] - Optional AbortSignal, passed through to
+ *   ApraFleet.executeCommand / McpClient.request. See AgentOptions.signal above for details.
+ *   (apra-fleet-unw.5)
  */
 
 export class FleetWorkflow extends EventEmitter {
@@ -134,7 +149,10 @@ export class FleetWorkflow extends EventEmitter {
             // F10: default to a self-contained (non-resumed) session for
             // workflow-authored prompts. See AgentOptions.resume above and
             // apra-fleet-unw.3.
-            resume: opts.resume ?? false
+            resume: opts.resume ?? false,
+            // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
+            timeoutMs: opts.timeoutMs,
+            signal: opts.signal
         };
 
         try {
@@ -244,7 +262,10 @@ export class FleetWorkflow extends EventEmitter {
             member_name: opts.member_name,
             member_id: opts.member_id,
             timeout_s: opts.timeout_s,
-            long_running: opts.long_running
+            long_running: opts.long_running,
+            // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
+            timeoutMs: opts.timeoutMs,
+            signal: opts.signal
         };
 
         try {

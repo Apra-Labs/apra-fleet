@@ -15,6 +15,12 @@
  *   callers effectively opt out of this client-level default unless they ask for resume.
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
  * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
+ * @property {number} [timeoutMs] - Client-side request timeout override (ms). Not sent to
+ *   the server; consumed locally by McpClient.request(). When omitted, a default is derived
+ *   from max_total_s/timeout_s (see deriveTimeoutMs in this file).
+ * @property {AbortSignal} [signal] - Optional AbortSignal to cancel the client-side wait for
+ *   a response. Not sent to the server. Aborting rejects the pending request locally; it
+ *   cannot cancel a job already accepted by the remote fleet-server (see client.mjs).
  */
 
 /**
@@ -27,6 +33,12 @@
  * @property {string} [restart_command] - Command for retry runs, e.g. checkpoint resume
  * @property {string} [run_from] - Override directory to run from
  * @property {number} [timeout_s] - Timeout in seconds (default: 120)
+ * @property {number} [timeoutMs] - Client-side request timeout override (ms). Not sent to
+ *   the server; consumed locally by McpClient.request(). When omitted, a default is derived
+ *   from timeout_s (see deriveTimeoutMs in this file).
+ * @property {AbortSignal} [signal] - Optional AbortSignal to cancel the client-side wait for
+ *   a response. Not sent to the server. Aborting rejects the pending request locally; it
+ *   cannot cancel a job already accepted by the remote fleet-server (see client.mjs).
  */
 
 /**
@@ -100,9 +112,32 @@
  */
 
 
+// Grace margin added on top of the payload's own timeout hint (timeout_s /
+// max_total_s) so the client doesn't race the server's own deadline -- the
+// server should have a chance to reply with its own timeout/error first.
+const TIMEOUT_GRACE_MS = 30 * 1000;
+
+/**
+ * Derives a client-side McpClient.request() timeout (ms) from a payload's
+ * own timeout hints. Prefers max_total_s (a hard ceiling) over timeout_s
+ * (an inactivity timeout) when both are present, then adds a grace margin.
+ * Returns undefined when neither hint is present, letting McpClient fall
+ * back to its own conservative default (never infinite).
+ *
+ * @param {{ max_total_s?: number, timeout_s?: number }} payload
+ * @returns {number | undefined}
+ */
+export function deriveTimeoutMs(payload = {}) {
+    const hintSeconds = payload.max_total_s ?? payload.timeout_s;
+    if (typeof hintSeconds !== 'number' || !Number.isFinite(hintSeconds) || hintSeconds <= 0) {
+        return undefined;
+    }
+    return hintSeconds * 1000 + TIMEOUT_GRACE_MS;
+}
+
 export class ApraFleet {
     /**
-     * @param {{ callTool: (name: string, args: Record<string, any>) => Promise<any> }} mcpClient 
+     * @param {{ callTool: (name: string, args: Record<string, any>, opts?: { timeoutMs?: number, signal?: AbortSignal }) => Promise<any> }} mcpClient
      */
     constructor(mcpClient) {
         this.mcpClient = mcpClient;
@@ -113,7 +148,11 @@ export class ApraFleet {
      * @param {ExecutePromptOptions} options
      */
     async executePrompt(options) {
-        return this.mcpClient.callTool('execute_prompt', options);
+        const { timeoutMs, signal, ...payload } = options;
+        return this.mcpClient.callTool('execute_prompt', payload, {
+            timeoutMs: timeoutMs ?? deriveTimeoutMs(payload),
+            signal
+        });
     }
 
     /**
@@ -121,7 +160,11 @@ export class ApraFleet {
      * @param {ExecuteCommandOptions} options
      */
     async executeCommand(options) {
-        return this.mcpClient.callTool('execute_command', options);
+        const { timeoutMs, signal, ...payload } = options;
+        return this.mcpClient.callTool('execute_command', payload, {
+            timeoutMs: timeoutMs ?? deriveTimeoutMs(payload),
+            signal
+        });
     }
 
     /**
