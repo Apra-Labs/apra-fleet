@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/ci-watcher-input@1",
+  "version": 1,
+  "title": "ci-watcher input",
+  "description": "Required dispatch-context keys for the ci-watcher role, per agents/ci-watcher.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["branch", "expectedHeadSha"],
+  "properties": {
+    "branch": {
+      "type": "string",
+      "description": "Sprint branch to check CI for."
+    },
+    "expectedHeadSha": {
+      "type": "string",
+      "description": "The commit SHA CI should have run against."
+    }
+  }
+}

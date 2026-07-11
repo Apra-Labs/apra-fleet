@@ -1,29 +1,46 @@
 // apra-fleet-unw.12 -- canonical, code-level definition of the sprint role
-// names and every role's verdict schema.
+// names, plus (apra-fleet-unw.22) a thin adapter that sources each role's
+// verdict/input schemas from vendor/apra-pm/agents/schemas/ instead of
+// owning them.
 //
-// This module is the single source of truth for:
+// This module is the single source of truth (application-side) for:
 //   1. The eight sprint-role name strings (lowercase, matching the
 //      `name:` frontmatter of vendor/apra-pm/agents/*.md exactly).
-//   2. An ajv-compatible JSON schema for every role's structured verdict,
-//      so a later issue (apra-fleet-unw.15/16, W4) can turn today's
-//      substring-matched LLM judgment gates ("includes('APPROVED')",
-//      runner.js) into deterministic, schema-validated state-machine
-//      edges -- see docs/plan.md "Determinism audit".
-//   3. A pure, testable helper for fencing untrusted inter-agent text
+//   2. An ajv-compatible JSON schema for every role's structured verdict --
+//      as of apra-fleet-unw.22, LOADED from vendor/apra-pm/agents/schemas/
+//      <role>.json rather than hand-copied inline, per
+//      docs/agent-schema-layering-proposal.md section 4.3/5.2. The role
+//      itself is the canonical author of its output contract; this module
+//      is a reader/re-exporter, not the source.
+//   3. A pre-flight input-validation helper (`validateRoleInput`) that
+//      checks an assembled dispatch context against
+//      vendor/apra-pm/agents/schemas/<role>-input.json BEFORE any agent()
+//      call is made -- proposal section 6.3. Deterministic, zero-cost,
+//      caller-side; never shown to the LLM.
+//   4. A pure, testable helper for fencing untrusted inter-agent text
 //      (feedback.md finding A7) plus a helper for appending the
 //      "respond only as this JSON schema" instruction to a prompt.
 //
-// Scope note (apra-fleet-unw.12): this module is NOT wired into
-// runner.js and does NOT touch vendor/ in this issue -- see
-// apra-fleet-unw.13 (vendored agent-def ruggedization) and
-// apra-fleet-unw.15/16 (runner.js consuming these schemas). This module
-// is deliberately self-contained: it does not import from
-// @apralabs/apra-fleet-workflow, so it can be depended on by that
-// package (or any other) without a cycle. `ajv` is a direct dependency
-// of apra-fleet-se (see package.json), matching the ajv usage/version
-// already established in packages/apra-fleet-workflow/src/workflow/index.mjs.
+// Scope note (apra-fleet-unw.22): this issue reframes HOW the seven output
+// schemas are sourced and adds `validateRoleInput`. It does NOT change
+// runner.js -- every export runner.js already imports (SCHEMAS, VALIDATORS,
+// validateVerdict, ROLES, wrapUntrustedBlock, appendSchemaInstruction,
+// finalVerdict, and the individual *Verdict/*Report constants) keeps the
+// same name and the same ajv-compatible shape. `validateRoleInput` is a new
+// export that is intentionally NOT wired into runner.js here -- see its
+// doc comment below for how a future issue should call it.
+//
+// This module remains self-contained: it does not import from
+// @apralabs/apra-fleet-workflow, so it can be depended on by that package
+// (or any other) without a cycle. `ajv` is a direct dependency of
+// apra-fleet-se (see package.json).
 
 import Ajv from 'ajv';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // 1. Canonical role enum
@@ -70,14 +87,161 @@ export function validateRole(role) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Verdict JSON schemas
+// 2. Role-owned schema loader (apra-fleet-unw.22)
 // ---------------------------------------------------------------------------
 //
-// Each schema is cross-checked against its role's prose contract in
-// vendor/apra-pm/agents/<role>.md (and, for the reviewer, against
-// vendor/apra-pm/skills/pm/SKILL.md -- see the note on reviewerVerdict
-// below). Where a schema had to diverge from the literal vendored prose,
-// that divergence is called out inline and in the commit message.
+// TEMPORARY STATE -- read before touching anything below:
+//
+// As of this writing, the OUTER repo's vendor/apra-pm submodule pointer has
+// NOT been bumped to include apra-fleet-unw.21's schema files. That work
+// (agents/schemas/<role>.json + <role>-input.json) exists only on the
+// local, unpushed vendor/apra-pm branch `tmp/unw13-vendor-agent-defs`
+// (checked out in worktree wt-unw13), and is awaiting human sign-off before
+// an upstream PR to Apra-Labs/apra-pm and a submodule bump in this repo.
+// A normal checkout of THIS repo therefore has an empty (uninitialized) or
+// stale vendor/apra-pm, so vendor/apra-pm/agents/schemas/*.json does not
+// resolve today.
+//
+// What unblocks this: once a human approves the unw.13 rework and the
+// submodule pointer in this repo is bumped to a commit that includes
+// agents/schemas/, `loadVendorSchema` below starts finding real files and
+// this module automatically switches from the fallback literals (section 3)
+// to the vendored schemas -- no code change required here. Until then, the
+// loader's "file not found" case is NOT an error: it is the expected,
+// graceful-degradation state (proposal section 4.2 "Graceful degradation" /
+// this issue's shim requirement), and every schema falls back to the same
+// literal this module has always shipped, so runner.js's current behavior
+// is completely unaffected either way.
+//
+// Path resolution: this file lives at
+// packages/apra-fleet-se/auto-sprint/contracts.mjs, so the repo root is
+// three levels up; vendor/apra-pm is resolved from there exactly the way
+// src/cli/install.ts resolves `vendor/apra-pm/agents` (path.join(root,
+// 'vendor', 'apra-pm', ...)) and the way apra-pm's own
+// .claude/workflows/auto-sprint.js resolves agents/schemas/ relative to
+// itself (apra-fleet-unw.21's migration of that file; see
+// path.join(__dirname, '..', 'agents', 'schemas', ...) there).
+const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+
+// Test-only escape hatch: lets test/contracts-schema-loader.test.mjs point
+// module-load-time schema resolution (SCHEMAS, validateRoleInput) at a
+// fixture directory (test/fixtures/vendor-apra-pm-schemas/, a snapshot of
+// wt-unw13's real vendor/apra-pm/agents/schemas/ files) instead of this
+// checkout's actual (currently empty/uninitialized) vendor/apra-pm
+// submodule -- see the TEMPORARY STATE note above. Never set in
+// production; production always resolves the real submodule path below.
+const VENDOR_SCHEMAS_DIR = process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE
+    || path.join(REPO_ROOT, 'vendor', 'apra-pm', 'agents', 'schemas');
+
+/**
+ * Reads and JSON-parses `<baseDir>/<fileBaseName>.json`.
+ *
+ * Exported (in addition to being used internally) so tests can point it at
+ * a fixture directory to prove the loader reads real schema content
+ * correctly, without depending on the not-yet-merged submodule state of
+ * this checkout -- see test/fixtures/vendor-apra-pm-schemas/ (a snapshot of
+ * wt-unw13's vendor/apra-pm/agents/schemas/ files) and
+ * test/contracts-schema-loader.test.mjs.
+ *
+ * Returns `null` (not a throw) when the file does not exist -- this is the
+ * signal the fallback shim (section 3) uses. Throws if the file exists but
+ * is not valid JSON, because a corrupt vendored file is a real bug, not an
+ * absence, and must not be silently swallowed into "just use the fallback".
+ * @param {string} baseDir
+ * @param {string} fileBaseName - e.g. "reviewer" or "reviewer-input" (no .json suffix)
+ * @returns {object|null}
+ */
+export function loadSchemaFileFrom(baseDir, fileBaseName) {
+    const filePath = path.join(baseDir, `${fileBaseName}.json`);
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    try {
+        return JSON.parse(raw);
+    } catch (err) {
+        throw new Error(`[contracts] Vendored schema file is not valid JSON: ${filePath} (${err.message})`);
+    }
+}
+
+/**
+ * Loads `vendor/apra-pm/agents/schemas/<fileBaseName>.json` from this
+ * repo's actual (submodule-relative) path. See the TEMPORARY STATE note
+ * above for why this frequently returns `null` today.
+ * @param {string} fileBaseName
+ * @returns {object|null}
+ */
+function loadVendorSchema(fileBaseName) {
+    return loadSchemaFileFrom(VENDOR_SCHEMAS_DIR, fileBaseName);
+}
+
+/**
+ * Extracts the major version number from a role schema's "$id" field, which
+ * follows the "apra-pm/<role>-output@<major>" / "apra-pm/<role>-input@<major>"
+ * convention established by apra-fleet-unw.21 / the layering proposal.
+ * @param {unknown} id
+ * @returns {number|null}
+ */
+export function majorVersionFromId(id) {
+    if (typeof id !== 'string') return null;
+    const match = id.match(/@(\d+)$/);
+    return match ? Number(match[1]) : null;
+}
+
+/**
+ * Version-pin check (proposal section 4.3): a submodule bump that changes a
+ * contract's major version must fail CI loudly at module-load time, not
+ * drift silently into a stale validator. Only ever called when a vendored
+ * schema file was actually found -- an absent file already takes the
+ * fallback path and never reaches this check.
+ * @param {string} role
+ * @param {object} schema
+ * @param {number} expectedMajor
+ */
+export function assertVersionPin(role, schema, expectedMajor) {
+    const actualMajor = majorVersionFromId(schema && schema.$id);
+    if (actualMajor !== expectedMajor) {
+        throw new Error(
+            `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
+                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
+                `${JSON.stringify(schema && schema.$id)}. A vendor/apra-pm submodule bump changed this ` +
+                `role's contract -- update contracts.mjs (and re-verify every call site that consumes ` +
+                `this schema) before accepting the new vendored version.`,
+        );
+    }
+}
+
+/**
+ * Resolves the output schema for one role: prefer the vendored
+ * agents/schemas/<role>.json (with a version-pin check), fall back to the
+ * literal shipped in this module when the vendored file is absent.
+ * @param {string} role
+ * @param {number} expectedMajor
+ * @param {object} fallback
+ * @returns {object}
+ */
+function resolveOutputSchema(role, expectedMajor, fallback) {
+    const vendorSchema = loadVendorSchema(role);
+    if (vendorSchema === null) {
+        return fallback;
+    }
+    assertVersionPin(role, vendorSchema, expectedMajor);
+    return vendorSchema;
+}
+
+// ---------------------------------------------------------------------------
+// 3. Fallback verdict schema literals
+// ---------------------------------------------------------------------------
+//
+// These are the pre-unw.22 hand-written schemas. They now serve ONLY as the
+// fallback engaged by resolveOutputSchema() while
+// vendor/apra-pm/agents/schemas/ is unavailable (see the TEMPORARY STATE
+// note in section 2). Each one was originally cross-checked against its
+// role's prose contract in vendor/apra-pm/agents/<role>.md; apra-fleet-
+// unw.21 subsequently aligned that prose (and added the sibling
+// agents/schemas/<role>.json this module now prefers) to these exact
+// shapes, so the DIVERGENCE NOTE comments that used to document open
+// prose/schema mismatches have been removed -- there is no longer a live
+// divergence to document, only a temporary "vendored file not merged yet"
+// gap that section 2 covers.
 
 const taskAssignmentSchema = {
     type: 'object',
@@ -89,10 +253,9 @@ const taskAssignmentSchema = {
     required: ['id', 'bucket', 'model'],
 };
 
-// agents/plan-reviewer.md Step 4: "verdict" (APPROVED | CHANGES NEEDED),
-// "notes", "taskAssignments: array with one entry per open task --
-// { id, bucket, model }". Matches the vendored prose as-is.
-export const planReviewerVerdict = {
+// Fallback for role "plan-reviewer". Canonical source once the submodule
+// pointer is bumped: vendor/apra-pm/agents/schemas/plan-reviewer.json.
+const FALLBACK_planReviewerVerdict = {
     $id: 'planReviewerVerdict',
     type: 'object',
     properties: {
@@ -103,20 +266,9 @@ export const planReviewerVerdict = {
     required: ['verdict', 'notes', 'taskAssignments'],
 };
 
-// DIVERGENCE NOTE (V1, resolved per the issue's explicit instruction):
-// agents/reviewer.md Step 5 only documents `verdict` + `notes`, and its
-// Step 5 "CHANGES NEEDED" instructions tell the reviewer to run
-// `bd update <id> --status=open` itself -- i.e. the vendored agent-def's
-// prose has the reviewer mutating beads directly. That contradicts
-// vendor/apra-pm/skills/pm/SKILL.md (lines ~102-105), which documents the
-// reviewer as writing `reopenIds`/`newTasks` arrays and states verbatim:
-// "never touches beads. The orchestrator reads those arrays and runs
-// `bd update --status=open` / `bd create` itself." Per this issue's
-// instructions, the SCHEMA below follows the SKILL.md /
-// orchestrator-applied-transitions version (reopenIds/newTasks), since
-// resolving the contradiction in the vendored agents/reviewer.md file
-// itself is separate work tracked by apra-fleet-unw.13.
-export const reviewerVerdict = {
+// Fallback for role "reviewer". Canonical source once the submodule
+// pointer is bumped: vendor/apra-pm/agents/schemas/reviewer.json.
+const FALLBACK_reviewerVerdict = {
     $id: 'reviewerVerdict',
     type: 'object',
     properties: {
@@ -139,19 +291,9 @@ export const reviewerVerdict = {
     required: ['verdict', 'notes', 'reopenIds', 'newTasks'],
 };
 
-// DIVERGENCE NOTE: agents/doer.md Step 3's literal return payload is just
-// `{ "status": "VERIFY" }`; it does not document a `BLOCKED` status value
-// or a `closedIds` field in its Step 3 JSON block (closes are described as
-// an out-of-band side effect via `bd close` during Step 2, and the
-// "missing secret" case in the Rules section closes the task with a
-// reason and STOPs, with no documented return shape at all). Per the
-// issue text, doerReport intentionally EXTENDS the vendored VERIFY
-// checkpoint: `BLOCKED` covers the missing-secret/STOP path so callers
-// get a machine-readable status instead of relying on the doer simply
-// stopping, and `closedIds` surfaces the side-effectful `bd close` calls
-// as data so a later issue (unw.16) can verify them against beads instead
-// of trusting the doer's say-so.
-export const doerReport = {
+// Fallback for role "doer". Canonical source once the submodule pointer is
+// bumped: vendor/apra-pm/agents/schemas/doer.json.
+const FALLBACK_doerReport = {
     $id: 'doerReport',
     type: 'object',
     properties: {
@@ -162,10 +304,9 @@ export const doerReport = {
     required: ['status', 'closedIds', 'notes'],
 };
 
-// agents/deployer.md: "Return `deployed: true` only if the smoke test
-// exits 0" / "return `deployed: false` ... include full error output in
-// `notes`". Matches the vendored prose as-is.
-export const deployerReport = {
+// Fallback for role "deployer". Canonical source once the submodule
+// pointer is bumped: vendor/apra-pm/agents/schemas/deployer.json.
+const FALLBACK_deployerReport = {
     $id: 'deployerReport',
     type: 'object',
     properties: {
@@ -175,15 +316,9 @@ export const deployerReport = {
     required: ['deployed', 'notes'],
 };
 
-// DIVERGENCE NOTE: agents/integ-test-runner.md Step 4 documents only
-// `featuresClosed`, `issuesCreated`, and `summary`. `passed` and
-// `bugsFiled` are additions called for explicitly by the issue text
-// ("per agents/integ-test-runner.md Step 4 + feedback A4") to close the
-// determinism gap flagged in feedback.md finding A4/A6: without a
-// boolean `passed` and the concrete list of bug IDs filed, a caller has
-// to re-derive pass/fail from `issuesCreated > 0`, which conflates a
-// P3 cosmetic bug with a P0 that blocks the goal.
-export const integReport = {
+// Fallback for role "integ-test-runner". Canonical source once the
+// submodule pointer is bumped: vendor/apra-pm/agents/schemas/integ-test-runner.json.
+const FALLBACK_integReport = {
     $id: 'integReport',
     type: 'object',
     properties: {
@@ -196,9 +331,9 @@ export const integReport = {
     required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
 };
 
-// agents/ci-watcher.md Step 2: status values are exactly "not_configured",
-// "green", "red", "pending". Matches the vendored prose as-is.
-export const ciReport = {
+// Fallback for role "ci-watcher". Canonical source once the submodule
+// pointer is bumped: vendor/apra-pm/agents/schemas/ci-watcher.json.
+const FALLBACK_ciReport = {
     $id: 'ciReport',
     type: 'object',
     properties: {
@@ -208,9 +343,9 @@ export const ciReport = {
     required: ['status', 'notes'],
 };
 
-// agents/harvester.md Step 7: "status: OK ... status: FAILED with notes
-// describing which step failed". Matches the vendored prose as-is.
-export const harvesterReport = {
+// Fallback for role "harvester". Canonical source once the submodule
+// pointer is bumped: vendor/apra-pm/agents/schemas/harvester.json.
+const FALLBACK_harvesterReport = {
     $id: 'harvesterReport',
     type: 'object',
     properties: {
@@ -223,7 +358,9 @@ export const harvesterReport = {
 // finalVerdict has no corresponding vendored agents/*.md file -- it is the
 // orchestrator's own synthesized pass/fail gate at the end of a sprint
 // cycle (feedback.md finding A6: today's "Fail" verdict is a no-op).
-// There is nothing to cross-check it against; it is new, schema-first.
+// Application-owned per the layering proposal (section 4.4): there is
+// nothing to load from vendor/apra-pm for this one, and there never will
+// be.
 export const finalVerdict = {
     $id: 'finalVerdict',
     type: 'object',
@@ -233,6 +370,23 @@ export const finalVerdict = {
     },
     required: ['verdict', 'notes'],
 };
+
+// ---------------------------------------------------------------------------
+// 4. Resolved verdict schemas (loader-first, fallback-shimmed)
+// ---------------------------------------------------------------------------
+//
+// Every export name and shape below is unchanged from pre-unw.22
+// contracts.mjs; only the sourcing changed (section 2/3).
+
+const OUTPUT_SCHEMA_MAJOR_VERSION = 1;
+
+export const planReviewerVerdict = resolveOutputSchema('plan-reviewer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_planReviewerVerdict);
+export const reviewerVerdict = resolveOutputSchema('reviewer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_reviewerVerdict);
+export const doerReport = resolveOutputSchema('doer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_doerReport);
+export const deployerReport = resolveOutputSchema('deployer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_deployerReport);
+export const integReport = resolveOutputSchema('integ-test-runner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_integReport);
+export const ciReport = resolveOutputSchema('ci-watcher', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_ciReport);
+export const harvesterReport = resolveOutputSchema('harvester', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_harvesterReport);
 
 // Map of verdict name -> raw JSON schema, for callers that want the raw
 // schema object (e.g. to embed in a prompt) rather than a compiled
@@ -279,7 +433,107 @@ export function validateVerdict(name, data) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Prompt-block helpers
+// 5. Pre-flight input validation (apra-fleet-unw.22, proposal section 6.3)
+// ---------------------------------------------------------------------------
+//
+// Output schemas (sections 2-4) guard against LLM-side ambiguity: the model
+// must resolve two schema statements it is shown. Inputs have no such
+// actor -- the dispatch context is assembled entirely by the caller before
+// any prompt is built, so a missing/malformed required field is a
+// deterministically-checkable local fact, not something that needs a paid
+// fleet dispatch to discover. `validateRoleInput` is that free, local,
+// fail-fast check.
+//
+// Loaded the same way as output schemas (section 2), with the same
+// shim/fallback pattern -- EXCEPT there is no hand-written fallback literal
+// for input schemas (this module never owned them, unlike output schemas
+// which it originally authored and is now migrating away from). So the
+// "file not found" case for an input schema no-ops/passes rather than
+// falling back to anything: unw.21 only shipped input schemas for the
+// roles it prioritized, and even once the submodule bump lands, a role
+// with no <role>-input.json is a valid state (some roles may never need
+// one), not an error state.
+//
+// NOT wired into runner.js in this issue (see the module-level scope note
+// at the top of this file): runner.js's `dispatch()` calls stay as-is. The
+// intended integration for a future issue is:
+//
+//   import { validateRoleInput } from './contracts.mjs';
+//   ...
+//   const context = { 'base-branch': base_branch, branch, ... };
+//   const preflight = validateRoleInput('harvester', context);
+//   if (!preflight.valid) {
+//     // fail fast, zero cost: do not call agent()/dispatch() at all.
+//     throw new Error(`[runner] harvester dispatch context invalid: ${JSON.stringify(preflight.errors)}`);
+//   }
+//   await dispatch(prompt, { agentType: 'harvester', schema: SCHEMAS.harvesterReport, ... });
+//
+// Priority order for wiring this into each phase's dispatch (proposal
+// section 6.4, highest value first): harvester (4 required values,
+// including two verbatim-content blocks that are expensive to silently
+// omit) > reviewer/doer/deployer (1-2 required strings each) >
+// ci-watcher/integ-test-runner/plan-reviewer (lighter-weight, same
+// pattern for consistency). This issue does not wire any of them into
+// runner.js -- that is left to whichever issue rebuilds each phase's
+// dispatch call sites.
+
+const INPUT_SCHEMA_MAJOR_VERSION = 1;
+const inputValidatorCache = new Map();
+
+/**
+ * Compiles (and caches) the ajv validator for a role's input schema.
+ * Caching avoids ajv's "schema with this $id already exists" error on a
+ * second call for the same role, and avoids recompiling on every
+ * dispatch-context check.
+ * @param {string} role - already-normalized, already-validated role string
+ * @returns {import('ajv').ValidateFunction | null} null if the role has no input schema (no-op case)
+ */
+function getInputValidator(role) {
+    if (inputValidatorCache.has(role)) {
+        return inputValidatorCache.get(role);
+    }
+    const schema = loadVendorSchema(`${role}-input`);
+    if (schema === null) {
+        inputValidatorCache.set(role, null);
+        return null;
+    }
+    assertVersionPin(`${role}-input`, schema, INPUT_SCHEMA_MAJOR_VERSION);
+    const validator = ajv.compile(schema);
+    inputValidatorCache.set(role, validator);
+    return validator;
+}
+
+/**
+ * Validates an assembled role-dispatch context object against the role's
+ * input schema (vendor/apra-pm/agents/schemas/<role>-input.json), BEFORE
+ * any agent() call is made. See the section 5 header comment above for the
+ * full rationale, the no-op case, and how a future runner.js integration
+ * should call this.
+ * @param {string} role - a canonical role string (see ROLES); validated internally
+ * @param {object} context - the assembled dispatch context (e.g. prompt template variables)
+ * @returns {{ valid: boolean, errors: import('ajv').ErrorObject[] | null }}
+ */
+export function validateRoleInput(role, context) {
+    const normalized = normalizeRole(role);
+    if (normalized === null || !ROLE_SET.has(normalized)) {
+        throw new Error(`[contracts] validateRoleInput: unknown role ${JSON.stringify(role)}`);
+    }
+
+    const validator = getInputValidator(normalized);
+    if (validator === null) {
+        // No input schema published for this role yet (unw.21 only covered
+        // priority roles) OR the vendor/apra-pm submodule pointer has not
+        // been bumped yet (see the TEMPORARY STATE note in section 2) --
+        // no-op/pass rather than erroring, per proposal section 6.3.
+        return { valid: true, errors: null };
+    }
+
+    const valid = validator(context);
+    return { valid, errors: valid ? null : validator.errors };
+}
+
+// ---------------------------------------------------------------------------
+// 6. Prompt-block helpers
 // ---------------------------------------------------------------------------
 
 // The exact phrase called for by feedback.md finding A7: "wrap inter-agent

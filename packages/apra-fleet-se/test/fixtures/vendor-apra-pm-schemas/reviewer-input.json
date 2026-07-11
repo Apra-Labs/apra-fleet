@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/reviewer-input@1",
+  "version": 1,
+  "title": "reviewer input",
+  "description": "Required dispatch-context keys for the reviewer role, per agents/reviewer.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["base-branch", "branch"],
+  "properties": {
+    "base-branch": {
+      "type": "string",
+      "description": "Branch to diff against, e.g. \"main\"."
+    },
+    "branch": {
+      "type": "string",
+      "description": "Sprint track branch to review."
+    }
+  }
+}
