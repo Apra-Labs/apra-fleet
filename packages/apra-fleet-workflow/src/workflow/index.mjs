@@ -8,6 +8,198 @@ export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, Fle
 
 const ajv = new Ajv({ strict: false });
 
+// --- Structured-output extraction (apra-fleet-unw.8) ---------------------
+//
+// The old extraction path used a single greedy regex,
+// /\{[\s\S]*\}|\[[\s\S]*\]/, which grabs from the FIRST `{`/`[` to the LAST
+// `}`/`]` in the whole reply. That fails as soon as a reply contains more
+// than one JSON block, or trailing prose that happens to contain a brace --
+// the regex swallows everything in between as one "candidate" and JSON.parse
+// then throws on it. The functions below replace that with real bracket
+// matching plus schema-directed candidate selection: prefer fenced ```json
+// blocks; otherwise scan the raw text for every balanced top-level
+// {...}/[...] span (tracking string state so braces inside string literals
+// don't confuse the matcher); validate each candidate against the schema in
+// the order found and return the first one that both parses and validates.
+//
+// NOTE (descoped, see agent() below for the full note): this is a
+// client-side mitigation. The more robust fix -- enforcing the schema at the
+// member/harness tool-call layer -- requires fleet-server changes.
+
+const FENCED_JSON_RE = /```(?:json)?\s*\n([\s\S]*?)```/gi;
+
+/**
+ * Extracts the contents of every fenced ```json (or bare ```) code block in
+ * `text`, in the order they appear.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function extractFencedJsonBlocks(text) {
+    const blocks = [];
+    let match;
+    FENCED_JSON_RE.lastIndex = 0;
+    while ((match = FENCED_JSON_RE.exec(text)) !== null) {
+        blocks.push(match[1].trim());
+    }
+    return blocks;
+}
+
+/**
+ * Given `text[start]` is `{` or `[`, scans forward tracking bracket nesting
+ * and JSON string state (so braces/brackets inside string literals are
+ * ignored) to find the index of the matching closing bracket. Returns -1 if
+ * the span never closes or the brackets are mismatched.
+ * @param {string} text
+ * @param {number} start
+ * @returns {number}
+ */
+function findBalancedEnd(text, start) {
+    const closerFor = { '{': '}', '[': ']' };
+    const stack = [closerFor[text[start]]];
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start + 1; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+        if (ch === '{' || ch === '[') {
+            stack.push(closerFor[ch]);
+            continue;
+        }
+        if (ch === '}' || ch === ']') {
+            if (stack.length === 0) return -1;
+            const expected = stack.pop();
+            if (expected !== ch) return -1;
+            if (stack.length === 0) return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Scans `text` for every balanced top-level JSON object/array span, using
+ * real bracket matching (not a greedy regex), in the order they appear.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function extractBalancedJsonCandidates(text) {
+    const candidates = [];
+    let i = 0;
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '{' || ch === '[') {
+            const end = findBalancedEnd(text, i);
+            if (end !== -1) {
+                candidates.push(text.slice(i, end + 1));
+                i = end + 1;
+                continue;
+            }
+        }
+        i++;
+    }
+    return candidates;
+}
+
+/**
+ * Attempts to find a schema-valid JSON candidate in `text`. Prefers fenced
+ * ```json blocks; falls back to a balanced top-level bracket scan of the raw
+ * text. Every candidate found is parsed and validated in order; the first
+ * one that both parses and validates against `compiledSchema` wins. Returns
+ * `{ ok: true, parsed, raw }` on success, or `{ ok: false, attempts }` where
+ * `attempts` records why every candidate was rejected (parse error or ajv
+ * validation errors) for repair-prompt / error-reporting purposes.
+ * @param {string} text
+ * @param {import('ajv').ValidateFunction} compiledSchema
+ */
+function extractStructuredOutput(text, compiledSchema) {
+    const fenced = extractFencedJsonBlocks(text);
+    const candidates = fenced.length > 0 ? fenced : extractBalancedJsonCandidates(text);
+
+    const attempts = [];
+    const tryCandidate = (raw) => {
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        } catch (parseError) {
+            attempts.push({ raw, parseError });
+            return null;
+        }
+        if (compiledSchema(parsed)) {
+            return { ok: true, parsed, raw };
+        }
+        attempts.push({ raw, parsed, validationErrors: compiledSchema.errors ? [...compiledSchema.errors] : [] });
+        return null;
+    };
+
+    for (const raw of candidates) {
+        const result = tryCandidate(raw);
+        if (result) return result;
+    }
+
+    // Last-resort fallback: no bracketed candidate was found at all (e.g. a
+    // reply that is itself plain JSON with stray leading/trailing
+    // whitespace but somehow no `{`/`[` was detected as an opener -- should
+    // be rare given the scan above, but keeps behavior at least as good as
+    // the old single-shot JSON.parse(text) path).
+    if (candidates.length === 0) {
+        const result = tryCandidate(text.trim());
+        if (result) return result;
+    }
+
+    return { ok: false, attempts };
+}
+
+/**
+ * Summarizes why every extraction attempt failed, for both the repair-prompt
+ * re-ask and the final AgentOutputError message.
+ * @param {Array<{raw: string, parseError?: Error, validationErrors?: object[]}>} attempts
+ */
+function summarizeExtractionAttempts(attempts) {
+    if (attempts.length === 0) {
+        return 'No JSON object or array was found in the response.';
+    }
+    return attempts
+        .map((a, idx) => {
+            if (a.parseError) {
+                return `Candidate ${idx + 1}: JSON parse error: ${a.parseError.message}`;
+            }
+            return `Candidate ${idx + 1}: schema validation failed: ${ajv.errorsText(a.validationErrors)}`;
+        })
+        .join('\n');
+}
+
+/**
+ * Builds the self-contained repair re-ask prompt sent to the SAME member
+ * after an invalid structured-output attempt. Deliberately does NOT rely on
+ * `resume: true` (see AgentOptions.resume / F10 note in agent() below) --
+ * every field the member needs (the original prompt+schema, its own invalid
+ * output, and the validation errors) is embedded directly in the prompt
+ * text so the re-ask stands alone even in a fresh, non-resumed session.
+ * @param {string} originalPrompt
+ * @param {string} invalidOutput
+ * @param {string} errorsText
+ */
+function buildRepairPrompt(originalPrompt, invalidOutput, errorsText) {
+    return `${originalPrompt}\n\n` +
+        `Your previous response could not be used:\n${invalidOutput}\n\n` +
+        `Validation errors:\n${errorsText}\n\n` +
+        `Please respond again with corrected JSON only, strictly conforming to the schema above. ` +
+        `Do not include any commentary, explanation, or text outside the JSON.`;
+}
+
 /**
  * @typedef {Object} AgentOptions
  * @property {string} [label] - UI label for this run
@@ -36,6 +228,13 @@ const ajv = new Ajv({ strict: false });
  *   wait for a response; it cannot cancel a job already accepted by the remote fleet-server.
  *   Groundwork for the cooperative-stop work in apra-fleet-unw.10 -- no /stop UI wiring here.
  *   (apra-fleet-unw.5)
+ * @property {number} [schemaRetries] - Only meaningful when `schema` is set. Bounded number
+ *   of repair re-asks to the SAME member after a parse/validation failure, before giving up
+ *   and throwing AgentOutputError. Defaults to 2 (so up to 3 total dispatches: 1 original +
+ *   2 repairs). Each repair re-ask is a fresh, self-contained prompt (does not rely on
+ *   `resume: true`) containing the original prompt, the member's own invalid output, and the
+ *   ajv validation/parse errors. Each attempt emits its own activity:start/activity:end pair
+ *   and is cost-accounted individually. (apra-fleet-unw.8)
  */
 
 /**
@@ -109,19 +308,11 @@ export class FleetWorkflow extends EventEmitter {
             throw new Error(`[Workflow Error] agent() requires either member_name or member_id`);
         }
 
-        if (this.budget.total !== null && this.budget.remaining() <= 0) {
-            throw new BudgetExceededError(
-                `[Workflow Error] Budget exceeded: spent $${this.budget._spent.toFixed(4)} of $${this.budget.total.toFixed(4)} total. Aborting agent() dispatch.`,
-                { details: { spent: this.budget._spent, total: this.budget.total, member: opts.member_name || opts.member_id } }
-            );
-        }
-
         const effectivePhase = opts.phase || this.currentPhase;
         if (effectivePhase) {
             console.log(`[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
         }
-        
-        let finalPrompt = prompt;
+
         let compiledSchema = null;
         if (opts.schema) {
             try {
@@ -129,113 +320,191 @@ export class FleetWorkflow extends EventEmitter {
             } catch (err) {
                 throw new Error(`[Workflow Error] Invalid JSON Schema provided to agent(): ${err.message}`);
             }
-            finalPrompt += `\n\nOnly provide your response strictly as per this JSON schema:\n${JSON.stringify(opts.schema, null, 2)}`;
         }
 
-        const activityMeta = {
-            id: Math.random().toString(36).substring(2, 9),
-            type: 'agent',
-            phase: effectivePhase,
-            label: opts.label || prompt.split('\n')[0].substring(0, 50) + (prompt.length > 50 ? '...' : ''),
-            member: opts.member_name || opts.member_id,
-            model: opts.model || 'default',
-            startTime: Date.now()
-        };
-        this.emit('activity:start', activityMeta);
+        const initialPrompt = opts.schema
+            ? `${prompt}\n\nOnly provide your response strictly as per this JSON schema:\n${JSON.stringify(opts.schema, null, 2)}`
+            : prompt;
 
-        const payload = {
-            prompt: finalPrompt,
-            model: opts.model,
-            member_name: opts.member_name,
-            member_id: opts.member_id,
-            substitutions: opts.substitutions,
-            timeout_s: opts.timeout_s,
-            max_turns: opts.max_turns,
-            effort: opts.effort,
-            agent: opts.agentType,
-            // F10: default to a self-contained (non-resumed) session for
-            // workflow-authored prompts. See AgentOptions.resume above and
-            // apra-fleet-unw.3.
-            resume: opts.resume ?? false,
-            // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
-            timeoutMs: opts.timeoutMs,
-            signal: opts.signal
-        };
+        // Bounded schema-repair loop (apra-fleet-unw.8, F5). Non-schema
+        // calls always run exactly one iteration (maxRepairs = 0). For
+        // schema calls, a parse/validation failure re-dispatches to the SAME
+        // member with a self-contained repair prompt (see buildRepairPrompt
+        // above) instead of hard-throwing on the first bad reply -- one
+        // malformed JSON reply used to kill a whole multi-cycle sprint.
+        //
+        // DESCOPED: the more robust fix is enforcing the schema at the
+        // member/harness tool-call layer (e.g. a Claude-CLI-style structured
+        // tool call) so the member literally cannot emit non-conforming
+        // output. That requires fleet-server changes and is out of scope
+        // here; this client-side repair loop is the best available
+        // mitigation until that lands.
+        const maxRepairs = opts.schema ? (opts.schemaRetries ?? 2) : 0;
 
-        try {
-            const result = await this.fleetApi.executePrompt(payload);
+        let currentPrompt = initialPrompt;
+        let lastActivityMeta = null;
 
-            // apra-fleet-unw.4: never fabricate usage. If the fleet result
-            // didn't report real token usage, both usage and cost are
-            // explicitly null -- the viewer renders "n/a" and excludes the
-            // activity from cost totals rather than showing fiction.
-            const hasRealUsage = !!(result.usage && typeof result.usage.total_tokens === 'number');
-            if (!hasRealUsage) {
-                result.usage = null;
+        for (let attempt = 0; attempt <= maxRepairs; attempt++) {
+            if (this.budget.total !== null && this.budget.remaining() <= 0) {
+                throw new BudgetExceededError(
+                    `[Workflow Error] Budget exceeded: spent $${this.budget._spent.toFixed(4)} of $${this.budget.total.toFixed(4)} total. Aborting agent() dispatch.`,
+                    { details: { spent: this.budget._spent, total: this.budget.total, member: opts.member_name || opts.member_id } }
+                );
             }
 
-            const cost = hasRealUsage ? calculateCost(opts.model, result.usage) : null;
-            if (cost !== null) {
-                this.budget._spent += cost;
-            }
-            const duration = Date.now() - activityMeta.startTime;
+            const isRepair = attempt > 0;
+            const activityMeta = {
+                id: Math.random().toString(36).substring(2, 9),
+                type: 'agent',
+                phase: effectivePhase,
+                label: (opts.label || prompt.split('\n')[0].substring(0, 50) + (prompt.length > 50 ? '...' : ''))
+                    + (isRepair ? ` [schema repair ${attempt}/${maxRepairs}]` : ''),
+                member: opts.member_name || opts.member_id,
+                model: opts.model || 'default',
+                repairAttempt: attempt,
+                startTime: Date.now()
+            };
+            lastActivityMeta = activityMeta;
+            this.emit('activity:start', activityMeta);
 
-            if (result && result.content && result.content.length > 0) {
-                const text = result.content[0].text;
+            const payload = {
+                prompt: currentPrompt,
+                model: opts.model,
+                member_name: opts.member_name,
+                member_id: opts.member_id,
+                substitutions: opts.substitutions,
+                timeout_s: opts.timeout_s,
+                max_turns: opts.max_turns,
+                effort: opts.effort,
+                agent: opts.agentType,
+                // F10: default to a self-contained (non-resumed) session for
+                // workflow-authored prompts, including every repair re-ask --
+                // buildRepairPrompt() embeds the original prompt + invalid
+                // output + errors directly, so it never depends on
+                // resume:true to carry context forward. See AgentOptions
+                // .resume above and apra-fleet-unw.3.
+                resume: opts.resume ?? false,
+                // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
+                timeoutMs: opts.timeoutMs,
+                signal: opts.signal
+            };
 
-                // STOPGAP: the apra-fleet MCP server currently reports a
-                // missing member as a normal-looking success payload whose
-                // text happens to match this pattern, instead of a
-                // structured error (see docs/structured-errors-proposal.md).
-                // Until the server ships Option 1 (JSON-RPC error) or
-                // Option 2 (isError payload), this string-sniff is the only
-                // classifier available; keep it, but always surface it as a
-                // typed error rather than a silent `null` return.
-                if (text.startsWith('Member "') && text.includes('" not found.')) {
-                    console.error(`[Agent API Error]`, text);
-                    this.emit('activity:end', { ...activityMeta, error: text, duration: Date.now() - activityMeta.startTime, success: false });
-                    throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
+            try {
+                const result = await this.fleetApi.executePrompt(payload);
+
+                // apra-fleet-unw.4: never fabricate usage. If the fleet result
+                // didn't report real token usage, both usage and cost are
+                // explicitly null -- the viewer renders "n/a" and excludes the
+                // activity from cost totals rather than showing fiction. This
+                // applies per-attempt: every repair dispatch is accounted
+                // individually, exactly like the original attempt.
+                const hasRealUsage = !!(result.usage && typeof result.usage.total_tokens === 'number');
+                if (!hasRealUsage) {
+                    result.usage = null;
                 }
 
-                if (opts.schema) {
-                    let parsedJson;
-                    try {
-                        const jsonMatch = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-                        if (jsonMatch) {
-                            parsedJson = JSON.parse(jsonMatch[0]);
-                        } else {
-                            parsedJson = JSON.parse(text);
-                        }
-                    } catch (e) {
-                        const err = new AgentOutputError(`[Workflow Error] LLM failed to return parseable JSON for structured output.`, { details: { text }, cause: e });
-                        this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost });
-                        throw err;
-                    }
-
-                    const isValid = compiledSchema(parsedJson);
-                    if (!isValid) {
-                        const errors = ajv.errorsText(compiledSchema.errors);
-                        const err = new AgentOutputError(`[Workflow Error] LLM returned non-compliant JSON. Validation failed: ${errors}`, { details: { text, validationErrors: compiledSchema.errors } });
-                        this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost });
-                        throw err;
-                    }
-
-                    this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: JSON.stringify(parsedJson, null, 2) });
-                    return parsedJson;
+                const cost = hasRealUsage ? calculateCost(opts.model, result.usage) : null;
+                if (cost !== null) {
+                    this.budget._spent += cost;
                 }
-                this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: text });
-                return text;
+                const duration = Date.now() - activityMeta.startTime;
+
+                if (result && result.content && result.content.length > 0) {
+                    const text = result.content[0].text;
+
+                    // STOPGAP: the apra-fleet MCP server currently reports a
+                    // missing member as a normal-looking success payload whose
+                    // text happens to match this pattern, instead of a
+                    // structured error (see docs/structured-errors-proposal.md).
+                    // Until the server ships Option 1 (JSON-RPC error) or
+                    // Option 2 (isError payload), this string-sniff is the only
+                    // classifier available; keep it, but always surface it as a
+                    // typed error rather than a silent `null` return. A missing
+                    // member is not a schema problem, so it is never retried
+                    // through the repair loop.
+                    if (text.startsWith('Member "') && text.includes('" not found.')) {
+                        console.error(`[Agent API Error]`, text);
+                        this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
+                        throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
+                    }
+
+                    if (!opts.schema) {
+                        this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: text });
+                        return text;
+                    }
+
+                    const extraction = extractStructuredOutput(text, compiledSchema);
+                    if (extraction.ok) {
+                        this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: JSON.stringify(extraction.parsed, null, 2) });
+                        return extraction.parsed;
+                    }
+
+                    const errorsText = summarizeExtractionAttempts(extraction.attempts);
+
+                    if (attempt < maxRepairs) {
+                        // Bounded repair: re-dispatch to the SAME member with
+                        // a fresh, self-contained prompt (original prompt +
+                        // invalid output + ajv errors). This attempt is still
+                        // recorded as its own activity:end (success: false)
+                        // so the journal/dashboard show it as a distinct step
+                        // before the repair attempt that follows.
+                        this.emit('activity:end', { ...activityMeta, error: `Schema-invalid output, retrying (repair ${attempt + 1}/${maxRepairs}): ${errorsText}`, output: text, duration, usage: result.usage, cost, success: false });
+                        currentPrompt = buildRepairPrompt(initialPrompt, text, errorsText);
+                        continue;
+                    }
+
+                    // Repairs exhausted -- surface a typed AgentOutputError.
+                    // Classify the message the same way the old single-shot
+                    // code did (parseable-JSON vs schema-compliance failure)
+                    // based on the final attempt, so existing callers keyed
+                    // off either phrase keep working.
+                    const allUnparseable = extraction.attempts.length === 0 || extraction.attempts.every((a) => a.parseError);
+                    const attemptCount = attempt + 1;
+                    const message = allUnparseable
+                        ? `[Workflow Error] LLM failed to return parseable JSON for structured output after ${attemptCount} attempt(s) (${maxRepairs} repair(s) exhausted).`
+                        : `[Workflow Error] LLM returned non-compliant JSON. Validation failed after ${attemptCount} attempt(s) (${maxRepairs} repair(s) exhausted): ${errorsText}`;
+                    const validationErrors = extraction.attempts
+                        .filter((a) => a.validationErrors)
+                        .flatMap((a) => a.validationErrors);
+                    // Preserve the underlying JSON.parse error on `.cause`
+                    // when the final attempt was unparseable, matching the
+                    // original single-shot contract that callers can inspect
+                    // `.cause` for the raw parse failure.
+                    const lastParseError = [...extraction.attempts].reverse().find((a) => a.parseError)?.parseError;
+
+                    const err = new AgentOutputError(message, {
+                        details: {
+                            text,
+                            attempts: attemptCount,
+                            repairs: maxRepairs,
+                            errorsText,
+                            validationErrors: validationErrors.length > 0 ? validationErrors : undefined
+                        },
+                        cause: lastParseError
+                    });
+                    this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost, success: false });
+                    throw err;
+                }
+
+                this.emit('activity:end', { ...activityMeta, duration, success: false });
+                throw new AgentOutputError(`[Workflow Error] agent() received an empty content response from the fleet API.`, { details: { result } });
+            } catch (error) {
+                console.error(`[Agent API Error]`, error.message || error);
+                if (error instanceof WorkflowError) {
+                    // activity:end for typed errors was already emitted at
+                    // the throw site above (with the richer, attempt-scoped
+                    // metadata); don't double-emit here.
+                    throw error;
+                }
+                const duration = Date.now() - activityMeta.startTime;
+                this.emit('activity:end', { ...activityMeta, error: error.message || error, duration, success: false });
+                throw new FleetTransportError(`[Workflow Error] Transport failure while executing agent prompt: ${error.message || error}`, { details: { payload }, cause: error });
             }
-            this.emit('activity:end', { ...activityMeta, duration, success: false });
-            throw new AgentOutputError(`[Workflow Error] agent() received an empty content response from the fleet API.`, { details: { result } });
-        } catch (error) {
-            console.error(`[Agent API Error]`, error.message || error);
-            this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
-            if (error instanceof WorkflowError) {
-                throw error;
-            }
-            throw new FleetTransportError(`[Workflow Error] Transport failure while executing agent prompt: ${error.message || error}`, { details: { payload }, cause: error });
         }
+
+        // Unreachable: the loop above always returns or throws. Kept as a
+        // defensive guard in case maxRepairs computation is ever negative.
+        throw new AgentOutputError(`[Workflow Error] agent() exhausted its dispatch loop without a result.`, { details: { activity: lastActivityMeta } });
     }
 
     /**
