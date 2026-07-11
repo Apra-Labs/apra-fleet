@@ -7,10 +7,11 @@
     "auto-sprint": "./bin/cli.mjs"
   },
   "scripts": {
-    "test": "node test/advanced-mock-runner-test.mjs"
+    "test": "node test/advanced-mock-runner-test.mjs && node --test test/*.test.mjs"
   },
   "dependencies": {
     "@apralabs/apra-fleet-workflow": "*",
-    "@apralabs/apra-fleet-client": "*"
+    "@apralabs/apra-fleet-client": "*",
+    "ajv": "^8.12.0"
   }
 }
