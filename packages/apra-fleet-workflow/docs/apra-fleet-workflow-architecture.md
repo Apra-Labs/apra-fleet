@@ -9,8 +9,9 @@ The engine is built around a functional Sequential approach. Instead of hardcodi
 **Available Workflow Globals:**
 - `agent(prompt, opts)`: Directly dispatches a task to a fleet member's LLM via `executePrompt`.
 - `command(cmd, opts)`: Dispatches a pure shell command via `executeCommand`.
-- `sequential(items, ...stages)`: Processes an array of items sequentially through distinct functional stages.
-- `parallel(thunks)`: Acts as a synchronization barrier, running tasks concurrently across members.
+- `sequential(items, processor, opts)`: Applies a single `processor(item, index, items)` function to each item in order. Passing more than one processor function (the old variadic `sequential(items, ...stages)` form) throws a `TypeError` rather than silently dropping the extra stages.
+- `pipeline(items, ...stages)`: The multi-stage primitive. Each stage function is applied in order to every item; a stage receives the previous stage's result for that item (the first stage receives the raw item) and returns the input for the next stage.
+- `parallel(items, processor, opts)`: Acts as a synchronization barrier, running the processor for every item concurrently across members.
 - `transform(fn)`: A string-to-string mapping idiom to cleanly format outputs between Sequential stages.
 - `phase(title)` and `log(message)`: Structured telemetry and UX tracking.
 
@@ -18,9 +19,10 @@ The engine is built around a functional Sequential approach. Instead of hardcodi
 
 Workflows operating in a multi-node, AI-driven environment must assume that network requests drop, LLMs hallucinate, and commands crash. The engine ensures reliability through the following guarantees:
 
-1. **Parallel Fallbacks:** Any thunk inside a `parallel()` block that throws an exception (due to network failure, API crash, etc.) is gracefully caught. The engine returns `null` for that specific index in the barrier array, rather than crashing the orchestrator and abandoning the other successful concurrent tasks.
-2. **Sequential Sequentials:** If a specific stage inside a `sequential()` fails for an item, the engine catches the error, aborts further processing for *that specific item*, and logs it. Surviving items continue their journey through the Sequential.
-3. **Structured Output (Schema Validation):**
+1. **Fail-fast by default, opt-in resilience:** Both `sequential()`/`pipeline()` and `parallel()` are **fail-fast by default**. The first item (or stage) that throws aborts the whole call and rethrows that error -- the engine does not silently continue or substitute `null` unless you explicitly opt in.
+2. **`continueOnError: true`:** Pass `{ continueOnError: true }` as the `opts` argument to `sequential()`, `pipeline()`, or `parallel()` to change this: a failing item is logged and recorded as `null` in the results array, and the engine continues with the remaining items instead of aborting.
+3. **Partial results on failure:** When the default fail-fast path rethrows (i.e. `continueOnError` was not set), the results collected for items processed *before* the failure are attached to the thrown error as `err.partialResults`, so callers can recover whatever progress was made before deciding how to handle the failure.
+4. **Structured Output (Schema Validation):**
    - **Pre-Condition**: When `opts.schema` is provided to an `agent()`, the engine first compiles the JSON Schema using `ajv` (JSON Schema draft-07 standard). If the user provided a malformed schema, the engine halts immediately rather than wasting LLM compute.
    - **Post-Condition**: When the LLM responds, the engine attempts to scrape and parse the JSON. It then strictly validates the parsed object against the compiled `ajv` schema. A non-compliant response is treated as a fatal stage error, preventing downstream systems from processing malformed data.
 

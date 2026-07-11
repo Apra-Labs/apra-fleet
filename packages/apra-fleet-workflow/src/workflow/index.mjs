@@ -282,8 +282,33 @@ export class FleetWorkflow extends EventEmitter {
 
     /**
      * Executes the given async processor function for each item sequentially.
+     *
+     * `sequential(items, processor, opts)` is the single-processor primitive:
+     * exactly one `processor(item, index, items)` function is applied to every
+     * item, in order. It does NOT accept a variadic list of per-stage
+     * processors -- that old `sequential(items, ...stages)` form silently
+     * dropped every stage after the first (F7). Extra positional arguments
+     * now throw a TypeError instead of being swallowed. For a genuine
+     * multi-stage pipeline where each stage's output feeds the next, use
+     * `pipeline(items, ...stages)`.
      */
-    async sequential(items, processor, opts = {}) {
+    async sequential(items, processor, opts = {}, ...rest) {
+        if (rest.length > 0) {
+            throw new TypeError(
+                `sequential(items, processor, opts) accepts at most 3 arguments, got ${3 + rest.length}. ` +
+                `sequential() no longer accepts a variadic list of per-stage processors -- use pipeline(items, ...stages) for multi-stage flows.`
+            );
+        }
+        if (typeof processor !== 'function') {
+            throw new TypeError(
+                `sequential(items, processor, opts): the 2nd argument must be a single processor function, got ${processor === null ? 'null' : typeof processor}. ` +
+                `The old sequential(items, ...stages) multi-stage form is no longer supported -- use pipeline(items, ...stages) instead.`
+            );
+        }
+        if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
+            throw new TypeError(`sequential(items, processor, opts): the 3rd argument must be a plain options object, got ${opts === null ? 'null' : typeof opts}.`);
+        }
+
         const results = [];
         for (let i = 0; i < items.length; i++) {
             try {
@@ -291,10 +316,66 @@ export class FleetWorkflow extends EventEmitter {
                 results.push(res);
             } catch (err) {
                 this.log(`[Sequential Error] item ${i} failed at a stage: ${err.message}`);
-                results.push(null);
                 if (!opts.continueOnError) {
+                    // Fail-fast: rethrow without discarding results already
+                    // collected for prior items. Attach them to the error so
+                    // callers can recover partial progress.
+                    err.partialResults = results.slice();
                     throw err;
                 }
+                results.push(null);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Executes a chain of stage functions for each item, sequentially, where
+     * each stage receives the previous stage's result for that item (the
+     * first stage receives the raw item). This is the documented multi-stage
+     * form that `sequential(items, ...stages)` used to provide before it was
+     * narrowed to a single-processor primitive (see `sequential()` above).
+     *
+     * Failure semantics mirror `sequential()`: by default a stage error
+     * aborts the whole pipeline run and rethrows with `err.partialResults`
+     * populated; pass `{ continueOnError: true }` as a trailing plain-object
+     * argument to instead record `null` for the failed item and continue
+     * with the rest.
+     */
+    async pipeline(items, ...stagesAndOpts) {
+        let opts = {};
+        let stages = stagesAndOpts;
+        if (stagesAndOpts.length > 0 && typeof stagesAndOpts[stagesAndOpts.length - 1] !== 'function') {
+            opts = stagesAndOpts[stagesAndOpts.length - 1];
+            stages = stagesAndOpts.slice(0, -1);
+            if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
+                throw new TypeError(`pipeline(items, ...stages, [opts]): the trailing non-function argument must be a plain options object, got ${opts === null ? 'null' : typeof opts}.`);
+            }
+        }
+        if (stages.length === 0) {
+            throw new TypeError('pipeline(items, ...stages): at least one stage function is required.');
+        }
+        stages.forEach((stage, idx) => {
+            if (typeof stage !== 'function') {
+                throw new TypeError(`pipeline(items, ...stages): stage ${idx + 1} must be a function, got ${stage === null ? 'null' : typeof stage}.`);
+            }
+        });
+
+        const results = [];
+        for (let i = 0; i < items.length; i++) {
+            try {
+                let value = items[i];
+                for (const stage of stages) {
+                    value = await stage(value, i, items);
+                }
+                results.push(value);
+            } catch (err) {
+                this.log(`[Pipeline Error] item ${i} failed at a stage: ${err.message}`);
+                if (!opts.continueOnError) {
+                    err.partialResults = results.slice();
+                    throw err;
+                }
+                results.push(null);
             }
         }
         return results;
@@ -366,6 +447,7 @@ export class FleetWorkflow extends EventEmitter {
             agent: this.agent.bind(this),
             command: this.command.bind(this),
             sequential: this.sequential.bind(this),
+            pipeline: this.pipeline.bind(this),
             parallel: this.parallel.bind(this),
             transform: this.transform.bind(this),
             nullTransform: () => null,

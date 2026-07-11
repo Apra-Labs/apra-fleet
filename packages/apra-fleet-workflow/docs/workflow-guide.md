@@ -65,7 +65,7 @@ The \`transform(label, func, context)\` primitive securely executes Javascript m
 
 ### Features
 * **Telemetry**: Errors, execution durations, stringified Inputs, and stringified Outputs are logged exactly like \`agent()\` actions.
-* **Failures**: Errors thrown by \`transform()\` will safely fail the node, but will not crash the workflow engine itself.
+* **Failures**: Errors thrown by \`transform()\` are logged to telemetry and then rethrown -- they DO propagate and will crash/reject the enclosing workflow run unless the call site catches them. Inside a \`sequential()\`/\`pipeline()\`/\`parallel()\` item processor, a \`transform()\` failure is handled the same way any other error from that processor is: it aborts the whole call by default, or is recorded as \`null\` for that item when \`{ continueOnError: true }\` is passed (see "Error Handling" below).
 
 ### Example
 \`\`\`javascript
@@ -89,15 +89,55 @@ await command(cmdString, { ... });
 
 ## Error Handling (\`continueOnError\`)
 
-By default, any error thrown within a \`sequential()\` or \`parallel()\` block halts execution of the sequence.
-If you need partial success, pass \`{ continueOnError: true }\`:
+By default, any error thrown within a \`sequential()\`, \`pipeline()\`, or \`parallel()\` block is **fail-fast**: the
+first failing item aborts the call and the error is rethrown to the caller (this is the default -- no opt-in flag
+is required to get fail-fast behavior). When \`sequential()\`/\`pipeline()\` rethrow this way, the results collected
+for items processed *before* the failure are attached to the error as \`err.partialResults\`:
+
+\`\`\`javascript
+try {
+    await sequential(items, async (item) => {
+        await transform('Risky map', riskyFunc, item);
+    });
+} catch (err) {
+    console.log('Completed before failure:', err.partialResults);
+    throw err;
+}
+\`\`\`
+
+If you need partial success instead -- log-and-continue rather than abort -- pass \`{ continueOnError: true }\`:
 
 \`\`\`javascript
 await sequential(items, async (item) => {
-    // If one item fails, the Sequential logs the error but continues with the rest
+    // If one item fails, the Sequential logs the error, records `null` for
+    // that item, and continues with the rest
     await transform('Risky map', riskyFunc, item);
 }, { continueOnError: true });
 \`\`\`
+
+## Multi-Stage Flows (\`pipeline()\`)
+
+\`sequential(items, processor, opts)\` only accepts a single processor function -- passing more than one (the old
+\`sequential(items, ...stages)\` form) throws a \`TypeError\`. For a genuine multi-stage flow where each stage's
+output feeds the next stage's input, use \`pipeline(items, ...stages)\`:
+
+\`\`\`javascript
+const results = await pipeline(
+    issues,
+    async (issueId) => {
+        const plan = await agent(\`Plan for \${issueId}\`, { member_name: 'apra-pm' });
+        return { issueId, plan };
+    },
+    async (context) => {
+        const devResult = await agent(\`Develop \${context.issueId}\`, { member_name: 'apra-pm' });
+        return { ...context, devResult };
+    }
+);
+\`\`\`
+
+Each stage is applied in order to every item; the first stage receives the raw item, and each subsequent stage
+receives the previous stage's return value for that item. \`pipeline()\` follows the same fail-fast /
+\`continueOnError\` / \`err.partialResults\` semantics as \`sequential()\`.
 
 ## Typed Errors from \`agent()\` / \`command()\`
 
