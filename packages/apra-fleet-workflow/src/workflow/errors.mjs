@@ -83,3 +83,17 @@ export class FleetTransportError extends WorkflowError {
         super(message, { code: 'TRANSPORT_ERROR', ...opts });
     }
 }
+
+/**
+ * Thrown by agent()/command() before dispatch when the workflow's `budget`
+ * has been configured with a `total` and the already-spent amount has
+ * reached or exceeded it (`budget.remaining() <= 0`). Cost is only known
+ * (and therefore only ever debited) for activities where the fleet result
+ * reported real token usage -- see the usage/cost handling in
+ * src/workflow/index.mjs and apra-fleet-unw.4.
+ */
+export class BudgetExceededError extends WorkflowError {
+    constructor(message, opts = {}) {
+        super(message, { code: 'BUDGET_EXCEEDED', ...opts });
+    }
+}

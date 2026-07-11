@@ -2,9 +2,9 @@ import Ajv from 'ajv';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { calculateCost } from './pricing.mjs';
-import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError } from './errors.mjs';
+import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError } from './errors.mjs';
 
-export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError } from './errors.mjs';
+export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError } from './errors.mjs';
 
 const ajv = new Ajv({ strict: false });
 
@@ -109,6 +109,13 @@ export class FleetWorkflow extends EventEmitter {
             throw new Error(`[Workflow Error] agent() requires either member_name or member_id`);
         }
 
+        if (this.budget.total !== null && this.budget.remaining() <= 0) {
+            throw new BudgetExceededError(
+                `[Workflow Error] Budget exceeded: spent $${this.budget._spent.toFixed(4)} of $${this.budget.total.toFixed(4)} total. Aborting agent() dispatch.`,
+                { details: { spent: this.budget._spent, total: this.budget.total, member: opts.member_name || opts.member_id } }
+            );
+        }
+
         const effectivePhase = opts.phase || this.currentPhase;
         if (effectivePhase) {
             console.log(`[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
@@ -158,13 +165,19 @@ export class FleetWorkflow extends EventEmitter {
         try {
             const result = await this.fleetApi.executePrompt(payload);
 
-            if (!result.usage || typeof result.usage.total_tokens !== 'number') {
-                const dummyP = Math.floor(Math.random() * 500) + 100;
-                const dummyC = Math.floor(Math.random() * 200) + 50;
-                result.usage = { prompt_tokens: dummyP, completion_tokens: dummyC, total_tokens: dummyP + dummyC };
+            // apra-fleet-unw.4: never fabricate usage. If the fleet result
+            // didn't report real token usage, both usage and cost are
+            // explicitly null -- the viewer renders "n/a" and excludes the
+            // activity from cost totals rather than showing fiction.
+            const hasRealUsage = !!(result.usage && typeof result.usage.total_tokens === 'number');
+            if (!hasRealUsage) {
+                result.usage = null;
             }
 
-            const cost = calculateCost(opts.model || 'default', result.usage);
+            const cost = hasRealUsage ? calculateCost(opts.model, result.usage) : null;
+            if (cost !== null) {
+                this.budget._spent += cost;
+            }
             const duration = Date.now() - activityMeta.startTime;
 
             if (result && result.content && result.content.length > 0) {
