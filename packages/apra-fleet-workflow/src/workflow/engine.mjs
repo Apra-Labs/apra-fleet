@@ -65,8 +65,6 @@ export class WorkflowEngine {
             }
         }
 
-        this.wf.args = args; // update args for this run
-
         const moduleUrl = pathToFileURL(fullPath).href;
         const mod = await import(moduleUrl);
 
@@ -75,10 +73,16 @@ export class WorkflowEngine {
             throw new Error(`[WorkflowEngine] ${fullPath} does not export a main(context)/run(context)/default(context) function. Workflow scripts must export one of these as their entry point.`);
         }
 
-        const ctx = this.wf.createContext();
-
+        // (apra-fleet-unw.9, F11) Each executeFile() call gets its own
+        // isolated per-run context -- args, phase, group, budget -- via
+        // FleetWorkflow.runWithContext(), instead of mutating shared
+        // `this.wf.args`/`this.wf.currentPhase` instance state. This is what
+        // makes two concurrent executeFile() calls against the same
+        // FleetWorkflow instance safe: they no longer stomp on each other's
+        // args or phase attribution. See the runStorage comment in
+        // src/workflow/index.mjs for the full mechanism.
         try {
-            return await entry(ctx);
+            return await this.wf.runWithContext(args, entry);
         } catch (err) {
             console.error('[WorkflowEngine] Execution Failed:', err);
             throw err;
