@@ -7,7 +7,12 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
- * @property {boolean} [resume] - Resume the previous session if one exists (default: true)
+ * @property {boolean} [resume] - Resume the previous session if one exists. Defaults to
+ *   true at this client/transport layer when the field is omitted entirely. NOTE: the
+ *   FleetWorkflow.agent() workflow layer (packages/apra-fleet-workflow/src/workflow/index.mjs)
+ *   always sends this field explicitly, defaulting it to `false` for workflow-authored
+ *   prompts (see AgentOptions.resume there and apra-fleet-unw.3 / F10) -- so workflow
+ *   callers effectively opt out of this client-level default unless they ask for resume.
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
  * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
  */

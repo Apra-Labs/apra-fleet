@@ -98,3 +98,59 @@ await sequential(items, async (item) => {
     await transform('Risky map', riskyFunc, item);
 }, { continueOnError: true });
 \`\`\`
+
+## Typed Errors from \`agent()\` / \`command()\`
+
+\`agent()\` and \`command()\` never return \`null\`. Every failure -- a missing
+member, unparseable/schema-invalid LLM output, an \`isError\` command result,
+or a transport/JSON-RPC failure -- is raised as a typed error from
+\`src/workflow/errors.mjs\`:
+
+* \`MemberNotFoundError\` (\`code: MEMBER_NOT_FOUND\`)
+* \`AgentOutputError\` (\`code: AGENT_OUTPUT_INVALID\`) -- empty content,
+  unparseable JSON, or schema validation failures
+* \`CommandError\` (\`code: COMMAND_FAILED\`) -- \`isError: true\` results
+* \`FleetTransportError\` (\`code: TRANSPORT_ERROR\`) -- the underlying
+  \`fleetApi\` call itself rejected; the original error is preserved on
+  \`.cause\`
+
+All four extend the base \`WorkflowError\`, which carries \`.code\` and
+\`.details\`. These classes are exported from the package entry point
+(\`@apralabs/apra-fleet-workflow\`), so callers can \`instanceof\`-match them:
+
+\`\`\`javascript
+import { MemberNotFoundError } from '@apralabs/apra-fleet-workflow';
+
+try {
+    await agent('Say hello', { member_name: 'maybe-missing' });
+} catch (err) {
+    if (err instanceof MemberNotFoundError) {
+        // handle missing member specifically
+    }
+    throw err;
+}
+\`\`\`
+
+The apra-fleet MCP server currently reports some of these conditions (e.g. a
+missing member) via plain response text rather than a structured error --
+see \`docs/structured-errors-proposal.md\`. The classification above is a
+client-side stopgap; once the server ships a structured error contract, the
+same error classes will be raised from that path instead of a text sniff.
+
+### \`resume\` default (\`AgentOptions.resume\`)
+
+The underlying fleet client (\`ExecutePromptOptions.resume\` in
+\`@apralabs/apra-fleet-client\`) defaults to resuming the previous session
+(\`resume: true\`) when the field is omitted. The **workflow layer changes
+this default**: \`agent()\` always sends \`resume\` explicitly, defaulting it
+to \`false\` unless the caller sets \`AgentOptions.resume\` to \`true\`. This
+means workflow-authored prompts are self-contained by default and won't
+silently pick up state from a prior session:
+
+\`\`\`javascript
+// Resumes the member's previous session:
+await agent('Continue where we left off', { member_name: 'fleet-dev', resume: true });
+
+// Default: starts a fresh, self-contained session:
+await agent('Say hello', { member_name: 'fleet-dev' });
+\`\`\`

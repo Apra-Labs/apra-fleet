@@ -111,10 +111,12 @@ describe('WorkflowEngine executing fixture scripts against a mock fleet API', ()
         );
     });
 
-    test('missing member is handled gracefully (agent/command return null)', async () => {
+    test('missing member throws a typed MemberNotFoundError (agent/command never return null)', async () => {
         const { engine } = createEngine();
-        const result = await engine.executeFile(fixture('test-edge-missing-member.js'));
-        assert.deepStrictEqual(result, { status: 'success' });
+        await assert.rejects(
+            () => engine.executeFile(fixture('test-edge-missing-member.js')),
+            /Member ".*" not found\./
+        );
     });
 
     test('command + schema-driven agent + sequential + transform workflow', async () => {

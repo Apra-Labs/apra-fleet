@@ -2,6 +2,9 @@ import Ajv from 'ajv';
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { calculateCost } from './pricing.mjs';
+import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError } from './errors.mjs';
+
+export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError } from './errors.mjs';
 
 const ajv = new Ajv({ strict: false });
 
@@ -18,6 +21,12 @@ const ajv = new Ajv({ strict: false });
  * @property {number} [max_turns] - Max turns for conversational tools
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
+ * @property {boolean} [resume] - Resume the previous session on the member if one exists.
+ *   NOTE: the underlying ApraFleet client (packages/apra-fleet-client/src/client/api.mjs)
+ *   defaults `resume` to `true` when omitted. The WORKFLOW layer overrides that: agent()
+ *   explicitly sends `resume: false` unless the caller sets this option, so that
+ *   workflow-authored prompts are self-contained by default and don't silently inherit
+ *   state from a prior session. (F10 / apra-fleet-unw.3)
  */
 
 /**
@@ -121,12 +130,16 @@ export class FleetWorkflow extends EventEmitter {
             timeout_s: opts.timeout_s,
             max_turns: opts.max_turns,
             effort: opts.effort,
-            agent: opts.agentType
+            agent: opts.agentType,
+            // F10: default to a self-contained (non-resumed) session for
+            // workflow-authored prompts. See AgentOptions.resume above and
+            // apra-fleet-unw.3.
+            resume: opts.resume ?? false
         };
 
         try {
             const result = await this.fleetApi.executePrompt(payload);
-            
+
             if (!result.usage || typeof result.usage.total_tokens !== 'number') {
                 const dummyP = Math.floor(Math.random() * 500) + 100;
                 const dummyC = Math.floor(Math.random() * 200) + 50;
@@ -135,14 +148,22 @@ export class FleetWorkflow extends EventEmitter {
 
             const cost = calculateCost(opts.model || 'default', result.usage);
             const duration = Date.now() - activityMeta.startTime;
-            
+
             if (result && result.content && result.content.length > 0) {
                 const text = result.content[0].text;
-                
+
+                // STOPGAP: the apra-fleet MCP server currently reports a
+                // missing member as a normal-looking success payload whose
+                // text happens to match this pattern, instead of a
+                // structured error (see docs/structured-errors-proposal.md).
+                // Until the server ships Option 1 (JSON-RPC error) or
+                // Option 2 (isError payload), this string-sniff is the only
+                // classifier available; keep it, but always surface it as a
+                // typed error rather than a silent `null` return.
                 if (text.startsWith('Member "') && text.includes('" not found.')) {
                     console.error(`[Agent API Error]`, text);
                     this.emit('activity:end', { ...activityMeta, error: text, duration: Date.now() - activityMeta.startTime, success: false });
-                    return null;
+                    throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
                 }
 
                 if (opts.schema) {
@@ -155,7 +176,7 @@ export class FleetWorkflow extends EventEmitter {
                             parsedJson = JSON.parse(text);
                         }
                     } catch (e) {
-                        const err = new Error(`[Workflow Error] LLM failed to return parseable JSON for structured output.`);
+                        const err = new AgentOutputError(`[Workflow Error] LLM failed to return parseable JSON for structured output.`, { details: { text }, cause: e });
                         this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost });
                         throw err;
                     }
@@ -163,7 +184,7 @@ export class FleetWorkflow extends EventEmitter {
                     const isValid = compiledSchema(parsedJson);
                     if (!isValid) {
                         const errors = ajv.errorsText(compiledSchema.errors);
-                        const err = new Error(`[Workflow Error] LLM returned non-compliant JSON. Validation failed: ${errors}`);
+                        const err = new AgentOutputError(`[Workflow Error] LLM returned non-compliant JSON. Validation failed: ${errors}`, { details: { text, validationErrors: compiledSchema.errors } });
                         this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost });
                         throw err;
                     }
@@ -175,11 +196,14 @@ export class FleetWorkflow extends EventEmitter {
                 return text;
             }
             this.emit('activity:end', { ...activityMeta, duration, success: false });
-            return null;
+            throw new AgentOutputError(`[Workflow Error] agent() received an empty content response from the fleet API.`, { details: { result } });
         } catch (error) {
             console.error(`[Agent API Error]`, error.message || error);
             this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
-            throw error;
+            if (error instanceof WorkflowError) {
+                throw error;
+            }
+            throw new FleetTransportError(`[Workflow Error] Transport failure while executing agent prompt: ${error.message || error}`, { details: { payload }, cause: error });
         }
     }
 
@@ -228,14 +252,18 @@ export class FleetWorkflow extends EventEmitter {
             const outText = result.content && result.content.length > 0 ? result.content[0].text : '';
             const duration = Date.now() - activityMeta.startTime;
 
+            // STOPGAP: see the matching comment in agent() above and
+            // docs/structured-errors-proposal.md -- the server currently
+            // signals a missing member via plain response text rather than a
+            // structured error. Surface it as a typed error, never `null`.
             if (outText.startsWith('Member "') && outText.includes('" not found.')) {
                 console.error(`[Command API Error]`, outText);
                 this.emit('activity:end', { ...activityMeta, error: outText, duration, success: false });
-                return null;
+                throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
             }
-            
+
             if (result.isError) {
-                const err = new Error(`[Command Failed] ${outText}`);
+                const err = new CommandError(`[Command Failed] ${outText}`, { details: { text: outText, command: finalCmd } });
                 this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
                 throw err;
             }
@@ -245,7 +273,10 @@ export class FleetWorkflow extends EventEmitter {
         } catch (error) {
             console.error(`[Command API Error]`, error.message || error);
             this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
-            throw error;
+            if (error instanceof WorkflowError) {
+                throw error;
+            }
+            throw new FleetTransportError(`[Workflow Error] Transport failure while executing command: ${error.message || error}`, { details: { payload }, cause: error });
         }
     }
 
