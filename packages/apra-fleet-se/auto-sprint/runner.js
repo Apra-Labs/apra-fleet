@@ -8,12 +8,34 @@ async function main() {
     let cycle = 1;
     const MAX_CYCLES = 5;
 
-    const sprintFilter = args.target_issue ? `--parent ${args.target_issue}` : '';
+    const targetIssues = args.target_issues || (args.target_issue ? [args.target_issue] : []);
+    const sprintFilter = targetIssues.length > 0 ? `--parent ${targetIssues.join(',')}` : '';
+    
+    // Member mapping resolution
+    const physicalMembers = args.members || ['local'];
+    const getMemberForRole = (role) => {
+        if (args.roleMap && args.roleMap[role] && args.roleMap[role].length > 0) {
+            return args.roleMap[role][0];
+        }
+        return physicalMembers[0];
+    };
+    
+    const getMembersForRole = (role) => {
+        if (args.roleMap && args.roleMap[role]) {
+            return args.roleMap[role];
+        }
+        if (role === 'Doer' || role === 'Reviewer') {
+            return physicalMembers; // All members act as Doers/Reviewers by default
+        }
+        return [physicalMembers[0]];
+    };
+
+    const orchestratorMember = getMemberForRole('Orchestrator');
 
     // Helper to keep the dashboard UI updated with real bd data
     async function updateDashboard() {
         try {
-            const listRes = await command(`bd list ${sprintFilter} --json`, { member_name: 'local', silent: true });
+            const listRes = await command(`bd list ${sprintFilter} --json`, { member_name: orchestratorMember, silent: true });
             const tasks = JSON.parse(listRes || '[]');
             if (typeof publishState === 'function') {
                 publishState('beads', { tasks });
@@ -25,7 +47,7 @@ async function main() {
 
     await updateDashboard();
 
-    const initialList = await command(`bd list ${sprintFilter} --ready --json`, { member_name: 'local', silent: true });
+    const initialList = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
     const initialBeads = JSON.parse(initialList || '[]');
     if (initialBeads.length === 0) {
         throw new Error(`Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}'. Ensure beads are in 'open' or 'ready' status.`);
@@ -46,13 +68,13 @@ async function main() {
             phase(`Plan C${cycle} R${planningRounds}`);
             const plannerRes = await agent(
                 `Analyze features and build a DAG by adding beads. ${plannerFeedback ? 'Feedback from last review: ' + plannerFeedback : ''}`,
-                { member_name: 'Planner', agentType: 'Planner' }
+                { member_name: getMemberForRole('planner'), agentType: 'planner' }
             );
             log(`Planner: ${plannerRes}`);
             
             const reviewerRes = await agent(
                 'Review the plan. Reply APPROVED or CHANGES_NEEDED, and provide textual feedback.',
-                { member_name: 'Plan Reviewer', agentType: 'Plan Reviewer' }
+                { member_name: getMemberForRole('plan-reviewer'), agentType: 'plan-reviewer' }
             );
             log(`Plan Reviewer: ${reviewerRes}`);
             
@@ -67,8 +89,7 @@ async function main() {
         // =======================
         // 2. Execution Prep
         // =======================
-        // Get ready beads using real command
-        const listRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: 'local', silent: true });
+        const listRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
         const readyBeads = JSON.parse(listRes || '[]');
 
         if (readyBeads.length === 0) {
@@ -82,9 +103,12 @@ async function main() {
         let devRounds = 0;
         let doerFeedback = '';
         
+        const doerPool = getMembersForRole('doer');
+        const reviewerPool = getMembersForRole('reviewer');
+        
         while (devRounds < 3) {
-            const listRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: 'local', silent: true });
-            const currentReady = JSON.parse(listRes || '[]');
+            const currentListRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
+            const currentReady = JSON.parse(currentListRes || '[]');
             
             if (currentReady.length === 0) break;
 
@@ -93,19 +117,20 @@ async function main() {
             
             const streakRes = await agent(
                 `Group the following ready beads into logical development streaks (currently sequential): ${currentReady.map(b=>b.id).join(', ')}`,
-                { member_name: 'Streak Assignment', agentType: 'Streak Assignment' }
+                { member_name: getMemberForRole('planner'), agentType: 'planner', label: 'Streak Assignment' }
             );
             log(`Streak Assignment: ${streakRes}`);
             
             const streaks = currentReady.map(b => [b]); 
             
-            await parallel(streaks, async (streak) => {
+            await parallel(streaks, async (streak, index) => {
                 const beadIds = streak.map(b => b.id).join(', ');
+                const doerMember = doerPool[index % doerPool.length];
                 const doerRes = await agent(
                     `Close the assigned beads: ${beadIds}. ${doerFeedback ? 'Feedback to fix: ' + doerFeedback : ''}`,
-                    { member_name: 'Doer', agentType: 'Doer', label: `Streak [${beadIds}]` }
+                    { member_name: doerMember, agentType: 'doer', label: `Streak [${beadIds}]` }
                 );
-                log(`Doer [${beadIds}]: ${doerRes}`);
+                log(`Doer [${beadIds}] on [${doerMember}]: ${doerRes}`);
                 await updateDashboard();
             });
 
@@ -113,12 +138,12 @@ async function main() {
             phase(`Review C${cycle} R${devRounds}`);
             const codeReviewRes = await agent(
                 'Verify closed beads. Reopen if flawed, else approve. Return text feedback.',
-                { member_name: 'Reviewer', agentType: 'Reviewer' }
+                { member_name: reviewerPool[0], agentType: 'reviewer' }
             );
             log(`Reviewer: ${codeReviewRes}`);
             await updateDashboard();
             
-            const checkRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: 'local', silent: true });
+            const checkRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
             const stillOpen = JSON.parse(checkRes || '[]');
             
             if (stillOpen.length === 0) {
@@ -132,14 +157,14 @@ async function main() {
         // =======================
         // 4. Deploy & Integration
         // =======================
-        const deployCheck = await command('node -e "require(\'fs\').existsSync(\'deploy.md\') ? console.log(\'found\') : console.log(\'not found\')"', { member_name: 'local', silent: true });
+        const deployCheck = await command('node -e "require(\'fs\').existsSync(\'deploy.md\') ? console.log(\'found\') : console.log(\'not found\')"', { member_name: orchestratorMember, silent: true });
         const hasDeploy = !deployCheck.includes('not found');
-        const playCheck = await command('node -e "require(\'fs\').existsSync(\'integ-test-playbook.md\') ? console.log(\'found\') : console.log(\'not found\')"', { member_name: 'local', silent: true });
+        const playCheck = await command('node -e "require(\'fs\').existsSync(\'integ-test-playbook.md\') ? console.log(\'found\') : console.log(\'not found\')"', { member_name: orchestratorMember, silent: true });
         const hasPlaybook = !playCheck.includes('not found');
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
-            await agent('Deploy to test env using deploy.md.', { member_name: 'Deployer', agentType: 'Deployer' });
+            await agent('Deploy to test env using deploy.md.', { member_name: getMemberForRole('deployer'), agentType: 'deployer' });
         } else {
             log('Skipping Deploy Phase (no deploy.md found)');
         }
@@ -148,7 +173,7 @@ async function main() {
             phase(`Integ Test C${cycle}`);
             await agent(
                 'Run tests using integ-test-playbook.md. Add bug beads if needed.',
-                { member_name: 'Integration Test Runner', agentType: 'Integration Test Runner' }
+                { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner' }
             );
             await updateDashboard();
         } else {
@@ -158,7 +183,7 @@ async function main() {
         // =======================
         // 5. Cycle Evaluation
         // =======================
-        const remainingRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: 'local', silent: true });
+        const remainingRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
         const remaining = JSON.parse(remainingRes || '[]');
         
         if (remaining.length === 0) {
@@ -173,11 +198,11 @@ async function main() {
     // 6. Finalization
     // =======================
     phase(`Final Review C${cycle}`);
-    const finalRes = await agent('Pass or Fail?', { member_name: 'Final Reviewer', agentType: 'Final Reviewer' });
+    const finalRes = await agent('Pass or Fail?', { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', label: 'Final Review' });
     log(`Final Verdict: ${finalRes}`);
 
     phase(`Harvest C${cycle}`);
-    await agent('Update memories and retrospectives.', { member_name: 'Harvester', agentType: 'Harvester' });
+    await agent('Update memories and retrospectives.', { member_name: getMemberForRole('harvester'), agentType: 'harvester' });
     
     return { status: 'success' };
 }

@@ -68,7 +68,7 @@ async function run_test(tempDir, epicBead) {
             // Simulated wait to feel like an LLM
             await new Promise(r => setTimeout(r, 2000));
             
-            if (opts.agent === 'Planner') {
+            if (opts.agent === 'planner' && !opts.prompt.includes('Group')) {
                 await runCmd('bd create "Task: Add tests for API endpoints" -t task', tempDir);
                 const list = JSON.parse((await runCmd('bd list --json', tempDir)).stdout);
                 const newT = list.find(i => i.title.includes('Add tests for API endpoints'));
@@ -76,7 +76,7 @@ async function run_test(tempDir, epicBead) {
                 return { content: [{ text: 'Analyzed the Fleet Member API epic. Added a new task to ensure we have adequate e2e tests for registerMember and listMembers.' }] };
             }
             
-            if (opts.agent === 'Plan Reviewer') {
+            if (opts.agent === 'plan-reviewer') {
                 planRound++;
                 if (planRound < 2) {
                     return { content: [{ text: 'CHANGES_NEEDED: Ensure you also add a documentation task.' }] };
@@ -84,12 +84,12 @@ async function run_test(tempDir, epicBead) {
                 return { content: [{ text: 'Code looks solid. We have tasks for implementation, tests, and documentation. APPROVED.' }] };
             }
             
-            if (opts.agent === 'Streak Assignment') {
+            if (opts.agent === 'planner' && opts.prompt.includes('Group')) {
                 return { content: [{ text: 'Assigned implementation tasks into Streak 1 and test/doc tasks into Streak 2.' }] };
             }
             
-            if (opts.agent === 'Doer') {
-                const match = opts.prompt.match(/Close the assigned beads:\\s*([^.]+)/i);
+            if (opts.agent === 'doer') {
+                const match = opts.prompt.match(/Close the assigned beads:\s*([^.]+)/i);
                 if (match) {
                     const ids = match[1].split(',').map(s => s.trim());
                     for (const id of ids) {
@@ -101,7 +101,7 @@ async function run_test(tempDir, epicBead) {
                 return { content: [{ text: 'Implemented the requested fleet client methods (registerMember, listMembers) using fetch to hit the MCP JSON-RPC endpoints. I have closed the assigned beads.' }] };
             }
             
-            if (opts.agent === 'Reviewer') {
+            if (opts.agent === 'reviewer') {
                 if (Math.random() > 0.8) {
                     const closed = await runCmd(`bd list --parent ${epicBead.id} --status=closed --json`, tempDir);
                     const closedLines = JSON.parse(closed.stdout || '[]');
