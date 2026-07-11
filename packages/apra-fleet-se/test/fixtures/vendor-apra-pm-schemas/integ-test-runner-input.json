@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/integ-test-runner-input@1",
+  "version": 1,
+  "title": "integ-test-runner input",
+  "description": "Required dispatch-context keys for the integ-test-runner role, per agents/integ-test-runner.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["environmentReady"],
+  "properties": {
+    "environmentReady": {
+      "type": "boolean",
+      "description": "True once the deployer has brought the integration test environment up and it is reachable; the integ-test-runner does not bring the environment up itself."
+    }
+  }
+}

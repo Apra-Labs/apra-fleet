@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/doer-input@1",
+  "version": 1,
+  "title": "doer input",
+  "description": "Required dispatch-context keys for the doer role, per agents/doer.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["branch"],
+  "properties": {
+    "branch": {
+      "type": "string",
+      "description": "Sprint track branch to work on."
+    }
+  }
+}
