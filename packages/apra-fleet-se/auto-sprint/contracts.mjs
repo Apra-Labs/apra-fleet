@@ -215,18 +215,86 @@ export function assertVersionPin(role, schema, expectedMajor) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 2a. Missing-vendored-file observability (apra-fleet-unw2.5)
+// ---------------------------------------------------------------------------
+//
+// The TEMPORARY STATE note above documents ONE quiet fallback case: the
+// whole vendor/apra-pm/agents/schemas/ directory being absent because the
+// submodule has not been initialized/bumped yet. That is expected today and
+// must stay silent -- warning on it would just be noise on every normal
+// checkout.
+//
+// There is a SECOND, much more dangerous case this module must not stay
+// quiet about: the directory DOES exist (the submodule has been bumped) but
+// one specific role's <role>-output.json is missing from it. That means a
+// submodule bump silently dropped/never-added a schema file this module
+// expects, so `resolveOutputSchema` silently falls back to a
+// possibly-stale, hand-written literal instead of the new vendored contract
+// -- exactly the kind of drift the version-pin check (assertVersionPin)
+// cannot catch, because assertVersionPin only ever runs when a vendored
+// file WAS found. `warnIfVendorFileUnexpectedlyMissing` below is the loud
+// signal for this second case.
+//
+// Roles allow-listed here are exempt because they legitimately have no
+// output schema file, by design (not by omission):
+//   - "planner": per the layering proposal, the planner's "output" IS the
+//     beads DAG it creates, not a structured verdict object -- there is no
+//     corresponding agents/schemas/planner-output.json anywhere, ever.
+export const ROLES_WITHOUT_OUTPUT_SCHEMA = Object.freeze(new Set(['planner']));
+
+/**
+ * Emits a loud console.warn when `vendor/apra-pm/agents/schemas/` exists as
+ * a directory but a specific role's expected schema file is missing from
+ * it. No-ops (silently) for:
+ *   - roles in `ROLES_WITHOUT_OUTPUT_SCHEMA` (legitimately schema-less), and
+ *   - the case where the whole vendor schemas directory does not exist at
+ *     all (the quiet, already-documented submodule-not-bumped state).
+ *
+ * Exported so tests can call it directly (see
+ * test/contracts-schema-observability.test.mjs) without needing to drive
+ * the full resolveOutputSchema()/module-load-time path for every role.
+ * @param {string} role
+ * @param {string} fileBaseName - e.g. "doer-output" (no .json suffix)
+ */
+export function warnIfVendorFileUnexpectedlyMissing(role, fileBaseName) {
+    if (ROLES_WITHOUT_OUTPUT_SCHEMA.has(role)) return;
+
+    let dirExists = false;
+    try {
+        dirExists = fs.statSync(VENDOR_SCHEMAS_DIR).isDirectory();
+    } catch {
+        dirExists = false;
+    }
+    if (!dirExists) return; // whole-directory absence: quiet, documented fallback state
+
+    console.warn(
+        `[contracts] WARNING: vendor/apra-pm/agents/schemas/ exists (${VENDOR_SCHEMAS_DIR}) but ` +
+            `${fileBaseName}.json is missing from it. Role "${role}" is silently falling back to a ` +
+            `possibly-stale hand-written literal in contracts.mjs instead of the newly-vendored ` +
+            `contract. If this role legitimately has no output schema, add it to ` +
+            `ROLES_WITHOUT_OUTPUT_SCHEMA in contracts.mjs; otherwise this looks like a submodule bump ` +
+            `that dropped/renamed a schema file this module expects -- investigate before trusting the ` +
+            `fallback.`,
+    );
+}
+
 /**
  * Resolves the output schema for one role: prefer the vendored
  * agents/schemas/<role>-output.json (with a version-pin check), fall back to
- * the literal shipped in this module when the vendored file is absent.
+ * the literal shipped in this module when the vendored file is absent. Warns
+ * loudly (see `warnIfVendorFileUnexpectedlyMissing`) when that absence looks
+ * like a regression rather than the expected not-yet-bumped-submodule state.
  * @param {string} role
  * @param {number} expectedMajor
  * @param {object} fallback
  * @returns {object}
  */
 function resolveOutputSchema(role, expectedMajor, fallback) {
-    const vendorSchema = loadVendorSchema(`${role}-output`);
+    const fileBaseName = `${role}-output`;
+    const vendorSchema = loadVendorSchema(fileBaseName);
     if (vendorSchema === null) {
+        warnIfVendorFileUnexpectedlyMissing(role, fileBaseName);
         return fallback;
     }
     assertVersionPin(role, vendorSchema, expectedMajor);
@@ -417,6 +485,34 @@ export const deployerReport = resolveOutputSchema('deployer', OUTPUT_SCHEMA_MAJO
 export const integReport = resolveOutputSchema('integ-test-runner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_integReport);
 export const ciReport = resolveOutputSchema('ci-watcher', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_ciReport);
 export const harvesterReport = resolveOutputSchema('harvester', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_harvesterReport);
+
+// Map of verdict/export-name -> the hand-written fallback literal it
+// resolves to when the vendored file is absent (section 3). Exported
+// read-only, for tests ONLY (apra-fleet-unw2.5's vendor/fallback
+// consistency test) -- production code never consults this directly, it
+// always goes through resolveOutputSchema()'s vendored-first resolution.
+export const FALLBACK_SCHEMAS = Object.freeze({
+    planReviewerVerdict: FALLBACK_planReviewerVerdict,
+    reviewerVerdict: FALLBACK_reviewerVerdict,
+    doerReport: FALLBACK_doerReport,
+    deployerReport: FALLBACK_deployerReport,
+    integReport: FALLBACK_integReport,
+    ciReport: FALLBACK_ciReport,
+    harvesterReport: FALLBACK_harvesterReport,
+});
+
+// Map of the SCHEMAS/FALLBACK_SCHEMAS export name -> the role string whose
+// vendor/apra-pm/agents/schemas/<role>-output.json it resolves from.
+// Exported for the same test-only reason as FALLBACK_SCHEMAS above.
+export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
+    planReviewerVerdict: 'plan-reviewer',
+    reviewerVerdict: 'reviewer',
+    doerReport: 'doer',
+    deployerReport: 'deployer',
+    integReport: 'integ-test-runner',
+    ciReport: 'ci-watcher',
+    harvesterReport: 'harvester',
+});
 
 // Map of verdict name -> raw JSON schema, for callers that want the raw
 // schema object (e.g. to embed in a prompt) rather than a compiled
