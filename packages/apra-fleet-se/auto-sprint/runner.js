@@ -712,6 +712,53 @@ export function validateNewTask(newTask) {
 }
 
 // ---------------------------------------------------------------------------
+// PR body/title text sanitization (apra-fleet-hfs): the final reviewer's
+// verdict (finalVerdictResult, produced by the finalVerdict-schema agent
+// dispatch below) is LLM output, and its free-text `notes` field is embedded
+// directly in the PR title/body string that the Publish PR step interpolates
+// into a double-quoted `gh pr create --title "..." --body "..."` command()
+// string. That is the exact same injection class as N3 above (backtick and
+// `$(...)` command substitution both survive inside POSIX double quotes; a
+// trailing backslash can neutralize/escape the closing quote) -- just a
+// different call site, first flagged by unw2.9's adversarial reviewer and
+// tracked as apra-fleet-hfs.
+//
+// Unlike validateNewTask() (N3), a rejection is not an option here: the PR
+// must still be published with the sprint's verdict visible to a human
+// reviewer even when the notes are malformed -- the "fail closed" allowlist
+// used for newTasks would mean an adversarial/malformed verdict silently
+// drops the ONE thing (verdict notes) a human reviewer most needs to see. So
+// this SANITIZES instead of rejecting: every character outside the
+// SAFE_TEXT_RE allowlist above (same allowlist, same "strip over escape"
+// reasoning -- sprint members run mixed shells and no single escaping scheme
+// is reliably safe across all of them) is replaced with a space, so the
+// notes remain readable in the PR body rather than being dropped outright,
+// while nothing that can break out of the double-quoted command string ever
+// reaches `command()`.
+/**
+ * Sanitizes LLM-authored free text (e.g. finalVerdictResult.notes) before it
+ * is interpolated into a double-quoted `gh pr create`/`git` command() string.
+ * Strips (does not escape) every character outside SAFE_TEXT_RE, collapses
+ * the resulting whitespace, and returns the still-readable remainder -- see
+ * the comment above for why stripping is preferred over escaping here.
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function sanitizePrText(text) {
+    const str = String(text ?? '');
+    let out = '';
+    for (const ch of str) {
+        // Newlines/tabs collapse to a plain space along with every other
+        // disallowed character -- SAFE_TEXT_RE intentionally has no
+        // multi-line allowance, since a literal newline embedded in a
+        // double-quoted command-string argument is not reliably safe across
+        // the mixed POSIX/Windows shells sprint members run (see N3 above).
+        out += SAFE_TEXT_RE.test(ch) ? ch : ' ';
+    }
+    return out.replace(/\s+/g, ' ').trim();
+}
+
+// ---------------------------------------------------------------------------
 // Finalization prompt builders (apra-fleet-unw.17, A6)
 // ---------------------------------------------------------------------------
 
@@ -1980,11 +2027,19 @@ export async function main(context) {
     // stated plainly so the reviewer can weigh it before merging.
     const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
     const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
+    // apra-fleet-hfs: finalVerdictResult.notes is LLM-authored free text --
+    // sanitize with sanitizePrText() (see comment above its definition)
+    // BEFORE it is ever interpolated into the double-quoted `gh pr create`
+    // command() string below. validated.goal/validated.branch need no
+    // sanitization here: both are already validated against
+    // shell-injection-safe patterns (GOAL_PATTERN/BRANCH_NAME_PATTERN) at
+    // arg-validation time, well before this point.
+    const safeNotes = sanitizePrText(finalVerdictResult.notes);
     const prBody = [
         `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
         '',
         `Final Verdict: ${finalVerdictLabel}`,
-        finalVerdictResult.notes ? `Notes: ${finalVerdictResult.notes}` : null,
+        safeNotes ? `Notes: ${safeNotes}` : null,
         '',
         'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
     ].filter((line) => line !== null).join('\n');
