@@ -6,7 +6,7 @@ import os from 'os';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { SprintPlanRejectedError, StalledSprintError } from '../auto-sprint/errors.mjs';
-import { parseBdJson } from '../auto-sprint/runner.js';
+import { parseBdJson, checkMemberTopology } from '../auto-sprint/runner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -148,6 +148,25 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
         // deterministically, without depending on real filesystem/process
         // flakiness.
         commandFailurePattern = null,
+        // apra-fleet-unw2.4 (N4): per-member modeling. `commandLogDetailed`,
+        // when provided, receives one `{ command, member }` entry per
+        // executeCommand() call so a test can assert WHICH member each
+        // git/gh/bd command was dispatched to (not just that it happened) --
+        // the existing string-only `commandLog` is kept untouched for
+        // backward compatibility. `memberGitState`, when provided, is a
+        // Map<member, { ensuredBranches:Set, checkedOut:string|null }> that
+        // simulates each member's git checkout independently: a
+        // `git checkout -B <b>` (initial ensure) adds <b> to that member's
+        // ensuredBranches and makes it current; a plain `git checkout <b>`
+        // (the non-destructive re-ensure) only updates `checkedOut`. This
+        // lets the 2-member regression test verify the branch-ensure reached
+        // BOTH members' checkouts, which is exactly the state the pre-fix
+        // (orchestrator-only ensure) failed to establish. The bd DB itself
+        // still defaults to a single shared tempDir for every member (the
+        // supported shared-workspace mode), so all existing single-workspace
+        // tests are unaffected.
+        commandLogDetailed = null,
+        memberGitState = null,
     } = options;
 
     let planRound = 0;
@@ -212,6 +231,25 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
     return {
         executeCommand: async (opts) => {
             commandLog.push(opts.command);
+
+            // apra-fleet-unw2.4 (N4): per-member command log + simulated
+            // per-member git checkout state (see the option comments above).
+            if (commandLogDetailed) {
+                commandLogDetailed.push({ command: opts.command, member: opts.member_name });
+            }
+            if (memberGitState) {
+                const m = opts.member_name || '(none)';
+                if (!memberGitState.has(m)) memberGitState.set(m, { ensuredBranches: new Set(), checkedOut: null });
+                const st = memberGitState.get(m);
+                const ensureMatch = opts.command.match(/git checkout -B (\S+)/);
+                if (ensureMatch) {
+                    st.ensuredBranches.add(ensureMatch[1]);
+                    st.checkedOut = ensureMatch[1];
+                } else {
+                    const coMatch = opts.command.match(/^git checkout (\S+)\s*$/);
+                    if (coMatch) st.checkedOut = coMatch[1];
+                }
+            }
 
             // git/gh commands (apra-fleet-unw.14's branch-ensure/push/PR
             // steps) are intercepted rather than run for real: tempDir is a
@@ -614,6 +652,8 @@ async function runDevelopLoopScenario(tag, {
     }
     const dispatched = [];
     const commandLog = [];
+    const commandLogDetailed = [];
+    const memberGitState = new Map();
     const logs = [];
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
@@ -625,6 +665,8 @@ async function runDevelopLoopScenario(tag, {
             integHandler,
             finalReviewHandler,
             commandFailurePattern,
+            commandLogDetailed,
+            memberGitState,
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
@@ -649,7 +691,7 @@ async function runDevelopLoopScenario(tag, {
         const finalBeadsRaw = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
         const finalBeadsById = new Map(finalBeadsRaw.map((b) => [b.id, b]));
 
-        return { dispatched, commandLog, logs, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById };
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById };
     } finally {
         await teardown(tempDir);
     }
@@ -865,6 +907,65 @@ async function main() {
     for (const t of multiDoer.tasks) {
         const bead = multiDoer.finalBeadsById.get(t.id);
         check(!!bead && bead.status === 'closed', `Multi-doer scenario: expected bead '${t.id}' (${t.title}) to be closed, got: ${JSON.stringify(bead)}`);
+    }
+
+    // =========================================================================
+    // apra-fleet-unw2.4 (N4): branch-ensure must be dispatched to EVERY member
+    // in the union of the orchestrator/doer/reviewer pools, not just the
+    // orchestrator member. With 2 distinct members configured, the sprint-
+    // branch ensure (`git checkout -B <branch> origin/<base>`) must land on
+    // BOTH members' checkouts before the first doer round.
+    //
+    // This is the regression tripwire for N4: against the PRE-FIX runner
+    // (which dispatched the ensure to `orchestratorMember` only) the second
+    // member's checkout is never ensured, so both the per-member command-log
+    // assertion and the per-member git-state assertion below FAIL; against the
+    // fixed runner (ensure over the union of the pools) both PASS.
+    // =========================================================================
+    console.log('Running mock sprint scenario (2-member branch-ensure everywhere)...');
+    const twoMemberEnsure = await runDevelopLoopScenario('twomemberensure', {
+        members: ['m1', 'm2'],
+        taskSpecs: [
+            { title: 'Task: Two-member ensure A' },
+            { title: 'Task: Two-member ensure B' },
+        ],
+        // Approve immediately so the scenario stays a single dev round -- the
+        // property under test is the branch-ensure dispatch topology, not the
+        // develop/review loop.
+        reviewerHandler: async () => ({
+            content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Both look good.', reopenIds: [], newTasks: [] }) }]
+        }),
+    });
+    check(!twoMemberEnsure.error, `2-member ensure scenario should complete: ${twoMemberEnsure.error ? twoMemberEnsure.error.message : ''}`);
+    const ensureBranch = 'auto-sprint/mock-twomemberensure';
+    const ensureLog = twoMemberEnsure.commandLogDetailed.filter((e) => e.command.includes(`git checkout -B ${ensureBranch}`));
+    const ensuredMembers = new Set(ensureLog.map((e) => e.member));
+    check(
+        ensuredMembers.has('m1'),
+        `Expected the sprint-branch ensure to be dispatched to member 'm1', ensure log: ${JSON.stringify(ensureLog)}`
+    );
+    check(
+        ensuredMembers.has('m2'),
+        `Expected the sprint-branch ensure to be dispatched to member 'm2' too (N4: ensure-everywhere, not orchestrator-only), ensure log: ${JSON.stringify(ensureLog)}`
+    );
+    // The modeled per-member git state must agree: BOTH members' checkouts had
+    // the sprint branch ensured (this is the state the pre-fix runner failed
+    // to establish on the non-orchestrator member).
+    const m1Git = twoMemberEnsure.memberGitState.get('m1');
+    const m2Git = twoMemberEnsure.memberGitState.get('m2');
+    check(
+        m1Git && m1Git.ensuredBranches.has(ensureBranch),
+        `Expected member 'm1' git state to have the sprint branch ensured, got: ${JSON.stringify(m1Git ? [...m1Git.ensuredBranches] : null)}`
+    );
+    check(
+        m2Git && m2Git.ensuredBranches.has(ensureBranch),
+        `Expected member 'm2' git state to have the sprint branch ensured, got: ${JSON.stringify(m2Git ? [...m2Git.ensuredBranches] : null)}`
+    );
+    // Both configured members' beads all close (the sprint runs to success)
+    // -- proving ensure-everywhere doesn't regress the happy path.
+    for (const t of twoMemberEnsure.tasks) {
+        const bead = twoMemberEnsure.finalBeadsById.get(t.id);
+        check(!!bead && bead.status === 'closed', `2-member ensure scenario: expected bead '${t.id}' (${t.title}) to be closed, got: ${JSON.stringify(bead)}`);
     }
 
     // =========================================================================
@@ -1341,6 +1442,49 @@ async function main() {
     check(
         bdJsonNoiseError && bdJsonNoiseError.message.includes('WARN: some deprecation notice'),
         `Expected the diagnostic error to include a raw-output snippet, got: ${bdJsonNoiseError ? bdJsonNoiseError.message : 'n/a'}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw2.4 (N4): the multi-member topology precondition
+    // (checkMemberTopology, the pure helper bin/cli.mjs wires to
+    // `git rev-parse HEAD` per member) refuses to start when the members'
+    // identity signals disagree, and trivially passes for a single member.
+    // =========================================================================
+    console.log('Running topology precondition checks (checkMemberTopology)...');
+    // Single member -> trivially ok, and getIdentity must not even be called.
+    const topoSingle = await checkMemberTopology({
+        members: ['solo'],
+        getIdentity: async () => { throw new Error('getIdentity must not be called for a single-member sprint'); },
+    });
+    check(topoSingle.ok && topoSingle.singleMember, `Single-member topology must trivially pass, got: ${JSON.stringify(topoSingle)}`);
+
+    // Agreeing signals (shared workspace) -> ok, not flagged single-member.
+    const topoAgree = await checkMemberTopology({ members: ['m1', 'm2'], getIdentity: async () => 'deadbeef\n' });
+    check(topoAgree.ok && !topoAgree.singleMember, `Members sharing an identity signal must pass, got: ${JSON.stringify(topoAgree)}`);
+
+    // Disagreeing signals (separate checkouts) -> REFUSE with a clear message
+    // that names both members and the divergent signals.
+    const topoMismatch = await checkMemberTopology({
+        members: ['m1', 'm2'],
+        getIdentity: async (m) => (m === 'm1' ? 'aaaaaaa' : 'bbbbbbb'),
+    });
+    check(!topoMismatch.ok, 'Topology check MUST refuse to start when member identity signals disagree');
+    check(
+        /refus/i.test(topoMismatch.message) && topoMismatch.message.includes('m1') && topoMismatch.message.includes('m2') &&
+        topoMismatch.message.includes('aaaaaaa') && topoMismatch.message.includes('bbbbbbb'),
+        `Topology mismatch message must clearly refuse and name the divergent members/signals, got: ${topoMismatch.message}`
+    );
+
+    // A member whose signal cannot be obtained -> REFUSE (cannot verify shared
+    // state), naming the failing member and the reason.
+    const topoErr = await checkMemberTopology({
+        members: ['m1', 'm2'],
+        getIdentity: async (m) => { if (m === 'm2') throw new Error('not a git repository'); return 'aaaaaaa'; },
+    });
+    check(!topoErr.ok, 'Topology check MUST refuse when a member identity signal cannot be obtained');
+    check(
+        topoErr.message.includes('m2') && /not a git repository/.test(topoErr.message),
+        `Topology unresolved-signal message must name the failing member and reason, got: ${topoErr.message}`
     );
 
     if (failures.length > 0) {
