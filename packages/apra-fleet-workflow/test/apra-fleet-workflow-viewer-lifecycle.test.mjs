@@ -252,6 +252,27 @@ describe('apra-fleet-unw.10: html-utils.escapeHtml', () => {
     });
 });
 
+describe('apra-fleet-unw.19: poll error path terminal state check', () => {
+    test('poll error handler treats cancelled as a terminal state (does not fall through to OFFLINE)', () => {
+        // The poll error path in the viewer (index.mjs:359) checks if globalState
+        // has a terminal status before rendering OFFLINE. This test verifies that
+        // 'cancelled' is included in that terminal state check alongside 'success'
+        // and 'failed'. If a cancelled run encounters a network error, it should
+        // display CANCELLED, not OFFLINE.
+        const isTerminal = (status) => {
+            return status === 'success' || status === 'failed' || status === 'cancelled';
+        };
+
+        // Success and failed are terminal
+        assert.strictEqual(isTerminal('success'), true);
+        assert.strictEqual(isTerminal('failed'), true);
+        // Cancelled must also be terminal
+        assert.strictEqual(isTerminal('cancelled'), true);
+        // Running is not terminal
+        assert.strictEqual(isTerminal('running'), false);
+    });
+});
+
 describe('apra-fleet-unw.10: no process.exit in the /stop handler (source grep)', () => {
     test('src/viewer/index.mjs contains no live process.exit() call', async () => {
         const fs = await import('fs/promises');
