@@ -70,6 +70,25 @@ describe('apra-fleet-unw.8: robust JSON extraction (greedy-regex failure mode is
         const result = await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA });
         assert.deepStrictEqual(result, { value: 'fenced-answer' });
     });
+
+    test('a fenced non-JSON snippet plus valid JSON outside the fences falls through to the balanced scan on the first attempt (apra-fleet-unw2.15, N17)', async () => {
+        let calls = 0;
+        const reply =
+            'Here is the shell command I used for context:\n' +
+            '```\nnpm run build && npm test\n```\n\n' +
+            'And here is the actual structured answer:\n' +
+            '{"value": "outside-the-fence"}\n';
+
+        const wf = new FleetWorkflow(createMockFleetApi(async () => {
+            calls++;
+            return { content: [{ text: reply }], usage: { total_tokens: 10 } };
+        }));
+
+        const result = await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA });
+
+        assert.deepStrictEqual(result, { value: 'outside-the-fence' });
+        assert.strictEqual(calls, 1, 'a fenced non-JSON snippet must not prevent falling through to valid JSON outside the fences, and must not consume a repair round');
+    });
 });
 
 describe('apra-fleet-unw.8: bounded schema-repair loop', () => {

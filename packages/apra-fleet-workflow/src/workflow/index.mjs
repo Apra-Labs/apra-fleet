@@ -173,7 +173,6 @@ function extractBalancedJsonCandidates(text) {
  */
 function extractStructuredOutput(text, compiledSchema) {
     const fenced = extractFencedJsonBlocks(text);
-    const candidates = fenced.length > 0 ? fenced : extractBalancedJsonCandidates(text);
 
     const attempts = [];
     const tryCandidate = (raw) => {
@@ -191,7 +190,25 @@ function extractStructuredOutput(text, compiledSchema) {
         return null;
     };
 
-    for (const raw of candidates) {
+    // Prefer fenced ```json blocks: try every fenced candidate first so the
+    // common case (a well-behaved reply whose only JSON lives in a fenced
+    // block) keeps picking the fenced block exactly as before.
+    for (const raw of fenced) {
+        const result = tryCandidate(raw);
+        if (result) return result;
+    }
+
+    // Fall through to a balanced-bracket scan when no fenced candidate
+    // parsed and validated -- either because there were no fenced blocks at
+    // all, or because every fenced block was something else entirely (e.g.
+    // a shell command the reply quotes for illustration) and the real
+    // schema-satisfying JSON lives outside the fences. Scan the text with
+    // the fenced spans blanked out so we don't re-try content already
+    // rejected above, and so a stray brace inside a non-JSON fenced block
+    // can't be mistaken for a balanced candidate.
+    const unfencedText = text.replace(FENCED_JSON_RE, (match) => ' '.repeat(match.length));
+    const balanced = extractBalancedJsonCandidates(unfencedText);
+    for (const raw of balanced) {
         const result = tryCandidate(raw);
         if (result) return result;
     }
@@ -201,7 +218,7 @@ function extractStructuredOutput(text, compiledSchema) {
     // whitespace but somehow no `{`/`[` was detected as an opener -- should
     // be rare given the scan above, but keeps behavior at least as good as
     // the old single-shot JSON.parse(text) path).
-    if (candidates.length === 0) {
+    if (fenced.length === 0 && balanced.length === 0) {
         const result = tryCandidate(text.trim());
         if (result) return result;
     }
