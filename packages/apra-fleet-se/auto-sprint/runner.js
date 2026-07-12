@@ -299,7 +299,8 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
         'model tier as beads metadata at creation time via ' +
         '`bd create ... --metadata \'{"model": "<tier>"}\'` (tier is one of ' +
         'cheap-tier, standard-tier, premium-tier) -- this is the ONLY location the model ' +
-        'tier is recorded (not --notes, not a METADATA-section comment), per planner.md Step 3.'
+        'tier is recorded: do not additionally record it via bd\'s freeform notes field or ' +
+        'a METADATA-section comment, per planner.md Step 3.'
     );
 
     if (requirementsFile && requirementsContent) {
