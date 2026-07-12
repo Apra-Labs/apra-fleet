@@ -154,7 +154,7 @@ export function goalPriorityMax(goal) {
 // bug: `bd list --ready == []` used to be misread as "the sprint is done"
 // even when a bead was stuck blocked or left in_progress with no doer ever
 // finishing it).
-const NOT_DONE_STATUSES = 'open,in_progress,blocked';
+const NOT_DONE_STATUSES = 'open,in_progress,blocked,deferred';
 
 // We can import standard node modules in workflows if needed, or pass them in context.
 // For now, we'll assume we check runbooks via command() since we are in the workflow engine.
@@ -690,7 +690,7 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
     return [
         `Review the work just done for the following bead id(s): ${beadIds.join(', ')}.`,
         'Full task detail (including acceptance criteria), from `bd show --json`:',
-        acceptanceCriteriaJson,
+        wrapUntrustedBlock('bd show --json', acceptanceCriteriaJson),
         `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +

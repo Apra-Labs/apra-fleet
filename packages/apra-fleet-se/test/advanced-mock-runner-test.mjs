@@ -1826,6 +1826,87 @@ async function main() {
         `Expected the final verdict/notes to be surfaced on the result, got: ${JSON.stringify(explicitFail.result)}`
     );
 
+    // =========================================================================
+    // apra-fleet-unw2.18 (N18) fix (a): a goal-priority bead with 'deferred'
+    // status must be counted as NOT done for the sprint's exit-check logic.
+    // A deferred goal-priority bead must prevent exit success.
+    // =========================================================================
+    console.log('Running mock sprint scenario (deferred goal-priority bead must not allow exit success)...');
+    const deferredGoalPriority = await runDevelopLoopScenario('deferredgoalpriority', {
+        members: ['local'],
+        taskSpecs: [
+            { title: 'Task: In-goal P1 work' },
+            { title: 'Task: Out-of-goal P3 work', priority: 'P3' },
+        ],
+        maxCycles: 2,
+        // Cycle 1: close the in-goal P1 task, defer the out-of-goal P3 task
+        doerHandler: async ({ opts, tempDir: td, cycle }) => {
+            const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+            const ids = match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+            const listRes = JSON.parse((await runCmd('bd list --json', td)).stdout || '[]');
+            const p1Task = listRes.find((b) => b.title === 'Task: In-goal P1 work');
+            const p3Task = listRes.find((b) => b.title === 'Task: Out-of-goal P3 work');
+            for (const id of ids) {
+                if (p1Task && id === p1Task.id) {
+                    await runCmd(`bd close ${id}`, td);
+                } else if (p3Task && id === p3Task.id) {
+                    // Defer the out-of-goal P3 task (NOT closed, not left open)
+                    await runCmd(`bd update ${id} --status=deferred`, td);
+                }
+            }
+            return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids.filter((id) => !p1Task || id !== p1Task.id), notes: 'Closed in-goal P1; deferred out-of-goal P3.' }) }] };
+        },
+        reviewerHandler: async () => ({
+            content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'In-goal work approved; P3 remains deferred.', reopenIds: [], newTasks: [] }) }]
+        }),
+    });
+    check(!deferredGoalPriority.error, `Deferred goal-priority scenario should not throw: ${deferredGoalPriority.error ? deferredGoalPriority.error.message : ''}`);
+    check(
+        !(deferredGoalPriority.result && deferredGoalPriority.result.status === 'success'),
+        `Expected the sprint to NOT exit as success when a deferred P1 bead exists (even though P3 is out-of-goal), got: ${JSON.stringify(deferredGoalPriority.result)}`
+    );
+    const deferredInGoalId = deferredGoalPriority.tasks.find((t) => t.title === 'Task: In-goal P1 work').id;
+    const deferredOutOfGoalId = deferredGoalPriority.tasks.find((t) => t.title === 'Task: Out-of-goal P3 work').id;
+    check(
+        deferredGoalPriority.finalBeadsById.get(deferredInGoalId) && deferredGoalPriority.finalBeadsById.get(deferredInGoalId).status === 'closed',
+        `Expected the in-goal (P1) bead to be closed, got: ${JSON.stringify(deferredGoalPriority.finalBeadsById.get(deferredInGoalId))}`
+    );
+    check(
+        deferredGoalPriority.finalBeadsById.get(deferredOutOfGoalId) && deferredGoalPriority.finalBeadsById.get(deferredOutOfGoalId).status === 'deferred',
+        `Expected the out-of-goal (P3) bead to remain deferred, got: ${JSON.stringify(deferredGoalPriority.finalBeadsById.get(deferredOutOfGoalId))}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw2.18 (N18) fix (b): reviewer prompt's embedded bd show
+    // --json must be wrapped with wrapUntrustedBlock for A7 fencing compliance.
+    // Check the reviewer dispatch prompt contains the fence markers.
+    // =========================================================================
+    console.log('Running mock sprint scenario (reviewer prompt must fence bd show JSON)...');
+    const reviewerPromptFence = await runDevelopLoopScenario('reviewerpromptfence', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: Fence-check scenario work' }],
+        maxCycles: 1,
+    });
+    check(!reviewerPromptFence.error, `Reviewer prompt fence scenario should not throw: ${reviewerPromptFence.error ? reviewerPromptFence.error.message : ''}`);
+    const reviewerDispatches = reviewerPromptFence.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
+    check(
+        reviewerDispatches.length > 0,
+        `Expected at least one reviewer dispatch (non-final), got: ${JSON.stringify(reviewerPromptFence.dispatched.map((d) => d.agent))}`
+    );
+    const reviewerPrompt = reviewerDispatches[0].prompt;
+    check(
+        reviewerPrompt.includes('UNTRUSTED_BLOCK_BEGIN'),
+        `Expected reviewer prompt to contain UNTRUSTED_BLOCK_BEGIN fence marker (from wrapUntrustedBlock), got: ${reviewerPrompt.substring(0, 500)}`
+    );
+    check(
+        reviewerPrompt.includes('UNTRUSTED_BLOCK_END'),
+        `Expected reviewer prompt to contain UNTRUSTED_BLOCK_END fence marker (from wrapUntrustedBlock), got: ${reviewerPrompt.substring(0, 500)}`
+    );
+    check(
+        reviewerPrompt.includes('Source: bd show --json'),
+        `Expected reviewer prompt to contain 'Source: bd show --json' label (from wrapUntrustedBlock), got: ${reviewerPrompt.substring(0, 500)}`
+    );
+
     const runnerSource = await fs.readFile(path.join(__dirname, '../auto-sprint/runner.js'), 'utf-8');
     check(
         !/return\s*\{\s*status:\s*'success'/.test(runnerSource),
