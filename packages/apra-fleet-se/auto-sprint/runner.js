@@ -30,6 +30,44 @@ function roleConst(name) {
 const ROLE_DOER = roleConst('doer');
 const ROLE_REVIEWER = roleConst('reviewer');
 
+// ---------------------------------------------------------------------------
+// N10 (apra-fleet-unw2.8): fixed-role model defaults
+// ---------------------------------------------------------------------------
+//
+// Doer dispatches price themselves off the PER-BEAD model tier recorded in
+// beads metadata by the planner (N1, apra-fleet-unw2.1's `--metadata
+// '{"model": ...}'` convention) -- see resolveDoerModel() near the
+// Develop/Review loop below. The other six roles this runner dispatches
+// (planner, plan-reviewer, reviewer, deployer, integ-test-runner,
+// harvester) are NOT per-bead: they each run once per cycle/run and have no
+// single bead of their own to read a tier from. Per the vendored
+// agents/planner.md Step 3 ("Reviewer dispatches always use model: premium
+// regardless of the task tier -- this is not configurable by the
+// planner"), these roles use a FIXED model chosen for the nature of the
+// work rather than any bead's declared tier. This table is that fixed
+// assignment, made explicit (previously these dispatches passed no `model`
+// at all, so FleetWorkflow silently used its 'default' bucket, which never
+// matches an entry in pricing.mjs and is therefore NEVER priced -- see N10
+// in packages/apra-fleet-workflow/docs/feedback-reassessment.md):
+//   planner            -> 'opus'   (drafts/redrafts the whole task DAG; highest-stakes single dispatch of a cycle)
+//   plan-reviewer      -> 'opus'   (adversarial DAG review; vendor contract treats reviewer-class work as premium-tier)
+//   reviewer           -> 'opus'   (both per-round AND final review; vendor contract: "always use model: premium")
+//   deployer           -> 'sonnet' (mostly mechanical: follow deploy.md)
+//   integ-test-runner  -> 'sonnet' (mostly mechanical: follow integ-test-playbook.md)
+//   harvester          -> 'sonnet' (docs/CHANGELOG synthesis, not code-critical)
+// These are this runner's own policy choices, not a live read of what a
+// real fleet member happens to be configured to run -- see the
+// budget-is-estimate-based note on resolveDoerModel() and in pricing.mjs
+// for why this whole mechanism is honestly labeled an estimate.
+const FIXED_ROLE_MODEL = {
+    planner: 'opus',
+    'plan-reviewer': 'opus',
+    reviewer: 'opus',
+    deployer: 'sonnet',
+    'integ-test-runner': 'sonnet',
+    harvester: 'sonnet',
+};
+
 export const meta = { name: 'auto-sprint-runner' };
 
 // ---------------------------------------------------------------------------
@@ -122,7 +160,7 @@ const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
 
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
-    'goal', 'max_cycles', 'requirementsFile', 'roleMap',
+    'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'budget',
 ]);
 
 /**
@@ -264,7 +302,8 @@ export async function checkMemberTopology({ members, getIdentity }) {
  * @returns {{
  *   targetIssues: string[], members: string[], branch: string,
  *   baseBranch: string, goal: string, maxCycles: number,
- *   requirementsFile: string|undefined, roleMap: object|undefined
+ *   requirementsFile: string|undefined, roleMap: object|undefined,
+ *   budget: number|undefined
  * }}
  */
 export function validateArgs(args) {
@@ -336,6 +375,21 @@ export function validateArgs(args) {
         throw new Error('[Arg Contract] Invalid roleMap: must be an object mapping role -> member[].');
     }
 
+    // --- budget (optional; N10, apra-fleet-unw2.8) -----------------------
+    // A USD ceiling for this run's total estimated spend. When provided,
+    // main() below sets `context.budget.total` to this value BEFORE any
+    // dispatch, so `agent()`'s existing (previously unreachable in
+    // practice -- see N10 in feedback-reassessment.md) budget-exceeded
+    // check can actually fire. Omitted (the default): `context.budget.total`
+    // stays `null` (unlimited), identical to every run before this option
+    // existed -- this is purely additive. There is currently no CLI flag
+    // that sets this (bin/cli.mjs is out of this issue's scope); a caller
+    // going through WorkflowEngine.executeFile() directly (as this
+    // package's own tests do) can pass `{ ..., budget: 1.23 }`.
+    if (args.budget !== undefined && (typeof args.budget !== 'number' || !Number.isFinite(args.budget) || args.budget < 0)) {
+        throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -345,6 +399,7 @@ export function validateArgs(args) {
         maxCycles,
         requirementsFile: args.requirementsFile,
         roleMap: args.roleMap,
+        budget: args.budget,
     };
 }
 
@@ -744,12 +799,28 @@ function buildHarvesterPrompt({ branch, baseBranch, targetIssues }) {
 // same binding the old bare-global version referred to; no control-flow or
 // dispatch-order changes.
 export async function main(context) {
-    const { agent, command, parallel, log, phase, group, endGroup, publishState, args } = context;
+    const { agent, command, parallel, log, phase, group, endGroup, publishState, args, budget } = context;
 
     // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
     // A7 defense in depth): a rejected/malformed arg must result in zero
     // fleet dispatches.
     const validated = validateArgs(args);
+
+    // N10 (apra-fleet-unw2.8): apply the optional `budget` arg ceiling to
+    // THIS run's budget object. Every prior version of this runner ignored
+    // `context.budget` entirely, so `budget.total` stayed `null` (unlimited)
+    // for every run regardless of caller intent -- one of the two reasons
+    // (the other being no `opts.model` ever reaching `agent()`, fixed at
+    // the doer/fixed-role dispatch sites below) `BudgetExceededError` was
+    // unreachable in practice (see N10, feedback-reassessment.md). Setting
+    // it here, before any dispatch, is what makes the ceiling enforceable
+    // for the whole run -- `agent()` itself already checks
+    // `budget.remaining() <= 0` before every dispatch (WF/src/workflow/
+    // index.mjs), that mechanism was always correct, just never fed real
+    // inputs.
+    if (validated.budget !== undefined) {
+        budget.total = validated.budget;
+    }
 
     let cycle = 1;
     const MAX_CYCLES = validated.maxCycles;
@@ -814,6 +885,7 @@ export async function main(context) {
                         member_name: reviewerPool[0],
                         agentType: 'reviewer',
                         schema: reviewerVerdict,
+                        model: FIXED_ROLE_MODEL.reviewer,
                     }
                 );
             } catch (err) {
@@ -1129,7 +1201,7 @@ export async function main(context) {
             });
             const plannerRes = await agent(
                 plannerPrompt,
-                { member_name: getMemberForRole('planner'), agentType: 'planner' }
+                { member_name: getMemberForRole('planner'), agentType: 'planner', model: FIXED_ROLE_MODEL.planner }
             );
             log(`Planner: ${plannerRes}`);
 
@@ -1141,6 +1213,7 @@ export async function main(context) {
                         member_name: getMemberForRole('plan-reviewer'),
                         agentType: 'plan-reviewer',
                         schema: planReviewerVerdict,
+                        model: FIXED_ROLE_MODEL['plan-reviewer'],
                     }
                 );
             } catch (err) {
@@ -1269,6 +1342,7 @@ export async function main(context) {
                         agentType: 'planner',
                         label: 'Streak Assignment',
                         schema: streakAssignment,
+                        model: FIXED_ROLE_MODEL.planner,
                     }
                 );
                 log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
@@ -1294,6 +1368,17 @@ export async function main(context) {
             // the only field that's both present and stable across runs.
             const readyTitleById = new Map(currentReady.map((b) => [b.id, b.title]));
 
+            // N10 (apra-fleet-unw2.8): beadId -> declared model tier, read
+            // straight out of the SAME `bd list --ready --json` response
+            // already fetched above to build `currentReady` -- that response
+            // is each bead's full record, metadata included, so no extra
+            // `bd show` round-trip is needed to recover the `model` key N1
+            // (apra-fleet-unw2.1) has the planner record via `--metadata`.
+            // See resolveDoerModel() below for how a streak's (possibly
+            // multi-bead) model is picked from this map, and the
+            // budget-is-estimate-based caveat there.
+            const modelByBeadId = new Map(currentReady.map((b) => [b.id, b.metadata && b.metadata.model]));
+
             // --- Doer barrier: isolated failures, one retry, verified closes (Work item 3) ---
             // continueOnError: true so one doer streak's exception can never
             // abort sibling streaks mid-flight (the old parallel() call had
@@ -1307,6 +1392,31 @@ export async function main(context) {
                     .filter(Boolean)
                     .join('\n\n');
 
+                // N10: resolve the model to price this dispatch against.
+                // Beads are normally streaked one-per-model (the planner
+                // assigns tiers per task), but when a streak DOES span
+                // beads with different declared models, this deterministically
+                // picks the first (by streak/bead-id order, not dispatch
+                // completion order) and logs the discrepancy rather than
+                // silently averaging or guessing a blended price. A bead
+                // with no `model` metadata at all (pre-N1 data, or a
+                // planner that forgot the convention) resolves to
+                // `undefined`, which FleetWorkflow treats the same as never
+                // passing `model` -- the dispatch still runs, it's just not
+                // priced (calculateCost() returns null; see pricing.mjs).
+                // CAVEAT: this is the model the PLANNER ASKED the doer to
+                // run on -- the fleet does not currently echo back the
+                // model it actually resolved/ran with alongside usage, so
+                // this (and therefore budget._spent / BudgetExceededError)
+                // is honestly an ESTIMATE, not a verified actual, until that
+                // server-side echo lands (explicitly descoped -- see
+                // docs/plan.md and the pricing.mjs header comment).
+                const streakModels = [...new Set(beadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
+                if (streakModels.length > 1) {
+                    log(`Doer streak [${beadIds.join(', ')}] spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${streakModels[0]}'.`);
+                }
+                const doerModel = streakModels[0];
+
                 const dispatchDoer = () => agent(
                     buildDoerPrompt({ beadIds, branch: validated.branch, feedback: feedbackForStreak || null }),
                     {
@@ -1314,6 +1424,7 @@ export async function main(context) {
                         agentType: 'doer',
                         label: `Streak [${beadIds.join(', ')}]`,
                         schema: doerReport,
+                        model: doerModel,
                     }
                 );
 
@@ -1474,7 +1585,7 @@ export async function main(context) {
             try {
                 deployResult = await agent(
                     'Deploy to test env using deploy.md.',
-                    { member_name: getMemberForRole('deployer'), agentType: 'deployer', schema: deployerReport }
+                    { member_name: getMemberForRole('deployer'), agentType: 'deployer', schema: deployerReport, model: FIXED_ROLE_MODEL.deployer }
                 );
             } catch (err) {
                 if (err instanceof AgentOutputError) {
@@ -1500,7 +1611,7 @@ export async function main(context) {
             try {
                 integResult = await agent(
                     'Run tests using integ-test-playbook.md. Add bug beads if needed.',
-                    { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner', schema: integReport }
+                    { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner', schema: integReport, model: FIXED_ROLE_MODEL['integ-test-runner'] }
                 );
             } catch (err) {
                 if (err instanceof AgentOutputError) {
@@ -1682,7 +1793,7 @@ export async function main(context) {
                 integFailures,
                 rejectedNewTasks,
             }),
-            { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review' }
+            { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review', model: FIXED_ROLE_MODEL.reviewer }
         );
     } catch (err) {
         if (err instanceof AgentOutputError) {
@@ -1700,7 +1811,7 @@ export async function main(context) {
     try {
         harvesterResult = await agent(
             harvesterPrompt,
-            { member_name: getMemberForRole('harvester'), agentType: 'harvester', schema: harvesterReport }
+            { member_name: getMemberForRole('harvester'), agentType: 'harvester', schema: harvesterReport, model: FIXED_ROLE_MODEL.harvester }
         );
         log(`Harvester: ${JSON.stringify(harvesterResult)}`);
         if (harvesterResult.status !== 'OK') {
