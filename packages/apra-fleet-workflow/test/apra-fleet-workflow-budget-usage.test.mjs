@@ -152,3 +152,38 @@ describe('apra-fleet-unw.4: pricing table sanity', () => {
         assert.strictEqual(calculateCost(undefined, { prompt_tokens: 100, completion_tokens: 100 }), null);
     });
 });
+
+describe('apra-fleet-unw2.8 (N10): fleet model pricing rows (fable/opus/sonnet/haiku)', () => {
+    // Guards against the N10 regression: runner.js now passes these exact
+    // strings as `opts.model` (from beads `--metadata '{"model": "<tier>"}'`
+    // for doer dispatches, or from FIXED_ROLE_MODEL for the fixed roles --
+    // see auto-sprint/runner.js). If any of these rows is ever removed
+    // (e.g. an over-eager pricing-table cleanup), every dispatch using that
+    // model silently goes back to cost:null and budget._spent stops moving
+    // for it, exactly the N10 finding this issue fixes.
+    for (const model of ['fable', 'opus', 'sonnet', 'haiku']) {
+        test(`calculateCost prices '${model}' as a known, positive, finite number`, () => {
+            const cost = calculateCost(model, { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 });
+            assert.strictEqual(typeof cost, 'number');
+            assert.ok(Number.isFinite(cost) && cost > 0, `Expected a positive finite cost for '${model}', got ${cost}`);
+        });
+    }
+
+    test('calculateCost matches a fleet model tier via substring, even inside a more specific real model id', () => {
+        // Mirrors the flexible substring match the pricing table's own doc
+        // comment describes: a longer, more specific model id that merely
+        // CONTAINS one of the short fleet-tier keys should still price.
+        const cost = calculateCost('claude-haiku-4.5-20260601', { prompt_tokens: 1000, completion_tokens: 1000 });
+        assert.strictEqual(typeof cost, 'number');
+        assert.ok(cost > 0);
+    });
+
+    test('haiku is priced strictly cheaper than sonnet, which is priced strictly cheaper than opus, for identical usage', () => {
+        const usage = { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 };
+        const haikuCost = calculateCost('haiku', usage);
+        const sonnetCost = calculateCost('sonnet', usage);
+        const opusCost = calculateCost('opus', usage);
+        assert.ok(haikuCost < sonnetCost, `Expected haiku (${haikuCost}) < sonnet (${sonnetCost})`);
+        assert.ok(sonnetCost < opusCost, `Expected sonnet (${sonnetCost}) < opus (${opusCost})`);
+    });
+});
