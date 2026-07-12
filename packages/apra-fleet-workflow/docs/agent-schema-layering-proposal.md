@@ -214,7 +214,7 @@ declaration** instead of defining a parallel one.
   the persona itself carries it.
 - Con to solve: a fenced JSON block in markdown is not importable by code.
   The fix is to ship the schema as a **real JSON Schema file next to the
-  agent defs inside apra-pm** (`agents/schemas/<role>.json`), with the `.md`
+  agent defs inside apra-pm** (`agents/schemas/<role>-output.json`), with the `.md`
   embedding the human-readable example and pointing at its sibling file.
   This is the load-bearing refinement over naive Option B.
 
@@ -259,7 +259,7 @@ declaration** instead of defining a parallel one.
 by every caller; dispatch-prompt schema declared authoritative in the persona
 itself.** Concretely:
 
-1. **apra-pm ships `agents/schemas/<role>.json`** -- one real JSON Schema
+1. **apra-pm ships `agents/schemas/<role>-output.json`** -- one real JSON Schema
    file per role that has a structured output (plan-reviewer, doer, reviewer,
    deployer, integ-test-runner, ci-watcher, harvester; planner deliberately
    has none -- its output is the beads DAG). Each file carries
@@ -269,7 +269,7 @@ itself.** Concretely:
    `apra-fleet`'s `src/cli/install.ts` install them alongside `agents/*.md`.
 2. **Each role `.md`'s "Output schema" section becomes**: (a) a valid example
    instance (real JSON, not `"A | B"` pseudo-JSON), (b) a pointer to its
-   sibling `agents/schemas/<role>.json` as the canonical machine contract,
+   sibling `agents/schemas/<role>-output.json` as the canonical machine contract,
    and (c) two standing clauses:
    - *Precedence*: "If your dispatch prompt includes a JSON schema
      instruction, that schema is authoritative -- respond with exactly that
@@ -321,7 +321,7 @@ itself.** Concretely:
    - apra-fleet-se test: contracts.mjs loads, compiles, and version-pins the
      vendored files (fails on submodule bump drift).
    - `cost.md:94` re-points from "auto-sprint's `PLAN_REVIEW_SCHEMA`" to
-     "the plan-reviewer role schema (`agents/schemas/plan-reviewer.json`)".
+     "the plan-reviewer role schema (`agents/schemas/plan-reviewer-output.json`)".
 
 Why this is the durable choice: it puts each contract where its behavioral
 meaning lives, makes every consumer a *reader* of one file instead of a
@@ -445,11 +445,10 @@ network call.
 Extend section 4's design symmetrically:
 
 1. **apra-pm ships `agents/schemas/<role>-input.json`** alongside each
-   role's `-output.json` (naming: `agents/schemas/<role>.json` could hold
-   `{"input": {...}, "output": {...}}` as two named sub-schemas in one file,
-   or two sibling files -- implementer's choice, document whichever in the
-   eventual beads issue). Same versioning convention (`$id`, `version`) as
-   section 4.1.
+   role's `agents/schemas/<role>-output.json` (naming: two sibling files per
+   role, one for each direction, rather than a single `{"input": {...},
+   "output": {...}}` file -- this is the naming actually adopted). Same
+   versioning convention (`$id`, `version`) as section 4.1.
 2. **The schema describes required context keys/types only** -- it is
    never appended to the prompt and never shown to the LLM. It is consumed
    exclusively by whichever caller assembles the dispatch context
