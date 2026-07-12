@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
 import os from 'os';
-import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
+import { FleetWorkflow, CommandError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError } from '../auto-sprint/errors.mjs';
 import { parseBdJson, checkMemberTopology } from '../auto-sprint/runner.js';
@@ -167,6 +167,33 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
         // tests are unaffected.
         commandLogDetailed = null,
         memberGitState = null,
+        // apra-fleet-unw2.9 (N11): injectable git/gh failure. Optional
+        // (cmd: string) => boolean predicate, tested ONLY against `git `/
+        // `gh ` commands (the ones this mock otherwise short-circuits to a
+        // hardcoded success below). When it matches, the mock returns
+        // `{ isError: true, ... }` with `gitGhFailureMessage` (or a default)
+        // as the failure text -- this is what lets a test observe a git/gh
+        // failure path (e.g. `git push` rejected, `gh pr create` erroring
+        // for a reason OTHER than "already exists") as something OTHER than
+        // the unconditional "ok (mocked...)" success every git/gh command
+        // got before this issue. Deliberately separate from
+        // `commandFailurePattern` above, which is never matched against
+        // git/gh commands (see the intercept order below) -- that keeps
+        // existing scenarios using `commandFailurePattern` for bd/node probe
+        // failures unaffected.
+        gitGhFailurePattern = null,
+        gitGhFailureMessage = null,
+        // apra-fleet-unw2.9 (N11): idempotent-PR-creation simulation. When
+        // provided, this Set is used (instead of a call-local one) to track
+        // which branches already have a mock-simulated open PR -- passing
+        // the SAME Set into two successive buildMockFleetApi()/scenario
+        // calls for the SAME branch simulates "run finalization again
+        // against a branch that already has a PR from a prior run", which
+        // is exactly the idempotency regression this issue guards against.
+        // When omitted, a fresh, call-local Set is used (existing scenarios
+        // -- which never re-run against the same branch twice -- are
+        // unaffected either way).
+        prExistsState = new Set(),
     } = options;
 
     let planRound = 0;
@@ -259,6 +286,37 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
             // still exercising and asserting on runner.js's dispatch of
             // these commands.
             if (/^(git|gh)\s/.test(opts.command)) {
+                // apra-fleet-unw2.9 (N11): injectable git/gh failure takes
+                // priority over the PR-exists simulation below -- a test
+                // that wants to observe a genuine (non-"already exists")
+                // git/gh failure should get exactly that, deterministically.
+                if (gitGhFailurePattern && gitGhFailurePattern.test(opts.command)) {
+                    return {
+                        isError: true,
+                        content: [{ text: gitGhFailureMessage || `mock git/gh failure (injected) for: ${opts.command}` }],
+                    };
+                }
+
+                // apra-fleet-unw2.9 (N11): idempotent `gh pr create`
+                // simulation -- the first `gh pr create --head "<branch>"`
+                // for a given branch records that branch into
+                // `prExistsState` and succeeds; a SECOND `gh pr create` for
+                // the SAME branch (simulating a re-run of finalization
+                // against a branch that already has an open PR) fails with
+                // an "already exists" message, mirroring the real `gh`
+                // CLI's behaviour for this case.
+                const prCreateMatch = /^gh pr create\b.*--head "([^"]+)"/.exec(opts.command);
+                if (prCreateMatch) {
+                    const branch = prCreateMatch[1];
+                    if (prExistsState.has(branch)) {
+                        return {
+                            isError: true,
+                            content: [{ text: `GraphQL: a pull request for branch "${branch}" already exists: https://github.com/mock-org/mock-repo/pull/1 (createPullRequest)` }],
+                        };
+                    }
+                    prExistsState.add(branch);
+                }
+
                 return { content: [{ text: 'ok (mocked -- no real git remote in this mock sprint)' }] };
             }
 
@@ -641,6 +699,13 @@ async function runDevelopLoopScenario(tag, {
     // deploy.md / integ-test-playbook.md are NOT written by setupMinimal();
     // set true to write them (enabling the Deploy/Integ phases).
     withRunbooks = false,
+    // apra-fleet-unw2.9 (N11) additions: see buildMockFleetApi's option
+    // comments above. `branchOverride` lets a scenario force a specific
+    // branch name (rather than the tag-derived default) -- used by the
+    // idempotent-PR-creation regression test, which must dispatch TWO
+    // separate scenario runs against the exact SAME branch to simulate a
+    // re-run of finalization.
+    gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -667,19 +732,23 @@ async function runDevelopLoopScenario(tag, {
             commandFailurePattern,
             commandLogDetailed,
             memberGitState,
+            gitGhFailurePattern,
+            gitGhFailureMessage,
+            prExistsState,
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
 
+        const branch = branchOverride || `auto-sprint/mock-${tag}`;
         let error = null;
         let result = null;
         try {
             result = await engine.executeFile(scriptPath, {
                 target_issue: epicBead.id,
                 members,
-                branch: `auto-sprint/mock-${tag}`,
+                branch,
                 base_branch: 'main',
                 goal,
                 max_cycles: maxCycles,
@@ -691,7 +760,7 @@ async function runDevelopLoopScenario(tag, {
         const finalBeadsRaw = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
         const finalBeadsById = new Map(finalBeadsRaw.map((b) => [b.id, b]));
 
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById };
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch };
     } finally {
         await teardown(tempDir);
     }
@@ -1770,6 +1839,149 @@ async function main() {
     check(
         topoErr.message.includes('m2') && /not a git repository/.test(topoErr.message),
         `Topology unresolved-signal message must name the failing member and reason, got: ${topoErr.message}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw2.9 (N11) acceptance criterion 1: re-running finalization
+    // against the SAME branch (simulating a re-run of a sprint that already
+    // published a PR) must NOT throw. `prExistsState` is a Set shared across
+    // both scenario runs and `branchOverride` pins both runs to the exact
+    // same branch name -- the second run's `gh pr create` sees that branch
+    // already recorded and mock-fails with an "already exists" message,
+    // which runner.js's Publish PR step must swallow (not throw).
+    // =========================================================================
+    console.log('Running mock sprint scenario (idempotent PR creation: re-run same branch)...');
+    const idempotentPrState = new Set();
+    const idempotentBranch = 'auto-sprint/mock-idempotent-pr-rerun';
+    const idemPrRun1 = await runDevelopLoopScenario('idempr1', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: Idempotent PR creation run 1' }],
+        maxCycles: 1,
+        prExistsState: idempotentPrState,
+        branchOverride: idempotentBranch,
+    });
+    check(!idemPrRun1.error, `Idempotent-PR run1 (first publish, no prior PR) should not throw: ${idemPrRun1.error ? idemPrRun1.error.message : ''}`);
+    check(
+        idemPrRun1.result && idemPrRun1.result.status === 'success',
+        `Idempotent-PR run1 should succeed, got: ${JSON.stringify(idemPrRun1.result)}`
+    );
+    check(
+        idemPrRun1.commandLog.some((c) => c.startsWith('gh pr create') && c.includes(`--head "${idempotentBranch}"`)),
+        `Expected run1 to dispatch 'gh pr create' for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun1.commandLog)}`
+    );
+
+    const idemPrRun2 = await runDevelopLoopScenario('idempr2', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: Idempotent PR creation run 2 (re-run)' }],
+        maxCycles: 1,
+        prExistsState: idempotentPrState,
+        branchOverride: idempotentBranch,
+    });
+    check(
+        !idemPrRun2.error,
+        `SECOND run against the same branch (simulating a re-run) must NOT throw in finalization, got error: ${idemPrRun2.error ? `${idemPrRun2.error.constructor.name}: ${idemPrRun2.error.message}` : ''}`
+    );
+    check(
+        idemPrRun2.result && idemPrRun2.result.status === 'success',
+        `Idempotent-PR run2 (re-run against a branch with an existing PR) should still resolve to success, got: ${JSON.stringify(idemPrRun2.result)}`
+    );
+    check(
+        idemPrRun2.commandLog.some((c) => c.startsWith('gh pr create') && c.includes(`--head "${idempotentBranch}"`)),
+        `Expected run2 to still dispatch 'gh pr create' (idempotently) for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
+    );
+    check(
+        idemPrRun2.logs.some((m) => m.includes('already exists') && m.includes('idempotent success')),
+        `Expected a logged message noting the PR already exists and was treated as an idempotent success, logs: ${JSON.stringify(idemPrRun2.logs)}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw2.9 (N11) acceptance criterion 2: the PR title/body must
+    // include the final verdict, for both PASS and FAIL outcomes. Per
+    // plan.md's already-decided rule (not re-litigated here), a FAIL verdict
+    // still publishes the PR -- the verdict is stated plainly in the body,
+    // not suppressed.
+    // =========================================================================
+    console.log('Running mock sprint scenario (PR title/body carries PASS verdict)...');
+    const prVerdictPass = await runDevelopLoopScenario('prverdictpass', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: PR verdict PASS scenario' }],
+        maxCycles: 1,
+    });
+    check(!prVerdictPass.error, `PR-verdict PASS scenario should not throw: ${prVerdictPass.error ? prVerdictPass.error.message : ''}`);
+    check(prVerdictPass.result && prVerdictPass.result.verdict === 'PASS', `Expected a PASS final verdict, got: ${JSON.stringify(prVerdictPass.result)}`);
+    const prVerdictPassCmd = prVerdictPass.commandLog.find((c) => c.startsWith('gh pr create'));
+    check(!!prVerdictPassCmd, `Expected a 'gh pr create' command in the log, commandLog: ${JSON.stringify(prVerdictPass.commandLog)}`);
+    check(
+        !!prVerdictPassCmd && /--title "[^"]*PASS[^"]*"/.test(prVerdictPassCmd) && /--body "[^"]*PASS[^"]*"/.test(prVerdictPassCmd),
+        `Expected the PR title AND body to include the PASS verdict, got: ${prVerdictPassCmd}`
+    );
+
+    console.log('Running mock sprint scenario (PR title/body carries FAIL verdict, PR still published)...');
+    const prVerdictFail = await runDevelopLoopScenario('prverdictfail', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: PR verdict FAIL scenario' }],
+        maxCycles: 1,
+        finalReviewHandler: async () => ({
+            content: [{ text: JSON.stringify({ verdict: 'FAIL', notes: 'Injected FAIL for PR-verdict test.' }) }]
+        }),
+    });
+    check(!prVerdictFail.error, `PR-verdict FAIL scenario should not throw: ${prVerdictFail.error ? prVerdictFail.error.message : ''}`);
+    check(prVerdictFail.result && prVerdictFail.result.verdict === 'FAIL', `Expected a FAIL final verdict, got: ${JSON.stringify(prVerdictFail.result)}`);
+    const prVerdictFailCmd = prVerdictFail.commandLog.find((c) => c.startsWith('gh pr create'));
+    check(
+        !!prVerdictFailCmd,
+        `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a 'gh pr create' command, commandLog: ${JSON.stringify(prVerdictFail.commandLog)}`
+    );
+    check(
+        !!prVerdictFailCmd && /--title "[^"]*FAIL[^"]*"/.test(prVerdictFailCmd) && /--body "[^"]*FAIL[^"]*"/.test(prVerdictFailCmd),
+        `Expected the PR title AND body to include the FAIL verdict, got: ${prVerdictFailCmd}`
+    );
+
+    // =========================================================================
+    // apra-fleet-unw2.9 (N11) acceptance criterion 3: an injected git/gh
+    // failure (other than "already exists") must surface as a clear, typed
+    // error -- never swallowed/invisible.
+    // =========================================================================
+    console.log('Running mock sprint scenario (injected gh pr create failure surfaces as a typed error)...');
+    const ghFailure = await runDevelopLoopScenario('ghfailure', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: gh failure injection scenario' }],
+        maxCycles: 1,
+        gitGhFailurePattern: /^gh pr create\b/,
+        gitGhFailureMessage: 'error connecting to api.github.com: authentication failed',
+    });
+    check(!!ghFailure.error, 'Expected the injected gh pr create failure to surface as a thrown error, not be swallowed');
+    check(
+        ghFailure.error instanceof CommandError,
+        `Expected the surfaced error to be a typed CommandError, got: ${ghFailure.error ? ghFailure.error.constructor.name : 'n/a'}`
+    );
+    check(
+        !!ghFailure.error && ghFailure.error.message.includes('authentication failed'),
+        `Expected the surfaced error to include the underlying gh failure text, got: ${ghFailure.error ? ghFailure.error.message : 'n/a'}`
+    );
+    check(
+        !!ghFailure.error && /already exists/i.test(ghFailure.error.message) === false,
+        `A non-"already exists" gh failure must not be misclassified/swallowed as the idempotent case, got: ${ghFailure.error ? ghFailure.error.message : 'n/a'}`
+    );
+
+    // Sanity: also inject a plain `git push` failure and confirm it, too,
+    // surfaces as a typed error (Publish PR's push step is not failSoft).
+    console.log('Running mock sprint scenario (injected git push failure surfaces as a typed error)...');
+    const gitPushFailure = await runDevelopLoopScenario('gitpushfailure', {
+        members: ['local'],
+        taskSpecs: [{ title: 'Task: git push failure injection scenario' }],
+        maxCycles: 1,
+        gitGhFailurePattern: /^git push\b/,
+        gitGhFailureMessage: 'fatal: unable to access remote: Could not resolve host',
+    });
+    check(!!gitPushFailure.error, 'Expected the injected git push failure to surface as a thrown error, not be swallowed');
+    check(
+        gitPushFailure.error instanceof CommandError,
+        `Expected the surfaced git-push error to be a typed CommandError, got: ${gitPushFailure.error ? gitPushFailure.error.constructor.name : 'n/a'}`
+    );
+    check(
+        !!gitPushFailure.error && gitPushFailure.error.message.includes('Could not resolve host'),
+        `Expected the surfaced error to include the underlying git failure text, got: ${gitPushFailure.error ? gitPushFailure.error.message : 'n/a'}`
     );
 
     if (failures.length > 0) {

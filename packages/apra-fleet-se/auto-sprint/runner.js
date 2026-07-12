@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { AgentOutputError } from '@apralabs/apra-fleet-workflow';
+import { AgentOutputError, CommandError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
@@ -1840,16 +1840,53 @@ export async function main(context) {
             label: `Push sprint branch '${validated.branch}'`,
         }
     );
-    const prTitle = `Auto-sprint: ${validated.branch}`;
-    const prBody = `Automated apra-fleet-se sprint (goal: ${validated.goal}). Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.`;
-    await command(
+    // N11 (apra-fleet-unw2.9): the final verdict is surfaced directly in the
+    // PR title and body -- a human reviewer must never have to dig through
+    // sprint logs to learn whether the run's own review gate passed. Per
+    // plan.md's already-made decision (not re-litigated here): a FAIL
+    // verdict still publishes the PR (never suppressed), with the verdict
+    // stated plainly so the reviewer can weigh it before merging.
+    const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
+    const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
+    const prBody = [
+        `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
+        '',
+        `Final Verdict: ${finalVerdictLabel}`,
+        finalVerdictResult.notes ? `Notes: ${finalVerdictResult.notes}` : null,
+        '',
+        'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
+    ].filter((line) => line !== null).join('\n');
+
+    // N11: idempotent PR creation. `gh pr create` is dispatched with
+    // `failSoft: true` (rather than the default throw-on-isError behaviour)
+    // so a re-run of finalization against a branch that ALREADY has an open
+    // PR from a prior, otherwise-successful run can be told apart from a
+    // genuine gh/git failure. `gh pr create` fails with an "already exists"
+    // message in that case -- that specific failure is swallowed (logged,
+    // not thrown) because it means the desired end state (a PR is open for
+    // this branch) already holds. Any OTHER failure (auth, network, a real
+    // API error, the injectable mock failure below) is NOT swallowed -- it
+    // is re-raised as a typed CommandError so it surfaces clearly rather
+    // than being silently invisible.
+    const prCreateRes = await command(
         `gh pr create --base "${validated.baseBranch}" --head "${validated.branch}" --title "${prTitle}" --body "${prBody}"`,
         {
             member_name: orchestratorMember,
             silent: true,
+            failSoft: true,
             label: `Raise PR to '${validated.baseBranch}' (not merged)`,
         }
     );
+    if (!prCreateRes.ok) {
+        if (/already exists/i.test(prCreateRes.error || '')) {
+            log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
+        } else {
+            throw new CommandError(
+                `[Publish PR Failed] gh pr create failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prCreateRes.error}`,
+                { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prCreateRes.error } }
+            );
+        }
+    }
 
     endGroup();
 
