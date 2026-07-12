@@ -253,23 +253,33 @@ describe('apra-fleet-unw.10: html-utils.escapeHtml', () => {
 });
 
 describe('apra-fleet-unw.19: poll error path terminal state check', () => {
-    test('poll error handler treats cancelled as a terminal state (does not fall through to OFFLINE)', () => {
+    test('poll error handler treats cancelled as a terminal state (does not fall through to OFFLINE)', async () => {
         // The poll error path in the viewer (index.mjs:359) checks if globalState
         // has a terminal status before rendering OFFLINE. This test verifies that
         // 'cancelled' is included in that terminal state check alongside 'success'
         // and 'failed'. If a cancelled run encounters a network error, it should
-        // display CANCELLED, not OFFLINE.
-        const isTerminal = (status) => {
-            return status === 'success' || status === 'failed' || status === 'cancelled';
-        };
+        // display CANCELLED, not OFFLINE. Since the terminal-state check lives
+        // inside an HTML_TEMPLATE string (client-side code), we read the actual
+        // source file and assert it contains the full terminal state check.
+        const fs = await import('fs/promises');
+        const source = await fs.readFile(path.join(__dirname, '../src/viewer/index.mjs'), 'utf-8');
 
-        // Success and failed are terminal
-        assert.strictEqual(isTerminal('success'), true);
-        assert.strictEqual(isTerminal('failed'), true);
-        // Cancelled must also be terminal
-        assert.strictEqual(isTerminal('cancelled'), true);
-        // Running is not terminal
-        assert.strictEqual(isTerminal('running'), false);
+        // Find the terminal state check line in the poll error handler (catch block
+        // of the poll() function, which checks globalState.status for terminal states
+        // before rendering OFFLINE). The real check must include 'cancelled' alongside
+        // 'success' and 'failed', and must NOT incorrectly mark 'running' as terminal.
+        const terminalStateCheckPattern = /globalState\.status\s*===\s*['"]success['"]\s*\|\|\s*globalState\.status\s*===\s*['"]failed['"]\s*\|\|\s*globalState\.status\s*===\s*['"]cancelled['"]/;
+        const hasTerminalStateCheck = terminalStateCheckPattern.test(source);
+        assert.ok(hasTerminalStateCheck,
+            'Expected to find terminal state check that includes success, failed, AND cancelled. ' +
+            'The check ensures cancelled runs render CANCELLED (not OFFLINE) after a poll error.'
+        );
+
+        // Verify cancelled is explicitly mentioned in the check (not just assumed)
+        const cancelledInTerminalCheck = /globalState\.status\s*===\s*['"]cancelled['"]/.test(source);
+        assert.ok(cancelledInTerminalCheck,
+            'Expected the poll error handler to explicitly check for cancelled status'
+        );
     });
 });
 
