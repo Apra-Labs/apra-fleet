@@ -263,6 +263,96 @@ describe('apra-fleet-unw.11 (F6): resume/replay -- divergence detection', () => 
     });
 });
 
+describe('apra-fleet-unw2.13 (N5): replay honors the failSoft result shape for command()', () => {
+    test('a resumed run replays a failSoft probe as { ok, output, error } (matching the live shape), so a Deploy/Integ-style gate is NOT silently skipped; a non-failSoft command still replays as the raw string', async () => {
+        const tmpDir = await makeTmpDir();
+        const journalPath = path.join(tmpDir, 'journal.jsonl');
+
+        // First (uninterrupted) run: both the failSoft probe and the plain
+        // command succeed live -- this is the "original run succeeded"
+        // scenario the bug describes (probeFileExists() found the file).
+        const trackingApi1 = createTrackingFleetApi();
+        const wf1 = new FleetWorkflow(trackingApi1);
+        const engine1 = new WorkflowEngine(wf1);
+        const liveResult = await engine1.executeFile(fixture('test-journal-command-failsoft.mjs'), {}, { journal: journalPath });
+
+        assert.deepStrictEqual(liveResult.probe, { ok: true, output: 'test -f deploy-marker', error: null });
+        assert.strictEqual(liveResult.deploySkipped, false);
+        assert.strictEqual(liveResult.plain, 'echo plain-output');
+
+        // Resume: fresh FleetWorkflow/engine, with a fleetApi that FAILS the
+        // test if EITHER command is redispatched -- both must be served
+        // entirely from the journal cache.
+        const guardedApi = createGuardedFleetApi(new Set());
+        guardedApi.executeCommand = async (payload) => {
+            assert.fail(`executeCommand() was called for a command that should have been served from the journal cache: ${JSON.stringify(payload.command)}`);
+        };
+        const wf2 = new FleetWorkflow(guardedApi);
+        const engine2 = new WorkflowEngine(wf2);
+
+        const replayedActivities = [];
+        wf2.on('activity:end', (meta) => { if (meta.replayed) replayedActivities.push(meta); });
+
+        const replayedResult = await engine2.executeFile(fixture('test-journal-command-failsoft.mjs'), {}, { resumeJournal: journalPath });
+
+        // The crux of the bug: the replayed failSoft probe must be the
+        // SHAPED object, not the bare journaled string -- so `.ok` is a real
+        // boolean, and the Deploy/Integ-style gate downstream of it is not
+        // silently skipped just because `.ok` read as `undefined`.
+        assert.deepStrictEqual(replayedResult.probe, { ok: true, output: 'test -f deploy-marker', error: null });
+        assert.strictEqual(replayedResult.deploySkipped, false, 'Deploy/Integ must NOT be silently skipped on replay when the original probe succeeded');
+
+        // Non-failSoft replay is unchanged: still the raw string, exactly as
+        // before this fix.
+        assert.strictEqual(replayedResult.plain, 'echo plain-output');
+        assert.strictEqual(typeof replayedResult.plain, 'string');
+
+        assert.strictEqual(replayedActivities.length, 2, 'both the probe and the plain command should have been served from the replay cache');
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+
+    test('OLD-FORMAT journal (no failSoft field on the activity:end record) falls back gracefully to a raw-string replay instead of crashing', async () => {
+        const tmpDir = await makeTmpDir();
+        const journalPath = path.join(tmpDir, 'journal.jsonl');
+
+        const probeHash = hashText('test -f deploy-marker');
+        const probeKey = computeActivityKey({ sequence: 0, type: 'command', member: 'fleet-dev', textHash: probeHash });
+        const plainHash = hashText('echo plain-output');
+        const plainKey = computeActivityKey({ sequence: 1, type: 'command', member: 'fleet-dev', textHash: plainHash });
+
+        // Hand-constructed journal in the PRE-fix shape: activity:end
+        // records for both command() calls, with no `failSoft` field at all
+        // (as a journal written before this fix would look).
+        const lines = [
+            { event: 'run:start', runId: 'old-format-run', timestamp: Date.now(), scriptPath: 'irrelevant.mjs', args: {} },
+            { event: 'activity:start', id: 'act-1', type: 'command', phase: null, runId: 'old-format-run', label: 'probe', member: 'fleet-dev', command: 'test -f deploy-marker', startTime: Date.now(), sequence: 0, replayKey: probeKey },
+            { event: 'activity:end', id: 'act-1', type: 'command', phase: null, runId: 'old-format-run', label: 'probe', member: 'fleet-dev', command: 'test -f deploy-marker', sequence: 0, replayKey: probeKey, duration: 5, success: true, output: 'test -f deploy-marker' },
+            { event: 'activity:start', id: 'act-2', type: 'command', phase: null, runId: 'old-format-run', label: 'plain-command', member: 'fleet-dev', command: 'echo plain-output', startTime: Date.now(), sequence: 1, replayKey: plainKey },
+            { event: 'activity:end', id: 'act-2', type: 'command', phase: null, runId: 'old-format-run', label: 'plain-command', member: 'fleet-dev', command: 'echo plain-output', sequence: 1, replayKey: plainKey, duration: 5, success: true, output: 'echo plain-output' }
+        ];
+        await fs.writeFile(journalPath, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf-8');
+
+        const guardedApi = createGuardedFleetApi(new Set());
+        guardedApi.executeCommand = async (payload) => {
+            assert.fail(`executeCommand() was called for a command that should have been served from the journal cache: ${JSON.stringify(payload.command)}`);
+        };
+        const wf = new FleetWorkflow(guardedApi);
+        const engine = new WorkflowEngine(wf);
+
+        // Must not crash despite the missing `failSoft` field.
+        const result = await engine.executeFile(fixture('test-journal-command-failsoft.mjs'), {}, { resumeJournal: journalPath });
+
+        // Documented fallback: an old-format cache hit is treated as
+        // non-failSoft (best-effort raw string), same as pre-fix behavior --
+        // NOT a crash, but also not a perfectly-shaped replay.
+        assert.strictEqual(result.probe, 'test -f deploy-marker');
+        assert.strictEqual(result.plain, 'echo plain-output');
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+});
+
 describe('apra-fleet-unw.11 (F6): ambiguity guard', () => {
     test('a journal record that is started-but-never-finished is surfaced via journal:ambiguous and is never auto-resolved as a cache hit', async () => {
         const tmpDir = await makeTmpDir();
