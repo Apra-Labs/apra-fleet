@@ -199,6 +199,94 @@ describe('command() typed error classification', () => {
     });
 });
 
+describe('apra-fleet-unw2.12: command() must not double-emit activity:end for typed errors', () => {
+    // Mirrors agent()'s catch: MemberNotFoundError/CommandError already
+    // emit their own activity:end at the throw site inside the try block,
+    // so the outer catch must not emit a second one for the same
+    // activity id -- neither on the hard-fail path (rejects) nor the
+    // failSoft path (resolves to { ok: false, ... }), since failSoft wraps
+    // the same underlying error classification after the emit already
+    // happened.
+
+    test('hard-fail: MemberNotFoundError -- exactly one activity:end for the activity id', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executeCommandImpl: async () => ({ content: [{ text: `Member "ghost" not found.` }] })
+        }));
+        const ends = [];
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        await assert.rejects(
+            () => wf.command('echo hi', { member_name: 'ghost' }),
+            (err) => err instanceof MemberNotFoundError
+        );
+
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end record');
+        const byId = new Map();
+        for (const e of ends) byId.set(e.id, (byId.get(e.id) || 0) + 1);
+        for (const [id, count] of byId) {
+            assert.strictEqual(count, 1, `activity id ${id} emitted activity:end ${count} times, expected 1`);
+        }
+    });
+
+    test('hard-fail: CommandError (isError result) -- exactly one activity:end for the activity id', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executeCommandImpl: async () => ({ content: [{ text: 'boom: command not found' }], isError: true })
+        }));
+        const ends = [];
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        await assert.rejects(
+            () => wf.command('some_missing_binary', { member_name: KNOWN_MEMBER }),
+            (err) => err instanceof CommandError
+        );
+
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end record');
+        const byId = new Map();
+        for (const e of ends) byId.set(e.id, (byId.get(e.id) || 0) + 1);
+        for (const [id, count] of byId) {
+            assert.strictEqual(count, 1, `activity id ${id} emitted activity:end ${count} times, expected 1`);
+        }
+    });
+
+    test('failSoft: MemberNotFoundError resolves to { ok: false, ... } -- exactly one activity:end for the activity id', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executeCommandImpl: async () => ({ content: [{ text: `Member "ghost" not found.` }] })
+        }));
+        const ends = [];
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        const result = await wf.command('echo hi', { member_name: 'ghost', failSoft: true });
+
+        assert.strictEqual(result.ok, false);
+        assert.ok(result.error.includes('not found'));
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end record');
+        const byId = new Map();
+        for (const e of ends) byId.set(e.id, (byId.get(e.id) || 0) + 1);
+        for (const [id, count] of byId) {
+            assert.strictEqual(count, 1, `activity id ${id} emitted activity:end ${count} times, expected 1`);
+        }
+    });
+
+    test('failSoft: CommandError (isError result) resolves to { ok: false, ... } -- exactly one activity:end for the activity id', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executeCommandImpl: async () => ({ content: [{ text: 'boom: command not found' }], isError: true })
+        }));
+        const ends = [];
+        wf.on('activity:end', (meta) => ends.push(meta));
+
+        const result = await wf.command('some_missing_binary', { member_name: KNOWN_MEMBER, failSoft: true });
+
+        assert.strictEqual(result.ok, false);
+        assert.ok(result.error.includes('boom'));
+        assert.strictEqual(ends.length, 1, 'expected exactly one activity:end record');
+        const byId = new Map();
+        for (const e of ends) byId.set(e.id, (byId.get(e.id) || 0) + 1);
+        for (const [id, count] of byId) {
+            assert.strictEqual(count, 1, `activity id ${id} emitted activity:end ${count} times, expected 1`);
+        }
+    });
+});
+
 describe('F10: resume defaulting at the workflow layer', () => {
     test('agent() defaults resume:false in the payload sent to executePrompt', async () => {
         let capturedPayload;

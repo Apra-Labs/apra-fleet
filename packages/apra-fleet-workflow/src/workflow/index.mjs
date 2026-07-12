@@ -914,7 +914,9 @@ export class FleetWorkflow extends EventEmitter {
         } catch (error) {
             console.error(`[Command API Error]`, error.message || error);
             if (error instanceof WorkflowError) {
-                this.emit('activity:end', { ...activityMeta, error: error.message || error, duration: Date.now() - activityMeta.startTime, success: false });
+                // activity:end for typed errors was already emitted at the
+                // throw site above (see the matching comment in agent()'s
+                // catch); don't double-emit here.
                 return softFail(error);
             }
             const duration = Date.now() - activityMeta.startTime;
