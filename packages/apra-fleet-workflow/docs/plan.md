@@ -211,7 +211,29 @@ works in its own worktree.
 | **N18: per-error-type doer retry policy** (skip blind re-dispatch after `AgentOutputError`) | A cost optimization that only matters once budgets bite on real runs; sequenced behind `unw2.8` landing and real-fleet usage data. File under a future epic if cost amplification is observed. |
 | **F1 residue: `import()` module caching** (same-path scripts share module state) | Harmless for current stateless scripts; a doc note, not a defect. Fold into any future engine doc pass rather than spending a review cycle now. |
 | **F9/N-residue: viewer single-run group/phase tracking** despite the engine supporting concurrent runs | Accepted single-tenant usage; making the viewer multi-run is a feature, not a fix. Documenting the limitation rides along with `unw2.19`'s viewer touch. |
-| **Vendor push / upstream PR / submodule bump** | Unchanged hard gate: requires the user's explicit sign-off. Nothing in this round pushes vendor/apra-pm or moves the outer repo's submodule pointer. When sign-off comes, the vendor checklist MUST include re-running `unw2.2`'s contract test against the candidate submodule commit (N1 fix direction (e)). |
+| **Vendor push / upstream PR / submodule bump** | Unchanged hard gate: requires the user's explicit sign-off. Nothing in this round pushes vendor/apra-pm or moves the outer repo's submodule pointer. When sign-off comes, the vendor checklist MUST include re-running `unw2.2`'s contract test against the candidate submodule commit (N1 fix direction (e)) -- see the mandatory step below. |
+
+### Vendor sign-off checklist -- mandatory contract re-run (N1 fix direction (e))
+
+Before ANY candidate `vendor/apra-pm` submodule commit is pushed / the outer-repo
+submodule pointer is bumped, the sign-off MUST re-run the role-input contract tripwire
+against that candidate's real `agents/schemas/*-input.json` (not the pinned fixture
+snapshot) and confirm it is green:
+
+- Test: `packages/apra-fleet-se/test/runner-role-input-contract.test.mjs` (`unw2.2`, the
+  N13 tripwire). It reconstructs, for every role runner.js dispatches, the exact context
+  the runner's prompt builder consumes, and asserts `validateRoleInput(role, ctx).valid`
+  against the vendored `<role>-input.json`.
+- Point it at the candidate vendored schemas via
+  `APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE=<candidate>/agents/schemas` and run
+  `node --test packages/apra-fleet-se/test/runner-role-input-contract.test.mjs`.
+- A red run means the candidate vendored contract has re-diverged from the runner's
+  prompt builders (the exact N1 failure class). Do NOT push / bump until it is green
+  (either the runner or the vendored contract is corrected first). Also regenerate the
+  fixture snapshot (`unw2.5`'s regenerate script) from the candidate so the pinned net
+  tracks the pushed truth.
+- Reminder: the harvester subtest is `test.skip` until `unw2.10` wires real harvester
+  inputs -- do not count that skip as a pass, and un-skip it once `unw2.10` lands.
 
 ---
 
