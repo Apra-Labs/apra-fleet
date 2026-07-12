@@ -44,7 +44,63 @@ export function hashText(text) {
  * dispatched prompt/command text. First mismatch or first missing entry for
  * this key during a resumed run stops replay and switches to live execution
  * from that point onward (Claude-CLI style partial replay).
- * @param {{ sequence: number, type: 'agent'|'command', member?: string, textHash: string|null }} parts
+ *
+ * REPLAY-KEY SEMANTICS AND LIMITATIONS (apra-fleet-unw2.14, N6)
+ * ------------------------------------------------------------
+ * `sequence` is the call's position in the run. Its shape depends on WHERE
+ * the call was made:
+ *
+ *   - A call made in the run's top-level (sequential) flow gets a plain
+ *     numeric sequence: `0`, `1`, `2`, ... in program order. (Stringified
+ *     into the key, so `0` -> `"0:agent:..."`.) This is the original,
+ *     pre-N6 shape and is preserved byte-for-byte, so a resumed run of a
+ *     purely sequential script computes exactly the same keys it always did,
+ *     and OLD-FORMAT journals (written before N6) still match for these
+ *     top-level calls.
+ *
+ *   - A call made INSIDE a `parallel()` branch gets a HIERARCHICAL,
+ *     scheduler-INDEPENDENT sequence of the form
+ *     `<parentPrefix><barrierIndex>:<branchIndex>:<localSeq>` -- e.g.
+ *     `0:1:0` = the first parallel() barrier (barrierIndex 0) entered at
+ *     this level, its branch at STATIC input-array index 1, that branch's
+ *     first (localSeq 0) agent()/command() call. `branchIndex` is the
+ *     branch's fixed position in the array passed to `parallel()`, NOT its
+ *     completion/scheduling order, and `localSeq` counts only within that
+ *     one branch. Nested `parallel()` calls extend the prefix further
+ *     (`0:1:0:2:0` etc.).
+ *
+ * WHAT IS GUARANTEED: For a given logical call site, the key is IDENTICAL
+ * regardless of how the parallel branches actually interleave at runtime.
+ * Recording a journal under one interleaving and resuming it under a totally
+ * different interleaving therefore still hits the replay cache for every
+ * already-completed call across the barrier -- no live re-dispatch of doers
+ * whose work already happened. This is the whole point of N6: before it,
+ * `sequence` was a single shared counter incremented by whichever branch's
+ * agent()/command() happened to run next, so a resumed multi-streak run
+ * computed different sequence numbers, missed the cache, and re-executed
+ * everything live.
+ *
+ * WHAT IS NOT GUARANTEED: Determinism still requires the SAME logical
+ * script structure on replay -- same top-level call order, same number and
+ * static ordering of `parallel()` branches, same per-branch call order,
+ * same prompt/command text (the textHash). If the script itself is edited
+ * (calls added/removed/reordered, branches added, prompts changed) between
+ * the recording and the resume, keys legitimately diverge at the first
+ * changed call, exactly as intended -- that is real divergence, not a
+ * scheduling artifact. Non-determinism WITHIN a single branch (e.g. a
+ * branch that dispatches a different number of agent() calls depending on a
+ * coin flip) will also shift that branch's localSeq and diverge; branches
+ * must be internally deterministic for replay to be exact.
+ *
+ * OLD-FORMAT (pre-N6) journals degrade gracefully, never crash: their
+ * parallel-region records used the old shared global counter, so the new
+ * hierarchical keys won't match for calls inside a `parallel()` region --
+ * those calls simply diverge and re-run live (as they effectively did before
+ * N6 anyway), while top-level sequential calls still match and replay. The
+ * remedy is to regenerate the journal with a fresh run once the fix is
+ * deployed.
+ *
+ * @param {{ sequence: number|string, type: 'agent'|'command', member?: string, textHash: string|null }} parts
  * @returns {string}
  */
 export function computeActivityKey({ sequence, type, member, textHash }) {
