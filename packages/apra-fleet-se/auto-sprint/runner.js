@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { createHash } from 'crypto';
 import { AgentOutputError, CommandError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
@@ -858,6 +859,33 @@ function buildCostAnalysis(budget) {
 }
 
 /**
+ * Computes the collision-resistant filesystem slug used for
+ * `docs/sprint-analysis-<slug>.md` (the harvester's `analysisArtifactFile`
+ * input). Exported (apra-fleet-unw2.22, N12 follow-up) purely for direct
+ * unit testing, per this file's existing convention of exporting otherwise-
+ * internal pure helpers (parseBdJson, validateArgs, checkMemberTopology,
+ * validateNewTask) for testability.
+ *
+ * A naive `branch.replace(/[\\/]+/g, '-')` is not collision-free: two
+ * differently-named branches that differ only in a `/` vs. a pre-existing
+ * `-` at the same position (e.g. `feat/fleet-reorg` and `feat-fleet-reorg`)
+ * would otherwise collapse to the identical slug and clobber each other's
+ * analysis artifact if both sprints ever ran against the same
+ * repo/worktree in overlapping windows. A short content hash of the RAW
+ * (pre-replace) branch name is appended to disambiguate -- it stays
+ * deterministic per branch (same idempotent-rerun/golden-transcript
+ * guarantee the human-readable prefix already provided) while making slug
+ * collisions cryptographically negligible.
+ * @param {string} branch
+ * @returns {string}
+ */
+export function computeBranchSlug(branch) {
+    const humanReadablePrefix = branch.replace(/[\\/]+/g, '-');
+    const disambiguatingHash = createHash('sha256').update(branch).digest('hex').slice(0, 8);
+    return `${humanReadablePrefix}-${disambiguatingHash}`;
+}
+
+/**
  * Builds the self-contained Harvester dispatch prompt, per the vendored
  * harvester.md contract's documented inputs. N12 (apra-fleet-unw2.10): this
  * runner now wires the five required inputs
@@ -866,11 +894,15 @@ function buildCostAnalysis(budget) {
  * treat them as unavailable -- the prior version of this prompt told a
  * contract-obeying harvester to violate its own contract every sprint (see
  * N12, feedback-reassessment.md). The vendored input schema is intentionally
- * not loosened; the fix is entirely on the caller side.
+ * not loosened; the fix is entirely on the caller side. Exported (apra-
+ * fleet-unw2.22) so tests can directly build a harvester prompt with
+ * forced-blank inputs and assert the hardened mock contract check catches
+ * it, without needing to reconstruct this format by hand or spin up a full
+ * sprint run.
  * @param {{ branch: string, baseBranch: string, targetIssues: string[], analysisArtifactFile: string, analysisText: string, costAnalysis: string }} opts
  * @returns {string}
  */
-function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText, costAnalysis }) {
+export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText, costAnalysis }) {
     // analysisText/costAnalysis are orchestrator-computed (this file, from
     // real run state), not another agent's free text -- wrapUntrustedBlock's
     // "untrusted output from another agent" framing does not apply. They
@@ -1907,14 +1939,15 @@ export async function main(context) {
     phase(`Harvest C${finalCycleLabel}`);
     // N12 (apra-fleet-unw2.10): wire the harvester's five vendored-required
     // inputs with real, runner-computed values -- see buildAnalysisText()/
-    // buildCostAnalysis() above. `branchSlug` avoids embedding raw `/`
-    // characters from a branch name like `feat/fleet-reorg` in the artifact
-    // path, which would otherwise create surprise subdirectories. Note:
-    // deliberately no wall-clock timestamp in this path -- it must stay
-    // identical for two dispatches of the same branch (idempotent re-runs,
-    // and the golden-transcript determinism test), and harvester.md Step 1
-    // already overwrites the file at this path if it exists.
-    const branchSlug = validated.branch.replace(/[\\/]+/g, '-');
+    // buildCostAnalysis() above. `branchSlug` (see computeBranchSlug() below)
+    // avoids embedding raw `/` characters from a branch name like
+    // `feat/fleet-reorg` in the artifact path, which would otherwise create
+    // surprise subdirectories. Note: deliberately no wall-clock timestamp in
+    // this path -- it must stay identical for two dispatches of the same
+    // branch (idempotent re-runs, and the golden-transcript determinism
+    // test), and harvester.md Step 1 already overwrites the file at this
+    // path if it exists.
+    const branchSlug = computeBranchSlug(validated.branch);
     const analysisArtifactFile = `docs/sprint-analysis-${branchSlug}.md`;
     const analysisText = buildAnalysisText({
         targetIssues,
