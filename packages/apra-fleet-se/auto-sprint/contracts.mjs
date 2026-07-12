@@ -8,7 +8,7 @@
 //      `name:` frontmatter of vendor/apra-pm/agents/*.md exactly).
 //   2. An ajv-compatible JSON schema for every role's structured verdict --
 //      as of apra-fleet-unw.22, LOADED from vendor/apra-pm/agents/schemas/
-//      <role>.json rather than hand-copied inline, per
+//      <role>-output.json rather than hand-copied inline, per
 //      docs/agent-schema-layering-proposal.md section 4.3/5.2. The role
 //      itself is the canonical author of its output contract; this module
 //      is a reader/re-exporter, not the source.
@@ -94,7 +94,7 @@ export function validateRole(role) {
 //
 // As of this writing, the OUTER repo's vendor/apra-pm submodule pointer has
 // NOT been bumped to include apra-fleet-unw.21's schema files. That work
-// (agents/schemas/<role>.json + <role>-input.json) exists only on the
+// (agents/schemas/<role>-output.json + <role>-input.json) exists only on the
 // local, unpushed vendor/apra-pm branch `tmp/unw13-vendor-agent-defs`
 // (checked out in worktree wt-unw13), and is awaiting human sign-off before
 // an upstream PR to Apra-Labs/apra-pm and a submodule bump in this repo.
@@ -166,6 +166,12 @@ export function loadSchemaFileFrom(baseDir, fileBaseName) {
  * Loads `vendor/apra-pm/agents/schemas/<fileBaseName>.json` from this
  * repo's actual (submodule-relative) path. See the TEMPORARY STATE note
  * above for why this frequently returns `null` today.
+ *
+ * Note: for output verdict schemas, callers pass `<role>-output` as
+ * `fileBaseName` (see `resolveOutputSchema` below); for input schemas,
+ * callers pass `<role>-input` (see `getInputValidator`). This function
+ * itself applies no suffix magic -- it is a thin, generic wrapper around
+ * `loadSchemaFileFrom`.
  * @param {string} fileBaseName
  * @returns {object|null}
  */
@@ -211,15 +217,15 @@ export function assertVersionPin(role, schema, expectedMajor) {
 
 /**
  * Resolves the output schema for one role: prefer the vendored
- * agents/schemas/<role>.json (with a version-pin check), fall back to the
- * literal shipped in this module when the vendored file is absent.
+ * agents/schemas/<role>-output.json (with a version-pin check), fall back to
+ * the literal shipped in this module when the vendored file is absent.
  * @param {string} role
  * @param {number} expectedMajor
  * @param {object} fallback
  * @returns {object}
  */
 function resolveOutputSchema(role, expectedMajor, fallback) {
-    const vendorSchema = loadVendorSchema(role);
+    const vendorSchema = loadVendorSchema(`${role}-output`);
     if (vendorSchema === null) {
         return fallback;
     }
@@ -237,7 +243,7 @@ function resolveOutputSchema(role, expectedMajor, fallback) {
 // note in section 2). Each one was originally cross-checked against its
 // role's prose contract in vendor/apra-pm/agents/<role>.md; apra-fleet-
 // unw.21 subsequently aligned that prose (and added the sibling
-// agents/schemas/<role>.json this module now prefers) to these exact
+// agents/schemas/<role>-output.json this module now prefers) to these exact
 // shapes, so the DIVERGENCE NOTE comments that used to document open
 // prose/schema mismatches have been removed -- there is no longer a live
 // divergence to document, only a temporary "vendored file not merged yet"
@@ -254,7 +260,7 @@ const taskAssignmentSchema = {
 };
 
 // Fallback for role "plan-reviewer". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/plan-reviewer.json.
+// pointer is bumped: vendor/apra-pm/agents/schemas/plan-reviewer-output.json.
 const FALLBACK_planReviewerVerdict = {
     $id: 'planReviewerVerdict',
     type: 'object',
@@ -267,7 +273,7 @@ const FALLBACK_planReviewerVerdict = {
 };
 
 // Fallback for role "reviewer". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/reviewer.json.
+// pointer is bumped: vendor/apra-pm/agents/schemas/reviewer-output.json.
 const FALLBACK_reviewerVerdict = {
     $id: 'reviewerVerdict',
     type: 'object',
@@ -292,7 +298,7 @@ const FALLBACK_reviewerVerdict = {
 };
 
 // Fallback for role "doer". Canonical source once the submodule pointer is
-// bumped: vendor/apra-pm/agents/schemas/doer.json.
+// bumped: vendor/apra-pm/agents/schemas/doer-output.json.
 const FALLBACK_doerReport = {
     $id: 'doerReport',
     type: 'object',
@@ -329,7 +335,7 @@ export const streakAssignment = {
 };
 
 // Fallback for role "deployer". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/deployer.json.
+// pointer is bumped: vendor/apra-pm/agents/schemas/deployer-output.json.
 const FALLBACK_deployerReport = {
     $id: 'deployerReport',
     type: 'object',
@@ -341,7 +347,7 @@ const FALLBACK_deployerReport = {
 };
 
 // Fallback for role "integ-test-runner". Canonical source once the
-// submodule pointer is bumped: vendor/apra-pm/agents/schemas/integ-test-runner.json.
+// submodule pointer is bumped: vendor/apra-pm/agents/schemas/integ-test-runner-output.json.
 const FALLBACK_integReport = {
     $id: 'integReport',
     type: 'object',
@@ -356,7 +362,7 @@ const FALLBACK_integReport = {
 };
 
 // Fallback for role "ci-watcher". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/ci-watcher.json.
+// pointer is bumped: vendor/apra-pm/agents/schemas/ci-watcher-output.json.
 const FALLBACK_ciReport = {
     $id: 'ciReport',
     type: 'object',
@@ -368,7 +374,7 @@ const FALLBACK_ciReport = {
 };
 
 // Fallback for role "harvester". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/harvester.json.
+// pointer is bumped: vendor/apra-pm/agents/schemas/harvester-output.json.
 const FALLBACK_harvesterReport = {
     $id: 'harvesterReport',
     type: 'object',

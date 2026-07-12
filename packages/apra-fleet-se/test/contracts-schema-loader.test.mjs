@@ -35,14 +35,14 @@ const { loadSchemaFileFrom, assertVersionPin, majorVersionFromId } = await impor
 
 describe('loadSchemaFileFrom (loader primitive)', () => {
     test('AC2: reads real schema content from a fixture snapshot of vendor/apra-pm/agents/schemas/', () => {
-        const harvester = loadSchemaFileFrom(FIXTURES_DIR, 'harvester');
-        assert.ok(harvester, 'expected harvester.json to load');
+        const harvester = loadSchemaFileFrom(FIXTURES_DIR, 'harvester-output');
+        assert.ok(harvester, 'expected harvester-output.json to load');
         assert.strictEqual(harvester.$id, 'apra-pm/harvester-output@1');
         assert.deepStrictEqual(harvester.required, ['status', 'notes']);
         assert.deepStrictEqual(harvester.properties.status.enum, ['OK', 'FAILED']);
 
-        const reviewer = loadSchemaFileFrom(FIXTURES_DIR, 'reviewer');
-        assert.ok(reviewer, 'expected reviewer.json to load');
+        const reviewer = loadSchemaFileFrom(FIXTURES_DIR, 'reviewer-output');
+        assert.ok(reviewer, 'expected reviewer-output.json to load');
         assert.strictEqual(reviewer.$id, 'apra-pm/reviewer-output@1');
         assert.deepStrictEqual(reviewer.required, ['verdict', 'notes', 'reopenIds', 'newTasks']);
     });
@@ -96,12 +96,12 @@ describe('majorVersionFromId', () => {
 
 describe('assertVersionPin (loader primitive)', () => {
     test('does not throw when the vendored major version matches expectations', () => {
-        const harvester = loadSchemaFileFrom(FIXTURES_DIR, 'harvester');
+        const harvester = loadSchemaFileFrom(FIXTURES_DIR, 'harvester-output');
         assert.doesNotThrow(() => assertVersionPin('harvester', harvester, 1));
     });
 
     test('AC4: throws loudly when the vendored $id major version does not match', () => {
-        const mismatched = loadSchemaFileFrom(VERSION_MISMATCH_FIXTURES_DIR, 'harvester');
+        const mismatched = loadSchemaFileFrom(VERSION_MISMATCH_FIXTURES_DIR, 'harvester-output');
         assert.ok(mismatched, 'expected the version-mismatch fixture to load');
         assert.strictEqual(mismatched.$id, 'apra-pm/harvester-output@2');
         assert.throws(
