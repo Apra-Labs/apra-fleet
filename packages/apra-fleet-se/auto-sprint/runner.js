@@ -487,6 +487,57 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
 }
 
 // ---------------------------------------------------------------------------
+// newTasks validation (apra-fleet-unw2.3 / N3): reviewer-authored newTasks
+// are LLM output -- and the reviewer's own context includes the diff under
+// review, so an adversarial diff/commit could try to steer the reviewer
+// into emitting a title/description crafted to break out of the
+// double-quoted `bd create "..."` shell command below (backticks and
+// `$(...)` both survive inside POSIX double quotes; a trailing backslash
+// can neutralize/escape the closing quote). Because sprint members run
+// mixed shells (POSIX vs Windows), no single escaping scheme is reliably
+// safe across all of them -- so this validates with an ALLOWLIST instead of
+// trying to escape: anything outside the allowlist is rejected before it
+// ever reaches `command()`, independent of whatever escaping the member
+// shell would otherwise need.
+//
+// SAFE_TEXT_RE deliberately excludes: backtick, `$`, double-quote (the
+// command's own quoting delimiter -- allowing it back in would let a
+// title/description close the quote early regardless of any other
+// restriction), and backslash (blocks a trailing-backslash "escape the
+// closing quote" trick as well as any other backslash-based escape
+// sequence). The allowed punctuation (`.,:;!?()'-_/` plus space) covers
+// realistic task titles/descriptions while remaining inert as shell syntax
+// in both POSIX and Windows member shells.
+const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/-]+$/;
+const SAFE_PRIORITY_RE = /^P[0-4]$/;
+
+/**
+ * Validates one reviewer-authored newTask entry BEFORE it is ever
+ * interpolated into a `bd create` command string. Returns either
+ * `{ ok: true, title, description, priority }` (safe to interpolate) or
+ * `{ ok: false, reason }` (must be rejected -- logged, surfaced in the run
+ * summary, and never sent to `command()`; rejection is non-fatal, the
+ * sprint continues).
+ * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
+ * @returns {{ ok: true, title: string, description: string, priority: string } | { ok: false, reason: string }}
+ */
+export function validateNewTask(newTask) {
+    const priority = String(newTask && newTask.priority);
+    if (!SAFE_PRIORITY_RE.test(priority)) {
+        return { ok: false, reason: `priority '${priority}' does not match required pattern ${SAFE_PRIORITY_RE}` };
+    }
+    const title = String(newTask && newTask.title);
+    if (!title || !SAFE_TEXT_RE.test(title)) {
+        return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(title)}` };
+    }
+    const description = String(newTask && newTask.description);
+    if (!description || !SAFE_TEXT_RE.test(description)) {
+        return { ok: false, reason: `description fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(description)}` };
+    }
+    return { ok: true, title, description, priority };
+}
+
+// ---------------------------------------------------------------------------
 // Finalization prompt builders (apra-fleet-unw.17, A6)
 // ---------------------------------------------------------------------------
 
@@ -504,10 +555,11 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
  *   cyclesRun: number, closedCount: number, openAtGoalCount: number,
  *   deployFailures: Array<{cycle: number, notes: string}>,
  *   integFailures: Array<{cycle: number, notes: string, bugsFiled: string[]}>,
+ *   rejectedNewTasks: Array<{cycle: number, reason: string, raw: object}>,
  * }} opts
  * @returns {string}
  */
-function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures }) {
+function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [] }) {
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
@@ -524,6 +576,16 @@ function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cycle
         lines.push(
             `Integration tests FAILED in ${integFailures.length} cycle(s): ` +
             integFailures.map((d) => `C${d.cycle} (bugsFiled: ${d.bugsFiled.join(', ') || 'none'}): ${d.notes}`).join(' | ')
+        );
+    }
+    if (rejectedNewTasks.length > 0) {
+        // N3: reviewer-proposed newTasks that failed the pre-interpolation
+        // allowlist (see validateNewTask) are non-fatal to the sprint but
+        // must be visible to a human -- surfaced here in the same evidence
+        // block the final reviewer/human reads.
+        lines.push(
+            `${rejectedNewTasks.length} reviewer-proposed newTask(s) were REJECTED (not created via bd create) for failing input validation: ` +
+            rejectedNewTasks.map((r) => `C${r.cycle}: ${r.reason}`).join(' | ')
         );
     }
     lines.push(
@@ -709,6 +771,12 @@ export async function main(context) {
     // Review's evidence-based prompt (A6) below -- never silently swallowed.
     const deployFailures = [];
     const integFailures = [];
+
+    // N3: reviewer newTasks rejected by validateNewTask() before ever
+    // reaching `command()` -- threaded into the Final Review's evidence-
+    // based prompt below so a rejection is visible to a human, not silently
+    // dropped. Rejection is non-fatal: the sprint continues.
+    const rejectedNewTasks = [];
 
     // Populated with the last Develop/Review loop's reviewer verdict for
     // each cycle (A5 work item 3: goal-priority completion requires BOTH
@@ -1067,12 +1135,21 @@ export async function main(context) {
                 perBeadFeedback.set(id, verdict.notes);
             }
             for (const newTask of verdict.newTasks) {
-                const title = String(newTask.title).replace(/"/g, '\\"');
-                const description = String(newTask.description).replace(/"/g, '\\"');
-                const priority = String(newTask.priority).replace(/"/g, '\\"');
+                // N3: validate BEFORE interpolation -- see validateNewTask()
+                // above for why this is an allowlist, not escaping. A
+                // rejection is logged, recorded for the final-review
+                // evidence summary, and skipped; it must never abort the
+                // sprint over one bad newTask.
+                const validation = validateNewTask(newTask);
+                if (!validation.ok) {
+                    log(`Reviewer newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
+                    rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    continue;
+                }
+                const { title, description, priority } = validation;
                 await command(
                     `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues.join(',')} --silent`,
-                    { member_name: orchestratorMember, silent: true, label: `Create follow-up task from reviewer newTasks: ${newTask.title}` }
+                    { member_name: orchestratorMember, silent: true, label: `Create follow-up task from reviewer newTasks: ${title}` }
                 );
             }
 
@@ -1252,6 +1329,7 @@ export async function main(context) {
                 openAtGoalCount: finalOpenAtGoal.length,
                 deployFailures,
                 integFailures,
+                rejectedNewTasks,
             }),
             { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review' }
         );
