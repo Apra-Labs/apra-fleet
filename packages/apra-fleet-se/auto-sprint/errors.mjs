@@ -57,21 +57,29 @@ export class SprintPlanRejectedError extends WorkflowError {
  *
  * @property {number} staleCycles - how many consecutive cycles showed zero progress
  * @property {number[]} closedCountHistory - closed-bead count in scope, per cycle, in order
+ * @property {number} [highWaterClosedCount] - N9 (apra-fleet-unw2.7): the
+ *   highest closed-bead count observed at any point this sprint (the
+ *   high-water mark progress is measured against)
+ * @property {string[]} [thrashIds] - N9: bead ids reopened more than the
+ *   reopen-thrash threshold this sprint, i.e. the beads most likely
+ *   responsible for a close/reopen oscillation stall
  */
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], cycle?: number, details?: object, cause?: unknown }} [opts]
      */
     constructor(message, opts = {}) {
-        const { staleCycles = null, closedCountHistory = [], cycle, details, cause } = opts;
+        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], cycle, details, cause } = opts;
         super(message, {
             code: 'SPRINT_STALLED',
-            details: { staleCycles, closedCountHistory, cycle, ...details },
+            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, cycle, ...details },
             cause,
         });
         this.staleCycles = staleCycles;
         this.closedCountHistory = closedCountHistory;
+        this.highWaterClosedCount = highWaterClosedCount;
+        this.thrashIds = thrashIds;
     }
 }
 

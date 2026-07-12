@@ -1007,14 +1007,43 @@ export async function main(context) {
 
     // Stall detection: per the pm skill mandate cited in the issue text,
     // abort with a typed StalledSprintError after two consecutive cycles
-    // that closed zero net NEW beads in scope -- rather than silently
-    // burning every remaining cycle up to max_cycles on a sprint that has
-    // stopped making forward progress (e.g. a develop/review loop that
-    // keeps reopening and re-failing the exact same bead(s)).
+    // that made no forward progress -- rather than silently burning every
+    // remaining cycle up to max_cycles on a sprint that has stopped making
+    // forward progress (e.g. a develop/review loop that keeps reopening and
+    // re-failing the exact same bead(s)).
+    //
+    // N9 (apra-fleet-unw2.7): progress is a HIGH-WATER MARK on the closed
+    // count, not a cycle-over-cycle delta. A naive "did the count change
+    // since last cycle" check is defeated by an oscillation pattern (close
+    // a bead, reopen it next cycle, close it again, ...) whose closed-count
+    // sequence looks like 5,4,5,4,... -- every cycle differs from the one
+    // before it, so a delta-based check never trips, and the sprint burns
+    // all max_cycles doing net-zero work. Tracking the highest closed count
+    // ever observed this sprint instead means a cycle only counts as
+    // progress when it exceeds every prior cycle, so 5,4,5,4,... is
+    // correctly flagged as stalled after STALL_CYCLE_LIMIT non-record
+    // cycles.
     const STALL_CYCLE_LIMIT = 2;
     let staleCycles = 0;
-    let lastClosedCount = null;
+    let highWaterClosedCount = 0;
     const closedCountHistory = [];
+
+    // N9 (apra-fleet-unw2.7, work item b): per-bead reopen counts across the
+    // whole sprint. A bead reopened more than REOPEN_THRASH_LIMIT times is
+    // flagged as "thrash" -- the develop/review loop is oscillating on that
+    // specific bead rather than making progress -- and its ID is surfaced in
+    // the StalledSprintError so a human can see WHICH bead(s) are thrashing,
+    // not just that the sprint stalled.
+    const REOPEN_THRASH_LIMIT = 3;
+    const reopenCounts = new Map();
+    function recordReopen(id) {
+        reopenCounts.set(id, (reopenCounts.get(id) ?? 0) + 1);
+    }
+    function thrashingBeadIds() {
+        return [...reopenCounts.entries()]
+            .filter(([, count]) => count > REOPEN_THRASH_LIMIT)
+            .map(([id]) => id);
+    }
 
     // Deploy/Integration failure evidence (A4), threaded into the Final
     // Review's evidence-based prompt (A6) below -- never silently swallowed.
@@ -1384,6 +1413,8 @@ export async function main(context) {
                     `bd update ${id} --status=open`,
                     { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per reviewer verdict` }
                 );
+                // N9: track per-bead reopen counts for reopen-thrash detection.
+                recordReopen(id);
                 // Per-bead feedback routing (Work item 5): only beads named
                 // in reopenIds carry this round's feedback into the next
                 // round's doer prompt -- never a blanket broadcast.
@@ -1521,18 +1552,29 @@ export async function main(context) {
         );
         const closedCount = parseBdJson(closedRes, `bd list ${sprintFilter} --status=closed --json`).length;
         closedCountHistory.push(closedCount);
-        if (lastClosedCount !== null && closedCount === lastClosedCount) {
-            staleCycles++;
-        } else {
+        // N9: high-water-mark progress. A cycle only counts as progress when
+        // it sets a NEW all-time high for the closed count this sprint --
+        // returning to a previously-seen value (even one different from the
+        // immediately prior cycle, e.g. 5,4,5,4,...) is not progress.
+        if (closedCount > highWaterClosedCount) {
+            highWaterClosedCount = closedCount;
             staleCycles = 0;
+        } else {
+            staleCycles++;
         }
-        lastClosedCount = closedCount;
 
         if (staleCycles >= STALL_CYCLE_LIMIT) {
+            const thrashIds = thrashingBeadIds();
+            const thrashSuffix = thrashIds.length > 0
+                ? ` Reopen-thrash detected on bead(s) [${thrashIds.join(', ')}] (reopened more than ${REOPEN_THRASH_LIMIT} times) -- ` +
+                  `likely cause of the oscillation.`
+                : '';
             throw new StalledSprintError(
-                `Sprint stalled: ${staleCycles} consecutive cycle(s) closed zero net new bead(s) in scope '${sprintFilter}'. ` +
-                `Closed-count history: [${closedCountHistory.join(', ')}]. Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, cycle }
+                `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress on closed beads ` +
+                `in scope '${sprintFilter}'. Closed-count history: [${closedCountHistory.join(', ')}] (high-water mark: ${highWaterClosedCount}).` +
+                thrashSuffix +
+                ` Aborting rather than burning the remaining cycles.`,
+                { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), cycle }
             );
         }
 
@@ -1572,6 +1614,8 @@ export async function main(context) {
                     `bd update ${id} --status=open`,
                     { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per re-review verdict` }
                 );
+                // N9: track per-bead reopen counts for reopen-thrash detection.
+                recordReopen(id);
             }
             for (const newTask of reReviewVerdict.newTasks) {
                 const validation = validateNewTask(newTask);
