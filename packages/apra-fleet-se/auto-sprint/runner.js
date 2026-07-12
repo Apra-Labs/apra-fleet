@@ -256,21 +256,16 @@ export function validateArgs(args) {
 // re-planning cycle -- explicit "gaps only" framing) must be spelled out in
 // the prompt text itself rather than assumed.
 //
-// Model-tier convention: vendor/apra-pm/skills/pm/SKILL.md,
-// vendor/apra-pm/skills/pm/beads.md, and
-// vendor/apra-pm/skills/pm/doer-reviewer-loop.md all document the model
-// tier as living in a task's beads *notes* field, set via
-// `bd update <id> --notes="model: <tier>"`, and read back from there by
-// downstream roles. The vendored agents/plan-reviewer.md Step 3 also says
-// to read the model tier "from the task's METADATA section in `bd show
-// <id>` output", which is worded differently but -- per this repo's current
-// vendor/apra-pm submodule pointer (checked directly for this issue; no
-// separate `--metadata '{"model": ...}'` convention was found anywhere in
-// the vendored skills/agents docs) -- there is no distinct `--metadata`
-// flag/convention in this snapshot. We follow the concrete, repeatedly
-// documented `--notes="model: <tier>"` convention here. If a later issue
-// (e.g. apra-fleet-unw.13's vendor ruggedization) introduces a real
-// `--metadata` convention, this prompt should be updated to match.
+// Model-tier convention: the vendored agents/planner.md Step 3 is the
+// authoritative source and states the model tier is set as beads *metadata*
+// at creation time via `bd create ... --metadata '{"model": "<tier>"}'` --
+// explicitly "the ONLY location the model tier is recorded" and explicitly
+// NOT in `--notes`, a METADATA-section comment, or anywhere else. Every
+// consumer reads it back from that same metadata field (the `model` key in
+// `bd show <id>`): agents/plan-reviewer.md Step 3 reads it from beads
+// metadata (`--metadata`), and the orchestrator that dispatches doers does
+// likewise. This prompt therefore instructs the planner to use
+// `--metadata` and MUST stay aligned with planner.md Step 3.
 /**
  * @param {{
  *   isDeltaCycle: boolean,
@@ -301,8 +296,11 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
     lines.push(`Goal priority for this sprint: ${goal}.`);
     lines.push(
         'For every task: set clear acceptance criteria in its description, and set its ' +
-        'model tier via `bd update <task-id> --notes="model: <tier>"` (tier is one of ' +
-        'cheap-tier, standard-tier, premium-tier), per the pm skill\'s beads/model-tier convention.'
+        'model tier as beads metadata at creation time via ' +
+        '`bd create ... --metadata \'{"model": "<tier>"}\'` (tier is one of ' +
+        'cheap-tier, standard-tier, premium-tier) -- this is the ONLY location the model ' +
+        'tier is recorded: do not additionally record it via bd\'s freeform notes field or ' +
+        'a METADATA-section comment, per planner.md Step 3.'
     );
 
     if (requirementsFile && requirementsContent) {
@@ -318,6 +316,31 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
     }
 
     return lines.join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+//
+// Builds the self-contained plan-reviewer dispatch prompt. The vendored
+// agents/plan-reviewer.md Inputs section requires exactly one dispatch input:
+// "The sprint root / scope to review (required)". Its
+// agents/schemas/plan-reviewer-input.json declares `required: ["scope"]`, and
+// plan-reviewer.md's missing-input behavior says an unscoped dispatch must
+// return verdict CHANGES_NEEDED. The plan-reviewer has no memory of this
+// conversation (apra-fleet-unw.3's `resume: false` default), so the sprint
+// root issue id(s) and goal priority that define the subtree under review are
+// spelled out here rather than assumed. Everything else (the DAG, task
+// metadata) the reviewer reads from beads itself in its Step 1.
+/**
+ * @param {{ targetIssues: string[], goal: string }} opts
+ * @returns {string}
+ */
+function buildPlanReviewerPrompt({ targetIssues, goal }) {
+    return [
+        'Review the beads DAG created by the planner for this sprint, per your agent contract.',
+        `Sprint root / scope to review (the open beads subtree this review pass covers): ` +
+        `sprint root issue id(s) ${targetIssues.join(', ')}, goal priority ${goal}. ` +
+        'Review only the features and tasks under this scope.',
+    ].join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -404,11 +427,18 @@ function selectStreaks(candidate, currentReady) {
  * bead(s) this streak actually owns -- never a blanket broadcast of the
  * entire reviewer verdict to every doer -- and is wrapped as untrusted
  * inter-agent content (feedback.md A7, contracts.mjs `wrapUntrustedBlock`).
- * @param {{ beadIds: string[], feedback: string|null }} opts
+ * The `branch` is the sprint track branch to work on -- required by the
+ * vendored agents/doer.md Inputs section (and agents/schemas/doer-input.json,
+ * whose only required key is "branch"). Per doer.md's missing-input behavior,
+ * a doer dispatched without a branch must return status "BLOCKED" rather than
+ * guessing whatever branch happens to be checked out, so it is always spelled
+ * out here.
+ * @param {{ beadIds: string[], branch: string, feedback: string|null }} opts
  * @returns {string}
  */
-function buildDoerPrompt({ beadIds, feedback }) {
+function buildDoerPrompt({ beadIds, branch, feedback }) {
     const lines = [
+        `Sprint track branch to work on: ${branch}. Work on this branch only; do not push to the base branch.`,
         `Assigned bead ids (comma-separated): ${beadIds.join(', ')}`,
         'Work each assigned bead per your agent contract: read `bd show <id>` for its ' +
         'full acceptance criteria, implement and verify the change, then `bd close <id>` ' +
@@ -736,7 +766,7 @@ export async function main(context) {
             let verdict;
             try {
                 verdict = await agent(
-                    'Review the plan per your agent contract.',
+                    buildPlanReviewerPrompt({ targetIssues, goal: validated.goal }),
                     {
                         member_name: getMemberForRole('plan-reviewer'),
                         agentType: 'plan-reviewer',
@@ -909,7 +939,7 @@ export async function main(context) {
                     .join('\n\n');
 
                 const dispatchDoer = () => agent(
-                    buildDoerPrompt({ beadIds, feedback: feedbackForStreak || null }),
+                    buildDoerPrompt({ beadIds, branch: validated.branch, feedback: feedbackForStreak || null }),
                     {
                         member_name: doerMember,
                         agentType: 'doer',

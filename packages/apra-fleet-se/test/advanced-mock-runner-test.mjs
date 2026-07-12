@@ -260,7 +260,17 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
             if (opts.agent === 'planner' && !isStreakAssignment) {
                 if (addExtraTaskDuringPlan && !extraTaskAdded) {
                     extraTaskAdded = true;
-                    await runCmd('bd create -t task "Task: Add tests for API endpoints"', tempDir);
+                    // Contract enforcement (vendored planner.md Step 3): the
+                    // model tier is recorded ONLY as beads `--metadata`
+                    // ('{"model": "..."}') at creation time -- never in
+                    // `--notes`. This mock planner obeys that contract so the
+                    // suite exercises the same shape a real planner would
+                    // produce, catching any future drift back to `--notes`.
+                    // NOTE: the JSON arg is double-quoted with escaped inner
+                    // quotes (NOT single-quoted) so it survives Windows
+                    // cmd.exe, where single quotes are literal characters and
+                    // would make bd reject the metadata as invalid JSON.
+                    await runCmd('bd create -t task "Task: Add tests for API endpoints" --metadata "{\\"model\\": \\"standard-tier\\"}"', tempDir);
                     const list = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
                     const newTask = list.find((i) => i.title.includes('Add tests for API endpoints'));
                     if (newTask) {
@@ -277,6 +287,29 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
             // --- plan phase: plan-reviewer ---
             if (opts.agent === 'plan-reviewer') {
                 planRound++;
+
+                // Contract enforcement (vendored plan-reviewer.md Inputs +
+                // agents/schemas/plan-reviewer-input.json, required: ["scope"]):
+                // the dispatch prompt MUST supply the sprint root / scope to
+                // review. Per plan-reviewer.md's missing-input behavior, a
+                // dispatch without scope must return verdict CHANGES_NEEDED,
+                // notes stating the scope is missing, and taskAssignments: [].
+                // This mock obeys that CONTRACT rather than the runner's old
+                // behavior: if runner.js ever reverts to a context-free
+                // dispatch (no scope / no sprint root id), the plan is never
+                // approved and the sprint fails -- a tripwire on regression.
+                const promptHasScope = /scope/i.test(opts.prompt) && opts.prompt.includes(epicBead.id);
+                if (!promptHasScope) {
+                    return {
+                        content: [{
+                            text: JSON.stringify({
+                                verdict: 'CHANGES_NEEDED',
+                                notes: 'Dispatch prompt did not supply the sprint root / scope to review (plan-reviewer-input.json required key "scope" missing).',
+                                taskAssignments: [],
+                            })
+                        }]
+                    };
+                }
 
                 // apra-fleet-unw.15: plan-reviewer responses are now
                 // schema-validated JSON (contracts.mjs `planReviewerVerdict`)
@@ -329,6 +362,28 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
 
             // --- develop phase: doer ---
             if (opts.agent === 'doer') {
+                // Contract enforcement (vendored doer.md Inputs +
+                // agents/schemas/doer-input.json, required: ["branch"]): the
+                // dispatch prompt MUST supply the sprint track branch to work
+                // on. Per doer.md's missing-input behavior, a doer dispatched
+                // without a branch must return status "BLOCKED" (closedIds:
+                // []) instead of guessing whatever branch is checked out.
+                // Enforced here at the dispatch seam -- BEFORE any scenario's
+                // doerHandler override runs -- so every doer path obeys the
+                // CONTRACT uniformly: if runner.js ever drops the branch from
+                // buildDoerPrompt, no bead is ever worked/closed and the
+                // sprint fails, tripping this regression.
+                if (!/Sprint track branch to work on:\s*\S+/.test(opts.prompt)) {
+                    return {
+                        content: [{
+                            text: JSON.stringify({
+                                status: 'BLOCKED',
+                                closedIds: [],
+                                notes: 'Sprint track branch was not specified in the dispatch prompt (doer-input.json required key "branch" missing).',
+                            })
+                        }]
+                    };
+                }
                 const handler = doerHandler || defaultDoerHandler;
                 return handler({ opts, tempDir, runCmd, epicBead });
             }
@@ -704,6 +759,56 @@ async function main() {
         check(
             round2Prompt.includes('Ensure you also add a documentation task.'),
             `Round-2 planner prompt did not carry the round-1 plan-reviewer feedback text: ${round2Prompt}`
+        );
+    }
+
+    // apra-fleet-unw2.1 (N1) fix (a): the planner dispatch prompt must instruct
+    // the model tier via `--metadata '{"model": ...}'` at creation time (the
+    // ONLY location, per vendored planner.md Step 3) and must NOT tell the
+    // planner to put the model tier in `--notes` -- the old, re-diverged
+    // convention. Fails on revert to the `--notes="model: <tier>"` instruction.
+    if (planPhasePlannerCalls.length > 0) {
+        const p = planPhasePlannerCalls[0].prompt;
+        check(
+            p.includes('--metadata') && /\{"model":\s*"<tier>"\}|\{"model": "<tier>"\}/.test(p),
+            `Planner prompt must instruct model tier via --metadata '{"model": "<tier>"}' (planner.md Step 3): ${p}`
+        );
+        check(
+            !/--notes="model:/.test(p),
+            `Planner prompt must NOT instruct the model tier via --notes="model: ..." (re-diverged N1 convention): ${p}`
+        );
+    }
+
+    // apra-fleet-unw2.1 (N1) fix (b): the plan-reviewer dispatch prompt must be
+    // a real, scoped prompt supplying the sprint root / scope (plan-reviewer-
+    // input.json required key "scope"), not the old context-free string. Every
+    // plan-reviewer dispatch must name the sprint root issue id and the goal.
+    const planReviewerDispatches = run1.dispatched.filter((d) => d.agent === 'plan-reviewer');
+    check(planReviewerDispatches.length >= 1, 'Expected at least one plan-reviewer dispatch in run1');
+    for (const d of planReviewerDispatches) {
+        check(
+            /scope/i.test(d.prompt) && d.prompt.includes(run1.epicBeadId),
+            `Plan-reviewer dispatch prompt must supply the sprint root / scope (issue id ${run1.epicBeadId}): ${d.prompt}`
+        );
+        check(
+            d.prompt.includes('P1/P2'),
+            `Plan-reviewer dispatch prompt must name the goal priority: ${d.prompt}`
+        );
+        check(
+            d.prompt !== 'Review the plan per your agent contract.',
+            'Plan-reviewer dispatch prompt must not be the old context-free string (N1 regression)'
+        );
+    }
+
+    // apra-fleet-unw2.1 (N1) fix (c): the doer dispatch prompt must supply the
+    // sprint track `branch` (doer-input.json required key "branch"). Every doer
+    // dispatch must name the branch this sprint runs on. Fails on revert.
+    const doerDispatches = run1.dispatched.filter((d) => d.agent === 'doer');
+    check(doerDispatches.length >= 1, 'Expected at least one doer dispatch in run1');
+    for (const d of doerDispatches) {
+        check(
+            /Sprint track branch to work on:\s*auto-sprint\/mock-sprint/.test(d.prompt),
+            `Doer dispatch prompt must supply the sprint track branch (doer-input.json required "branch"): ${d.prompt}`
         );
     }
 
