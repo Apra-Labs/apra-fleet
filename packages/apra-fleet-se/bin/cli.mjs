@@ -11,7 +11,7 @@ import { StdioTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName } from '../auto-sprint/runner.js';
+import { validateIssueId, validateBranchName, checkMemberTopology } from '../auto-sprint/runner.js';
 
 const execFile = promisify(execFileCb);
 
@@ -174,6 +174,38 @@ Options:
     }
     if (missingMembers.length > 0) {
         console.warn(`Warning: The following members are missing and will be ignored: ${missingMembers.join(', ')}`);
+    }
+
+    // 4. N4 (apra-fleet-unw2.4) multi-member topology precondition.
+    //
+    // The auto-sprint runner has NO cross-member bd/git sync layer this round
+    // (deferred -- see docs/plan.md section 5 and docs/architecture.md
+    // "Multi-member topology (auto-sprint)"). Every orchestrator-side `bd`
+    // command runs against the orchestrator member's beads DB, and the sprint
+    // git branch is only coherent if every member operates on the same
+    // working state -- so a genuine multi-member fleet is supported ONLY when
+    // all members share one workspace/DB. Enforce that here, BEFORE standing
+    // up the sprint: compare `git rev-parse HEAD` across the configured
+    // members and refuse to start on a mismatch. Single-member trivially
+    // passes (checkMemberTopology short-circuits with nothing to compare).
+    const topology = await checkMemberTopology({
+        members: validMembers,
+        getIdentity: async (member) => {
+            const res = await fleetApi.executeCommand({ command: 'git rev-parse HEAD', member_name: member });
+            if (res && res.isError) {
+                const errText = res.content && res.content[0] ? res.content[0].text : 'unknown error';
+                throw new Error(errText);
+            }
+            return res && res.content && res.content[0] ? res.content[0].text : '';
+        },
+    });
+    if (!topology.ok) {
+        console.error(`Error: ${topology.message}`);
+        transport.stop();
+        process.exit(1);
+    }
+    if (!topology.singleMember) {
+        console.log(topology.message);
     }
 
     console.log('Starting Auto-Sprint');

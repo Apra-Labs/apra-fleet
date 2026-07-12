@@ -153,6 +153,109 @@ export function validateBranchName(name, label) {
     return name;
 }
 
+// ---------------------------------------------------------------------------
+// Multi-member topology precondition (apra-fleet-unw2.4 / N4)
+// ---------------------------------------------------------------------------
+//
+// This runner has NO cross-member bd/git sync layer this round (deferred --
+// see docs/plan.md section 5 and docs/architecture.md "Multi-member
+// topology"). Every `bd` command the orchestrator issues in main() runs
+// against the ORCHESTRATOR member's beads DB, while each doer's own
+// `bd close` runs against ITS member's DB; and the sprint git branch is only
+// meaningful if every member operates on the same working state. That whole
+// design only coheres when all configured members resolve to the same
+// workspace/DB (a "shared-workspace" fleet) -- or when there is a single
+// member. On any other topology, non-orchestrator members would silently
+// work against a beads DB / git checkout the orchestrator never touches.
+//
+// So the ONLY currently-supported real-fleet mode is single-member, or a
+// verified shared-workspace setup. This function is the enforcement gate for
+// that contract: it compares an identity signal (bin/cli.mjs wires it to
+// `git rev-parse HEAD`) across every configured member and refuses to start
+// when they disagree -- rather than proceeding onto the unsupported,
+// silently-diverging path.
+//
+// Pure/inject-driven (no direct I/O of its own): `getIdentity` is supplied
+// by the caller, so cli.mjs can wire it to a live fleet command while the
+// mock test supplies per-member signals directly. Single-member trivially
+// passes (nothing to compare). For 2+ members, a member whose signal cannot
+// be obtained (getIdentity throws) is treated as a REFUSAL -- we cannot
+// prove shared state, so we do not silently continue.
+//
+// Honest limitation (documented, not oversold): matching HEADs at start is a
+// best-effort shared-workspace heuristic, NOT a guarantee of ongoing shared
+// state -- two independent checkouts that merely happen to sit on the same
+// commit right now would pass. Fully validating (and reconciling) per-member
+// state across a running sprint needs the deferred cross-member sync layer.
+/**
+ * @param {{ members: string[], getIdentity: (member: string) => Promise<string> }} opts
+ * @returns {Promise<{ ok: boolean, singleMember: boolean, identities: Array<{member: string, signal: string|null, error: string|null}>, message: string }>}
+ */
+export async function checkMemberTopology({ members, getIdentity }) {
+    if (!Array.isArray(members) || members.length === 0) {
+        return { ok: false, singleMember: false, identities: [], message: '[Topology] Refusing to start: no members configured.' };
+    }
+
+    if (members.length === 1) {
+        return {
+            ok: true,
+            singleMember: true,
+            identities: [{ member: members[0], signal: null, error: null }],
+            message: `[Topology] Single-member sprint ('${members[0]}') -- shared-state precondition trivially satisfied (nothing to compare).`,
+        };
+    }
+
+    const identities = [];
+    for (const member of members) {
+        try {
+            const raw = await getIdentity(member);
+            const signal = (typeof raw === 'string' ? raw : String(raw)).trim();
+            identities.push({ member, signal: signal || null, error: signal ? null : 'empty identity signal' });
+        } catch (err) {
+            identities.push({ member, signal: null, error: (err && err.message) ? err.message : String(err) });
+        }
+    }
+
+    const unresolved = identities.filter((i) => i.error !== null);
+    if (unresolved.length > 0) {
+        return {
+            ok: false,
+            singleMember: false,
+            identities,
+            message:
+                '[Topology] Refusing to start the multi-member sprint: could not obtain an identity signal from every ' +
+                'configured member, so a shared-workspace setup cannot be verified. Per-member results: ' +
+                identities.map((i) => `${i.member}=${i.error ? `ERROR(${i.error})` : i.signal}`).join(', ') +
+                '. The only supported multi-member mode is a verified shared workspace (all members resolve to the same ' +
+                'checkout/DB); otherwise run single-member. See docs/architecture.md "Multi-member topology (auto-sprint)".',
+        };
+    }
+
+    const distinct = [...new Set(identities.map((i) => i.signal))];
+    if (distinct.length > 1) {
+        return {
+            ok: false,
+            singleMember: false,
+            identities,
+            message:
+                '[Topology] Refusing to start the multi-member sprint: the configured members disagree on their identity ' +
+                'signal, so they are NOT operating on a shared workspace. This runner has no cross-member bd/git sync layer ' +
+                'this round, so the orchestrator-side beads DB and the sprint git branch would not be visible to the other ' +
+                'members (their `bd close`/commits would silently diverge). Per-member signals: ' +
+                identities.map((i) => `${i.member}=${i.signal}`).join(', ') +
+                '. Supported modes: single-member, or a verified shared-workspace fleet (all members resolve to the same ' +
+                'checkout/DB). See docs/architecture.md "Multi-member topology (auto-sprint)".',
+        };
+    }
+
+    return {
+        ok: true,
+        singleMember: false,
+        identities,
+        message: `[Topology] All ${members.length} configured members share the same identity signal (${distinct[0]}) -- shared-state precondition satisfied.`,
+    };
+}
+
 /**
  * Validates and normalizes the args object passed into main(context).
  * Rejects unknown keys and missing/malformed required keys loudly.
@@ -664,6 +767,30 @@ export async function main(context) {
 
     const orchestratorMember = getMemberForRole('Orchestrator');
 
+    // N4 (apra-fleet-unw2.4): the sprint branch must be git-ensured on EVERY
+    // member that will operate on it, not just the orchestrator. Doers
+    // round-robin across the doer pool and the reviewer runs from the
+    // reviewer pool; on a real multi-member fleet each of those members has
+    // its own checkout, so the old "ensure on the orchestrator only" left
+    // every OTHER member working on whatever branch happened to be checked
+    // out (finding N4). Ensure on the UNION of the orchestrator, doer, and
+    // reviewer pools before the first doer round.
+    //
+    // SUPPORTED-TOPOLOGY NOTE: this runner has NO cross-member bd/git sync
+    // layer this round (deferred -- docs/plan.md section 5). Every `bd`
+    // command below runs against the orchestrator member's beads DB, and a
+    // doer's own `bd close` runs against its member's DB; that only coheres
+    // when all members share one workspace/DB (or there is a single member).
+    // bin/cli.mjs enforces exactly that via checkMemberTopology() BEFORE the
+    // sprint starts; the ensure-everywhere below is the git half of the same
+    // "every member starts from the same state" guarantee. See
+    // docs/architecture.md "Multi-member topology (auto-sprint)".
+    const branchEnsureMembers = [...new Set([
+        orchestratorMember,
+        ...getMembersForRole(ROLE_DOER),
+        ...getMembersForRole(ROLE_REVIEWER),
+    ])];
+
     // Read the requirementsFile (if any) once, up front, so its content can
     // be threaded into every Plan-phase planner prompt (apra-fleet-unw.15).
     // A missing/unreadable file is a warning, not a fatal error -- the
@@ -685,14 +812,20 @@ export async function main(context) {
     // so the whole sprint develops on `branch`, branched from `base_branch`.
     group('Sprint Setup');
     phase('Ensure Sprint Branch');
-    await command(
-        `git fetch origin ${validated.baseBranch} --quiet && git checkout -B ${validated.branch} origin/${validated.baseBranch}`,
-        {
-            member_name: orchestratorMember,
-            silent: true,
-            label: `Ensure sprint branch '${validated.branch}' from '${validated.baseBranch}'`,
-        }
-    );
+    // N4: dispatch the fetch + checkout -B to EVERY member in the ensure set
+    // (union of orchestrator/doer/reviewer pools), not just the orchestrator.
+    // Sequential (not parallel) so the command log stays deterministic and
+    // the very first dispatch of the run is still the branch-ensure.
+    for (const member of branchEnsureMembers) {
+        await command(
+            `git fetch origin ${validated.baseBranch} --quiet && git checkout -B ${validated.branch} origin/${validated.baseBranch}`,
+            {
+                member_name: member,
+                silent: true,
+                label: `Ensure sprint branch '${validated.branch}' from '${validated.baseBranch}' on member '${member}'`,
+            }
+        );
+    }
     publishState('sprint-args', {
         branch: validated.branch,
         baseBranch: validated.baseBranch,
@@ -701,6 +834,35 @@ export async function main(context) {
         requirementsFile: validated.requirementsFile || null,
     });
     endGroup();
+
+    // N4: NON-DESTRUCTIVE re-ensure of the sprint branch on every member at
+    // the top of each subsequent cycle. Purpose: guarantee each member is
+    // still ON the sprint branch even if an agent on that member checked
+    // something else out between cycles. This deliberately uses a plain
+    // `git checkout <branch>` -- NOT the initial `checkout -B <branch>
+    // origin/<base>` -- because once doers have committed sprint work to the
+    // branch, resetting it to origin/<base> would DISCARD that work (there is
+    // no cross-member sync to recover it this round). It is `failSoft` so a
+    // member that legitimately can't re-checkout (e.g. a transient state)
+    // never kills the sprint. In the supported shared-workspace/single-member
+    // mode this is effectively a no-op, but it keeps the "every member on the
+    // sprint branch" invariant explicit across reopen/re-plan cycles rather
+    // than assumed. A truly divergent multi-member fleet is refused up front
+    // by checkMemberTopology() in bin/cli.mjs, which is what makes this cheap
+    // guard sufficient (a real reconcile would need the deferred sync layer).
+    async function reEnsureBranchOnMembers() {
+        for (const member of branchEnsureMembers) {
+            await command(
+                `git checkout ${validated.branch}`,
+                {
+                    member_name: member,
+                    silent: true,
+                    failSoft: true,
+                    label: `Re-ensure sprint branch '${validated.branch}' checked out on member '${member}'`,
+                }
+            );
+        }
+    }
 
     // Helper to keep the dashboard UI updated with real bd data
     async function updateDashboard() {
@@ -787,6 +949,13 @@ export async function main(context) {
 
     while (cycle <= MAX_CYCLES) {
         group(`Sprint Cycle ${cycle}`);
+
+        // N4: after the first cycle, re-ensure (non-destructively) that every
+        // member is still on the sprint branch before this cycle's doers run.
+        // See reEnsureBranchOnMembers() above for why this never resets.
+        if (cycle > 1) {
+            await reEnsureBranchOnMembers();
+        }
 
         // =======================
         // 1. Planning Loop

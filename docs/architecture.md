@@ -154,6 +154,22 @@ All five members use the same `execute_prompt` tool call. The tool builds provid
 
 See `docs/provider-matrix.md` for the full comparison table.
 
+### Multi-member topology (auto-sprint)
+
+The `apra-fleet-se` auto-sprint runner (`packages/apra-fleet-se/auto-sprint/runner.js`) dispatches roles across configured members: the orchestrator issues every `bd` command and the git push/PR, doers round-robin across the doer pool, and the reviewer runs from the reviewer pool.
+
+Important, honest limitation: this round the runner has **NO cross-member bd/git sync layer**. Every `bd` command the orchestrator issues runs against the orchestrator member's beads DB, while each doer's own `bd close` runs against **its** member's DB; and the sprint git branch is only meaningful if all members operate on the same working state. That design coheres in exactly two topologies:
+
+- **Single-member** -- one member does everything (the DB and the branch are trivially shared).
+- **Verified shared-workspace fleet** -- every configured member resolves to the same checkout / beads DB (e.g. multiple members pointed at one working folder).
+
+Any other topology (each member with its own independent checkout/DB) is **NOT supported** yet: non-orchestrator members would silently work against a beads DB and git branch the orchestrator never sees, so their `bd close` calls and commits would diverge. A real cross-member reconcile layer is deferred (see `packages/apra-fleet-workflow/docs/plan.md` section 5) because it cannot be validated without a real multi-member fleet.
+
+Two guards enforce the supported contract instead of silently misbehaving:
+
+1. **Branch-ensure everywhere** (N4): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
+2. **Topology precondition** (N4): `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. It compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained). Single-member sprints skip the check (nothing to compare). Matching HEADs at start is a best-effort shared-workspace heuristic, not a proof of ongoing shared state -- the latter needs the deferred sync layer.
+
 ## PM Skill Submodule
 
 The PM skill and its four agent definitions (planner, plan-reviewer, doer, reviewer) are vendored from the [apra-pm](https://github.com/Apra-Labs/apra-pm) repository via a git submodule at `vendor/apra-pm/`. At build time, `scripts/vendor-pm.mjs` copies the skill and agent files into `dist/`. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`). For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation.
