@@ -186,6 +186,34 @@ describe('resolveRoleMap + buildRunnerArgs -> runner.js validateArgs (c)', () =>
     test('@file indirection surfaces a clear error when the file is missing', async () => {
         await assert.rejects(() => resolveRoleMap('@/path/does/not/exist.json'), /could not read --role-map file/);
     });
+
+    // -------------------------------------------------------------------
+    // N15 (apra-fleet-unw2.11): resolveRoleMap() normalizes keys via
+    // contracts.normalizeRole() -- this is where roleMap keys first enter
+    // the system from a user-supplied --role-map value, so downstream
+    // consumers (this CLI's own orchestratorMember lookup, and
+    // runner.js's validateArgs()) can rely on canonical lowercase keys.
+    // -------------------------------------------------------------------
+
+    test('normalizes mixed-case/whitespace-variant --role-map keys to canonical lowercase', async () => {
+        const roleMap = await resolveRoleMap('{"  Doer  ":["m1"],"REVIEWER":["m2"],"Orchestrator":["m3"]}');
+        assert.deepStrictEqual(roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+        // The normalized roleMap must reach validateArgs() unchanged (it's
+        // already canonical) and must not throw.
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['m1', 'm2', 'm3'], branch: 'b', baseBranch: 'main',
+            goal: 'P1', maxCycles: 1, requirementsFile: undefined, roleMap,
+        });
+        const validated = validateArgs(args);
+        assert.deepStrictEqual(validated.roleMap, { doer: ['m1'], reviewer: ['m2'], orchestrator: ['m3'] });
+    });
+
+    test('rejects a --role-map whose keys collide once normalized', async () => {
+        await assert.rejects(
+            () => resolveRoleMap('{"Doer":["m1"],"doer":["m2"]}'),
+            /--role-map key "doer" normalizes to "doer", which collides/
+        );
+    });
 });
 
 // ---------------------------------------------------------------------------
