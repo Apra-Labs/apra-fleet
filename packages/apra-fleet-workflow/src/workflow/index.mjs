@@ -536,7 +536,10 @@ export class FleetWorkflow extends EventEmitter {
         let sequence = null;
         let replayKey = null;
         if (store && store.activitySeq) {
-            sequence = store.activitySeq.value++;
+            // (apra-fleet-unw2.14, N6) `sequence` is numeric at the top level
+            // and a hierarchical, scheduler-independent string inside a
+            // parallel() branch -- see _nextSequence()/parallel().
+            sequence = this._nextSequence(store);
             replayKey = computeActivityKey({
                 sequence,
                 type: 'agent',
@@ -568,6 +571,20 @@ export class FleetWorkflow extends EventEmitter {
                     replayed: true
                 };
                 this.emit('activity:start', cachedActivityMeta);
+                // (apra-fleet-unw2.14, N18) INTENTIONAL: a replayed agent
+                // activity re-debits the run's budget using the journaled
+                // (cached) cost of the ORIGINAL dispatch. This is
+                // "total-spend-view" semantics: `budget.spent()` on a resumed
+                // run reflects the cumulative real cost of the whole logical
+                // run (original + resumed portions), NOT just what the resumed
+                // process dispatched live. That is deliberate -- a resume is a
+                // continuation of one run, and its budget ceiling must still
+                // account for money already spent before the crash, otherwise
+                // a run that crashed near its budget limit could resume and
+                // massively overspend. It is NOT the "fresh run starts at $0"
+                // model some callers might naively assume; that expectation is
+                // explicitly wrong here. (See the resumed-budget test in
+                // apra-fleet-workflow-journal.test.mjs.)
                 if (typeof cached.cost === 'number') {
                     budget._spent += cached.cost;
                 }
@@ -587,8 +604,9 @@ export class FleetWorkflow extends EventEmitter {
             // replay and switch to live execution from here onward (partial
             // replay, not all-or-nothing).
             replay.diverged = true;
-            console.warn(`[Journal] Replay divergence at sequence ${sequence} (agent, member: ${opts.member_name || opts.member_id}) -- switching to live execution from this point onward.`);
-            this.emit('journal:diverged', { runId, sequence, type: 'agent', replayKey });
+            const inParallel = !!(store && store.seqPrefix);
+            console.warn(this._divergenceWarning({ sequence, type: 'agent', member: opts.member_name || opts.member_id, inParallel }));
+            this.emit('journal:diverged', { runId, sequence, type: 'agent', replayKey, inParallel });
         }
 
         for (let attempt = 0; attempt <= maxRepairs; attempt++) {
@@ -822,7 +840,9 @@ export class FleetWorkflow extends EventEmitter {
         let sequence = null;
         let replayKey = null;
         if (store && store.activitySeq) {
-            sequence = store.activitySeq.value++;
+            // (apra-fleet-unw2.14, N6) See agent()/_nextSequence(): numeric at
+            // the top level, hierarchical/order-independent inside parallel().
+            sequence = this._nextSequence(store);
             replayKey = computeActivityKey({
                 sequence,
                 type: 'command',
@@ -879,8 +899,9 @@ export class FleetWorkflow extends EventEmitter {
                 return cachedFailSoft ? { ok: true, output: cached.output, error: null } : cached.output;
             }
             replay.diverged = true;
-            console.warn(`[Journal] Replay divergence at sequence ${sequence} (command, member: ${opts.member_name || opts.member_id}) -- switching to live execution from this point onward.`);
-            this.emit('journal:diverged', { runId, sequence, type: 'command', replayKey });
+            const inParallel = !!(store && store.seqPrefix);
+            console.warn(this._divergenceWarning({ sequence, type: 'command', member: opts.member_name || opts.member_id, inParallel }));
+            this.emit('journal:diverged', { runId, sequence, type: 'command', replayKey, inParallel });
         }
 
         const activityMeta = {
@@ -1073,9 +1094,35 @@ export class FleetWorkflow extends EventEmitter {
      * consistent across every branch of the same run. When `parallel()` is
      * called outside of any active run store (legacy direct-call usage),
      * branches simply run without forking anything, matching prior behavior.
+     *
+     * (apra-fleet-unw2.14, N6) When journaling is active, each branch fork
+     * ALSO gets its OWN activity sub-sequence rooted at a deterministic,
+     * scheduler-independent prefix. Before this, every branch shared the
+     * run's single `activitySeq` counter, so the sequence number a given
+     * agent()/command() call received depended on which branch's call
+     * happened to increment the shared counter next -- non-deterministic
+     * across runs. A resumed multi-streak run then computed different
+     * sequence numbers than the journaled run, missed the replay cache, and
+     * re-executed everything live (re-dispatching doers whose work already
+     * happened). Now the prefix is `<parentPrefix><barrierIndex>:<i>:` where
+     * `barrierIndex` numbers this parallel() barrier at the parent level (in
+     * program order, assigned SYNCHRONOUSLY before any branch runs) and `i`
+     * is the branch's STATIC index in `items` -- neither depends on runtime
+     * completion/scheduling order. Each branch's own fresh `activitySeq`
+     * then counts only that branch's calls, in the branch's own program
+     * order. The result: identical replay keys for a given logical call site
+     * regardless of how branches interleave. See journal.mjs
+     * computeActivityKey for the full semantics.
      */
     async parallel(items, processor, opts = {}) {
         const parentStore = this._store();
+        // Assign this barrier's index SYNCHRONOUSLY, in program order, before
+        // any branch is scheduled -- so it can never race with a sibling
+        // parallel() call at the same store level. Only meaningful when
+        // journaling is active (parallelSeq is null otherwise).
+        const barrierIndex = (parentStore && parentStore.parallelSeq)
+            ? parentStore.parallelSeq.value++
+            : null;
         return Promise.all(items.map((item, i) => {
             const runBranch = async () => {
                 try {
@@ -1090,10 +1137,67 @@ export class FleetWorkflow extends EventEmitter {
             };
             if (parentStore) {
                 const branchStore = { ...parentStore };
+                // Journaling active: give this branch its OWN hierarchical
+                // sub-sequence so its replay keys are order-independent. The
+                // prefix is fixed by the branch's static array index `i` and
+                // the barrier index computed above -- not by scheduling.
+                if (parentStore.activitySeq) {
+                    branchStore.seqPrefix = `${parentStore.seqPrefix || ''}${barrierIndex}:${i}:`;
+                    branchStore.activitySeq = { value: 0 };
+                    branchStore.parallelSeq = { value: 0 };
+                }
                 return runStorage.run(branchStore, runBranch);
             }
             return runBranch();
         }));
+    }
+
+    /**
+     * (apra-fleet-unw2.14, N6) Computes the replay `sequence` component for
+     * the next agent()/command() call in the current store, advancing the
+     * store's local activity counter. At the top level this returns a plain
+     * number (`0`,`1`,...); inside a `parallel()` branch it returns the
+     * hierarchical, scheduler-independent string
+     * `<seqPrefix><localSeq>` (e.g. `0:1:0`). Returns `null` when journaling
+     * is not active for this run (so no replay-key machinery runs at all).
+     * @param {object|undefined} store
+     * @returns {number|string|null}
+     */
+    _nextSequence(store) {
+        if (!store || !store.activitySeq) return null;
+        const local = store.activitySeq.value++;
+        return store.seqPrefix ? `${store.seqPrefix}${local}` : local;
+    }
+
+    /**
+     * (apra-fleet-unw2.14, N6) Builds the human-facing replay-divergence
+     * warning, distinguishing a divergence detected INSIDE a `parallel()`
+     * region from a sequential one. The two carry very different severity for
+     * a human debugging a resume:
+     *
+     *   - A SEQUENTIAL divergence is the suspicious case: the run's top-level
+     *     flow no longer matches the journal, which almost always means the
+     *     workflow script itself changed (a call added/removed/reordered, a
+     *     prompt/command edited, non-deterministic args) between the recording
+     *     and the resume. Everything from here on re-runs live.
+     *
+     *   - A PARALLEL-region divergence is (post-N6) far less alarming: keys
+     *     inside `parallel()` are now scheduler-independent, so a divergence
+     *     here is NOT caused by branch interleaving. It usually means either
+     *     (a) the journal was written by a pre-N6 build (old shared global
+     *     counter -- see computeActivityKey's OLD-FORMAT note; regenerate the
+     *     journal to fix), or (b) a branch is internally non-deterministic
+     *     (dispatches a different number/order of calls across runs) or the
+     *     set/order of parallel branches changed.
+     * @param {{ sequence: number|string, type: string, member?: string, inParallel: boolean }} parts
+     * @returns {string}
+     */
+    _divergenceWarning({ sequence, type, member, inParallel }) {
+        const base = `[Journal] Replay divergence at sequence ${sequence} (${type}, member: ${member}) -- switching to live execution from this point onward.`;
+        if (inParallel) {
+            return base + ' This divergence is INSIDE a parallel() region; branch interleaving is NOT the cause (replay keys are order-independent since apra-fleet-unw2.14/N6). Likely a pre-N6 (old-format) journal, an internally non-deterministic branch, or a changed set/order of parallel branches -- regenerate the journal from a fresh run if it predates N6.';
+        }
+        return base + ' This is a SEQUENTIAL (top-level) divergence: the run no longer matches the journal, most likely because the workflow script or its args changed between recording and resume.';
     }
 
     async transform(label, func, context) {
@@ -1248,12 +1352,35 @@ export class FleetWorkflow extends EventEmitter {
             group: null,
             budget,
             signal: controller.signal,
-            // (apra-fleet-unw.11, F6) Shared-by-reference across parallel()
-            // branch store forks (see parallel() below), same as `budget` --
-            // a single monotonic counter for the whole run so replay keys
-            // stay unique/ordered regardless of which branch increments it.
-            // `null` unless journaling was requested for this run at all.
+            // (apra-fleet-unw.11, F6 / apra-fleet-unw2.14, N6) Per-run
+            // activity sequencing for deterministic replay keys.
+            //
+            // `activitySeq` is a monotonic counter scoped to THIS store level
+            // (the run's top-level flow, or -- after a `parallel()` fork -- a
+            // single branch). At the top level it produces plain numeric
+            // sequences 0,1,2,... in program order, exactly as before N6.
+            //
+            // `seqPrefix` is the hierarchical path prefix prepended to a
+            // call's local sequence to form its replay key's `sequence`
+            // component. It is empty ('') at the top level -- so top-level
+            // keys stay numeric and backward-compatible -- and is extended by
+            // `parallel()` per branch (see parallel() below) to
+            // `<barrierIndex>:<branchIndex>:`, making every in-branch key
+            // scheduler-INDEPENDENT (order of branch interleaving no longer
+            // affects the key). See journal.mjs computeActivityKey for the
+            // full semantics/limitations.
+            //
+            // `parallelSeq` numbers the `parallel()` barriers entered AT this
+            // store level, in program order, so two sequential parallel()
+            // calls at the same level get distinct barrier prefixes even if
+            // no agent()/command() ran between them.
+            //
+            // All three are `null` unless journaling was requested for this
+            // run at all (a normal, non-journaled run never enters any of the
+            // replay-key code paths).
             activitySeq: opts.journalEnabled ? { value: 0 } : null,
+            seqPrefix: '',
+            parallelSeq: opts.journalEnabled ? { value: 0 } : null,
             replay: opts.journalEnabled ? (opts.replay || null) : null
         };
         const context = {

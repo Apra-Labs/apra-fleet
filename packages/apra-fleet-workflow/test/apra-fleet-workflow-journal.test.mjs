@@ -404,6 +404,225 @@ describe('apra-fleet-unw.11 (F6): ambiguity guard', () => {
     });
 });
 
+describe('apra-fleet-unw2.14 (N6): order-independent replay keys across parallel() branches', () => {
+    // The core N6 regression: record a 2-streak parallel develop phase under
+    // one branch interleaving, then resume it under a DIFFERENT (reversed)
+    // interleaving, and assert every already-completed call across the barrier
+    // is served from the journal cache -- ZERO live re-dispatch of the doers.
+    test('a 2-streak parallel develop phase recorded under one interleaving replays with ZERO re-dispatch under a REVERSED interleaving', async () => {
+        const tmpDir = await makeTmpDir();
+        const journalPath = path.join(tmpDir, 'journal.jsonl');
+
+        // Recording run: streak-a (delay 0) reaches its dispatches BEFORE
+        // streak-b (delay 25), so the natural runtime order is
+        // a-impl, a-test, b-impl, b-test. Under the pre-N6 single shared
+        // counter these would be journaled as sequences 0,1,2,3 in that order.
+        const trackingApi = createTrackingFleetApi();
+        const wf1 = new FleetWorkflow(trackingApi);
+        const engine1 = new WorkflowEngine(wf1);
+        const recorded = await engine1.executeFile(
+            fixture('test-journal-parallel-develop.mjs'),
+            { delays: [0, 25] },
+            { journal: journalPath }
+        );
+        assert.strictEqual(recorded.results.length, 2);
+        // All four logical calls actually dispatched live during recording.
+        assert.deepStrictEqual(
+            [...trackingApi.calls].sort(),
+            ['implement streak-a', 'implement streak-b', 'test streak-a', 'test streak-b']
+        );
+
+        // Resume run: REVERSED delays so streak-b now reaches its dispatches
+        // FIRST -- runtime order becomes b-impl, b-test, a-impl, a-test, the
+        // opposite of the recording. Under the pre-N6 shared counter this
+        // reassigns sequence numbers and misses the cache; under N6 every key
+        // is rooted at the branch's STATIC index, so all four still hit.
+        const forbidden = new Set([
+            'implement streak-a', 'test streak-a',
+            'implement streak-b', 'test streak-b'
+        ]);
+        const guardedApi = createGuardedFleetApi(forbidden);
+        const wf2 = new FleetWorkflow(guardedApi);
+        const engine2 = new WorkflowEngine(wf2);
+
+        const replayedActivities = [];
+        wf2.on('activity:end', (meta) => { if (meta.replayed) replayedActivities.push(meta); });
+        const divergedEvents = [];
+        wf2.on('journal:diverged', (meta) => divergedEvents.push(meta));
+
+        const resumed = await engine2.executeFile(
+            fixture('test-journal-parallel-develop.mjs'),
+            { delays: [25, 0] },
+            { resumeJournal: journalPath }
+        );
+
+        // No live dispatch at all -- the whole barrier was served from cache
+        // despite the reversed interleaving.
+        assert.deepStrictEqual(guardedApi.calls, [], 'no doer should have been re-dispatched live on resume');
+        // No divergence: order-independent keys all matched.
+        assert.deepStrictEqual(divergedEvents, [], 'a reversed interleaving must NOT be mistaken for divergence');
+        // All four agent activities replayed from cache.
+        assert.strictEqual(replayedActivities.length, 4);
+        assert.deepStrictEqual(
+            replayedActivities.map((a) => a.label).sort(),
+            ['streak-a-impl', 'streak-a-test', 'streak-b-impl', 'streak-b-test']
+        );
+
+        // Same logical result as the recording, regardless of interleaving.
+        const byId = (r) => r.results.slice().sort((x, y) => x.id.localeCompare(y.id));
+        assert.deepStrictEqual(byId(resumed), byId(recorded));
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+
+    test('replay keys inside a parallel() branch are hierarchical/static (barrierIndex:branchIndex:localSeq), stable across interleavings', async () => {
+        const tmpDir = await makeTmpDir();
+        const journalPath = path.join(tmpDir, 'journal.jsonl');
+
+        const wf = new FleetWorkflow(createTrackingFleetApi());
+        const engine = new WorkflowEngine(wf);
+        await engine.executeFile(
+            fixture('test-journal-parallel-develop.mjs'),
+            { delays: [0, 15] },
+            { journal: journalPath }
+        );
+
+        const { completedByKey } = await loadJournal(journalPath);
+        // Compute the EXPECTED order-independent keys directly from the branch
+        // structure: barrier 0, static branch index 0 (streak-a) / 1
+        // (streak-b), localSeq 0 (impl) / 1 (test). These must be present
+        // regardless of which branch actually finished first at runtime.
+        const key = (branchIdx, localSeq, text) => computeActivityKey({
+            sequence: `0:${branchIdx}:${localSeq}`,
+            type: 'agent',
+            member: 'fleet-dev',
+            textHash: hashText(text)
+        });
+        assert.ok(completedByKey.has(key(0, 0, 'implement streak-a')), 'streak-a impl key (0:0:0) missing');
+        assert.ok(completedByKey.has(key(0, 1, 'test streak-a')), 'streak-a test key (0:0:1) missing');
+        assert.ok(completedByKey.has(key(1, 0, 'implement streak-b')), 'streak-b impl key (0:1:0) missing');
+        assert.ok(completedByKey.has(key(1, 1, 'test streak-b')), 'streak-b test key (0:1:1) missing');
+
+        // The in-branch sequence surfaced on the events is the hierarchical
+        // string form, not a raw run-global integer.
+        for (const rec of completedByKey.values()) {
+            assert.strictEqual(typeof rec.sequence, 'string');
+            assert.match(rec.sequence, /^0:[01]:[01]$/);
+        }
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+
+    test('OLD-FORMAT journal (pre-N6 single global counter for parallel calls) degrades gracefully: diverges inside the parallel region and re-runs live WITHOUT crashing', async () => {
+        const tmpDir = await makeTmpDir();
+        const journalPath = path.join(tmpDir, 'journal.jsonl');
+
+        // Hand-construct a pre-N6 journal: the four parallel-branch calls keyed
+        // with a single run-GLOBAL numeric counter (0,1,2,3), the way the old
+        // shared `activitySeq` produced them. The new code computes
+        // hierarchical keys (0:0:0, 0:0:1, 0:1:0, 0:1:1) that do NOT match
+        // these -- so replay legitimately diverges and re-runs live. The point
+        // of this test is that this degradation NEVER crashes.
+        const oldKey = (seq, text) => computeActivityKey({ sequence: seq, type: 'agent', member: 'fleet-dev', textHash: hashText(text) });
+        const rec = (id, seq, prompt, label) => ([
+            { event: 'activity:start', id, type: 'agent', phase: null, runId: 'old-run', label, member: 'fleet-dev', model: 'gpt-4o', repairAttempt: 0, startTime: Date.now(), sequence: seq, replayKey: oldKey(seq, prompt) },
+            { event: 'activity:end', id, type: 'agent', phase: null, runId: 'old-run', label, member: 'fleet-dev', model: 'gpt-4o', repairAttempt: 0, sequence: seq, replayKey: oldKey(seq, prompt), duration: 5, success: true, usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }, cost: 0.0001, output: `echo: ${prompt}` }
+        ]);
+        const lines = [
+            { event: 'run:start', runId: 'old-run', timestamp: Date.now(), scriptPath: 'irrelevant.mjs', args: {} },
+            ...rec('a1', 0, 'implement streak-a', 'streak-a-impl'),
+            ...rec('a2', 1, 'test streak-a', 'streak-a-test'),
+            ...rec('b1', 2, 'implement streak-b', 'streak-b-impl'),
+            ...rec('b2', 3, 'test streak-b', 'streak-b-test')
+        ];
+        await fs.writeFile(journalPath, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf-8');
+
+        const trackingApi = createTrackingFleetApi();
+        const wf = new FleetWorkflow(trackingApi);
+        const engine = new WorkflowEngine(wf);
+
+        const divergedEvents = [];
+        wf.on('journal:diverged', (meta) => divergedEvents.push(meta));
+
+        // Must NOT throw despite the format mismatch.
+        const result = await engine.executeFile(
+            fixture('test-journal-parallel-develop.mjs'),
+            { delays: [0, 0] },
+            { resumeJournal: journalPath }
+        );
+
+        // Correct result, produced by re-running the branches live.
+        assert.strictEqual(result.results.length, 2);
+        assert.ok(trackingApi.calls.length > 0, 'an old-format parallel journal should degrade to live re-dispatch, not silent skip');
+
+        // Divergence WAS detected, and it is flagged as being inside a
+        // parallel region (the graceful-degradation signal), not a suspicious
+        // sequential mismatch.
+        assert.ok(divergedEvents.length >= 1, 'expected at least one divergence against the old-format journal');
+        assert.ok(divergedEvents.every((e) => e.inParallel === true), 'old-format parallel divergences must be flagged inParallel:true');
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+
+    test('journal:diverged distinguishes a SEQUENTIAL (top-level) mismatch (inParallel:false) from a parallel-region one', async () => {
+        const tmpDir = await makeTmpDir();
+        const journalPath = path.join(tmpDir, 'journal.jsonl');
+
+        // Record a normal sequential run, then resume with a changed 2nd
+        // prompt so divergence happens at the TOP level (not in a parallel).
+        const wf1 = new FleetWorkflow(createTrackingFleetApi());
+        const engine1 = new WorkflowEngine(wf1);
+        await engine1.executeFile(fixture('test-journal-sequential.mjs'), {}, { journal: journalPath });
+
+        const wf2 = new FleetWorkflow(createTrackingFleetApi());
+        const engine2 = new WorkflowEngine(wf2);
+        const divergedEvents = [];
+        wf2.on('journal:diverged', (meta) => divergedEvents.push(meta));
+
+        await engine2.executeFile(
+            fixture('test-journal-sequential.mjs'),
+            { step2Prompt: 'step2-changed' },
+            { resumeJournal: journalPath }
+        );
+
+        assert.strictEqual(divergedEvents.length, 1);
+        assert.strictEqual(divergedEvents[0].inParallel, false, 'a top-level mismatch must be flagged inParallel:false');
+        assert.strictEqual(typeof divergedEvents[0].sequence, 'number', 'top-level sequence stays a plain integer (backward compatible)');
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+});
+
+describe('apra-fleet-unw2.14 (N18): replayed agent activities re-debit the run budget (total-spend semantics)', () => {
+    test('a resumed run\'s budget reflects the replayed (cached) costs, not just live dispatches -- deliberate, documented', async () => {
+        const tmpDir = await makeTmpDir();
+        const journalPath = path.join(tmpDir, 'journal.jsonl');
+
+        // Recording run: two agent() calls dispatch live and accrue real cost.
+        const trackingApi = createTrackingFleetApi();
+        const wf1 = new FleetWorkflow(trackingApi);
+        const engine1 = new WorkflowEngine(wf1);
+        const recorded = await engine1.executeFile(fixture('test-journal-budget.mjs'), {}, { journal: journalPath });
+        assert.ok(recorded.spent > 0, 'the recording run should have accrued a positive budget spend');
+
+        // Resume run: BOTH calls are served entirely from the journal cache
+        // (the guarded api fails the test on any live dispatch), yet the
+        // resumed run's budget must STILL reflect the replayed costs -- this
+        // is the total-spend-view semantics N18 documents, so a resume near a
+        // budget ceiling cannot silently overspend.
+        const guardedApi = createGuardedFleetApi(new Set(['bstep1', 'bstep2']));
+        const wf2 = new FleetWorkflow(guardedApi);
+        const engine2 = new WorkflowEngine(wf2);
+        const resumed = await engine2.executeFile(fixture('test-journal-budget.mjs'), {}, { resumeJournal: journalPath });
+
+        assert.deepStrictEqual(guardedApi.calls, [], 'both calls should be served from cache, zero live dispatch');
+        assert.ok(resumed.spent > 0, 'a resumed run that replayed paid work must report a positive budget spend, not $0');
+        assert.strictEqual(resumed.spent, recorded.spent, 'the resumed budget must equal the recorded budget (replayed costs are re-debited)');
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+});
+
 describe('apra-fleet-unw.11 (F6): off by default', () => {
     test('a normal executeFile() call with no journal/resumeJournal option writes no journal file and creates no .fleet-workflow directory', async () => {
         const cwdBefore = process.cwd();
