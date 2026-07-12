@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { execFile as execFileCb } from 'node:child_process';
-import { promisify } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import fs from 'node:fs/promises';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
@@ -13,10 +12,10 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology } from '../auto-sprint/runner.js';
 
-const execFile = promisify(execFileCb);
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const DEFAULT_VIEWER_PORT = 8080;
 
 /**
  * Resolves the command used to launch the apra-fleet MCP server over
@@ -46,32 +45,260 @@ function resolveFleetServerCommand() {
     return { command: 'node', args: [path.join(repoRoot, 'dist', 'index.js'), 'run', '--transport', 'stdio'] };
 }
 
-async function main() {
-    const options = {
+/**
+ * The `node:util parseArgs` options spec for this CLI. Pulled out into its
+ * own function (rather than inlined in main()) so it is the single source of
+ * truth for both the real `parseArgs()` call and any test that needs to
+ * enumerate/exercise the supported flags.
+ * @returns {object}
+ */
+export function buildOptionsSpec() {
+    return {
         issue: { type: 'string', short: 'i' },
         members: { type: 'string', short: 'm' },
         branch: { type: 'string', short: 'b' },
         base: { type: 'string', short: 'B' },
         goal: { type: 'string', short: 'g', default: 'P1/P2' },
         'max-cycles': { type: 'string', short: 'c' },
-        help: { type: 'boolean', short: 'h' }
+        'allow-missing-members': { type: 'boolean' },
+        'requirements-file': { type: 'string' },
+        'role-map': { type: 'string' },
+        'viewer-port': { type: 'string', default: String(DEFAULT_VIEWER_PORT) },
+        help: { type: 'boolean', short: 'h' },
     };
+}
 
-    const { values } = parseArgs({ options, strict: false });
-
-    if (values.help) {
-        console.log(`
+const USAGE_TEXT = `
 Usage: fleet-se sprint [options]
 
 Options:
-  -i, --issue <ids>       (REQUIRED) Target issue ID(s). Comma separated (e.g., epic-1,epic-2).
-  -m, --members <ids>     (REQUIRED) Member IDs/names to use. Comma separated. Members act as repo targets for parallelism.
-  -b, --branch <name>     (REQUIRED) Sprint branch to develop on (created from --base if it doesn't exist).
-  -B, --base <name>       (REQUIRED) Base branch the sprint branch is created from and the eventual PR targets.
-  -g, --goal <goal>       Sprint goal constraint. Options: P1, P1/P2, P1/P2/P3. Default: P1/P2.
-  -c, --max-cycles <n>    Max plan/develop/review cycles. Default: 5.
-  -h, --help              Show this help message.
-        `.trim());
+  -i, --issue <ids>            (REQUIRED) Target issue ID(s). Comma separated (e.g., epic-1,epic-2).
+  -m, --members <ids>          (REQUIRED) Member IDs/names to use. Comma separated. Members act as repo targets for parallelism.
+  -b, --branch <name>          (REQUIRED) Sprint branch to develop on (created from --base if it doesn't exist).
+  -B, --base <name>            (REQUIRED) Base branch the sprint branch is created from and the eventual PR targets.
+  -g, --goal <goal>            Sprint goal constraint. Options: P1, P1/P2, P1/P2/P3. Default: P1/P2.
+  -c, --max-cycles <n>         Max plan/develop/review cycles. Default: 5.
+      --allow-missing-members  Proceed (warn-and-continue) if some --members are not registered with the fleet.
+                                Without this flag, any missing member aborts the sprint.
+      --requirements-file <p>  Path to a requirements file threaded into the planner's prompt.
+      --role-map <json|@file>  JSON object mapping role -> member[] (e.g. '{"doer":["m1","m2"]}'),
+                                either inline JSON or '@path/to/file.json'.
+      --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
+  -h, --help                   Show this help message.
+`.trim();
+
+/**
+ * Parses argv with `strict: true` so an unrecognized/typo'd flag (e.g.
+ * `--max-cycle` instead of `--max-cycles`) fails loudly instead of being
+ * silently ignored with defaults applying (apra-fleet-unw2.16, N14 (a)).
+ * @param {string[]} argv - argv slice (no node/script entries), e.g. `process.argv.slice(2)`
+ * @returns {{ values: object, positionals: string[] }}
+ */
+export function parseCliArgs(argv) {
+    try {
+        return parseArgs({ args: argv, options: buildOptionsSpec(), strict: true, allowPositionals: false });
+    } catch (err) {
+        throw new Error(
+            `Invalid command-line arguments: ${err.message}\n\n${USAGE_TEXT}`
+        );
+    }
+}
+
+/**
+ * Resolves `--role-map` into a plain object, supporting both inline JSON
+ * (`--role-map '{"doer":["m1"]}'`) and an `@path/to/file.json` indirection
+ * (`--role-map @role-map.json`), matching the read-and-parse pattern already
+ * used for `requirementsFile` content elsewhere in this package
+ * (auto-sprint/runner.js reads requirementsFile content at sprint-start).
+ * @param {string|undefined} rawValue - the raw `--role-map` flag value
+ * @param {{ readFile?: (path: string, encoding: string) => Promise<string> }} [deps] - injectable for tests
+ * @returns {Promise<object|undefined>}
+ */
+export async function resolveRoleMap(rawValue, deps = {}) {
+    if (rawValue === undefined) return undefined;
+    const readFile = deps.readFile || fs.readFile;
+
+    let jsonText = rawValue;
+    if (rawValue.startsWith('@')) {
+        const filePath = rawValue.slice(1);
+        try {
+            jsonText = await readFile(filePath, 'utf-8');
+        } catch (err) {
+            throw new Error(`Error: could not read --role-map file '${filePath}': ${err.message}`);
+        }
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonText);
+    } catch (err) {
+        throw new Error(`Error: --role-map must be valid JSON (inline or @path/to/file.json): ${err.message}`);
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('Error: --role-map JSON must be an object mapping role -> member[] (e.g. {"doer":["m1","m2"]}).');
+    }
+    for (const [role, members] of Object.entries(parsed)) {
+        if (!Array.isArray(members) || members.some((m) => typeof m !== 'string' || m.length === 0)) {
+            throw new Error(`Error: --role-map entry for role "${role}" must be a non-empty array of member-name strings.`);
+        }
+    }
+
+    return parsed;
+}
+
+/**
+ * Builds the exact args object handed to `engine.executeFile()`, i.e. the
+ * object `auto-sprint/runner.js`'s `validateArgs()` consumes. Pulled into its
+ * own pure function so a test can assert `--requirements-file`/`--role-map`
+ * reach the runner's validated args correctly without standing up the fleet
+ * transport/workflow engine (apra-fleet-unw2.16, N14 (c)).
+ * @param {{
+ *   targetIssues: string[], members: string[], branch: string, baseBranch: string,
+ *   goal: string, maxCycles: number, requirementsFile: string|undefined, roleMap: object|undefined,
+ * }} opts
+ * @returns {object}
+ */
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap }) {
+    const args = {
+        target_issues: targetIssues,
+        members,
+        branch,
+        base_branch: baseBranch,
+        goal,
+        max_cycles: maxCycles,
+    };
+    if (requirementsFile !== undefined) args.requirementsFile = requirementsFile;
+    if (roleMap !== undefined) args.roleMap = roleMap;
+    return args;
+}
+
+/**
+ * Splits `--members` against the fleet's registered member names and decides
+ * whether the sprint may proceed.
+ *
+ * Before this issue, a missing configured member was only warned about and
+ * silently dropped -- shrinking the doer/reviewer pool without the user
+ * necessarily noticing. Now: any missing member ABORTS unless
+ * `--allow-missing-members` is explicitly passed, in which case the previous
+ * warn-and-continue behavior is preserved (apra-fleet-unw2.16, N14 (b)).
+ * @param {{ rawMembers: string[], registeredNames: Set<string>, allowMissingMembers: boolean }} opts
+ * @returns {{ ok: boolean, validMembers: string[], missingMembers: string[], message: string|null }}
+ */
+export function resolveMemberValidation({ rawMembers, registeredNames, allowMissingMembers }) {
+    const validMembers = [];
+    const missingMembers = [];
+    for (const m of rawMembers) {
+        if (registeredNames.has(m)) validMembers.push(m);
+        else missingMembers.push(m);
+    }
+
+    if (validMembers.length === 0) {
+        return {
+            ok: false,
+            validMembers,
+            missingMembers,
+            message: `Error: All specified members are missing or invalid: ${rawMembers.join(', ')}`,
+        };
+    }
+
+    if (missingMembers.length > 0 && !allowMissingMembers) {
+        return {
+            ok: false,
+            validMembers,
+            missingMembers,
+            message:
+                `Error: The following configured members are missing from the fleet: ${missingMembers.join(', ')}. ` +
+                `Refusing to silently shrink the doer/reviewer pool. Pass --allow-missing-members to proceed with ` +
+                `only the remaining member(s) (${validMembers.join(', ')}).`,
+        };
+    }
+
+    const message = missingMembers.length > 0
+        ? `Warning: The following members are missing and will be ignored: ${missingMembers.join(', ')}`
+        : null;
+
+    return { ok: true, validMembers, missingMembers, message };
+}
+
+/**
+ * Verifies every target issue exists, run on the ORCHESTRATOR MEMBER via the
+ * fleet transport (`runBdShow`) -- NOT on the local machine. The sprint's own
+ * `bd` commands run against the orchestrator member's beads DB (see
+ * auto-sprint/runner.js's SUPPORTED-TOPOLOGY NOTE), which can be a different
+ * database than whatever is local to wherever this CLI process happens to
+ * run. Checking locally could pass (or worse, resolve a same-named-but-
+ * different issue) while the actual sprint dispatch on the member fails
+ * (apra-fleet-unw2.16, N14 (d)). This runs AFTER the fleet transport/
+ * `initialize` handshake is established and BEFORE any sprint phase begins.
+ * @param {{ targetIssues: string[], member: string, runBdShow: (id: string, member: string) => Promise<{ isError?: boolean, content?: Array<{text: string}> }> }} opts
+ * @returns {Promise<{ ok: boolean, missing: string[], message: string }>}
+ */
+export async function checkIssuesExistOnMember({ targetIssues, member, runBdShow }) {
+    const missing = [];
+    for (const id of targetIssues) {
+        try {
+            const res = await runBdShow(id, member);
+            if (res && res.isError) {
+                missing.push(id);
+            }
+        } catch (err) {
+            missing.push(id);
+        }
+    }
+    if (missing.length > 0) {
+        return {
+            ok: false,
+            missing,
+            message: `Error: The following target issues are missing from the database on member '${member}': ${missing.join(', ')}`,
+        };
+    }
+    return {
+        ok: true,
+        missing: [],
+        message: `[Precondition] All ${targetIssues.length} target issue(s) verified present on member '${member}'.`,
+    };
+}
+
+/**
+ * Formats a clean, actionable message for a viewer `server.listen()`
+ * failure -- in particular a port collision (EADDRINUSE) -- instead of
+ * letting it surface as an unhandled 'error' event / uncaught crash before
+ * the sprint even starts (apra-fleet-unw2.16, N14 (e)).
+ * @param {number} port
+ * @param {NodeJS.ErrnoException} err
+ * @returns {string}
+ */
+export function formatViewerListenError(port, err) {
+    if (err && err.code === 'EADDRINUSE') {
+        return `viewer port ${port} is already in use, try --viewer-port <other port>.`;
+    }
+    return `viewer server error: ${err && err.message ? err.message : String(err)}`;
+}
+
+/**
+ * Attaches an `error` listener to the dashboard viewer's http.Server so a
+ * `server.listen()` failure (most commonly a port collision) reports a
+ * clean, actionable message via `onError` instead of an unhandled 'error'
+ * event crashing the process.
+ * @param {import('http').Server} server
+ * @param {number} port
+ * @param {{ onError?: (message: string, err: NodeJS.ErrnoException) => void }} [opts]
+ * @returns {import('http').Server}
+ */
+export function attachViewerErrorHandler(server, port, opts = {}) {
+    server.on('error', (err) => {
+        const message = formatViewerListenError(port, err);
+        if (typeof opts.onError === 'function') opts.onError(message, err);
+    });
+    return server;
+}
+
+async function main() {
+    const { values } = parseCliArgs(process.argv.slice(2));
+
+    if (values.help) {
+        console.log(USAGE_TEXT);
         process.exit(0);
     }
 
@@ -93,6 +320,9 @@ Options:
     const baseBranch = values.base;
     const goal = values.goal;
     const maxCycles = values['max-cycles'] !== undefined ? Number(values['max-cycles']) : 5;
+    const allowMissingMembers = Boolean(values['allow-missing-members']);
+    const requirementsFile = values['requirements-file'];
+    const viewerPort = values['viewer-port'] !== undefined ? Number(values['viewer-port']) : DEFAULT_VIEWER_PORT;
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -100,10 +330,12 @@ Options:
     // malformed id can never reach a shell command even if this CLI layer
     // is somehow bypassed -- both layers share the exact same validators
     // (imported from runner.js) so there is a single source of truth.
+    let roleMap;
     try {
         targetIssues.forEach(validateIssueId);
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
+        roleMap = await resolveRoleMap(values['role-map']);
     } catch (err) {
         console.error(`Error: ${err.message}`);
         process.exit(1);
@@ -114,24 +346,20 @@ Options:
         process.exit(1);
     }
 
-    // --- Precondition Validations ---
-
-    // 1. Validate issues exist via `bd show <id>`.
-    const missingIssues = [];
-    for (const id of targetIssues) {
-        try {
-            await execFile('bd', ['show', id]);
-        } catch (err) {
-            missingIssues.push(id);
-        }
-    }
-    if (missingIssues.length > 0) {
-        console.error(`Error: The following target issues are missing from the database: ${missingIssues.join(', ')}`);
+    if (!Number.isInteger(viewerPort) || viewerPort < 1 || viewerPort > 65535) {
+        console.error(`Error: --viewer-port must be a valid TCP port number, got "${values['viewer-port']}".`);
         process.exit(1);
     }
 
-    // 2. Stand up the fleet MCP transport so member validation and the
-    // sprint itself run against the same live client/connection.
+    // --- Precondition Validations ---
+
+    // 1. Stand up the fleet MCP transport FIRST, so member validation, the
+    // "bd show" issue precondition (below), and the sprint itself all run
+    // against the same live client/connection -- and so the issue
+    // precondition can target the orchestrator MEMBER rather than the local
+    // machine (apra-fleet-unw2.16, N14 (d): the sprint's own `bd` commands
+    // run on the member via the fleet transport, which can be a different
+    // database than whatever is local to this CLI process).
     const { command: serverCommand, args: serverArgs } = resolveFleetServerCommand();
     const transport = new StdioTransport(serverCommand, serverArgs);
     await transport.start();
@@ -149,31 +377,43 @@ Options:
 
     const fleetApi = new ApraFleet(mcpClient);
 
-    // 3. Validate members exist via the fleet's list_members tool.
+    // 2. Validate members exist via the fleet's list_members tool.
     let validMembers = [];
-    let missingMembers = [];
     try {
         const listRes = await fleetApi.listMembers({ format: 'json' });
         const text = listRes && listRes.content && listRes.content[0] ? listRes.content[0].text : JSON.stringify(listRes);
         const parsed = JSON.parse(text);
         const registeredNames = new Set((parsed.members || []).map(m => m.name));
-        for (const m of rawMembers) {
-            if (registeredNames.has(m)) validMembers.push(m);
-            else missingMembers.push(m);
+        const result = resolveMemberValidation({ rawMembers, registeredNames, allowMissingMembers });
+        if (!result.ok) {
+            console.error(result.message);
+            transport.stop();
+            process.exit(1);
         }
+        if (result.message) console.warn(result.message);
+        validMembers = result.validMembers;
     } catch (err) {
         console.error(`Error: Failed to list fleet members: ${err.message}`);
         transport.stop();
         process.exit(1);
     }
 
-    if (validMembers.length === 0) {
-        console.error(`Error: All specified members are missing or invalid: ${rawMembers.join(', ')}`);
+    // 3. bd show issue precondition -- run on the orchestrator MEMBER via the
+    // fleet transport (apra-fleet-unw2.16, N14 (d)), immediately after the
+    // transport/initialize handshake above and before any sprint phase
+    // begins. The orchestrator member mirrors auto-sprint/runner.js's
+    // `getMemberForRole('Orchestrator')` resolution: roleMap.Orchestrator[0]
+    // if configured, else the first valid member.
+    const orchestratorMember = (roleMap && roleMap.Orchestrator && roleMap.Orchestrator[0]) || validMembers[0];
+    const issueCheck = await checkIssuesExistOnMember({
+        targetIssues,
+        member: orchestratorMember,
+        runBdShow: async (id, member) => fleetApi.executeCommand({ command: `bd show ${id}`, member_name: member }),
+    });
+    if (!issueCheck.ok) {
+        console.error(issueCheck.message);
         transport.stop();
         process.exit(1);
-    }
-    if (missingMembers.length > 0) {
-        console.warn(`Warning: The following members are missing and will be ignored: ${missingMembers.join(', ')}`);
     }
 
     // 4. N4 (apra-fleet-unw2.4) multi-member topology precondition.
@@ -219,23 +459,41 @@ Options:
     const engine = new WorkflowEngine(workflow);
 
     const server = createDashboardViewer(workflow, {
-        port: 8080,
+        port: viewerPort,
         name: 'Auto-Sprint',
         dashboardExtensions: [beadsExtension]
     });
 
-    console.log('Dashboard live at http://localhost:8080');
+    // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no
+    // `error` handler on `server.listen()`, so a port collision crashed the
+    // process uncleanly before the sprint even started. Report a clean,
+    // actionable message and exit instead.
+    let viewerFailed = false;
+    attachViewerErrorHandler(server, viewerPort, {
+        onError: (message) => {
+            viewerFailed = true;
+            console.error(`Error: ${message}`);
+            transport.stop();
+            process.exit(1);
+        },
+    });
+
+    console.log(`Dashboard live at http://localhost:${viewerPort}`);
+
+    if (viewerFailed) return; // process.exit already called synchronously above
 
     try {
         const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
-        const res = await engine.executeFile(scriptPath, {
-            target_issues: targetIssues,
+        const res = await engine.executeFile(scriptPath, buildRunnerArgs({
+            targetIssues,
             members: validMembers,
             branch: branchName,
-            base_branch: baseBranch,
-            goal: goal,
-            max_cycles: maxCycles
-        });
+            baseBranch,
+            goal,
+            maxCycles,
+            requirementsFile,
+            roleMap,
+        }));
         console.log('Sprint finished:', res);
     } catch (err) {
         console.error('Sprint failed:', err);
@@ -247,7 +505,17 @@ Options:
     }
 }
 
-main().catch(err => {
-    console.error(err);
-    process.exit(1);
-});
+function isMainModule() {
+    try {
+        return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+    } catch {
+        return false;
+    }
+}
+
+if (isMainModule()) {
+    main().catch(err => {
+        console.error(err);
+        process.exit(1);
+    });
+}
