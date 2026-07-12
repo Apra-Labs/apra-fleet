@@ -11,6 +11,7 @@ import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology } from '../auto-sprint/runner.js';
+import { normalizeRole } from '../auto-sprint/contracts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -147,7 +148,31 @@ export async function resolveRoleMap(rawValue, deps = {}) {
         }
     }
 
-    return parsed;
+    // N15 (apra-fleet-unw2.11): normalize every key via
+    // contracts.normalizeRole() (trim + lowercase) HERE -- this is where
+    // roleMap keys first enter the system from a user-supplied
+    // `--role-map`/`@file.json` value, so callers of `resolveRoleMap()`
+    // (including this CLI's own pre-transport `orchestratorMember` lookup
+    // below, and runner.js's `validateArgs()`, which normalizes again
+    // defensively for callers that bypass the CLI and pass a raw roleMap
+    // straight to `engine.executeFile()`) can rely on keys already being in
+    // canonical lowercase form. This also covers the 'orchestrator'
+    // application-level pseudo-role key (see runner.js's ROLE_ORCHESTRATOR
+    // doc comment) -- it is not a vendored contracts.ROLES member but is
+    // still just a plain string key here, so the same normalization applies.
+    const normalized = {};
+    for (const [rawKey, members] of Object.entries(parsed)) {
+        const key = normalizeRole(rawKey);
+        if (Object.prototype.hasOwnProperty.call(normalized, key)) {
+            throw new Error(
+                `Error: --role-map key "${rawKey}" normalizes to "${key}", which collides with another key ` +
+                `already present in --role-map. Use a single casing/whitespace variant per role.`
+            );
+        }
+        normalized[key] = members;
+    }
+
+    return normalized;
 }
 
 /**
@@ -420,9 +445,14 @@ async function main() {
     // fleet transport (apra-fleet-unw2.16, N14 (d)), immediately after the
     // transport/initialize handshake above and before any sprint phase
     // begins. The orchestrator member mirrors auto-sprint/runner.js's
-    // `getMemberForRole('Orchestrator')` resolution: roleMap.Orchestrator[0]
-    // if configured, else the first valid member.
-    const orchestratorMember = (roleMap && roleMap.Orchestrator && roleMap.Orchestrator[0]) || validMembers[0];
+    // `getMemberForRole(ROLE_ORCHESTRATOR)` resolution: roleMap.orchestrator[0]
+    // if configured, else the first valid member. `roleMap` here is already
+    // key-normalized by `resolveRoleMap()` above (N15, apra-fleet-unw2.11),
+    // so the canonical lowercase 'orchestrator' key is the only one that can
+    // be present -- this must NOT read a capitalized 'Orchestrator' key (the
+    // N15 finding: that stray casing silently never matched a roleMap
+    // author's natural lowercase key).
+    const orchestratorMember = (roleMap && roleMap.orchestrator && roleMap.orchestrator[0]) || validMembers[0];
     const issueCheck = await checkIssuesExistOnMember({
         targetIssues,
         member: orchestratorMember,

@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import { AgentOutputError, CommandError } from '@apralabs/apra-fleet-workflow';
 import {
-    ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
+    ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError } from './errors.mjs';
@@ -29,6 +29,30 @@ function roleConst(name) {
 }
 const ROLE_DOER = roleConst('doer');
 const ROLE_REVIEWER = roleConst('reviewer');
+
+// ---------------------------------------------------------------------------
+// 'orchestrator' pseudo-role (apra-fleet-unw2.11, N15)
+// ---------------------------------------------------------------------------
+//
+// 'orchestrator' is deliberately NOT a member of `contracts.ROLES` and must
+// never be added to it: that enum is vendored (it mirrors the `name:`
+// frontmatter of vendor/apra-pm/agents/*.md 1:1) and this repo must not
+// diverge from it. 'orchestrator' has no vendor/apra-pm/agents/*.md
+// definition, no output/input schema, and is never passed to `agent()` --
+// it is never dispatched as a fleet agent at all. It exists purely as an
+// APPLICATION-LEVEL pseudo-role: a `roleMap` key a caller can use to pin
+// which physical fleet member the orchestrating PROCESS ITSELF (this file,
+// issuing `bd`/`git` commands directly -- see `orchestratorMember` below and
+// the SUPPORTED-TOPOLOGY NOTE) should act as. Because it is not a vendored
+// role, it is intentionally NOT passed through `roleConst()`/`ROLES`
+// membership checks (doing so would throw) and must never be used as a key
+// into a `bd show`-derived model-metadata lookup or any vendored schema
+// table. Always reference it via this constant (the canonical lowercase
+// form) rather than a literal -- this is the fix for the N15 finding, where
+// a stray `getMemberForRole('Orchestrator')` (capitalized) call site meant a
+// roleMap author who wrote the natural lowercase `'orchestrator'` key
+// silently fell back to `physicalMembers[0]` instead of being honored.
+const ROLE_ORCHESTRATOR = 'orchestrator';
 
 // ---------------------------------------------------------------------------
 // N10 (apra-fleet-unw2.8): fixed-role model defaults
@@ -374,6 +398,37 @@ export function validateArgs(args) {
     if (args.roleMap !== undefined && (typeof args.roleMap !== 'object' || args.roleMap === null || Array.isArray(args.roleMap))) {
         throw new Error('[Arg Contract] Invalid roleMap: must be an object mapping role -> member[].');
     }
+    // N15 (apra-fleet-unw2.11): normalize EVERY roleMap key via
+    // contracts.normalizeRole() (trim + lowercase) HERE, at validateArgs()
+    // time -- the single normalization point for this arg. A caller-supplied
+    // key of any casing/whitespace variant (e.g. 'Doer', ' doer ', 'DOER',
+    // or the 'orchestrator' pseudo-role itself -- see ROLE_ORCHESTRATOR
+    // above) resolves identically to its canonical lowercase form, fixing
+    // the class of bug where `getMembersForRole`/`getMemberForRole` compared
+    // an un-normalized roleMap key against a canonical lowercase role
+    // constant and silently missed the match (the concrete instance being
+    // the old `getMemberForRole('Orchestrator')` call site below, which
+    // never matched a roleMap author's natural lowercase `orchestrator`
+    // key). Every downstream reader of `validated.roleMap`
+    // (getMemberForRole/getMembersForRole) can assume keys are already
+    // normalized -- neither may re-read `args.roleMap` directly. Two
+    // differently-cased input keys that normalize to the same key are
+    // rejected loudly (ambiguous authorial intent) rather than one silently
+    // clobbering the other.
+    let normalizedRoleMap;
+    if (args.roleMap !== undefined) {
+        normalizedRoleMap = {};
+        for (const [rawKey, value] of Object.entries(args.roleMap)) {
+            const key = normalizeRole(rawKey);
+            if (Object.prototype.hasOwnProperty.call(normalizedRoleMap, key)) {
+                throw new Error(
+                    `[Arg Contract] Invalid roleMap: key "${rawKey}" normalizes to "${key}", which collides with ` +
+                    `another key already present in roleMap. Use a single casing/whitespace variant per role.`
+                );
+            }
+            normalizedRoleMap[key] = value;
+        }
+    }
 
     // --- budget (optional; N10, apra-fleet-unw2.8) -----------------------
     // A USD ceiling for this run's total estimated spend. When provided,
@@ -398,7 +453,7 @@ export function validateArgs(args) {
         goal,
         maxCycles,
         requirementsFile: args.requirementsFile,
-        roleMap: args.roleMap,
+        roleMap: normalizedRoleMap,
         budget: args.budget,
     };
 }
@@ -998,7 +1053,11 @@ export async function main(context) {
         return [physicalMembers[0]];
     };
 
-    const orchestratorMember = getMemberForRole('Orchestrator');
+    // N15 (apra-fleet-unw2.11): must use the canonical lowercase
+    // ROLE_ORCHESTRATOR constant, not a literal -- see its doc comment near
+    // the top of this file for why 'orchestrator' is an application-level
+    // pseudo-role, deliberately outside contracts.ROLES.
+    const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
     /**
      * N8 (apra-fleet-unw2.6, work items b/c): dispatches one reviewer round

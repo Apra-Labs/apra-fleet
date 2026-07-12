@@ -102,6 +102,55 @@ describe('validateArgs', () => {
         assert.deepStrictEqual(result.roleMap, { planner: ['member-a'] });
     });
 
+    // -------------------------------------------------------------------
+    // N15 (apra-fleet-unw2.11): roleMap key normalization + the
+    // 'orchestrator' application-level pseudo-role.
+    // -------------------------------------------------------------------
+
+    test('normalizes mixed-case/whitespace-variant roleMap keys to canonical lowercase', () => {
+        const result = validateArgs({
+            ...VALID_ARGS,
+            roleMap: {
+                '  Doer  ': ['member-a'],
+                'REVIEWER': ['member-b'],
+                'Plan-Reviewer': ['member-c'],
+            },
+        });
+        assert.deepStrictEqual(result.roleMap, {
+            doer: ['member-a'],
+            reviewer: ['member-b'],
+            'plan-reviewer': ['member-c'],
+        });
+    });
+
+    test('accepts the "orchestrator" pseudo-role as a roleMap key (not a member of ROLES) without throwing', () => {
+        const result = validateArgs({
+            ...VALID_ARGS,
+            roleMap: { orchestrator: ['member-a'], doer: ['member-b'] },
+        });
+        assert.deepStrictEqual(result.roleMap, { orchestrator: ['member-a'], doer: ['member-b'] });
+    });
+
+    test('normalizes a mixed-case "Orchestrator" roleMap key to lowercase "orchestrator"', () => {
+        const result = validateArgs({
+            ...VALID_ARGS,
+            roleMap: { Orchestrator: ['member-a'] },
+        });
+        assert.deepStrictEqual(result.roleMap, { orchestrator: ['member-a'] });
+    });
+
+    test('rejects roleMap keys that collide once normalized', () => {
+        assert.throws(
+            () => validateArgs({ ...VALID_ARGS, roleMap: { Doer: ['member-a'], doer: ['member-b'] } }),
+            /roleMap: key "doer" normalizes to "doer", which collides/
+        );
+    });
+
+    test('roleMap is undefined when not passed (no normalization side effect)', () => {
+        const result = validateArgs(VALID_ARGS);
+        assert.strictEqual(result.roleMap, undefined);
+    });
+
     test('rejects unknown args loudly', () => {
         assert.throws(
             () => validateArgs({ ...VALID_ARGS, bogus_flag: 'x' }),
@@ -174,14 +223,21 @@ function buildSpyFleetApi() {
     const calls = { executeCommand: 0, executePrompt: 0 };
     const commandLog = [];
     const promptLog = [];
+    // N15 (apra-fleet-unw2.11): parallel log of { command, member_name } for
+    // tests that need to assert WHICH member a given command dispatched to
+    // (commandLog above is command-strings-only and used by pre-existing
+    // assertions that must not change shape).
+    const dispatchLog = [];
 
     return {
         calls,
         commandLog,
         promptLog,
+        dispatchLog,
         executeCommand: async (opts) => {
             calls.executeCommand++;
             commandLog.push(opts.command);
+            dispatchLog.push({ command: opts.command, member_name: opts.member_name });
 
             if (/^(git|gh)\s/.test(opts.command)) {
                 return { content: [{ text: 'ok' }] };
@@ -363,5 +419,71 @@ describe('runner.js mock-level execution', () => {
 
         assert.strictEqual(spy.calls.executeCommand, 0);
         assert.strictEqual(spy.calls.executePrompt, 0);
+    });
+
+    // -------------------------------------------------------------------
+    // N15 (apra-fleet-unw2.11): a roleMap with mixed-case/whitespace-variant
+    // keys dispatches to the mapped member, and the 'orchestrator'
+    // pseudo-role is honored WITHOUT being validated against contracts.ROLES.
+    // -------------------------------------------------------------------
+
+    test('a mixed-case roleMap key normalizes and dispatches orchestrator-side bd commands to the mapped member', async () => {
+        const spy = buildSpyFleetApi();
+        const workflow = new FleetWorkflow(spy);
+        const engine = new WorkflowEngine(workflow);
+
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1',
+            members: ['local', 'member-x'],
+            branch: 'auto-sprint/rolemap-casing-test',
+            base_branch: 'main',
+            max_cycles: 1,
+            // Mixed casing/whitespace: must resolve identically to the
+            // canonical lowercase 'orchestrator' key and route every
+            // orchestrator-side `bd` command to 'member-x'. (git
+            // fetch/checkout commands go to the UNION of orchestrator/doer/
+            // reviewer pools -- see runner.js's branchEnsureMembers/N4 -- so
+            // this asserts on the `bd `-prefixed commands specifically,
+            // which always use `orchestratorMember`.)
+            roleMap: { '  Orchestrator  ': ['member-x'] },
+        }, true);
+
+        assert.strictEqual(result.status, 'success');
+
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd '));
+        assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
+        for (const { command, member_name } of bdDispatches) {
+            assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
+        }
+    });
+
+    test('roleMap: { orchestrator: [...] } (lowercase) is honored for orchestrator-side bd dispatch, with no ROLES/schema validation involved', async () => {
+        const spy = buildSpyFleetApi();
+        const workflow = new FleetWorkflow(spy);
+        const engine = new WorkflowEngine(workflow);
+
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1',
+            members: ['local', 'member-y'],
+            branch: 'auto-sprint/rolemap-orchestrator-test',
+            base_branch: 'main',
+            max_cycles: 1,
+            roleMap: { orchestrator: ['member-y'] },
+        }, true);
+
+        assert.strictEqual(result.status, 'success');
+
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd '));
+        assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
+        for (const { command, member_name } of bdDispatches) {
+            assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);
+        }
+        // 'orchestrator' must never surface as a dispatched agent role (it
+        // has no vendor/apra-pm/agents/*.md definition/schema): confirm no
+        // executePrompt() call ever used agent === 'orchestrator'.
+        assert.ok(
+            spy.promptLog.every((p) => p.agent !== 'orchestrator'),
+            'orchestrator must never be dispatched as an agent (it is not a member of contracts.ROLES)'
+        );
     });
 });
