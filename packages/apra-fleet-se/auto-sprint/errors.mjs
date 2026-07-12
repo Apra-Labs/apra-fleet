@@ -74,3 +74,45 @@ export class StalledSprintError extends WorkflowError {
         this.closedCountHistory = closedCountHistory;
     }
 }
+
+/**
+ * apra-fleet-unw2.6 (N8) -- thrown when the reviewer persistently returns a
+ * self-contradictory verdict: `CHANGES_NEEDED` with BOTH `reopenIds` and
+ * `newTasks` empty. That combination is schema-legal but semantically
+ * meaningless -- `CHANGES_NEEDED` asserts more work is required, yet the
+ * verdict names nothing to reopen and proposes no new follow-up work, so
+ * there is nothing for the orchestrator to act on. Left unhandled, this
+ * "verdict" can never resolve to APPROVED and never produces a reopened/new
+ * bead either, so a cycle loop that keeps hitting it makes no closed-bead
+ * progress -- which apra-fleet-unw.17's stall-abort bookkeeping cannot tell
+ * apart from genuine no-progress, and can misreport an otherwise-finished
+ * sprint (every bead already closed) as `StalledSprintError`.
+ *
+ * The cycle loop retries the review dispatch exactly once when this
+ * contradiction is first seen (the reviewer may have been dispatched with
+ * stale/incomplete context); if the SAME contradiction repeats on the
+ * retry, this error is thrown instead of letting the round silently
+ * accumulate toward stall-abort. Never caught inside runner.js's cycle
+ * loop -- it unwinds `runWithContext()`'s promise and fails the whole
+ * sprint run, the same way `StalledSprintError`/`SprintPlanRejectedError` do.
+ *
+ * @property {number} cycle - the outer sprint cycle the violation occurred in
+ * @property {string|null} notes - the reviewer's own `notes` field from the
+ *   contradictory verdict, carried through for a human/CI reading the failure
+ */
+export class ReviewerContractViolationError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ cycle?: number, notes?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { cycle, notes = null, details, cause } = opts;
+        super(message, {
+            code: 'REVIEWER_CONTRACT_VIOLATION',
+            details: { cycle, notes, ...details },
+            cause,
+        });
+        this.cycle = cycle;
+        this.notes = notes;
+    }
+}

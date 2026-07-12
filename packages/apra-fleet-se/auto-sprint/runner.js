@@ -4,7 +4,7 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop (apra-fleet-unw.16)
@@ -589,6 +589,22 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
     ].join('\n\n');
 }
 
+/**
+ * apra-fleet-unw2.6 (N8, work item b): detects the reviewer contract
+ * violation described on `ReviewerContractViolationError` -- a
+ * `CHANGES_NEEDED` verdict that names nothing to reopen and proposes no new
+ * follow-up work is schema-legal but self-contradictory: there is nothing
+ * for the orchestrator to act on, so the sprint can never make progress off
+ * of it.
+ * @param {{ verdict: string, reopenIds?: string[], newTasks?: object[] }} verdict
+ * @returns {boolean}
+ */
+function isReviewerContractViolation(verdict) {
+    return verdict.verdict === 'CHANGES_NEEDED'
+        && (!verdict.reopenIds || verdict.reopenIds.length === 0)
+        && (!verdict.newTasks || verdict.newTasks.length === 0);
+}
+
 // ---------------------------------------------------------------------------
 // newTasks validation (apra-fleet-unw2.3 / N3): reviewer-authored newTasks
 // are LLM output -- and the reviewer's own context includes the diff under
@@ -766,6 +782,77 @@ export async function main(context) {
     };
 
     const orchestratorMember = getMemberForRole('Orchestrator');
+
+    /**
+     * N8 (apra-fleet-unw2.6, work items b/c): dispatches one reviewer round
+     * and returns its schema-validated verdict, with the shared
+     * contract-violation retry/surface behavior factored out so BOTH the
+     * normal per-round Develop/Review dispatch AND the Cycle Evaluation
+     * re-review dispatch (work item c) apply the exact same rule: a
+     * `CHANGES_NEEDED` verdict with empty `reopenIds` AND empty `newTasks`
+     * is schema-legal but self-contradictory (nothing for the orchestrator
+     * to act on). The SAME dispatch is retried once; if the contradiction
+     * repeats, this throws `ReviewerContractViolationError` rather than
+     * returning a verdict that could silently accumulate toward
+     * stall-abort as if it were legitimate no-progress.
+     * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
+     * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], newTasks: object[] }>}
+     */
+    async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
+        const reviewerPool = getMembersForRole(ROLE_REVIEWER);
+        let verdict;
+        for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt++) {
+            try {
+                verdict = await agent(
+                    buildReviewerPrompt({
+                        beadIds,
+                        acceptanceCriteriaJson,
+                        baseBranch: validated.baseBranch,
+                        branch: validated.branch,
+                    }),
+                    {
+                        member_name: reviewerPool[0],
+                        agentType: 'reviewer',
+                        schema: reviewerVerdict,
+                    }
+                );
+            } catch (err) {
+                if (err instanceof AgentOutputError) {
+                    log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
+                    verdict = {
+                        verdict: 'CHANGES_NEEDED',
+                        notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                        reopenIds: [],
+                        newTasks: [],
+                    };
+                } else {
+                    throw err;
+                }
+            }
+            log(`Reviewer: ${JSON.stringify(verdict)}`);
+
+            if (!isReviewerContractViolation(verdict)) {
+                return verdict;
+            }
+            if (reviewAttempt < 2) {
+                log(
+                    `Reviewer: CHANGES_NEEDED verdict with empty reopenIds AND empty newTasks is a ` +
+                    `contract violation (nothing for the orchestrator to act on) -- retrying the review ` +
+                    `once (attempt ${reviewAttempt} of 2) before treating this as a distinct failure.`
+                );
+            } else {
+                throw new ReviewerContractViolationError(
+                    `Reviewer returned CHANGES_NEEDED with empty reopenIds AND empty newTasks twice in a ` +
+                    `row (cycle ${cycle}) -- a self-contradictory verdict with nothing for the ` +
+                    `orchestrator to act on. Refusing to let this silently accumulate toward stall-abort.`,
+                    { cycle, notes: verdict.notes }
+                );
+            }
+        }
+        // Unreachable (the loop above always returns or throws), but keeps
+        // this function's return type honest for static analysis.
+        return verdict;
+    }
 
     // N4 (apra-fleet-unw2.4): the sprint branch must be git-ensured on EVERY
     // member that will operate on it, not just the orchestrator. Doers
@@ -945,10 +1032,27 @@ export async function main(context) {
     // zero open goal-priority beads AND an APPROVED last reviewer verdict --
     // a cycle where the ready-bead list happened to empty out while the
     // last review round was still CHANGES_NEEDED must not be read as done).
+    //
+    // N8 (apra-fleet-unw2.6, work item a): this MUST be reset to `null` at
+    // the top of every cycle (see below) -- previously it was declared once,
+    // here, and never reset, so an APPROVED verdict from cycle N could still
+    // read as "approved" in cycle N+1's Cycle Evaluation even when N+1's
+    // Develop/Review loop was skipped entirely (no ready beads -> no fresh
+    // review of N+1's actual state). `reviewedThisCycle` tracks whether a
+    // review genuinely ran THIS cycle, so the Cycle Evaluation section below
+    // can tell "fresh APPROVED" apart from "stale APPROVED left over from an
+    // earlier cycle" and dispatch a re-review before ever trusting the
+    // latter (work item c).
     let lastReviewVerdict = null;
+    let reviewedThisCycle = false;
 
     while (cycle <= MAX_CYCLES) {
         group(`Sprint Cycle ${cycle}`);
+
+        // N8 (work item a): reset per-cycle review state -- a verdict is
+        // only ever trustworthy for THE CYCLE that actually produced it.
+        lastReviewVerdict = null;
+        reviewedThisCycle = false;
 
         // N4: after the first cycle, re-ensure (non-destructively) that every
         // member is still on the sprint branch before this cycle's doers run.
@@ -1105,7 +1209,6 @@ export async function main(context) {
         const perBeadFeedback = new Map();
 
         const doerPool = getMembersForRole(ROLE_DOER);
-        const reviewerPool = getMembersForRole(ROLE_REVIEWER);
 
         while (devRounds < 3) {
             const currentListRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
@@ -1253,40 +1356,23 @@ export async function main(context) {
                 ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true })
                 : '[]';
 
-            let verdict;
-            try {
-                verdict = await agent(
-                    buildReviewerPrompt({
-                        beadIds: assignedBeadIds,
-                        acceptanceCriteriaJson,
-                        baseBranch: validated.baseBranch,
-                        branch: validated.branch,
-                    }),
-                    {
-                        member_name: reviewerPool[0],
-                        agentType: 'reviewer',
-                        schema: reviewerVerdict,
-                    }
-                );
-            } catch (err) {
-                if (err instanceof AgentOutputError) {
-                    log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
-                    verdict = {
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
-                        reopenIds: [],
-                        newTasks: [],
-                    };
-                } else {
-                    throw err;
-                }
-            }
-            log(`Reviewer: ${JSON.stringify(verdict)}`);
+            // N8 (work item b): dispatchReview() applies the shared
+            // contract-violation retry-once-then-throw rule (see its own doc
+            // comment and ReviewerContractViolationError) -- a CHANGES_NEEDED
+            // verdict with both reopenIds and newTasks empty is
+            // self-contradictory and must never be treated as an ordinary
+            // "more work needed" round.
+            const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
             // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
             // Evaluation section's completion check below -- goal-priority
             // completion requires this to be exactly 'APPROVED', not just
             // an empty ready-bead list.
             lastReviewVerdict = verdict.verdict;
+            // N8 (work item a/c): a review genuinely ran THIS cycle -- the
+            // Cycle Evaluation section below only trusts `lastReviewVerdict`
+            // when this is true (see `reviewedThisCycle` reset at the top of
+            // the cycle loop and the re-review dispatch it guards).
+            reviewedThisCycle = true;
 
             // Orchestrator (this code) -- NOT the LLM -- applies every
             // structured transition: reopenIds via `bd update --status=open`,
@@ -1448,6 +1534,58 @@ export async function main(context) {
                 `Closed-count history: [${closedCountHistory.join(', ')}]. Aborting rather than burning the remaining cycles.`,
                 { staleCycles, closedCountHistory, cycle }
             );
+        }
+
+        // N8 (apra-fleet-unw2.6, work item c): the exit decision below must
+        // never rely on a verdict from an EARLIER cycle. `lastReviewVerdict`
+        // is reset to null at the top of every cycle (work item a) and only
+        // set when a review genuinely ran THIS cycle (`reviewedThisCycle`).
+        // If the goal-priority bead count already reads 0 but no review ran
+        // this cycle (e.g. the Develop/Review loop was skipped because
+        // there were no ready beads), dispatch one fresh review of the
+        // CURRENT state here, before ever deciding to exit -- rather than
+        // either (a, the pre-fix bug) silently exiting on a stale verdict
+        // nothing this cycle actually backs, or (b) looping forever with no
+        // way to ever confirm completion.
+        if (openAtGoal.length === 0 && !reviewedThisCycle) {
+            phase(`Re-Review C${cycle}`);
+            log(
+                `Cycle ${cycle}: 0 open goal-priority bead(s) but no review ran THIS cycle (Develop/Review ` +
+                `loop was skipped) -- dispatching a fresh re-review of the current state before deciding ` +
+                `whether to exit, rather than trusting a verdict from an earlier cycle.`
+            );
+            const reReviewScopeRes = await command(
+                `bd list ${sprintFilter} --json`,
+                { member_name: orchestratorMember, silent: true, label: `Re-review evidence (current full scope state)` }
+            );
+            const reReviewVerdict = await dispatchReview({ beadIds: [], acceptanceCriteriaJson: reReviewScopeRes });
+            lastReviewVerdict = reReviewVerdict.verdict;
+            reviewedThisCycle = true;
+
+            // Same orchestrator-applies-the-transition contract as the
+            // regular Develop/Review dispatch above: a re-review that
+            // reopens beads or proposes follow-up work must have those
+            // effects actually applied, not silently discarded just because
+            // this dispatch happened outside the normal Develop loop.
+            for (const id of reReviewVerdict.reopenIds) {
+                await command(
+                    `bd update ${id} --status=open`,
+                    { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per re-review verdict` }
+                );
+            }
+            for (const newTask of reReviewVerdict.newTasks) {
+                const validation = validateNewTask(newTask);
+                if (!validation.ok) {
+                    log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
+                    rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    continue;
+                }
+                const { title, description, priority } = validation;
+                await command(
+                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues.join(',')} --silent`,
+                    { member_name: orchestratorMember, silent: true, label: `Create follow-up task from re-review newTasks: ${title}` }
+                );
+            }
         }
 
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED') {
