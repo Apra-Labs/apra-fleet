@@ -1,203 +1,233 @@
-# Remediation Plan: apra-fleet-workflow + apra-fleet-se/auto-sprint
+# Remediation Plan, Round 2: apra-fleet-workflow + apra-fleet-se/auto-sprint
 
 **Date:** 2026-07-11
-**Input:** `docs/feedback.md` (findings F1-F11, A0-A7, testing gaps 1-4) plus new findings V1-V4 (below).
-**Tracking:** beads epic `apra-fleet-unw` with 19 child issues. This document is a map onto the
-beads DB, not a duplicate of it -- each issue's description is self-contained (finding refs,
-file scope, work items, acceptance criteria). Run `bd ready` to get the next unit(s) of work;
+**Input:** `docs/feedback-reassessment.md` (new findings N1-N18, plus F/A residues folded into
+them: F3's inert budget -> N10, F6's replay defects -> N5/N6, F10's plan-reviewer scope -> N1,
+A7's re-entry -> N3).
+**Supersedes:** the round-1 plan (epic `apra-fleet-unw`, closed). Git history preserves it.
+**Tracking:** beads epic `apra-fleet-unw2` with 20 child issues. This document is a map onto
+the beads DB, not a duplicate of it -- each issue's description is self-contained (finding
+refs, file scope, work items, acceptance criteria). Run `bd ready` for the next unit(s);
 `bd show <id>` for the full spec.
 
-**Hard constraint honored throughout:** no changes to the apra-fleet MCP server
-(`apra-fleet.exe`, external repo). All work lives in `packages/apra-fleet-workflow`,
-`packages/apra-fleet-se`, `packages/apra-fleet-client`, and (via upstream PR) `vendor/apra-pm`.
+**Ordering principle (different from round 1):** round 1 was derived bottom-up (harness ->
+contracts -> phases -> verification) because nothing was verifiable. That foundation now
+exists and is green (WF 86/86, SE 95/95). Round 2 is ordered strictly by SEVERITY: the
+reassessment's center of gravity is seam defects between independently-approved halves, and
+the most severe one (N1) breaks every real sprint. So: Group A (critical contract
+realignment + its regression tripwire) first, then Group B (highs), Group C (mediums),
+Group D (lows), with a parallel vendor track.
+
+**Hard constraints (unchanged from round 1):**
+
+- No changes to the apra-fleet MCP server (`apra-fleet.exe`, external repo).
+- **NO push of vendor/apra-pm to `Apra-Labs/apra-pm`.** All vendor work stays on the local
+  branch `tmp/unw13-vendor-agent-defs` (worktree `C:\akhil\git\wt-unw13\vendor\apra-pm`),
+  unpushed, pending the user's explicit sign-off. This plan does not change that gate.
+- Outer-repo work lands on `feat/fleet-reorg` via the ritual below.
 
 ---
 
-## 1. Bottom-up dependency analysis (why this order)
+## 1. State of the world this plan assumes (verified 2026-07-11, post-merge)
 
-This is a fresh derivation, not feedback.md's top-5 order. The reasoning:
+- `feat/fleet-reorg` HEAD `2d621dc`: the `contracts.mjs` consumer-side rename
+  (`<role>.json` -> `<role>-output.json`) and the fixture regeneration
+  (`SE/test/fixtures/vendor-apra-pm-schemas/*-{input,output}.json`) HAVE merged since the
+  reassessment was written. N2's "rename already broke the lookup" clause is therefore
+  resolved; N2's remaining scope is fallback observability + fixture/vendor consistency
+  (Group B below).
+- The authoritative vendored role contracts live at
+  `C:\akhil\git\wt-unw13\vendor\apra-pm` on local branch `tmp/unw13-vendor-agent-defs`
+  (HEAD `352a5c8`), NOT at the outer repo's stale submodule pointer. Exact contract
+  requirements the runner must satisfy (read from the real files, do not re-derive):
+  - `agents/schemas/plan-reviewer-input.json`: required `["scope"]` (string -- "the sprint
+    root / open beads subtree this review pass covers").
+  - `agents/schemas/doer-input.json`: required `["branch"]` (string -- sprint track branch).
+  - `agents/schemas/reviewer-input.json`: required `["base-branch", "branch"]`.
+  - `agents/schemas/harvester-input.json`: required
+    `["analysisArtifactFile", "analysisText", "costAnalysis", "base-branch", "branch"]`.
+  - `agents/planner.md` Step 3: model tier is recorded via
+    `bd create ... --metadata '{"model": "..."}'` and NOWHERE else (explicitly "not in
+    `--notes`"); `agents/plan-reviewer.md` criterion 10 hard-fails any task missing the
+    `model` METADATA key.
+- Paths as in the reassessment: `WF` = `packages/apra-fleet-workflow`,
+  `SE` = `packages/apra-fleet-se`, `VP` = `wt-unw13/vendor/apra-pm`.
 
-1. **Nothing is verifiable until the test harness runs.** Both suites are dead at import time
-   (gap 1) and the SE mock is nondeterministic and silently skips half the sprint (gap 2). Any
-   fix landed before this is unreviewable -- the adversarial reviewer would have no executable
-   evidence. So wave W0 is the harness, asserting *current* behavior (even where current
-   behavior is wrong), giving every later wave a before/after baseline.
-2. **Call-level contracts before call-site fixes.** F4's typed errors and F10's hidden `resume`
-   define what `agent()`/`command()` *mean*. A2 ("handle doer failure") cannot be implemented
-   correctly while failures arrive as three different signals (null / throw / normal string),
-   and A1/A3's "self-contained prompts" are meaningless while every dispatch silently resumes a
-   prior session. Likewise F3's `BudgetExceededError` subclasses the F4 base class, and F5's
-   repair loop terminates in an `AgentOutputError`. Hence W1 = typed errors + resume (unw.3),
-   budget/usage honesty (unw.4), client timeout + AbortSignal (unw.5), and the `sequential()`/
-   `pipeline()` arity contract (unw.6) -- the last because it is the flagship primitive whose
-   ambiguity contaminates docs, examples, and tests that later waves must update.
-3. **Execution model before the workflow that runs on it.** F1's loader decision (real ES
-   modules, explicit context parameter) changes the *calling convention* of every workflow
-   script, including `runner.js`. Doing the A-series rewrite first and the loader second would
-   rewrite runner.js twice. So W2 lands the loader (unw.7), then the pieces that build on W1:
-   schema-repair loop (unw.8, needs typed errors), per-run context + UUIDs (unw.9, after the
-   loader restructures context passing), viewer lifecycle/cooperative-stop/XSS (unw.10, needs
-   the AbortSignal plumbing from unw.5).
-4. **Role contracts before the sprint phases that enforce them.** The determinism audit's
-   highest-leverage observation is that ajv schemas exist and auto-sprint uses them zero times.
-   But schema'd verdicts are only as good as the agent definitions honoring them -- and the
-   vendored defs are internally contradictory (V1/V2 below). So W3 defines the canonical role
-   enum + verdict schemas in code (unw.12), aligns the vendored agent defs to them upstream
-   (unw.13), and lands the journal/resume (unw.11) -- the Claude-CLI pattern feedback.md says
-   to borrow first, which needs stable activity events (unw.9) and typed errors (unw.3).
-5. **The A-series last, serialized.** All four W4 issues edit `runner.js`; running them in
-   parallel guarantees merge conflicts and drift. Order: A0 first (unw.14 -- until the CLI
-   executes anything, the "product" cannot even be driven), then plan phase (unw.15), then
-   develop/review (unw.16), then deploy/integ/exit/finalization (unw.17), mirroring sprint
-   phase order so each issue's mock-test scenario builds on the previous one's.
-6. **The wide verification net last.** Failure-path regression tests (unw.18) and the
-   golden-transcript test (unw.19) assert *final* prompts and behavior; writing them earlier
-   means rewriting them every wave.
+---
+
+## 2. The per-issue ritual (binding, replayed for every issue)
+
+Same core ritual as round 1, with the model tier now carried as concrete metadata:
+
+| Step | Actor | Action |
+|------|-------|--------|
+| 1. Claim | Orchestrator (separate Claude Code session) | `bd update <id> --claim`; read `bd show <id>` and the cited reassessment finding(s). |
+| 2. Implement | **Doer agent** on the model named in the issue's `--metadata` `model` key (`fable`/`opus`/`sonnet`/`haiku`) | Works in an **isolated git worktree** (one per issue -- parallel doers NEVER share a checkout). Implements strictly within the issue's declared "Scope (files)". Writes/extends tests named for the finding IDs. Commits on its issue branch. **Never merges, never closes its own issue.** |
+| 3. Test run | Cheap/background agent | Runs `npm test` (package-scoped + full workspace) and reports pass/fail + failure text verbatim -- an independent execution, never the implementer's claim. |
+| 4. Adversarial review | **Separate reviewer agent, fresh context, at or above the doer's model tier** (review must never be weaker than the work it judges) | Independently re-verifies every claim: re-runs the tests, reads the full diff, hand-constructs adversarial inputs for the failure scenario the finding describes (e.g. for N3: a `newTasks.title` containing `` $(...) ``, backticks, trailing `\`). Checks scope fence, acceptance criteria, revert-sensitivity of tests. Verdict: **APPROVED** (close) or **CHANGES NEEDED** with file:line findings (reopen). |
+| 5. Merge + close | Orchestrator only | On APPROVED: merges the issue worktree's branch into `feat/fleet-reorg` **serially** (one merge at a time, re-running the suite after each), then `bd close <id>`. CHANGES NEEDED -> back to step 2, max 3 rounds, then escalate to the human. Never proceed unapproved. |
+
+**Anti-drift guardrails (unchanged from round 1):** scope fence enforced by the reviewer;
+mid-issue discoveries become `bd create --deps discovered-from:<id>` issues, never inline
+fixes; issue N+1 in a dependency chain does not start until N is closed.
+
+### Vendor-submodule work pattern (read this if your issue touches vendor/apra-pm)
+
+New doer agents do not have this session's history, so the pattern is spelled out:
+
+- The ONLY current source of truth for vendored agent defs is the worktree checkout
+  `C:\akhil\git\wt-unw13\vendor\apra-pm`, local branch `tmp/unw13-vendor-agent-defs`
+  (unpushed; `Apra-Labs/apra-pm` upstream does NOT have this work).
+- **NEVER run `git submodule update --init` (or `--remote`) for vendor/apra-pm** -- it
+  fetches the stale upstream and can clobber/hide the local branch. Do not touch the outer
+  repo's submodule pointer in this round at all.
+- To work on a vendor issue, use the established two-level-worktree pattern:
+  1. Create your outer-repo worktree for the issue as usual.
+  2. Inside it, do NOT init the submodule. Instead create a nested worktree of the wt-unw13
+     checkout: `git -C C:/akhil/git/wt-unw13/vendor/apra-pm worktree add
+     <your-vendor-workdir> -b tmp/<issue-id>-vendor tmp/unw13-vendor-agent-defs`
+     (i.e. fork from the CURRENT tip of `tmp/unw13-vendor-agent-defs`).
+  3. Commit vendor changes on your `tmp/<issue-id>-vendor` branch. The reviewer reviews
+     that branch. On APPROVED, the orchestrator fast-forwards/merges it back into
+     `tmp/unw13-vendor-agent-defs` inside the wt-unw13 checkout -- still unpushed.
+- Nothing in this plan pushes vendor/apra-pm anywhere. Upstream PR + submodule bump remain
+  a separate, user-gated step.
+
+---
+
+## 3. Execution groups (severity-ordered) -> beads issues
+
+Epic: **`apra-fleet-unw2`** -- `[EPIC] Remediate feedback-reassessment.md findings (N1-N18)` (P1).
+
+Every issue carries `--metadata '{"model": "<fable|opus|sonnet|haiku>"}'` naming the doer
+model. Reviewer runs at >= that tier.
+
+### Group A -- CRITICAL: runner/vendor contract realignment + its tripwire (P1)
+
+These two can START in parallel (.2 needs only the read-only vendored input schemas); the
+orchestrator merges .1 first, then .2's test must pass against the fixed runner.
+
+| Issue | Model | Finding | Fix |
+|---|---|---|---|
+| `unw2.1` | opus | **N1** (all three divergences; absorbs F10 residue) | Outer repo, `SE/auto-sprint/runner.js`: (a) `buildPlannerPrompt` switches from `bd update ... --notes="model: <tier>"` to `bd create ... --metadata '{"model": "..."}'` per `VP/agents/planner.md` Step 3, and updates the long convention comment (runner.js:259-306); (b) replace the context-free plan-reviewer dispatch (`'Review the plan per your agent contract.'`, runner.js:739) with a real prompt builder supplying the sprint root/scope (`scope` = target issue ids + goal) per `plan-reviewer-input.json`; (c) `buildDoerPrompt` (runner.js:410) gains the required `branch`. All three verified against the REAL vendored files at wt-unw13 (section 1 above), not guessed. Mock personas in `advanced-mock-runner-test.mjs` updated to ENFORCE the contracts (reject dispatches missing scope/branch/metadata convention) so the mock obeys the CONTRACTS, not the runner. |
+| `unw2.2` | opus | **N13** (regression guard for N1's whole failure class) | Outer repo, `SE/test/`: a static contract test that, for each role runner.js dispatches, builds the same context object the corresponding prompt builder consumes and asserts `validateRoleInput(role, ctx).valid` against the real vendored `<role>-input.json` schemas (fixture snapshot mirrors them; `contracts.mjs` already exposes `validateRoleInput`). Harvester is included with an explicit expected-fail/skip marker referencing `unw2.13` (its inputs are wired there). Acceptance: the test FAILS on the pre-`unw2.1` runner for exactly the three N1 divergences (that failure is the proof the tripwire works) and passes after `unw2.1` merges. Also add the process note from N1's fix direction (e): the vendor sign-off checklist must include re-running this test against any candidate submodule commit. |
+
+### Group B -- HIGH (P1/P2)
+
+| Issue | Model | Finding | Fix |
+|---|---|---|---|
+| `unw2.3` | sonnet | **N3** shell injection via reviewer `newTasks` -> `bd create` (P1) | Outer repo, `SE/auto-sprint/runner.js:1039-1047` (+ tests): validate before interpolation -- `priority` must match `/^P[0-4]$/` (typed failure otherwise); title/description allowlisted to a safe character class (given Windows/POSIX member-shell divergence, allowlisting over escaping); rejected task -> logged + surfaced, never executed. Regression test hand-constructs `` $(...) ``, backtick, and trailing-`\` payloads and asserts no shell metacharacters reach `command()`. |
+| `unw2.4` | opus | **N4** branch ensured on one member only; unspecified multi-member topology (P1) | Outer repo, `SE/auto-sprint/runner.js` + `SE/bin/cli.mjs` + docs: (a) dispatch the branch-ensure to EVERY member in the union of orchestrator/doer/reviewer pools before the first doer round; (b) add a CLI-precondition topology check (compare `git rev-parse` / beads DB identity across members; refuse to start on mismatch unless single-member); (c) document that single-member (or shared-workspace) is the only SUPPORTED real-fleet mode until cross-member bd/git sync exists (deferred, section 5); (d) extend the mock so git/gh commands and beads state can be per-member, and add a 2-member regression test that fails on the pre-fix behavior. Decision (made here, not re-decided by the doer): ensure-everywhere + validate-shared-state, not a sync layer. |
+| `unw2.5` | sonnet | **N2** residue: silent-fallback observability (rename itself already merged, see section 1) | Outer repo, `SE/auto-sprint/contracts.mjs` + `SE/test/`: (a) when `vendor/apra-pm/agents/schemas/` EXISTS but an expected `<role>-output.json` is absent, warn loudly (console.warn + emitted event) with an explicit allowlist for roles that legitimately have none (planner); full-directory absence (submodule not initialized) stays the quiet documented fallback; (b) a consistency test: when the vendored dir exists, every resolved SCHEMAS entry came from a vendored file AND each fallback literal deep-equals its vendored counterpart (failure = update the literal in the same commit as any bump); (c) a small script to regenerate `SE/test/fixtures/vendor-apra-pm-schemas/` mechanically from a vendored checkout, plus a test that the fixture matches what the script would produce. |
+
+### Group C -- MEDIUM (P2)
+
+Two chains, ordered inside each chain by file-region coupling (all `runner.js` issues are
+serialized to keep orchestrator merges conflict-free; likewise the WF replay-path issues):
+
+**Runner chain (continues from `unw2.4`):**
+
+| Issue | Model | Finding | Fix |
+|---|---|---|---|
+| `unw2.6` | sonnet | **N8** `lastReviewVerdict` lifecycle | `runner.js`: reset `lastReviewVerdict = null` at the top of each cycle; treat CHANGES_NEEDED with empty `reopenIds` AND empty `newTasks` as a reviewer contract violation (retry the review once, then surface distinctly -- never silently stall); add a "re-review before exit" dispatch when the exit check would otherwise rely on a verdict from an earlier cycle. Tests for both scenarios in N8 (stale-approval exit, unsatisfiable-exit misreported as stalled). |
+| `unw2.7` | sonnet | **N9** stall detection defeated by close/reopen oscillation | `runner.js`: progress = new all-time-high of the closed count (high-water mark), not any change; additionally flag any bead reopened more than K times (K=3) as thrash and surface it in the stall error. Regression test drives the 5,4,5,4 oscillation and asserts stall-abort fires. |
+| `unw2.8` | sonnet | **N10** cost/budget pipeline inert (F3 residue) | `runner.js` + `WF/src/workflow/pricing.mjs` + docs: after `unw2.1`, the planner records `{"model": ...}` metadata -- the runner reads it back (`bd show` already fetched for dispatch) and passes `opts.model` on doer dispatches, plus a documented default model for the fixed roles; refresh the pricing table with current per-model rows for the four fleet models, clearly labeled estimates; document that budget enforcement is estimate-based until the fleet echoes the resolved model (server-side, deferred). Test: a mock sprint accrues nonzero `_spent` and can trip `BudgetExceededError`. |
+| `unw2.9` | sonnet | **N11** publish phase not idempotent, verdict-blind | `runner.js` + mock: `gh pr view <branch>` before `gh pr create` (or parse "already exists" and continue); include the final verdict (PASS/FAIL) in PR title/body; explicit decision: a FAIL verdict still publishes, with the verdict stated in the body (human reviews); extend the mock with an injectable git/gh failure mode and add the re-run-same-branch regression test. |
+| `unw2.10` | sonnet | **N12** harvester dispatch violates its own contract | `runner.js`: wire real values for the five required harvester inputs -- `analysisArtifactFile` (chosen path under the repo), `analysisText` (assembled from the run's event stream/journal), `costAnalysis` (from the budget object, honest "unknown" lines where cost is null), `base-branch`, `branch` -- and delete the "treat as UNAVAILABLE" instruction; flip `unw2.2`'s harvester expected-fail marker to green. Do NOT change the vendored contract (runner-side wiring chosen over contract loosening). |
+| `unw2.11` | sonnet | **N15** `'Orchestrator'` casing/enum stray | `runner.js`: handle `orchestrator` deliberately as a documented application-level pseudo-role (not added to vendored ROLES); normalize all `roleMap` keys via `normalizeRole()` at validation time; test that `roleMap: { orchestrator: [...] }` is honored. |
+
+**WF replay/extraction chain (independent of the runner chain):**
+
+| Issue | Model | Finding | Fix |
+|---|---|---|---|
+| `unw2.12` | sonnet | **N7** `command()` double `activity:end` | `WF/src/workflow/index.mjs`: mirror `agent()`'s catch (skip re-emission for WorkflowError before `softFail()`); journal test asserting exactly one `activity:end` per activity id on the failure path. |
+| `unw2.13` | sonnet | **N5** replay breaks the failSoft contract (F6 residue) | `WF/src/workflow/{index,journal}.mjs`: journal the failSoft flag or the shaped result; on replay, reconstruct the shape the caller asked for. Resume test whose journal includes a probe command; assert Deploy/Integ are NOT silently skipped on replay. |
+| `unw2.14` | opus | **N6** replay keys sequence-numbered through `parallel()` (F6 residue) | `WF/src/workflow/{index,journal}.mjs`: per-branch sub-sequences -- `parallel()` already forks the store; give each fork `activitySeq = { value: 0, prefix: parentSeq + ':' + branchIndex }` (or equivalent order-independent keying); emit a hinting `journal:diverged` warning when divergence occurs inside a parallel region; document the semantics. Also absorbs the N18 doc item: document (and test) that replayed agent activities re-debit the budget (total-spend semantics). Resume test with a 2-streak parallel develop phase asserting cache hits across the barrier. |
+| `unw2.15` | sonnet | **N17** fenced-block preference hides valid JSON | `WF/src/workflow/index.mjs` `extractStructuredOutput()`: try fenced candidates first, then FALL THROUGH to the balanced scan of the remaining text instead of either/or. Test: reply with a fenced shell snippet + valid JSON outside the fences parses without burning repair attempts. |
+
+### Group D -- LOW (P3)
+
+| Issue | Model | Finding | Fix |
+|---|---|---|---|
+| `unw2.16` | sonnet | **N14** CLI robustness | `SE/bin/cli.mjs`: `parseArgs` strict (unknown flags fail loudly); missing members abort unless `--allow-missing-members`; expose `--requirements-file` and `--role-map` so the skill-advertised features are reachable; run the `bd show` issue precondition on the orchestrator MEMBER (or document the local/member DB seam and verify both); `--viewer-port` flag + `error` handler on `server.listen`. |
+| `unw2.17` | sonnet | **N16** unw.19 determinism fixes unprotected | `SE/test/`: a 3-bead golden variant that snapshots ONLY the order-sensitive artifacts (streak-assignment prompt text, reviewer prompt's bead-id list), sidestepping the parallel-completion race the single-bead golden rightly avoids. Acceptance: reverting the runner.js sort lines (806-807, 850-851, 979-984) fails this test. |
+| `unw2.18` | haiku | **N18** runner minors | `runner.js`: add `deferred` to `NOT_DONE_STATUSES` (+ exit-check test with a deferred goal-priority bead); wrap the reviewer prompt's embedded `bd show --json` in `wrapUntrustedBlock` for A7 consistency. |
+| `unw2.19` | haiku | **N18** viewer cancelled state | `WF/src/viewer/index.mjs:359`: treat `cancelled` as terminal in the browser poll error path so a CANCELLED run does not render OFFLINE. |
+
+### Vendor track (parallel; two-level-worktree pattern from section 2; NEVER pushed)
+
+| Issue | Model | Finding | Fix |
+|---|---|---|---|
+| `unw2.20` | sonnet | **N18** vendored defs instruct `bd remember` (round-1 V4 parenthetical, still unresolved) | `VP/agents/{doer,reviewer,integ-test-runner}.md`: `bd remember` does not exist in the current `bd` CLI -- replace with a real command (`bd note` / `bd comment`) or remove the instruction, consistently across the three files. Fork from the CURRENT tip of `tmp/unw13-vendor-agent-defs`; merged back into that branch only; NOT pushed. |
 
 ### Dependency sketch (blocked-by edges as wired in beads)
 
 ```
-W0: unw.1 (WF harness)     unw.2 (SE mock)
-      |                       |
-W1: unw.3 (F4+F10) ---> unw.4 (F2+F3)     unw.5 (timeout/abort)   unw.6 (F7/F8)   [all <- unw.1]
-      |         \                             |                      |
-W2:   |          unw.8 (F5)     unw.7 (F1 loader) <- unw.1, unw.2, unw.6
-      |                            |         \
-      |                         unw.9 (F11)   unw.10 (F9+A7-viewer) <- unw.5
-      |                            |
-W3: unw.12 (contracts) <- unw.2   unw.11 (journal) <- unw.3, unw.9
-      |
-    unw.13 (vendored agent defs, upstream PR)
-W4: unw.14 (A0+A7-cli) <- unw.2, unw.5, unw.7
-    unw.15 (A1) <- unw.8, unw.12, unw.14
-    unw.16 (A2+A3) <- unw.6, unw.15
-    unw.17 (A4+A5+A6) <- unw.16
-W5: unw.18 (failure tests) <- unw.11, unw.17     unw.19 (golden transcript) <- unw.17
+Group A:  unw2.1 (N1, opus)        unw2.2 (N13 tripwire, opus)     [both start-ready; merge .1 first]
+             |
+Group B:  unw2.3 (N3) -> unw2.4 (N4)                unw2.5 (N2, independent)
+             (runner chain continues)
+Group C:  unw2.4 -> unw2.6 (N8) -> unw2.7 (N9) -> unw2.8 (N10) -> unw2.9 (N11) -> unw2.10 (N12; also <- unw2.2)
+          WF chain: unw2.12 (N7) -> unw2.13 (N5) -> unw2.14 (N6) -> unw2.15 (N17)
+Group D:  unw2.10 -> unw2.11 (N15) -> unw2.18 (N18 runner minors)
+          unw2.4 -> unw2.16 (N14 CLI)      unw2.10 -> unw2.17 (N16 golden)
+          unw2.19 (N18 viewer, independent)
+Vendor:   unw2.20 (independent track)
 ```
 
-Note: `unw.13` (vendored defs) deliberately does NOT block the W4 issues. The W4 runner
-dispatches embed the verdict schema and required context inline in every prompt (the shim), so
-auto-sprint is correct even before the upstream apra-pm PR merges.
+`bd ready` at epic start therefore surfaces: `unw2.1` + `unw2.2` (the P1 critical pair --
+the correct next units), plus the legitimately parallel independent tracks `unw2.5` (P2,
+contracts.mjs -- no file overlap with the runner chain), `unw2.12` (P2, head of the WF
+chain), and the P3 independents `unw2.19`/`unw2.20`. Severity order is carried by priority;
+parallel starts are safe because every listed parallel pair is file-disjoint and each doer
+works in its own worktree.
 
 ---
 
-## 2. New findings from the vendored-agent comparison (V-series)
+## 4. Why the chains are shaped this way
 
-Discovered in this planning pass by reading `vendor/apra-pm/agents/*.md` and
-`vendor/apra-pm/skills/pm/SKILL.md` against runner.js -- feedback.md's A-series inferred the
-role contracts from SKILL.md only and missed that the agent defs disagree with it:
-
-| ID | Finding |
-|----|---------|
-| V1 | `skills/pm/SKILL.md` (reviewer spec) says the reviewer "writes feedback.md ... reopenIds/newTasks ... never touches beads". `agents/reviewer.md` says the opposite twice: reopen directly via `bd update <id> --status=open`, and "NEVER write feedback.md -- return structured output only". feedback.md A3 cited only the SKILL.md half. Resolution: reviewer returns structured output only, orchestrator applies transitions (deterministic-state-machine direction). |
-| V2 | `agents/plan-reviewer.md` criterion 10 hard-fails any task without model metadata, but `agents/planner.md` never instructs setting it, and SKILL.md says the tier lives in `--notes` while plan-reviewer.md reads the `METADATA` section. A planner + plan-reviewer pair as-written loops CHANGES NEEDED forever. |
-| V3 | Agent defs require dispatch-supplied context that auto-sprint never provides: `<base-branch>`/`<branch>` (reviewer.md, harvester.md), `analysisArtifactFile`/`analysisText`/`costAnalysis` (harvester.md). No defined behavior when inputs are missing -- the defs must degrade loudly (return FAILED/BLOCKED with notes) to be rugged both under auto-sprint and standalone `pm` use, with beads as the state tracker in both modes. |
-| V4 | Every def's output contract is prose ("Return your structured output"). None carries an actual JSON schema, so nothing pins the shape runner.js will ajv-validate. (Also: several defs invoke `bd remember`, which current `bd --help` does not list -- verify/replace upstream.) |
-
-**Vendoring process decision:** `vendor/apra-pm` is a **git submodule** of
-`Apra-Labs/apra-pm` (see `.gitmodules`; prior art in this repo's history:
-`chore(pm): bump apra-pm to acf62b4 and sync installer`). So agent-def fixes follow option (b)
-upstream-first: branch inside the submodule, PR to `Apra-Labs/apra-pm`, then bump the submodule
-pointer here -- tracked as `unw.13`, with the runner-side inline-schema prompts (`unw.15`-`unw.17`)
-serving as the local shim so nothing in this repo blocks on the upstream merge.
+- **All runner.js issues are one serial chain** (`unw2.1 -> .3 -> .4 -> .6 -> .7 -> .8 ->
+  .9 -> .10 -> .11 -> .18`), severity-ordered within: round 1 learned that parallel edits
+  to one 1300-line file guarantee merge conflicts even with worktree isolation -- the
+  orchestrator pays for them at merge time. Same rule for the WF replay chain
+  (`index.mjs`/`journal.mjs`).
+- **`unw2.2` (tripwire) is deliberately NOT blocked by `unw2.1`**: it is written against the
+  read-only vendored input schemas and the runner's CURRENT prompt builders; its initial
+  red state on the three N1 divergences is its own validation. The orchestrator merges
+  `unw2.1` first, then requires `unw2.2` green before closing either.
+- **`unw2.8` (N10) sits after `unw2.1` in the chain** because the model-metadata read-back
+  it needs only exists once the planner prompt writes `--metadata '{"model": ...}'`.
+- **`unw2.17` (golden variant) waits for the end of the prompt-changing chain** (`unw2.10`)
+  so its snapshots are written once, against final prompt text.
 
 ---
 
-## 3. The per-iteration ritual (replayed for every issue)
+## 5. Deferred this round (explicitly, with reasons)
 
-**An iteration = exactly one beads issue** from `bd ready` within the epic (`bd ready` +
-priority order picks it; ties broken by wave number in the title).
-
-| Step | Actor / tier | Action |
-|------|--------------|--------|
-| 1. Claim | Orchestrator (cheap, mechanical) | `bd update <id> --claim`; read `bd show <id>`; re-read the cited feedback.md/plan.md sections. |
-| 2. Implement | **Premium-tier agent** (design judgment) | Implement strictly within the issue's declared "Scope (files)". Write/extend tests named for the finding IDs. |
-| 3. Test run | **Cheap/background agent** (mechanical) | Run `npm test` (and the package-scoped suites) and report pass/fail + failure text verbatim. Never the implementer's own claim -- an independent execution. |
-| 4. Adversarial review | **Separate premium-tier agent, fresh context** (never the implementer) | Inputs: the issue's acceptance criteria, the cited feedback.md finding(s), the full diff, and the step-3 test report. Checks: (a) every acceptance criterion demonstrably met; (b) diff touches only declared scope; (c) no new failure mode introduced (races, swallowed errors); (d) tests actually assert the fix (would fail on revert). Verdict: APPROVED or CHANGES NEEDED with specific file:line findings. The reviewer CAN and SHOULD reject. |
-| 5. Loop or close | Orchestrator | CHANGES NEEDED -> back to step 2 with the findings (max 3 rounds, then escalate to the human -- never proceed unapproved; this plan does not repeat runner.js's A1 bug in its own process). APPROVED -> commit (conventional style, referencing the issue id), `bd close <id>`. |
-
-**Anti-drift guardrails (binding):**
-
-- **Scope fence:** an iteration must not modify files or address findings outside its issue's
-  declared scope. The adversarial reviewer rejects out-of-scope hunks even if they are good.
-- **Discoveries become issues, not fixes:** anything new found mid-iteration (bug, gap,
-  refactor urge) is filed via `bd create --deps discovered-from:<current-id>` under the epic
-  and left alone. No inline opportunistic fixes.
-- **Gate between iterations:** iteration N+1 must not start until iteration N's issue is
-  `closed`, and only the orchestrator closes -- after the adversarial APPROVED verdict, never
-  on the implementer's "done".
-- **Tier discipline:** test execution, `bd`/`git` state queries, and grep-style verification
-  run on cheap/background agents; implementation and adversarial review run on premium-tier.
-  Parallel-eligible issues (e.g. unw.4/unw.5/unw.6 after unw.3) may run concurrently only if
-  their scope fences do not overlap on any file.
-
----
-
-## 4. Waves -> beads issues
-
-Epic: **`apra-fleet-unw`** -- `[EPIC] Remediate feedback.md findings` (P1).
-
-| Wave | Issue | P | Title (abbrev.) | Findings |
-|------|-------|---|-----------------|----------|
-| W0 | `apra-fleet-unw.1` | P1 | Repair WF test harness | gap 1 |
-| W0 | `apra-fleet-unw.2` | P1 | Deterministic SE mock sprint test | gap 2 |
-| W1 | `apra-fleet-unw.3` | P1 | Typed error contract + surface `resume` (default false) | F4 (client-side scope), F10 |
-| W1 | `apra-fleet-unw.4` | P1 | Honest usage, budget enforcement, pricing sanity | F2, F3 |
-| W1 | `apra-fleet-unw.5` | P1 | Client-side MCP timeout + AbortSignal | F6 (partial) |
-| W1 | `apra-fleet-unw.6` | P1 | `sequential` arity validation + `pipeline()` + doc truth | F7, F8 |
-| W2 | `apra-fleet-unw.7` | P2 | Real ES-module loader; vetting demoted to advisory | F1 |
-| W2 | `apra-fleet-unw.8` | P2 | Robust JSON extraction + bounded schema-repair loop | F5 |
-| W2 | `apra-fleet-unw.9` | P2 | Per-run context, no shared phase/args, UUID ids | F11 |
-| W2 | `apra-fleet-unw.10` | P2 | Viewer: emit `end`, cooperative /stop, escape extension HTML | F9, A7 (viewer) |
-| W3 | `apra-fleet-unw.11` | P2 | Run journal (JSONL) + resume/replay | F6 (journal) |
-| W3 | `apra-fleet-unw.12` | P2 | Canonical role enum + verdict schema contracts module | A1/A3/A4/A6 support, V4 |
-| W3 | `apra-fleet-unw.13` | P2 | Ruggedize vendored apra-pm agent defs (upstream PR + bump) | V1, V2, V3, V4 |
-| W4 | `apra-fleet-unw.14` | P2 | Wire CLI end-to-end; arg contract; branch/PR; id validation | A0, A7 (cli) |
-| W4 | `apra-fleet-unw.15` | P2 | Plan phase: schema verdict, hard-fail unapproved, delta re-plan | A1 |
-| W4 | `apra-fleet-unw.16` | P2 | Develop/review: casing fix, streaks, failure isolation, orchestrator-applied transitions | A2, A3 |
-| W4 | `apra-fleet-unw.17` | P2 | Deploy/integ probes, goal-priority exit + stall abort, real final verdict | A4, A5, A6 |
-| W5 | `apra-fleet-unw.18` | P3 | Failure-path regression tests | gap 3 |
-| W5 | `apra-fleet-unw.19` | P3 | Golden-transcript snapshot test | gap 4 |
-
-A7 is deliberately split across unw.10 (dashboard XSS), unw.14 (shell-injectable issue ids),
-and unw.15/unw.16 (delimited untrusted inter-agent feedback) -- its three surfaces live in
-three different components.
-
----
-
-## 5. Descoped: requires apra-fleet MCP server changes
-
-Grounded in `docs/structured-errors-proposal.md` and feedback.md. Each item below is deferred
-because its real fix is server-side (external repo); the listed workaround is what this plan
-implements instead.
-
-| Deferred (server-side) | Why deferred | Client-side substitute in this plan | When constraint lifts |
-|---|---|---|---|
-| structured-errors-proposal.md **Option 1** (JSON-RPC error responses) and **Option 2** (standardized `{isError, code, message, data}` payloads) -- both require the fleet server to stop embedding error strings in success payloads | Server emission change | `unw.3`: typed-error normalization layer that classifies today's error strings (and already maps JSON-RPC rejections, which `McpClient.handleMessage` surfaces) into `WorkflowError` subclasses with proposal-Option-2-compatible `.code` values | Implement Option 1 server-side; the client classifier then keys off `error.code` instead of string sniffing -- same classes, one function changes |
-| Real token usage reporting (F2 root cause: fleet omits `usage`) | Server must report actuals | `unw.4`: `usage: null` reported honestly, "n/a" in viewer, unknown-cost counter | File a fleet issue; delete the null-path once usage is always present |
-| Schema enforcement at the member/tool-call harness (F5's "Claude CLI enforces at the harness") | `execute_prompt` behavior is server-side | `unw.8`: orchestrator-side bounded repair loop with ajv error feedback | Move enforcement into `execute_prompt`; keep the repair loop as fallback |
-| Idempotency keys on `execute_prompt`/`execute_command`; true remote cancellation (F6, F9) | Dispatch dedup/cancel must be honored by the server | `unw.11`: journal flags started-but-unfinished activities on resume as possible double-dispatches; `unw.10`: client-side abort unwinds the workflow but cannot kill the remote job (documented) | Add idempotency-token and cancel params server-side; thread them through the existing client plumbing |
-| First-class `fileExists`/facts primitive (A4) | New fleet API | `unw.17`: `command(..., {failSoft: true})` + portable probe construction | Add the facts API; replace the probes |
-
-When the constraint lifts, file these as new beads issues under a fresh epic; the interfaces
-built here (error classes, signal plumbing, journal keys) are the intended landing pads.
+| Item | Why deferred |
+|---|---|
+| **N4's full multi-member state model** (cross-member bd/git sync, per-member beads reconciliation) | Cannot be validated without a real multi-member fleet; any sync layer built against the mock would be speculative. This round ships ensure-branch-everywhere + a topology precondition check + an honest "single-member/shared-workspace is the only supported real-fleet mode" statement (`unw2.4`). Revisit when a real 2-member fleet is available to test against. |
+| **N10's root fix** (price from the model the fleet actually resolved) | Server-side: requires `apra-fleet.exe` to echo the resolved model alongside usage. Stays on the round-1 descoped-server-side list; `unw2.8` ships the client-side estimate path and documents the gap. |
+| **N18: per-error-type doer retry policy** (skip blind re-dispatch after `AgentOutputError`) | A cost optimization that only matters once budgets bite on real runs; sequenced behind `unw2.8` landing and real-fleet usage data. File under a future epic if cost amplification is observed. |
+| **F1 residue: `import()` module caching** (same-path scripts share module state) | Harmless for current stateless scripts; a doc note, not a defect. Fold into any future engine doc pass rather than spending a review cycle now. |
+| **F9/N-residue: viewer single-run group/phase tracking** despite the engine supporting concurrent runs | Accepted single-tenant usage; making the viewer multi-run is a feature, not a fix. Documenting the limitation rides along with `unw2.19`'s viewer touch. |
+| **Vendor push / upstream PR / submodule bump** | Unchanged hard gate: requires the user's explicit sign-off. Nothing in this round pushes vendor/apra-pm or moves the outer repo's submodule pointer. When sign-off comes, the vendor checklist MUST include re-running `unw2.2`'s contract test against the candidate submodule commit (N1 fix direction (e)). |
 
 ---
 
 ## 6. Definition of done (whole epic)
 
-1. All 19 child issues closed, each via the ritual's adversarial APPROVED (no self-approved closes).
-2. `npm test` green and deterministic on Windows: both packages' suites run, the mock sprint
-   exercises every runner phase, two consecutive runs produce identical transcripts (unw.19).
-3. Zero LLM-judgment gates in runner.js: every verdict is schema-validated and state
-   transitions are applied by the orchestrator (grep: no `.includes('APPROVED')`, no
-   unconditional `{status:'success'}`).
-4. `agent()`/`command()` have one failure contract (typed throws, never null), a finite timeout,
-   and honest cost accounting with an enforced budget.
-5. The CLI runs a sprint end-to-end against a mock fleet with branch + PR semantics, and every
-   advertised argument is consumed or rejected.
-6. Upstream apra-pm PR for V1-V4 opened and linked in `apra-fleet-unw.13`; submodule pointer
-   bumped once merged (or the issue re-scoped with the user if upstream stalls).
-7. Docs (`apra-fleet-workflow-architecture.md`, `workflow-guide.md`) match code behavior --
-   no claimed resilience or security boundary that the code does not provide.
-8. The server-side deferrals in section 5 are on file and referenced -- nothing silently dropped.
+1. All 20 child issues closed via the ritual's adversarial APPROVED (no self-approved
+   closes, orchestrator-only merges, serial).
+2. `unw2.2`'s contract tripwire is green against the merged runner AND is documented as a
+   mandatory step in the vendor sign-off checklist -- the N1 failure class cannot silently
+   recur.
+3. A hand-constructed injection payload through reviewer `newTasks` cannot reach a member
+   shell (`unw2.3`'s adversarial review reproduces the attack).
+4. A 2-member mock sprint passes with per-member git/beads state, or the runner refuses to
+   start on an unsupported topology with a clear message (`unw2.4`).
+5. Both suites green and deterministic on Windows; the 3-bead order-sensitive golden
+   variant fails on revert of the unw.19 sort fixes.
+6. A mock sprint accrues real (estimate-labeled) spend and can trip `BudgetExceededError`.
+7. vendor/apra-pm remains unpushed on `tmp/unw13-vendor-agent-defs`; the only vendor delta
+   this round is the `bd remember` correction, merged back into that local branch.
