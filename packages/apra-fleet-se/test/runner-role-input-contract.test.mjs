@@ -42,10 +42,12 @@ import { fileURLToPath } from 'node:url';
 // That red run is the PROOF the tripwire works. Do not weaken the assertions
 // to make it pass -- it is meant to go green only when runner.js is fixed.
 //
-// harvester is KNOWN to currently violate its own contract (runner.js
-// deliberately omits its five required inputs, see runner.js's harvester
-// prompt comment) -- it is included but SKIPPED, referencing apra-fleet-unw2.10,
-// the issue that wires real harvester inputs and flips this to green.
+// harvester: wired for real in apra-fleet-unw2.10 (N12) -- runner.js's
+// buildHarvesterPrompt now consumes all five vendored-required inputs
+// (analysisArtifactFile/analysisText/costAnalysis/base-branch/branch), each
+// assembled from real per-run state (closedCountHistory, deploy/integ
+// failures, the final verdict, the live budget object). This assertion is
+// EXPECTED GREEN.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
@@ -293,8 +295,7 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     // in apra-fleet-unw2.10 (N12). Included but SKIPPED so it does not go red
     // here; the assertion body documents the failure it WILL guard once wired.
     describe('harvester', () => {
-        test.skip('buildHarvesterPrompt supplies all five required harvester inputs '
-            + '(expected-fail until apra-fleet-unw2.10 wires them)', () => {
+        test('buildHarvesterPrompt supplies all five required harvester inputs (N12)', () => {
             const ctx = contextFromBuilder('buildHarvesterPrompt');
             assert.ok(ctx !== null, 'buildHarvesterPrompt not found in runner.js');
             const result = validateRoleInput('harvester', ctx);
@@ -302,7 +303,7 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
                 result.valid,
                 true,
                 'harvester dispatch must supply analysisArtifactFile/analysisText/costAnalysis/'
-                    + `base-branch/branch (N12); it omits three of five. errors=${JSON.stringify(result.errors)}`,
+                    + `base-branch/branch (N12); it omits at least one. errors=${JSON.stringify(result.errors)}`,
             );
         });
     });

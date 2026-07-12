@@ -560,8 +560,36 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
                 };
             }
 
-            // --- harvest phase (apra-fleet-unw.17, A6: schema-validated) ---
+            // --- harvest phase (apra-fleet-unw.17, A6: schema-validated;
+            //     apra-fleet-unw2.10, N12: contract enforcement) ---
+            //
+            // The vendored harvester-input.json requires
+            // analysisArtifactFile/analysisText/costAnalysis/base-branch/
+            // branch (see agents/harvester.md's own "Missing-input
+            // behavior": a contract-obeying harvester returns FAILED, never
+            // fabricates a substitute, if any of these is absent from its
+            // dispatch). This mock now enforces that for real -- it is NOT
+            // enough for the runner to merely include SOME text; each
+            // required input must be genuinely present in the prompt this
+            // dispatch actually received. Prior to apra-fleet-unw2.10 the
+            // runner told the harvester these were UNAVAILABLE; this check
+            // fails loudly if that regression ever comes back.
             if (opts.agent === 'harvester') {
+                const missing = [];
+                if (!/analysisArtifactFile:\s*\S+/.test(opts.prompt)) missing.push('analysisArtifactFile');
+                if (!/analysisText \(pre-computed by the orchestrator/.test(opts.prompt)) missing.push('analysisText');
+                if (!/costAnalysis \(pre-computed by the orchestrator/.test(opts.prompt)) missing.push('costAnalysis');
+                if (!/Branch:\s*\S+\s*\(base:\s*\S+\)/.test(opts.prompt)) missing.push('base-branch/branch');
+                if (missing.length > 0) {
+                    return {
+                        content: [{
+                            text: JSON.stringify({
+                                status: 'FAILED',
+                                notes: `Missing required harvester input(s): ${missing.join(', ')}.`,
+                            })
+                        }]
+                    };
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
@@ -825,6 +853,25 @@ async function main() {
         run1.dispatched.some((d) => d.agent === 'reviewer' && d.label === 'Final Review'),
         "Final Review phase (agentType 'reviewer', label 'Final Review') was not dispatched (run1)"
     );
+
+    // apra-fleet-unw2.10 (N12): a normal sprint run must genuinely harvest
+    // OK -- not merely dispatch the harvester phase. The mock harvester
+    // returns FAILED if any of the five vendored-required inputs is missing
+    // from the prompt it actually received (see buildMockFleetApi's
+    // 'harvester' branch above), so re-running that exact check against the
+    // real dispatched prompt here is proof the runner supplies all five for
+    // real -- not that the mock's contract check was loosened to pass.
+    for (const [label, run] of [['run1', run1], ['run2', run2]]) {
+        const harvesterDispatch = run.dispatched.find((d) => d.agent === 'harvester');
+        check(harvesterDispatch !== undefined, `No harvester dispatch found (${label})`);
+        if (harvesterDispatch) {
+            const p = harvesterDispatch.prompt;
+            check(/analysisArtifactFile:\s*\S+/.test(p), `Harvester prompt missing analysisArtifactFile (${label})`);
+            check(/analysisText \(pre-computed by the orchestrator/.test(p), `Harvester prompt missing analysisText (${label})`);
+            check(/costAnalysis \(pre-computed by the orchestrator/.test(p), `Harvester prompt missing costAnalysis (${label})`);
+            check(/Branch:\s*\S+\s*\(base:\s*\S+\)/.test(p), `Harvester prompt missing branch/base-branch (${label})`);
+        }
+    }
 
     check(
         JSON.stringify(run1.finalBeads) === JSON.stringify(run2.finalBeads),
