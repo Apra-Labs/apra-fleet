@@ -64,6 +64,7 @@ export function buildOptionsSpec() {
         'requirements-file': { type: 'string' },
         'role-map': { type: 'string' },
         'viewer-port': { type: 'string', default: String(DEFAULT_VIEWER_PORT) },
+        budget: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -84,6 +85,8 @@ Options:
       --role-map <json|@file>  JSON object mapping role -> member[] (e.g. '{"doer":["m1","m2"]}'),
                                 either inline JSON or '@path/to/file.json'.
       --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
+      --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
+                                omitted (the default) means unlimited, identical to prior behavior.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -156,10 +159,11 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * @param {{
  *   targetIssues: string[], members: string[], branch: string, baseBranch: string,
  *   goal: string, maxCycles: number, requirementsFile: string|undefined, roleMap: object|undefined,
+ *   budget: number|undefined,
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -170,6 +174,7 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     };
     if (requirementsFile !== undefined) args.requirementsFile = requirementsFile;
     if (roleMap !== undefined) args.roleMap = roleMap;
+    if (budget !== undefined) args.budget = budget;
     return args;
 }
 
@@ -323,6 +328,7 @@ async function main() {
     const allowMissingMembers = Boolean(values['allow-missing-members']);
     const requirementsFile = values['requirements-file'];
     const viewerPort = values['viewer-port'] !== undefined ? Number(values['viewer-port']) : DEFAULT_VIEWER_PORT;
+    const budget = values.budget !== undefined ? Number(values.budget) : undefined;
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -348,6 +354,18 @@ async function main() {
 
     if (!Number.isInteger(viewerPort) || viewerPort < 1 || viewerPort > 65535) {
         console.error(`Error: --viewer-port must be a valid TCP port number, got "${values['viewer-port']}".`);
+        process.exit(1);
+    }
+
+    // --budget is optional; omitted means unlimited (runner.js's validateArgs
+    // leaves context.budget.total as null in that case). When passed, reject
+    // non-numeric/negative values here at the CLI layer with a clear error,
+    // consistent with the strict-parsing conventions established for
+    // --max-cycles/--viewer-port above (apra-fleet-unw2.16, N14 (a)) -- this
+    // mirrors, but does not duplicate/conflict with, runner.js validateArgs's
+    // own budget check (non-negative finite number; see N10, apra-fleet-unw2.8).
+    if (budget !== undefined && (!Number.isFinite(budget) || budget < 0)) {
+        console.error(`Error: --budget must be a non-negative finite number (USD ceiling), got "${values.budget}".`);
         process.exit(1);
     }
 
@@ -493,6 +511,7 @@ async function main() {
             maxCycles,
             requirementsFile,
             roleMap,
+            budget,
         }));
         console.log('Sprint finished:', res);
     } catch (err) {

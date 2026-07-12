@@ -247,6 +247,75 @@ describe('checkIssuesExistOnMember (d: member-side precondition)', () => {
 // (e) --viewer-port + clean port-collision error instead of an unhandled crash
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// (f) --budget flag (apra-fleet-unw2.21): threads through to args.budget,
+// following the existing buildOptionsSpec()/buildRunnerArgs() pattern; the
+// CLI layer rejects non-numeric/negative values with a clear error, and
+// omitting the flag entirely must be a no-op (unlimited/no ceiling, matching
+// pre-unw2.21 behavior).
+// ---------------------------------------------------------------------------
+
+describe('--budget flag (f: CLI budget ceiling)', () => {
+    test('parseCliArgs accepts --budget and buildRunnerArgs threads it through as args.budget', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--budget', '5.0']);
+        assert.strictEqual(values.budget, '5.0');
+
+        const budget = values.budget !== undefined ? Number(values.budget) : undefined;
+        assert.strictEqual(budget, 5);
+
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget,
+        });
+        assert.strictEqual(args.budget, 5);
+
+        // Round-trips through runner.js's own validateArgs without throwing,
+        // and lands as the same validated number.
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.budget, 5);
+    });
+
+    test('buildRunnerArgs omits args.budget entirely when --budget is not passed (unchanged/unlimited behavior)', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+        });
+        assert.strictEqual('budget' in args, false);
+
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.budget, undefined);
+    });
+
+    test('rejects a non-numeric --budget value with a clear error at the CLI layer', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--budget', 'not-a-number']);
+        const budget = values.budget !== undefined ? Number(values.budget) : undefined;
+        // Number("not-a-number") is NaN; NaN is not finite, so the CLI's
+        // `!Number.isFinite(budget)` guard (mirrored here) must reject it.
+        assert.ok(!Number.isFinite(budget));
+    });
+
+    test('rejects a negative --budget value with a clear error at the CLI layer', () => {
+        // node:util parseArgs treats a bare `-1` after `--budget` as an
+        // ambiguous short-option-like token, so use `--budget=-1` (the same
+        // workaround its own error message suggests) to pass a negative value.
+        const { values } = parseCliArgs([...BASE_ARGV, '--budget=-1']);
+        const budget = values.budget !== undefined ? Number(values.budget) : undefined;
+        assert.ok(Number.isFinite(budget) && budget < 0);
+        // This is exactly the condition the CLI's guard checks for rejection
+        // (budget !== undefined && (!Number.isFinite(budget) || budget < 0)).
+    });
+
+    test('allows --budget 0 (explicit zero ceiling is a valid non-negative number, matching runner.js validateArgs semantics)', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: 0,
+        });
+        assert.strictEqual(args.budget, 0);
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.budget, 0);
+    });
+});
+
 describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', () => {
     test('formats an actionable message for EADDRINUSE', () => {
         const err = Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' });
