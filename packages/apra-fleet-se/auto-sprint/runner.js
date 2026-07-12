@@ -770,24 +770,123 @@ function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cycle
 }
 
 /**
- * Builds the self-contained Harvester dispatch prompt, per the vendored
- * harvester.md contract's documented inputs (branch/base-branch). This
- * runner does not currently wire real per-run journal/cost-accounting data
- * into the dispatch (that would require threading FleetWorkflow's budget
- * object and journal state through to this prompt, out of scope for this
- * issue) -- rather than fabricate an analysisText/costAnalysis, the prompt
- * explicitly tells the harvester those inputs are unavailable so it marks
- * the steps that depend on them as skipped instead of inventing numbers.
- * @param {{ branch: string, baseBranch: string, targetIssues: string[] }} opts
+ * Assembles the real `analysisText` block for the Harvester dispatch (N12,
+ * apra-fleet-unw2.10) from this run's actual in-memory tracking state --
+ * cycle-by-cycle closed-bead progress, deploy/integration outcomes, rejected
+ * reviewer newTasks, and the final verdict. Every source here already exists
+ * elsewhere in this file (closedCountHistory/highWaterClosedCount from N9's
+ * stall detector, deployFailures/integFailures from A4, rejectedNewTasks
+ * from N3, finalVerdictResult from A6) -- this just formats them into the
+ * verbatim content the harvester writes to `analysisArtifactFile`, per
+ * harvester.md Step 1 ("write the analysisText verbatim").
+ * @param {object} opts
  * @returns {string}
  */
-function buildHarvesterPrompt({ branch, baseBranch, targetIssues }) {
+function buildAnalysisText({
+    targetIssues, branch, baseBranch, cyclesRun,
+    closedCountHistory, highWaterClosedCount,
+    deployFailures, integFailures, rejectedNewTasks,
+    finalVerdictResult, finalClosedCount, finalOpenAtGoalCount,
+}) {
+    const lines = [
+        `# Sprint Analysis: ${branch}`,
+        '',
+        `Scope issue id(s): ${targetIssues.join(', ') || '(none specified)'}.`,
+        `Base branch: ${baseBranch}.`,
+        `Cycles run: ${cyclesRun}.`,
+        '',
+        '## Progress',
+        '',
+        `Closed-bead count history (per cycle evaluation): [${closedCountHistory.join(', ') || 'none recorded'}].`,
+        `High-water-mark closed count this sprint: ${highWaterClosedCount}.`,
+        `Final closed count: ${finalClosedCount}.`,
+        `Final open-at-goal-priority count: ${finalOpenAtGoalCount}.`,
+        '',
+        '## Deploy/Integration outcomes',
+        '',
+        deployFailures.length > 0
+            ? `Deploy failures (${deployFailures.length}): ` + deployFailures.map((f) => `C${f.cycle}: ${f.notes}`).join(' | ')
+            : 'No deploy failures recorded this sprint.',
+        integFailures.length > 0
+            ? `Integration test failures (${integFailures.length}): ` + integFailures.map((f) => `C${f.cycle}: ${f.notes} (bugs filed: ${(f.bugsFiled || []).join(', ') || 'none'})`).join(' | ')
+            : 'No integration test failures recorded this sprint.',
+        '',
+        '## Reviewer-proposed newTask rejections',
+        '',
+        rejectedNewTasks.length > 0
+            ? `${rejectedNewTasks.length} newTask(s) rejected before reaching bd create: ` + rejectedNewTasks.map((r) => `C${r.cycle}: ${r.reason}`).join(' | ')
+            : 'None.',
+        '',
+        '## Final verdict',
+        '',
+        `${finalVerdictResult.verdict}${finalVerdictResult.notes ? ` -- ${finalVerdictResult.notes}` : ''}`,
+    ];
+    return lines.join('\n');
+}
+
+/**
+ * Builds the `costAnalysis` block for the Harvester dispatch (N12) from the
+ * live `budget` object (wired in N10/apra-fleet-unw2.8). Reports only what
+ * is actually known -- an unset ceiling or an unpriced-model spend gap is
+ * stated as "not tracked"/"unlimited", never backfilled with a fabricated
+ * number (per F2's honesty goal and the harvester contract's "insert
+ * verbatim, do not recompute" rule).
+ * @param {{ total: number|null, spent?: () => number, remaining?: () => number }} budget
+ * @returns {string}
+ */
+function buildCostAnalysis(budget) {
+    const total = budget && budget.total;
+    const spent = budget && typeof budget.spent === 'function' ? budget.spent() : null;
+    const lines = [
+        total !== null && total !== undefined
+            ? `Budget ceiling: $${total.toFixed(4)}.`
+            : 'Budget ceiling: not set (no --budget flag) -- unlimited for this run.',
+        typeof spent === 'number'
+            ? `Tracked spend (priced dispatches only): $${spent.toFixed(4)}.`
+            : 'Tracked spend: not tracked -- the budget object did not expose spent() for this run.',
+    ];
+    if (total !== null && total !== undefined && typeof spent === 'number') {
+        lines.push(`Remaining budget: $${(total - spent).toFixed(4)}.`);
+    } else {
+        lines.push('Remaining budget: unknown/unbounded.');
+    }
+    lines.push(
+        'Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- '
+        + 'this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.'
+    );
+    return lines.join('\n');
+}
+
+/**
+ * Builds the self-contained Harvester dispatch prompt, per the vendored
+ * harvester.md contract's documented inputs. N12 (apra-fleet-unw2.10): this
+ * runner now wires the five required inputs
+ * (analysisArtifactFile/analysisText/costAnalysis/base-branch/branch) with
+ * real, runner-computed values instead of instructing the harvester to
+ * treat them as unavailable -- the prior version of this prompt told a
+ * contract-obeying harvester to violate its own contract every sprint (see
+ * N12, feedback-reassessment.md). The vendored input schema is intentionally
+ * not loosened; the fix is entirely on the caller side.
+ * @param {{ branch: string, baseBranch: string, targetIssues: string[], analysisArtifactFile: string, analysisText: string, costAnalysis: string }} opts
+ * @returns {string}
+ */
+function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText, costAnalysis }) {
+    // analysisText/costAnalysis are orchestrator-computed (this file, from
+    // real run state), not another agent's free text -- wrapUntrustedBlock's
+    // "untrusted output from another agent" framing does not apply. They
+    // still need a collision-safe fence (per-block, sized past the longest
+    // backtick run in the content) so a literal ``` line inside either
+    // block can never be mistaken for its closing fence.
+    const fence = (content) => '`'.repeat(Math.max(3, (content.match(/`+/g) || []).reduce((m, r) => Math.max(m, r.length), 0) + 1));
+    const analysisFence = fence(analysisText);
+    const costFence = fence(costAnalysis);
     return [
         `Harvest durable knowledge for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}).`,
         'Update docs/, README/CHANGELOG (including a cost-analysis block), and defer low-priority issues, per your agent contract.',
-        'This run did not wire real per-run journal/cost-accounting data into this dispatch: treat analysisText/costAnalysis ' +
-        'inputs as UNAVAILABLE, and explicitly mark any harvester step that depends on them as skipped rather than fabricating figures.',
+        `analysisArtifactFile: ${analysisArtifactFile}`,
+        `analysisText (pre-computed by the orchestrator -- write verbatim to analysisArtifactFile, per Step 1 of your contract):\n${analysisFence}\n${analysisText}\n${analysisFence}`,
+        `costAnalysis (pre-computed by the orchestrator -- insert verbatim into the CHANGELOG entry, per Step 4 of your contract):\n${costFence}\n${costAnalysis}\n${costFence}`,
     ].join('\n\n');
 }
 
@@ -1806,7 +1905,40 @@ export async function main(context) {
     log(`Final Verdict: ${JSON.stringify(finalVerdictResult)}`);
 
     phase(`Harvest C${finalCycleLabel}`);
-    const harvesterPrompt = buildHarvesterPrompt({ branch: validated.branch, baseBranch: validated.baseBranch, targetIssues });
+    // N12 (apra-fleet-unw2.10): wire the harvester's five vendored-required
+    // inputs with real, runner-computed values -- see buildAnalysisText()/
+    // buildCostAnalysis() above. `branchSlug` avoids embedding raw `/`
+    // characters from a branch name like `feat/fleet-reorg` in the artifact
+    // path, which would otherwise create surprise subdirectories. Note:
+    // deliberately no wall-clock timestamp in this path -- it must stay
+    // identical for two dispatches of the same branch (idempotent re-runs,
+    // and the golden-transcript determinism test), and harvester.md Step 1
+    // already overwrites the file at this path if it exists.
+    const branchSlug = validated.branch.replace(/[\\/]+/g, '-');
+    const analysisArtifactFile = `docs/sprint-analysis-${branchSlug}.md`;
+    const analysisText = buildAnalysisText({
+        targetIssues,
+        branch: validated.branch,
+        baseBranch: validated.baseBranch,
+        cyclesRun: finalCycleLabel,
+        closedCountHistory,
+        highWaterClosedCount,
+        deployFailures,
+        integFailures,
+        rejectedNewTasks,
+        finalVerdictResult,
+        finalClosedCount,
+        finalOpenAtGoalCount: finalOpenAtGoal.length,
+    });
+    const costAnalysis = buildCostAnalysis(budget);
+    const harvesterPrompt = buildHarvesterPrompt({
+        branch: validated.branch,
+        baseBranch: validated.baseBranch,
+        targetIssues,
+        analysisArtifactFile,
+        analysisText,
+        costAnalysis,
+    });
     let harvesterResult = null;
     try {
         harvesterResult = await agent(
