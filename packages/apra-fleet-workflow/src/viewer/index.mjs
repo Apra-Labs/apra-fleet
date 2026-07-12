@@ -356,7 +356,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
         }
       } catch(e) {
           console.error("Poll Error:", e);
-          if (globalState && (globalState.status === 'success' || globalState.status === 'failed')) {
+          if (globalState && (globalState.status === 'success' || globalState.status === 'failed' || globalState.status === 'cancelled')) {
               // already done, ignore
           } else {
               document.getElementById('status-indicator').innerHTML = '<span class="status-badge status-offline">OFFLINE</span>';
@@ -392,6 +392,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         extensions: {}
     };
 
+    // Note: group/phase tracking is single-run by design (single-tenant usage).
     let currentGroup = { title: 'Workflow', phases: [] };
     let currentPhase = { title: 'Initialization', events: [] };
     currentGroup.phases.push(currentPhase);
