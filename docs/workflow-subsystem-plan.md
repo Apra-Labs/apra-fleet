@@ -141,6 +141,27 @@ adds IPC/exit-code plumbing for no isolation benefit. The workflow's fleet
 server IS still a child process (via `APRA_FLEET_SERVER_BIN` self-spawn), so
 the MCP boundary is unchanged from today's npm mode.
 
+**Hard invariant (called out explicitly, not left implicit in the reasoning
+above): `apra-fleet workflow <name>` is ALWAYS a separate client process
+from the `apra-fleet` MCP server it talks to.** The "in-process `import()`"
+decision above only collapses the workflow-launcher/runner/engine code into
+one process; it never collapses the launcher and the MCP *server* together.
+Every `apra-fleet workflow <name>` invocation spawns its OWN fresh server
+child process via the `APRA_FLEET_SERVER_BIN` self-spawn (`run --transport
+stdio`) -- it never attaches to, shares, or reuses an already-running
+`apra-fleet` MCP session (e.g. the one a Claude Code IDE session already has
+registered). This exactly mirrors how the existing npm-based `auto-sprint`
+bin (`packages/apra-fleet-se/bin/cli.mjs`) already behaves today: it is
+already a distinct client process from whatever `apra-fleet` MCP server
+instance a coding-agent session might separately be talking to, connected
+only via its own private stdio pipe to a server instance it spawned itself.
+This SEA-binary design changes nothing about that relationship -- it only
+changes how the client half (the launcher/engine/runner) is packaged and
+run without a system Node install. Task authors/reviewers: do not propose
+attaching `apra-fleet workflow` to an already-running server process or
+merging the two into one process -- that would be a structural change to
+this invariant, not an implementation detail.
+
 **Mandatory Phase 1 spike (risk gate):** confirm on all 3 OS that dynamic
 `import()` of on-disk ESM works from inside a SEA main script (Node docs
 guarantee `createRequire` for CJS; dynamic `import()` from SEA is believed to
