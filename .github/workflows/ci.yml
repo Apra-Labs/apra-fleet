@@ -55,6 +55,15 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # apra-fleet-se's test/advanced-mock-runner-test.mjs shells out to a
+      # real `bd` (beads) CLI binary via child_process -- it was never
+      # available in CI because apra-fleet-3ns.3's step below is the first
+      # time this package's tests have ever run here. Install it globally
+      # (matches how every call site in this repo invokes `bd` as a bare
+      # PATH command, not a project-local dependency).
+      - name: Install bd CLI (required by apra-fleet-se tests)
+        run: npm install -g @beads/bd
+
       # apra-fleet-3ns.3: apra-fleet-se, apra-fleet-workflow, and
       # apra-fleet-client each keep their tests in test/ (singular) as
       # *.test.mjs run via `node --test`, NOT vitest.config.ts's
