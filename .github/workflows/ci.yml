@@ -478,6 +478,19 @@ jobs:
           fi
           echo "Clean install smoke test passed: auto-sprint --help works with no node_modules, schemas resolved from dist/agents/schemas (no dev-fallback warning)"
 
+          # apra-fleet-7pm.12: the `--help` check above exits before
+          # engine.executeFile() ever runs, so it never exercised
+          # dist/auto-sprint-runner.mjs's own import graph ('./contracts.mjs',
+          # './errors.mjs', '@apralabs/apra-fleet-workflow' [+ its '/viewer/
+          # html-utils' subpath], '@apralabs/apra-fleet-client', 'ajv') --
+          # only dist/auto-sprint.mjs's esbuild-inlined imports. Reuse this
+          # same clean-prefix tarball extraction and drive
+          # engine.executeFile() directly against the runner script, so a
+          # broken runtime import graph fails CI instead of shipping
+          # silently.
+          node "$GITHUB_WORKSPACE/scripts/smoke-test-runner-import.mjs" "$PKG_DIR"
+          echo "Runner-load smoke test passed"
+
       - name: Check if version already published
         id: check-published
         run: |
