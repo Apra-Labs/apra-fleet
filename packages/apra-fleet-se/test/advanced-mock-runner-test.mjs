@@ -1013,6 +1013,20 @@ async function main() {
             !/--notes="model:/.test(p),
             `Planner prompt must NOT instruct the model tier via --notes="model: ..." (re-diverged N1 convention): ${p}`
         );
+
+        // apra-fleet-dv5.1/dv5.3: the planner prompt must name the three
+        // EXACT tier keywords the server actually resolves ('cheap',
+        // 'standard', 'premium') and must NOT use the old '-tier'-suffixed
+        // wording (matched neither the server nor pricing.mjs's keys).
+        // Fails loudly on a regression back to the pre-dv5.1 wording.
+        check(
+            p.includes("'cheap'") && p.includes("'standard'") && p.includes("'premium'"),
+            `Planner prompt must name the exact tier keywords 'cheap', 'standard', 'premium': ${p}`
+        );
+        check(
+            !/cheap-tier|standard-tier|premium-tier/.test(p),
+            `Planner prompt must NOT use the old "-tier"-suffixed wording (cheap-tier/standard-tier/premium-tier): ${p}`
+        );
     }
 
     // apra-fleet-unw2.1 (N1) fix (b): the plan-reviewer dispatch prompt must be

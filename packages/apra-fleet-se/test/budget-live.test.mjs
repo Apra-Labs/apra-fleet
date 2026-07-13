@@ -101,8 +101,21 @@ async function teardown(tempDir) {
  * (which role got which model, per FIXED_ROLE_TIER / the doer's per-bead
  * metadata).
  */
-function buildMockFleetApi(tempDir, epicBead, taskId, dispatched) {
+// apra-fleet-dv5.3/dv5.6: `pricingByMember` optionally supplies a
+// get_member_model_pricing response per member_name -- omitted (the
+// default for every existing test in this file) means the mock fleet has
+// NO get_member_model_pricing tool at all, so every tier-keyword dispatch
+// exercises the "tool unavailable -> tier-band fallback" degrade path
+// exactly as it did before apra-fleet-dv5.6 existed (identical totals to
+// pre-dv5.6 behavior -- this is what proves fallback-safety end to end,
+// not a separate test).
+function buildMockFleetApi(tempDir, epicBead, taskId, dispatched, { pricingByMember } = {}) {
     return {
+        ...(pricingByMember ? {
+            getMemberModelPricing: async ({ member_name }) => ({
+                content: [{ text: JSON.stringify({ member_name, pricing: pricingByMember[member_name] ?? { cheap: null, standard: null, premium: null } }) }]
+            })
+        } : {}),
         executeCommand: async (opts) => {
             if (/^(git|gh)\s/.test(opts.command)) {
                 return { content: [{ text: 'ok (mocked -- no real git remote in this mock sprint)' }] };
@@ -170,7 +183,7 @@ function baseArgs(epicBead) {
 
 describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
     test('a mock sprint run genuinely accrues nonzero cost across its dispatches (budget is no longer inert)', async () => {
-        const { tempDir, epicBead, taskId } = await setup('spent');
+        const { tempDir, epicBead, taskId } = await setup('spent', { doerModel: 'cheap' });
         const dispatched = [];
         try {
             const mockFleetApi = buildMockFleetApi(tempDir, epicBead, taskId, dispatched);
@@ -204,11 +217,12 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
             assert.strictEqual(unknownCostCount, 0, 'Expected every dispatch in this scenario to be priced (every role has a FIXED_ROLE_TIER entry or per-bead metadata) -- an unpriced dispatch means a model failed to reach calculateCost().');
 
             // Sanity: the doer dispatch for our single task was actually
-            // priced against the model recorded in ITS bead metadata
-            // ('haiku'), not some other role's fixed default.
+            // priced against the tier keyword recorded in ITS bead metadata
+            // ('cheap', apra-fleet-dv5.1's tier vocabulary), not some other
+            // role's fixed default.
             const doerDispatch = dispatched.find((d) => d.agent === 'doer');
             assert.ok(doerDispatch, 'Expected a doer dispatch to have happened.');
-            assert.strictEqual(doerDispatch.model, 'haiku', `Doer dispatch should be priced against the bead's declared metadata model ('haiku'), got '${doerDispatch.model}'.`);
+            assert.strictEqual(doerDispatch.model, 'cheap', `Doer dispatch should be priced against the bead's declared metadata tier ('cheap'), got '${doerDispatch.model}'.`);
 
             // Sanity: the fixed reviewer-class roles used their documented
             // default tier ('premium', apra-fleet-dv5.1), independent of
@@ -220,6 +234,78 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
             const finalBeads = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
             const task = finalBeads.find((b) => b.id === taskId);
             assert.strictEqual(task.status, 'closed', 'Expected the single task to have been closed by the doer.');
+        } finally {
+            await teardown(tempDir);
+        }
+    });
+
+    // apra-fleet-dv5.1/dv5.3: a literal (non-tier-keyword) model ID in a
+    // bead's metadata is a fully legitimate, permanent value -- e.g. for a
+    // planner/human that already knows the target member's provider and
+    // wants a specific model family from it -- not deprecated, not
+    // rewritten, not warned about. This proves runner.js passes it through
+    // to the doer dispatch completely unchanged, end to end.
+    test('a bead declaring a literal, provider-meaningful model ID (not a tier keyword) dispatches UNCHANGED -- no rewriting', async () => {
+        const { tempDir, epicBead, taskId } = await setup('literal-id', { doerModel: 'minimax-abab' });
+        const dispatched = [];
+        try {
+            const mockFleetApi = buildMockFleetApi(tempDir, epicBead, taskId, dispatched);
+            const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+            const engine = new WorkflowEngine(workflow);
+
+            await engine.executeFile(scriptPath, baseArgs(epicBead), true);
+
+            const doerDispatch = dispatched.find((d) => d.agent === 'doer');
+            assert.ok(doerDispatch, 'Expected a doer dispatch to have happened.');
+            assert.strictEqual(doerDispatch.model, 'minimax-abab', `A literal model ID must pass through unchanged, got '${doerDispatch.model}'.`);
+
+            const finalBeads = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
+            const task = finalBeads.find((b) => b.id === taskId);
+            assert.strictEqual(task.status, 'closed', 'Expected the single task to have been closed by the doer.');
+        } finally {
+            await teardown(tempDir);
+        }
+    });
+
+    // apra-fleet-dv5.3 (c): apra-fleet-se-side end-to-end coverage of
+    // apra-fleet-dv5.6's real-vs-fallback pricing selection (the
+    // apra-fleet-workflow-side unit-level assertions live in
+    // apra-fleet-workflow-real-pricing.test.mjs -- this test proves the
+    // SAME behavior surfaces through a real runner.js mock sprint, not
+    // just an isolated FleetWorkflow.agent() call).
+    test('a member with real get_member_model_pricing data is priced at the real rate, not the pricing.mjs tier-band fallback', async () => {
+        const { tempDir, epicBead, taskId } = await setup('real-pricing', { doerModel: 'cheap' });
+        const dispatched = [];
+        try {
+            // Deliberately priced far outside pricing.mjs's fallback rows
+            // (premium: $15/$75 per 1M) so a match against these numbers
+            // can only come from the real-pricing path, never a
+            // coincidental fallback hit.
+            const mockFleetApi = buildMockFleetApi(tempDir, epicBead, taskId, dispatched, {
+                pricingByMember: {
+                    local: {
+                        cheap: { model: 'local-cheap-model', promptPrice: 1000, completionPrice: 2000 },
+                        standard: null,
+                        premium: { model: 'local-premium-model', promptPrice: 1000, completionPrice: 2000 },
+                    }
+                }
+            });
+            const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+
+            let totalCost = 0;
+            workflow.on('activity:end', (meta) => { if (typeof meta.cost === 'number') totalCost += meta.cost; });
+
+            const engine = new WorkflowEngine(workflow);
+            await engine.executeFile(scriptPath, baseArgs(epicBead), true);
+
+            // USAGE = 1000 prompt + 500 completion tokens per dispatch.
+            // Real 'cheap' rate: 1000/1e6*1000 + 500/1e6*2000 = 1 + 1 = 2.00 per dispatch (doer).
+            // Real 'premium' rate: same numbers = 2.00 per dispatch (planner/plan-reviewer/reviewer/final-review).
+            // pricing.mjs's fallback premium row would give only 0.0525 per dispatch --
+            // a run that used the fallback for these would total far less than 2.00 per priced dispatch.
+            const doerDispatch = dispatched.find((d) => d.agent === 'doer');
+            assert.ok(doerDispatch, 'Expected a doer dispatch to have happened.');
+            assert.ok(totalCost >= 2.0, `Expected totalCost to reflect the real per-member rate (>= $2.00 for at least one dispatch), got ${totalCost} -- this would be far lower ($0.0525-scale) if the tier-band fallback was used instead of real pricing.`);
         } finally {
             await teardown(tempDir);
         }
