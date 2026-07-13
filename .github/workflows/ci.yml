@@ -60,9 +60,17 @@ jobs:
       # available in CI because apra-fleet-3ns.3's step below is the first
       # time this package's tests have ever run here. Install it globally
       # (matches how every call site in this repo invokes `bd` as a bare
-      # PATH command, not a project-local dependency).
+      # PATH command, not a project-local dependency). @beads/bd's
+      # postinstall script downloads a platform-specific native binary; that
+      # download can fail silently (npm still reports install success) --
+      # --foreground-scripts surfaces postinstall output/failures instead of
+      # swallowing them, and the version check below fails this step
+      # immediately and clearly rather than deferring to a confusing crash
+      # two steps later in the apra-fleet-se test suite.
       - name: Install bd CLI (required by apra-fleet-se tests)
-        run: npm install -g @beads/bd
+        run: |
+          npm install -g @beads/bd --foreground-scripts
+          bd --version
 
       # apra-fleet-3ns.3: apra-fleet-se, apra-fleet-workflow, and
       # apra-fleet-client each keep their tests in test/ (singular) as
