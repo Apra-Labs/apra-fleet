@@ -67,7 +67,18 @@ jobs:
       # swallowing them, and the version check below fails this step
       # immediately and clearly rather than deferring to a confusing crash
       # two steps later in the apra-fleet-se test suite.
+      #
+      # @beads/bd's postinstall.js has a hardcoded `if (!process.env.CI)
+      # { install() } else { skip }` guard with no override flag/env var --
+      # it assumes CI environments never need the bd binary, which is wrong
+      # for this repo (apra-fleet-se's tests genuinely need a working `bd`).
+      # GitHub Actions sets CI=true globally for every step; overriding it
+      # to empty string for just this step (via the step-level `env:` block)
+      # makes `!process.env.CI` true again, so postinstall actually runs its
+      # download instead of silently no-op'ing.
       - name: Install bd CLI (required by apra-fleet-se tests)
+        env:
+          CI: ''
         run: |
           npm install -g @beads/bd --foreground-scripts
           bd --version
