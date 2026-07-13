@@ -1,5 +1,12 @@
 # Workflow Terminology Standardization Proposal
 
+Design note: this proposes a renaming (`phase()` -> Scope/Stage, `sequential()` -> Sequence,
+"action" -> "Activity") that is not part of the current implementation. The engine's actual
+API today uses `phase()`, `sequential()`, `pipeline()`, `parallel()`, `agent()`, `command()`,
+and `transform()` exactly as described in `docs/apra-fleet-workflow-architecture.md` and
+`docs/workflow-guide.md` -- none of the renames below have been adopted. Kept here as
+forward-looking terminology thinking, not as a description of current behavior.
+
 ## Background
 Currently, our workflow engine uses varied terminology: `workflow.phase()`, `sequential()`, `parallel()`, `agent()`, `command()`, and `transform()`. A user raised the question: *"What is the unit of work within a phase? Is it an activity, a step, or a job?"*
 

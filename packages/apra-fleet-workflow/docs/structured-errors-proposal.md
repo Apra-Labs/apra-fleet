@@ -1,5 +1,13 @@
 # Proposal: Structured Errors in apra-fleet MCP Server
 
+Design note: this proposes a server-side change to the apra-fleet MCP server (an external
+repository, outside this package) and is not yet implemented. Until it lands, the workflow
+layer in this package (`src/workflow/errors.mjs`) implements a client-side stopgap --
+classifying certain known failure text patterns (e.g. a missing member) into the typed error
+hierarchy described in `docs/apra-fleet-workflow-architecture.md` section 4.4 -- which this
+proposal's "Migration Path" step 3 anticipates replacing once the server ships either option
+below.
+
 ## Problem Statement
 
 Currently, the `apra-fleet` MCP server embeds error strings within successful text payloads. This approach forces clients to implement fragile parsing logic to determine whether a tool call succeeded or failed by inspecting the text content. This is an anti-pattern that violates the principles of structured communication and makes error handling across the fleet unreliable.

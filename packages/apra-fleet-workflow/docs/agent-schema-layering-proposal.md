@@ -1,10 +1,20 @@
 # Proposal: Role-Owned Output Schemas (Agent-Def Layering Fix)
 
-Status: PROPOSED -- awaiting user approval before any implementation.
-Affects: `vendor/apra-pm` (agent defs, unpushed `apra-fleet-unw.13` work),
-`packages/apra-fleet-se/auto-sprint/contracts.mjs` (`apra-fleet-unw.12`),
-`packages/apra-fleet-workflow/src/workflow/index.mjs` `agent()` schema handling,
-and the planned runner wiring in `apra-fleet-unw.15/16/17`.
+Design note: this proposes an approach not yet part of the current implementation. It spans
+three components: `vendor/apra-pm` (the agent-role definitions consumed by fleet members),
+`packages/apra-fleet-se/auto-sprint/contracts.mjs` (auto-sprint's application-layer schema
+adapter), and `packages/apra-fleet-workflow/src/workflow/index.mjs`'s `agent()` schema
+handling. Only the last of these lives in this package, and per the recommendation below its
+change is documentation-only (see section 4, item 4) -- the `AgentOptions.schema` jsdoc in
+`index.mjs` already carries a cross-reference to this document. The rest of the proposal
+(shipping schema files inside `vendor/apra-pm`, reframing `contracts.mjs` as a thin adapter
+over them) is scoped to those other components and has not been implemented there either, as
+of this document's writing.
+
+Status: PROPOSED, pending sign-off before implementation begins.
+Affects: `vendor/apra-pm` agent-role definitions, `packages/apra-fleet-se/auto-sprint/
+contracts.mjs`, and (documentation-only) `packages/apra-fleet-workflow/src/workflow/
+index.mjs`'s `agent()` schema handling.
 
 ## Problem Statement
 
@@ -18,7 +28,7 @@ files are consumed by at least three distinct callers:
    subagents.
 3. **Any future workflow script** written against `apra-fleet-workflow`.
 
-The just-completed (local-only, unpushed) `apra-fleet-unw.13` work added
+A recent update to the vendored agent-role definitions added
 "Output schema" sections to each role def, and in `planner.md` referenced
 `packages/apra-fleet-se/auto-sprint/contracts.mjs` -- an application-layer
 module -- as the frame of reference for the role's output contract. That is a
@@ -40,24 +50,21 @@ source and a documented precedence rule for the prompt channel.
 
 ## 1. Audit: application-layer references in `vendor/apra-pm`
 
-Audited state: worktree `C:\akhil\git\wt-unw13\vendor\apra-pm`, branch
-`tmp/unw13-vendor-agent-defs` (commits `5c5fed9`, `a125810` -- the unpushed
-unw.13 work), all 8 `agents/*.md` files plus `skills/pm/*`.
+This audit covers the `agents/*.md` role-definition files plus `skills/pm/*` in
+`vendor/apra-pm`.
 
 ### 1.1 True cross-repo layering violations (must fix before upstream PR)
 
 | File | Location | Text | Why it is a violation |
 | --- | --- | --- | --- |
-| `agents/planner.md` | "Output schema" section, lines 116-120 (added by unw.13 commit `5c5fed9`) | "`planner` has no structured verdict schema in `packages/apra-fleet-se/auto-sprint/contracts.mjs` -- unlike the other seven roles ..." and "... via its `planReviewerVerdict` schema" | References a path that exists only in the `apra-fleet` repo. Once this file is PR'd upstream to `Apra-Labs/apra-pm`, the path is dangling for every non-fleet consumer. `planReviewerVerdict` is a `contracts.mjs` export identifier, i.e. an application symbol name leaked into the generic layer. Also asserts (falsely, from apra-pm's own perspective) that "the other seven roles" have their schema defined in an external application module. |
+| `agents/planner.md` | "Output schema" section | "`planner` has no structured verdict schema in `packages/apra-fleet-se/auto-sprint/contracts.mjs` -- unlike the other seven roles ..." and "... via its `planReviewerVerdict` schema" | References a path that exists only in the `apra-fleet` repo. Once this file is PR'd upstream to `Apra-Labs/apra-pm`, the path is dangling for every non-fleet consumer. `planReviewerVerdict` is a `contracts.mjs` export identifier, i.e. an application symbol name leaked into the generic layer. Also asserts (falsely, from apra-pm's own perspective) that "the other seven roles" have their schema defined in an external application module. |
 
 This is the **only** cross-repo reference in the eight `agents/*.md` files.
-The other seven roles' unw.13 "Output schema" sections are self-contained
-inline JSON blocks with no caller references -- verified by grep for
+The other seven roles' "Output schema" sections are self-contained
+inline JSON blocks with no caller references -- verified by grepping for
 `auto-sprint`, `contracts.mjs`, `apra-fleet-se`, `apra-fleet-workflow`,
-`runner.js` across all of `agents/` (case-insensitive). The user's instinct
-("I see this broken in planner.md so look for the same symptom everywhere")
-was right to demand the sweep; the sweep result is: one instance in
-`agents/`, plus the `skills/pm` items below.
+`runner.js` across all of `agents/` (case-insensitive). The sweep result is:
+one instance in `agents/`, plus the `skills/pm` items below.
 
 ### 1.2 `skills/pm/*` references to "auto-sprint" -- mostly intra-repo, one smell
 
@@ -66,8 +73,8 @@ Important nuance: apra-pm **ships its own legacy auto-sprint workflow** at
 `skills/pm` mentions of "auto-sprint" refer to that sibling file, not to
 `packages/apra-fleet-se`. Those are same-repo coupling, not cross-repo
 layering violations -- but they are catalogued here because (a) the name
-collision with `apra-fleet-se/auto-sprint` invites exactly the confusion this
-epic is untangling, and (b) one of them names a workflow-private schema
+collision with `apra-fleet-se/auto-sprint` invites exactly this kind of
+confusion, and (b) one of them names a workflow-private schema
 constant as the reference for a role contract, which violates role ownership
 even intra-repo:
 
@@ -82,8 +89,7 @@ even intra-repo:
 | `skills/pm/sprint.md` | lines 198-199 | "`computeSprintAnalysis`, `buildSprintSummary`, and `computeUpdatedCalibration` from auto-sprint.js" | Intra-repo. OK. |
 
 Bottom line: the layering violation proper is one sentence in `planner.md`,
-introduced by the unpushed unw.13 work, plus one role-ownership smell in
-`cost.md:94`. Both are cheap to fix textually -- but fixing only the text
+plus one role-ownership smell in `cost.md:94`. Both are cheap to fix textually -- but fixing only the text
 without deciding *where the schema canonically lives* just moves the drift
 problem around, which is what the rest of this proposal addresses.
 
@@ -110,7 +116,7 @@ Role-to-member binding is real and specific, not hypothetical:
 
 ### 2.2 How the workflow's `schema:` option reaches the LLM
 
-In the same `agent()` call (post-unw.8, current merged code):
+In the same `agent()` call:
 
 - `opts.schema` is compiled with ajv (line 422-429; invalid schema throws).
 - The schema is **appended to the user prompt as text** (lines 431-433):
@@ -128,10 +134,10 @@ In the same `agent()` call (post-unw.8, current merged code):
 Both, in a layered way:
 
 - **Reading (b) -- persona vs. call-site -- is the structural risk.** After
-  unw.13, every role `.md` bakes an "Output schema" JSON block into the
-  member's system prompt. When unw.15/16/17 wire `runner.js` to pass
-  `schema: contracts.SCHEMAS.<x>` (per docs/plan.md, the W4 dispatches
-  "embed the verdict schema ... inline in every prompt (the shim)"), each
+  the vendored update, every role `.md` bakes an "Output schema" JSON block
+  into the member's system prompt. When `runner.js` also passes
+  `schema: contracts.SCHEMAS.<x>` on the same dispatch (embedding the verdict
+  schema inline in the prompt, as a caller-side enforcement mechanism), each
   dispatch will carry two schema statements: one in the system prompt (the
   persona) and one appended to the user prompt. They are maintained in two
   different repos with no mechanical link. Only the call-site one is
@@ -143,19 +149,19 @@ Both, in a layered way:
 ### 2.4 This is already live, not future risk
 
 apra-pm's own shipped `.claude/workflows/auto-sprint.js` already dispatches
-with BOTH `agentType:` and `schema:` (e.g. lines 1441, 1549, 1601, 1790).
-Its inline schemas have **already drifted** from both `contracts.mjs` and the
-unw.13 `.md` blocks -- there are now THREE independent copies of each role
+with BOTH `agentType:` and `schema:`. Its inline schemas have **already
+drifted** from both `contracts.mjs` and the vendored `.md` role defs' own
+Output-schema sections -- there are now THREE independent copies of each role
 contract:
 
-| Contract | legacy `apra-pm/.claude/workflows/auto-sprint.js` | `contracts.mjs` (unw.12) | unw.13 `.md` Output schema |
+| Contract | legacy `apra-pm/.claude/workflows/auto-sprint.js` | `contracts.mjs` (auto-sprint's adapter) | vendored `.md` Output schema |
 | --- | --- | --- | --- |
 | reviewer verdict enum | `'CHANGES NEEDED'` (space) | `'CHANGES_NEEDED'` (underscore) | `'CHANGES_NEEDED'` |
 | reviewer fields | `verdict`, `notes` only | + required `reopenIds`, `newTasks` | + `reopenIds`, `newTasks` |
 | doer status enum | `['VERIFY']` only | `['VERIFY', 'BLOCKED']` + required `closedIds` | `VERIFY \| BLOCKED` + `closedIds` |
 | integ report | no `passed`/`bugsFiled` | required `passed`, `bugsFiled` | `passed`, `bugsFiled` |
 
-Concrete failure once unw.13's defs are installed on members while the legacy
+Concrete failure once the vendored defs are installed on members while the legacy
 workflow (or any stale caller) still runs: the reviewer persona says return
 `CHANGES_NEEDED` with `reopenIds`; the appended legacy schema says
 `CHANGES NEEDED` with neither. If the model follows its persona, ajv fails
@@ -164,9 +170,9 @@ still exhaust into a thrown `AgentOutputError` that kills the sprint. If it
 follows the appended schema, the persona contract is silently dead and the
 orchestration semantics that SKILL.md builds on `reopenIds` (R10, Develop
 exit condition) get a shape they cannot act on. Either way the choice is
-non-deterministic per dispatch -- exactly the danger the user named.
+non-deterministic per dispatch -- exactly the danger named above.
 
-One subtlety that matters for the design: the unw.13 `.md` blocks are
+One subtlety that matters for the design: the vendored `.md` blocks are
 **pseudo-JSON exemplars** (`"verdict": "APPROVED | CHANGES_NEEDED"` -- a pipe
 inside a string), not valid JSON Schema and not valid example instances. A
 literal-minded model can emit the pipe string verbatim; today only the
@@ -278,7 +284,7 @@ itself.** Concretely:
    - *Graceful degradation*: "If dispatched without a schema instruction
      (e.g. informal/manual use), report the same decision fields, in this
      JSON shape if the caller is an orchestrator, or as prose if you are
-     answering a human directly." This keeps the user's "smart about both
+     answering a human directly." This keeps the goal of being "smart about both
      textual and structured" property: JSON is emitted when a schema is in
      play or an orchestrator is reading; plain text otherwise. Agents must
      also continue to treat their *inputs* as possibly structured or
@@ -291,7 +297,7 @@ itself.** Concretely:
    role file because it is the orchestrator's own synthesized gate). The
    seven hand-copied role schemas are replaced by loading
    `vendor/apra-pm/agents/schemas/*.json` at module init, re-exported under
-   the existing names so unw.15/16/17 wiring is unaffected. A version-pin
+   the existing names so the runner's schema-passing call sites are unaffected. A version-pin
    check throws at load if a vendored schema's `$id` major version is not
    the expected one -- so a submodule bump that changes a contract fails
    loudly in CI instead of drifting silently. Dependency direction is now
@@ -333,12 +339,12 @@ single source with a deterministic tiebreak.
 
 ---
 
-## 5. Migration sketch (for future beads issues -- no changes made here)
+## 5. Migration sketch (no changes made in this document)
 
-### 5.1 Rework the unpushed unw.13 branch (`tmp/unw13-vendor-agent-defs`) BEFORE any upstream PR
+### 5.1 Rework the vendored agent-def branch before any upstream PR
 
-The branch as it stands **contains the layering violation and must not be
-pushed upstream as-is.**
+The vendored agent-role definitions, as they currently stand, **contain the
+layering violation described above and must not be pushed upstream as-is.**
 
 - `agents/planner.md`: delete the `contracts.mjs`/`apra-fleet-se` sentence.
   Replace with: "planner has no structured output contract -- its output IS
@@ -348,12 +354,14 @@ pushed upstream as-is.**
   instances; add the sibling-file pointer, precedence clause, and
   graceful-degradation clause (section 4.2).
 - Add `agents/schemas/*.json` (7 files) with `$id`/version; content =
-  today's contracts.mjs shapes (which unw.13 already aligned the prose to).
+  today's contracts.mjs shapes (which the vendored prose update already
+  aligned to).
 - Update `install.mjs` (and mirror in apra-fleet `src/cli/install.ts`) to
   install `agents/schemas/`.
 - Migrate `.claude/workflows/auto-sprint.js` inline role schemas to read the
   files; fix `cost.md:94`; add the example-validates-against-schema CI check.
-- Then: upstream PR to `Apra-Labs/apra-pm`, submodule bump per docs/plan.md.
+- Then: upstream PR to `Apra-Labs/apra-pm`, followed by a submodule bump in
+  the consuming repo.
 
 ### 5.2 Reframe contracts.mjs (small diff, not a rewrite)
 
@@ -361,18 +369,17 @@ pushed upstream as-is.**
   `vendor/apra-pm/agents/schemas/*.json` + version pin; keep export names,
   `SCHEMAS`, `VALIDATORS`, `validateVerdict` signatures identical.
 - Keep `ROLES`, helpers, and `finalVerdict` as-is (application-owned).
-- Delete the now-satisfied DIVERGENCE NOTEs (the unw.13 prose already
-  adopted those shapes); add the drift-pin test.
+- Delete divergence notes that become moot once the vendored prose and the
+  literals agree; add the drift-pin test.
 - Until the submodule bump lands, the literals can remain as a fallback
-  behind the loader so unw.15/16/17 are not blocked (mirrors plan.md's
-  existing "shim" stance).
+  behind the loader so runner development is not blocked on the vendor sign-off.
 
 ### 5.3 `apra-fleet-workflow` `agent()`
 
 - No runtime change. Jsdoc addition on `AgentOptions.schema` documenting the
   single-source + precedence contract (section 4.4).
 
-### 5.4 Runner wiring (folds into unw.15/16/17 as already planned)
+### 5.4 Runner wiring
 
 - All `agent(..., { agentType, schema })` calls take `schema` from
   `contracts.SCHEMAS.<name>` exclusively; a lint-ish unit test asserts
@@ -397,7 +404,7 @@ pushed upstream as-is.**
 
 ## 6. Extension: role-owned input schemas (pre-dispatch validation)
 
-Approved by the user as a follow-on to the recommendation above, with the
+A follow-on to the recommendation above, with the
 explicit observation that it is a *cleaner* case than output schemas, not a
 harder one -- for a structural reason worth stating precisely.
 
@@ -414,9 +421,9 @@ does not apply here -- but a different, still-real problem does.
 
 ### 6.2 The problem: a deterministically-checkable property left to LLM judgment
 
-`apra-fleet-unw.13`'s V3 fix added an "Inputs" section to every role def,
-each with a **prose** "missing-input behavior" clause. Concrete examples
-audited directly from `C:\akhil\git\wt-unw13\vendor\apra-pm\agents\`:
+The vendored agent-def update added an "Inputs" section to every role def,
+each with a **prose** "missing-input behavior" clause. Concrete examples,
+audited directly from the vendored `agents/*.md` files:
 
 - `harvester.md`: requires `analysisArtifactFile`, `analysisText`,
   `costAnalysis` (verbatim pre-computed content), `base-branch`, `branch`.
@@ -479,7 +486,7 @@ priority but same pattern for consistency).
 
 ### 6.5 Migration note (folds into section 5, no changes made here)
 
-When `agents/unw.13`'s branch is reworked per section 5.1, add the sibling
+When the vendored agent-def branch is reworked per section 5.1, add the sibling
 input-schema files and the pre-flight-validation adapter function to
 `contracts.mjs` (section 5.2) in the same pass -- both are additive,
 non-breaking changes to the same files already being touched, so there is
