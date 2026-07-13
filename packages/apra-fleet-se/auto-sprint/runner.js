@@ -961,6 +961,23 @@ function buildCostAnalysis(budget) {
     } else {
         lines.push('Remaining budget: unknown/unbounded.');
     }
+    // apra-fleet-dv5.6: reports the SOURCE of each priced dispatch's cost --
+    // real per-member rates (get_member_model_pricing) vs. pricing.mjs's
+    // tier-band/concrete-model fallback -- so this note stays honest about
+    // precision rather than implying every number above is equally exact.
+    const summary = budget && typeof budget.pricingSummary === 'function' ? budget.pricingSummary() : null;
+    if (summary) {
+        const { real, fallback } = summary;
+        if (real === 0 && fallback === 0) {
+            lines.push('Pricing source: no dispatch was priced this run.');
+        } else if (real > 0 && fallback === 0) {
+            lines.push(`Pricing source: all ${real} priced dispatch(es) used real per-member rates (get_member_model_pricing).`);
+        } else if (real === 0 && fallback > 0) {
+            lines.push(`Pricing source: all ${fallback} priced dispatch(es) used the tier-band/concrete-model fallback estimate (real per-member pricing was unavailable) -- see pricing.mjs.`);
+        } else {
+            lines.push(`Pricing source: mixed -- ${real} dispatch(es) priced via real per-member rates, ${fallback} via the tier-band/concrete-model fallback estimate.`);
+        }
+    }
     lines.push(
         'Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- '
         + 'this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.'

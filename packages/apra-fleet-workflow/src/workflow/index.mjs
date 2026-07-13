@@ -355,9 +355,26 @@ export class FleetWorkflow extends EventEmitter {
         this.budget = {
             total: null,
             _spent: 0,
+            // apra-fleet-dv5.6: counts of dispatches priced via real
+            // per-member rates (get_member_model_pricing) vs. the
+            // tier-band/concrete-model fallback (pricing.mjs) -- see
+            // pricingSummary() and buildCostAnalysis() in runner.js.
+            _pricedReal: 0,
+            _pricedFallback: 0,
             spent: () => this.budget._spent,
-            remaining: () => this.budget.total === null ? Infinity : (this.budget.total - this.budget._spent)
+            remaining: () => this.budget.total === null ? Infinity : (this.budget.total - this.budget._spent),
+            pricingSummary: () => ({ real: this.budget._pricedReal, fallback: this.budget._pricedFallback })
         };
+        // apra-fleet-dv5.6: member_id/member_name -> MemberModelPricing (or
+        // `null` when real pricing is unavailable for that member), cached
+        // for the lifetime of a run (fresh per runWithContext() call, see
+        // `store.memberPricingCache` below) -- tier->model resolution is
+        // static for a run's duration, so this is a plain cache, not a TTL.
+        this._memberPricingCache = new Map();
+        // member_id/member_name we've already logged a "pricing unavailable"
+        // warning for (apra-fleet-dv5.6 acceptance criteria: log ONCE per
+        // member, not once per dispatch).
+        this._warnedPricingMembers = new Set();
         // (apra-fleet-unw.10) runId -> AbortController for every currently
         // active runWithContext() run. requestStop() aborts every entry in
         // this map; agent()/command() default to the current run's
@@ -393,6 +410,14 @@ export class FleetWorkflow extends EventEmitter {
     _currentBudget() {
         const store = this._store();
         return store ? store.budget : this.budget;
+    }
+
+    // apra-fleet-dv5.6: same store-or-legacy-field pattern as the other
+    // _current*() accessors -- a fresh Map per run (see runWithContext()),
+    // or the legacy instance-level field for direct non-executeFile() usage.
+    _currentMemberPricingCache() {
+        const store = this._store();
+        return store ? store.memberPricingCache : this._memberPricingCache;
     }
 
     _currentRunId() {
@@ -490,9 +515,75 @@ export class FleetWorkflow extends EventEmitter {
         this.emit('state', { namespace, data, phase: this._currentPhase(), runId: this._currentRunId() });
     }
 
+    // apra-fleet-dv5.6: fetches (and caches for the run) a member's real
+    // per-tier pricing via the get_member_model_pricing MCP tool. Never
+    // throws -- any failure (older fleet server without the tool,
+    // network/hub-relay error, member not found) degrades to `null`
+    // (meaning "use the tier-band/concrete-model fallback for this
+    // member"), logged ONCE per member rather than once per dispatch.
+    async _getMemberPricing(memberKey, opts) {
+        const cache = this._currentMemberPricingCache();
+        if (cache.has(memberKey)) return cache.get(memberKey);
+
+        const warnUnavailable = (reason) => {
+            if (!this._warnedPricingMembers.has(memberKey)) {
+                this._warnedPricingMembers.add(memberKey);
+                console.warn(`[Workflow] Real per-member pricing unavailable for member "${memberKey}" (${reason}) -- falling back to tier-band cost estimates for this member's dispatches.`);
+            }
+        };
+
+        try {
+            const res = await this.fleetApi.getMemberModelPricing({ member_id: opts.member_id, member_name: opts.member_name });
+            const text = res && res.content && res.content[0] ? res.content[0].text : null;
+            const parsed = text ? JSON.parse(text) : null;
+            if (!parsed || parsed.error || !parsed.pricing) {
+                warnUnavailable(parsed && parsed.error ? parsed.error : 'no pricing data returned');
+                cache.set(memberKey, null);
+                return null;
+            }
+            cache.set(memberKey, parsed.pricing);
+            return parsed.pricing;
+        } catch (err) {
+            warnUnavailable(err && err.message ? err.message : String(err));
+            cache.set(memberKey, null);
+            return null;
+        }
+    }
+
+    // apra-fleet-dv5.6: resolves the cost of one dispatch, preferring real
+    // per-member pricing over the pricing.mjs tier-band/concrete-model
+    // fallback whenever `opts.model` is a tier keyword AND real pricing is
+    // available for that member and tier. Falls back to calculateCost()
+    // (unchanged behavior) for: a literal (non-tier-keyword) model id, a
+    // dispatch with no member_id/member_name (shouldn't happen -- agent()
+    // requires one), or when real pricing is unavailable/doesn't cover this
+    // tier. Increments budget._pricedReal/_pricedFallback so
+    // buildCostAnalysis() (runner.js) can honestly report which source
+    // priced a run's total.
+    async _resolveCost(opts, usage, budget) {
+        const tier = opts.model;
+        if (tier === 'cheap' || tier === 'standard' || tier === 'premium') {
+            const memberKey = opts.member_id || opts.member_name;
+            if (memberKey) {
+                const realPricing = await this._getMemberPricing(memberKey, opts);
+                const entry = realPricing && realPricing[tier];
+                if (entry && typeof entry.promptPrice === 'number' && typeof entry.completionPrice === 'number') {
+                    const pTokens = usage.prompt_tokens || 0;
+                    const cTokens = usage.completion_tokens || 0;
+                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice;
+                    budget._pricedReal++;
+                    return cost;
+                }
+            }
+        }
+        const cost = calculateCost(opts.model, usage);
+        if (cost !== null) budget._pricedFallback++;
+        return cost;
+    }
+
     /**
-     * @param {string} prompt 
-     * @param {AgentOptions} [opts] 
+     * @param {string} prompt
+     * @param {AgentOptions} [opts]
      */
     async agent(prompt, opts = {}) {
         if (!opts.member_name && !opts.member_id) {
@@ -690,7 +781,7 @@ export class FleetWorkflow extends EventEmitter {
                     result.usage = null;
                 }
 
-                const cost = hasRealUsage ? calculateCost(opts.model, result.usage) : null;
+                const cost = hasRealUsage ? await this._resolveCost(opts, result.usage, budget) : null;
                 if (cost !== null) {
                     budget._spent += cost;
                 }
@@ -1349,8 +1440,11 @@ export class FleetWorkflow extends EventEmitter {
         const budget = {
             total: null,
             _spent: 0,
+            _pricedReal: 0,
+            _pricedFallback: 0,
             spent: () => budget._spent,
-            remaining: () => budget.total === null ? Infinity : (budget.total - budget._spent)
+            remaining: () => budget.total === null ? Infinity : (budget.total - budget._spent),
+            pricingSummary: () => ({ real: budget._pricedReal, fallback: budget._pricedFallback })
         };
         // (apra-fleet-unw.10) Per-run AbortController backing cooperative
         // cancellation: agent()/command() default to `store.signal` (via
@@ -1398,7 +1492,12 @@ export class FleetWorkflow extends EventEmitter {
             activitySeq: opts.journalEnabled ? { value: 0 } : null,
             seqPrefix: '',
             parallelSeq: opts.journalEnabled ? { value: 0 } : null,
-            replay: opts.journalEnabled ? (opts.replay || null) : null
+            replay: opts.journalEnabled ? (opts.replay || null) : null,
+            // apra-fleet-dv5.6: fresh per run, shared by reference across
+            // parallel() branches (like `budget` above) so a member's
+            // pricing is only fetched once per run regardless of how many
+            // branches dispatch to it.
+            memberPricingCache: new Map()
         };
         const context = {
             ...this._bindPrimitives(),
