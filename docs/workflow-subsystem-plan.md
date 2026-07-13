@@ -146,21 +146,61 @@ above): `apra-fleet workflow <name>` is ALWAYS a separate client process
 from the `apra-fleet` MCP server it talks to.** The "in-process `import()`"
 decision above only collapses the workflow-launcher/runner/engine code into
 one process; it never collapses the launcher and the MCP *server* together.
-Every `apra-fleet workflow <name>` invocation spawns its OWN fresh server
-child process via the `APRA_FLEET_SERVER_BIN` self-spawn (`run --transport
-stdio`) -- it never attaches to, shares, or reuses an already-running
-`apra-fleet` MCP session (e.g. the one a Claude Code IDE session already has
-registered). This exactly mirrors how the existing npm-based `auto-sprint`
-bin (`packages/apra-fleet-se/bin/cli.mjs`) already behaves today: it is
-already a distinct client process from whatever `apra-fleet` MCP server
-instance a coding-agent session might separately be talking to, connected
-only via its own private stdio pipe to a server instance it spawned itself.
-This SEA-binary design changes nothing about that relationship -- it only
-changes how the client half (the launcher/engine/runner) is packaged and
-run without a system Node install. Task authors/reviewers: do not propose
-attaching `apra-fleet workflow` to an already-running server process or
-merging the two into one process -- that would be a structural change to
-this invariant, not an implementation detail.
+**How that server is reached is transport-dependent, and the two modes
+behave differently -- this was mischaracterized in an earlier draft of this
+section as uniform self-spawn behavior, which is wrong:**
+
+- **stdio transport (legacy/subprocess mode):** the launcher self-spawns its
+  OWN fresh server child process via the `APRA_FLEET_SERVER_BIN` self-spawn
+  (`run --transport stdio`) -- it never attaches to, shares, or reuses an
+  already-running `apra-fleet` MCP session. This exactly mirrors how the
+  existing npm-based `auto-sprint` bin (`packages/apra-fleet-se/bin/cli.mjs`,
+  `resolveFleetServerCommand()`, lines ~51-84) already behaves today: it is a
+  distinct client process connected only via its own private stdio pipe to a
+  server instance it spawned itself.
+- **streamableHTTP transport (the actual product default -- `install.ts:484-
+  485` documents HTTP as default, stdio as legacy):** there is a persistent
+  local singleton `apra-fleet` server already running as an installed OS
+  service (`install.ts:914`, `svcMgr.register(..., ['--transport', 'http'],
+  ...)`), listening at a fixed, well-known URL --
+  `http://localhost:${DEFAULT_PORT}/mcp`, where `DEFAULT_PORT` is `7523` by
+  default (overridable via `APRA_FLEET_PORT`; `src/paths.ts:6`). In this mode
+  `apra-fleet workflow <name>` does **not** spawn a server at all -- it is a
+  plain HTTP client (`packages/apra-fleet-client`'s already-implemented
+  `StreamableHttpTransport`, `factory.mjs`/`transport.mjs`) that connects to
+  that already-running singleton, the same one every other registered
+  provider (Claude Code, Gemini, Codex, Copilot, etc.) is already talking to.
+  Discovery/liveness works exactly the way `src/services/singleton.ts`
+  already does it for the server's own startup-dedup: `~/.apra-fleet/data/
+  server.json` holds `{pid, url}` written by the running instance;
+  `checkRunningInstance()` validates the pid is alive and GETs
+  `<url-with-/mcp-replaced-by-/health>` before trusting it, self-healing
+  (deletes the stale file) if either check fails. The workflow launcher
+  should reuse this exact check, not re-implement liveness detection.
+
+**Known gap this creates (flag for the task breakdown, not yet resolved by
+this doc):** `resolveFleetServerCommand()` in `packages/apra-fleet-se/bin/
+cli.mjs` -- the function this plan's launcher design (Section 1, step 2)
+said it would reuse/mirror -- currently implements ONLY the stdio-self-spawn
+branch (4 resolution tiers, all producing `run --transport stdio` args).
+It has no HTTP-mode branch. The launcher cannot simply "mirror" this
+function as originally described; it needs its own resolution order that
+(a) checks `checkRunningInstance()` first when HTTP is the configured/
+default transport and connects directly if healthy, (b) falls back to the
+existing stdio self-spawn path only when no healthy HTTP singleton is found
+(e.g. running before `apra-fleet install`/`start` has ever launched the
+service, or with `APRA_FLEET_TRANSPORT=stdio` forced). See R13 in the risk
+register. This resolution-order decision, and whether it lives in a shared
+helper `apra-fleet workflow` and `auto-sprint`'s `cli.mjs` both call, or is
+duplicated, is an open design question for Phase 1/2 task authoring, not
+decided here.
+
+Task authors/reviewers: do not propose merging the launcher and the MCP
+*server* into one process -- that would be a structural change to the
+separate-client-process invariant, not an implementation detail. The
+open question is only *how* the client reaches the server (self-spawned
+stdio vs. HTTP to an existing singleton), not *whether* they are separate
+processes -- they always are.
 
 **Mandatory Phase 1 spike (risk gate):** confirm on all 3 OS that dynamic
 `import()` of on-disk ESM works from inside a SEA main script (Node docs
@@ -513,6 +553,7 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
 | R10 | Divergence between installed runtime copy and repo (stale `~/.apra-fleet/node_modules`) | `.installed.json` carries the version; launcher warns when the binary version != installed runtime version and suggests `apra-fleet install`. |
 | R11 | Path length / spaces on Windows (`Program Files`-style homes, deep ajv paths) | All launcher paths built with `path.join` + `pathToFileURL`; ajv subtree depth is modest (<160 chars under `%USERPROFILE%`); CI Windows leg exercises the real extraction. |
 | R12 | Concurrent `apra-fleet workflow` + `install --force` | Running-process guard already exists for the server (install.ts:596-615); document that install refresh skips locked built-ins (R5) rather than corrupting them. |
+| R13 | `resolveFleetServerCommand()` (cli.mjs) is stdio-only; HTTP is the actual product default, so a naive "mirror cli.mjs" launcher would always self-spawn a private stdio server even when a healthy HTTP singleton is already running, defeating the "attach to what's already there" behavior users expect and doubling running server processes | Launcher resolution order: probe `checkRunningInstance()` (reuses `src/services/singleton.ts`'s pid+`/health` check against `~/.apra-fleet/data/server.json`) first when transport is HTTP/default; connect via `StreamableHttpTransport` on success; fall back to the existing stdio self-spawn path only if no healthy singleton is found. Decide during Phase 1/2 task authoring whether this becomes a shared helper used by both `apra-fleet workflow` and `auto-sprint`'s `cli.mjs`, or is duplicated -- not yet decided in this doc. |
 
 ## 10. Phased task breakdown (for the planner agent)
 
