@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 //     (apra-fleet-unw2.1). This file only reads runner.js as text and reads
 //     contracts.mjs's validateRoleInput against the REAL vendored input
 //     schemas (fixture snapshot at test/fixtures/vendor-apra-pm-schemas/*,
-//     a mirror of wt-unw13's vendor/apra-pm/agents/schemas/).
+//     a mirror of this repo's vendor/apra-pm/agents/schemas/).
 //
 //   - For every role runner.js dispatches, it reconstructs the SAME context
 //     object the corresponding prompt builder (or inline dispatch) in
@@ -57,13 +57,13 @@ const RUNNER_PATH = path.join(__dirname, '..', 'auto-sprint', 'runner.js');
 // this env var (its documented test-only override), so it must be set before
 // the import. `node --test` isolates each test file in its own process, so
 // this cannot leak into another file; we restore it anyway for cleanliness.
-const previousOverride = process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
-process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = FIXTURES_DIR;
+const previousOverride = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
+process.env.APRA_FLEET_SE_SCHEMAS_DIR = FIXTURES_DIR;
 const { validateRoleInput } = await import(`../auto-sprint/contracts.mjs?role-input-contract=${Date.now()}`);
 if (previousOverride === undefined) {
-    delete process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
+    delete process.env.APRA_FLEET_SE_SCHEMAS_DIR;
 } else {
-    process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = previousOverride;
+    process.env.APRA_FLEET_SE_SCHEMAS_DIR = previousOverride;
 }
 
 const RUNNER_SOURCE = fs.readFileSync(RUNNER_PATH, 'utf-8');

@@ -89,14 +89,18 @@ schemas with no vendored counterpart at all -- they exist only because this
 runner invented those two dispatch shapes itself; there is no
 `vendor/apra-pm/agents/streak-assignment.md` or `.../final-verdict.md`.
 
-**Current state of the submodule** (documented directly in `contracts.mjs`,
-"TEMPORARY STATE"): as of this writing the checked-in `vendor/apra-pm`
-submodule pointer has not been bumped to a commit containing
-`agents/schemas/`, so `loadVendorSchema()` resolves `null` for every role and
-every schema currently falls back to the hand-written literal. This is
-treated as an expected, silent state -- not an error -- and requires no code
-change to resolve once the submodule is bumped; the loader will start
-finding real files automatically.
+**Schema directory resolution** (`resolveSchemasDir()` in `contracts.mjs`,
+apra-fleet-bun): layout-aware and bundled-location-first, so this package
+resolves its role schemas correctly whether it's a full monorepo checkout, a
+standalone install, or bundled into the root `@apralabs/apra-fleet` package.
+In order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override; a bundled
+`dist/agents/schemas` copy (already populated by the root package's
+`prepublishOnly`); a package-local `vendor/schemas/` copy (populated by
+`scripts/vendor-schemas.mjs`); this monorepo's live `vendor/apra-pm`
+submodule checkout as a last-resort dev fallback (warns once when used,
+since it won't exist in an installed package). If none of those resolve,
+`loadVendorSchema()` returns `null` for every role and every schema falls
+back to its hand-written literal -- an expected, silent state, not an error.
 
 `warnIfVendorFileUnexpectedlyMissing()` distinguishes that expected case from
 a more dangerous one: the `agents/schemas/` directory *does* exist (the
@@ -167,9 +171,12 @@ success.
 
 ## Testing notes
 
-This package's tests point `contracts.mjs`'s schema loader at
-`test/fixtures/vendor-apra-pm-schemas/` (a snapshot of the real vendored
-schema files) via the `APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE` env
-var, so schema-loading behavior can be exercised deterministically without
-depending on the submodule's actual checked-in state. Production code never
-sets this override.
+`contracts.mjs` resolves its schema directory via `resolveSchemasDir()`, in
+order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override, a bundled `dist/agents/schemas`
+copy, a package-local `vendor/schemas/` copy (populated by
+`scripts/vendor-schemas.mjs`), then the monorepo's `vendor/apra-pm` submodule
+checkout as a last-resort dev fallback. This package's tests point the loader
+at `test/fixtures/vendor-apra-pm-schemas/` (a snapshot of the real vendored
+schema files) via the `APRA_FLEET_SE_SCHEMAS_DIR` env override, so
+schema-loading behavior can be exercised deterministically regardless of
+which of those directories actually exist in the checkout running the test.

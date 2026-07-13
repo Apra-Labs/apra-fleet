@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 //   2. "Wired" end-to-end tests (SCHEMAS / validateRoleInput actually
 //      resolving from vendored files) -- these need contracts.mjs's
 //      module-load-time resolution to see fixture content, so they set
-//      APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE *before* importing
+//      APRA_FLEET_SE_SCHEMAS_DIR *before* importing
 //      contracts.mjs. This only works because `node --test` isolates each
 //      test file in its own process by default (Node 20+), so this
 //      env-var + dynamic-import trick cannot leak into other test files.
@@ -119,16 +119,16 @@ describe('SCHEMAS / validateRoleInput resolved against a fixture vendor/apra-pm'
     let wired;
 
     before(async () => {
-        const previous = process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
-        process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = FIXTURES_DIR;
+        const previous = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
+        process.env.APRA_FLEET_SE_SCHEMAS_DIR = FIXTURES_DIR;
         // Cache-bust so this import re-runs contracts.mjs's module-level
         // resolution against the override, independent of the (uncached,
         // since this is a distinct URL) import above.
         wired = await import(`../auto-sprint/contracts.mjs?wired-test=${Date.now()}`);
         if (previous === undefined) {
-            delete process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
+            delete process.env.APRA_FLEET_SE_SCHEMAS_DIR;
         } else {
-            process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = previous;
+            process.env.APRA_FLEET_SE_SCHEMAS_DIR = previous;
         }
     });
 
@@ -201,19 +201,19 @@ describe('SCHEMAS / validateRoleInput resolved against a fixture vendor/apra-pm'
 });
 
 // -----------------------------------------------------------------------
-// Group 3: fallback shim against THIS checkout's real (unbumped) submodule
+// Group 3: fallback shim against THIS checkout's real resolveSchemasDir()
 // -----------------------------------------------------------------------
 
-describe('fallback shim against the real (unbumped) vendor/apra-pm submodule', () => {
-    test('AC3: contracts.mjs imports and exports usable schemas even though this checkout'
-        + ' has not bumped the vendor/apra-pm submodule pointer to include unw.21 schemas yet', async () => {
+describe('fallback shim against contracts.mjs\'s real, unoverridden resolveSchemasDir()', () => {
+    test('AC3: contracts.mjs imports and exports usable schemas regardless of which'
+        + ' resolveSchemasDir() tier this checkout resolves to', async () => {
         // Imports the module the NORMAL way (no override), i.e. exactly
-        // how runner.js imports it. If vendor/apra-pm/agents/schemas/ is
-        // genuinely absent in this checkout (the expected state -- see the
-        // TEMPORARY STATE note in contracts.mjs), every export below comes
-        // from the fallback literals; if the submodule has since been
-        // bumped, it comes from the real vendored files. Either way the
-        // shapes below must hold -- this is exactly what "shim" means.
+        // how runner.js imports it. Whichever of resolveSchemasDir()'s four
+        // tiers this checkout resolves to (dist/agents/schemas,
+        // packages/apra-fleet-se/vendor/schemas, the monorepo vendor/apra-pm
+        // submodule, or none of them -- the fallback-literal case), every
+        // export below must hold the same shape -- this is exactly what
+        // "shim" means.
         const real = await import('../auto-sprint/contracts.mjs');
         for (const name of ['planReviewerVerdict', 'reviewerVerdict', 'doerReport', 'deployerReport', 'integReport', 'ciReport', 'harvesterReport']) {
             assert.ok(real.SCHEMAS[name], `expected SCHEMAS.${name} to be defined`);

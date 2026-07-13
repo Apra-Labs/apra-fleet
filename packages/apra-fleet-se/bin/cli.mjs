@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
@@ -20,30 +21,94 @@ const DEFAULT_VIEWER_PORT = 8080;
 
 /**
  * Resolves the command used to launch the apra-fleet MCP server over
- * stdio. Mirrors the SEA-binary -> npm-global-entry -> dev-mode
- * `node dist/index.js` resolution order that src/cli/install.ts uses when
- * it registers the stdio MCP server for other LLM providers (see
- * `mcpConfig` in install.ts's "Register MCP server" step), overridable via
- * env for tests/CI/non-standard installs.
+ * stdio, layout-aware (apra-fleet-3ns.1) so it works whether this CLI is
+ * running dev-mode from a monorepo checkout or bundled as
+ * dist/auto-sprint.mjs alongside the server's own dist/index.js
+ * (apra-fleet-3ns.2). Overridable via env for tests/CI/non-standard installs.
  *
+ * Resolution order:
+ *   1. APRA_FLEET_SERVER_CMD -- an explicit full command + args string.
+ *   2. APRA_FLEET_SERVER_BIN -- an explicit server executable, resolved via
+ *      PATH (not a literal file path, so no existsSync check applies).
+ *   3. <__dirname>/index.js -- the bundled layout: dist/auto-sprint.mjs's
+ *      sibling dist/index.js (the root @apralabs/apra-fleet package's own
+ *      entry point, same dist/ directory).
+ *   4. <repoRoot>/dist/index.js, three levels up from
+ *      packages/apra-fleet-se/bin/ -- the dev-monorepo layout.
+ *
+ * Candidates 3 and 4 are literal paths this function constructs itself, so
+ * each is existsSync-checked before use; if neither exists, throws an
+ * actionable error naming both the two env overrides and both attempted
+ * paths, rather than deferring to StdioTransport.start()'s opaque spawn
+ * failure.
+ *
+ * `deps` is injectable so tests can exercise every branch (including the
+ * "simulated installed layout" acceptance criterion) without needing to
+ * copy this file into a real temp directory tree.
+ * @param {{ env?: Record<string, string | undefined>, dirname?: string, exists?: (candidate: string) => boolean }} [deps]
  * @returns {{ command: string, args: string[] }}
  */
-function resolveFleetServerCommand() {
-    if (process.env.APRA_FLEET_SERVER_CMD) {
-        const parts = process.env.APRA_FLEET_SERVER_CMD.split(' ').filter(Boolean);
+export function resolveFleetServerCommand(deps = {}) {
+    const env = deps.env || process.env;
+    const dirname = deps.dirname || __dirname;
+    const exists = deps.exists || existsSync;
+
+    if (env.APRA_FLEET_SERVER_CMD) {
+        const parts = env.APRA_FLEET_SERVER_CMD.split(' ').filter(Boolean);
         if (parts.length === 0) {
             throw new Error('APRA_FLEET_SERVER_CMD is set but empty.');
         }
         return { command: parts[0], args: parts.slice(1) };
     }
-    if (process.env.APRA_FLEET_SERVER_BIN) {
-        return { command: process.env.APRA_FLEET_SERVER_BIN, args: ['run', '--transport', 'stdio'] };
+    if (env.APRA_FLEET_SERVER_BIN) {
+        return { command: env.APRA_FLEET_SERVER_BIN, args: ['run', '--transport', 'stdio'] };
     }
-    // Dev-mode default: this package lives at <repoRoot>/packages/apra-fleet-se/bin,
-    // so the built server entry point is three levels up at <repoRoot>/dist/index.js
-    // (see the repo root package.json's "main"/"bin": "dist/index.js").
-    const repoRoot = path.resolve(__dirname, '..', '..', '..');
-    return { command: 'node', args: [path.join(repoRoot, 'dist', 'index.js'), 'run', '--transport', 'stdio'] };
+
+    const bundledSiblingEntry = path.join(dirname, 'index.js');
+    const devMonorepoEntry = path.resolve(dirname, '..', '..', '..', 'dist', 'index.js');
+
+    for (const entry of [bundledSiblingEntry, devMonorepoEntry]) {
+        if (exists(entry)) {
+            return { command: 'node', args: [entry, 'run', '--transport', 'stdio'] };
+        }
+    }
+
+    throw new Error(
+        '[apra-fleet-se] Could not locate the apra-fleet MCP server entry point. Tried:\n' +
+            `  - ${bundledSiblingEntry} (bundled layout)\n` +
+            `  - ${devMonorepoEntry} (dev-monorepo layout)\n` +
+            'Set APRA_FLEET_SERVER_CMD (a full "<command> <args...>" string) or ' +
+            'APRA_FLEET_SERVER_BIN (a server executable resolved via PATH) to point at your ' +
+            'apra-fleet server explicitly.',
+    );
+}
+
+/**
+ * Resolves the path to auto-sprint's runner script, loaded at runtime via
+ * `engine.executeFile()` (NOT importable/bundlable -- it is read from disk
+ * and fed to the workflow engine as text). Layout-aware the same way as
+ * `resolveFleetServerCommand()` (apra-fleet-3ns.1): a bundled dist/auto-
+ * sprint.mjs ships this as a sibling dist asset (apra-fleet-3ns.2); a dev
+ * monorepo checkout resolves it relative to this file's own package tree.
+ * @param {{ dirname?: string, exists?: (candidate: string) => boolean }} [deps]
+ * @returns {string}
+ */
+export function resolveRunnerScriptPath(deps = {}) {
+    const dirname = deps.dirname || __dirname;
+    const exists = deps.exists || existsSync;
+
+    const bundledRunnerAsset = path.join(dirname, 'auto-sprint-runner.mjs');
+    const devRunnerPath = path.join(dirname, '../auto-sprint/runner.js');
+
+    for (const candidate of [bundledRunnerAsset, devRunnerPath]) {
+        if (exists(candidate)) return candidate;
+    }
+
+    throw new Error(
+        '[apra-fleet-se] Could not locate the auto-sprint runner script. Tried:\n' +
+            `  - ${bundledRunnerAsset} (bundled layout)\n` +
+            `  - ${devRunnerPath} (dev-monorepo layout)`,
+    );
 }
 
 /**
@@ -531,7 +596,7 @@ async function main() {
     if (viewerFailed) return; // process.exit already called synchronously above
 
     try {
-        const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+        const scriptPath = resolveRunnerScriptPath();
         const res = await engine.executeFile(scriptPath, buildRunnerArgs({
             targetIssues,
             members: validMembers,

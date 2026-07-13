@@ -2,6 +2,10 @@
   "name": "@apralabs/apra-fleet-client",
   "version": "1.0.0",
   "description": "MCP Client SDK for Apra Fleet",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "main": "src/client/api.mjs",
   "exports": {
     ".": "./src/client/api.mjs",

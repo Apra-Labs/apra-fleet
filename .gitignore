@@ -1,6 +1,11 @@
 node_modules/
 dist/
 data/
+
+# apra-fleet-se's package-local vendored schema snapshot (apra-fleet-bun):
+# build artifact written by packages/apra-fleet-se/scripts/vendor-schemas.mjs,
+# not a checked-in fixture (contrast with test/fixtures/vendor-apra-pm-schemas/).
+packages/apra-fleet-se/vendor/schemas/
 .fleet-task.md
 *.js.map
 *.tsbuildinfo

@@ -87,60 +87,103 @@ export function validateRole(role) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Role-owned schema loader (apra-fleet-unw.22)
+// 2. Role-owned schema loader (apra-fleet-unw.22, packaging-safe per apra-fleet-bun)
 // ---------------------------------------------------------------------------
 //
-// TEMPORARY STATE -- read before touching anything below:
+// Schema resolution is layout-aware and bundled-location-first (apra-fleet-
+// bun), because apra-fleet-se must resolve its vendored role schemas
+// correctly regardless of how it ended up on disk: a full monorepo git
+// clone (this repo, today), a standalone `npm install @apralabs/apra-fleet-
+// se` (schemas do not exist three levels up in that layout -- nothing does),
+// or bundled into the root @apralabs/apra-fleet package's dist/auto-
+// sprint.mjs. `resolveSchemasDir()` below tries, in order:
 //
-// As of this writing, the OUTER repo's vendor/apra-pm submodule pointer has
-// NOT been bumped to include apra-fleet-unw.21's schema files. That work
-// (agents/schemas/<role>-output.json + <role>-input.json) exists only on the
-// local, unpushed vendor/apra-pm branch `tmp/unw13-vendor-agent-defs`
-// (checked out in worktree wt-unw13), and is awaiting human sign-off before
-// an upstream PR to Apra-Labs/apra-pm and a submodule bump in this repo.
-// A normal checkout of THIS repo therefore has an empty (uninitialized) or
-// stale vendor/apra-pm, so vendor/apra-pm/agents/schemas/*.json does not
-// resolve today.
+//   1. process.env.APRA_FLEET_SE_SCHEMAS_DIR, if set -- an explicit
+//      override, used as-is with no further fallback. Tests use this to
+//      point at a fixture directory; any deployment may also use it to pin
+//      an exact schemas directory.
+//   2. <root>/dist/agents/schemas -- the sibling directory scripts/vendor-
+//      pm.mjs ALREADY populates at the root package's `prepublishOnly`
+//      (cpSync of vendor/apra-pm/agents -> dist/agents, which includes its
+//      schemas/ subdir). This is what a dist/auto-sprint.mjs bundle
+//      resolves once apra-fleet-3ns.2 ships it as a dist/ sibling -- no new
+//      copy step needed, this artifact already exists today.
+//   3. packages/apra-fleet-se/vendor/schemas -- a package-local copy inside
+//      apra-fleet-se's OWN directory tree, populated by the build script
+//      scripts/vendor-schemas.mjs (apra-fleet-bun.2). This is what a
+//      standalone install of @apralabs/apra-fleet-se resolves, or a dev
+//      checkout that has run the build/vendor step.
+//   4. vendor/apra-pm/agents/schemas, three levels up from this file --
+//      this repo's live submodule checkout. A dev-convenience fallback ONLY:
+//      it does not exist once the package is installed standalone or
+//      published, so reaching this branch means neither of the two bundled
+//      copies (2, 3) has been built yet. Emits a one-time console.warn when
+//      used, since silently depending on it would mask a missing build step.
 //
-// What unblocks this: once a human approves the unw.13 rework and the
-// submodule pointer in this repo is bumped to a commit that includes
-// agents/schemas/, `loadVendorSchema` below starts finding real files and
-// this module automatically switches from the fallback literals (section 3)
-// to the vendored schemas -- no code change required here. Until then, the
-// loader's "file not found" case is NOT an error: it is the expected,
-// graceful-degradation state (proposal section 4.2 "Graceful degradation" /
-// this issue's shim requirement), and every schema falls back to the same
-// literal this module has always shipped, so runner.js's current behavior
-// is completely unaffected either way.
-//
-// Path resolution: this file lives at
-// packages/apra-fleet-se/auto-sprint/contracts.mjs, so the repo root is
-// three levels up; vendor/apra-pm is resolved from there exactly the way
-// src/cli/install.ts resolves `vendor/apra-pm/agents` (path.join(root,
-// 'vendor', 'apra-pm', ...)) and the way apra-pm's own
-// .claude/workflows/auto-sprint.js resolves agents/schemas/ relative to
-// itself (apra-fleet-unw.21's migration of that file; see
-// path.join(__dirname, '..', 'agents', 'schemas', ...) there).
-const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+// If none of 1-4 exist as a directory, `resolveSchemasDir()` returns `null`;
+// `loadVendorSchema` already treats a null/absent directory as the expected,
+// quiet graceful-degradation case (every schema falls back to its hand-
+// written literal in section 3) -- unchanged from before apra-fleet-bun.
+const PACKAGE_ROOT = path.join(__dirname, '..');
+const REPO_ROOT = path.join(PACKAGE_ROOT, '..', '..');
+const DIST_BUNDLED_SCHEMAS_DIR = path.join(REPO_ROOT, 'dist', 'agents', 'schemas');
+const PACKAGE_VENDORED_SCHEMAS_DIR = path.join(PACKAGE_ROOT, 'vendor', 'schemas');
+const MONOREPO_SCHEMAS_DIR = path.join(REPO_ROOT, 'vendor', 'apra-pm', 'agents', 'schemas');
 
-// Test-only escape hatch: lets test/contracts-schema-loader.test.mjs point
-// module-load-time schema resolution (SCHEMAS, validateRoleInput) at a
-// fixture directory (test/fixtures/vendor-apra-pm-schemas/, a snapshot of
-// wt-unw13's real vendor/apra-pm/agents/schemas/ files) instead of this
-// checkout's actual (currently empty/uninitialized) vendor/apra-pm
-// submodule -- see the TEMPORARY STATE note above. Never set in
-// production; production always resolves the real submodule path below.
-const VENDOR_SCHEMAS_DIR = process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE
-    || path.join(REPO_ROOT, 'vendor', 'apra-pm', 'agents', 'schemas');
+let warnedMonorepoFallback = false;
+
+function isDirectory(candidate) {
+    try {
+        return fs.statSync(candidate).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Resolves the directory to load vendored role schemas from, per the
+ * bundled-location-first precedence documented above. Exported (and
+ * side-effect-injectable via `deps`) so tests can exercise every branch in
+ * isolation without needing real directories on disk for each case.
+ * @param {{ env?: Record<string, string | undefined>, exists?: (candidate: string) => boolean }} [deps]
+ * @returns {string | null}
+ */
+export function resolveSchemasDir(deps = {}) {
+    const env = deps.env || process.env;
+    const exists = deps.exists || isDirectory;
+
+    const override = env.APRA_FLEET_SE_SCHEMAS_DIR;
+    if (override) return override;
+
+    if (exists(DIST_BUNDLED_SCHEMAS_DIR)) return DIST_BUNDLED_SCHEMAS_DIR;
+    if (exists(PACKAGE_VENDORED_SCHEMAS_DIR)) return PACKAGE_VENDORED_SCHEMAS_DIR;
+
+    if (exists(MONOREPO_SCHEMAS_DIR)) {
+        if (!warnedMonorepoFallback) {
+            warnedMonorepoFallback = true;
+            console.warn(
+                `[contracts] Using the live vendor/apra-pm submodule at ${MONOREPO_SCHEMAS_DIR} -- neither ` +
+                    `${DIST_BUNDLED_SCHEMAS_DIR} nor ${PACKAGE_VENDORED_SCHEMAS_DIR} exists yet. This works in a ` +
+                    'monorepo dev checkout but will NOT work once apra-fleet-se is packaged/installed standalone. ' +
+                    'Run: node packages/apra-fleet-se/scripts/vendor-schemas.mjs',
+            );
+        }
+        return MONOREPO_SCHEMAS_DIR;
+    }
+
+    return null;
+}
+
+const VENDOR_SCHEMAS_DIR = resolveSchemasDir();
 
 /**
  * Reads and JSON-parses `<baseDir>/<fileBaseName>.json`.
  *
  * Exported (in addition to being used internally) so tests can point it at
  * a fixture directory to prove the loader reads real schema content
- * correctly, without depending on the not-yet-merged submodule state of
- * this checkout -- see test/fixtures/vendor-apra-pm-schemas/ (a snapshot of
- * wt-unw13's vendor/apra-pm/agents/schemas/ files) and
+ * correctly, independent of whichever schemas directory resolveSchemasDir()
+ * would pick in this checkout -- see test/fixtures/vendor-apra-pm-schemas/
+ * (a snapshot of vendor/apra-pm/agents/schemas/) and
  * test/contracts-schema-loader.test.mjs.
  *
  * Returns `null` (not a throw) when the file does not exist -- this is the
@@ -163,9 +206,11 @@ export function loadSchemaFileFrom(baseDir, fileBaseName) {
 }
 
 /**
- * Loads `vendor/apra-pm/agents/schemas/<fileBaseName>.json` from this
- * repo's actual (submodule-relative) path. See the TEMPORARY STATE note
- * above for why this frequently returns `null` today.
+ * Loads `<fileBaseName>.json` from `resolveSchemasDir()`'s resolved
+ * directory (see section 2 above). Returns `null` both when that directory
+ * resolved to nothing at all (`VENDOR_SCHEMAS_DIR === null`) and when the
+ * directory exists but this specific file does not -- either way, the
+ * fallback-shim signal callers already handle.
  *
  * Note: for output verdict schemas, callers pass `<role>-output` as
  * `fileBaseName` (see `resolveOutputSchema` below); for input schemas,
@@ -176,6 +221,7 @@ export function loadSchemaFileFrom(baseDir, fileBaseName) {
  * @returns {object|null}
  */
 function loadVendorSchema(fileBaseName) {
+    if (VENDOR_SCHEMAS_DIR === null) return null;
     return loadSchemaFileFrom(VENDOR_SCHEMAS_DIR, fileBaseName);
 }
 
@@ -219,11 +265,12 @@ export function assertVersionPin(role, schema, expectedMajor) {
 // 2a. Missing-vendored-file observability (apra-fleet-unw2.5)
 // ---------------------------------------------------------------------------
 //
-// The TEMPORARY STATE note above documents ONE quiet fallback case: the
-// whole vendor/apra-pm/agents/schemas/ directory being absent because the
-// submodule has not been initialized/bumped yet. That is expected today and
-// must stay silent -- warning on it would just be noise on every normal
-// checkout.
+// The section 2 note above documents ONE quiet case: resolveSchemasDir()
+// finding none of its four candidate directories at all (VENDOR_SCHEMAS_DIR
+// === null). That is an expected state (e.g. a fresh dev checkout that
+// hasn't run the vendor-schemas build step and has no submodule checked
+// out) and must stay silent -- warning on it would just be noise on every
+// such checkout.
 //
 // There is a SECOND, much more dangerous case this module must not stay
 // quiet about: the directory DOES exist (the submodule has been bumped) but
@@ -244,12 +291,13 @@ export function assertVersionPin(role, schema, expectedMajor) {
 export const ROLES_WITHOUT_OUTPUT_SCHEMA = Object.freeze(new Set(['planner']));
 
 /**
- * Emits a loud console.warn when `vendor/apra-pm/agents/schemas/` exists as
- * a directory but a specific role's expected schema file is missing from
- * it. No-ops (silently) for:
+ * Emits a loud console.warn when `resolveSchemasDir()`'s resolved directory
+ * exists but a specific role's expected schema file is missing from it.
+ * No-ops (silently) for:
  *   - roles in `ROLES_WITHOUT_OUTPUT_SCHEMA` (legitimately schema-less), and
- *   - the case where the whole vendor schemas directory does not exist at
- *     all (the quiet, already-documented submodule-not-bumped state).
+ *   - the case where no schemas directory resolved at all (VENDOR_SCHEMAS_DIR
+ *     === null; the quiet, already-documented "nothing built/checked out
+ *     yet" state).
  *
  * Exported so tests can call it directly (see
  * test/contracts-schema-observability.test.mjs) without needing to drive
@@ -305,17 +353,21 @@ function resolveOutputSchema(role, expectedMajor, fallback) {
 // 3. Fallback verdict schema literals
 // ---------------------------------------------------------------------------
 //
-// These are the pre-unw.22 hand-written schemas. They now serve ONLY as the
-// fallback engaged by resolveOutputSchema() while
-// vendor/apra-pm/agents/schemas/ is unavailable (see the TEMPORARY STATE
-// note in section 2). Each one was originally cross-checked against its
-// role's prose contract in vendor/apra-pm/agents/<role>.md; apra-fleet-
-// unw.21 subsequently aligned that prose (and added the sibling
+// These are the pre-unw.22 hand-written schemas. They now serve as the FINAL
+// fallback tier in resolveSchemasDir()'s bundled + dev-fallback resolution
+// chain (section 2, apra-fleet-bun): engaged by resolveOutputSchema()
+// whenever no schemas directory resolved at all, or a specific role's file
+// is missing from the directory that did resolve. This is a deliberate,
+// permanent last-resort safety net (apra-fleet-bun.3), NOT a temporary state
+// to be removed once packaging lands -- a corrupted or partial install
+// (e.g. a build step that failed to populate the bundled schemas dir)
+// should degrade to a working, if possibly stale, validator rather than
+// crash contracts.mjs at import time and break every consumer (runner.js,
+// cli.mjs). Each literal was originally cross-checked against its role's
+// prose contract in vendor/apra-pm/agents/<role>.md; apra-fleet-unw.21
+// subsequently aligned that prose (and added the sibling
 // agents/schemas/<role>-output.json this module now prefers) to these exact
-// shapes, so the DIVERGENCE NOTE comments that used to document open
-// prose/schema mismatches have been removed -- there is no longer a live
-// divergence to document, only a temporary "vendored file not merged yet"
-// gap that section 2 covers.
+// shapes, so there is no live prose/schema divergence to document here.
 
 const taskAssignmentSchema = {
     type: 'object',
@@ -649,9 +701,9 @@ export function validateRoleInput(role, context) {
     const validator = getInputValidator(normalized);
     if (validator === null) {
         // No input schema published for this role yet (unw.21 only covered
-        // priority roles) OR the vendor/apra-pm submodule pointer has not
-        // been bumped yet (see the TEMPORARY STATE note in section 2) --
-        // no-op/pass rather than erroring, per proposal section 6.3.
+        // priority roles) OR resolveSchemasDir() found no usable schemas
+        // directory at all (see section 2) -- no-op/pass rather than
+        // erroring, per proposal section 6.3.
         return { valid: true, errors: null };
     }
 

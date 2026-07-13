@@ -10,10 +10,10 @@ import { fileURLToPath } from 'node:url';
 //
 // Two very different absences must be told apart:
 //
-//   1. The whole vendor/apra-pm/agents/schemas/ directory is missing --
-//      the expected, quiet, already-documented state while the submodule
-//      is not initialized/bumped (see contracts.mjs's TEMPORARY STATE
-//      note). MUST stay silent.
+//   1. resolveSchemasDir() resolves no directory at all (VENDOR_SCHEMAS_DIR
+//      === null) -- the expected, quiet, already-documented state when
+//      none of the bundled/monorepo candidates exist yet (see contracts.mjs
+//      section 2). MUST stay silent.
 //
 //   2. The directory exists but one role's <role>-output.json is missing
 //      from it -- a submodule bump silently dropped/never-added a schema
@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 // Missing, called straight) and the wired end-to-end path (module-load-time
 // resolveOutputSchema calls) the same way
 // test/contracts-schema-loader.test.mjs's "Group 2" does: by setting
-// APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE before a cache-busted
+// APRA_FLEET_SE_SCHEMAS_DIR before a cache-busted
 // dynamic import.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -32,7 +32,7 @@ const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
 
 /**
  * Dynamically (re)imports contracts.mjs with
- * APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE pointed at `overrideDir`
+ * APRA_FLEET_SE_SCHEMAS_DIR pointed at `overrideDir`
  * for the duration of the import, restoring the previous env var value
  * immediately after. Cache-busted via a unique query string so every call
  * gets a fresh module instance (and therefore a fresh module-load-time
@@ -40,15 +40,15 @@ const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
  * @param {string} overrideDir
  */
 async function importWired(overrideDir) {
-    const previous = process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
-    process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = overrideDir;
+    const previous = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
+    process.env.APRA_FLEET_SE_SCHEMAS_DIR = overrideDir;
     try {
         return await import(`../auto-sprint/contracts.mjs?observability-test=${Date.now()}-${Math.random()}`);
     } finally {
         if (previous === undefined) {
-            delete process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
+            delete process.env.APRA_FLEET_SE_SCHEMAS_DIR;
         } else {
-            process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = previous;
+            process.env.APRA_FLEET_SE_SCHEMAS_DIR = previous;
         }
     }
 }

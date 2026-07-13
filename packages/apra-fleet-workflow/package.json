@@ -2,6 +2,10 @@
   "name": "@apralabs/apra-fleet-workflow",
   "version": "1.0.0",
   "description": "Workflow Engine for Apra Fleet",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "main": "src/workflow/index.mjs",
   "exports": {
     ".": "./src/workflow/index.mjs",

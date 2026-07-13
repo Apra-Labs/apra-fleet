@@ -77,6 +77,27 @@ For other providers, these are written to that provider's skill/config directori
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
 
+### Two `auto-sprint` entry points -- do not confuse them
+
+`apra-fleet` ships **two separate, independently maintained** auto-sprint
+implementations:
+
+| | `~/.claude/workflows/auto-sprint.js` | `auto-sprint` bin (npm) |
+|---|---|---|
+| Written by | `install` (table above) | The root `@apralabs/apra-fleet` npm package's `bin.auto-sprint`, resolving to `dist/auto-sprint.mjs` |
+| Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Gemini, Codex, Copilot, Antigravity/agy) |
+| Source package | `vendor/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (esbuild-bundled, apra-fleet-3ns.2) |
+| Model selection | Literal Claude model names | Fleet's `cheap`/`standard`/`premium` tier keywords, per-member |
+| How you run it | Invoked from within a Claude Code session as a workflow | `npx auto-sprint --issue ... --members ... --branch ... --base ...` (or globally, if `@apralabs/apra-fleet` is installed with `-g`) -- see `packages/apra-fleet-se/docs/cli-reference.md` |
+
+If you installed `apra-fleet` via `npm install -g @apralabs/apra-fleet`
+(or `npx @apralabs/apra-fleet`), the `auto-sprint` bin is available
+immediately alongside `apra-fleet` -- no separate install step. It requires
+the `apra-fleet` MCP server to be reachable (it spawns/connects to it over
+stdio the same way `apra-fleet` itself does); see
+`packages/apra-fleet-se/docs/cli-reference.md` for its server- and
+schema-resolution order across dev/bundled/standalone layouts.
+
 **What `install` does NOT do:**
 
 - No system-level changes -- no `/usr/local`, no PATH modification, no

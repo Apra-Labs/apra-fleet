@@ -80,16 +80,58 @@ dispatch) begins.
 
 ## Resolving the fleet MCP server command
 
-`resolveFleetServerCommand()` decides how to launch the stdio MCP server the
-CLI talks to, in this override order:
+`resolveFleetServerCommand()` (apra-fleet-3ns.1) decides how to launch the
+stdio MCP server the CLI talks to, layout-aware so it works whether this CLI
+is running dev-mode from a monorepo checkout or bundled as
+`dist/auto-sprint.mjs` alongside the server's own `dist/index.js`
+(apra-fleet-3ns.2). Resolution order:
 
 1. `APRA_FLEET_SERVER_CMD` env var, if set -- split on spaces into
-   `command`/`args` (must be non-empty after filtering).
+   `command`/`args` (must be non-empty after filtering). No existence check
+   (this may be any command, not necessarily a literal file path).
 2. `APRA_FLEET_SERVER_BIN` env var, if set -- run as
-   `<value> run --transport stdio`.
-3. Dev-mode default -- `node <repoRoot>/dist/index.js run --transport
+   `<value> run --transport stdio`. Resolved via `PATH`, also no existence
+   check.
+3. Bundled layout -- `<dirname>/index.js`, i.e. `dist/auto-sprint.mjs`'s
+   sibling `dist/index.js` (the root `@apralabs/apra-fleet` package's own
+   entry point, same `dist/` directory). Used if it exists on disk.
+4. Dev-monorepo layout -- `node <repoRoot>/dist/index.js run --transport
    stdio`, where `repoRoot` is resolved as three directories up from
-   `bin/cli.mjs` (i.e. `packages/apra-fleet-se/bin/../../../`).
+   `bin/cli.mjs` (i.e. `packages/apra-fleet-se/bin/../../../`). Used if it
+   exists on disk.
+
+Candidates 3 and 4 are literal paths this function constructs itself, so
+each is checked with `fs.existsSync` before use. If neither exists, the CLI
+fails loud with an actionable error naming both env overrides and both
+attempted paths, instead of deferring to `StdioTransport.start()`'s opaque
+spawn failure.
+
+The auto-sprint runner script (`auto-sprint/runner.js`, loaded at runtime via
+`engine.executeFile()` -- read from disk and fed to the workflow engine, not
+imported/bundlable) is resolved the same layout-aware way by
+`resolveRunnerScriptPath()`: a bundled `dist/auto-sprint.mjs` ships it as the
+sibling asset `dist/auto-sprint-runner.mjs`; a dev monorepo checkout resolves
+`../auto-sprint/runner.js` relative to `bin/cli.mjs`.
+
+### Role schema resolution (contracts.mjs)
+
+Separately, `contracts.mjs`'s `resolveSchemasDir()` (apra-fleet-bun) resolves
+where the eight sprint roles' verdict/input JSON schemas are loaded from,
+independent of the server-command resolution above:
+
+1. `APRA_FLEET_SE_SCHEMAS_DIR` env override, if set.
+2. `dist/agents/schemas/` -- populated by the root package's `scripts/vendor-pm.mjs`
+   at `prepublishOnly` (the same artifact `dist/auto-sprint.mjs` ships next to).
+3. `packages/apra-fleet-se/vendor/schemas/` -- a package-local copy inside
+   this package's own directory tree, populated by `scripts/vendor-schemas.mjs`.
+4. `vendor/apra-pm/agents/schemas/`, three levels up -- this monorepo's live
+   submodule checkout. Dev-convenience fallback only; emits a one-time
+   `console.warn` when used, since it does not exist in a packaged/installed
+   layout.
+
+If none of the four resolve, every role falls back to a hand-written literal
+schema shipped inside `contracts.mjs` itself (a deliberate, permanent
+last-resort safety net, not a temporary state) -- see `docs/role-contracts.md`.
 
 ## Dashboard viewer
 

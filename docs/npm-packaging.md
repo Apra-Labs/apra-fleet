@@ -14,12 +14,12 @@ the same machine:
 | Mode | How installed | Entry point | process.execPath |
 |------|---------------|-------------|-----------------|
 | `sea` | GitHub release binary | platform ELF/PE/Mach-O | the binary itself |
-| `npm` | `npm i -g @apra-labs/apra-fleet` | `dist/index.js` run by node | the node executable |
+| `npm` | `npm i -g @apralabs/apra-fleet` | `dist/index.js` run by node | the node executable |
 | `dev` | `node dist/index.js` from source tree | `dist/index.js` | the node executable |
 
 Coexistence is safe because:
 - The SEA binary installs to `~/.local/share/apra-fleet/apra-fleet` (or equivalent).
-- The npm global install goes to the npm prefix (`node_modules/@apra-labs/apra-fleet/`).
+- The npm global install goes to the npm prefix (`node_modules/@apralabs/apra-fleet/`).
 - Neither overwrites the other; the two `binaryPath` values are distinct.
 
 No code path copies a binary or registers an MCP entry point without first
@@ -139,7 +139,7 @@ call.
 
 | Mode | Behavior |
 |------|----------|
-| `npm` | Prints `npm update -g @apra-labs/apra-fleet`, then blank line, then `apra-fleet install` skill-refresh reminder. Returns. No fetch. |
+| `npm` | Prints `npm update -g @apralabs/apra-fleet`, then blank line, then `apra-fleet install` skill-refresh reminder. Returns. No fetch. |
 | `dev` | Prints `apra-fleet is running in dev mode. Pull the latest source and rebuild.` Returns. No fetch. |
 | `sea` | Proceeds to GitHub Releases API fetch + binary download (existing logic, unchanged). |
 
@@ -157,7 +157,7 @@ Implemented in `src/index.ts`. Output is three lines:
 ```
 apra-fleet v0.2.2_d86bc6
   Mode:   npm (node v22.x.x)
-  Binary: /usr/local/lib/node_modules/@apra-labs/apra-fleet/dist/index.js
+  Binary: /usr/local/lib/node_modules/@apralabs/apra-fleet/dist/index.js
 ```
 
 SEA mode omits the `(node ...)` suffix:
@@ -223,30 +223,65 @@ codebase. The `--help` text does not list them.
 **What is shipped:** compiled JS (`dist/`), hooks config, three runtime scripts,
 skills (fleet + pm), and `version.json`.
 
+**Workspace packages are intentionally private** (apra-fleet-3ns.4):
+`packages/apra-fleet-se`, `packages/apra-fleet-workflow`, and
+`packages/apra-fleet-client` all set `"private": true` in their own
+`package.json` -- `npm publish` from any of those directories refuses. They
+are consumed exclusively via the root `@apralabs/apra-fleet` package's
+bundled `dist/` output described below, never published or installed as
+standalone npm packages. (`packages/fleet-api-contract` is the one exception
+-- it IS a real, independently published package with its own `files`/
+`publishConfig`, unrelated to this bundling story.)
+
+Inside `dist/`, two independent build steps contribute content beyond tsc's
+own TypeScript output:
+
+- `scripts/vendor-pm.mjs` (prepublishOnly) copies the `vendor/apra-pm`
+  submodule's `skills/pm`, `agents/` (including `agents/schemas/*.json`),
+  and `.claude/workflows/` into `dist/skills/pm`, `dist/agents/`, and
+  `dist/workflows/` respectively -- needed because `npm install` never
+  clones submodules.
+- `scripts/bundle-se.mjs` (prepublishOnly, apra-fleet-3ns.2) esbuild-bundles
+  `packages/apra-fleet-se/bin/cli.mjs` (the new, provider-agnostic
+  `auto-sprint` CLI, plus its `@apralabs/apra-fleet-workflow` and
+  `@apralabs/apra-fleet-client` workspace dependencies) into
+  `dist/auto-sprint.mjs`, and copies `packages/apra-fleet-se/auto-sprint/runner.js`
+  (loaded at runtime via `engine.executeFile()`, not importable/bundlable) to
+  `dist/auto-sprint-runner.mjs` as a sibling asset. `dist/auto-sprint.mjs`
+  resolves its role schemas from the `dist/agents/schemas/` directory
+  `vendor-pm.mjs` already populated -- no separate copy step for that
+  (apra-fleet-bun / apra-fleet-3ns.2.1). See
+  `packages/apra-fleet-se/docs/cli-reference.md` for the full schema- and
+  server-resolution order.
+
 **What is NOT shipped:** `src/` (TypeScript source), `tsconfig.json`, build
 scripts (`scripts/build-sea.mjs`, `scripts/gen-sea-config.mjs`,
-`scripts/package-sea.mjs`, `scripts/install-hooks.mjs`), `node_modules/`,
-SEA artifacts (`dist/sea-bundle.cjs`, `dist/sea-prep.blob`,
-`dist/*.exe`, platform binaries).
+`scripts/package-sea.mjs`, `scripts/install-hooks.mjs`, `scripts/bundle-se.mjs`,
+`scripts/vendor-pm.mjs`), `node_modules/`, SEA artifacts (`dist/sea-bundle.cjs`,
+`dist/sea-prep.blob`, `dist/*.exe`, platform binaries). The `packages/`
+workspace source directories themselves are also not shipped -- only their
+bundled/copied output inside `dist/`; `packages/apra-fleet-se`,
+`-workflow`, and `-client` are `"private": true` (apra-fleet-3ns.4) and
+cannot be `npm publish`ed standalone.
 
 The `scripts/` entries are explicit individual files, not a `scripts/` glob.
 This is intentional: a bare `scripts/` glob would ship the `.mjs` build scripts.
 **Maintenance note:** if a new runtime script is added under `scripts/`, it must
 also be added to `files` manually or it will be silently excluded from the tarball.
 
-Validated tarball size: ~1.3 MB unpacked, ~311 KB compressed (482 files).
+Validated tarball size (post apra-fleet-3ns.2): ~2.7 MB unpacked, 744 files.
 
 ### 7.2 Other package.json fields
 
 | Field | Value | Notes |
 |-------|-------|-------|
-| `name` | `@apra-labs/apra-fleet` | Scoped; requires `@apra-labs` npm org |
-| `version` | `0.2.2` | Must match `version.json` at publish time |
-| `bin` | `{ "apra-fleet": "dist/index.js" }` | npm sets executable bit; shebang preserved by tsc |
+| `name` | `@apralabs/apra-fleet` | Scoped; requires `@apralabs` npm org |
+| `version` | matches `version.json` | Must match at publish time (CI's version lockstep guard) |
+| `bin` | `{ "apra-fleet": "dist/index.js", "auto-sprint": "dist/auto-sprint.mjs" }` | npm sets the executable bit; both entries' shebangs are preserved (tsc for the former, esbuild for the latter) |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
-| `prepublishOnly` | `npm run build` | Ensures `dist/` is rebuilt before packing |
-| `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`) |
+| `prepublishOnly` | `node scripts/vendor-pm.mjs && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se` | Vendors submodule content, snapshots apra-fleet-se's package-local schema copy, runs tsc, then esbuild-bundles auto-sprint -- see above |
+| `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`); the esbuild auto-sprint bundle emits `.mjs` |
 
 ---
 
@@ -279,15 +314,31 @@ Steps in order:
    with the semver extracted from `GITHUB_REF` (strips `refs/tags/v` prefix)
 4. **Version lockstep guard** -- asserts tag == `package.json.version` ==
    `version.json.version`; fails the job if they diverge
-5. `npm run build`
-6. **Verify shebang** -- `head -1 dist/index.js | grep -q '^#!/usr/bin/env node'`
+5. `npm run prepublishOnly` (labeled "Build") -- runs the full
+   prepublishOnly sequence explicitly, since npm only fires
+   `prepublishOnly` automatically on `npm publish`, not on the `npm pack
+   --dry-run` calls this job makes later. Produces `dist/index.js`,
+   `dist/agents/schemas/`, and `dist/auto-sprint.mjs` +
+   `dist/auto-sprint-runner.mjs` (apra-fleet-3ns.2) in one step.
+6. **Verify shebang** -- checks both `dist/index.js` and `dist/auto-sprint.mjs`
+   start with `#!/usr/bin/env node`
 7. **Dry-run pack verification** -- `npm pack --dry-run`; greps for required
-   files (`dist/index.js`, `version.json`, `hooks/hooks-config.json`, `skills/`)
+   files (`dist/index.js`, `version.json`, `hooks/hooks-config.json`, `skills/`,
+   `dist/auto-sprint.mjs`, `dist/auto-sprint-runner.mjs`, `dist/agents/schemas/`)
 8. **Clean-pack guard** -- rejects `*.exe`, `sea-prep.blob`, `sea-bundle.cjs`
    in the pack output; fails if unpacked size exceeds 10 MB
-9. **Idempotency check** -- `npm view @apra-labs/apra-fleet@<tag> version`;
-   skips publish if already published (reruns the job safely)
-10. **Publish** -- `npm publish --provenance --access public`; skipped if step 9
+9. **Pack + install into a clean temp prefix (auto-sprint smoke test)**
+   (apra-fleet-3ns.2 / apra-fleet-3ns.2.2) -- packs a real tarball, extracts
+   it into a temp directory with no monorepo/vendor/ ancestor and no
+   `node_modules`, runs `node dist/auto-sprint.mjs --help` from there, and
+   asserts (a) the expected usage text prints and (b) stderr does NOT
+   contain the apra-fleet-bun.1 dev-fallback warning -- proving the packed
+   `auto-sprint` bin resolves its schemas from the co-packaged
+   `dist/agents/schemas/`, not a monorepo path that would not exist in a
+   real install.
+10. **Idempotency check** -- `npm view @apralabs/apra-fleet@<tag> version`;
+    skips publish if already published (reruns the job safely)
+11. **Publish** -- `npm publish --provenance --access public`; skipped if step 10
     set `already_published=true`; uses `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`
 
 ### 8.4 Hard constraint
@@ -295,7 +346,7 @@ Steps in order:
 **An actual publish requires a human to:**
 1. Create and push a `v*` tag (e.g., `git tag v0.2.2 && git push origin v0.2.2`)
 2. Ensure the `NPM_TOKEN` secret is present in the repository
-3. Ensure the `@apra-labs` npm org exists and the token has publish rights
+3. Ensure the `@apralabs` npm org exists and the token has publish rights
 
 The CI job enforces version lockstep and pack hygiene automatically, but it
 cannot run without a tag + secret. This is intentional.

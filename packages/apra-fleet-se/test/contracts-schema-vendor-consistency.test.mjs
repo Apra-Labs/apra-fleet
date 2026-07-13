@@ -32,22 +32,22 @@ const { FALLBACK_SCHEMAS, ROLE_FOR_SCHEMA_NAME } = await import('../auto-sprint/
 
 /**
  * Dynamically (re)imports contracts.mjs with
- * APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE pointed at `overrideDir`,
+ * APRA_FLEET_SE_SCHEMAS_DIR pointed at `overrideDir`,
  * restoring the previous env var afterward. Cache-busted per call. Mirrors
  * the helper in test/contracts-schema-loader.test.mjs /
  * test/contracts-schema-observability.test.mjs.
  * @param {string} overrideDir
  */
 async function importWired(overrideDir) {
-    const previous = process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
-    process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = overrideDir;
+    const previous = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
+    process.env.APRA_FLEET_SE_SCHEMAS_DIR = overrideDir;
     try {
         return await import(`../auto-sprint/contracts.mjs?consistency-test=${Date.now()}-${Math.random()}`);
     } finally {
         if (previous === undefined) {
-            delete process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE;
+            delete process.env.APRA_FLEET_SE_SCHEMAS_DIR;
         } else {
-            process.env.APRA_FLEET_SE_VENDOR_SCHEMAS_DIR_TEST_OVERRIDE = previous;
+            process.env.APRA_FLEET_SE_SCHEMAS_DIR = previous;
         }
     }
 }
