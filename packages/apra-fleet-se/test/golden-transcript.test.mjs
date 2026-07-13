@@ -416,6 +416,16 @@ function normalizeText(text, idMap, tempDir) {
         out = out.split(id).join(idMap.get(id));
     }
     out = out.replace(ISO_TIMESTAMP_PATTERN, '<TIMESTAMP>');
+    // bd's `owner`/`created_by` fields (embedded in `bd show --json` output
+    // that flows into the reviewer prompt) reflect the local git identity
+    // (git config user.name/user.email) used when the bead was created --
+    // nondeterministic across machines/CI. `owner` is only set when a git
+    // identity is configured, so it's entirely absent on CI runners rather
+    // than merely holding a different value; strip it (with its trailing
+    // comma) rather than replacing its value. `created_by` is always
+    // present, so normalize its value instead.
+    out = out.replace(/\n[ \t]*"owner":\s*"[^"]*",/g, '');
+    out = out.replace(/"created_by":\s*"[^"]*"/g, '"created_by": "<CREATED_BY>"');
     if (tempDir) {
         out = out.split(tempDir).join('<TMPDIR>');
         out = out.split(tempDir.replace(/\\/g, '/')).join('<TMPDIR>');
