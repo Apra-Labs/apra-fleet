@@ -306,6 +306,43 @@ on-disk payload, which is what makes the escape hatch free. Only Section 3
 Section 10 (docs) now explicitly includes this subsection in its acceptance
 criterion.
 
+### Addendum (2026-07-13): R1 spike result -- dynamic `import()` from a SEA main WORKS
+
+Recorded per Section 10 Phase 1 task 1 (`apra-fleet-7pm.1`), the hard risk gate
+for R1. This addendum is the binding decision for the rest of the epic.
+
+**Outcome: PASS on all 3 OS with `useCodeCache: true` retained. No fallback is
+adopted.** The import-trampoline architecture in Section 1 stands as designed.
+
+What was proven. `scripts/spike-sea-import.mjs` builds a throwaway SEA binary
+through the same pipeline shape as the real one (`gen-sea-config.mjs` semantics
+with `useCodeCache: true`, `postject` injection, the macOS codesign
+remove/re-sign dance). The injected main does
+`await import(pathToFileURL(<on-disk .mjs>))`, and that on-disk fixture in turn
+*statically* imports both a bare specifier and a subpath export from a sibling
+`node_modules/` -- mirroring the `~/.apra-fleet/node_modules/` runtime-tree
+layout that Section 2 installs. The dynamic import resolved, the bare specifier
+and the subpath export both resolved, and the fixture executed.
+
+Where it ran. CI workflow `.github/workflows/spike-sea-import.yml`, matrix of
+{ubuntu-latest, windows-latest, macos-latest} x {useCodeCache true, false} = 6
+legs, all green (run 29291557051). The `useCodeCache: false` legs were kept as a
+control to confirm the code cache is not load-bearing either way; since the
+`true` legs pass, **no startup re-measurement is required and `useCodeCache`
+stays `true`** (`scripts/gen-sea-config.mjs:130` is unchanged).
+
+Consequences for downstream tasks:
+
+- Fallback (a) -- flip `useCodeCache` off -- is **not** adopted; do not change
+  that flag.
+- Fallback (b) -- `module.createRequire()` + a `node:worker_threads` ESM
+  bootstrap -- is **not** adopted; the extra indirection is unnecessary.
+- Phase 1 task 4 (`gen-sea-config.mjs` asset embedding) and Phase 1 task 5
+  (`install.ts` install step) proceed against the plain import-trampoline design:
+  assets are extracted to a real on-disk tree and the launcher `import()`s the
+  workflow entry directly. Bare specifiers resolve from the installed sibling
+  `node_modules/`; no bundling of the runtime into the binary is needed.
+
 ## 2. File/asset inventory
 
 Everything below is verified from actual imports (runner.js:1-8, cli.mjs:1-15,
