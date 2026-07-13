@@ -154,7 +154,7 @@ const verdict = await agent(
         member_name: reviewerPool[0],
         agentType: 'reviewer',
         schema: reviewerVerdict,      // from contracts.mjs
-        model: FIXED_ROLE_MODEL.reviewer,
+        model: FIXED_ROLE_TIER.reviewer,   // 'premium' -- resolved to a concrete model per member, server-side
     }
 );
 ```

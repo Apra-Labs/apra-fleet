@@ -90,13 +90,13 @@ explicitly).
 
 | Role | Dispatched by | Cardinality per cycle | Fixed model tier |
 |---|---|---|---|
-| `planner` | Plan phase, and Develop phase's streak-assignment step | 1 (Plan) + 1 per Develop round | `opus` |
-| `plan-reviewer` | Plan phase | 1 per planning round (up to 3) | `opus` |
+| `planner` | Plan phase, and Develop phase's streak-assignment step | 1 (Plan) + 1 per Develop round | `premium` |
+| `plan-reviewer` | Plan phase | 1 per planning round (up to 3) | `premium` |
 | `doer` | Develop phase | 1 per streak (parallel) | per-bead metadata tier (see `docs/architecture.md`) |
-| `reviewer` | Develop/Review phase, Cycle Evaluation re-review, Finalization | 1 per develop round + conditional re-review + 1 final | `opus` |
-| `deployer` | Deploy phase (conditional on `deploy.md`) | 0 or 1 | `sonnet` |
-| `integ-test-runner` | Integration phase (conditional on `deploy.md` + `integ-test-playbook.md` + successful deploy) | 0 or 1 | `sonnet` |
-| `harvester` | Finalization | 1 | `sonnet` |
+| `reviewer` | Develop/Review phase, Cycle Evaluation re-review, Finalization | 1 per develop round + conditional re-review + 1 final | `premium` |
+| `deployer` | Deploy phase (conditional on `deploy.md`) | 0 or 1 | `standard` |
+| `integ-test-runner` | Integration phase (conditional on `deploy.md` + `integ-test-playbook.md` + successful deploy) | 0 or 1 | `standard` |
+| `harvester` | Finalization | 1 | `standard` |
 | `ci-watcher` | Not dispatched by this runner today (contract exists in `contracts.mjs`/vendor for future use) | -- | -- |
 
 Each role's full behavioral contract (what it reads, what it does, what it

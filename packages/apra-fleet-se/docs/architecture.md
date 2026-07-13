@@ -245,33 +245,69 @@ omitted, it stays `null` (unlimited). The engine's `agent()` already checks
 error -- this runner's only job is to actually set `budget.total` from the
 validated arg.
 
-Model-tier pricing for non-doer roles is fixed by `FIXED_ROLE_MODEL` (a
+Model-tier pricing for non-doer roles is fixed by `FIXED_ROLE_TIER` (a
 runner-owned policy table, not a live read of fleet configuration):
 
-| Role | Model | Rationale |
+| Role | Tier | Rationale |
 |---|---|---|
-| `planner` | `opus` | Highest-stakes single dispatch of a cycle |
-| `plan-reviewer` | `opus` | Vendored contract treats reviewer-class work as premium |
-| `reviewer` | `opus` | Vendored contract: "always use model: premium" |
-| `deployer` | `sonnet` | Mostly mechanical: follow `deploy.md` |
-| `integ-test-runner` | `sonnet` | Mostly mechanical: follow `integ-test-playbook.md` |
-| `harvester` | `sonnet` | Docs/CHANGELOG synthesis, not code-critical |
+| `planner` | `premium` | Highest-stakes single dispatch of a cycle |
+| `plan-reviewer` | `premium` | Vendored contract treats reviewer-class work as premium |
+| `reviewer` | `premium` | Vendored contract: "always use model: premium" |
+| `deployer` | `standard` | Mostly mechanical: follow `deploy.md` |
+| `integ-test-runner` | `standard` | Mostly mechanical: follow `integ-test-playbook.md` |
+| `harvester` | `standard` | Docs/CHANGELOG synthesis, not code-critical |
+
+These tier keywords (`cheap`/`standard`/`premium`) are resolved to a concrete
+model **per member, server-side** (`execute-prompt.ts`'s
+`resolveModelForTier()`, via each member's registered `model_tiers`) -- this
+is what makes a mixed-provider fleet (Claude, Gemini, Codex, Copilot,
+OpenCode, ...) work correctly. Earlier revisions of this runner hardcoded
+Claude-specific literal model names (`opus`/`sonnet`) here instead. That was
+a real bug, not a stylistic choice: a fixed `opus` dispatch to a non-Claude
+member was passed through verbatim as a literal model ID that meant nothing
+to that provider, silently assuming a Claude-only fleet regardless of the
+member's actual provider. The fix (apra-fleet-dv5) was to stop emitting
+Claude-specific literals here and use the provider-agnostic tier vocabulary
+instead.
 
 `doer` dispatches instead price themselves off the **per-bead model tier**
 the planner recorded as beads metadata (`bd create ... --metadata
 '{"model": "<tier>"}'`, per `planner.md` Step 3 -- this is documented as the
-*only* place the tier is recorded). When a streak spans beads with different
-declared tiers, the runner picks the first (by streak/bead-id order) and
-logs the discrepancy rather than blending. A bead with no `model` metadata
-resolves to `undefined`, which the engine treats as "unpriced" -- the
-dispatch still runs, it just is not counted toward budget.
+*only* place the tier is recorded). The value is normally one of `cheap` /
+`standard` / `premium`, but a literal, provider-specific model ID (e.g. an
+OpenCode member's model string) is also a fully legitimate value -- not
+deprecated, not rewritten, not warned about -- for a caller who already
+knows the target member's provider and wants a specific model family from
+it. When a streak spans beads with different declared tiers/models, the
+runner picks the first (by streak/bead-id order) and logs the discrepancy
+rather than blending. A bead with no `model` metadata resolves to
+`undefined`, which the engine treats as "unpriced" -- the dispatch still
+runs, it just is not counted toward budget.
 
-**Honesty caveat, stated directly in the code**: this is the model the
-*planner asked* the doer to run on, not a verified actual -- the fleet does
-not currently echo back the model it actually resolved/ran with alongside
-usage. Budget tracking (and the harvester's cost-analysis block) is
-explicitly an estimate, not a guaranteed total, and is reported as such
-rather than being backfilled with a fabricated number.
+**Pricing source**: a dispatch's cost is priced against one of two sources,
+in preference order:
+
+1. **Real per-member rates** -- when the dispatch's `opts.model` is a tier
+   keyword, the workflow engine calls the `get_member_model_pricing` MCP
+   tool (once per member per run, cached for the run's lifetime) to resolve
+   that member's tier to its actual concrete model and real `$`/1M-token
+   rate, and prices the dispatch against that.
+2. **Tier-band/concrete-model fallback estimate** (`pricing.mjs`) -- used
+   whenever real pricing isn't available for the dispatch: the tool call
+   fails (older fleet server, network/hub-relay error), the member/tier
+   combination has no known price, or `opts.model` is a literal model ID
+   rather than a tier keyword (concrete IDs are priced via `pricing.mjs`'s
+   own model table, matched by substring).
+
+The harvester's `costAnalysis` block (`buildCostAnalysis()`) reports which
+of these sourced each run's total -- all real, all fallback, or a mixed
+count -- so the CHANGELOG cost note stays honest about precision rather than
+implying uniform accuracy. A dispatch using an entirely unpriced model id
+(no match in either source) is still excluded from the tracked total, not
+backfilled with a fabricated number -- the fleet does not currently echo
+back the model it actually resolved/ran with alongside usage, so even the
+"real rate" path prices against the model the caller *asked for* (the
+resolved tier), not a separately confirmed actual.
 
 ## Multi-member topology
 
