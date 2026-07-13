@@ -24,8 +24,9 @@ const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
 // every activity priced as `calculateCost('default', usage)` -> null ->
 // `_spent` never moved -> a budget ceiling could never be reached. This
 // suite fails on a revert of either the per-bead doer model wiring or the
-// FIXED_ROLE_MODEL constants (see runner.js), and fails on a revert of the
-// pricing.mjs fleet-model rows (fable/opus/sonnet/haiku).
+// FIXED_ROLE_TIER constants (see runner.js), and fails on a revert of the
+// pricing.mjs fleet-model rows (fable/opus/sonnet/haiku) or tier-band rows
+// (cheap/standard/premium, apra-fleet-dv5.2).
 
 const runCmd = (cmd, cwd) => new Promise((resolve) => {
     exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } }, (err, stdout, stderr) => {
@@ -97,7 +98,7 @@ async function teardown(tempDir) {
  * (b) attaches real `usage` to every executePrompt response (so every
  * dispatch is priceable -- see USAGE above), and (c) records `{ agent,
  * model }` for every dispatch so a test can assert the wiring end to end
- * (which role got which model, per FIXED_ROLE_MODEL / the doer's per-bead
+ * (which role got which model, per FIXED_ROLE_TIER / the doer's per-bead
  * metadata).
  */
 function buildMockFleetApi(tempDir, epicBead, taskId, dispatched) {
@@ -200,7 +201,7 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
 
             assert.ok(pricedCount > 0, 'Expected at least one activity to be priced (nonzero pricedCount) -- got 0, meaning opts.model never reached a pricing-table match.');
             assert.ok(totalCost > 0, `Expected totalCost > 0 (a live sprint with real usage should genuinely accrue cost), got ${totalCost}.`);
-            assert.strictEqual(unknownCostCount, 0, 'Expected every dispatch in this scenario to be priced (every role has a FIXED_ROLE_MODEL entry or per-bead metadata) -- an unpriced dispatch means a model failed to reach calculateCost().');
+            assert.strictEqual(unknownCostCount, 0, 'Expected every dispatch in this scenario to be priced (every role has a FIXED_ROLE_TIER entry or per-bead metadata) -- an unpriced dispatch means a model failed to reach calculateCost().');
 
             // Sanity: the doer dispatch for our single task was actually
             // priced against the model recorded in ITS bead metadata
@@ -210,10 +211,11 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
             assert.strictEqual(doerDispatch.model, 'haiku', `Doer dispatch should be priced against the bead's declared metadata model ('haiku'), got '${doerDispatch.model}'.`);
 
             // Sanity: the fixed reviewer-class roles used their documented
-            // default ('opus'), independent of the bead's own tier.
+            // default tier ('premium', apra-fleet-dv5.1), independent of
+            // the bead's own tier.
             const reviewerDispatch = dispatched.find((d) => d.agent === 'reviewer');
             assert.ok(reviewerDispatch, 'Expected a reviewer dispatch to have happened.');
-            assert.strictEqual(reviewerDispatch.model, 'opus', `Reviewer dispatch should use the fixed role default ('opus'), got '${reviewerDispatch.model}'.`);
+            assert.strictEqual(reviewerDispatch.model, 'premium', `Reviewer dispatch should use the fixed role tier ('premium'), got '${reviewerDispatch.model}'.`);
 
             const finalBeads = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
             const task = finalBeads.find((b) => b.id === taskId);
@@ -231,7 +233,8 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
             const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
             const engine = new WorkflowEngine(workflow);
 
-            // The planner dispatch alone (FIXED_ROLE_MODEL.planner = 'opus':
+            // The planner dispatch alone (FIXED_ROLE_TIER.planner = 'premium',
+            // priced identically to the old 'opus' row:
             // 1000 prompt tokens * $15/1M + 500 completion tokens * $75/1M =
             // 0.015 + 0.0375 = $0.0525) already exceeds this ceiling once
             // its cost is debited, so the very next dispatch (plan-reviewer)

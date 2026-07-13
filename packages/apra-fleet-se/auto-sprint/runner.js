@@ -56,41 +56,48 @@ const ROLE_REVIEWER = roleConst('reviewer');
 const ROLE_ORCHESTRATOR = 'orchestrator';
 
 // ---------------------------------------------------------------------------
-// N10 (apra-fleet-unw2.8): fixed-role model defaults
+// N10 (apra-fleet-unw2.8) / apra-fleet-dv5.1: fixed-role tier defaults
 // ---------------------------------------------------------------------------
 //
 // Doer dispatches price themselves off the PER-BEAD model tier recorded in
 // beads metadata by the planner (N1, apra-fleet-unw2.1's `--metadata
-// '{"model": ...}'` convention) -- see resolveDoerModel() near the
+// '{"model": ...}'` convention) -- see the streak model resolution near the
 // Develop/Review loop below. The other six roles this runner dispatches
 // (planner, plan-reviewer, reviewer, deployer, integ-test-runner,
 // harvester) are NOT per-bead: they each run once per cycle/run and have no
 // single bead of their own to read a tier from. Per the vendored
 // agents/planner.md Step 3 ("Reviewer dispatches always use model: premium
 // regardless of the task tier -- this is not configurable by the
-// planner"), these roles use a FIXED model chosen for the nature of the
+// planner"), these roles use a FIXED tier chosen for the nature of the
 // work rather than any bead's declared tier. This table is that fixed
 // assignment, made explicit (previously these dispatches passed no `model`
 // at all, so FleetWorkflow silently used its 'default' bucket, which never
 // matches an entry in pricing.mjs and is therefore NEVER priced -- see N10
 // in packages/apra-fleet-workflow/docs/feedback-reassessment.md):
-//   planner            -> 'opus'   (drafts/redrafts the whole task DAG; highest-stakes single dispatch of a cycle)
-//   plan-reviewer      -> 'opus'   (adversarial DAG review; vendor contract treats reviewer-class work as premium-tier)
-//   reviewer           -> 'opus'   (both per-round AND final review; vendor contract: "always use model: premium")
-//   deployer           -> 'sonnet' (mostly mechanical: follow deploy.md)
-//   integ-test-runner  -> 'sonnet' (mostly mechanical: follow integ-test-playbook.md)
-//   harvester          -> 'sonnet' (docs/CHANGELOG synthesis, not code-critical)
-// These are this runner's own policy choices, not a live read of what a
-// real fleet member happens to be configured to run -- see the
-// budget-is-estimate-based note on resolveDoerModel() and in pricing.mjs
-// for why this whole mechanism is honestly labeled an estimate.
-const FIXED_ROLE_MODEL = {
-    planner: 'opus',
-    'plan-reviewer': 'opus',
-    reviewer: 'opus',
-    deployer: 'sonnet',
-    'integ-test-runner': 'sonnet',
-    harvester: 'sonnet',
+//   planner            -> 'premium'  (drafts/redrafts the whole task DAG; highest-stakes single dispatch of a cycle)
+//   plan-reviewer      -> 'premium'  (adversarial DAG review; vendor contract treats reviewer-class work as premium-tier)
+//   reviewer           -> 'premium'  (both per-round AND final review; vendor contract: "always use model: premium")
+//   deployer           -> 'standard' (mostly mechanical: follow deploy.md)
+//   integ-test-runner  -> 'standard' (mostly mechanical: follow integ-test-playbook.md)
+//   harvester          -> 'standard' (docs/CHANGELOG synthesis, not code-critical)
+// These tier keywords ('cheap' | 'standard' | 'premium') are resolved to a
+// concrete model PER MEMBER, server-side, by execute-prompt.ts's
+// resolveModelForTier() (via each member's registered model_tiers) -- this
+// is what makes a mixed-provider fleet (Claude, Gemini, Codex, Copilot,
+// OpenCode, ...) work: a fixed 'premium' dispatch resolves to whatever each
+// target member's own premium tier is configured to, instead of a
+// Claude-specific literal ('opus') being passed through verbatim to a
+// non-Claude member where it means nothing. Real per-member cost lookup
+// (rather than a tier-band estimate) is available via the
+// get_member_model_pricing MCP tool -- see apra-fleet-dv5.5/dv5.6 and
+// pricing.mjs.
+const FIXED_ROLE_TIER = {
+    planner: 'premium',
+    'plan-reviewer': 'premium',
+    reviewer: 'premium',
+    deployer: 'standard',
+    'integ-test-runner': 'standard',
+    harvester: 'standard',
 };
 
 export const meta = { name: 'auto-sprint-runner' };
@@ -511,8 +518,9 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
     lines.push(
         'For every task: set clear acceptance criteria in its description, and set its ' +
         'model tier as beads metadata at creation time via ' +
-        '`bd create ... --metadata \'{"model": "<tier>"}\'` (tier is one of ' +
-        'cheap-tier, standard-tier, premium-tier) -- this is the ONLY location the model ' +
+        '`bd create ... --metadata \'{"model": "<tier>"}\'` (tier is EXACTLY one of ' +
+        '\'cheap\', \'standard\', \'premium\' -- these three literal strings, not ' +
+        '"cheap-tier"/"standard-tier"/"premium-tier") -- this is the ONLY location the model ' +
         'tier is recorded: do not additionally record it via bd\'s freeform notes field or ' +
         'a METADATA-section comment, per planner.md Step 3.'
     );
@@ -1122,7 +1130,7 @@ export async function main(context) {
                         member_name: reviewerPool[0],
                         agentType: 'reviewer',
                         schema: reviewerVerdict,
-                        model: FIXED_ROLE_MODEL.reviewer,
+                        model: FIXED_ROLE_TIER.reviewer,
                     }
                 );
             } catch (err) {
@@ -1438,7 +1446,7 @@ export async function main(context) {
             });
             const plannerRes = await agent(
                 plannerPrompt,
-                { member_name: getMemberForRole('planner'), agentType: 'planner', model: FIXED_ROLE_MODEL.planner }
+                { member_name: getMemberForRole('planner'), agentType: 'planner', model: FIXED_ROLE_TIER.planner }
             );
             log(`Planner: ${plannerRes}`);
 
@@ -1450,7 +1458,7 @@ export async function main(context) {
                         member_name: getMemberForRole('plan-reviewer'),
                         agentType: 'plan-reviewer',
                         schema: planReviewerVerdict,
-                        model: FIXED_ROLE_MODEL['plan-reviewer'],
+                        model: FIXED_ROLE_TIER['plan-reviewer'],
                     }
                 );
             } catch (err) {
@@ -1579,7 +1587,7 @@ export async function main(context) {
                         agentType: 'planner',
                         label: 'Streak Assignment',
                         schema: streakAssignment,
-                        model: FIXED_ROLE_MODEL.planner,
+                        model: FIXED_ROLE_TIER.planner,
                     }
                 );
                 log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
@@ -1822,7 +1830,7 @@ export async function main(context) {
             try {
                 deployResult = await agent(
                     'Deploy to test env using deploy.md.',
-                    { member_name: getMemberForRole('deployer'), agentType: 'deployer', schema: deployerReport, model: FIXED_ROLE_MODEL.deployer }
+                    { member_name: getMemberForRole('deployer'), agentType: 'deployer', schema: deployerReport, model: FIXED_ROLE_TIER.deployer }
                 );
             } catch (err) {
                 if (err instanceof AgentOutputError) {
@@ -1848,7 +1856,7 @@ export async function main(context) {
             try {
                 integResult = await agent(
                     'Run tests using integ-test-playbook.md. Add bug beads if needed.',
-                    { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner', schema: integReport, model: FIXED_ROLE_MODEL['integ-test-runner'] }
+                    { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner', schema: integReport, model: FIXED_ROLE_TIER['integ-test-runner'] }
                 );
             } catch (err) {
                 if (err instanceof AgentOutputError) {
@@ -2030,7 +2038,7 @@ export async function main(context) {
                 integFailures,
                 rejectedNewTasks,
             }),
-            { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review', model: FIXED_ROLE_MODEL.reviewer }
+            { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review', model: FIXED_ROLE_TIER.reviewer }
         );
     } catch (err) {
         if (err instanceof AgentOutputError) {
@@ -2082,7 +2090,7 @@ export async function main(context) {
     try {
         harvesterResult = await agent(
             harvesterPrompt,
-            { member_name: getMemberForRole('harvester'), agentType: 'harvester', schema: harvesterReport, model: FIXED_ROLE_MODEL.harvester }
+            { member_name: getMemberForRole('harvester'), agentType: 'harvester', schema: harvesterReport, model: FIXED_ROLE_TIER.harvester }
         );
         log(`Harvester: ${JSON.stringify(harvesterResult)}`);
         if (harvesterResult.status !== 'OK') {
