@@ -28,6 +28,24 @@ const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
 // pricing.mjs fleet-model rows (fable/opus/sonnet/haiku) or tier-band rows
 // (cheap/standard/premium, apra-fleet-dv5.2).
 
+// apra-fleet-7ll: replicate the real execute_command MCP tool's response
+// shape (src/tools/execute-command.ts) -- "Exit code: N\n<output>" display
+// text PLUS a structuredContent.stdout/stderr/exitCode machine-readable
+// channel -- so this mock exercises the same contract FleetWorkflow.command()
+// actually receives in production, instead of a cleaner-than-reality stand-in
+// that silently masked the "Exit code: N\n" prefix bug for this suite's
+// whole lifetime.
+function mockCmdResult(code, stdout, stderr) {
+    const parts = [];
+    if (stdout) parts.push(stdout);
+    if (stderr) parts.push(`[stderr]\n${stderr}`);
+    const output = parts.join('\n') || '(no output)';
+    return {
+        content: [{ text: `Exit code: ${code}\n${output}` }],
+        structuredContent: { exitCode: code, stdout: stdout ?? '', stderr: stderr ?? '' },
+    };
+}
+
 const runCmd = (cmd, cwd) => new Promise((resolve) => {
     exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } }, (err, stdout, stderr) => {
         resolve({ err, stdout, stderr });
@@ -118,11 +136,11 @@ function buildMockFleetApi(tempDir, epicBead, taskId, dispatched, { pricingByMem
         } : {}),
         executeCommand: async (opts) => {
             if (/^(git|gh)\s/.test(opts.command)) {
-                return { content: [{ text: 'ok (mocked -- no real git remote in this mock sprint)' }] };
+                return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) return { isError: true, content: [{ text: stderr || err.message }] };
-            return { content: [{ text: stdout }] };
+            return mockCmdResult(0, stdout, stderr);
         },
         executePrompt: async (opts) => {
             dispatched.push({ agent: opts.agent, model: opts.model, member: opts.member_name });

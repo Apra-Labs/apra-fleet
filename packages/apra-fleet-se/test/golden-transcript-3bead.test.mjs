@@ -58,6 +58,24 @@ const GOLDEN_DIR = path.join(__dirname, 'fixtures', 'golden-transcript');
 const GOLDEN_PATH = path.join(GOLDEN_DIR, 'mock-sprint-3bead.jsonl');
 const UPDATE_GOLDEN = process.env.UPDATE_GOLDEN === '1';
 
+// apra-fleet-7ll: replicate the real execute_command MCP tool's response
+// shape (src/tools/execute-command.ts) -- "Exit code: N\n<output>" display
+// text PLUS a structuredContent.stdout/stderr/exitCode machine-readable
+// channel -- so this mock exercises the same contract FleetWorkflow.command()
+// actually receives in production, instead of a cleaner-than-reality stand-in
+// that silently masked the "Exit code: N\n" prefix bug for this suite's
+// whole lifetime.
+function mockCmdResult(code, stdout, stderr) {
+    const parts = [];
+    if (stdout) parts.push(stdout);
+    if (stderr) parts.push(`[stderr]\n${stderr}`);
+    const output = parts.join('\n') || '(no output)';
+    return {
+        content: [{ text: `Exit code: ${code}\n${output}` }],
+        structuredContent: { exitCode: code, stdout: stdout ?? '', stderr: stderr ?? '' },
+    };
+}
+
 const runCmd = (cmd, cwd) => new Promise((resolve) => {
     exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } }, (err, stdout, stderr) => {
         resolve({ err, stdout, stderr });
@@ -145,14 +163,14 @@ function build3BeadFleetApi(tempDir, epicBead, dispatchLog) {
             // an 'origin' remote -- see the identical comment in
             // test/golden-transcript.test.mjs / advanced-mock-runner-test.mjs.
             if (/^(git|gh)\s/.test(opts.command)) {
-                return { content: [{ text: 'ok (mocked -- no real git remote in this mock sprint)' }] };
+                return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }
 
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) {
                 return { isError: true, content: [{ text: stderr || err.message }] };
             }
-            return { content: [{ text: stdout }] };
+            return mockCmdResult(0, stdout, stderr);
         },
 
         executePrompt: async (opts) => {

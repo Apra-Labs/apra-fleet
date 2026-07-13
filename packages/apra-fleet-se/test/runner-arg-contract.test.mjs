@@ -219,6 +219,22 @@ describe('validateArgs', () => {
  * scripted, deterministic response for whichever agentType/command is
  * dispatched so the full runner.js sprint loop can run to completion.
  */
+// apra-fleet-7ll: replicate the real execute_command MCP tool's response
+// shape (src/tools/execute-command.ts) -- "Exit code: N\n<output>" display
+// text PLUS a structuredContent.stdout/stderr/exitCode machine-readable
+// channel -- see the identical helper in advanced-mock-runner-test.mjs /
+// golden-transcript.test.mjs / budget-live.test.mjs.
+function mockCmdResult(code, stdout, stderr = '') {
+    const parts = [];
+    if (stdout) parts.push(stdout);
+    if (stderr) parts.push(`[stderr]\n${stderr}`);
+    const output = parts.join('\n') || '(no output)';
+    return {
+        content: [{ text: `Exit code: ${code}\n${output}` }],
+        structuredContent: { exitCode: code, stdout: stdout ?? '', stderr: stderr ?? '' },
+    };
+}
+
 function buildSpyFleetApi() {
     const calls = { executeCommand: 0, executePrompt: 0 };
     const commandLog = [];
@@ -240,22 +256,22 @@ function buildSpyFleetApi() {
             dispatchLog.push({ command: opts.command, member_name: opts.member_name });
 
             if (/^(git|gh)\s/.test(opts.command)) {
-                return { content: [{ text: 'ok' }] };
+                return mockCmdResult(0, 'ok');
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // First ready-list call returns one bead so the sprint can
                 // proceed; subsequent calls (post-doer) return none so the
                 // develop loop and cycle loop both terminate immediately.
                 const alreadyReturnedReady = commandLog.filter((c) => /^bd list .*--ready/.test(c)).length > 1;
-                return { content: [{ text: alreadyReturnedReady ? '[]' : '[{"id":"bd-1","title":"Task"}]' }] };
+                return mockCmdResult(0, alreadyReturnedReady ? '[]' : '[{"id":"bd-1","title":"Task"}]');
             }
             if (/^bd list /.test(opts.command)) {
-                return { content: [{ text: '[]' }] };
+                return mockCmdResult(0, '[]');
             }
             if (opts.command.includes("existsSync")) {
-                return { content: [{ text: 'not found' }] };
+                return mockCmdResult(0, 'not found');
             }
-            return { content: [{ text: '' }] };
+            return mockCmdResult(0, '');
         },
         executePrompt: async (opts) => {
             calls.executePrompt++;

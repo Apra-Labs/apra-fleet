@@ -6,7 +6,7 @@
  *  - Network egress policy (allow / confirm / deny)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executeCommand } from '../src/tools/execute-command.js';
 import {
@@ -133,11 +133,11 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `echo {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('Exit code: 0');
     // The actual command sent must contain the plaintext (shell-escaped), not the token
@@ -152,11 +152,11 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: 'echo {{secure.nonexistent_cred}}',
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('not found');
     expect(result).toContain('nonexistent_cred');
@@ -171,13 +171,13 @@ describe('execute_command: {{secure.NAME}} token resolution', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: 'python train.py',
       long_running: true,
       restart_command: `python resume.py --token {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     // Task should launch (not error out about missing token)
     expect(result).toContain('Task launched');
@@ -215,11 +215,11 @@ describe('execute_command: output redaction', () => {
     // Simulate command that echoes the secret back
     mockExecCommand.mockResolvedValue({ stdout: `token=${secret}`, stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `echo {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     // Secret should be redacted in returned output
     expect(result).not.toContain(secret);
@@ -237,11 +237,11 @@ describe('execute_command: output redaction', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: `Error: bad token ${secret}`, code: 1 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `cmd {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).not.toContain(secret);
     expect(result).toContain(`[REDACTED:${name}]`);
@@ -254,11 +254,11 @@ describe('execute_command: output redaction', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'hello world', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: 'echo hello world',
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('hello world');
     expect(result).not.toContain('REDACTED');
@@ -305,11 +305,11 @@ describe('execute_command: network egress policy', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'fetched', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `curl https://example.com --header {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(mockCollectOobConfirm).not.toHaveBeenCalled();
     expect(result).toContain('Exit code: 0');
@@ -324,11 +324,11 @@ describe('execute_command: network egress policy', () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `curl https://example.com --header {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('Blocked');
     expect(result).toContain(name);
@@ -347,11 +347,11 @@ describe('execute_command: network egress policy', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'fetched', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `curl https://example.com --header {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(mockCollectOobConfirm).toHaveBeenCalledWith(name, expect.objectContaining({ command: expect.any(String), memberName: expect.any(String) }));
     expect(result).toContain('Exit code: 0');
@@ -368,11 +368,11 @@ describe('execute_command: network egress policy', () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `wget https://example.com --header {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('was not confirmed');
     expect(mockExecCommand).not.toHaveBeenCalled();
@@ -389,11 +389,11 @@ describe('execute_command: network egress policy', () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `ssh user@host --key {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('could not be confirmed');
     expect(mockExecCommand).not.toHaveBeenCalled();
@@ -410,11 +410,11 @@ describe('execute_command: network egress policy', () => {
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
     // Command does not contain any network tool pattern
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `echo {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     // deny only blocks when a network tool is present — pure echo is fine
     expect(result).toContain('Exit code: 0');

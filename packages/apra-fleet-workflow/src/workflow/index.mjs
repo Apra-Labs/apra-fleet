@@ -1047,6 +1047,15 @@ export class FleetWorkflow extends EventEmitter {
         try {
             const result = await this.fleetApi.executeCommand(payload);
             const outText = result.content && result.content.length > 0 ? result.content[0].text : '';
+            // Servers new enough to send structuredContent give clean stdout
+            // directly -- no "Exit code: N\n" prefix to strip, no risk of a
+            // caller (e.g. parseBdJson() in auto-sprint/runner.js) choking on
+            // display formatting mixed into what should be raw command
+            // output. Older servers (no structuredContent) fall back to the
+            // legacy text field as-is, preserving prior behavior exactly.
+            const cleanOutput = (result.structuredContent && typeof result.structuredContent.stdout === 'string')
+                ? result.structuredContent.stdout
+                : outText;
             const duration = Date.now() - activityMeta.startTime;
 
             // STOPGAP: see the matching comment in agent() above and
@@ -1066,7 +1075,7 @@ export class FleetWorkflow extends EventEmitter {
             }
 
             this.emit('activity:end', { ...activityMeta, duration, success: true, output: outText });
-            return failSoft ? { ok: true, output: outText, error: null } : outText;
+            return failSoft ? { ok: true, output: cleanOutput, error: null } : cleanOutput;
         } catch (error) {
             console.error(`[Command API Error]`, error.message || error);
             if (error instanceof WorkflowError) {

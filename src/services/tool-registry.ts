@@ -64,9 +64,15 @@ export async function registerAllTools(server: McpServer): Promise<void> {
     return getWelcomeBackPreamble();
   }
 
-  function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string>) {
+  // Most tools return a plain display string. A few (execute_command) return
+  // { text, structuredContent } to give programmatic callers (e.g.
+  // FleetWorkflow.command()) a machine-readable channel alongside the
+  // human/LLM-facing text -- see ExecuteCommandResult in tools/execute-command.ts.
+  function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown> }>) {
     return async (input: any, extra?: any) => {
-      const result = await handler(input, extra);
+      const raw = await handler(input, extra);
+      const result = typeof raw === 'string' ? raw : raw.text;
+      const structuredContent = typeof raw === 'string' ? undefined : raw.structuredContent;
       const isJson = isJsonResponse(result);
       const preamble = getOnboardingPreamble(toolName, isJson);
       const suffix = isJson ? null : getOnboardingNudge(toolName, input, result);
@@ -82,7 +88,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
       if (suffix) {
         content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${suffix}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 0.8 } });
       }
-      return { content };
+      return structuredContent ? { content, structuredContent } : { content };
     };
   }
 

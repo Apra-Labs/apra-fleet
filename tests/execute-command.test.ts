@@ -32,8 +32,11 @@ describe('executeCommand', () => {
     mockExecCommand.mockResolvedValue({ stdout: 'hello world\n', stderr: '', code: 0 });
 
     const result = await executeCommand({ member_id: member.id, command: 'echo hello world', timeout_s: 5 });
-    expect(result).toContain('Exit code: 0');
-    expect(result).toContain('hello world');
+    expect(result).not.toBeTypeOf('string');
+    const { text, structuredContent } = result as Exclude<typeof result, string>;
+    expect(text).toContain('Exit code: 0');
+    expect(text).toContain('hello world');
+    expect(structuredContent).toEqual({ exitCode: 0, stdout: 'hello world\n', stderr: '' });
   });
 
   it('wraps command with work folder', async () => {
@@ -76,8 +79,10 @@ describe('executeCommand', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: 'command not found', code: 127 });
 
     const result = await executeCommand({ member_id: member.id, command: 'nonexistent', timeout_s: 5 });
-    expect(result).toContain('Exit code: 127');
-    expect(result).toContain('command not found');
+    const { text, structuredContent } = result as Exclude<typeof result, string>;
+    expect(text).toContain('Exit code: 127');
+    expect(text).toContain('command not found');
+    expect(structuredContent).toEqual({ exitCode: 127, stdout: '', stderr: 'command not found' });
   });
 
   it('returns error message on exception', async () => {
@@ -101,7 +106,8 @@ describe('executeCommand', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await executeCommand({ member_id: member.id, command: 'true', timeout_s: 5 });
-    expect(result).toContain('(no output)');
+    const { text } = result as Exclude<typeof result, string>;
+    expect(text).toContain('(no output)');
   });
 
   it('includes both stdout and stderr when both present', async () => {
@@ -110,9 +116,14 @@ describe('executeCommand', () => {
     mockExecCommand.mockResolvedValue({ stdout: 'output', stderr: 'warning', code: 0 });
 
     const result = await executeCommand({ member_id: member.id, command: 'cmd', timeout_s: 5 });
-    expect(result).toContain('output');
-    expect(result).toContain('[stderr]');
-    expect(result).toContain('warning');
+    const { text, structuredContent } = result as Exclude<typeof result, string>;
+    expect(text).toContain('output');
+    expect(text).toContain('[stderr]');
+    expect(text).toContain('warning');
+    // structuredContent.stdout stays clean -- no "[stderr]" marker mixed in,
+    // this is exactly the field a JSON-parsing caller like auto-sprint's
+    // parseBdJson() should read instead of the display text.
+    expect(structuredContent).toEqual({ exitCode: 0, stdout: 'output', stderr: 'warning' });
   });
 });
 
