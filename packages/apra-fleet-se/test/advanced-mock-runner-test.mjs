@@ -35,18 +35,32 @@ async function setup(tempDirSuffix) {
 
     await runCmd('bd init', tempDir);
 
-    await runCmd('bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary."', tempDir);
-    await runCmd('bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool."', tempDir);
-    await runCmd('bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members."', tempDir);
+    // `--silent` returns the created id directly on stdout, from the exact
+    // write just performed -- unlike a separate `bd list --json` + title
+    // match immediately afterward, which reads back through bd's embedded
+    // Dolt store and can lag behind a just-completed write on a cold/fresh
+    // environment (observed in CI: a fresh `bd` install with no warmed-up
+    // Dolt state hits this every time, even though sequential `bd create`
+    // calls each fully complete -- exec()'s callback only fires on process
+    // exit -- before the next command starts).
+    const epicId = (await runCmd('bd create -t epic "Epic: Fleet Member Management APIs" -d "This epic covers the implementation of member management APIs for apra-fleet-client. It includes registerMember, listMembers, and ensuring they integrate securely using fetch across the MCP JSON-RPC boundary." --silent', tempDir)).stdout.trim();
+    const task1Id = (await runCmd('bd create "Task: Implement registerMember in client.js" -d "Implement a registerMember(config) function in the ApraFleet API class. It should accept an object with name, prompt, url, token, etc., and map to the register_member tool." --silent', tempDir)).stdout.trim();
+    const task2Id = (await runCmd('bd create "Task: Implement listMembers in client.js" -d "Implement a listMembers() function in the ApraFleet API class. It should call the list_members tool and return the parsed JSON array of active fleet members." --silent', tempDir)).stdout.trim();
 
-    const initialList = await runCmd('bd list --json', tempDir);
-    const allBeads = JSON.parse(initialList.stdout || '[]');
-    const epicBead = allBeads.find((b) => b.title.includes('Epic:'));
-    const task1 = allBeads.find((b) => b.title.includes('registerMember'));
-    const task2 = allBeads.find((b) => b.title.includes('listMembers'));
+    if (!epicId || !task1Id || !task2Id) {
+        throw new Error(`[advanced-mock-runner-test] setup(${tempDirSuffix}): bd create --silent did not return an id for one or more beads (epicId=${JSON.stringify(epicId)}, task1Id=${JSON.stringify(task1Id)}, task2Id=${JSON.stringify(task2Id)}). tempDir=${tempDir}`);
+    }
 
-    await runCmd(`bd update ${task1.id} --parent ${epicBead.id}`, tempDir);
-    await runCmd(`bd update ${task2.id} --parent ${epicBead.id}`, tempDir);
+    await runCmd(`bd update ${task1Id} --parent ${epicId}`, tempDir);
+    await runCmd(`bd update ${task2Id} --parent ${epicId}`, tempDir);
+
+    const finalList = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
+    const epicBead = finalList.find((b) => b.id === epicId);
+    const task1 = finalList.find((b) => b.id === task1Id);
+    const task2 = finalList.find((b) => b.id === task2Id);
+    if (!epicBead || !task1 || !task2) {
+        throw new Error(`[advanced-mock-runner-test] setup(${tempDirSuffix}): bd list --json did not include one or more just-created beads (epicId=${epicId}, task1Id=${task1Id}, task2Id=${task2Id}). Found ${finalList.length} bead(s): ${JSON.stringify(finalList.map((b) => b.id))}. tempDir=${tempDir}`);
+    }
 
     // deploy.md / integ-test-playbook.md let runner.js's fs.existsSync probes
     // (via `node -e "require('fs').existsSync(...)"`) resolve to "found",
@@ -70,9 +84,15 @@ async function setupMinimal(tempDirSuffix, taskSpecs) {
     await fs.mkdir(tempDir, { recursive: true });
 
     await runCmd('bd init', tempDir);
-    await runCmd(`bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test."`, tempDir);
-    const epicList = JSON.parse((await runCmd('bd list --json', tempDir)).stdout || '[]');
-    const epicBead = epicList.find((b) => b.title.startsWith('Epic:'));
+    // `--silent` returns the created id directly, from the write just
+    // performed -- avoids a separate `bd list --json` + title match, which
+    // reads back through bd's embedded Dolt store and can lag behind a
+    // just-completed write on a cold/fresh environment (see setup() above).
+    const epicId = (await runCmd(`bd create -t epic "Epic: ${tempDirSuffix}" -d "Scenario epic for apra-fleet-unw.16 mock test." --silent`, tempDir)).stdout.trim();
+    if (!epicId) {
+        throw new Error(`[advanced-mock-runner-test] setupMinimal(${tempDirSuffix}): bd create --silent did not return an epic id. tempDir=${tempDir}`);
+    }
+    const epicBead = { id: epicId };
 
     const tasks = [];
     for (const spec of taskSpecs) {
