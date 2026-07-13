@@ -1019,13 +1019,21 @@ async function main() {
         // 'standard', 'premium') and must NOT use the old '-tier'-suffixed
         // wording (matched neither the server nor pricing.mjs's keys).
         // Fails loudly on a regression back to the pre-dv5.1 wording.
+        //
+        // NOTE: the CURRENT (fixed) wording deliberately quotes
+        // "cheap-tier"/"standard-tier"/"premium-tier" as a NEGATIVE example
+        // ("not 'cheap-tier'/...") to warn the planner away from that
+        // format, so a blanket substring-absence check would self-
+        // contradict. Instead this targets the OLD wording's specific
+        // phrase ("... is one of cheap-tier, standard-tier, premium-tier")
+        // literally, which the current wording never produces.
         check(
             p.includes("'cheap'") && p.includes("'standard'") && p.includes("'premium'"),
             `Planner prompt must name the exact tier keywords 'cheap', 'standard', 'premium': ${p}`
         );
         check(
-            !/cheap-tier|standard-tier|premium-tier/.test(p),
-            `Planner prompt must NOT use the old "-tier"-suffixed wording (cheap-tier/standard-tier/premium-tier): ${p}`
+            !/is one of cheap-tier, standard-tier, premium-tier/.test(p),
+            `Planner prompt must NOT use the old pre-dv5.1 phrasing ("is one of cheap-tier, standard-tier, premium-tier"): ${p}`
         );
     }
 

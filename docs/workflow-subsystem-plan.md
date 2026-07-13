@@ -157,6 +157,94 @@ resolution logic is delivery-mode-independent (it only reads
 vs repo files), reusing the existing `extractAsset()` dev fallback
 (install.ts:173-187).
 
+### 1.1 Reconsideration: `apra-fleet workflow <name>` vs. telling users to run `node` directly
+
+Raised by the project owner before sprint planning: is the launcher/subcommand
+worth building, or should the plan just document
+`node ~/.apra-fleet/workflows/<name>/<entry> [args]` and skip Section 3
+entirely? Both options assume the SAME install-time payload (Section 2's
+runtime tree + schemas dir) -- that part of the architecture is not in
+question, only whether a dedicated subcommand sits on top of it.
+
+**Pros / cons**
+
+| Dimension | `apra-fleet workflow <name>` (launcher) | Raw `node <path>` |
+|---|---|---|
+| "No Node install required" claim | Holds for its intended audience (non-dev machines, ops boxes, CI runners with no Node) -- the embedded runtime runs the workflow with zero system Node. | Does not merely "weaken" the claim for users who already have Node -- it **eliminates the claim** as a product capability. Raw-node is a fine escape hatch for people who already have Node, but as the *only* mechanism it fails exactly the audience this feature exists for. It is not "only undermined for users who already have Node"; it is *unusable* for users who don't, which is the whole point of an SEA binary. |
+| Discoverability/UX | `--list`, `--help`, uniform "workflow not found" error, tab-completion-friendly verb shape. | User must already know the exact installed path and entry filename; a typo'd path gives Node's raw `MODULE_NOT_FOUND` instead of an actionable message; no listing mechanism without inventing one anyway (which is most of the launcher's value). |
+| Maintenance burden | New file (`src/cli/workflow.ts`), argv-rewrite/self-heal logic, CI smoke tests -- real but small (Section 10, Phase 2, ~3 tasks). | Near zero new code -- but only because it silently pushes the "how do I find/run this" problem onto documentation and the user, not because the problem goes away. |
+| Interaction with the schema/dependency install already solved | Launcher sets `APRA_FLEET_SERVER_BIN` / `APRA_FLEET_SE_SCHEMAS_DIR` automatically (Section 5) -- a workflow author never has to know these env vars exist for the built-ins to work. | Still works IF the user (or workflow doc) sets the same two env vars, or the workflow ships its own `vendor/schemas` fallback (tier 3) -- auto-sprint happens to have this, but a bare user workflow that needs role schemas would silently get no schemas at all unless told to. The install-time payload doesn't change; only who is responsible for wiring it at run time does. |
+| Versioning story | `.installed.json` records the installed runtime/workflow version; the launcher can detect and warn on a binary/runtime mismatch (R10). | No version check exists or is proposed -- a user who runs a stale `node <path>` after `apra-fleet update` refreshed the built-ins gets whatever is on disk with no diagnostic if it's inconsistent. |
+| Command-family coherence | Fits a single `apra-fleet <verb>` mental model already used by `install`/`uninstall`/`update`/`run`. | Introduces a second, ungoverned invocation style (`node <long path>`) alongside the `apra-fleet` command family -- inconsistent with everything else in the CLI. |
+
+Net technical read: raw-node is not actually a lighter-weight *substitute* for
+the launcher's real job (making a workflow runnable with zero Node and zero
+manual env wiring) -- it is only lighter-weight as a *replacement claim*
+("run some node file") that quietly drops the requirement's hardest part.
+Where raw-node genuinely wins is that it costs nothing to also support,
+because the install payload (Section 2) already puts real, self-sufficient
+files on disk -- nothing about the launcher design prevents `node
+~/.apra-fleet/workflows/auto-sprint/bin/cli.mjs --help` from working today,
+and it should keep working.
+
+**Product-surface argument (project owner's point)**
+
+The owner's argument -- that `apra-fleet workflow <verb>` (list/run/check/...)
+establishes a coherent, extensible command family the way `git <verb>` /
+`docker <verb>` do -- is a real product-value point, not just aesthetics. It
+matters for reasons beyond taste:
+- **Forward extensibility with no new top-level surface.** `workflow list`,
+  `workflow check`, `workflow init` (scaffold a new user workflow from the
+  hello-world template) all fit under one verb without inventing
+  `apra-fleet list-workflows`, `apra-fleet check-workflow`, etc. -- the launcher
+  built in this plan is already the right seam for that growth.
+  Raw-node has no equivalent growth path; each new capability would need its
+  own bespoke script and its own doc section.
+  Note: this plan implements `--list`/`--help` as flags in v1 (Section 3),
+  not `workflow list` as a subcommand-of-a-subcommand -- both make the same
+  command-family argument. If the owner wants the `git`-style noun/verb form
+  now rather than flags, that is a small syntax change to Section 3, not a
+  structural one.
+- **One pattern to document/support, not N.** Every future workflow --
+  built-in or third-party -- is discovered, run, and errors the same way.
+  Support/docs cost stays flat as the number of workflows grows; raw-node
+  scales support cost linearly with the number of workflows (each needs its
+  own "here's the exact command" doc snippet).
+- **It does not conflict with the technical case -- it reinforces it.** The
+  launcher was already required to satisfy "no Node install"; the product
+  argument is a second, independent reason to build the same thing, not a
+  tradeoff against it.
+
+**Final recommendation: hybrid, launcher-primary, raw-node as a documented
+escape hatch.**
+
+Keep `apra-fleet workflow <name> [args]` exactly as designed in Sections 1-8
+as the primary, documented, tested path -- it is the only mechanism that
+satisfies the actual requirement (no system Node) and it is the correct
+product surface per the argument above. Additionally, explicitly document
+(not merely tolerate) that every installed workflow is a real file tree under
+`~/.apra-fleet/workflows/<name>/` and can be run directly with a system
+Node (`node ~/.apra-fleet/workflows/<name>/<entry> [args]`) for users who
+already have Node and want to skip the wrapper for debugging/scripting --
+this costs no extra code because Section 2's install payload is already
+self-sufficient on disk (runtime tree + schemas + workflow-local
+`vendor/schemas` fallback). `docs/authoring-workflows.md` (Section 4, Phase 3
+task 10) gains one short subsection stating this explicitly, including the
+caveat that raw-node invocation does not get the launcher's env-var
+auto-wiring, `--list`, version check, or friendly errors -- so it is
+positioned as an escape hatch, not an equally-supported alternative.
+
+**Structural impact on the rest of the plan: none.** The architecture
+decision (Section 1), file/asset inventory (Section 2), install/uninstall/
+update integration (Section 6), build pipeline changes (Section 7), CI
+verification (Section 8), risk register (Section 9), and the Phase 1-4 task
+breakdown (Section 10) are unchanged -- they already assumed a self-sufficient
+on-disk payload, which is what makes the escape hatch free. Only Section 3
+(CLI surface) and Section 4 (hello-world/authoring doc) gain the explicit
+"raw node also works, here's the caveat" documentation note; task 10 in
+Section 10 (docs) now explicitly includes this subsection in its acceptance
+criterion.
+
 ## 2. File/asset inventory
 
 Everything below is verified from actual imports (runner.js:1-8, cli.mjs:1-15,
@@ -249,6 +337,16 @@ apra-fleet workflow --help               Launcher help (does NOT swallow <name> 
   runtime + schemas from SEA assets on demand (same code path the installer
   uses), print one line saying so. This is what makes the CI smoke test
   possible without a full `install` run (which needs `claude` CLI etc.).
+- **Escape hatch (documented, not a launcher feature)**: every resolved
+  workflow is a real file tree at `~/.apra-fleet/workflows/<name>/`; a user
+  with a system Node can always run it directly, e.g.
+  `node ~/.apra-fleet/workflows/auto-sprint/bin/cli.mjs --help`. This is not
+  additional code -- Section 2's install payload is already self-sufficient
+  on disk -- but it does NOT get the launcher's env-var auto-wiring
+  (`APRA_FLEET_SERVER_BIN`, `APRA_FLEET_SE_SCHEMAS_DIR`), `--list`, or the
+  version-mismatch check (R10); document it plainly as a debug/power-user
+  path, not a first-class alternative to `apra-fleet workflow <name>`. See
+  Section 1.1 for the full pros/cons this decision is based on.
 
 ## 4. hello-world example (the authoring contract)
 
@@ -471,7 +569,9 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
     docs/npm-packaging.md, packages/apra-fleet-se/docs/cli-reference.md
     (schema/server resolution orders now include the installed-binary case).**
     AC: docs describe the Section 3/4/5 contracts exactly; install.md's
-    directory table lists the three new dirs; ASCII-only.
+    directory table lists the three new dirs; authoring-workflows.md includes
+    the Section 1.1/3 "raw node escape hatch" subsection with its caveats
+    (no env auto-wiring, no `--list`, no version check); ASCII-only.
 11. **[bug] (separate, non-blocking) npm-mode auto-sprint runtime imports
     broken in clean global install** (Section 0.1). Files:
     `scripts/bundle-se.mjs`, npm-publish smoke step.
