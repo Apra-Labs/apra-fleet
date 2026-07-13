@@ -1,15 +1,12 @@
 #!/usr/bin/env node
-// apra-fleet-unw2.5 -- mechanical regeneration of
-// test/fixtures/vendor-apra-pm-schemas/ from a real vendor/apra-pm/agents/
-// schemas/ checkout.
+// Mechanical regeneration of test/fixtures/vendor-apra-pm-schemas/ from a
+// real vendor/apra-pm/agents/schemas/ checkout.
 //
-// Why: that fixture directory is a byte-for-byte snapshot of a real
-// vendored checkout, used by contracts-schema-loader.test.mjs,
-// contracts-schema-observability.test.mjs, and
-// contracts-schema-vendor-consistency.test.mjs to exercise contracts.mjs's
-// loader/fallback/warning logic without depending on this checkout's own
-// (currently unbumped) vendor/apra-pm submodule pointer -- see the
-// TEMPORARY STATE note at the top of auto-sprint/contracts.mjs. Hand-
+// Why: that fixture directory is a byte-for-byte snapshot of the real
+// vendored schemas, used by contracts-schema-loader.test.mjs and
+// contracts-schema-observability.test.mjs to exercise contracts.mjs's
+// loader/fallback/warning logic without depending on the vendor/apra-pm
+// submodule being initialized in the environment running the test. Hand-
 // copying that snapshot invites silent drift; this script makes
 // regenerating it (and checking whether it has drifted) a single
 // mechanical, testable operation.
@@ -18,18 +15,14 @@
 //   node packages/apra-fleet-se/scripts/regen-vendor-schema-fixtures.mjs [--source <dir>] [--check]
 //
 //   --source <dir>  Real vendor/apra-pm/agents/schemas/ directory to copy
-//                    *.json files FROM. Defaults to the sibling-worktree
-//                    convention this repo's dev workflow currently uses
-//                    (../wt-unw13/vendor/apra-pm/agents/schemas relative to
-//                    the repo root -- see contracts.mjs's TEMPORARY STATE
-//                    note). Once vendor/apra-pm is bumped for real in this
-//                    checkout, pass --source vendor/apra-pm/agents/schemas
-//                    (or just rely on the default once this file's default
-//                    is updated to match).
+//                    *.json files FROM. Defaults to this repo's own
+//                    vendor/apra-pm submodule (vendor/apra-pm/agents/schemas
+//                    relative to the repo root). Pass --source to point at a
+//                    different checkout instead.
 //   --check          Do not write anything; report whether the destination
 //                     fixture is out of sync with --source and exit 1 if
-//                     so. Read-only -- safe to run against wt-unw13's
-//                     checkout without ever modifying it.
+//                     so. Read-only -- safe to run against any checkout
+//                     without ever modifying it.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
 const DEST_DIR = path.join(__dirname, '..', 'test', 'fixtures', 'vendor-apra-pm-schemas');
-const DEFAULT_SOURCE_DIR = path.join(REPO_ROOT, '..', 'wt-unw13', 'vendor', 'apra-pm', 'agents', 'schemas');
+const DEFAULT_SOURCE_DIR = path.join(REPO_ROOT, 'vendor', 'apra-pm', 'agents', 'schemas');
 
 /**
  * @param {string[]} argv - e.g. process.argv.slice(2)
@@ -62,7 +55,7 @@ export function parseArgs(argv) {
  * Reads every *.json file directly inside `sourceDir` (non-recursive) and
  * returns a map of filename -> raw file contents, byte-for-byte (no
  * reformatting). Pure/read-only -- safe to call against a directory (e.g.
- * wt-unw13's checkout) that must not be modified.
+ * a submodule checkout) that must not be modified.
  * @param {string} sourceDir
  * @returns {Record<string, string>}
  */

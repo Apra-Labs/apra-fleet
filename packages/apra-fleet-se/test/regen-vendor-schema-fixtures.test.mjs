@@ -5,17 +5,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readVendorSchemaFiles, diffAgainstDest, writeFixtures } from '../scripts/regen-vendor-schema-fixtures.mjs';
 
-// apra-fleet-unw2.5 -- tests for scripts/regen-vendor-schema-fixtures.mjs's
-// pure copy/diff mechanics, plus the actual acceptance criterion: the
-// checked-in test/fixtures/vendor-apra-pm-schemas/ snapshot matches what
-// the script would currently produce from a real vendored checkout
-// (wt-unw13's vendor/apra-pm/agents/schemas/, read-only -- this test never
-// writes to that worktree).
+// Tests for scripts/regen-vendor-schema-fixtures.mjs's pure copy/diff
+// mechanics, plus the actual acceptance criterion: the checked-in
+// test/fixtures/vendor-apra-pm-schemas/ snapshot matches what the script
+// would currently produce from this repo's real vendor/apra-pm submodule
+// checkout (read-only -- this test never writes to the submodule).
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
-const REAL_VENDOR_SOURCE_DIR = path.join(REPO_ROOT, '..', 'wt-unw13', 'vendor', 'apra-pm', 'agents', 'schemas');
+const REAL_VENDOR_SOURCE_DIR = path.join(REPO_ROOT, 'vendor', 'apra-pm', 'agents', 'schemas');
 
 describe('regen-vendor-schema-fixtures.mjs: pure copy mechanics', () => {
     let tmpSrc;
@@ -83,8 +82,8 @@ describe('regen-vendor-schema-fixtures.mjs: checked-in fixture consistency', () 
     const realSourceAvailable = fs.existsSync(REAL_VENDOR_SOURCE_DIR) && fs.statSync(REAL_VENDOR_SOURCE_DIR).isDirectory();
 
     test(
-        'AC: the checked-in fixture matches what the script would currently produce from the real vendored source (wt-unw13)',
-        { skip: realSourceAvailable ? false : `wt-unw13 vendored source not present at ${REAL_VENDOR_SOURCE_DIR} in this environment -- see contracts.mjs's TEMPORARY STATE note` },
+        'AC: the checked-in fixture matches what the script would currently produce from the real vendored submodule',
+        { skip: realSourceAvailable ? false : `vendor/apra-pm submodule not initialized at ${REAL_VENDOR_SOURCE_DIR} -- run: git submodule update --init` },
         () => {
             const diff = diffAgainstDest(REAL_VENDOR_SOURCE_DIR, FIXTURES_DIR);
             assert.deepStrictEqual(
