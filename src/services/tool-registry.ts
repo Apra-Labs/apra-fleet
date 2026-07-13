@@ -7,6 +7,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   // Tool schemas and handlers
   const { registerMemberSchema, registerMember } = await import('../tools/register-member.js');
   const { listMembersSchema, listMembers } = await import('../tools/list-members.js');
+  const { getMemberModelPricingSchema, getMemberModelPricing } = await import('../tools/get-member-model-pricing.js');
   const { removeMemberSchema, removeMember } = await import('../tools/remove-member.js');
   const { updateMemberSchema, updateMember } = await import('../tools/update-member.js');
   const { sendFilesSchema, sendFiles } = await import('../tools/send-files.js');
@@ -88,6 +89,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   // Core Member Management
   server.tool('register_member', 'Add a machine to the fleet. Use member_type "local" for this machine or "remote" for a machine reachable over SSH. Choose the AI provider the member will use for prompts. Optional: add tags for grouping and filtering members.', registerMemberSchema.shape, wrapTool('register_member', (input) => registerMember(input as any)));
   server.tool('list_members', 'List all fleet members and their current status. Use format="json" for structured data. Use tags=["gpu"] to filter to members that have ALL specified tags (AND semantics); omit tags to return all members.', listMembersSchema.shape, wrapTool('list_members', (input) => listMembers(input as any)));
+  server.tool('get_member_model_pricing', "Returns a member's cheap/standard/premium tier resolved to a concrete model and its per-1M-token price (prompt/completion), for real per-dispatch cost tracking instead of a tier-band estimate. A tier is null when its resolved model has no known price.", getMemberModelPricingSchema.shape, wrapTool('get_member_model_pricing', (input) => getMemberModelPricing(input as any)));
   server.tool('remove_member', 'Remove a member from the fleet.', removeMemberSchema.shape, wrapTool('remove_member', (input) => removeMember(input as any)));
   server.tool('update_member', "Change a member's name, connection details, working directory, AI provider, tags, or other settings.", updateMemberSchema.shape, wrapTool('update_member', (input) => updateMember(input as any)));
 
