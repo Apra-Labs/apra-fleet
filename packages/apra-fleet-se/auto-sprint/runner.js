@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import { createHash } from 'crypto';
-import { AgentOutputError, CommandError } from '@apralabs/apra-fleet-workflow';
+import { AgentOutputError, AgentDispatchError, CommandError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
@@ -1151,7 +1151,7 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError) {
+                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
@@ -1238,8 +1238,24 @@ export async function main(context) {
     // Sequential (not parallel) so the command log stays deterministic and
     // the very first dispatch of the run is still the branch-ensure.
     for (const member of branchEnsureMembers) {
+        // Two sequential command() calls, not a single `a && b` shell string:
+        // `&&` is a bash-ism that PowerShell 5.1 (Windows' default, pre-7.0)
+        // rejects outright ("The token '&&' is not a valid statement
+        // separator in this version"), breaking this phase on any Windows
+        // member. command() already throws on a non-zero exit by default (no
+        // failSoft here), so awaiting the fetch before the checkout
+        // reproduces `&&`'s fail-fast semantics -- if the fetch fails, the
+        // checkout is never attempted, on every OS/shell.
         await command(
-            `git fetch origin ${validated.baseBranch} --quiet && git checkout -B ${validated.branch} origin/${validated.baseBranch}`,
+            `git fetch origin ${validated.baseBranch} --quiet`,
+            {
+                member_name: member,
+                silent: true,
+                label: `Fetch '${validated.baseBranch}' on member '${member}'`,
+            }
+        );
+        await command(
+            `git checkout -B ${validated.branch} origin/${validated.baseBranch}`,
             {
                 member_name: member,
                 silent: true,
@@ -1294,7 +1310,18 @@ export async function main(context) {
                 publishState('beads', { tasks });
             }
         } catch (e) {
-            // ignore
+            // apra-fleet-nkg: this used to be a bare `catch (e) {}` -- a
+            // failure here (e.g. the orchestrator member transiently
+            // unreachable, a `bd list` hiccup) left the dashboard's Beads
+            // Tasks panel silently empty/stale with ZERO visible signal
+            // anywhere (not the log stream, not the viewer), often for the
+            // entire duration of a Plan round (this is only called once per
+            // round -- see the call sites above/below). Best-effort dashboard
+            // sync must never abort the sprint over a transient blip, so
+            // this still doesn't rethrow -- but it must at least be visible
+            // so a stale/empty panel is diagnosable instead of silently
+            // "just how it looks".
+            log(`updateDashboard: failed to refresh beads panel (non-fatal, will retry next update): ${e.message}`);
         }
     }
 
@@ -1479,7 +1506,7 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError) {
+                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
                     // Persistent non-JSON/non-schema-compliant output FAILS
                     // this plan round -- it must never be treated as an
                     // approval.
@@ -1609,7 +1636,7 @@ export async function main(context) {
                 );
                 log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
             } catch (err) {
-                if (err instanceof AgentOutputError) {
+                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
                 } else {
                     throw err;
@@ -1645,10 +1672,31 @@ export async function main(context) {
             // continueOnError: true so one doer streak's exception can never
             // abort sibling streaks mid-flight (the old parallel() call had
             // no such option and one throw killed the whole cycle).
+            //
+            // Per-member serialization: `doerPool[index % doerPool.length]`
+            // round-robins streaks across the doer pool, but when there are
+            // fewer members than streaks (most visibly single-member mode,
+            // doerPool.length === 1), two or more streaks resolve to the SAME
+            // member and `parallel()` below dispatches them concurrently
+            // anyway. The fleet server allows only one in-flight
+            // execute_prompt per member (inFlightAgents guard) -- every streak
+            // but the first to arrive gets rejected instantly with a
+            // "busy"/AgentDispatchError, deterministically, every time (not a
+            // flaky race). memberLocks below chains same-member dispatches
+            // into a queue (one in flight at a time per member) while leaving
+            // streaks assigned to DIFFERENT members fully concurrent -- true
+            // multi-member fleets see no behavior change since their locks
+            // are never contended.
+            const memberLocks = new Map();
             const streakOutcomes = [];
             await parallel(streaks, async (streak, index) => {
                 const beadIds = streak.map((b) => b.id);
                 const doerMember = doerPool[index % doerPool.length];
+                const priorTurn = memberLocks.get(doerMember) || Promise.resolve();
+                let releaseTurn;
+                memberLocks.set(doerMember, new Promise((resolve) => { releaseTurn = resolve; }));
+                await priorTurn;
+                try {
                 const feedbackForStreak = beadIds
                     .map((id) => perBeadFeedback.get(id))
                     .filter(Boolean)
@@ -1738,6 +1786,9 @@ export async function main(context) {
                     outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
                 });
                 await updateDashboard();
+                } finally {
+                    releaseTurn();
+                }
             }, { continueOnError: true });
 
             log(`Develop C${cycle} R${devRounds} streak outcomes: ${JSON.stringify(streakOutcomes.map((o) => ({ beadIds: o.beadIds, outcome: o.outcome })))}`);
@@ -1850,7 +1901,7 @@ export async function main(context) {
                     { member_name: getMemberForRole('deployer'), agentType: 'deployer', schema: deployerReport, model: FIXED_ROLE_TIER.deployer }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError) {
+                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
                 } else {
@@ -1876,7 +1927,7 @@ export async function main(context) {
                     { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner', schema: integReport, model: FIXED_ROLE_TIER['integ-test-runner'] }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError) {
+                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
                 } else {
@@ -2058,7 +2109,7 @@ export async function main(context) {
             { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review', model: FIXED_ROLE_TIER.reviewer }
         );
     } catch (err) {
-        if (err instanceof AgentOutputError) {
+        if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
             log(`Final Review: schema-repair exhausted, treating as FAIL: ${err.message}`);
             finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}` };
         } else {
@@ -2114,7 +2165,7 @@ export async function main(context) {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         }
     } catch (err) {
-        if (err instanceof AgentOutputError) {
+        if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
             log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
         } else {
             throw err;

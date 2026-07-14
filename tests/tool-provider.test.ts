@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import { provisionAuth } from '../src/tools/provision-auth.js';
@@ -62,8 +62,8 @@ describe('executePrompt — provider routing', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).toContain('claude response');
-    expect(result).toContain('sess-c');
+    expect(resultText(result)).toContain('claude response');
+    expect(resultText(result)).toContain('sess-c');
 
     // calls[0] = writePromptFile, calls[1] = main prompt command
     const cmd = mockExecCommand.mock.calls[1][0] as string;
@@ -81,7 +81,7 @@ describe('executePrompt — provider routing', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).toContain('gemini response');
+    expect(resultText(result)).toContain('gemini response');
 
     // calls[0] = writePromptFile, calls[1] = main prompt command
     const cmd = mockExecCommand.mock.calls[1][0] as string;
@@ -98,7 +98,7 @@ describe('executePrompt — provider routing', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).toContain('agy response');
+    expect(resultText(result)).toContain('agy response');
 
     // calls[0] = writePromptFile, calls[1] = main prompt command
     const cmd = mockExecCommand.mock.calls[1][0] as string;

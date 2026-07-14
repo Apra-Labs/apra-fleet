@@ -2,7 +2,7 @@
  * Surface-integration tests for execute_prompt substitutions (tests q-v from Task 1).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -89,7 +89,7 @@ describe('execute_prompt -- substitutions surface tests', () => {
       timeout_s: 5,
     });
 
-    expect(result).toContain('{{secure.NAME}}');
+    expect(resultText(result)).toContain('{{secure.NAME}}');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
@@ -112,7 +112,7 @@ describe('execute_prompt -- substitutions surface tests', () => {
     });
 
     // The SECURE_TOKEN_RE guard fires first, before substitution.
-    expect(result).toContain('{{secure.NAME}}');
+    expect(resultText(result)).toContain('{{secure.NAME}}');
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(vi.mocked(credentialResolve)).not.toHaveBeenCalled();
   });
@@ -141,7 +141,7 @@ describe('execute_prompt -- substitutions surface tests', () => {
       substitutions: { phase: '3', branch: 'feat/x' },
     });
 
-    expect(result).toContain('done');
+    expect(resultText(result)).toContain('done');
     // The CLI was launched (mockExecCommand was called)
     expect(mockExecCommand).toHaveBeenCalled();
   });
@@ -202,9 +202,9 @@ describe('execute_prompt -- substitutions surface tests', () => {
       substitutions: { branch: 'feat/x' }, // base_branch missing
     });
 
-    expect(result).toContain('execute_prompt: substitution failed');
-    expect(result).toContain('base_branch');
-    expect(result).not.toContain('feat/x'); // value must not appear in error
+    expect(resultText(result)).toContain('execute_prompt: substitution failed');
+    expect(resultText(result)).toContain('base_branch');
+    expect(resultText(result)).not.toContain('feat/x'); // value must not appear in error
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
@@ -222,8 +222,8 @@ describe('execute_prompt -- substitutions surface tests', () => {
       // no substitutions
     });
 
-    expect(result).toContain('done'); // underlying prompt succeeded
-    expect(result).toContain('branch'); // warning names the token
+    expect(resultText(result)).toContain('done'); // underlying prompt succeeded
+    expect(resultText(result)).toContain('branch'); // warning names the token
   });
 
   // (v) extra keys are silently ignored
@@ -240,7 +240,7 @@ describe('execute_prompt -- substitutions surface tests', () => {
       substitutions: { name: 'world', unused_a: 'ignored', unused_b: 'also ignored' },
     });
 
-    expect(result).toContain('done');
+    expect(resultText(result)).toContain('done');
     expect(mockExecCommand).toHaveBeenCalled();
   });
 });

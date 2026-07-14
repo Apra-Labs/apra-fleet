@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
 import { getStallDetector } from '../src/services/stall/index.js';
@@ -40,8 +40,8 @@ describe('executePrompt', () => {
     addAgent(member);
 
     const result = await executePrompt({ member_id: member.id, prompt: 'use {{secure.github_pat}} to auth', resume: false, timeout_s: 5 });
-    expect(result).toContain('{{secure.NAME}} token');
-    expect(result).toContain('execute_command');
+    expect(resultText(result)).toContain('{{secure.NAME}} token');
+    expect(resultText(result)).toContain('execute_command');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
@@ -50,7 +50,7 @@ describe('executePrompt', () => {
     addAgent(member);
 
     const result = await executePrompt({ member_id: member.id, prompt: 'auth with {{secure.my_token_123}} please', resume: false, timeout_s: 5 });
-    expect(result).toContain('{{secure.NAME}} token');
+    expect(resultText(result)).toContain('{{secure.NAME}} token');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
@@ -64,7 +64,7 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'authenticate using credential github_pat', resume: false, timeout_s: 5 });
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     expect(mockExecCommand).toHaveBeenCalled();
   });
 
@@ -78,8 +78,8 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).toContain('Hello world');
-    expect(result).toContain('sess-123');
+    expect(resultText(result)).toContain('Hello world');
+    expect(resultText(result)).toContain('sess-123');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
@@ -96,8 +96,8 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('/login');
-    expect(result).toContain('provision_llm_auth');
+    expect(resultText(result)).toContain('/login');
+    expect(resultText(result)).toContain('provision_llm_auth');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
@@ -119,7 +119,7 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
-    expect(result).toContain('recovered');
+    expect(resultText(result)).toContain('recovered');
     // 4 calls: writePromptFile + main (500) + retry (recovered) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
@@ -137,8 +137,8 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
-    expect(result).toContain('500');
-    expect(result).toContain('failed');
+    expect(resultText(result)).toContain('500');
+    expect(resultText(result)).toContain('failed');
     // 4 calls: writePromptFile + main (500) + retry (500) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
@@ -161,7 +161,7 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
-    expect(result).toContain('finally');
+    expect(resultText(result)).toContain('finally');
     // 5 calls: writePromptFile + main (stale) + stale-retry (500) + server-retry (ok) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(5);
   });
@@ -183,7 +183,7 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('fresh');
+    expect(resultText(result)).toContain('fresh');
     // 4 calls: writePromptFile + main (stale) + stale-retry (fresh) + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
   });
@@ -294,7 +294,7 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).toContain('Tokens: input=100 output=200');
+    expect(resultText(result)).toContain('Tokens: input=100 output=200');
   });
 
   it('does not append token line when usage is absent', async () => {
@@ -307,7 +307,7 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(result).not.toContain('Tokens:');
+    expect(resultText(result)).not.toContain('Tokens:');
     expect(getAgent(member.id)?.tokenUsage).toBeUndefined();
   });
 
@@ -350,8 +350,8 @@ describe('executePrompt', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('something unexpected happened');
-    expect(result).toContain('failed');
+    expect(resultText(result)).toContain('something unexpected happened');
+    expect(resultText(result)).toContain('failed');
     // 3 calls: writePromptFile + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
@@ -480,7 +480,7 @@ describe('kill-before-retry (T5)', () => {
 
     const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     // 4 calls: kill + writePromptFile + main + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(4);
     expect(mockExecCommand.mock.calls[0][0]).toContain('kill');
@@ -743,8 +743,8 @@ describe('concurrency guard: rejects a second dispatch while one is in flight (a
 
     const result = await executePrompt({ member_id: memberId, prompt: 'second dispatch', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('already running');
-    expect(result).toContain(member.friendlyName);
+    expect(resultText(result)).toContain('already running');
+    expect(resultText(result)).toContain(member.friendlyName);
     expect(mockExecCommand).not.toHaveBeenCalled();
     // The guard must not have cleared the ORIGINAL in-flight session's state.
     expect(inFlightAgents.has(memberId)).toBe(true);
@@ -773,8 +773,8 @@ describe('no-LLM members are rejected, never dispatched (apra-fleet-us9.14)', ()
 
     const result = await executePrompt({ member_id: memberId, prompt: 'do something', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('no-llm-member');
-    expect(result).toContain('execute_command');
+    expect(resultText(result)).toContain('no-llm-member');
+    expect(resultText(result)).toContain('execute_command');
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(inFlightAgents.has(memberId)).toBe(false);
   });
@@ -824,7 +824,7 @@ describe('MCP disconnect cleanup (T10)', () => {
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(result).toContain('aborted');
+    expect(resultText(result)).toContain('aborted');
     expect(inFlightAgents.has(memberId)).toBe(false);
     expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
     expect(vi.mocked(writeStatusline).mock.calls.some(

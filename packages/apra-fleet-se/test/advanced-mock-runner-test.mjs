@@ -915,11 +915,21 @@ async function main() {
     check(run1.result && run1.result.maxCycles === 5, `Run1 result did not expose maxCycles: ${JSON.stringify(run1.result)}`);
 
     // apra-fleet-unw.14: git semantics -- ensure/create the sprint branch is
-    // the very first command dispatched (before any bd/node command), and
+    // the very first commands dispatched (before any bd/node command), and
     // push + PR-raise are the last two commands dispatched (finalization).
+    // apra-fleet-zzu: the fetch + checkout used to be one `a && b` shell
+    // string (a single commandLog entry) -- split into two sequential
+    // command() calls so this phase works on Windows PowerShell 5.1, which
+    // rejects `&&` outright. Assert the same fetch-then-checkout semantics
+    // across the now-separate first two commandLog entries instead of one
+    // combined string.
     check(
-        run1.commandLog.length >= 3 && /^git fetch /.test(run1.commandLog[0]) && run1.commandLog[0].includes('git checkout -B auto-sprint/mock-sprint'),
-        `Expected first commandLog entry to be the sprint-branch-ensure git command, got: ${JSON.stringify(run1.commandLog[0])}`
+        run1.commandLog.length >= 4 && /^git fetch /.test(run1.commandLog[0]),
+        `Expected first commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[0])}`
+    );
+    check(
+        run1.commandLog[1] && run1.commandLog[1].includes('git checkout -B auto-sprint/mock-sprint'),
+        `Expected second commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[1])}`
     );
     const pushIdx = run1.commandLog.length - 2;
     const prIdx = run1.commandLog.length - 1;

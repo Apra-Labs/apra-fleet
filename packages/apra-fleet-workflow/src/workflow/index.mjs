@@ -3,10 +3,10 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
-import { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
 
-export { WorkflowError, MemberNotFoundError, AgentOutputError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
 const ajv = new Ajv({ strict: false });
 
@@ -770,22 +770,49 @@ export class FleetWorkflow extends EventEmitter {
             try {
                 const result = await this.fleetApi.executePrompt(payload);
 
+                // execute_prompt's dispatch-level structuredContent (added
+                // alongside the display text -- see src/tools/execute-prompt.ts)
+                // reports real per-call token usage AND classifies dispatch
+                // failures (busy member, non-zero CLI exit, transport
+                // exception) distinctly from a genuine LLM response. Prefer it;
+                // fall back to result.usage directly for older servers that
+                // predate this field.
+                const structured = result && result.structuredContent;
+                const reportedUsage = (structured && structured.usage) || result.usage;
+
                 // apra-fleet-unw.4: never fabricate usage. If the fleet result
                 // didn't report real token usage, both usage and cost are
                 // explicitly null -- the viewer renders "n/a" and excludes the
                 // activity from cost totals rather than showing fiction. This
                 // applies per-attempt: every repair dispatch is accounted
                 // individually, exactly like the original attempt.
-                const hasRealUsage = !!(result.usage && typeof result.usage.total_tokens === 'number');
-                if (!hasRealUsage) {
-                    result.usage = null;
-                }
+                const hasRealUsage = !!(reportedUsage && typeof reportedUsage.total_tokens === 'number');
+                result.usage = hasRealUsage ? reportedUsage : null;
 
                 const cost = hasRealUsage ? await this._resolveCost(opts, result.usage, budget) : null;
                 if (cost !== null) {
                     budget._spent += cost;
                 }
                 const duration = Date.now() - activityMeta.startTime;
+
+                // Dispatch-level failure (busy member, non-zero exit, transport
+                // exception): the text is never the LLM's actual answer, so
+                // feeding it to the schema/JSON extractor below would always
+                // fail and misreport as "LLM failed to return parseable JSON".
+                // Surface it as a typed, distinctly-classified error instead,
+                // and never retry it through the bounded schema-repair loop --
+                // repair re-asks the SAME prompt with "here's why your JSON was
+                // invalid" framing, which cannot fix a dispatch failure and
+                // both wastes attempts and produces a misleading error message.
+                // The caller's own top-level retry (e.g. the streak-dispatch
+                // "retrying once" wrapper in apra-fleet-se's runner.js) still
+                // applies on top of this.
+                if (structured && structured.isError) {
+                    const text = result && result.content && result.content.length > 0 ? result.content[0].text : '';
+                    console.error(`[Agent API Error]`, text);
+                    this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id } });
+                }
 
                 if (result && result.content && result.content.length > 0) {
                     const text = result.content[0].text;
@@ -826,7 +853,20 @@ export class FleetWorkflow extends EventEmitter {
                         // recorded as its own activity:end (success: false)
                         // so the journal/dashboard show it as a distinct step
                         // before the repair attempt that follows.
-                        this.emit('activity:end', { ...activityMeta, error: `Schema-invalid output, retrying (repair ${attempt + 1}/${maxRepairs}): ${errorsText}`, output: text, duration, usage: result.usage, cost, success: false });
+                        const repairMsg = `Schema-invalid output, retrying (repair ${attempt + 1}/${maxRepairs}): ${errorsText}`;
+                        // apra-fleet-wei: this branch used to ONLY emit
+                        // activity:end (visible via /state, i.e. the
+                        // dashboard) with no console/text-log line at all --
+                        // only the terminal failure paths (member-not-found,
+                        // repairs-exhausted, dispatch errors) call
+                        // console.error. A caller watching just the workflow
+                        // log stream had no way to see an intermediate repair
+                        // attempt fail, even when it eventually recovers on a
+                        // later repair (as most of these do) -- the failure
+                        // was only ever visible by separately querying the
+                        // dashboard's structured activity data.
+                        console.error(`[Agent API Error]`, repairMsg);
+                        this.emit('activity:end', { ...activityMeta, error: repairMsg, output: text, duration, usage: result.usage, cost, success: false });
                         currentPrompt = buildRepairPrompt(initialPrompt, text, errorsText);
                         continue;
                     }

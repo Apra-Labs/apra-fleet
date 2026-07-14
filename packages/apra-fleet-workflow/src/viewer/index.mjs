@@ -95,7 +95,16 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     .tab-btn:hover { background: rgba(255,255,255,0.05); }
     .tab-btn.active { color: #fff; background: rgba(255,255,255,0.1); }
     .tab-content { display: none; }
-    .tab-content.active { display: block; }
+    /* apra-fleet-m0c: both #tab-core and #tab-beads also carry .panel
+       (flex column, flex:1, overflow:hidden), which is what lets
+       .stream-list's flex:1 + overflow-y:auto bound its height and scroll
+       on its own. A plain block display here had higher specificity
+       (.tab-content.active = 2 classes vs .panel = 1) and silently
+       overrode that to a plain block, so the whole page grew to fit every
+       activity instead of the inner list scrolling -- collapsing items was
+       the only way to shrink total height. Flex here still wins on
+       specificity but no longer conflicts with .panel's own flex layout. */
+    .tab-content.active { display: flex; }
   </style>
 </head>
 <body>
@@ -298,15 +307,25 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
                             }
                         }
                         
+                        // Token count and model tier are two DISTINCT pieces of
+                        // information -- previously only tokensHtml existed,
+                        // so a finished agent activity with no usage data (see
+                        // apra-fleet-13o) rendered a bare "n/a" that was easy
+                        // to misread as a missing model tier, when the model
+                        // tier was never displayed at all. modelHtml surfaces
+                        // act.model (e.g. "premium"/"standard", already
+                        // present on every agent activity) explicitly.
                         let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : (act.type === 'agent' && !act.isRunning ? \`<span style="color:var(--text-muted)">n/a</span>\` : '');
+                        const modelHtml = (act.type === 'agent' && act.model) ? \`<span style="color:var(--text-muted)">[\${escapeHtml(act.model)}]</span>\` : '';
                         const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
                         const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
-                        
+
                         evEl.innerHTML = \`
                           <summary class="activity-header">
                             <span class="log-time">\${t}</span>
                             <span class="activity-title"><strong>\${escapeHtml(act.type.toUpperCase())}</strong>: \${escapeHtml(act.label)} \${memberHtml}</span>
                             <div class="activity-meta">
+                              \${modelHtml}
                               \${tokensHtml}
                               \${act.duration ? formatTime(act.duration) : ''} \${badge}
                               <span class="toggle-icon"></span>

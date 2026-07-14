@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
 import { respondToMessage } from '../src/tools/respond-to-message.js';
@@ -74,8 +74,8 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     expect(JSON.parse(respondResult)).toEqual({ ok: true });
 
     const result = await promptPromise;
-    expect(result).toContain('interactive-member');
-    expect(result).toContain('all done, here is the summary');
+    expect(resultText(result)).toContain('interactive-member');
+    expect(resultText(result)).toContain('all done, here is the summary');
     expect(inFlightAgents.has(memberId)).toBe(false);
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
@@ -126,7 +126,7 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     await vi.waitFor(() => expect(inFlightAgents.has(memberId)).toBe(true));
 
     const secondResult = await executePrompt({ member_id: memberId, prompt: 'second', resume: false, timeout_s: 5 });
-    expect(secondResult).toContain('already running');
+    expect(resultText(secondResult)).toContain('already running');
 
     const msgid = notification.mock.calls[0][0].params.meta.msgid;
     await respondToMessage({ reply_to: msgid, content: 'first response' });
@@ -151,8 +151,8 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
 
     const result = await executePrompt({ member_id: memberId, prompt: 'nobody answers', resume: false, timeout_s: 0.2 });
 
-    expect(result).toContain('Timed out');
-    expect(result).toContain('interactive-timeout');
+    expect(resultText(result)).toContain('Timed out');
+    expect(resultText(result)).toContain('interactive-timeout');
     expect(inFlightAgents.has(memberId)).toBe(false);
   }, 10000);
 
@@ -167,8 +167,8 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     // The subprocess path was taken (execCommand called, normal success
     // result), not interactive routing (which never touches execCommand).
     expect(mockExecCommand).toHaveBeenCalled();
-    expect(result).toContain('subprocess-only-member');
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('subprocess-only-member');
+    expect(resultText(result)).toContain('ok');
   });
 
   it('falls through to the subprocess path even WITH a live session, for a non-Claude provider (apra-fleet-us9.9: mode b is Claude-only)', async () => {
@@ -196,6 +196,6 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
 
     expect(mockExecCommand).toHaveBeenCalled();
     expect(notification).not.toHaveBeenCalled();
-    expect(result).toContain('gemini-with-live-session');
+    expect(resultText(result)).toContain('gemini-with-live-session');
   });
 });

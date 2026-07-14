@@ -356,8 +356,11 @@ describe('runner.js mock-level execution', () => {
         assert.strictEqual(argsState.data.maxCycles, 1);
 
         // Git semantics: branch-ensure at start, push+PR at finalization.
+        // apra-fleet-zzu: fetch + checkout are two sequential command()
+        // calls (not one `a && b` shell string, which PowerShell 5.1
+        // rejects) -- assert across the two now-separate entries.
         assert.match(spy.commandLog[0], /^git fetch origin develop/);
-        assert.ok(spy.commandLog[0].includes('git checkout -B auto-sprint/reach-test origin/develop'));
+        assert.ok(spy.commandLog[1].includes('git checkout -B auto-sprint/reach-test origin/develop'));
         const last2 = spy.commandLog.slice(-2);
         assert.match(last2[0], /^git push -u origin auto-sprint\/reach-test/);
         assert.match(last2[1], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'node:os';
-import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from '../test-helpers.js';
 import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { stopPrompt } from '../../src/tools/stop-prompt.js';
@@ -124,7 +124,7 @@ describe('Cancellation — integration (T13)', () => {
 
     const result = await executePrompt({ member_id: memberId, prompt: 'go', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('resumed');
+    expect(resultText(result)).toContain('resumed');
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });

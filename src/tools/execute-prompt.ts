@@ -30,6 +30,19 @@ import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
+export interface ExecutePromptStructured {
+  isError?: boolean;
+  reason?: 'busy' | 'dispatch_failed' | 'nonzero_exit';
+  usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
+  sessionId?: string;
+  [key: string]: unknown;
+}
+
+export interface ExecutePromptResult {
+  text: string;
+  structuredContent?: ExecutePromptStructured;
+}
+
 export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
@@ -170,7 +183,7 @@ async function executePromptInteractive(
   }
 }
 
-export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string> {
+export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
   if (SECURE_TOKEN_RE.test(input.prompt)) {
     return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
   }
@@ -208,7 +221,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   }
 
   if (inFlightAgents.has(agent.id)) {
-    return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
+    return {
+      text: `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`,
+      structuredContent: { isError: true, reason: 'busy' },
+    };
   }
 
   // No-LLM members (apra-fleet-us9.14) are plain command executors -- neither
@@ -431,7 +447,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
     _epExitCode = result.code;
     if (result.code !== 0) {
-      return buildFailureMessage(agent.friendlyName, result, provider);
+      return {
+        text: buildFailureMessage(agent.friendlyName, result, provider),
+        structuredContent: { isError: true, reason: 'nonzero_exit' },
+      };
     }
 
     // Session-id assertion: returned id must match the one we minted/resumed
@@ -472,12 +491,21 @@ Tokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}`
 ---
 session: ${parsed.sessionId}`;
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
-    return output;
+    return {
+      text: output,
+      structuredContent: {
+        ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+        ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+      },
+    };
   } catch (err: any) {
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
     _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     _epError = err.message;
-    return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
+    return {
+      text: `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`,
+      structuredContent: { isError: true, reason: 'dispatch_failed' },
+    };
   } finally {
     extra?.signal?.removeEventListener('abort', abortHandler);
     const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';

@@ -63,6 +63,27 @@ export class AgentOutputError extends WorkflowError {
 }
 
 /**
+ * Thrown when execute_prompt's dispatch itself failed (member busy, transport
+ * exception, non-zero CLI exit) BEFORE any real LLM content was produced --
+ * as opposed to AgentOutputError, which means the LLM responded but the
+ * response was empty/unparseable/schema-invalid. Distinguishing these two
+ * matters because a dispatch failure is not a schema problem: retrying it
+ * through the bounded schema-repair loop (which re-asks the SAME broken
+ * prompt with "here's why your JSON was invalid" framing) wastes repair
+ * attempts on a failure class repair can never fix, and produces a
+ * misleading "LLM failed to return parseable JSON" message for what was
+ * actually a busy-member rejection or a transport-level exception.
+ * Classified today via structuredContent.isError/reason on execute_prompt's
+ * response (see src/tools/execute-prompt.ts); never retried via schema
+ * repair (see the `attempt === 0` short-circuit in agent()).
+ */
+export class AgentDispatchError extends WorkflowError {
+    constructor(message, opts = {}) {
+        super(message, { code: 'AGENT_DISPATCH_FAILED', ...opts });
+    }
+}
+
+/**
  * Thrown when command() receives an `isError: true` result from the fleet
  * API.
  */
