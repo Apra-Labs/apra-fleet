@@ -255,20 +255,44 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
                             const dateObj = new Date(ev.time || Date.now());
                             const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
                             
-                            if (ev.msg && ev.msg.includes('\\n')) {
-                                const lines = ev.msg.split('\\n');
-                                const firstLine = lines[0];
-                                const rest = lines.slice(1).join('\\n');
+                            // apra-fleet-aqq: a log message needs truncation
+                            // + drill-down whenever it would run past one row
+                            // -- not just multiline ones. A single-line
+                            // JSON.stringify'd verdict (e.g. the Plan
+                            // Reviewer's) has no '\\n' at all but can easily
+                            // run past a thousand characters, and used to
+                            // render via the plain .log-msg path below, which
+                            // has no length cap and just wraps across many
+                            // rows with the full text always visible inline
+                            // (no truncation, but also nothing to "drill
+                            // into" -- it was simply always fully expanded).
+                            // Both cases now share the same truncate-with-
+                            // ellipsis + expandable-details treatment; only
+                            // how the preview/full-text split is computed
+                            // differs (by line vs. by character count).
+                            const LOG_PREVIEW_CHARS = 200;
+                            const isMultiline = ev.msg && ev.msg.includes('\\n');
+                            const isLongSingleLine = ev.msg && !isMultiline && ev.msg.length > LOG_PREVIEW_CHARS;
+                            if (isMultiline || isLongSingleLine) {
+                                let firstLine, rest;
+                                if (isMultiline) {
+                                    const lines = ev.msg.split('\\n');
+                                    firstLine = lines[0];
+                                    rest = lines.slice(1).join('\\n');
+                                } else {
+                                    firstLine = ev.msg.slice(0, LOG_PREVIEW_CHARS);
+                                    rest = ev.msg.slice(LOG_PREVIEW_CHARS);
+                                }
                                 evEl.innerHTML = \`<details class="event-activity log-multiline">
                                   <summary class="activity-header">
                                     <span class="log-time">\${t}</span>
-                                    <span class="activity-title" style="font-family:monospace; font-size:12px; color:#d4d4d8;">
+                                    <span class="activity-title" style="font-family:monospace; font-size:12px; color:#d4d4d8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
                                       \${escapeHtml(firstLine)} <em style="color:#a1a1aa">...</em>
                                     </span>
                                     <div class="activity-meta"><span class="toggle-icon"></span></div>
                                   </summary>
                                   <div class="activity-body">
-                                    <div class="activity-child" style="color:#d4d4d8;">\${escapeHtml(rest)}</div>
+                                    <div class="activity-child" style="color:#d4d4d8;">\${escapeHtml(isMultiline ? rest : ev.msg)}</div>
                                   </div>
                                 </details>\`;
                             } else {
