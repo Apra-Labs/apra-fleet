@@ -1148,6 +1148,10 @@ export async function main(context) {
                         agentType: 'reviewer',
                         schema: reviewerVerdict,
                         model: FIXED_ROLE_TIER.reviewer,
+                        // apra-fleet-aw8: reviewer inspects a real diff/branch,
+                        // not a quick prompt -- same 300s-default gap as doer
+                        // dispatch, observed live tripping on real review work.
+                        timeout_s: 900,
                     }
                 );
             } catch (err) {
@@ -1735,6 +1739,11 @@ export async function main(context) {
                         label: `Streak [${beadIds.join(', ')}]`,
                         schema: doerReport,
                         model: doerModel,
+                        // apra-fleet-aw8: doer streaks run a full impl+test+commit
+                        // cycle, categorically heavier than a one-shot prompt --
+                        // the fleet's generic execute_prompt default (300s) was
+                        // observed live tripping repeatedly on real work.
+                        timeout_s: 900,
                     }
                 );
 
