@@ -51,8 +51,39 @@
 </head>
 <body>
 
-<!-- 1 -->
+<!-- 1 : KB workflow -->
 <div class="slide on">
+  <div class="kicker">How it works -- the knowledge lifecycle</div>
+  <h1>How the fleet <span class="hl">stores</span> and <span class="hl">reuses</span> knowledge</h1>
+
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--green);margin:6px 0 6px;">STORE&nbsp;&mdash;&nbsp;during and after every sprint</div>
+  <div class="pipe">
+    <div class="stage s-doer"><div class="n">1. DISCOVER</div><div class="d">planner / doer / reviewer hit a durable fact while working (a convention, a constraint, a gotcha)</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-plan"><div class="n">2. kb_capture</div><div class="d">saved immediately, clamped to <b>INFERRED</b> -- no agent can self-certify</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-rev"><div class="n">3. REVIEWER</div><div class="d">independent verdict on the code that demonstrates the fact</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-kb"><div class="n">4. KB AGENT</div><div class="d"><b>kb_promote</b> to <b>CONFIRMED</b> only if the reviewer APPROVED. The curator.</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-plan"><div class="n">5. kb_export</div><div class="d"><code>.fleet/kb-canonical.json</code> <b>auto-commits to git</b> -- the shareable bible</div></div>
+  </div>
+
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--blue);margin:18px 0 6px;">RETRIEVE&nbsp;&mdash;&nbsp;at the start of the next sprint / session / clone</div>
+  <div class="pipe">
+    <div class="stage s-plan"><div class="n">6. kb_session_prime</div><div class="d">planner/doer prime on the task's symbols before touching a file</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-kb"><div class="n">7. CONFIRMED hits</div><div class="d">prior learnings surface (a cold clone seeds from the git bible)</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-doer"><div class="n">8. REUSE</div><div class="d">agent trusts the fact, <b>skips re-reading the code</b>, picks a cheaper model</div></div>
+  </div>
+
+  <div class="subtle">Trust tiers, enforced in code: UNVERIFIED (raw / harvested) &rarr; INFERRED (captured, unreviewed) &rarr; CONFIRMED (reviewer-approved). Only kb_promote mints CONFIRMED; the bible carries only CONFIRMED.</div>
+  <div class="note">SAY: "This is the whole engine. Agents capture what they learn as they work; a reviewer's approval is what promotes it to trusted; the KB Agent curates and commits it to your repo; and the next session retrieves and reuses it. Store on the top row, retrieve on the bottom."</div>
+</div>
+
+<!-- 2 -->
+<div class="slide">
   <div class="kicker">Apra Fleet</div>
   <h1>The Amnesia Test</h1>
   <div class="big">Every AI coding tool is brilliant and <b>forgets everything</b> the moment a session ends. It re-reads the same files, re-derives the same facts, and repeats the same mistakes -- every single time.<br><br>
