@@ -254,6 +254,16 @@ own TypeScript output:
   `packages/apra-fleet-se/docs/cli-reference.md` for the full schema- and
   server-resolution order.
 
+  Note: the SEA/installed-binary delivery mode (`apra-fleet workflow <name>`,
+  see `docs/authoring-workflows.md`) adds a further tier to both resolution
+  orders ahead of the ones described above -- `APRA_FLEET_SE_SCHEMAS_DIR`
+  (set by the workflow launcher to `~/.apra-fleet/schemas`) is schema
+  resolution's tier 1, and the launcher's HTTP-singleton-probe-first /
+  stdio-self-spawn-fallback order (`docs/adr-workflow-server-resolution.md`)
+  applies before `resolveFleetServerCommand()`'s four stdio tiers. This does
+  not change the npm/`dist/` bundling described in this section; it only
+  applies when running via the installed SEA binary.
+
 **What is NOT shipped:** `src/` (TypeScript source), `tsconfig.json`, build
 scripts (`scripts/build-sea.mjs`, `scripts/gen-sea-config.mjs`,
 `scripts/package-sea.mjs`, `scripts/install-hooks.mjs`, `scripts/bundle-se.mjs`,

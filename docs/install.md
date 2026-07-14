@@ -67,6 +67,9 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.apra-fleet/bin/apra-fleet[.exe]` | The fleet binary |
 | `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
 | `~/.apra-fleet/scripts/` | Helper scripts |
+| `~/.apra-fleet/node_modules/` | Shared on-disk workflow runtime (`@apralabs/apra-fleet-workflow`, `@apralabs/apra-fleet-client`, vendored `ajv` + deps) that `apra-fleet workflow <name>` and any user-authored workflow resolve bare specifiers against -- see `docs/authoring-workflows.md` |
+| `~/.apra-fleet/schemas/` | Installed agent role verdict/input JSON schemas (17 files); the `APRA_FLEET_SE_SCHEMAS_DIR` default the workflow launcher sets |
+| `~/.apra-fleet/workflows/` | Installed workflows (`.installed.json` + one directory per workflow, built-in or user-authored); run with `apra-fleet workflow <name> [args...]` -- see `docs/authoring-workflows.md` |
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
 | `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
@@ -97,6 +100,27 @@ the `apra-fleet` MCP server to be reachable (it spawns/connects to it over
 stdio the same way `apra-fleet` itself does); see
 `packages/apra-fleet-se/docs/cli-reference.md` for its server- and
 schema-resolution order across dev/bundled/standalone layouts.
+
+### The `apra-fleet workflow <name>` subcommand
+
+`install` also populates `~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`,
+and `~/.apra-fleet/workflows/` (see the directory table above) so that
+`apra-fleet workflow <name> [args...]` -- the SEA-binary workflow runner --
+can run built-in workflows (`auto-sprint`, `hello-world`) or any
+user-authored workflow with zero system Node required. See
+`docs/authoring-workflows.md` for the full authoring contract.
+
+The workflow launcher and the `apra-fleet` MCP server it talks to are
+always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
+`APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
+server: `http` (default) attaches to the already-running installed-service
+singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
+nothing; `stdio` self-spawns a private server the same way the `auto-sprint`
+bin does. See `docs/adr-workflow-server-resolution.md` for the full
+resolution order (this same order also governs where role schemas resolve
+from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the
+launcher to `~/.apra-fleet/schemas`, is now tier 1 of the schema resolution
+described in `packages/apra-fleet-se/docs/cli-reference.md`).
 
 **What `install` does NOT do:**
 

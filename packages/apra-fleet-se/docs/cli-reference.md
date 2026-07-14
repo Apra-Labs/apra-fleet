@@ -106,6 +106,33 @@ fails loud with an actionable error naming both env overrides and both
 attempted paths, instead of deferring to `StdioTransport.start()`'s opaque
 spawn failure.
 
+### The installed-binary case: `APRA_FLEET_TRANSPORT` and HTTP-singleton attach
+
+The four-tier resolution above is `resolveFleetServerCommand()`'s
+stdio-only view. It is now one branch of a larger, shared resolution order
+(`@apralabs/apra-fleet-client`'s `server-resolution` subpath export,
+`resolveFleetServerConnection()`) that both this CLI and the
+`apra-fleet workflow <name>` launcher (`src/cli/workflow.ts`, see
+`docs/authoring-workflows.md` and `docs/adr-workflow-server-resolution.md`)
+call:
+
+1. **`APRA_FLEET_TRANSPORT`** (`http` | `stdio`, default `http`) -- forces
+   the mode. `stdio` goes straight to tier 3 below; `http` requires a
+   healthy HTTP singleton or fails loudly (no silent stdio fallback).
+   `APRA_FLEET_SERVER_CMD`/`APRA_FLEET_SERVER_BIN` remain stdio-only escape
+   hatches: setting either (with `APRA_FLEET_TRANSPORT` unset or not
+   `http`) is treated as an explicit stdio request.
+2. **HTTP singleton probe (default path)** -- `checkRunningInstance()`
+   (`src/services/singleton.ts`) checks `~/.apra-fleet/data/server.json`
+   for a live pid + a passing `/health` GET; on success, attach via
+   `StreamableHttpTransport` and spawn nothing.
+3. **stdio self-spawn fallback** -- only when no healthy HTTP singleton is
+   found: the four-tier `resolveFleetServerCommand()` resolution above,
+   feeding `StdioTransport`.
+
+See `docs/adr-workflow-server-resolution.md` for the full rationale; this
+is binding on any future change to `resolveFleetServerCommand()`.
+
 The auto-sprint runner script (`auto-sprint/runner.js`, loaded at runtime via
 `engine.executeFile()` -- read from disk and fed to the workflow engine, not
 imported/bundlable) is resolved the same layout-aware way by
@@ -119,7 +146,11 @@ Separately, `contracts.mjs`'s `resolveSchemasDir()` (apra-fleet-bun) resolves
 where the eight sprint roles' verdict/input JSON schemas are loaded from,
 independent of the server-command resolution above:
 
-1. `APRA_FLEET_SE_SCHEMAS_DIR` env override, if set.
+1. `APRA_FLEET_SE_SCHEMAS_DIR` env override, if set. In the installed SEA
+   binary's `apra-fleet workflow <name>` launcher, this is tier 1 in
+   practice: the launcher sets it to `~/.apra-fleet/schemas` whenever it is
+   unset (see `docs/authoring-workflows.md` Section 4/7), so `contracts.mjs`
+   itself requires no code change for the installed-binary case.
 2. `dist/agents/schemas/` -- populated by the root package's `scripts/vendor-pm.mjs`
    at `prepublishOnly` (the same artifact `dist/auto-sprint.mjs` ships next to).
 3. `packages/apra-fleet-se/vendor/schemas/` -- a package-local copy inside
