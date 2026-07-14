@@ -1,168 +1,144 @@
-# Handoff: getting `auto-sprint` running against `apra-fleet-7pm`
+# Handoff: `auto-sprint` bug-fix pass against `apra-fleet-7pm` run
 
-Status as of 2026-07-13. This doc exists so a fresh session can pick up exactly
-where this one left off without re-deriving any of the diagnosis below.
+Status as of 2026-07-13. This doc exists so a fresh session can pick up
+without re-deriving the diagnosis below. Supersedes the earlier version of
+this doc (the "get a green run going" goal from earlier today is DONE --
+see history below).
 
-## Goal
+## Current state (HEAD)
 
-Run `apra-fleet-se`'s auto-sprint engine, single-member on `fleet-reorg`,
-against beads epic `apra-fleet-7pm` (the SEA-binary workflow-runner subsystem
-epic, 14 tasks, built from `docs/workflow-subsystem-plan.md`).
+- Branch `feat/fleet-reorg`, HEAD `08105eb`, working tree clean.
+- Binary rebuilt and installed at v0.3.5_08105e; server running locally
+  (`apra-fleet.exe start`, http://127.0.0.1:7523/mcp). `fleet_status` shows
+  21/23 members online.
+- All 3 test suites green at HEAD: root vitest 2215/2215 (+18 skipped),
+  `apra-fleet-workflow` 112/112, `apra-fleet-se` 222/222.
 
-## Done and committed on `feat/fleet-reorg`
+## What happened today (in order)
 
-- `docs/workflow-subsystem-plan.md` corrected: the "Hard invariant" section
-  previously claimed `apra-fleet workflow <name>` always self-spawns its own
-  MCP server child. Corrected to split by transport -- stdio self-spawns,
-  streamableHTTP (the actual product default) instead connects to the
-  already-running local singleton service. Added risk **R13** for the
-  resulting gap in `resolveFleetServerCommand()` (stdio-only, no HTTP
-  branch). Commit `1dec81c`.
-- `.mcp.json` fixed: was configured for stdio self-spawn (`node dist/index.js
-  run`), which immediately exits when the HTTP singleton is already running
-  ("apra-fleet already running... -- exiting"), leaving the session with no
-  fleet MCP tools at all. Switched to `{"type": "http", "url":
-  "http://localhost:7523/mcp"}`. Commit `33e7e86`.
-- `skills/fleet/beads.md` accuracy fixes: removed a false "`bd init` is
-  idempotent" claim (it is NOT -- re-running it on a repo with an existing
-  `.beads/` recreates the DB and discards local issue state; use `bd
-  bootstrap` instead), fixed misleading `dep add <child-id> <parent-id>`
-  naming (renamed to `<blocked-id> <blocker-id>` -- unrelated to `--parent`,
-  which means epic/task nesting), fixed a nonexistent `--note` flag (real
-  flag is `--notes` / `bd note`), documented the missing P4 priority tier.
-  Commit `e9941b2`.
-- **`apra-fleet-7ll` fix (the big one)**: `execute_command`'s MCP response
-  always formats output as `Exit code: N\n<output>` display text
-  (`src/tools/execute-command.ts`, by design, for human/LLM-facing
-  dispatch). But `FleetWorkflow.command()`
-  (`packages/apra-fleet-workflow/src/workflow/index.mjs`) returned that text
-  verbatim to callers expecting raw stdout -- every `bd ... --json` call
-  dispatched through a REAL fleet member (not a test mock) failed to
-  `JSON.parse`. This broke the auto-sprint engine's very first real
-  (non-mocked) run, ever, confirmed live.
-  Fix: `execute_command` now returns `{ text, structuredContent:
-  { exitCode, stdout, stderr } }` -- `text` (display, with the prefix) is
-  UNCHANGED for LLM-facing dispatch; `structuredContent` is a new additive
-  machine-readable channel. `wrapTool()` in `tool-registry.ts` generically
-  supports both shapes. No client-library plumbing needed -- `callTool()`
-  already passes through the full raw MCP response. `FleetWorkflow.command()`
-  now prefers `structuredContent.stdout`, falling back to the legacy text
-  field for older servers. Test mocks across `apra-fleet-se`/root test
-  suites updated to replicate the real shape (previously returned clean
-  stdout directly -- an unrealistic mock that let this bug ship
-  undetected). Full suites green: root 2215/2215, `apra-fleet-se` 222/222,
-  `apra-fleet-workflow` 112/112. Commit `0b878fc`, CI green on all 3 OSes.
-- Beads epic **`apra-fleet-7pm`** created (14-task DAG covering the plan
-  doc's Sections 1-10 / Phases 1-4) via the `planner` agent, reviewed via
-  `plan-reviewer`, 3 real findings fixed directly in beads: R9/R10
-  version-mismatch mitigation added to task `.7`, dynamic-`import()` fix
-  applied to task `.2`'s acceptance criteria, model-tier bumped from
-  `haiku` to `sonnet` on tasks `.11`/`.14`.
-- 3 remote fleet members migrated from password to key-based auth:
-  `fleet-rev`, `fleet-win11`, `fleet-mac15` (via `setup_ssh_key`).
-  `rport-bb` skipped -- offline (`ECONNREFUSED`).
-- Binary rebuilt (`npm run build:binary` -> `v0.3.5_0b878f`) and installed
-  at user scope (`./dist/apra-fleet-installer-win-x64.exe install --force`).
-  No admin privileges needed or used -- everything lives under
-  `C:\Users\<user>\.apra-fleet\` / `.claude\`. The ONE step that does need
-  elevated rights, registering a persistent Windows Scheduled Task so the
-  server auto-starts on login (`schtasks /create ... /sc onlogon`), fails
-  with "Access is denied" in this environment and is skipped harmlessly --
-  the server was started manually instead (`apra-fleet.exe start`). This is
-  a standing, separate, low-priority gap: the server will not survive a
-  reboot/logout until scheduled-task registration is fixed or done manually
-  with elevated rights.
+1. Merged `apra-pm` PR #21, bumped the `vendor/apra-pm` submodule pin,
+   rebuilt/installed the binary, and got a real (non-mocked) `auto-sprint`
+   run going against beads epic `apra-fleet-7pm` on member `fleet-reorg`.
+2. While that sprint ran, acted as a live bug scribe per user instruction:
+   watched the dashboard/viewer and the auto-sprint HTTP API (`/state`,
+   `/events`) and filed every observed issue as a beads bug -- **record
+   only, no fixing** during this phase.
+3. User manually stopped the sprint, then said: **fix all filed bugs in
+   priority order P1/P2/P3; flag anything too complex.**
+4. All P1/P2/P3 bugs were fixed (list below), verified with the 3 full
+   test suites, committed (`51df121`, `08105eb`), and merged into
+   `feat/fleet-reorg` per explicit instruction ("merge everything to
+   feat/fleet-reorg branch") -- including recovering one commit that had
+   landed on a stray `feat/fleet-workflow-subsystem` checkout via a clean
+   `git merge --ff-only`.
+5. User also asked for `apra-fleet-aqq` (P4, "should be simple") to be
+   fixed -- done, `08105eb`.
+6. Binary rebuilt and reinstalled with all of the above (`build:binary` ->
+   `install --force` -> `apra-fleet.exe start`), confirmed live via
+   `fleet_status`.
 
-## Open, NOT yet merged -- this is what's actually blocking a green run
+## Bugs fixed (commits `51df121`, `08105eb`)
 
-**`apra-pm` PR #21**: https://github.com/Apra-Labs/apra-pm/pull/21
+- **`apra-fleet-7b0`/`jkw`** (root cause, spans 3 files) -- dispatch-level
+  agent failures (busy guard, nonzero exit, exception) were not
+  distinguished from bad-LLM-JSON schema failures, so the workflow engine
+  retried them via the schema-repair loop instead of failing cleanly, and
+  concurrent same-member dispatch had no serialization. Fixed by: adding a
+  `structuredContent` channel to `execute_prompt`'s MCP response
+  (`src/tools/execute-prompt.ts`, same pattern as the earlier
+  `execute_command` fix), a new `AgentDispatchError` class
+  (`packages/apra-fleet-workflow/src/workflow/errors.mjs`) so the engine's
+  `agent()` method classifies dispatch failures correctly and never
+  schema-repair-retries them, and a per-member async lock
+  (`memberLocks` Map) in the auto-sprint runner's streak-dispatch loop
+  (`packages/apra-fleet-se/auto-sprint/runner.js`) to serialize concurrent
+  calls to the same member.
+- **`apra-fleet-13o`** (cost always $0.000) -- `execute-prompt.ts` computed
+  real token usage but never returned it in a structured field; same root
+  gap as `7b0`. Fixed by the same `structuredContent` change (usage now
+  threaded through to `FleetWorkflow.agent()` and the viewer).
+- **`apra-fleet-m0c`/`5lj`** (no scroll in activity view / dashboard not
+  auto-refreshing) -- single shared root cause: CSS specificity bug in the
+  viewer, `.tab-content.active { display: block; }` silently overrode
+  `.panel`'s `display: flex`, breaking the nested flex/overflow scroll
+  chain. Fixed in `packages/apra-fleet-workflow/src/viewer/index.mjs`.
+- **`apra-fleet-wei`** (silent schema-repair failures, no console output) --
+  the `attempt < maxRepairs` branch in `workflow/index.mjs` was missing the
+  `console.error` call its sibling branches had. Added.
+- **`apra-fleet-zzu`** ("Ensure Sprint Branch" PowerShell error) -- runner.js
+  used a combined `git fetch ... && git checkout ...` command, which fails
+  under PowerShell 5.1 (no `&&`). Split into two sequential `command()`
+  calls.
+- **`apra-fleet-0ak`** (model tier always shown as n/a) -- viewer now
+  renders `[model_name]` badge next to token count when available.
+- **`apra-fleet-nkg`** (silent dashboard-refresh failures) -- empty
+  `catch (e) { /* ignore */ }` around the beads-panel refresh replaced with
+  a logged, non-fatal warning.
+- **`apra-fleet-aqq`** (P4, long single-line log messages not truncated) --
+  extended the viewer's existing multiline-truncation logic to also cover
+  long single-line messages (200-char preview + expandable `<details>`),
+  same fix applied to all agent types, not just reviewer.
 
-Fixes two bugs in the `pm` skill's agent definitions (a separate repo,
-vendored into `apra-fleet-reorg` via the `vendor/apra-pm` submodule pin):
+## Deferred, left open in beads -- explicit user calls, no action needed
 
-1. **`agents/plan-reviewer.md` criterion 9** told the reviewer to run bare
-   `bd ready` and flag any feature/sprint-goal that appears as "dependencies
-   wired backwards." This is structurally impossible to satisfy: `bd dep add
-   <epic> <child>` is rejected by the CLI outright ("epics can only block
-   other epics, not tasks"), so an epic can NEVER be wired to wait on its own
-   children -- it will always appear in a bare `bd ready` scan (which also
-   lists ready work across the whole database, not just the DAG under
-   review). **Confirmed live**: this produced a false CHANGES_NEEDED against
-   the real, correctly-wired `apra-fleet-7pm` epic, and the auto-sprint run
-   below failed because of exactly this, after exhausting its 3-round
-   planning-retry cap (`SprintPlanRejectedError`, clean exit, no hung
-   process). The fix replaces the check with a scoped equivalent: `bd list
-   --parent <scope> --ready --json` should be non-empty whenever open tasks
-   remain under the reviewed scope.
-2. **`agents/harvester.md` Step 5** closed every P3/P4 "deferred" issue with
-   `--reason="deferred to next sprint"` -- this defeats its own stated goal,
-   since a closed issue drops out of `bd list --status=open`/`bd ready` and
-   the next sprint's planner never sees it. Fixed to leave them open.
+- **`apra-fleet-4yr`** -- Stop-button uses 2 native OS dialogs (confirm +
+  info), user wants a modernized in-app confirmation instead of the
+  "ugly" native ones. Explicitly deferred ("really cosmetic").
+- **`apra-fleet-9ub`** -- pause/resume feature for auto-sprint runs (as
+  opposed to hard stop). Explicitly deferred by user as a backlog idea
+  needing more design thought before scheduling.
+- **`apra-fleet-1cb`** (P3, from the earlier handoff) -- some
+  `apra-fleet-se` test mocks conflate nonzero shell exit with MCP-level
+  `isError: true`; not confirmed to cause a real runner.js bug. Still just
+  filed for investigation, not investigated.
+- **`apra-fleet-adl`** (P3, from the earlier handoff) -- `pm` skill's
+  `planner.md`/`plan-reviewer.md` docs use literal model names instead of
+  the `cheap`/`standard`/`premium` tier vocabulary; auto-sprint's Plan
+  phase self-heals this today but it's not guaranteed to always.
+- **`apra-fleet-3ns.6`** -- still open, superseded by `apra-fleet-7pm.3`
+  per the epic's own description; nobody has closed it yet
+  (`plan-reviewer` criterion-7 duplicate-work warning). Low priority,
+  cosmetic bookkeeping only.
 
-The running binary's vendored `pm` skill/agents come from `vendor/apra-pm`'s
-**pinned commit** in this repo, which predates PR #21. Rebuilding the binary
-today does NOT pick up this fix -- the submodule pin must move first.
+## Test-infra notes worth keeping
 
-## Also surfaced by the last run (real, not a tool bug)
+- `executePrompt()` now returns `string | { text, structuredContent }`.
+  Tests must read results via the `resultText()` helper from
+  `tests/test-helpers.ts`, not raw `.toContain()` on the return value.
+  Already fixed across all affected test files at HEAD -- if you add a new
+  test that calls `executePrompt()` directly, use `resultText(result)`.
+- Golden-transcript snapshot tests
+  (`packages/apra-fleet-se/test/golden-transcript*.test.mjs`) are
+  regenerable via `UPDATE_GOLDEN=1 node --test <file>` -- used once today
+  for the `zzu` git-command-split fix (clean `seq` +1 shift only, verified
+  by diff).
+- Long-running background test suites (`run_in_background: true`) were
+  observed getting killed mid-run for no clear reason today. Foreground
+  `Bash` calls with a large explicit `timeout` (e.g. 600000ms) completed
+  reliably every time instead -- prefer that pattern for full-suite runs
+  until this is understood better. (Not confirmed root-caused; may be
+  harness reaping idle-perceived background jobs.)
 
-`apra-fleet-3ns.6` ("SEA binary: embed new auto-sprint as SEA assets") is
-still open and covers the same scope as `apra-fleet-7pm.3`. The epic's own
-description already says it should be closed as superseded, but nobody has
-done it -- `plan-reviewer` flagged this as a legitimate duplicate-work risk
-(criterion 7 WARN).
-
-## Filed bugs, P3, not blocking, for later
-
-- `apra-fleet-1cb` -- several `apra-fleet-se` test mocks conflate "shell
-  command exited nonzero" with MCP-level `isError: true`; real
-  `execute-command.ts` does not do this (nonzero exit is just data on a
-  successful dispatch). Not confirmed to cause an actual runner.js bug yet;
-  filed for investigation.
-- `apra-fleet-adl` -- `pm` skill's `planner.md`/`plan-reviewer.md` write/read
-  task model metadata using literal Claude model names (`opus`/`sonnet`)
-  instead of the `cheap`/`standard`/`premium` tier vocabulary
-  `apra-fleet-se`'s `runner.js` actually expects (established in
-  `apra-fleet-dv5`). Auto-sprint's own internal Plan phase caught and
-  silently rewrote this on the last run -- it self-healed this time, but
-  cost a wasted planning round, and there's no guarantee it always will.
-
-## Next steps to get a green run
-
-1. Merge `apra-pm` PR #21 -> `main`.
-2. In `apra-fleet-reorg`: bump the `vendor/apra-pm` submodule pin to that
-   new commit (`cd vendor/apra-pm && git checkout main && git pull`, then
-   `cd ../.. && git add vendor/apra-pm && git commit`), push to
-   `feat/fleet-reorg`, verify CI green.
-3. `npm run build:binary`
-4. `./dist/apra-fleet-installer-win-x64.exe install --force` then
-   `apra-fleet.exe start` (manual start needed -- see the scheduled-task
-   caveat above).
-5. `bd close apra-fleet-3ns.6 --reason "superseded by apra-fleet-7pm"`
-   (clears the criterion-7 duplicate-work warning).
-6. Retry:
-   ```bash
-   node packages/apra-fleet-se/bin/cli.mjs \
-     -i apra-fleet-7pm \
-     -m fleet-reorg \
-     -b feat/fleet-workflow-subsystem \
-     -B feat/fleet-reorg \
-     --goal P1/P2 \
-     --budget 50 \
-     --viewer-port 8090
-   ```
-
-## Standing constraints to respect while doing the above
+## Standing constraints (unchanged from before)
 
 - Never run `bd init` on a repo that already has `.beads/` (destructive).
 - Keep CI green on `feat/fleet-reorg` at all times; verify every push.
 - `feat/fleet-workflow-subsystem` should be cut FROM `feat/fleet-reorg`
   (`--base feat/fleet-reorg`), never re-target `--branch feat/fleet-reorg
-  --base main` -- that would `git checkout -B` and rewind the existing
-  branch's ~30 commits of divergence back to `main`.
+  --base main`.
 - Multi-member auto-sprint is not supported today for genuinely separate
-  checkouts (`fleet-dev`, `fleet-dev2`, etc.) -- `checkMemberTopology()`
-  refuses to start unless all configured members share an identical git
-  HEAD (a verified shared workspace). Stick to single-member (`fleet-reorg`)
-  until the deferred cross-member bd/git sync layer exists
+  checkouts -- `checkMemberTopology()` refuses to start unless all
+  configured members share an identical git HEAD. Stick to single-member
+  (`fleet-reorg`) until the deferred cross-member bd/git sync layer exists
   (`docs/plan.md` section 5 / `docs/architecture.md` "Multi-member
   topology").
+- The server does not auto-start on reboot/logout in this environment
+  (Windows Scheduled Task registration fails without admin rights). Start
+  manually with `apra-fleet.exe start` after any reboot.
+
+## Suggested next steps (not yet requested by user)
+
+- Re-run `auto-sprint` against `apra-fleet-7pm` now that the P1-P3 blockers
+  are fixed, to see if it can get further than Develop Cycle 1 Round 1.
+- Consider tackling `apra-fleet-1cb`/`adl` (P3s) or designing `9ub`
+  (pause/resume) if/when the user wants to continue this track.
