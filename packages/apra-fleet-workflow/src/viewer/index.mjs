@@ -138,7 +138,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       `).join('\\n')}
     </div>
   </div>
-  ${dashboardExtensions.map(ext => `<script>\\n${ext.js}\\n</script>`).join('\\n')}
+  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\\n')}
   <script>
     let globalState = null;
     function switchTab(id) {
