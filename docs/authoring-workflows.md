@@ -125,12 +125,40 @@ This logic lives in exactly one place -- `@apralabs/apra-fleet-client`'s
 `server-resolution` subpath export -- and both `apra-fleet workflow` and
 the `auto-sprint` CLI call it; do not reimplement it in your workflow.
 
-To connect from your own workflow code, copy the transport/initialize
-sequence pattern used by `packages/apra-fleet-se/bin/cli.mjs:471-486`:
+### Recommended: `connectFleet()`
+
+`server-resolution.mjs` exports a `connectFleet()` helper that already does
+resolution + transport construction + start + the mode-correct handshake in
+one call (a stdio connection needs a manual `initialize` +
+`notifications/initialized` pair; an HTTP connection does not, because
+`StreamableHttpTransport.start()` performs that handshake internally as
+part of its POST/session-id exchange -- sending the manual pair again on
+HTTP would double-initialize). Prefer this for new workflow code:
+
+```js
+import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
+
+const { mcpClient, fleetApi, mode } = await connectFleet({ env: process.env });
+
+// fleetApi is an ApraFleet(mcpClient) wrapper; mcpClient.request(...) also works directly.
+```
+
+A workflow that never needs the fleet server (like `hello-world`) can skip
+this entirely -- there is no requirement to connect.
+
+### Lower-level variant: `resolveFleetServerConnection()`
+
+If you need to construct the transport yourself (for example, to pass
+transport-specific options `connectFleet()` does not expose), call
+`resolveFleetServerConnection()` directly and build the transport and
+handshake from the resolved `mode`. The handshake step below is
+**mode-conditional** -- only run it for `mode === 'stdio'`, since the HTTP
+transport already performed its own handshake inside `transport.start()`:
 
 ```js
 import { resolveFleetServerConnection } from '@apralabs/apra-fleet-client/server-resolution';
-import { StdioTransport, StreamableHttpTransport, McpClient } from '@apralabs/apra-fleet-client';
+import { StdioTransport, StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
+import { McpClient } from '@apralabs/apra-fleet-client/client';
 
 const resolution = await resolveFleetServerConnection({ env: process.env });
 const transport = resolution.mode === 'http'
@@ -139,18 +167,17 @@ const transport = resolution.mode === 'http'
 await transport.start();
 
 const mcpClient = new McpClient(transport);
-await mcpClient.request('initialize', {
-  protocolVersion: '2024-11-05',
-  capabilities: {},
-  clientInfo: { name: '<your-workflow-name>', version: '1.0.0' },
-});
-await transport.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+if (resolution.mode === 'stdio') {
+  await mcpClient.request('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: '<your-workflow-name>', version: '1.0.0' },
+  });
+  await transport.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+}
 
 // mcpClient.request(...) / an ApraFleet(mcpClient) wrapper from here on.
 ```
-
-A workflow that never needs the fleet server (like `hello-world`) can skip
-this entirely -- there is no requirement to connect.
 
 ## 6. Importing the shared engine/client
 
