@@ -170,6 +170,77 @@ Two guards enforce the supported contract instead of silently misbehaving:
 1. **Branch-ensure everywhere** (N4): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
 2. **Topology precondition** (N4): `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. It compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained). Single-member sprints skip the check (nothing to compare). Matching HEADs at start is a best-effort shared-workspace heuristic, not a proof of ongoing shared state -- the latter needs the deferred sync layer.
 
+## Workflow Subsystem (SEA-embedded workflow runner)
+
+`apra-fleet workflow <name>` runs a self-contained script (an ESM entry point
+under `workflows/<name>/`) against a live fleet connection, from inside the
+single-executable-application (SEA) binary -- no separate Node install and no
+unpacking to a temp directory required. `auto-sprint` is itself shipped as one
+of these built-in workflows rather than as a bespoke subcommand, so the
+launcher, the packaging, and the docs only need to solve this problem once.
+
+**Two always-separate processes.** The workflow launcher (`apra-fleet
+workflow`, `auto-sprint`) and the `apra-fleet` MCP server are never merged
+into one process. This is a hard boundary, not an optimization detail --
+see `docs/adr-workflow-server-resolution.md` for the ADR and its explicit
+scope guard against reopening it.
+
+**Server connection resolution is a single shared helper**, not duplicated
+per consumer. `@apralabs/apra-fleet-client/server-resolution`
+(`packages/apra-fleet-client/src/client/server-resolution.mjs`) implements
+one resolution order used identically by `src/cli/workflow.ts` and
+`packages/apra-fleet-se/bin/cli.mjs`:
+
+1. `APRA_FLEET_TRANSPORT` forced override (`http` fails loud with no
+   singleton rather than silently falling back to a private server; `stdio`
+   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to self-spawn).
+2. Probe for a healthy HTTP singleton (`checkRunningInstance()` -- the same
+   pid + `/health` check the installed service already uses for
+   startup-dedup) and attach with zero spawned processes. This is the
+   default, steady-state path.
+3. Fall back to stdio self-spawn (the four-tier command resolution
+   `resolveFleetServerCommand()` already had) only when no healthy
+   singleton is found.
+
+The rationale for one shared helper over two copies: a launcher that merely
+mirrored the old stdio-only `resolveFleetServerCommand()` would always
+self-spawn a private server even when a healthy HTTP singleton already
+existed, doubling running servers and splitting state. Duplicating the
+resolution order in two languages (TS launcher, MJS auto-sprint) was
+rejected because it guarantees drift between the two copies over time; see
+the ADR for the full tradeoff writeup.
+
+**Workflow entry contract:** a workflow is a directory under `workflows/`
+containing a `workflow.json` (name, entry, description) and an entry file
+that is either self-executing ESM or exports `main(args)` / `run(args)` /
+a default export. The launcher sets two env vars for every workflow run --
+`APRA_FLEET_SERVER_BIN` and `APRA_FLEET_SE_SCHEMAS_DIR` -- and never
+clobbers a value the caller already set. See `docs/authoring-workflows.md`
+for the full contract, including the raw-node escape hatch and how a
+workflow should import the shared engine/client packages.
+
+**Entry-path escape prevention is security-critical, not incidental:** the
+launcher resolves a workflow's `entry` against its own directory and
+rejects any resolution that escapes it (checked via `path.relative` plus
+`..`/absolute-path detection) before ever executing the file. A workflow
+manifest is not a trusted-by-construction input.
+
+**Packaging:** the workflow runtime, agent schemas, and built-in workflows
+(including auto-sprint) are embedded as SEA assets by
+`scripts/gen-sea-config.mjs`, proven viable by an earlier spike that
+dynamic `import()` of on-disk ESM works from inside a SEA main script on
+all three target OSes.
+
+**Known incomplete as of this sprint (feat/fleet-workflow-subsystem):** the
+epic `apra-fleet-7pm` shipped Phases 1-2 partially -- the launcher itself
+(`src/cli/workflow.ts`), the resolution ADR, and docs landed -- but Phase 1
+task 3 (`install.ts` additive workflow-install step) was left mid-flight as
+WIP commits with its owning issue still open, and Phases 3-4 (uninstall
+`--skill workflows`, update-flow re-install, build-binary smoke tests, the
+regression guard, and the auto-sprint-as-built-in-workflow e2e test) were
+not started. Treat `apra-fleet workflow` as not yet installable or
+uninstallable end-to-end until those land.
+
 ## PM Skill Submodule
 
 The PM skill and its four agent definitions (planner, plan-reviewer, doer, reviewer) are vendored from the [apra-pm](https://github.com/Apra-Labs/apra-pm) repository via a git submodule at `vendor/apra-pm/`. At build time, `scripts/vendor-pm.mjs` copies the skill and agent files into `dist/`. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`). For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation.
