@@ -1,0 +1,80 @@
+[
+  {
+    "env": "A",
+    "sprint": "sprint1",
+    "collected_at": "2026-07-13T11:23:24.765Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-a",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-a",
+    "git": {
+      "available": true,
+      "commit_count": 2,
+      "recent": [
+        {
+          "hash": "b487b12b7e3f20420f900bc373c8ecb29e895120",
+          "subject": "bd init: initialize beads issue tracking"
+        },
+        {
+          "hash": "147dfe49c5ce4675a4a8f22565e08f55f68e3440",
+          "subject": "chore: fresh sandbox copy of fleet-e2e-toy for Env A"
+        }
+      ],
+      "notes": []
+    },
+    "progress": {
+      "found": false,
+      "path": null,
+      "totals": null,
+      "by_role": {},
+      "doer_model_mix": [],
+      "notes": [
+        "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-a -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json"
+      ]
+    },
+    "kb": null,
+    "bible": null,
+    "usage": null,
+    "notes": [
+      "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-a -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json",
+      "Env A: skipping KB/bible/usage collection -- released v0.3.4 has no KB/code-intelligence layer"
+    ]
+  },
+  {
+    "env": "A",
+    "sprint": "sprint2",
+    "collected_at": "2026-07-13T11:24:10.846Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-a",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-a",
+    "git": {
+      "available": true,
+      "commit_count": 2,
+      "recent": [
+        {
+          "hash": "b487b12b7e3f20420f900bc373c8ecb29e895120",
+          "subject": "bd init: initialize beads issue tracking"
+        },
+        {
+          "hash": "147dfe49c5ce4675a4a8f22565e08f55f68e3440",
+          "subject": "chore: fresh sandbox copy of fleet-e2e-toy for Env A"
+        }
+      ],
+      "notes": []
+    },
+    "progress": {
+      "found": false,
+      "path": null,
+      "totals": null,
+      "by_role": {},
+      "doer_model_mix": [],
+      "notes": [
+        "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-a -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json"
+      ]
+    },
+    "kb": null,
+    "bible": null,
+    "usage": null,
+    "notes": [
+      "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-a -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json",
+      "Env A: skipping KB/bible/usage collection -- released v0.3.4 has no KB/code-intelligence layer"
+    ]
+  }
+]
