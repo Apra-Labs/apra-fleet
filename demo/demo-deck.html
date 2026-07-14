@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Apra Fleet -- The Amnesia Test (demo deck)</title>
+<style>
+  :root{--bg:#0f1117;--panel:#161b26;--border:#232b3b;--text:#e2e8f0;--dim:#94a3b8;--faint:#64748b;
+    --green:#22c55e;--green-bg:#0a1f12;--amber:#fbbf24;--red:#f87171;--red-bg:#1f0f0f;--blue:#60a5fa;--purple:#a78bfa;--gold:#f59e0b;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden;}
+  .slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;
+    padding:6vh 9vw;opacity:0;transition:opacity .35s;}
+  .slide.on{display:flex;opacity:1;}
+  .kicker{font-size:13px;letter-spacing:.14em;font-weight:700;text-transform:uppercase;color:var(--faint);margin-bottom:18px;}
+  h1{font-size:44px;line-height:1.1;margin-bottom:20px;font-weight:700;}
+  h1 .hl{color:var(--green);} h1 .rd{color:var(--red);}
+  .big{font-size:20px;line-height:1.6;color:var(--dim);max-width:900px;}
+  .big b{color:var(--text);}
+  ul{list-style:none;margin-top:12px;} li{font-size:19px;line-height:2;color:var(--dim);padding-left:28px;position:relative;}
+  li:before{content:"\2192";position:absolute;left:0;color:var(--blue);}
+  li b{color:var(--text);}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:12px;max-width:1000px;}
+  .col{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px 24px;}
+  .col.old{border-color:#4c1d1d;} .col.new{border-color:#14532d;}
+  .col h3{font-size:16px;margin-bottom:14px;} .col.old h3{color:var(--red);} .col.new h3{color:var(--green);}
+  .col .row{font-size:16px;line-height:1.9;color:var(--dim);}
+  .col .row .v{float:right;font-weight:700;} .col.old .v{color:var(--red);} .col.new .v{color:var(--green);}
+  .stat{font-size:64px;font-weight:800;color:var(--green);line-height:1;}
+  .stat.rd{color:var(--red);}
+  .statrow{display:flex;gap:60px;margin:24px 0;flex-wrap:wrap;}
+  .statrow .s{text-align:center;} .statrow .lab{font-size:14px;color:var(--faint);margin-top:8px;max-width:180px;}
+  .note{position:absolute;bottom:4vh;left:9vw;right:9vw;font-size:14px;color:var(--faint);
+    border-top:1px solid var(--border);padding-top:12px;line-height:1.5;}
+  .note b{color:var(--amber);}
+  .bugbox{background:#1c1405;border:1px solid #6b4f0f;border-radius:12px;padding:22px 26px;max-width:960px;font-size:18px;line-height:1.6;color:var(--dim);margin-top:8px;}
+  .bugbox b{color:var(--gold);}
+  code{background:#1c2333;padding:2px 8px;border-radius:5px;font-size:.85em;color:#c4d3f0;}
+  .nav{position:absolute;bottom:3vh;right:3vw;font-size:13px;color:var(--faint);}
+  .hint{position:absolute;top:3vh;right:3vw;font-size:12px;color:var(--faint);}
+  .term{background:#0a0d13;border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-family:Consolas,monospace;font-size:16px;line-height:1.8;max-width:920px;margin-top:10px;}
+  .term .p{color:var(--green);} .term .k{color:var(--purple);} .term .o{color:var(--dim);}
+</style>
+</head>
+<body>
+
+<div class="slide on">
+  <div class="kicker">Apra Fleet</div>
+  <h1>The Amnesia Test</h1>
+  <div class="big">Every AI coding tool is brilliant and <b>forgets everything</b> between sessions.<br>
+  We ran the <b>same task twice on the same codebase</b> -- once on our last release, once on the new build -- to show the difference a fleet that <span style="color:var(--green)">remembers</span> makes.</div>
+  <div class="note">SAY: "This is a real head-to-head. Same repo, same two features, same machine. Only the build differs."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">The setup</div>
+  <h1>Two environments, one experiment</h1>
+  <div class="cols">
+    <div class="col old"><h3>Env A -- v0.3.4 (released)</h3>
+      <div class="row">Knowledge Bank<span class="v">none</span></div>
+      <div class="row">Code intelligence<span class="v">none</span></div>
+      <div class="row">Install steps<span class="v">10</span></div>
+      <div class="row">Delivers the features?<span class="v" style="color:var(--dim)">yes</span></div>
+    </div>
+    <div class="col new"><h3>Env B -- current build</h3>
+      <div class="row">Knowledge Bank<span class="v">yes</span></div>
+      <div class="row">Code intelligence<span class="v">gitnexus</span></div>
+      <div class="row">Install steps<span class="v">11</span></div>
+      <div class="row">Delivers the features?<span class="v">yes + learns</span></div>
+    </div>
+  </div>
+  <div class="note">SAY: "Both builds finish the work. The 11th install step -- 'setting up Knowledge Bank and code intelligence' -- is the whole story. Watch what it buys us."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">The tasks (identical for both)</div>
+  <h1>Two sprints, back to back</h1>
+  <ul>
+    <li><b>Sprint 1 -- Note archiving:</b> add an archived flag, archive/unarchive endpoints, exclude archived from the default listing.</li>
+    <li><b>Sprint 2 -- Pagination:</b> paginate the listing -- and it <b>must compose with the archived filter sprint 1 just built.</b></li>
+  </ul>
+  <div class="big" style="margin-top:24px">Sprint 2 deliberately touches the <b>same listing code</b> sprint 1 changed. That is where a fleet that remembers pulls ahead.</div>
+  <div class="note">SAY: "The trap is sprint 2. It has to understand what sprint 1 did. A tool with no memory re-learns it from scratch."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">Env A -- the old build runs</div>
+  <h1>It works... and <span class="rd">forgets</span></h1>
+  <div class="big">v0.3.4 delivered both features, tests green. But between sprint 1 and sprint 2 it kept <b>nothing</b>. Sprint 2 re-explored the archived-listing code cold.</div>
+  <div class="statrow">
+    <div class="s"><div class="stat rd">0</div><div class="lab">knowledge entries kept</div></div>
+    <div class="s"><div class="stat rd">0</div><div class="lab">actual tokens it can even measure</div></div>
+    <div class="s"><div class="stat rd">flat</div><div class="lab">sprint-2 cost vs sprint-1 (no reuse)</div></div>
+  </div>
+  <div class="note">SAY: "Its own logs say 'Act tokens: 0' -- it can only estimate cost from a fixed table, and the estimate doesn't drop on sprint 2, because there's nothing to reuse."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">Env B -- the new build runs</div>
+  <h1>Init builds a <span class="hl">map of the code</span></h1>
+  <div class="term">
+    <div><span class="p">/pm init</span> fleet-e2e-toy-env-b</div>
+    <div class="o">...</div>
+    <div><span class="k">npx gitnexus analyze</span> <span class="o">-> 75 nodes | 79 edges | 8 clusters</span></div>
+  </div>
+  <div class="big" style="margin-top:24px">Before writing a line, the current build <b>indexes the codebase</b> -- symbols, call graph, structure. Env A has no equivalent step.</div>
+  <div class="note">SAY: "Zoom in here. This code-intelligence index is what lets agents navigate by structure instead of grepping blindly."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">Env B -- sprint 1 captures as it works</div>
+  <h1>It <span class="hl">learns while doing</span></h1>
+  <div class="term">
+    <div>doer: <span class="k">kb_session_prime</span>(<span class="o">hint_symbols: ["noteStore","setArchived","router"]</span>)</div>
+    <div>doer: <span class="k">kb_capture</span> <span class="o">-> "archived filter composes in the store layer"</span></div>
+    <div class="o">reviewer APPROVED -> KB Agent promotes to CONFIRMED -> bible auto-commits</div>
+  </div>
+  <div class="big" style="margin-top:24px">Every durable discovery is captured, clamped to a safe confidence, and <b>promoted to CONFIRMED only after the reviewer approves</b>. Then the bible commits itself to git.</div>
+  <div class="note">SAY: "Nobody typed 'save this.' Capture happens at discovery; trust is earned at review; the bible commits with zero manual steps."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">Env B -- sprint 2, the payoff</div>
+  <h1>It <span class="hl">remembers</span> sprint 1</h1>
+  <div class="term">
+    <div>planner: <span class="k">kb_session_prime</span> <span class="o">-> HITS on the archived-listing code</span></div>
+    <div class="o">planner: "reuse CONFIRMED knowledge; assign a cheaper model"</div>
+  </div>
+  <div class="big" style="margin-top:24px">Sprint 2's planner opens by <b>retrieving what sprint 1 learned</b> about the listing code -- the exact context Env A threw away and re-derived from scratch.</div>
+  <div class="note">SAY: "This is the moment. Same task as Env A's sprint 2 -- but here it starts already knowing the code, instead of re-reading it."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">The scoreboard</div>
+  <h1>Learns. Remembers. <span class="hl">Shares.</span></h1>
+  <div class="cols">
+    <div class="col old"><h3>Env A -- v0.3.4</h3>
+      <div class="row">Knowledge captured<span class="v">0</span></div>
+      <div class="row">Confirmed / reused<span class="v">0 / 0</span></div>
+      <div class="row">Bible in git<span class="v">none</span></div>
+      <div class="row">Sprint 2 context<span class="v">cold</span></div>
+    </div>
+    <div class="col new"><h3>Env B -- current</h3>
+      <div class="row">Knowledge captured<span class="v">16</span></div>
+      <div class="row">Confirmed / reused<span class="v">14 / 8</span></div>
+      <div class="row">Bible in git<span class="v">11 entries</span></div>
+      <div class="row">Sprint 2 context<span class="v">primed</span></div>
+    </div>
+  </div>
+  <div class="note">SAY: "16 learnings captured, 14 reviewer-confirmed, reused 8 times, committed to git for the next developer. Env A: zero of everything. Not slower -- absent."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">The honest part</div>
+  <h1>What this <span class="rd">doesn't</span> claim</h1>
+  <div class="big">We are <b>not</b> showing a "40% fewer tokens" headline. The two builds structure their work differently, and the sandbox cost telemetry didn't populate cleanly for either side.<br><br>
+  The defensible, verified claim is the <b>capability</b>: reuse happened in Env B and is <b>impossible</b> in Env A. v0.3.4 can't even measure its own tokens -- its logs read <code>Act tokens: 0</code>.</div>
+  <div class="note">SAY: "Credibility matters more than a big number. The win is real and it's about capability, not a cherry-picked benchmark."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">The twist</div>
+  <h1>The demo caught a <span class="rd">release-blocker</span></h1>
+  <div class="bugbox">
+    The first Env B runs showed <b>no</b> knowledge activity. Root cause: the shipped agent definitions hard-coded tool lists that <b>excluded every KB / code-intelligence tool</b> -- so the standard flow's agents literally couldn't use the feature. The whole layer was <b>inert in the real product</b>.<br><br>
+    <b>Found it, fixed it, re-ran clean</b> -- all 16 captures above are from the fixed run.
+  </div>
+  <div class="big" style="margin-top:20px">A rigorous head-to-head that catches your own bug before ship beats any favorable benchmark.</div>
+  <div class="note">SAY: "This is the best part of the story. We didn't just measure a feature -- we caught it silently broken in the release path and fixed it in the same session."</div>
+</div>
+
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h1>A fleet that gets <span class="hl">cheaper, more consistent, and more aligned</span> the more it works</h1>
+  <div class="big">Knowledge captured once is retrieved forever. A correction made once propagates forever. A standing instruction given once applies forever -- and all of it lives in your repo, not a vector DB you rent.<br><br>
+  <b>v0.3.4 finished each sprint and forgot everything. The new build learned from it.</b></div>
+  <div class="note">SAY: "That's the pitch. Same work, but the fleet compounds -- and it caught its own bug proving it."</div>
+</div>
+
+<div class="hint">Arrow keys / Space to advance &middot; F for fullscreen</div>
+<div class="nav"><span id="cur">1</span> / <span id="tot">11</span></div>
+
+<script>
+  var slides=[].slice.call(document.querySelectorAll('.slide')),i=0;
+  document.getElementById('tot').textContent=slides.length;
+  function show(n){slides[i].classList.remove('on');i=Math.max(0,Math.min(slides.length-1,n));slides[i].classList.add('on');document.getElementById('cur').textContent=i+1;}
+  document.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){show(i+1);e.preventDefault();}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){show(i-1);e.preventDefault();}
+    else if(e.key==='Home'){show(0);} else if(e.key==='End'){show(slides.length-1);}
+    else if(e.key==='f'||e.key==='F'){if(!document.fullscreenElement)document.documentElement.requestFullscreen();else document.exitFullscreen();}
+  });
+  document.addEventListener('click',function(){show(i+1);});
+</script>
+</body>
+</html>
