@@ -163,6 +163,18 @@ export function goalPriorityMax(goal) {
 // finishing it).
 const NOT_DONE_STATUSES = 'open,in_progress,blocked,deferred';
 
+// Backlog panel (dashboard "Backlog" section): beads the sprint certainly
+// will NOT be addressing this run. Excludes 'closed' (done, not backlog)
+// and 'in_progress' (actively being worked -- possibly by something else
+// entirely, e.g. a concurrent sprint -- a meaningfully different state
+// from idle backlog, not lumped in here). 'blocked' IS included: a bead
+// gated on an unresolved dependency is just as certainly "not being
+// addressed this run" as an untouched 'open' or 'deferred' one. Deliberately
+// project-wide (no --parent filter) -- this can and should include beads
+// with no relation at all to the current sprint's target epic, so the
+// user sees the true state of unplanned/idle work.
+const BACKLOG_STATUSES = 'open,deferred,blocked';
+
 // We can import standard node modules in workflows if needed, or pass them in context.
 // For now, we'll assume we check runbooks via command() since we are in the workflow engine.
 
@@ -1305,14 +1317,21 @@ export async function main(context) {
         }
     }
 
-    // Helper to keep the dashboard UI updated with real bd data
+    // Helper to keep the dashboard UI updated with real bd data. Publishes
+    // two independent sets -- see BACKLOG_STATUSES above:
+    //   sprintTasks: everything under this sprint's target scope (re-fetched
+    //     fresh every call, so beads added mid-run -- a planner's newTasks,
+    //     an integ-test-runner's filed bug -- appear on the very next
+    //     refresh with no separate wiring needed).
+    //   backlogTasks: open/deferred beads project-wide that are NOT already
+    //     in sprintTasks -- beads the sprint certainly is not addressing
+    //     this run, which may never have gone through a planning phase at
+    //     all and may belong to an entirely unrelated epic.
     async function updateDashboard() {
+        let sprintTasks = [];
         try {
             const listRes = await command(`bd list ${sprintFilter} --json`, { member_name: orchestratorMember, silent: true });
-            const tasks = parseBdJson(listRes, `bd list ${sprintFilter} --json`);
-            if (typeof publishState === 'function') {
-                publishState('beads', { tasks });
-            }
+            sprintTasks = parseBdJson(listRes, `bd list ${sprintFilter} --json`);
         } catch (e) {
             // apra-fleet-nkg: this used to be a bare `catch (e) {}` -- a
             // failure here (e.g. the orchestrator member transiently
@@ -1325,7 +1344,24 @@ export async function main(context) {
             // this still doesn't rethrow -- but it must at least be visible
             // so a stale/empty panel is diagnosable instead of silently
             // "just how it looks".
-            log(`updateDashboard: failed to refresh beads panel (non-fatal, will retry next update): ${e.message}`);
+            log(`updateDashboard: failed to refresh sprint-tree panel (non-fatal, will retry next update): ${e.message}`);
+            return; // sprintTasks fetch failed -- nothing to publish this round
+        }
+
+        // Backlog fetch is independently resilient: a failure here must
+        // never suppress the (already-successful) sprint-tree publish above.
+        let backlogTasks = [];
+        try {
+            const backlogRes = await command(`bd list --status=${BACKLOG_STATUSES} --json`, { member_name: orchestratorMember, silent: true });
+            const allBacklogCandidates = parseBdJson(backlogRes, `bd list --status=${BACKLOG_STATUSES} --json`);
+            const sprintIds = new Set(sprintTasks.map((t) => t.id));
+            backlogTasks = allBacklogCandidates.filter((t) => !sprintIds.has(t.id));
+        } catch (e) {
+            log(`updateDashboard: failed to refresh backlog panel (non-fatal, will retry next update): ${e.message}`);
+        }
+
+        if (typeof publishState === 'function') {
+            publishState('beads', { sprintTasks, backlogTasks });
         }
     }
 
