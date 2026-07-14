@@ -195,6 +195,18 @@ helper `apra-fleet workflow` and `auto-sprint`'s `cli.mjs` both call, or is
 duplicated, is an open design question for Phase 1/2 task authoring, not
 decided here.
 
+**RESOLVED (apra-fleet-7pm.6):** see `docs/adr-workflow-server-resolution.md`.
+That ADR is binding on the `src/cli/workflow.ts` implementation task. In short:
+(1) resolution order is forced-transport override -> `checkRunningInstance()`
+HTTP-singleton probe (attach via `StreamableHttpTransport`, spawn nothing) ->
+stdio self-spawn fallback (the existing 4 tiers); (2) the logic is ONE shared
+helper, not duplicated -- it lives in
+`packages/apra-fleet-client/src/client/server-resolution.mjs` (subpath export
+`@apralabs/apra-fleet-client/server-resolution`), the only package both
+consumers already depend on, and `checkRunningInstance()` /
+`resolveFleetServerCommand()` delegate to it so the liveness check has exactly
+one implementation.
+
 Task authors/reviewers: do not propose merging the launcher and the MCP
 *server* into one process -- that would be a structural change to the
 separate-client-process invariant, not an implementation detail. The
@@ -590,7 +602,7 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
 | R10 | Divergence between installed runtime copy and repo (stale `~/.apra-fleet/node_modules`) | `.installed.json` carries the version; launcher warns when the binary version != installed runtime version and suggests `apra-fleet install`. |
 | R11 | Path length / spaces on Windows (`Program Files`-style homes, deep ajv paths) | All launcher paths built with `path.join` + `pathToFileURL`; ajv subtree depth is modest (<160 chars under `%USERPROFILE%`); CI Windows leg exercises the real extraction. |
 | R12 | Concurrent `apra-fleet workflow` + `install --force` | Running-process guard already exists for the server (install.ts:596-615); document that install refresh skips locked built-ins (R5) rather than corrupting them. |
-| R13 | `resolveFleetServerCommand()` (cli.mjs) is stdio-only; HTTP is the actual product default, so a naive "mirror cli.mjs" launcher would always self-spawn a private stdio server even when a healthy HTTP singleton is already running, defeating the "attach to what's already there" behavior users expect and doubling running server processes | Launcher resolution order: probe `checkRunningInstance()` (reuses `src/services/singleton.ts`'s pid+`/health` check against `~/.apra-fleet/data/server.json`) first when transport is HTTP/default; connect via `StreamableHttpTransport` on success; fall back to the existing stdio self-spawn path only if no healthy singleton is found. Decide during Phase 1/2 task authoring whether this becomes a shared helper used by both `apra-fleet workflow` and `auto-sprint`'s `cli.mjs`, or is duplicated -- not yet decided in this doc. |
+| R13 | `resolveFleetServerCommand()` (cli.mjs) is stdio-only; HTTP is the actual product default, so a naive "mirror cli.mjs" launcher would always self-spawn a private stdio server even when a healthy HTTP singleton is already running, defeating the "attach to what's already there" behavior users expect and doubling running server processes | Launcher resolution order: probe `checkRunningInstance()` (reuses `src/services/singleton.ts`'s pid+`/health` check against `~/.apra-fleet/data/server.json`) first when transport is HTTP/default; connect via `StreamableHttpTransport` on success; fall back to the existing stdio self-spawn path only if no healthy singleton is found. RESOLVED by `docs/adr-workflow-server-resolution.md` (apra-fleet-7pm.6): that resolution order is adopted, and the logic is ONE shared helper (`packages/apra-fleet-client/src/client/server-resolution.mjs`, subpath export `@apralabs/apra-fleet-client/server-resolution`) called by both `apra-fleet workflow` and `cli.mjs` -- not duplicated. |
 
 ## 10. Phased task breakdown (for the planner agent)
 
