@@ -81,6 +81,12 @@ interface AssetManifest {
   fleetSkills: Record<string, string>;
   agents: Record<string, string>;
   workflows: Record<string, string>;
+  // Optional: added for the workflow subsystem (apra-fleet workflow <name>).
+  // Older manifests / existing tests that don't know about these keys still
+  // work unmodified since they are additive-only.
+  workflowRuntime?: Record<string, string>;
+  agentSchemas?: Record<string, string>;
+  builtinWorkflows?: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';

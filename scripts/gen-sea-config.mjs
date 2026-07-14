@@ -34,6 +34,48 @@ function collectFiles(dir, base, rootBase) {
   return results;
 }
 
+// Directory names excluded (recursively) when collecting package trees for the
+// workflow-runtime / built-in-workflow asset sections (test fixtures, docs,
+// build scripts, and standalone examples are never needed at runtime).
+const PACKAGE_TREE_EXCLUDE_DIRS = new Set(['test', 'docs', 'scripts', 'examples']);
+
+// Same as collectFiles, but skips any directory whose name is in excludeDirs
+// (checked at every depth, not just the top level). `base` here is always the
+// REAL path relative to root (so the returned values remain valid `join(root,
+// value)` disk paths) -- unlike collectFiles's other call sites, `base` is
+// never a synthetic manifest namespace.
+function collectFilesFiltered(dir, base, rootBase, excludeDirs = PACKAGE_TREE_EXCLUDE_DIRS) {
+  const effectiveRootBase = rootBase ?? base;
+  const results = {};
+  if (!existsSync(dir)) return results;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && excludeDirs.has(entry.name)) continue;
+    const fullPath = join(dir, entry.name);
+    const relPath = join(base, entry.name).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      Object.assign(results, collectFilesFiltered(fullPath, relPath, effectiveRootBase, excludeDirs));
+    } else {
+      results[relative(effectiveRootBase, relPath).replace(/\\/g, '/')] = relPath;
+    }
+  }
+  return results;
+}
+
+// Collects a package/module tree using its REAL root-relative path (so values
+// stay valid disk paths for `join(root, value)`), then re-keys the result
+// under `manifestPrefix` so multiple trees can be merged into one manifest
+// section (e.g. workflowRuntime) without key collisions between packages that
+// each have their own package.json / src / etc.
+function collectPackageTree(sourceDir, manifestPrefix) {
+  const rootRelBase = relative(root, sourceDir).replace(/\\/g, '/');
+  const raw = collectFilesFiltered(sourceDir, rootRelBase, rootRelBase);
+  const results = {};
+  for (const [shortKey, diskPath] of Object.entries(raw)) {
+    results[`${manifestPrefix}/${shortKey}`] = diskPath;
+  }
+  return results;
+}
+
 // Build manifest — use collectFiles for all three (handles subdirectories)
 const hooks = collectFiles(join(root, 'hooks'), 'hooks');
 
@@ -65,6 +107,47 @@ if (existsSync(workflowsSrcDir)) {
   }
 }
 
+// Workflow runtime: the two @apralabs packages (workflow engine + client) plus
+// the ajv validator subtree and its 4 runtime deps. Shipped as verbatim files
+// (never bundled into sea-bundle.cjs) so the on-disk workflow packages can
+// `import()` them at runtime with zero source changes. Hard-fail if the ajv
+// dependency tree is missing -- mirrors the vendor submodule guard above.
+const ajvDir = join(root, 'node_modules', 'ajv');
+if (!existsSync(ajvDir)) {
+  console.error('Error: node_modules/ajv is missing (required for the workflow-runtime SEA assets).');
+  console.error('Run: npm install');
+  process.exit(1);
+}
+
+const workflowRuntime = {
+  ...collectPackageTree(join(root, 'packages', 'apra-fleet-workflow'), '@apralabs/apra-fleet-workflow'),
+  ...collectPackageTree(join(root, 'packages', 'apra-fleet-client'), '@apralabs/apra-fleet-client'),
+  ...collectPackageTree(ajvDir, 'ajv'),
+  ...collectPackageTree(join(root, 'node_modules', 'fast-deep-equal'), 'fast-deep-equal'),
+  ...collectPackageTree(join(root, 'node_modules', 'fast-uri'), 'fast-uri'),
+  ...collectPackageTree(join(root, 'node_modules', 'json-schema-traverse'), 'json-schema-traverse'),
+  ...collectPackageTree(join(root, 'node_modules', 'require-from-string'), 'require-from-string'),
+};
+
+// Agent role schemas: the glob over vendor/apra-pm/agents/schemas is
+// authoritative for the file count -- do not hardcode it. Hard-fail if the
+// submodule directory is missing (same guard pattern as the skills/agents
+// check above).
+const agentSchemasDir = join(root, 'vendor', 'apra-pm', 'agents', 'schemas');
+if (!existsSync(agentSchemasDir)) {
+  console.error('Error: vendor/apra-pm/agents/schemas is missing (vendor/apra-pm submodule not initialized).');
+  console.error('Run: git submodule update --init');
+  process.exit(1);
+}
+const agentSchemas = collectPackageTree(agentSchemasDir, 'agentSchemas');
+
+// Built-in workflows: verbatim copy of the auto-sprint package tree (minus
+// test/docs/scripts) plus the hello-world example authored in-repo.
+const builtinWorkflows = {
+  ...collectPackageTree(join(root, 'packages', 'apra-fleet-se'), 'auto-sprint'),
+  ...collectPackageTree(join(root, 'examples', 'workflows', 'hello-world'), 'hello-world'),
+};
+
 const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf-8'));
 
 const manifest = {
@@ -75,6 +158,9 @@ const manifest = {
   fleetSkills,
   agents,
   workflows,
+  workflowRuntime,
+  agentSchemas,
+  builtinWorkflows,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -85,6 +171,9 @@ console.log(`  Skills (pm):  ${Object.keys(skills).length} files`);
 console.log(`  Skills (fleet): ${Object.keys(fleetSkills).length} files`);
 console.log(`  Agents:       ${Object.keys(agents).length} files`);
 console.log(`  Workflows:    ${Object.keys(workflows).length} files`);
+console.log(`  Workflow runtime:   ${Object.keys(workflowRuntime).length} files`);
+console.log(`  Agent schemas:      ${Object.keys(agentSchemas).length} files`);
+console.log(`  Built-in workflows: ${Object.keys(builtinWorkflows).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -122,6 +211,17 @@ for (const [name, relPath] of Object.entries(workflows)) {
   assets[name] = existsSync(relPath) ? relPath : join(root, relPath);
 }
 
+// Add workflow-runtime, agent-schema, and built-in-workflow files
+for (const [, relPath] of Object.entries(workflowRuntime)) {
+  assets[relPath] = join(root, relPath);
+}
+for (const [, relPath] of Object.entries(agentSchemas)) {
+  assets[relPath] = join(root, relPath);
+}
+for (const [, relPath] of Object.entries(builtinWorkflows)) {
+  assets[relPath] = join(root, relPath);
+}
+
 const seaConfig = {
   main: join(distDir, 'sea-bundle.cjs'),
   output: join(distDir, 'sea-prep.blob'),
@@ -133,3 +233,16 @@ const seaConfig = {
 writeFileSync(join(distDir, 'sea-config.json'), JSON.stringify(seaConfig, null, 2));
 console.log('Generated dist/sea-config.json');
 console.log(`  Total assets: ${Object.keys(assets).length}`);
+
+// Blob-size delta line: total bytes of all asset files (excluding the main
+// script itself), for CI to eyeball binary-size growth across builds.
+let totalAssetBytes = 0;
+for (const assetPath of Object.values(assets)) {
+  try {
+    totalAssetBytes += statSync(assetPath).size;
+  } catch {
+    // Asset path missing on disk (e.g. an inline-generated manifest entry) --
+    // skip rather than fail the byte total.
+  }
+}
+console.log(`  Total asset bytes: ${totalAssetBytes} (${(totalAssetBytes / (1024 * 1024)).toFixed(2)} MB)`);
