@@ -10,6 +10,9 @@ import {
   BIN_DIR,
   HOOKS_DIR,
   SCRIPTS_DIR,
+  NODE_MODULES_DIR,
+  SCHEMAS_DIR,
+  WORKFLOWS_DIR,
   getProviderInstallConfig,
   readConfig,
   writeConfig,
@@ -121,6 +124,51 @@ function collectFilesRec(dir: string, base: string, rootBase?: string): Record<s
   return results;
 }
 
+// Directory names excluded (recursively) when collecting a package tree for
+// the workflow-runtime / agent-schemas / built-in-workflow sections -- mirrors
+// scripts/gen-sea-config.mjs's PACKAGE_TREE_EXCLUDE_DIRS.
+const PACKAGE_TREE_EXCLUDE_DIRS = new Set(['test', 'docs', 'scripts', 'examples']);
+
+function collectFilesFilteredRec(
+  dir: string, base: string, rootBase: string, excludeDirs: Set<string>
+): Record<string, string> {
+  const results: Record<string, string> = {};
+  if (!fs.existsSync(dir)) return results;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && excludeDirs.has(entry.name)) continue;
+    const fullPath = path.join(dir, entry.name);
+    const relPath = path.join(base, entry.name).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      Object.assign(results, collectFilesFilteredRec(fullPath, relPath, rootBase, excludeDirs));
+    } else {
+      results[path.relative(rootBase, relPath).replace(/\\/g, '/')] = relPath;
+    }
+  }
+  return results;
+}
+
+/**
+ * Collects a package/module tree using its real root-relative path (so values
+ * stay valid `join(root, value)` disk paths -- and thus valid dev-mode
+ * extractAsset() keys), then re-keys the result under `manifestPrefix` so
+ * multiple trees merge into one manifest section without key collisions.
+ * Mirrors scripts/gen-sea-config.mjs's collectPackageTree exactly, so the
+ * namespaced keys install.ts's workflow-install step consumes are identical
+ * in dev mode and SEA mode.
+ */
+function collectPackageTree(
+  root: string, sourceDir: string, manifestPrefix: string,
+  excludeDirs: Set<string> = PACKAGE_TREE_EXCLUDE_DIRS
+): Record<string, string> {
+  const rootRelBase = path.relative(root, sourceDir).replace(/\\/g, '/');
+  const raw = collectFilesFilteredRec(sourceDir, rootRelBase, rootRelBase, excludeDirs);
+  const results: Record<string, string> = {};
+  for (const [shortKey, diskPath] of Object.entries(raw)) {
+    results[`${manifestPrefix}/${shortKey}`] = diskPath;
+  }
+  return results;
+}
+
 function buildDevManifest(root: string): AssetManifest {
   const hooks: Record<string, string> = {};
   for (const entry of fs.readdirSync(path.join(root, 'hooks'))) {
@@ -159,8 +207,48 @@ function buildDevManifest(root: string): AssetManifest {
     }
   }
 
+  // Workflow subsystem parity (mirrors scripts/gen-sea-config.mjs) so `node
+  // dist/index.js install` behaves identically to the SEA binary. Each source
+  // tree is optional -- an npm global install (no node_modules/ajv, no vendor
+  // submodule, no packages/) simply omits the section, same as an older SEA
+  // manifest built before this epic; the install step warns and skips.
+  const workflowRuntimeDir = path.join(root, 'packages', 'apra-fleet-workflow');
+  const clientDir = path.join(root, 'packages', 'apra-fleet-client');
+  const ajvDir = path.join(root, 'node_modules', 'ajv');
+  let workflowRuntime: Record<string, string> | undefined;
+  if (fs.existsSync(workflowRuntimeDir) && fs.existsSync(clientDir) && fs.existsSync(ajvDir)) {
+    workflowRuntime = {
+      ...collectPackageTree(root, workflowRuntimeDir, '@apralabs/apra-fleet-workflow'),
+      ...collectPackageTree(root, clientDir, '@apralabs/apra-fleet-client'),
+      ...collectPackageTree(root, ajvDir, 'ajv'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-deep-equal'), 'fast-deep-equal'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-uri'), 'fast-uri'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'json-schema-traverse'), 'json-schema-traverse'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'require-from-string'), 'require-from-string'),
+    };
+  }
+
+  const agentSchemasDir = path.join(root, 'vendor', 'apra-pm', 'agents', 'schemas');
+  let agentSchemas: Record<string, string> | undefined;
+  if (fs.existsSync(agentSchemasDir)) {
+    agentSchemas = collectPackageTree(root, agentSchemasDir, 'agentSchemas');
+  }
+
+  const autoSprintDir = path.join(root, 'packages', 'apra-fleet-se');
+  const helloWorldDir = path.join(root, 'examples', 'workflows', 'hello-world');
+  let builtinWorkflows: Record<string, string> | undefined;
+  if (fs.existsSync(autoSprintDir) || fs.existsSync(helloWorldDir)) {
+    builtinWorkflows = {
+      ...(fs.existsSync(autoSprintDir) ? collectPackageTree(root, autoSprintDir, 'auto-sprint') : {}),
+      ...(fs.existsSync(helloWorldDir) ? collectPackageTree(root, helloWorldDir, 'hello-world') : {}),
+    };
+  }
+
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows };
+  return {
+    version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows,
+    workflowRuntime, agentSchemas, builtinWorkflows,
+  };
 }
 
 let _manifestOverride: AssetManifest | null = null;
@@ -214,6 +302,64 @@ function copyDirSync(src: string, dest: string): void {
 function writeAssetFile(destPath: string, content: string): void {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.writeFileSync(destPath, content);
+}
+
+// --- Workflow subsystem: extract-to-temp-then-rename with Windows EBUSY handling ---
+// (apra-fleet-7pm.5). A running apra-fleet process (self-update, or a workflow
+// launched from the very tree being refreshed) can hold a package/workflow
+// directory open on Windows. Extract into a sibling temp dir first, then swap
+// it in with rename(); if the swap hits EBUSY, retry a few times, and if it
+// still fails, warn and leave the existing directory untouched rather than
+// failing the whole install.
+const EBUSY_MAX_ATTEMPTS = 5;
+const EBUSY_RETRY_DELAY_MS = 200;
+
+function sleepSync(ms: number): void {
+  const ia = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(ia, 0, 0, ms);
+}
+
+function rmSyncBestEffort(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch { /* best effort cleanup only */ }
+}
+
+/**
+ * Extract `files` (relative-path -> asset key) into `destDir` via
+ * extract-to-temp-then-rename. `label` is used in warning text only.
+ */
+function extractPackageTree(destDir: string, files: Record<string, string>, label: string): void {
+  const tmpDir = `${destDir}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    for (const [relPath, assetKey] of Object.entries(files)) {
+      const buf = extractAssetBuffer(assetKey);
+      const dest = path.join(tmpDir, relPath);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, buf);
+    }
+  } catch (err) {
+    rmSyncBestEffort(tmpDir);
+    console.warn(`  [!] Failed to extract ${label}: ${(err as Error).message} -- skipped`);
+    return;
+  }
+
+  for (let attempt = 1; attempt <= EBUSY_MAX_ATTEMPTS; attempt++) {
+    try {
+      fs.rmSync(destDir, { recursive: true, force: true, maxRetries: EBUSY_MAX_ATTEMPTS, retryDelay: EBUSY_RETRY_DELAY_MS });
+      fs.renameSync(tmpDir, destDir);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EBUSY' && attempt < EBUSY_MAX_ATTEMPTS) {
+        sleepSync(EBUSY_RETRY_DELAY_MS);
+        continue;
+      }
+      rmSyncBestEffort(tmpDir);
+      console.warn(`  [!] ${label} is in use (locked) -- skipped this update; existing files left in place.`);
+      return;
+    }
+  }
 }
 
 // Gemini CLI uses different hook event names than Claude CLI.
@@ -476,6 +622,7 @@ Usage:
   apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
+  apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
   apra-fleet install --force           Stop a running server before installing
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
@@ -491,6 +638,9 @@ Options:
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
   --no-skill              Alias for --skill none.
+  --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
+                          ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
+                          schemas), and /workflows/{auto-sprint,hello-world} (built-in workflows).
   --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
     process.exit(0);
     return;
@@ -546,6 +696,31 @@ Options:
     skillMode = 'none';
   }
 
+  // Parse --workflows flag: default (no flag) = all; accepts all|none
+  type WorkflowsMode = 'all' | 'none';
+  let workflowsMode: WorkflowsMode = 'all';
+  const workflowsEqualArg = args.find(a => a.startsWith('--workflows='));
+  if (workflowsEqualArg) {
+    const val = workflowsEqualArg.split('=')[1];
+    if (val === 'all' || val === 'none') {
+      workflowsMode = val;
+    } else {
+      console.error(`Error: --workflows value must be one of: all, none (got "${val}")`);
+      process.exit(1);
+    }
+  } else {
+    const workflowsIdx = args.indexOf('--workflows');
+    if (workflowsIdx >= 0) {
+      const nextArg = args[workflowsIdx + 1];
+      if (nextArg === 'all' || nextArg === 'none') {
+        workflowsMode = nextArg;
+      } else {
+        console.error(`Error: --workflows requires a value: all or none.`);
+        process.exit(1);
+      }
+    }
+  }
+
   // Parse --force flag
   const force = args.includes('--force');
 
@@ -575,8 +750,8 @@ Options:
   }
 
   // Reject unknown flags to catch typos early
-  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--transport', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -588,10 +763,12 @@ Options:
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
+  const installWorkflows = workflowsMode === 'all';
   const serviceStep = isSea() && transport === 'http';
   let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
   if (installAgents) totalSteps++;
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
+  if (installWorkflows) totalSteps++; // workflow-subsystem runtime/schemas/built-ins step
   if (serviceStep) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
@@ -880,6 +1057,71 @@ Then re-run:  apra-fleet install`);
     }
   }
 
+  // --- Workflow-subsystem install step (optional, --workflows all|none) ---
+  // Writes ~/.apra-fleet/{node_modules,schemas,workflows/{auto-sprint,hello-world}}.
+  // See docs/workflow-subsystem-plan.md Section 6 / Section 2.1 for the layout.
+  if (installWorkflows) {
+    const hasWorkflowAssets = !!(manifest.workflowRuntime && manifest.agentSchemas && manifest.builtinWorkflows);
+    const workflowsStepNum = serviceStep ? totalSteps - 2 : totalSteps - 1;
+    console.log(`  [${workflowsStepNum}/${totalSteps}] Installing workflow runtime...`);
+    if (!hasWorkflowAssets) {
+      console.warn('  [!] This build has no workflow-subsystem assets (older manifest) -- skipping workflow runtime install. Rebuild the binary or run apra-fleet update to get this feature.');
+    } else {
+      // (1) ~/.apra-fleet/node_modules -- grouped by top-level package so a lock on
+      // one package (Windows EBUSY) never blocks extracting the others. Each
+      // namespacedKey already encodes "<pkg>/<relpath-within-pkg>" (see
+      // scripts/gen-sea-config.mjs's collectPackageTree / install.ts's
+      // collectPackageTree), so join(NODE_MODULES_DIR, key) is the final layout.
+      const runtimeByPackage = new Map<string, Record<string, string>>();
+      for (const [namespacedKey, assetKey] of Object.entries(manifest.workflowRuntime!)) {
+        const parts = namespacedKey.split('/');
+        const pkgName = parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0];
+        const relWithinPkg = (parts[0].startsWith('@') ? parts.slice(2) : parts.slice(1)).join('/');
+        if (!runtimeByPackage.has(pkgName)) runtimeByPackage.set(pkgName, {});
+        runtimeByPackage.get(pkgName)![relWithinPkg] = assetKey;
+      }
+      for (const [pkgName, files] of runtimeByPackage) {
+        extractPackageTree(path.join(NODE_MODULES_DIR, pkgName), files, `node_modules/${pkgName}`);
+      }
+
+      // (2) ~/.apra-fleet/schemas
+      for (const [namespacedKey, assetKey] of Object.entries(manifest.agentSchemas!)) {
+        const relPath = namespacedKey.replace(/^agentSchemas\//, '');
+        const content = extractAssetBuffer(assetKey);
+        const dest = path.join(SCHEMAS_DIR, relPath);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, content);
+      }
+
+      // (3) ~/.apra-fleet/workflows/{auto-sprint,hello-world} -- clear+extract ONLY the
+      // named built-in subdirectory; the workflows/ root (and any sibling
+      // user-authored workflow directories) is never cleared.
+      const builtinNames = ['auto-sprint', 'hello-world'];
+      for (const name of builtinNames) {
+        const files: Record<string, string> = {};
+        const prefix = `${name}/`;
+        for (const [namespacedKey, assetKey] of Object.entries(manifest.builtinWorkflows!)) {
+          if (namespacedKey.startsWith(prefix)) {
+            files[namespacedKey.slice(prefix.length)] = assetKey;
+          }
+        }
+        if (Object.keys(files).length === 0) {
+          console.warn(`  [!] No assets found for built-in workflow "${name}" -- skipping.`);
+          continue;
+        }
+        extractPackageTree(path.join(WORKFLOWS_DIR, name), files, `workflows/${name}`);
+      }
+
+      // .installed.json -- records which subdirectories are built-in (vs. user-authored)
+      // and the installing binary's version, consumed by workflow.ts (--list, R10 skew warning).
+      fs.mkdirSync(WORKFLOWS_DIR, { recursive: true });
+      fs.writeFileSync(
+        path.join(WORKFLOWS_DIR, '.installed.json'),
+        JSON.stringify({ version: serverVersion, builtin: builtinNames }, null, 2) + '\n'
+      );
+    }
+  }
+
   // --- Beads install step ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
@@ -909,7 +1151,7 @@ Then re-run:  apra-fleet install`);
   }
 
   // Write install-config.json (merge provider entry)
-  writeInstallConfig(llm, skillMode);
+  writeInstallConfig(llm, skillMode, workflowsMode);
 
   // --- Step N: Register and start service (SEA + HTTP mode only) ---
   let serviceRegistered = false;

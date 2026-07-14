@@ -11,6 +11,11 @@ export const HOOKS_DIR = path.join(FLEET_BASE, 'hooks');
 export const SCRIPTS_DIR = path.join(FLEET_BASE, 'scripts');
 export const DATA_DIR = path.join(FLEET_BASE, 'data');
 export const INSTALL_CONFIG_PATH = path.join(DATA_DIR, 'install-config.json');
+// Workflow subsystem (apra-fleet workflow <name>) -- see
+// docs/workflow-subsystem-plan.md Section 2.1 for the on-disk layout.
+export const NODE_MODULES_DIR = path.join(FLEET_BASE, 'node_modules');
+export const SCHEMAS_DIR = path.join(FLEET_BASE, 'schemas');
+export const WORKFLOWS_DIR = path.join(FLEET_BASE, 'workflows');
 
 // Claude entries use the bare family aliases (haiku/sonnet/opus) instead of
 // dated model IDs -- the claude CLI/settings.json resolve these to the
@@ -63,6 +68,9 @@ export interface ProviderInstallConfig {
 export interface MultiProviderInstallConfig {
   providers: Record<string, {
     skill: 'none' | 'all' | 'fleet' | 'pm';
+    // Optional for backward compatibility -- older install-config.json files
+    // (written before the workflow subsystem existed) won't have this field.
+    workflowsMode?: 'all' | 'none';
     installedAt: string;
   }>;
 }
@@ -184,10 +192,15 @@ export function readInstallConfig(): MultiProviderInstallConfig {
   }
 }
 
-export function writeInstallConfig(llm: string, skill: 'none' | 'all' | 'fleet' | 'pm'): void {
+export function writeInstallConfig(
+  llm: string,
+  skill: 'none' | 'all' | 'fleet' | 'pm',
+  workflowsMode: 'all' | 'none' = 'all'
+): void {
   const config = readInstallConfig();
   config.providers[llm] = {
     skill,
+    workflowsMode,
     installedAt: new Date().toISOString()
   };
   fs.mkdirSync(DATA_DIR, { recursive: true });

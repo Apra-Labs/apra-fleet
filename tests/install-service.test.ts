@@ -139,10 +139,10 @@ describe('install -- service lifecycle (T11)', () => {
   });
 
   it('increments totalSteps by 1 in SEA + HTTP mode', async () => {
-    // With SEA + HTTP + no skills: base=6 steps, +1 service = 7 total
+    // With SEA + HTTP + no skills + no workflows: base=6 steps, +1 service = 7 total
     _setSeaOverride(true);
     const logSpy = vi.mocked(console.log);
-    await runInstall(['--transport', 'http', '--skill', 'none']);
+    await runInstall(['--transport', 'http', '--skill', 'none', '--workflows', 'none']);
     const allOutput = logSpy.mock.calls.flat().join('\n');
     // Service step should show as [7/7]
     expect(allOutput).toContain('[7/7]');

@@ -10,6 +10,10 @@ import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
 import { StdioTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
+import {
+    resolveFleetServerCommand as sharedResolveFleetServerCommand,
+    resolveFleetServerConnection as sharedResolveFleetServerConnection,
+} from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology } from '../auto-sprint/runner.js';
 import { normalizeRole } from '../auto-sprint/contracts.mjs';
@@ -26,61 +30,36 @@ const DEFAULT_VIEWER_PORT = 8080;
  * dist/auto-sprint.mjs alongside the server's own dist/index.js
  * (apra-fleet-3ns.2). Overridable via env for tests/CI/non-standard installs.
  *
+ * THIN RE-EXPORT (docs/adr-workflow-server-resolution.md, Decision 2): the
+ * implementation now lives once in
+ * @apralabs/apra-fleet-client/server-resolution, shared with the
+ * `apra-fleet workflow` launcher (src/cli/workflow.ts) so the two can never
+ * drift. Name, signature, resolution tiers and error text are unchanged for
+ * existing callers/tests; only the default `dirname` is bound to this file's
+ * location (which is what the bundled/dev-monorepo tiers key off).
+ *
  * Resolution order:
  *   1. APRA_FLEET_SERVER_CMD -- an explicit full command + args string.
  *   2. APRA_FLEET_SERVER_BIN -- an explicit server executable, resolved via
  *      PATH (not a literal file path, so no existsSync check applies).
- *   3. <__dirname>/index.js -- the bundled layout: dist/auto-sprint.mjs's
- *      sibling dist/index.js (the root @apralabs/apra-fleet package's own
- *      entry point, same dist/ directory).
- *   4. <repoRoot>/dist/index.js, three levels up from
- *      packages/apra-fleet-se/bin/ -- the dev-monorepo layout.
+ *   3. <__dirname>/index.js -- the bundled layout.
+ *   4. <repoRoot>/dist/index.js -- the dev-monorepo layout.
  *
- * Candidates 3 and 4 are literal paths this function constructs itself, so
- * each is existsSync-checked before use; if neither exists, throws an
- * actionable error naming both the two env overrides and both attempted
- * paths, rather than deferring to StdioTransport.start()'s opaque spawn
- * failure.
- *
- * `deps` is injectable so tests can exercise every branch (including the
- * "simulated installed layout" acceptance criterion) without needing to
- * copy this file into a real temp directory tree.
  * @param {{ env?: Record<string, string | undefined>, dirname?: string, exists?: (candidate: string) => boolean }} [deps]
  * @returns {{ command: string, args: string[] }}
  */
 export function resolveFleetServerCommand(deps = {}) {
-    const env = deps.env || process.env;
-    const dirname = deps.dirname || __dirname;
-    const exists = deps.exists || existsSync;
+    return sharedResolveFleetServerCommand({ dirname: __dirname, exists: existsSync, ...deps });
+}
 
-    if (env.APRA_FLEET_SERVER_CMD) {
-        const parts = env.APRA_FLEET_SERVER_CMD.split(' ').filter(Boolean);
-        if (parts.length === 0) {
-            throw new Error('APRA_FLEET_SERVER_CMD is set but empty.');
-        }
-        return { command: parts[0], args: parts.slice(1) };
-    }
-    if (env.APRA_FLEET_SERVER_BIN) {
-        return { command: env.APRA_FLEET_SERVER_BIN, args: ['run', '--transport', 'stdio'] };
-    }
-
-    const bundledSiblingEntry = path.join(dirname, 'index.js');
-    const devMonorepoEntry = path.resolve(dirname, '..', '..', '..', 'dist', 'index.js');
-
-    for (const entry of [bundledSiblingEntry, devMonorepoEntry]) {
-        if (exists(entry)) {
-            return { command: 'node', args: [entry, 'run', '--transport', 'stdio'] };
-        }
-    }
-
-    throw new Error(
-        '[apra-fleet-se] Could not locate the apra-fleet MCP server entry point. Tried:\n' +
-            `  - ${bundledSiblingEntry} (bundled layout)\n` +
-            `  - ${devMonorepoEntry} (dev-monorepo layout)\n` +
-            'Set APRA_FLEET_SERVER_CMD (a full "<command> <args...>" string) or ' +
-            'APRA_FLEET_SERVER_BIN (a server executable resolved via PATH) to point at your ' +
-            'apra-fleet server explicitly.',
-    );
+/**
+ * The full ADR resolution order (HTTP-singleton attach first, stdio self-spawn
+ * fallback) for callers that want it. auto-sprint's own main() keeps its current
+ * stdio behavior; this is exported so the resolution order has exactly one home.
+ * @param {object} [deps]
+ */
+export function resolveFleetServerConnection(deps = {}) {
+    return sharedResolveFleetServerConnection({ dirname: __dirname, exists: existsSync, ...deps });
 }
 
 /**

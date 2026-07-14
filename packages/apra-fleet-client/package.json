@@ -11,7 +11,8 @@
     ".": "./src/client/api.mjs",
     "./client": "./src/client/client.mjs",
     "./factory": "./src/client/factory.mjs",
-    "./transport": "./src/client/transport.mjs"
+    "./transport": "./src/client/transport.mjs",
+    "./server-resolution": "./src/client/server-resolution.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
