@@ -51,8 +51,22 @@
 </head>
 <body>
 
-<!-- 1 : KB workflow -->
+<!-- 0 : plain language -->
 <div class="slide on">
+  <div class="kicker">Apra Fleet -- the idea in plain language</div>
+  <h1>A team of AI developers that <span class="hl">keeps a shared notebook</span></h1>
+  <div class="big">
+  Apra Fleet runs your development like a small team: a <b>planner</b> breaks the work down, <b>doers</b> write the code, <b>reviewers</b> check it -- each on an AI model sized to the job.<br><br>
+  Until now, every AI tool had one flaw: <b>total amnesia</b>. Finish a task, close the session, and everything it figured out about your codebase is gone.<br><br>
+  The new build fixes that with two memories:<br>
+  <b style="color:var(--blue)">1. A map of the code</b> -- automatically built and kept current, so agents navigate by structure instead of searching blindly.<br>
+  <b style="color:var(--purple)">2. A notebook of lessons</b> -- everything the agents figure out while working ("this filter lives in the store layer", "never break X") is written down, <b>fact-checked by a reviewer before it's trusted</b>, and saved <b>inside your git repo</b> -- so the whole team, human and AI, inherits it.<br><br>
+  The result: <b>the second time the fleet touches any part of your code, it already knows it.</b></div>
+  <div class="note">SAY: "One sentence: it's a team of AI developers that keeps a shared, fact-checked notebook in your repo -- so it gets smarter and cheaper the more it works for you."</div>
+</div>
+
+<!-- 1 : KB workflow -->
+<div class="slide">
   <div class="kicker">How it works -- the knowledge lifecycle</div>
   <h1>How the fleet <span class="hl">stores</span> and <span class="hl">reuses</span> knowledge</h1>
 
@@ -124,9 +138,87 @@
   <div class="note">SAY: "This isn't theoretical -- it's from building this very system. The code graph pinpointed a symbol among four; a recalled Knowledge-Bank fact let the doer skip reading a file it had already understood once."</div>
 </div>
 
+<!-- under the hood : storage + retrieval mechanics -->
+<div class="slide">
+  <div class="kicker">Under the hood -- for the engineers in the room</div>
+  <h1>It's all <span class="hl">MCP tool calls</span>. No magic, no cloud.</h1>
+  <div class="cols" style="max-width:1040px;">
+    <div class="col" style="border-color:#3b2d6e;"><h3 style="color:var(--purple);">STORE -- what actually happens</h3>
+      <div class="row" style="line-height:1.8;color:var(--dim);">
+      Agent makes a normal MCP tool call: <code>kb_capture({title, content, symbols, source_files})</code><br>
+      -> the local apra-fleet server (a Node process on your machine) writes one row into a <b style="color:var(--text)">per-repo SQLite DB</b> (<code>kb.sqlite</code>) with:<br>
+      &nbsp;&nbsp;- an <b style="color:var(--text)">FTS5 full-text index</b> for search<br>
+      &nbsp;&nbsp;- a <b style="color:var(--text)">trust column</b> (clamped to INFERRED on capture)<br>
+      &nbsp;&nbsp;- <b style="color:var(--text)">file-content hashes</b> of the source files (for staleness)<br>
+      &nbsp;&nbsp;- duplicate/contradiction detection (AUDN) at write time<br>
+      After review, <code>kb_promote</code> flips trust to CONFIRMED and <code>kb_export</code> writes the CONFIRMED set to <code>.fleet/kb-canonical.json</code> and <b style="color:var(--text)">git-commits it</b>.</div>
+    </div>
+    <div class="col" style="border-color:#1e3a5f;"><h3 style="color:var(--blue);">RETRIEVE -- what actually happens</h3>
+      <div class="row" style="line-height:1.8;color:var(--dim);">
+      One tool call at session start: <code>kb_session_prime({hint_symbols, hint_modules})</code><br>
+      -> the server runs a pipeline and returns ranked entries:<br>
+      &nbsp;&nbsp;1. <b style="color:var(--text)">FTS search</b> (OR across hint terms) over the SQLite DB<br>
+      &nbsp;&nbsp;2. <b style="color:var(--text)">staleness check</b> -- re-hash source files; drop entries whose code changed<br>
+      &nbsp;&nbsp;3. <b style="color:var(--text)">graph expansion</b> -- also recall facts about callers/callees of the hinted symbols<br>
+      &nbsp;&nbsp;4. <b style="color:var(--text)">cold-seed</b> -- fresh clone? load from the git bible<br>
+      Mid-task: <code>kb_query</code> before reading an unfamiliar file.</div>
+    </div>
+  </div>
+  <div class="big" style="margin-top:14px">No embeddings service, no vector database, no external calls. <b>SQLite + FTS5 + file hashes + a JSON file in git</b> -- boring on purpose, so it's fast, inspectable, and yours.</div>
+  <div class="note">SAY: "When someone asks 'how is it stored' -- it's a tool call into a local SQLite DB with full-text search, trust columns, and file hashes; the confirmed subset is a JSON file committed to git. Retrieval is one tool call that searches, staleness-checks, and ranks."</div>
+</div>
+
+<!-- tool catalog -->
+<div class="slide">
+  <div class="kicker">The tool surface -- 49 MCP tools, three families</div>
+  <h1>What the agents can actually call</h1>
+  <div class="cols" style="grid-template-columns:1fr 1fr 1fr;max-width:1060px;">
+    <div class="col" style="border-color:#3b2d6e;"><h3 style="color:var(--purple);">Knowledge Bank (16)</h3>
+      <div class="row" style="font-size:12.5px;line-height:1.9;color:var(--dim);font-family:Consolas,monospace;">
+      kb_session_prime <span style="color:var(--faint)">recall</span><br>
+      kb_query &middot; kb_context &middot; kb_list &middot; kb_stats<br>
+      kb_capture <span style="color:var(--faint)">store (clamped)</span><br>
+      kb_promote <span style="color:var(--faint)">trust gate</span><br>
+      kb_feedback <span style="color:var(--faint)">downvote</span><br>
+      kb_invalidate &middot; kb_harvest<br>
+      kb_export &middot; kb_import <span style="color:var(--faint)">bible</span><br>
+      kb_freshness_sweep<br>
+      kb_reconcile_prefilter<br>
+      kb_resolve_contradiction<br>
+      kb_setup</div>
+    </div>
+    <div class="col" style="border-color:#1e3a5f;"><h3 style="color:var(--blue);">Code Intelligence (7)</h3>
+      <div class="row" style="font-size:12.5px;line-height:1.9;color:var(--dim);font-family:Consolas,monospace;">
+      code_context <span style="color:var(--faint)">symbol 360</span><br>
+      code_impact <span style="color:var(--faint)">blast radius</span><br>
+      code_query <span style="color:var(--faint)">search</span><br>
+      code_graph <span style="color:var(--faint)">call graph</span><br>
+      code_map <span style="color:var(--faint)">architecture</span><br>
+      code_flow <span style="color:var(--faint)">process flows</span><br>
+      code_tests <span style="color:var(--faint)">targeted tests</span></div>
+    </div>
+    <div class="col"><h3 style="color:var(--dim);">Fleet Operations (26)</h3>
+      <div class="row" style="font-size:12.5px;line-height:1.9;color:var(--dim);font-family:Consolas,monospace;">
+      execute_prompt &middot; execute_command<br>
+      send_files &middot; receive_files<br>
+      register_member &middot; update_member<br>
+      list_members &middot; member_detail<br>
+      fleet_status &middot; monitor_task &middot; stop_prompt<br>
+      compose_permissions<br>
+      credential_store_* <span style="color:var(--faint)">(4)</span><br>
+      provision_llm_auth &middot; provision_vcs_auth<br>
+      setup_git_app &middot; setup_ssh_key &middot; revoke_vcs_auth<br>
+      cloud_control &middot; update_llm_cli<br>
+      shutdown_server &middot; version &middot; remove_member</div>
+    </div>
+  </div>
+  <div class="subtle">v0.3.4 ships only the third column. The first two columns -- all 23 knowledge and code-intelligence tools -- are what this release adds.</div>
+  <div class="note">SAY: "Forty-nine tools, three families. The right column is what we had. The left two columns -- the entire knowledge and code-intelligence surface -- are new in this release."</div>
+</div>
+
 <!-- 4 -->
 <div class="slide">
-  <div class="kicker">Apra Fleet</div>
+  <div class="kicker">Apra Fleet -- part 2: the experiment</div>
   <h1>The Amnesia Test</h1>
   <div class="big">Every AI coding tool is brilliant and <b>forgets everything</b> the moment a session ends. It re-reads the same files, re-derives the same facts, and repeats the same mistakes -- every single time.<br><br>
   We ran the <b>same two tasks on the same codebase twice</b> -- once on our last public release, once on the new build -- to show, concretely, what changes when a fleet actually <span style="color:var(--green)">remembers</span>.</div>
