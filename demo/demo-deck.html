@@ -71,18 +71,60 @@
 
   <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--blue);margin:18px 0 6px;">RETRIEVE&nbsp;&mdash;&nbsp;at the start of the next sprint / session / clone</div>
   <div class="pipe">
-    <div class="stage s-plan"><div class="n">6. kb_session_prime</div><div class="d">planner/doer prime on the task's symbols before touching a file</div></div>
+    <div class="stage s-plan"><div class="n">6. RECALL <span style="color:var(--faint);font-weight:400">(kb_session_prime)</span></div><div class="d">planner/doer recall prior learnings for the task's symbols before touching a file</div></div>
     <div class="arrow">&rarr;</div>
     <div class="stage s-kb"><div class="n">7. CONFIRMED hits</div><div class="d">prior learnings surface (a cold clone seeds from the git bible)</div></div>
     <div class="arrow">&rarr;</div>
     <div class="stage s-doer"><div class="n">8. REUSE</div><div class="d">agent trusts the fact, <b>skips re-reading the code</b>, picks a cheaper model</div></div>
   </div>
 
-  <div class="subtle">Trust tiers, enforced in code: UNVERIFIED (raw / harvested) &rarr; INFERRED (captured, unreviewed) &rarr; CONFIRMED (reviewer-approved). Only kb_promote mints CONFIRMED; the bible carries only CONFIRMED.</div>
-  <div class="note">SAY: "This is the whole engine. Agents capture what they learn as they work; a reviewer's approval is what promotes it to trusted; the KB Agent curates and commits it to your repo; and the next session retrieves and reuses it. Store on the top row, retrieve on the bottom."</div>
+  <div class="subtle">Trust tiers, enforced in code: UNVERIFIED (raw / harvested) &rarr; INFERRED (captured, unreviewed) &rarr; CONFIRMED (reviewer-approved). Only promotion mints CONFIRMED; the bible carries only CONFIRMED.</div>
+  <div class="note">SAY: "This is the whole engine. Agents capture what they learn as they work; a reviewer's approval promotes it to trusted; the KB Agent curates it and commits it to your repo; and the next session recalls and reuses it. Store on the top row, recall on the bottom."</div>
 </div>
 
-<!-- 2 -->
+<!-- 2 : two kinds of knowledge -->
+<div class="slide">
+  <div class="kicker">Two kinds of knowledge -- don't confuse them</div>
+  <h1>Code Graph vs Agent Learning</h1>
+  <div class="cols">
+    <div class="col" style="border-color:#1e3a5f;"><h3 style="color:var(--blue);">CODE GRAPH &mdash; code intelligence (gitnexus)</h3>
+      <div class="row" style="color:var(--dim);line-height:1.9;">What the code <b style="color:var(--text)">IS</b>: symbols, call graph, module structure.<br>
+      Machine-derived, rebuilt on demand, <b style="color:var(--text)">always current</b>, disposable -- delete it and re-index for the identical result.<br><br>
+      <span style="color:var(--faint)">Tools:</span> <code>code_context</code>, <code>code_impact</code>, <code>code_query</code>, <code>code_graph</code><br><br>
+      <span style="color:var(--faint)">Answers:</span> "Where is X? Who calls Y? What breaks if I change Z?"</div>
+    </div>
+    <div class="col" style="border-color:#3b2d6e;"><h3 style="color:var(--purple);">AGENT LEARNING &mdash; Knowledge Bank</h3>
+      <div class="row" style="color:var(--dim);line-height:1.9;">What we <b style="color:var(--text)">FIGURED OUT</b>: conventions, constraints, gotchas, decisions -- the things the code does <i>not</i> tell you.<br>
+      Earned through work, <b style="color:var(--text)">reviewer-gated</b>, persists in git. Precious -- lost forever if not captured.<br><br>
+      <span style="color:var(--faint)">Tools:</span> <code>kb_capture</code>, <code>kb_promote</code>, <code>kb_session_prime</code> (recall), <code>kb_query</code><br><br>
+      <span style="color:var(--faint)">Answers:</span> "Why is it built this way? What must I not break?"</div>
+    </div>
+  </div>
+  <div class="big" style="margin-top:16px">They are complementary, and the current build <b>joins them</b>: <code>code_context</code> on a symbol also inlines any CONFIRMED Knowledge-Bank facts about it -- <b>structure and hard-won wisdom in one call.</b></div>
+  <div class="note">SAY: "Two different things. The code graph is the map -- always accurate, rebuildable. Agent learning is the wisdom -- earned, reviewed, and easy to lose. v0.3.4 had neither; the new build has both, and links them."</div>
+</div>
+
+<!-- 3 : real transcript from our own sprints -->
+<div class="slide">
+  <div class="kicker">Proof from our own dogfooding -- real session excerpts</div>
+  <h1>Both, working on this codebase</h1>
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--blue);margin:2px 0 6px;">CODE GRAPH -- structural navigation instead of guessing</div>
+  <div class="term">
+    <div>doer: <span class="tool">code_context</span>(<span class="o">name: "getGitNexusClient"</span>)</div>
+    <div class="o">&nbsp;&nbsp;-> disambiguated 4 definitions; confirmed src/tools/code-intelligence.ts:42</div>
+  </div>
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--purple);margin:16px 0 6px;">AGENT LEARNING -- a recalled fact replaced a file read</div>
+  <div class="term">
+    <div>doer: <span class="tool">kb_session_prime</span> + <span class="tool">kb_query</span> <span class="o">-> CONFIRMED entry for callGitNexus</span></div>
+    <div class="o">&nbsp;&nbsp;"...returned a CONFIRMED context-cache entry with exact line numbers</div>
+    <div class="o">&nbsp;&nbsp;(92-109) and structure for callGitNexus, which let me <span style="color:var(--green)">skip an</span></div>
+    <div class="o">&nbsp;&nbsp;<span style="color:var(--green)">exploratory read</span> and go straight to the precise edit."</div>
+  </div>
+  <div class="subtle">Verbatim from a doer's report during the kb-integrity sprint on this repo. A later planner: "12 KB entries replaced all exploratory reads" -- citing entry IDs per task.</div>
+  <div class="note">SAY: "This isn't theoretical -- it's from building this very system. The code graph pinpointed a symbol among four; a recalled Knowledge-Bank fact let the doer skip reading a file it had already understood once."</div>
+</div>
+
+<!-- 4 -->
 <div class="slide">
   <div class="kicker">Apra Fleet</div>
   <h1>The Amnesia Test</h1>
