@@ -185,7 +185,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     // --- Step 3: kb_import it ---------------------------------------------
     const importReport = JSON.parse(await kbImport({ repo: repoDir, path: biblePath }));
     expect(importReport.skipped).toBeGreaterThanOrEqual(1); // the duplicate
-    expect(importReport.superseded).toBeGreaterThanOrEqual(1); // the refinement
+    expect(importReport.linked).toBeGreaterThanOrEqual(1); // the refinement
     expect(importReport.flagged).toBeGreaterThanOrEqual(2); // both contradictions
 
     // duplicate: no new row for b-dup (id-skip does not apply here -- AUDN
@@ -193,7 +193,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(provider.hasEntry('b-dup')).toBe(false);
     expect(rawRow(aDup.id).superseded_at).toBeFalsy();
 
-    // refinement: AUDN decides 'update' (so importReport.superseded, which
+    // refinement: AUDN decides 'update' (so importReport.linked, which
     // counts 'update' decisions, still sees it), but supersede is OPT-IN and a
     // bible cannot opt in: it is authored on another branch and cannot name
     // THIS worktree's local uuid, so no bible entry can carry `supersedes`.
