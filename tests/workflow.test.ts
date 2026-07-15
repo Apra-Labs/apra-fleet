@@ -30,6 +30,7 @@ import {
 const MOCK_HOME = path.resolve('/mock/home');
 const WF_DIR = path.join(MOCK_HOME, '.apra-fleet', 'workflows');
 const SCHEMAS_DIR = path.join(MOCK_HOME, '.apra-fleet', 'schemas');
+const NODE_MODULES_DIR = path.join(MOCK_HOME, '.apra-fleet', 'node_modules');
 const SERVER_BIN = path.join(MOCK_HOME, '.apra-fleet', 'bin', 'apra-fleet');
 
 interface Harness {
@@ -40,6 +41,8 @@ interface Harness {
   imported: string[];
   /** process.argv as the imported entry observed it */
   seenArgv: string[] | null;
+  /** Each call to deps.selfHeal(), recording the includeBuiltins arg passed. */
+  selfHealCalls?: boolean[];
 }
 
 /**
@@ -57,32 +60,44 @@ function harness(
     resolveThrows?: Error;
     moduleExports?: Record<string, unknown>;
     importThrows?: Error;
+    /** Simulate `~/.apra-fleet/node_modules` missing (default: present). */
+    nodeModulesMissing?: boolean;
+    /** deps.selfHeal() return value (default: false -- no-op, as in dev/npm mode). */
+    selfHealResult?: boolean;
   } = {},
 ): Harness {
   const logs: string[] = [];
   const warns: string[] = [];
   const errors: string[] = [];
   const imported: string[] = [];
+  const selfHealCalls: boolean[] = [];
   const h: Harness = { logs, warns, errors, imported, seenArgv: null, deps: null as never };
+
+  // A synthetic marker file so `deps.exists(nodeModulesDir)` is true by default --
+  // only tests exercising self-heal opt out via `nodeModulesMissing: true`.
+  const allFiles = opts.nodeModulesMissing
+    ? files
+    : { ...files, [path.join(NODE_MODULES_DIR, '.marker')]: '' };
 
   const deps: WorkflowDeps = {
     env: opts.env ?? {},
     workflowsDir: WF_DIR,
+    nodeModulesDir: NODE_MODULES_DIR,
     schemasDir: SCHEMAS_DIR,
     serverBin: SERVER_BIN,
     version: opts.version ?? '1.2.3',
     execPath: '/usr/bin/node',
     exists: (p) =>
-      Object.prototype.hasOwnProperty.call(files, p) ||
+      Object.prototype.hasOwnProperty.call(allFiles, p) ||
       // a directory exists if any file lives under it
-      Object.keys(files).some((f) => f.startsWith(p + path.sep)),
+      Object.keys(allFiles).some((f) => f.startsWith(p + path.sep)),
     readFile: (p) => {
-      if (!Object.prototype.hasOwnProperty.call(files, p)) throw new Error(`ENOENT: ${p}`);
-      return files[p];
+      if (!Object.prototype.hasOwnProperty.call(allFiles, p)) throw new Error(`ENOENT: ${p}`);
+      return allFiles[p];
     },
     listDirs: (p) => {
       const names = new Set<string>();
-      for (const f of Object.keys(files)) {
+      for (const f of Object.keys(allFiles)) {
         if (!f.startsWith(p + path.sep)) continue;
         const rest = f.slice(p.length + 1).split(path.sep);
         if (rest.length > 1) names.add(rest[0]);
@@ -100,6 +115,10 @@ function harness(
       return opts.moduleExports ?? { selfExecuting: true };
     },
     hasWorkflowAssets: () => opts.hasAssets ?? true,
+    selfHeal: (includeBuiltins) => {
+      selfHealCalls.push(includeBuiltins);
+      return opts.selfHealResult ?? false;
+    },
     resolveConnection: async () => {
       if (opts.resolveThrows) throw opts.resolveThrows;
       const mode = opts.mode ?? 'http';
@@ -108,6 +127,7 @@ function harness(
   };
 
   h.deps = deps;
+  h.selfHealCalls = selfHealCalls;
   return h;
 }
 
@@ -537,5 +557,71 @@ describe('R9 -- binary built without the workflow asset sections', () => {
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain('not found');
     expect(h.errors.join('\n')).not.toContain('built without the workflow subsystem assets');
+  });
+});
+
+describe('self-heal -- on-demand extraction (apra-fleet-7pm.8)', () => {
+  it('extracts runtime+schemas+built-ins and prints exactly one notice, then runs hello-world', async () => {
+    // Empty ~/.apra-fleet: neither workflows/ nor node_modules/ has anything, but
+    // this binary's manifest DOES carry the workflow sections (hasAssets: true) --
+    // self-heal writes hello-world/main.mjs into the (simulated) virtual FS via
+    // deps.selfHeal returning true, and the launcher proceeds to resolve+run it.
+    const files = {
+      [path.join(WF_DIR, 'hello-world', 'workflow.json')]: JSON.stringify({
+        entry: 'main.mjs',
+        description: 'Minimal example workflow',
+      }),
+      [path.join(WF_DIR, 'hello-world', 'main.mjs')]: '// entry',
+    };
+    const h = harness(files, { hasAssets: true, nodeModulesMissing: true, selfHealResult: true });
+    const code = await runWorkflow(['hello-world'], h.deps);
+    expect(code).toBe(0);
+    expect(h.selfHealCalls).toEqual([true]); // hello-world IS a recognized built-in
+    const notices = h.logs.filter((l) => l.startsWith('[workflow] self-heal:'));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('built-in workflows');
+    expect(h.imported).toEqual([pathToFileURL(path.join(WF_DIR, 'hello-world', 'main.mjs')).href]);
+  });
+
+  it('does not self-heal (or print a notice) when workflows/ and node_modules/ are both present', async () => {
+    const h = harness(autoSprintFiles());
+    await runWorkflow(['auto-sprint'], h.deps);
+    expect(h.selfHealCalls).toEqual([]);
+    expect(h.logs.some((l) => l.startsWith('[workflow] self-heal:'))).toBe(false);
+  });
+
+  it('a non-built-in name triggers runtime/schemas-only self-heal (includeBuiltins=false), no notice mentions built-ins', async () => {
+    const h = harness({}, { hasAssets: true, nodeModulesMissing: true, selfHealResult: true });
+    const code = await runWorkflow(['my-custom-flow'], h.deps);
+    expect(code).toBe(1); // still "not found" -- self-heal never fabricates the dir
+    expect(h.selfHealCalls).toEqual([false]);
+    const notices = h.logs.filter((l) => l.startsWith('[workflow] self-heal:'));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).not.toContain('built-in');
+    expect(h.errors.join('\n')).toContain(`Error: workflow "my-custom-flow" not found in ${WF_DIR}.`);
+  });
+
+  it('a non-built-in unknown name never creates a workflow directory for itself', async () => {
+    const h = harness({}, { hasAssets: true, nodeModulesMissing: true, selfHealResult: true });
+    await runWorkflow(['unknown-name'], h.deps);
+    // The harness deps.exists() only reflects the virtual FS map, which self-heal
+    // (mocked) never wrote into for the requested name -- resolveWorkflowEntry's
+    // own not-found check (already exercised above) is the real guarantee here.
+    expect(h.deps.exists(path.join(WF_DIR, 'unknown-name'))).toBe(false);
+  });
+
+  it('prints no notice when deps.selfHeal() is a no-op (e.g. dev/npm mode)', async () => {
+    const h = harness({}, { hasAssets: true, nodeModulesMissing: true, selfHealResult: false });
+    await runWorkflow(['hello-world'], h.deps);
+    expect(h.selfHealCalls).toEqual([true]);
+    expect(h.logs.some((l) => l.startsWith('[workflow] self-heal:'))).toBe(false);
+  });
+
+  it('triggers self-heal when only workflows/ is missing (node_modules/ present)', async () => {
+    // Everything is "present" per the default harness marker EXCEPT workflows/,
+    // which has no files at all in this virtual FS.
+    const h = harness({}, { hasAssets: true, selfHealResult: true });
+    await runWorkflow(['auto-sprint'], h.deps);
+    expect(h.selfHealCalls).toEqual([true]);
   });
 });

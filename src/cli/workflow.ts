@@ -27,7 +27,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { serverVersion } from '../version.js';
-import { WORKFLOWS_DIR, SCHEMAS_DIR, BIN_DIR } from './config.js';
+import { WORKFLOWS_DIR, SCHEMAS_DIR, BIN_DIR, NODE_MODULES_DIR } from './config.js';
+import { extractWorkflowSubsystemAssets, BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
 
 /** Fallback entry filenames, in order, when a workflow ships no workflow.json. */
 export const ENTRY_CONVENTIONS = ['main.mjs', 'index.mjs', 'runner.js'];
@@ -45,6 +46,9 @@ export interface WorkflowDeps {
   env: Record<string, string | undefined>;
   /** ~/.apra-fleet/workflows */
   workflowsDir: string;
+  /** ~/.apra-fleet/node_modules -- the workflow runtime tree; self-heal (R-self-heal)
+   *  treats it, alongside workflowsDir, as the "is this install missing?" signal. */
+  nodeModulesDir: string;
   /** ~/.apra-fleet/schemas -- the APRA_FLEET_SE_SCHEMAS_DIR default */
   schemasDir: string;
   /** The apra-fleet server executable -- the APRA_FLEET_SERVER_BIN default */
@@ -64,6 +68,15 @@ export interface WorkflowDeps {
   importModule(url: string): Promise<Record<string, unknown>>;
   /** R9: does this binary's asset manifest carry the workflow sections? */
   hasWorkflowAssets(): boolean;
+  /**
+   * Self-heal (docs/workflow-subsystem-plan.md Section 3): on-demand extraction of
+   * the shared runtime/schemas (+ built-in workflows when `includeBuiltins`) using
+   * the SAME extraction code path install.ts's installer uses
+   * (extractWorkflowSubsystemAssets in workflow-assets.ts). Returns true when it
+   * actually performed an extraction (so the caller prints exactly one notice
+   * line); a no-op (e.g. dev/npm mode, no SEA assets to extract from) returns false.
+   */
+  selfHeal(includeBuiltins: boolean): boolean;
   /** ADR resolution order -- injected so tests never probe a real server */
   resolveConnection(env: Record<string, string | undefined>): Promise<{ mode: string; reason: string }>;
 }
@@ -99,10 +112,37 @@ function seaHasWorkflowAssets(): boolean {
   }
 }
 
+/**
+ * R-self-heal (SEA-only, mirrors seaHasWorkflowAssets()'s isSea() gate): extract
+ * the shared runtime/schemas (+ built-ins when `includeBuiltins`) straight from
+ * this binary's own embedded SEA assets, via the installer's own
+ * extractWorkflowSubsystemAssets() -- never a re-implementation. Dev/npm mode has
+ * no SEA assets to self-heal from (the project tree already IS the assets) so
+ * this is a no-op there, same as seaHasWorkflowAssets()'s dev-mode "true" branch.
+ */
+function defaultSelfHeal(includeBuiltins: boolean): boolean {
+  if (!isSea()) return false;
+  try {
+    const require = createRequire(import.meta.url);
+    const sea = require('node:sea');
+    const manifest = JSON.parse(new TextDecoder().decode(sea.getAsset('manifest.json')));
+    extractWorkflowSubsystemAssets({
+      manifest,
+      extractAssetBuffer: (key: string) => Buffer.from(sea.getAsset(key)),
+      version: serverVersion,
+      includeBuiltins,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function defaultDeps(): WorkflowDeps {
   return {
     env: process.env,
     workflowsDir: WORKFLOWS_DIR,
+    nodeModulesDir: NODE_MODULES_DIR,
     schemasDir: SCHEMAS_DIR,
     // In SEA mode process.execPath IS the apra-fleet binary; in dev/npm mode the
     // installed binary (if any) lives in ~/.apra-fleet/bin.
@@ -128,6 +168,7 @@ export function defaultDeps(): WorkflowDeps {
     error: (m) => console.error(m),
     importModule: (url) => import(url) as Promise<Record<string, unknown>>,
     hasWorkflowAssets: seaHasWorkflowAssets,
+    selfHeal: defaultSelfHeal,
     resolveConnection: async (env) => {
       const { resolveFleetServerConnection } = await import(
         '@apralabs/apra-fleet-client/server-resolution'
@@ -331,6 +372,23 @@ export async function runWorkflow(argv: string[], depsOverride?: Partial<Workflo
         `('apra-fleet update'), then run 'apra-fleet install' again.`,
     );
     return 1;
+  }
+
+  // --- Self-heal (docs/workflow-subsystem-plan.md Section 3): an empty/partial
+  // ~/.apra-fleet install (workflows/ or node_modules/ missing) is repaired on
+  // demand for a recognized built-in, using the SAME extraction code path
+  // install.ts's installer uses. A non-built-in name never gets a fabricated
+  // workflow directory -- only the shared runtime/schemas it also needs.
+  if (!deps.exists(deps.workflowsDir) || !deps.exists(deps.nodeModulesDir)) {
+    const isBuiltin = BUILTIN_WORKFLOW_NAMES.includes(name);
+    const healed = deps.selfHeal(isBuiltin);
+    if (healed) {
+      deps.log(
+        isBuiltin
+          ? `[workflow] self-heal: extracted the workflow runtime, schemas, and built-in workflows to ${deps.workflowsDir} (missing on disk).`
+          : `[workflow] self-heal: extracted the workflow runtime and schemas (missing on disk).`,
+      );
+    }
   }
 
   // --- R10: version skew between binary and installed workflows.
