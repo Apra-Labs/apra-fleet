@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { parse as parseToml } from 'smol-toml';
 import { runInstall } from '../src/cli/install.js';
+import { normalizeCommandSurfaceOutput, readCommandSurfaceFixture } from './helpers/regression-command-surface.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -649,6 +650,23 @@ describe('runInstall multi-provider', () => {
     expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain('apra-fleet install');
     // No file writes should have occurred
     expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  // Regression guard (apra-fleet-7pm.14): install --help output must stay
+  // byte-for-byte unchanged versus tests/fixtures/regression-command-surface/install-help.txt
+  // after this epic's install.ts/uninstall.ts/update.ts/index.ts edits land.
+  it('--help output is byte-for-byte unchanged versus its fixture (apra-fleet-7pm.14)', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['--help'])).rejects.toThrow('exit');
+
+    const actual = normalizeCommandSurfaceOutput(logSpy.mock.calls.map(c => c.join(' ')).join('\n'));
+    const expected = readCommandSurfaceFixture('install-help.txt');
+    expect(actual).toBe(expected);
 
     exitSpy.mockRestore();
     logSpy.mockRestore();

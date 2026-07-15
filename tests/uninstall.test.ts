@@ -7,6 +7,12 @@ import * as readline from 'node:readline/promises';
 import { runUninstall } from '../src/cli/uninstall.js';
 import * as config from '../src/cli/config.js';
 import * as install from '../src/cli/install.js';
+import { serverVersion } from '../src/version.js';
+import {
+  normalizeCommandSurfaceOutput,
+  readCommandSurfaceFixture,
+  fillFixturePlaceholders,
+} from './helpers/regression-command-surface.js';
 
 vi.mock('node:fs');
 vi.mock('node:child_process');
@@ -64,6 +70,31 @@ describe('uninstall', () => {
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('(DRY RUN)'));
     expect(fs.rmSync).not.toHaveBeenCalled();
     expect(fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  // Regression guard (apra-fleet-7pm.14): uninstall --dry-run output must stay
+  // byte-for-byte unchanged versus
+  // tests/fixtures/regression-command-surface/uninstall-dry-run.txt after this
+  // epic's install.ts/uninstall.ts/update.ts/index.ts edits land. Relies on
+  // the default beforeEach mocks (single claude provider, skill 'all', no
+  // settings changes, empty workflows dir listing) which reproduce the exact
+  // scenario the fixture was captured from.
+  it('--dry-run output is byte-for-byte unchanged versus its fixture (apra-fleet-7pm.14)', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runUninstall(['--dry-run', '--yes']);
+
+    const claudePaths = config.getProviderInstallConfig('claude');
+    const actual = normalizeCommandSurfaceOutput(consoleSpy.mock.calls.map(c => c.join(' ')).join('\n'));
+    const expected = fillFixturePlaceholders(readCommandSurfaceFixture('uninstall-dry-run.txt'), {
+      VERSION: serverVersion,
+      PM_SKILLS_DIR: claudePaths.skillsDir,
+      FLEET_SKILLS_DIR: claudePaths.fleetSkillsDir,
+      NODE_MODULES_DIR: config.NODE_MODULES_DIR,
+      SCHEMAS_DIR: config.SCHEMAS_DIR,
+      WORKFLOWS_DIR: config.WORKFLOWS_DIR,
+    });
+    expect(actual).toBe(normalizeCommandSurfaceOutput(expected));
   });
 
   it('removes recorded providers by default', async () => {

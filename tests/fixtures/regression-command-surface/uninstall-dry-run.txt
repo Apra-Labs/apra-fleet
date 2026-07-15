@@ -1,0 +1,17 @@
+
+Uninstalling Apra Fleet {VERSION}... (DRY RUN)
+
+Cleaning up Claude...
+  - Removing MCP server via Claude CLI
+  - Removing PM skills: {PM_SKILLS_DIR}
+  - Removing fleet skills: {FLEET_SKILLS_DIR}
+Cleaning up workflow subsystem...
+  - Removing workflow runtime: {NODE_MODULES_DIR}
+  - Removing workflow schemas: {SCHEMAS_DIR}
+  - Removing workflows directory: {WORKFLOWS_DIR}
+
+Uninstall complete.
+
+[WARN] Note: Surgical cleanup of settings (MCP, permissions, hooks) was performed.
+  If you manually modified these settings, some entries might remain.
+  Please review your provider settings files if you suspect residual config.
