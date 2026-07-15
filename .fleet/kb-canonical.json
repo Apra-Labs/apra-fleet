@@ -209,7 +209,7 @@
     "id": "28a1e6b5-c30f-4e9d-ac40-3246778acad7",
     "type": "knowledge",
     "title": "Guard rekeys: supersede and decay guard now key on type + CONFIRMED (D1, T1.1, L2)",
-    "summary": "Two directive-specific guard rules protect ACTIVE (CONFIRMED) directives from agent actions: (1) supersede guard in makeAudnDecision (audn.ts:175) skips update/merge when candidate is type='user-directive' AND confidence='CONFIRMED', allowing only contradiction-flagging; (2) decay guard in decayConceptEntries (sqlite-provider.ts:402) excludes from staleness check when type='user-directive' AND confidence='CONFIRMED'. A PENDING proposal (always UNVERIFIED) bypasses both guards and follows normal same-type dedup/decay rules.",
+    "summary": "Two directive-specific guard rules protect ACTIVE (CONFIRMED) directives from agent actions: (1) supersede guard in makeAudnDecision (audn.ts:224) skips update/merge when candidate is type='user-directive' AND confidence='CONFIRMED', allowing only contradiction-flagging; (2) decay guard in decayConceptEntries (sqlite-provider.ts:402) excludes from staleness check when type='user-directive' AND confidence='CONFIRMED'. A PENDING proposal (always UNVERIFIED) bypasses both guards and follows normal same-type dedup/decay rules.",
     "symbols": [
       "makeAudnDecision",
       "decayConceptEntries"
