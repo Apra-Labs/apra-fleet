@@ -72,9 +72,10 @@ export function filesOverlap(a: string[], b: string[]): boolean {
 // query. Tokens WITHIN one term stay space-joined (AND semantics within a
 // single term, e.g. a multi-word symbol); orJoinFtsTerms OR-joins ACROSS
 // terms. Shared by every FTS query-building site: findAudnCandidates (via
-// makeFtsQuery), prime (via QueryOptions.fts_terms), and query() itself
-// (free text). query() previously passed the caller's raw string to MATCH,
-// which threw on '.', '-', '(', ')', '/' -- 61% of real agent queries.
+// makeFtsQuery); both SqliteProvider.prime() and the kb_session_prime tool
+// (via QueryOptions.fts_terms); and query() itself (free text). query()
+// previously passed the caller's raw string to MATCH, which threw on '.',
+// '-', '(', ')', '/' -- 61% of real agent queries.
 export function ftsSafeTerm(term: string): string | null {
   const tokens = term.match(/[A-Za-z0-9_]+/g);
   if (!tokens || tokens.length === 0) return null;
