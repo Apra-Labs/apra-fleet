@@ -56,8 +56,8 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * well-formed bd data, but is not assumed) guarantees every task in the
  * input is rendered exactly once, never silently dropped.
  *
- * @param {Array<{id: string|number, title?: string, description?: string, status?: string, priority?: number, metadata?: {model?: string}, dependencies?: Array<{depends_on_id: string|number, type: string}>}>} sprintTasks
- * @param {Array<{id: string|number, title?: string, description?: string, status?: string, priority?: number, metadata?: {model?: string}}>} [backlogTasks]
+ * @param {Array<{id: string|number, title?: string, description?: string, status?: string, issue_type?: string, ready?: boolean, priority?: number, metadata?: {model?: string}, dependencies?: Array<{depends_on_id: string|number, type: string}>}>} sprintTasks
+ * @param {Array<{id: string|number, title?: string, description?: string, status?: string, issue_type?: string, priority?: number, metadata?: {model?: string}}>} [backlogTasks]
  * @returns {string}
  */
 export function renderBeadsHtml(sprintTasks, backlogTasks) {
@@ -77,6 +77,15 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         blocked: { label: 'BLOCKED', color: 'var(--danger)' },
         deferred: { label: 'DEFERRED', color: '#71717a' },
     };
+    // Keys serve double duty: some are real bd `issue_type` values (bug,
+    // chore, epic, decision), checked first below; others are only
+    // title-prefix conventions (test, impl, feat, fix, doc, design, spike,
+    // ci) that carry no `issue_type` of their own -- `task`/`feature` beads
+    // commonly use these prefixes to say what KIND of task/feature work this
+    // is, which is more informative than the bare issue_type, so those two
+    // real types are deliberately left OUT of this map: leaving them out is
+    // what lets the title-prefix fallback below run for them instead of
+    // being short-circuited to a bare TASK/FEATURE badge.
     const TYPE_BADGES = {
         bug: { label: 'BUG', color: 'var(--danger)' },
         test: { label: 'TEST', color: '#22d3ee' },
@@ -90,6 +99,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         ci: { label: 'CI', color: '#71717a' },
         chore: { label: 'CHORE', color: '#71717a' },
         epic: { label: 'EPIC', color: '#e4e4e7' },
+        decision: { label: 'DECISION', color: '#a78bfa' },
     };
 
     // Never throws: an unrecognized or missing status/type always resolves
@@ -103,13 +113,40 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         return '<span style="color: ' + color + '; font-weight: bold; font-size: 10px; border: 1px solid ' + color + '; border-radius: 3px; padding: 1px 5px; white-space: nowrap;">' + label + '</span>';
     }
 
-    function typeBadge(title) {
+    // Reads the authoritative `issue_type` first (bd's real, stored field);
+    // only falls back to guessing from a `[prefix]` title convention when
+    // issue_type is absent or isn't one of the types with its own dedicated
+    // badge above (this is the common case for `task`/`feature` beads,
+    // which rely on the title prefix to say what kind of task/feature this
+    // is -- see the comment on TYPE_BADGES).
+    function typeBadge(issueType, title) {
+        const typeKey = (issueType || '').toString().toLowerCase();
+        const knownType = TYPE_BADGES[typeKey];
+        if (knownType) {
+            return '<span style="color: ' + knownType.color + '; font-size: 10px; border: 1px solid ' + knownType.color + '; border-radius: 3px; padding: 1px 5px; white-space: nowrap;">' + knownType.label + '</span>';
+        }
         const match = /^\[([A-Za-z0-9_-]+)\]/.exec(title || '');
-        const key = match ? match[1].toLowerCase() : '';
-        const known = TYPE_BADGES[key];
-        const label = known ? known.label : (match ? escapeHtml(match[1]).toUpperCase() : 'MISC');
-        const color = known ? known.color : '#71717a';
+        const prefixKey = match ? match[1].toLowerCase() : '';
+        const knownPrefix = TYPE_BADGES[prefixKey];
+        const label = knownPrefix ? knownPrefix.label : (match ? escapeHtml(match[1]).toUpperCase() : 'MISC');
+        const color = knownPrefix ? knownPrefix.color : '#71717a';
         return '<span style="color: ' + color + '; font-size: 10px; border: 1px solid ' + color + '; border-radius: 3px; padding: 1px 5px; white-space: nowrap;">' + label + '</span>';
+    }
+
+    // apra-fleet-xbu.C6: a bead with stored status 'open' that is NOT in
+    // this update's `--ready` set (see updateDashboard() in runner.js,
+    // which now threads a per-bead `ready` boolean computed from the same
+    // `--ready` query dispatch decisions are already based on) is blocked,
+    // not merely unstarted -- render it distinctly instead of conflating it
+    // with genuinely-ready OPEN work. Beads with no `ready` field at all
+    // (e.g. backlog rows, or an older caller that hasn't been updated)
+    // fall back to the plain stored-status badge, unchanged.
+    function statusBadgeForNode(node) {
+        const status = (node.status || '').toString().toLowerCase();
+        if (status === 'open' && node.ready === false) {
+            return statusBadge('blocked');
+        }
+        return statusBadge(node.status);
     }
 
     function priorityBadge(priority) {
@@ -196,8 +233,8 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + prefix + '#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.title) + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadge(node.status) + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadgeForNode(node) + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 50px;">' + priorityBadge(node.priority) + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 80px;">' + modelBadge(node.metadata) + '</td>' +
             '</tr>';
@@ -231,8 +268,8 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; vertical-align: top; width: 110px; color: ' + titleColor(task.status) + ';">#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(task.status) + ';">' + titleHtml + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(task.title) + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadge(task.status) + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(task.issue_type, task.title) + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadgeForNode(task) + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 50px;">' + priorityBadge(task.priority) + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 80px;">' + modelBadge(task.metadata) + '</td>' +
             '</tr>';

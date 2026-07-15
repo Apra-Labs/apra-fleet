@@ -145,7 +145,10 @@ function buildMockFleetApi(tempDir, epicBead, taskId, dispatched, { pricingByMem
         executePrompt: async (opts) => {
             dispatched.push({ agent: opts.agent, model: opts.model, member: opts.member_name });
             const isFinalReview = opts.agent === 'reviewer' && opts.prompt.startsWith('Final review for sprint scope issue id(s):');
-            const isStreakAssignment = opts.agent === 'planner' && opts.prompt.includes('Ready bead ids:');
+            // Not gated on opts.agent === 'planner': runner.js no longer sets
+            // agentType on this dispatch (see the streakAssignment schema
+            // comment in contracts.mjs) -- detect it by prompt content instead.
+            const isStreakAssignment = opts.prompt.includes('Ready bead ids:');
 
             const json = (obj) => ({ content: [{ text: JSON.stringify(obj) }], usage: USAGE });
 

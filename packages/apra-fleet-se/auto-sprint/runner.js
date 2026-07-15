@@ -98,6 +98,14 @@ const FIXED_ROLE_TIER = {
     deployer: 'standard',
     'integ-test-runner': 'standard',
     harvester: 'standard',
+    // Streak Assignment (runner.js's own ad-hoc "group these ready bead ids"
+    // call, no vendored persona -- see the streakAssignment schema comment
+    // in contracts.mjs) is a small, fully-specified classification task with
+    // no exploration or judgment call beyond what's already in the prompt.
+    // It has no business running on the same premium tier as real sprint
+    // planning; it previously inherited FIXED_ROLE_TIER.planner only because
+    // it borrows the planner MEMBER for routing convenience.
+    streakAssignment: 'cheap',
 };
 
 export const meta = { name: 'auto-sprint-runner' };
@@ -595,6 +603,9 @@ function buildStreakAssignmentPrompt({ readyBeadIds }) {
         `Ready bead ids: ${readyBeadIds.join(', ')}`,
         'Every ready bead id listed above must appear in exactly one streak -- ' +
         'no bead id may be omitted, duplicated, or invented.',
+        'This is the complete input. Do not run bd, git, or any other command, ' +
+        'and do not read any files to investigate further -- respond immediately ' +
+        'using only the schema, based solely on the bead ids given above.',
     ].join('\n\n');
 }
 
@@ -697,12 +708,12 @@ function buildDoerPrompt({ beadIds, branch, feedback }) {
  * and the diff range are all spelled out here rather than assumed.
  *
  * CRITICAL: explicitly, redundantly forbids the reviewer from mutating
- * beads itself (contradicts the vendored agents/reviewer.md Step 5 prose,
- * which tells the reviewer to run `bd update` itself -- see contracts.mjs's
- * DIVERGENCE NOTE above `reviewerVerdict`). Per this issue's instructions,
- * the dispatch-prompt text is what's authoritative/validated today (the
- * schema alone doesn't stop the reviewer from ALSO shelling out `bd`
- * commands on the member side), so the prohibition must be stated here too.
+ * beads itself. agents/reviewer.md's own prose (Step 5, Rules) already
+ * states this same prohibition -- prose and dispatch prompt agree today --
+ * but the schema alone doesn't stop the reviewer from shelling out `bd`
+ * commands on the member side regardless of what either document says, so
+ * the prohibition is stated here too as defense in depth, not because of
+ * any known prose/code divergence.
  * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string }} opts
  * @returns {string}
  */
@@ -1128,6 +1139,56 @@ export async function main(context) {
     // pseudo-role, deliberately outside contracts.ROLES.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
+    // apra-fleet-xbu.C1: `bd list --parent` accepts exactly one id per
+    // invocation -- a comma-joined multi-target list (`--parent a,b`) is
+    // silently treated as one nonexistent id and returns `[]`, which used
+    // to be masked because this sprint only ever had one target issue in
+    // practice. This helper is the general fix: for a single target it
+    // behaves identically to the old string-interpolated call; for multiple
+    // targets it issues one `bd list --parent <id> <restArgs>` per target
+    // and unions the results by `id` (a bead cannot have more than one
+    // parent, so no id can appear under two different targets).
+    async function bdListScoped(restArgs) {
+        const rest = restArgs ? restArgs.trim() : '';
+        if (targetIssues.length <= 1) {
+            const filter = targetIssues.length === 1 ? `--parent ${targetIssues[0]}` : '';
+            const label = [`bd list`, filter, rest].filter(Boolean).join(' ');
+            const raw = await command(label, { member_name: orchestratorMember, silent: true });
+            return parseBdJson(raw, label);
+        }
+        const merged = new Map();
+        for (const id of targetIssues) {
+            const label = [`bd list`, `--parent ${id}`, rest].filter(Boolean).join(' ');
+            const raw = await command(label, { member_name: orchestratorMember, silent: true });
+            for (const item of parseBdJson(raw, label)) {
+                if (item && item.id !== undefined) merged.set(item.id, item);
+            }
+        }
+        return [...merged.values()];
+    }
+
+    // apra-fleet-xbu.C5: a bead that has been decomposed into subtasks
+    // (i.e. it is itself SOMEONE ELSE's `--parent`) must never be dispatched
+    // to a doer alongside its own subtasks -- the doer would claim/attempt
+    // to close a grouping node, not a leaf unit of work, and (per
+    // GRAPH-SEMANTICS.md) that item's "done" status is meant to come from
+    // its children closing, never from being worked directly. This is a
+    // STRUCTURAL check (does this ready bead have children in scope?), not
+    // an issue_type check -- retyping a bead to change its dispatch
+    // eligibility does not work (issue_type has no effect on `--ready`
+    // inclusion) and was reverted earlier in this remediation (see Phase
+    // A2). A bead can be a leaf `type=task` OR a decomposed `type=bug`/
+    // `type=feature` parent; only the has-children structure tells them
+    // apart.
+    async function readyLeafBeads() {
+        const [ready, allInScope] = await Promise.all([
+            bdListScoped('--ready --json'),
+            bdListScoped('--json'),
+        ]);
+        const parentIds = new Set(allInScope.filter((b) => b.parent).map((b) => b.parent));
+        return ready.filter((b) => !parentIds.has(b.id));
+    }
+
     /**
      * N8 (apra-fleet-unw2.6, work items b/c): dispatches one reviewer round
      * and returns its schema-validated verdict, with the shared
@@ -1330,8 +1391,21 @@ export async function main(context) {
     async function updateDashboard() {
         let sprintTasks = [];
         try {
-            const listRes = await command(`bd list ${sprintFilter} --json`, { member_name: orchestratorMember, silent: true });
-            sprintTasks = parseBdJson(listRes, `bd list ${sprintFilter} --json`);
+            sprintTasks = await bdListScoped('--json');
+            // apra-fleet-xbu.C6: a bead whose stored `status` is 'open' but
+            // that is NOT in the scope's `--ready` set is blocked -- but the
+            // viewer only ever saw the stored status, so a deadlocked bead
+            // rendered identically (OPEN) to a genuinely-ready one, which
+            // was exactly the "why does the dashboard say OPEN but nothing
+            // is happening" confusion the C1/C4 incident's operator hit.
+            // Reuses `--ready` (the same signal dispatch decisions are
+            // already based on), so this is not a second source of truth.
+            try {
+                const readyIds = new Set((await bdListScoped('--ready --json')).map((b) => b.id));
+                sprintTasks = sprintTasks.map((t) => ({ ...t, ready: readyIds.has(t.id) }));
+            } catch (e) {
+                log(`updateDashboard: failed to compute ready/blocked badge data (non-fatal, status badges fall back to stored status): ${e.message}`);
+            }
         } catch (e) {
             // apra-fleet-nkg: this used to be a bare `catch (e) {}` -- a
             // failure here (e.g. the orchestrator member transiently
@@ -1389,8 +1463,7 @@ export async function main(context) {
 
     await updateDashboard();
 
-    const initialList = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-    let initialBeads = parseBdJson(initialList, `bd list ${sprintFilter} --ready --json`);
+    let initialBeads = await bdListScoped('--ready --json');
 
     if (initialBeads.length === 0) {
         // apra-fleet-h7x: `bd --ready == []` alone used to be an unconditional
@@ -1404,8 +1477,7 @@ export async function main(context) {
         // a stuck 'in_progress' status is the only thing blocking it. Self-heal
         // that one case (reclaim it back to 'open') instead of requiring a
         // human to notice and run `bd update <id> --status open` by hand.
-        const notDoneList = await command(`bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --json`, { member_name: orchestratorMember, silent: true });
-        const notDoneBeads = parseBdJson(notDoneList, `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --json`);
+        const notDoneBeads = await bdListScoped(`--status=${NOT_DONE_STATUSES} --json`);
         const notDoneIds = new Set(notDoneBeads.map((b) => b.id));
 
         const unmetBlockers = (bead) => (bead.dependencies || [])
@@ -1419,14 +1491,46 @@ export async function main(context) {
                 log(`Pre-sprint self-heal (apra-fleet-h7x): ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers -- reclaiming to 'open' so the sprint can dispatch it.`);
                 await command(`bd update ${bead.id} --status open`, { member_name: orchestratorMember, silent: true });
             }
-            const retryList = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-            initialBeads = parseBdJson(retryList, `bd list ${sprintFilter} --ready --json`);
+            initialBeads = await bdListScoped('--ready --json');
         }
 
         if (initialBeads.length === 0) {
             if (notDoneBeads.length === 0) {
                 throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
             }
+
+            // apra-fleet-xbu.C4: the specific, self-inflicted deadlock shape
+            // this incident traced back to -- a `parent-child` edge one way
+            // plus a `blocks` edge the other way between the SAME two beads
+            // (see vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md). `bd
+            // dep cycles` does not detect this shape (it does not walk
+            // parent-child edges), so it silently reads as "everything
+            // blocked" with no actionable diagnosis. Check for it here,
+            // scoped to this sprint's own not-done beads, before falling
+            // through to the generic deadlock message below.
+            const byId = new Map(notDoneBeads.map((b) => [b.id, b]));
+            const cyclePairs = [];
+            for (const bead of notDoneBeads) {
+                for (const dep of bead.dependencies || []) {
+                    if (dep.type !== 'blocks') continue;
+                    const other = byId.get(dep.depends_on_id);
+                    const isParentChildPair = bead.parent === dep.depends_on_id
+                        || (other && other.parent === bead.id);
+                    if (isParentChildPair) {
+                        cyclePairs.push({ blockedIssue: bead.id, blockedBy: dep.depends_on_id });
+                    }
+                }
+            }
+            if (cyclePairs.length > 0) {
+                const fixCommands = cyclePairs.map((p) => `  bd dep remove ${p.blockedIssue} ${p.blockedBy}`);
+                throw new Error(
+                    `Pre-sprint validation failed: scope '${sprintFilter}' is deadlocked by ${cyclePairs.length} ` +
+                    `parent-child + blocks cycle(s) (a bead has a 'blocks' dependency on its own --parent ` +
+                    `ancestor/descendant, which fully blocks both beads even though 'bd dep cycles' will not ` +
+                    `flag it). Fix by removing the offending 'blocks' edge(s):\n${fixCommands.join('\n')}`
+                );
+            }
+
             const diagnostics = notDoneBeads.map((b) => {
                 const blockers = unmetBlockers(b);
                 return blockers.length > 0
@@ -1573,7 +1677,7 @@ export async function main(context) {
                 requirementsContent,
                 feedback: plannerFeedback,
             });
-            const plannerRes = await agent(
+            const dispatchPlanner = () => agent(
                 plannerPrompt,
                 {
                     member_name: getMemberForRole('planner'),
@@ -1584,6 +1688,21 @@ export async function main(context) {
                     timeout_s: 900,
                 }
             );
+            // apra-fleet-j6i: unlike every other dispatch site in this file,
+            // the Planner call had no error handling at all -- a single
+            // AgentDispatchError (e.g. a timeout) propagated uncaught all the
+            // way to main() in bin/cli.mjs, killing the whole CLI process
+            // (and its dashboard server) instead of failing just this round.
+            // Mirror the doer-streak retry-once pattern (line ~1844) as an
+            // interim mitigation; apra-fleet-j6i.2/j6i.3 cover the fuller
+            // dispatch-vs-schema-error distinction this really deserves.
+            let plannerRes;
+            try {
+                plannerRes = await dispatchPlanner();
+            } catch (err) {
+                log(`Planner dispatch threw: ${err.message}. Retrying once.`);
+                plannerRes = await dispatchPlanner();
+            }
             log(`Planner: ${plannerRes}`);
 
             let verdict;
@@ -1640,7 +1759,6 @@ export async function main(context) {
         // =======================
         // 2. Execution Prep
         // =======================
-        const listRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
         // apra-fleet-unw.19: `bd list --ready --json` does not guarantee a
         // stable ordering. It appears to return beads by `created_at`
         // descending, but `created_at` only has 1-SECOND resolution -- two
@@ -1659,7 +1777,7 @@ export async function main(context) {
         // different streak-assignment prompt text between two runs) that
         // the older agentType-only sequence comparison in
         // test/advanced-mock-runner-test.mjs could not see.
-        const readyBeads = parseBdJson(listRes, `bd list ${sprintFilter} --ready --json`)
+        const readyBeads = (await readyLeafBeads())
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
         // A5: an empty `--ready` list is NOT, by itself, evidence the sprint
@@ -1696,13 +1814,12 @@ export async function main(context) {
         const doerPool = getMembersForRole(ROLE_DOER);
 
         while (devRounds < 3) {
-            const currentListRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
             // apra-fleet-unw.19: same non-deterministic-ordering fix as
             // `readyBeads` above -- this is the list that actually feeds the
             // streak-assignment prompt and the doerPool round-robin index
             // below, so an unstable order here was directly observable as
             // prompt drift between two otherwise-identical runs.
-            const currentReady = parseBdJson(currentListRes, `bd list ${sprintFilter} --ready --json`)
+            const currentReady = (await readyLeafBeads())
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReady.length === 0) break;
@@ -1721,17 +1838,30 @@ export async function main(context) {
                 streakCandidate = await agent(
                     buildStreakAssignmentPrompt({ readyBeadIds: currentReady.map((b) => b.id) }),
                     {
+                        // No `agentType` here on purpose: this call has no
+                        // vendored persona of its own (see the streakAssignment
+                        // schema comment in contracts.mjs) and reuses the
+                        // planner MEMBER only for its model-tier routing.
+                        // Activating the full `planner` agentType/persona
+                        // (whose actual system prompt is "read open beads,
+                        // build a sprint DAG") on this narrow, fully-specified
+                        // grouping task caused the model to go exploring via
+                        // its Bash/Read/Grep tools instead of answering
+                        // directly from the prompt -- the real cause of this
+                        // dispatch intermittently running for many minutes
+                        // before the transport timeout fired.
                         member_name: getMemberForRole('planner'),
-                        agentType: 'planner',
                         label: 'Streak Assignment',
                         schema: streakAssignment,
-                        model: FIXED_ROLE_TIER.planner,
+                        model: FIXED_ROLE_TIER.streakAssignment,
                     }
                 );
                 log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Streak Assignment: agent dispatch failed, falling back to one-bead-per-streak: ${err.message}`);
                 } else {
                     throw err;
                 }
@@ -1956,16 +2086,17 @@ export async function main(context) {
                     continue;
                 }
                 const { title, description, priority } = validation;
+                // A bead can only have one parent -- see the matching
+                // comment on the re-review newTasks site below.
                 await command(
-                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues.join(',')} --silent`,
+                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues[0]} --silent`,
                     { member_name: orchestratorMember, silent: true, label: `Create follow-up task from reviewer newTasks: ${title}` }
                 );
             }
 
             await updateDashboard();
 
-            const checkRes = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-            const stillOpen = parseBdJson(checkRes, `bd list ${sprintFilter} --ready --json`);
+            const stillOpen = await bdListScoped('--ready --json');
 
             if (stillOpen.length === 0) {
                 break;
@@ -2029,8 +2160,30 @@ export async function main(context) {
             phase(`Integ Test C${cycle}`);
             let integResult;
             try {
+                // apra-fleet-xbu.C3: integ-test-runner.md's own contract
+                // requires "an explicit list of feature ids ... already
+                // scoped for you by the orchestrator" as a required input,
+                // and explicitly forbids the agent from deriving that list
+                // itself via a bare, unscoped `bd list --type=feature`. This
+                // dispatch used to hand it nothing but a generic instruction
+                // string -- the one input its own contract says it must
+                // never guess. Fetch the scope's open features here and name
+                // them explicitly -- always dispatch (even with zero open
+                // features this cycle: deploy succeeded and a playbook
+                // exists, so this phase runs regardless, per the fixed
+                // per-cycle phase sequence every other cycle-evaluation check
+                // in this file assumes).
+                const openFeatures = await bdListScoped('--type=feature --status=open --json');
+                const featurePrompt = openFeatures.length > 0
+                    ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
+                      `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
+                      `--parent ${targetIssues[0]}.`
+                    : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
+                      `this cycle -- if the playbook still names concrete checks to run, run them; ` +
+                      `otherwise report nothing to test. Add bug beads if needed, filed under ` +
+                      `--parent ${targetIssues[0]}.`;
                 integResult = await agent(
-                    'Run tests using integ-test-playbook.md. Add bug beads if needed.',
+                    featurePrompt,
                     {
                         member_name: getMemberForRole('integ-test-runner'),
                         agentType: 'integ-test-runner',
@@ -2074,22 +2227,14 @@ export async function main(context) {
         // was APPROVED" -- deliberately NOT `bd list --ready == []`, which
         // reads a permanently-blocked or orphaned in_progress bead as
         // success (A5 bug). See goalPriorityMax()/NOT_DONE_STATUSES above.
-        const openAtGoalRes = await command(
-            `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`,
-            { member_name: orchestratorMember, silent: true, label: `Goal-priority open-bead check (<=${goalMax})` }
-        );
-        const openAtGoal = parseBdJson(openAtGoalRes, `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
+        const openAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
 
         // Stall detection: track the closed-bead count for the WHOLE sprint
         // scope (not just goal-priority) so zero forward progress on ANY
         // bead -- not only goal-priority ones -- is caught, per the issue
         // text ("N consecutive iterations making no forward progress on any
         // bead").
-        const closedRes = await command(
-            `bd list ${sprintFilter} --status=closed --json`,
-            { member_name: orchestratorMember, silent: true, label: 'Closed-bead count for stall detection' }
-        );
-        const closedCount = parseBdJson(closedRes, `bd list ${sprintFilter} --status=closed --json`).length;
+        const closedCount = (await bdListScoped('--status=closed --json')).length;
         closedCountHistory.push(closedCount);
         // N9: high-water-mark progress. A cycle only counts as progress when
         // it sets a NEW all-time high for the closed count this sprint --
@@ -2135,11 +2280,8 @@ export async function main(context) {
                 `loop was skipped) -- dispatching a fresh re-review of the current state before deciding ` +
                 `whether to exit, rather than trusting a verdict from an earlier cycle.`
             );
-            const reReviewScopeRes = await command(
-                `bd list ${sprintFilter} --json`,
-                { member_name: orchestratorMember, silent: true, label: `Re-review evidence (current full scope state)` }
-            );
-            const reReviewVerdict = await dispatchReview({ beadIds: [], acceptanceCriteriaJson: reReviewScopeRes });
+            const reReviewScope = await bdListScoped('--json');
+            const reReviewVerdict = await dispatchReview({ beadIds: [], acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
             lastReviewVerdict = reReviewVerdict.verdict;
             reviewedThisCycle = true;
 
@@ -2164,8 +2306,13 @@ export async function main(context) {
                     continue;
                 }
                 const { title, description, priority } = validation;
+                // A bead can only have one parent -- when multiple sprint-root
+                // target issues are given, file follow-up work under the
+                // first one (apra-fleet-xbu.C1: --parent never accepts a
+                // comma-joined list, so `targetIssues.join(',')` here was
+                // silently creating an unparented/misparented bead).
                 await command(
-                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues.join(',')} --silent`,
+                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues[0]} --silent`,
                     { member_name: orchestratorMember, silent: true, label: `Create follow-up task from re-review newTasks: ${title}` }
                 );
             }
@@ -2195,16 +2342,8 @@ export async function main(context) {
     group('Finalization');
     phase(`Final Review C${finalCycleLabel}`);
 
-    const finalOpenAtGoalRes = await command(
-        `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`,
-        { member_name: orchestratorMember, silent: true, label: `Final goal-priority open-bead check (<=${goalMax})` }
-    );
-    const finalOpenAtGoal = parseBdJson(finalOpenAtGoalRes, `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
-    const finalClosedRes = await command(
-        `bd list ${sprintFilter} --status=closed --json`,
-        { member_name: orchestratorMember, silent: true, label: 'Final closed-bead count' }
-    );
-    const finalClosedCount = parseBdJson(finalClosedRes, `bd list ${sprintFilter} --status=closed --json`).length;
+    const finalOpenAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
+    const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
 
     let finalVerdictResult;
     try {

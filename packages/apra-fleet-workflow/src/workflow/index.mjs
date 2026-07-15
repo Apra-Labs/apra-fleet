@@ -1114,6 +1114,23 @@ export class FleetWorkflow extends EventEmitter {
                 throw err;
             }
 
+            // `result.isError` is an MCP-transport-level flag only -- it does
+            // NOT reflect the exit code of the underlying process the server
+            // ran. A `bd`/git/etc. invocation that exits non-zero (e.g. a
+            // malformed argument) still comes back with isError unset, so
+            // without this check it was reported as success:true both to
+            // callers and to the dashboard viewer's activity badge. Older
+            // servers with no structuredContent.exitCode are left exactly as
+            // before (exitCode undefined skips this branch).
+            const exitCode = result.structuredContent && typeof result.structuredContent.exitCode === 'number'
+                ? result.structuredContent.exitCode
+                : null;
+            if (exitCode !== null && exitCode !== 0) {
+                const err = new CommandError(`[Command Failed] Exit code ${exitCode}: ${outText}`, { details: { text: outText, command: finalCmd, exitCode } });
+                this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
+                throw err;
+            }
+
             this.emit('activity:end', { ...activityMeta, duration, success: true, output: outText });
             return failSoft ? { ok: true, output: cleanOutput, error: null } : cleanOutput;
         } catch (error) {

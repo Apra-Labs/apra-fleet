@@ -178,14 +178,35 @@ function buildDevManifest(root: string): AssetManifest {
     scripts[entry] = `scripts/${entry}`;
   }
 
-  // Source PM skills and agents from vendor/apra-pm submodule (dev mode),
-  // fall back to dist/ for npm global installs where submodule is absent.
+  // Source PM skills from vendor/apra-pm submodule (dev mode), fall back to
+  // dist/ for npm global installs where submodule is absent. Skills have no
+  // build-time resolution step, so reading the submodule directly is safe.
   const vendorPmSkills = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
-  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
   const pmSkillsDir = fs.existsSync(vendorPmSkills) ? vendorPmSkills : path.join(root, 'dist', 'skills', 'pm');
-  const agentsDir = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
   const pmBase = fs.existsSync(vendorPmSkills) ? 'vendor/apra-pm/skills/pm' : 'dist/skills/pm';
-  const agentsBase = fs.existsSync(vendorAgents) ? 'vendor/apra-pm/agents' : 'dist/agents';
+
+  // Agents are different: each vendor/apra-pm/agents/*.md file contains an
+  // unresolved `<!-- GRAPH-SEMANTICS -->` marker that only scripts/vendor-pm.mjs
+  // resolves (inlining agents/_shared/GRAPH-SEMANTICS.md) during its
+  // submodule -> dist/agents copy step. Reading the raw submodule here, as
+  // this used to do (preferring vendor/apra-pm/agents whenever the submodule
+  // was present on disk -- true for every dev-mode checkout), shipped that
+  // literal unresolved marker string into every non-SEA install. Prefer
+  // dist/agents (already build-resolved) whenever it exists; only fall back
+  // to the raw submodule -- with a warning -- if the build hasn't run yet.
+  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
+  const distAgents = path.join(root, 'dist', 'agents');
+  const distAgentsExists = fs.existsSync(distAgents);
+  const agentsDir = distAgentsExists ? distAgents : vendorAgents;
+  const agentsBase = distAgentsExists ? 'dist/agents' : 'vendor/apra-pm/agents';
+  if (!distAgentsExists && fs.existsSync(vendorAgents)) {
+    console.warn(
+      'Warning: dist/agents not found -- installing agent contracts directly from ' +
+      'vendor/apra-pm/agents. Run `node scripts/vendor-pm.mjs` first (or `npm run build`) ' +
+      'so the <!-- GRAPH-SEMANTICS --> marker is resolved; otherwise installed agent files ' +
+      'will contain the literal, unresolved marker text.'
+    );
+  }
 
   const skills = collectFilesRec(pmSkillsDir, pmBase, pmBase);
   const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
@@ -984,8 +1005,11 @@ Then re-run:  apra-fleet install`);
       }
     } else {
       const root = findProjectRoot();
-      const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
-      const agentsSrc = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
+      // Same dist/agents-first preference as the manifest-building step
+      // above (and for the same reason: only dist/agents has the
+      // <!-- GRAPH-SEMANTICS --> marker resolved).
+      const distAgentsSrc = path.join(root, 'dist', 'agents');
+      const agentsSrc = fs.existsSync(distAgentsSrc) ? distAgentsSrc : path.join(root, 'vendor', 'apra-pm', 'agents');
       for (const entry of fs.readdirSync(agentsSrc, { withFileTypes: true })) {
         if (entry.isDirectory()) continue;
         let content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf-8');

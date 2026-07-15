@@ -259,10 +259,19 @@ function buildSpyFleetApi() {
                 return mockCmdResult(0, 'ok');
             }
             if (/^bd list .*--ready/.test(opts.command)) {
-                // First ready-list call returns one bead so the sprint can
-                // proceed; subsequent calls (post-doer) return none so the
-                // develop loop and cycle loop both terminate immediately.
-                const alreadyReturnedReady = commandLog.filter((c) => /^bd list .*--ready/.test(c)).length > 1;
+                // The first TWO ready-list calls return one bead so the
+                // sprint can proceed; subsequent calls (post-doer) return
+                // none so the develop loop and cycle loop both terminate
+                // immediately. Two, not one: apra-fleet-xbu.C6 added an
+                // early --ready fetch inside updateDashboard() (to annotate
+                // the dashboard's per-bead ready/blocked badge) that now
+                // runs once, unconditionally, before pre-sprint validation's
+                // own initialBeads --ready check -- so the "give the bead
+                // once" allowance has to cover both calls, or pre-sprint
+                // validation sees an empty ready list on its very first
+                // real check and hard-fails as if there were no work at all.
+                const readyCallsSoFar = commandLog.filter((c) => /^bd list .*--ready/.test(c)).length;
+                const alreadyReturnedReady = readyCallsSoFar > 2;
                 return mockCmdResult(0, alreadyReturnedReady ? '[]' : '[{"id":"bd-1","title":"Task"}]');
             }
             if (/^bd list /.test(opts.command)) {
