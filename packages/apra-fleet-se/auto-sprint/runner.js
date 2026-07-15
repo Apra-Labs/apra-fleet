@@ -1390,9 +1390,54 @@ export async function main(context) {
     await updateDashboard();
 
     const initialList = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
-    const initialBeads = parseBdJson(initialList, `bd list ${sprintFilter} --ready --json`);
+    let initialBeads = parseBdJson(initialList, `bd list ${sprintFilter} --ready --json`);
+
     if (initialBeads.length === 0) {
-        throw new Error(`Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}'. Ensure beads are in 'open' or 'ready' status.`);
+        // apra-fleet-h7x: `bd --ready == []` alone used to be an unconditional
+        // hard-fail here, indistinguishable from "nothing left to do" -- even
+        // when real, unblocked work exists but is deadlocked on a bead stuck
+        // in a stale 'in_progress' state (e.g. left behind by a previously
+        // interrupted sprint run that never reached `bd close`). `bd --ready`
+        // deliberately excludes non-'open' beads, so it cannot itself tell
+        // "orphaned" from "actively being worked" -- but a bead whose own
+        // 'blocks' dependencies are ALL closed has nothing left to wait on, so
+        // a stuck 'in_progress' status is the only thing blocking it. Self-heal
+        // that one case (reclaim it back to 'open') instead of requiring a
+        // human to notice and run `bd update <id> --status open` by hand.
+        const notDoneList = await command(`bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --json`, { member_name: orchestratorMember, silent: true });
+        const notDoneBeads = parseBdJson(notDoneList, `bd list ${sprintFilter} --status=${NOT_DONE_STATUSES} --json`);
+        const notDoneIds = new Set(notDoneBeads.map((b) => b.id));
+
+        const unmetBlockers = (bead) => (bead.dependencies || [])
+            .filter((d) => d.type === 'blocks' && notDoneIds.has(d.depends_on_id))
+            .map((d) => d.depends_on_id);
+
+        const staleInProgress = notDoneBeads.filter((b) => b.status === 'in_progress' && unmetBlockers(b).length === 0);
+
+        if (staleInProgress.length > 0) {
+            for (const bead of staleInProgress) {
+                log(`Pre-sprint self-heal (apra-fleet-h7x): ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers -- reclaiming to 'open' so the sprint can dispatch it.`);
+                await command(`bd update ${bead.id} --status open`, { member_name: orchestratorMember, silent: true });
+            }
+            const retryList = await command(`bd list ${sprintFilter} --ready --json`, { member_name: orchestratorMember, silent: true });
+            initialBeads = parseBdJson(retryList, `bd list ${sprintFilter} --ready --json`);
+        }
+
+        if (initialBeads.length === 0) {
+            if (notDoneBeads.length === 0) {
+                throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
+            }
+            const diagnostics = notDoneBeads.map((b) => {
+                const blockers = unmetBlockers(b);
+                return blockers.length > 0
+                    ? `  - ${b.id} [${b.status}] -- blocked by: ${blockers.join(', ')}`
+                    : `  - ${b.id} [${b.status}] -- unblocked but status excludes it from --ready`;
+            });
+            throw new Error(
+                `Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}', and ${notDoneBeads.length} ` +
+                `not-done bead(s) remain deadlocked:\n${diagnostics.join('\n')}`
+            );
+        }
     }
 
     // =======================
