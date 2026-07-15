@@ -4,7 +4,6 @@ import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { getProvider } from './code-intelligence.js';
-import { orJoinFtsTerms } from '../services/knowledge/audn.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 import { FLEET_DIR } from '../paths.js';
 
@@ -169,18 +168,18 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
     hint_modules: input.hint_modules,
   });
 
-  // Append up to 3 global knowledge entries. D4 (T2.1): OR-join via the
-  // shared helper -- each term (a raw session file path or a hint symbol) is
-  // sanitized through ftsSafeTerm before joining, so FTS-hostile characters
-  // in a raw file path ('/', '.') cannot throw into the catch below, and
-  // multiple terms surface entries matching ANY of them instead of requiring
-  // ALL of them (implicit AND, KB finding 83726d75 / feedback.md finding 3).
+  // Append up to 3 global knowledge entries. D4 (T2.1): pass raw terms (a raw
+  // session file path or a hint symbol) via fts_terms -- query() sanitizes
+  // each term through ftsSafeTerm and OR-joins them centrally, so FTS-hostile
+  // characters in a raw file path ('/', '.') cannot throw into the catch
+  // below, and multiple terms surface entries matching ANY of them instead of
+  // requiring ALL of them (implicit AND, KB finding 83726d75 / feedback.md
+  // finding 3).
   const searchTerms = input.session_files?.length ? input.session_files : (input.hint_symbols ?? []);
-  const searchTerm = orJoinFtsTerms(searchTerms);
-  if (searchTerm) {
+  if (searchTerms.length) {
     try {
       const globalResult = await providers.global.query({
-        query: searchTerm,
+        fts_terms: searchTerms,
         l1_only: true,
         limit: 10,
         include_stale: false,
@@ -229,34 +228,30 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
       }
 
       if (neighbors.length > 0) {
-        // D4 (T2.1): shared OR-join helper -- sanitizes per-neighbor (a
-        // single FTS-hostile name degrades to skipping that neighbor rather
-        // than killing the whole batch query) AND OR-joins across neighbors
-        // so an entry matching ANY neighbor surfaces instead of requiring ALL
-        // of them (implicit AND).
-        const query = orJoinFtsTerms(neighbors);
+        // D4 (T2.1): pass raw neighbor names via fts_terms -- query()
+        // sanitizes per-neighbor (a single FTS-hostile name degrades to
+        // skipping that neighbor rather than killing the whole batch query)
+        // AND OR-joins across neighbors so an entry matching ANY neighbor
+        // surfaces instead of requiring ALL of them (implicit AND).
+        const neighborResult = await providers.project.query({
+          fts_terms: neighbors,
+          l1_only: true,
+          limit: 10,
+          include_stale: false,
+        });
 
-        if (query) {
-          const neighborResult = await providers.project.query({
-            query,
-            l1_only: true,
-            limit: 10,
-            include_stale: false,
-          });
-
-          // Merge below direct hits: skip ids already present (direct + global),
-          // mark each addition via "graph-neighbor", cap at ADDED_ENTRY_CAP.
-          const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
-          const additions: Array<KBEntry & { via: string }> = [];
-          for (const entry of neighborResult.results) {
-            if (additions.length >= ADDED_ENTRY_CAP) break;
-            if (existingIds.has(entry.id)) continue;
-            existingIds.add(entry.id);
-            additions.push({ ...entry, via: 'graph-neighbor' });
-          }
-          if (additions.length > 0) {
-            result.top_entries = [...(result.top_entries ?? []), ...additions];
-          }
+        // Merge below direct hits: skip ids already present (direct + global),
+        // mark each addition via "graph-neighbor", cap at ADDED_ENTRY_CAP.
+        const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
+        const additions: Array<KBEntry & { via: string }> = [];
+        for (const entry of neighborResult.results) {
+          if (additions.length >= ADDED_ENTRY_CAP) break;
+          if (existingIds.has(entry.id)) continue;
+          existingIds.add(entry.id);
+          additions.push({ ...entry, via: 'graph-neighbor' });
+        }
+        if (additions.length > 0) {
+          result.top_entries = [...(result.top_entries ?? []), ...additions];
         }
       }
     } catch {

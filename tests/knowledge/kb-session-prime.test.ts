@@ -266,11 +266,10 @@ describe('kb_session_prime graph-neighbor expansion', () => {
 
     expect(NEIGHBOR_CAP).toBe(10);
     expect(mockProjectQuery).toHaveBeenCalledTimes(1);
-    const passedQuery = mockProjectQuery.mock.calls[0][0].query as string;
+    const passedTerms = mockProjectQuery.mock.calls[0][0].fts_terms as string[];
     // 10 neighbors survive the cap; the 11th is excluded.
-    const quotedTerms = passedQuery.match(/"nbr\d+"/g) ?? [];
-    expect(quotedTerms).toHaveLength(NEIGHBOR_CAP);
-    expect(passedQuery).not.toContain('"nbr10"');
+    expect(passedTerms).toHaveLength(NEIGHBOR_CAP);
+    expect(passedTerms).not.toContain('nbr10');
   });
 
   it('caps additions at ADDED_ENTRY_CAP (8 candidates -> 5 added)', async () => {
@@ -363,15 +362,16 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['root'] }));
 
     expect(mockProjectQuery).toHaveBeenCalledTimes(1);
-    const passedQuery = mockProjectQuery.mock.calls[0][0].query as string;
-    expect(passedQuery).toBe('"goodName"');
+    const passedTerms = mockProjectQuery.mock.calls[0][0].fts_terms as string[];
+    expect(passedTerms).toEqual(['((', 'goodName']);
     expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['c']);
   });
 
-  // -- T2.1 / D4: shared OR-join helper proofs. MUST FAIL on today's code
-  // (both sites use a plain join(' '), implicit AND across terms), PASS after.
+  // -- T2.1 / D4: the tool passes RAW terms via fts_terms and does not
+  // sanitize or pre-build an FTS expression itself; query() is the single
+  // sanitization point and OR-joins across terms (implicit AND is on query()).
 
-  it('neighbor batch OR-joins multiple terms (not implicit AND)', async () => {
+  it('neighbor batch passes raw terms via fts_terms (not implicit AND)', async () => {
     mockPrime.mockResolvedValue(primedContext([]));
     mockContext.mockResolvedValue(contextResult(['alpha', 'beta']));
     mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
@@ -380,11 +380,12 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     await kbSessionPrime({ hint_symbols: ['root'] });
 
     expect(mockProjectQuery).toHaveBeenCalledTimes(1);
-    const passedQuery = mockProjectQuery.mock.calls[0][0].query as string;
-    expect(passedQuery).toBe('"alpha" OR "beta"');
+    const passed = mockProjectQuery.mock.calls[0][0];
+    expect(passed.fts_terms).toEqual(['alpha', 'beta']);
+    expect(passed.query).toBeUndefined();
   });
 
-  it('global-append OR-joins multiple hint_symbols (not implicit AND)', async () => {
+  it('global-append passes raw hint_symbols via fts_terms (not implicit AND)', async () => {
     mockPrime.mockResolvedValue(primedContext([]));
     mockContext.mockResolvedValue(contextResult([]));
     mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
@@ -394,11 +395,12 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     await kbSessionPrime({ hint_symbols: ['alpha', 'beta'] });
 
     expect(mockGlobalQuery).toHaveBeenCalledTimes(1);
-    const passedQuery = mockGlobalQuery.mock.calls[0][0].query as string;
-    expect(passedQuery).toBe('"alpha" OR "beta"');
+    const passed = mockGlobalQuery.mock.calls[0][0];
+    expect(passed.fts_terms).toEqual(['alpha', 'beta']);
+    expect(passed.query).toBeUndefined();
   });
 
-  it('global-append sanitizes FTS-hostile raw session_files and OR-joins them', async () => {
+  it('global-append passes raw session_files through untouched via fts_terms', async () => {
     mockPrime.mockResolvedValue(primedContext([]));
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
 
@@ -406,13 +408,11 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     await kbSessionPrime({ session_files: ['src/tools/kb-capture.ts', 'src/services/knowledge/audn.ts'] });
 
     expect(mockGlobalQuery).toHaveBeenCalledTimes(1);
-    const passedQuery = mockGlobalQuery.mock.calls[0][0].query as string;
-    // Slashes/dots are stripped (FTS5-hostile raw path chars), tokens are
-    // quoted, and the two file paths are OR-joined rather than AND-joined.
-    expect(passedQuery).not.toContain('/');
-    expect(passedQuery).toContain(' OR ');
-    expect(passedQuery).toContain('"kb"');
-    expect(passedQuery).toContain('"audn"');
+    const passed = mockGlobalQuery.mock.calls[0][0];
+    // Raw paths are passed through untouched -- the tool does not sanitize;
+    // query() is the single sanitization point.
+    expect(passed.fts_terms).toEqual(['src/tools/kb-capture.ts', 'src/services/knowledge/audn.ts']);
+    expect(passed.query).toBeUndefined();
   });
 });
 
