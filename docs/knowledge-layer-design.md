@@ -156,6 +156,13 @@ When a new entry arrives, the KB Service runs an AUDN evaluation before storing:
   BOTH entries stay live by default. The old entry is marked `superseded_at` +
   `stale=1` only when the caller explicitly passes `supersedes: <matchedId>`
   matching AUDN's matched entry. Old entry is kept as evidence, never deleted.
+  Because supersede is opt-in, `user-directive` proposals no longer collapse
+  automatically: several refined proposals on one topic each stay live and all
+  surface in `listDirectives`, so a human working the `apra-fleet kb
+  approve-directive` queue may see multiple revisions of the same proposal
+  rather than one. This is the same tradeoff as above -- distinct proposals are
+  no longer destroyed by an inferred match -- but it changes what the queue
+  shows.
 - **Delete (v2)** -- contradicts a false belief. In v1, contradictions are NOT
   auto-deleted. Instead, the KB Service sets `flagged_for_review: true` on the
   existing entry and stores the new entry as `UNVERIFIED` with
