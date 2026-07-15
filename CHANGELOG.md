@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- feat/fleet-reorg
+
+Sprint goal: continue scope issue `apra-fleet-7pm` (P1 epic, "apra-fleet workflow subsystem: SEA-binary workflow runner") from the point the prior `feat/fleet-workflow-subsystem` sprint left off. **Goal work landed (15 beads closed this sprint, final open-at-goal-priority count 0), but the sprint's own final verdict is FAIL** -- the final reviewer dispatch timed out after repair attempts (`Command timed out after 300000ms of inactivity`) rather than returning a schema-valid verdict, so the sprint could not self-certify despite the code landing. What shipped: `apra-fleet-7pm.8` self-heal extraction in the workflow launcher (`src/cli/workflow.ts` re-extracts the on-disk payload from embedded SEA assets if it's found missing/incomplete); `apra-fleet-7pm.9` `uninstall --skill workflows` (removes the shared runtime/schema dirs and only the built-in workflow subdirectories, preserving user-authored workflows); `apra-fleet-7pm.10` the update flow reading back and re-threading the persisted `--workflows` mode into a re-invoked install; `apra-fleet-7pm.11` `docs/authoring-workflows.md` plus doc deltas; `apra-fleet-7pm.12` a fix for broken npm-mode auto-sprint runtime imports in a clean global install; `apra-fleet-7pm.13`/`.15` build-binary smoke tests for the workflow subcommand and an auto-sprint-as-built-in-workflow packaged-binary e2e test; and `apra-fleet-7pm.14` a regression guard pinning the existing CLI command surface. Also landed outside the epic: a redesigned Sprint/Backlog dependency-tree beads panel in the auto-sprint dashboard, and a positioning paper comparing `apra-fleet-workflow` to LangChain/LangGraph.
+
+Deploy/integration still could not run this sprint, for the same reason recorded last sprint and tracked as `apra-fleet-nbp` (P3, still open): `integ-test-playbook.md` remains absent from the repo root, and `deploy.md` still lacks the required `## Deploy`/`## Smoke test` sections (it has a `## Steps` section with unresolved `<branch>`/`<run-id>`/`<tag>` placeholders and a manual, non-scriptable verify step instead). One of the three deploy attempts this sprint also flagged a stray instruction-like line in `deploy.md` ("Must be run using model tier `cheap`") as a likely prompt-injection attempt, which was correctly not followed.
+
+Carried forward: `apra-fleet-nbp` (missing deploy/integ-test runbook sections, P3, still open, still blocking automated deploy verification). No other work from this sprint's scope was left open.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $0.0000.
+Remaining budget: unknown/unbounded.
+Pricing source: all 35 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- feat/fleet-workflow-subsystem
 
 Sprint goal: scope issue `apra-fleet-7pm` (P1 epic, "apra-fleet workflow subsystem: SEA-binary workflow runner"). **Goal NOT met -- sprint verdict is FAIL.** What landed this sprint: `src/cli/workflow.ts`, the launcher subcommand that runs a workflow script (an ESM entry under `workflows/<name>/`) from inside the SEA binary against a live fleet connection; a shared, single-implementation connection-resolution helper (`@apralabs/apra-fleet-client/server-resolution`) used identically by the launcher and by `packages/apra-fleet-se/bin/cli.mjs`, resolving HTTP-singleton-attach-first with stdio self-spawn as fallback (`docs/adr-workflow-server-resolution.md`); SEA asset embedding of the workflow runtime, agent schemas, and built-in workflows via `scripts/gen-sea-config.mjs`; and `docs/authoring-workflows.md` plus deltas to `docs/install.md`, `docs/npm-packaging.md`, and `packages/apra-fleet-se/docs/cli-reference.md`. Entry-path escape prevention (rejecting `..`/absolute-path manifest entries) is implemented and tested. Full test suite passes (2275/2275, 18 skipped) and `npm run build` is clean.
