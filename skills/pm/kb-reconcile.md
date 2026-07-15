@@ -42,7 +42,7 @@ running this post-merge by hand. Omit `path` to resolve
 `path` only when importing a bible from somewhere else (caller-asserted
 trust, see above).
 
-Report: `{ imported, skipped, superseded, flagged, sweep }`. `kb_import`
+Report: `{ imported, skipped, linked, flagged, sweep }`. `kb_import`
 already runs a freshness sweep internally at the end of its own run, scoped
 to the imported entries' impact -- Step 2 below is still worth running
 explicitly (see its note).
