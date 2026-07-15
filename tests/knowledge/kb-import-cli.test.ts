@@ -48,19 +48,19 @@ describe('KB_IMPORT_USAGE carries the trust-boundary line', () => {
 describe('kbImportCmd (handler unit)', () => {
   it('prints the report and exits 0 on success', async () => {
     const importFn: KbImportFn = vi.fn(async () =>
-      JSON.stringify({ imported: 3, skipped: 1, superseded: 2, flagged: 1, sweep: { checked: 5, staled: 2, unstaled: 1 } })
+      JSON.stringify({ imported: 3, skipped: 1, linked: 2, flagged: 1, sweep: { checked: 5, staled: 2, unstaled: 1 } })
     );
     const code = await kbImportCmd(importFn, ['--repo', '/some/repo']);
     expect(code).toBe(0);
     expect(importFn).toHaveBeenCalledWith({ repo: '/some/repo', path: undefined });
     const out = logSpy.mock.calls.flat().join('\n');
-    expect(out).toContain('Imported 3, skipped 1, superseded 2, flagged 1.');
+    expect(out).toContain('Imported 3, skipped 1, linked 2, flagged 1.');
     expect(out).toContain('Freshness sweep: checked 5, staled 2, unstaled 1.');
   });
 
   it('passes --path through', async () => {
     const importFn: KbImportFn = vi.fn(async () =>
-      JSON.stringify({ imported: 0, skipped: 0, superseded: 0, flagged: 0, sweep: { checked: 0, staled: 0, unstaled: 0 } })
+      JSON.stringify({ imported: 0, skipped: 0, linked: 0, flagged: 0, sweep: { checked: 0, staled: 0, unstaled: 0 } })
     );
     await kbImportCmd(importFn, ['--path', '/some/bible.json']);
     expect(importFn).toHaveBeenCalledWith({ repo: undefined, path: '/some/bible.json' });

@@ -2,7 +2,7 @@
 // post-merge, human-facing entry point for absorbing a merged bible into the
 // warm local KB. Thin wrapper over the SAME kbImport implementation the MCP
 // tool uses (no logic duplication): it parses argv, calls kbImport, prints the
-// {imported, skipped, superseded, flagged} + sweep report in plain ASCII, and
+// {imported, skipped, linked, flagged} + sweep report in plain ASCII, and
 // exits non-zero on a resolution failure (missing bible / invalid repo).
 //
 // TRUST BOUNDARY (LOW-1): importing the repo-resolved .fleet/kb-canonical.json
@@ -54,7 +54,7 @@ export async function kbImportCmd(importFn: KbImportFn, args: string[]): Promise
     const r = JSON.parse(raw) as KbImportReport;
     console.log(
       'Imported ' + r.imported + ', skipped ' + r.skipped +
-      ', superseded ' + r.superseded + ', flagged ' + r.flagged + '.'
+      ', linked ' + r.linked + ', flagged ' + r.flagged + '.'
     );
     console.log(
       'Freshness sweep: checked ' + r.sweep.checked +

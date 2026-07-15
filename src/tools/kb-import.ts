@@ -97,7 +97,7 @@ function synthesizeContent(entry: BibleEntry): string {
 export interface KbImportReport {
   imported: number;
   skipped: number;
-  superseded: number;
+  linked: number;
   flagged: number;
   sweep: { checked: number; staled: number; unstaled: number };
 }
@@ -127,7 +127,7 @@ export async function kbImport(input: KbImportInput): Promise<string> {
 
   let imported = 0;
   let skipped = 0;
-  let superseded = 0;
+  let linked = 0;
   let flagged = 0;
 
   for (const candidate of parsed) {
@@ -174,7 +174,12 @@ export async function kbImport(input: KbImportInput): Promise<string> {
 
     if (audn_decision === 'add') imported++;
     else if (audn_decision === 'none') skipped++;
-    else if (audn_decision === 'update') superseded++;
+    // AUDN 'update' means the entry was linked to a same-topic predecessor and
+    // BOTH stay live -- supersede is opt-in (input.supersedes) and kb_import
+    // never sets it, because a bible authored on another branch cannot name a
+    // local entry's id. Counting these as "superseded" reported a retirement
+    // that never happened.
+    else if (audn_decision === 'update') linked++;
     else if (audn_decision === 'flagged') flagged++;
   }
 
@@ -195,6 +200,6 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   // basis paths remain cwd-independent either way).
   const sweep = await provider.freshnessSweep(repoAnchor);
 
-  const report: KbImportReport = { imported, skipped, superseded, flagged, sweep };
+  const report: KbImportReport = { imported, skipped, linked, flagged, sweep };
   return JSON.stringify(report);
 }

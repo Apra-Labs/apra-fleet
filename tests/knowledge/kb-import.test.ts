@@ -174,7 +174,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     expect(rowCount()).toBe(countAfterFirst); // no new rows
   });
 
-  it('TEST 4: AUDN routing -- duplicate skipped, refinement superseded, contradiction flagged, each counted', async () => {
+  it('TEST 4: AUDN routing -- duplicate skipped, refinement linked, contradiction flagged, each counted', async () => {
     // Seed pre-existing local entries the bible entries will match.
     await provider.capture(localInput({
       title: 'dupToken alpha', content: 'dup body text',
@@ -201,7 +201,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
 
     const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
     expect(report.skipped).toBe(1);     // the duplicate
-    expect(report.superseded).toBe(1);  // the refinement
+    expect(report.linked).toBe(1);      // the refinement
     expect(report.flagged).toBe(1);     // the contradiction
     expect(report.imported).toBe(0);
   });
@@ -226,7 +226,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     expect(provider.hasEntry('keep-me-1')).toBe(true);   // fresh id preserved
     expect(provider.hasEntry('bib-coll')).toBe(false);   // update minted a fresh id
     expect(report.imported).toBe(1);   // keep-me-1
-    expect(report.superseded).toBe(1); // the collision
+    expect(report.linked).toBe(1);     // the collision
   });
 
   it('TEST 6: post-import sweep stales entries whose basis no longer matches the merged worktree', async () => {
