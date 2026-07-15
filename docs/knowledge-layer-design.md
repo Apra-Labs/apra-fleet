@@ -152,8 +152,10 @@ until the index card says it is relevant.
 When a new entry arrives, the KB Service runs an AUDN evaluation before storing:
 
 - **Add** -- genuinely new fact, no existing entry covers it -> store
-- **Update** -- better version of an existing fact -> mark old as `superseded_at`,
-  store new. Old entry is kept as evidence, never deleted.
+- **Update** -- better version of an existing fact -> records a `refines` link;
+  BOTH entries stay live by default. The old entry is marked `superseded_at` +
+  `stale=1` only when the caller explicitly passes `supersedes: <matchedId>`
+  matching AUDN's matched entry. Old entry is kept as evidence, never deleted.
 - **Delete (v2)** -- contradicts a false belief. In v1, contradictions are NOT
   auto-deleted. Instead, the KB Service sets `flagged_for_review: true` on the
   existing entry and stores the new entry as `UNVERIFIED` with
@@ -163,8 +165,8 @@ When a new entry arrives, the KB Service runs an AUDN evaluation before storing:
 - **None** -- duplicate, same content as existing entry -> discard.
 
 This keeps the compiled truth clean. The evidence trail is append-only.
-You can query "what did we believe about X before the June refactor?" via
-the `superseded_at` timestamp.
+On the explicit-supersede path only, you can query "what did we believe about
+X before the June refactor?" via the `superseded_at` timestamp.
 
 ### Self-Wiring Links (zero LLM cost)
 
