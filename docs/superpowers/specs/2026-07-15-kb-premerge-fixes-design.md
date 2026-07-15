@@ -143,14 +143,51 @@ order, so which entry gets destroyed depends on ranking, not on topicality.
 failure (two same-topic entries with no keyword overlap are not merged -> a
 harmless duplicate) but not this one, which loses data.
 
-### Design
+### REVISED after an implementation finding (2026-07-15)
 
-The `update` branch inserts the new entry and links it to the prior one. It does
-NOT set `superseded_at` or `stale`:
+The original design said "AUDN never supersedes; curation decides what to
+retire". That was wrong, and the error was mine: I never checked HOW curation
+retires. It retires through the exact mechanism the design deleted.
+
+`skills/pm/kb-review.md` Step 4 is the KB agent's resolution workflow. Four of
+its five paths use a corrective `kb_capture` specifically to trigger AUDN's
+auto-supersede:
+
+- A (keep original):   "AUDN will UPDATE (supersede) the challenger."
+- B (keep challenger): "AUDN updates (supersedes) the original."
+- M (merge):           "AUDN supersedes whichever entry has the closest title match."
+- D (delete both):     "AUDN supersedes the original."
+
+It even instructs the agent to craft "corrected content that carries no
+contradiction keyword or polarity word (or AUDN will flag it again instead of
+updating)" -- i.e. the curation layer deliberately steers AUDN's dedup path and
+uses it as an implicit supersede API.
+
+After removing AUDN's trigger, only two writers of `superseded_at` remain:
+`resolveContradiction` (requires a genuine contradiction pair) and the
+directive-rejection path (requires `type='user-directive'`). `invalidate()` only
+touches `context-cache`. So paths M and D would have had NO retirement mechanism,
+and A/B would have changed documented behavior.
+
+### Design (revised): supersede becomes opt-in, not inferred
+
+`KBEntryInput` gains `supersedes?: string`. AUDN's `update` branch retires the
+prior entry ONLY when the caller explicitly named it:
 
 ```ts
 if (decision.decision === 'update') {
   const newId = randomUUID();
+  if (input.supersedes === decision.matchedId) {
+    // EXPLICIT: caller named what it replaces. Unchanged legacy semantics --
+    // superseded_at + stale=1, flagged_for_review deliberately NOT cleared
+    // (that is resolveContradiction's behavior, not this path's).
+    db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?')
+      .run(now, decision.matchedId);
+    this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
+    this.wireLinks(db, newId, input);
+    return { id: newId, audn_decision: 'update' };
+  }
+  // IMPLICIT: symbol+file overlap is NOT consent to destroy. Link and keep both.
   this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
   this.wireLinks(db, newId, input);
   db.prepare('INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)')
@@ -159,9 +196,24 @@ if (decision.decision === 'update') {
 }
 ```
 
-The supersede mechanism REMAINS for explicit paths -- `resolveContradiction`,
-`promote`, and the `/pm kb-reconcile` flow all legitimately retire entries.
-Only AUDN's automatic trigger on symbol+file overlap is removed.
+Why this is strictly better than the original design:
+
+- It kills the data loss at its source. The 25% came from ordinary doer/reviewer
+  captures that never intended to replace anything. They will not pass
+  `supersedes`, so they link.
+- It preserves curation for all five paths, with byte-identical semantics --
+  the explicit branch runs the same UPDATE the old code ran.
+- It preserves every existing supersede assertion in the test suite. The
+  contradiction-pair substitution the original design implied would have broken
+  four assertions in `kb-flagged-pipeline.test.ts`, because
+  `resolveContradiction` also clears `flagged_for_review` while the AUDN path
+  does not. Test repairs collapse to adding `supersedes: <id>` to the second
+  capture.
+
+`skills/pm/kb-review.md` Step 4 must be rewritten to pass `supersedes` explicitly
+in paths A, B, M and D, rather than relying on AUDN to infer it. Note kumaakh's
+PR review asks for `skills/pm/` to move into the `apra-pm` submodule; that
+relocation is out of scope here, but whoever performs it must carry this change.
 
 ### Rationale
 

@@ -4,7 +4,7 @@
 
 **Goal:** Fix two measured defects in the KB before PR #305 merges: `kb_query` throws on 61% of realistic agent queries, and AUDN silently destroys 25% of captured entries.
 
-**Architecture:** Two independent changes in `src/services/knowledge/`. Fix 1 gives FTS query-building a single sanitization point by splitting the overloaded `QueryOptions.query` field into free-text (`query`) and pre-tokenized (`fts_terms`) inputs. Fix 2 stops AUDN from auto-superseding on symbol+file overlap; it links instead, while leaving the supersede mechanism intact for the explicit curation paths.
+**Architecture:** Two changes in `src/services/knowledge/`. Fix 1 gives FTS query-building a single sanitization point by splitting the overloaded `QueryOptions.query` field into free-text (`query`) and pre-tokenized (`fts_terms`) inputs. Fix 2 makes supersede opt-in: AUDN retires the prior entry only when a capture explicitly names it via `supersedes`, and links `refines` otherwise. Supersede could not simply be removed -- `skills/pm/kb-review.md` Step 4 used AUDN's inference as its retirement API in 4 of 5 paths, so that file is rewritten to pass `supersedes` explicitly.
 
 **Tech Stack:** TypeScript (NodeNext ESM), better-sqlite3 with FTS5, vitest.
 
@@ -28,6 +28,8 @@
 **Modified:**
 - `src/services/knowledge/types.ts` -- add internal `fts_terms` to `QueryOptions` (Task 1)
 - `src/services/knowledge/sqlite-provider.ts` -- `query()` sanitization (Task 1), `prime()` call site (Task 1), `evaluateAudn()` update branch (Task 2)
+- `src/tools/kb-capture.ts` -- expose `supersedes` on kbCaptureSchema (Task 2)
+- `skills/pm/kb-review.md` -- Step 4 passes `supersedes` explicitly (Task 2)
 - `src/services/knowledge/audn.ts` -- correct a false comment (Task 1)
 
 **Test files modified:**
@@ -275,22 +277,30 @@ rather than pre-building an expression -- re-tokenizing a pre-built
 
 ---
 
-## Task 2: AUDN links instead of auto-superseding
+## Task 2: Supersede becomes opt-in (AUDN stops inferring it)
 
 **Files:**
-- Modify: `src/services/knowledge/sqlite-provider.ts:558-567` (`evaluateAudn` update branch)
-- Test: `tests/knowledge/kb-supersede.test.ts` (rewrite)
-- Test: `tests/knowledge/kb-capture.test.ts`, `kb-query.test.ts`, `kb-list.test.ts`, `kb-export.test.ts`, `kb-stats.test.ts`, `kb-flagged-pipeline.test.ts`, `kb-reconcile-e2e.test.ts`
+- Modify: `src/services/knowledge/types.ts` (`KBEntry` / `KBEntryInput` -- add `supersedes`)
+- Modify: `src/services/knowledge/sqlite-provider.ts` (`evaluateAudn` update branch)
+- Modify: `src/tools/kb-capture.ts` (`kbCaptureSchema` -- expose `supersedes`)
+- Modify: `skills/pm/kb-review.md` (Step 4 paths A, B, M, D)
+- Test: `tests/knowledge/kb-supersede.test.ts`, `kb-capture.test.ts`, and any file the suite reports failing
 
 **Interfaces:**
-- Consumes: `resolveContradiction(winnerId, loserId, evidence): Promise<{winnerId, loserId}>` -- the explicit supersede path. It REFUSES unless the pair is genuinely linked (`winner.contradiction_of === loser.id` or vice versa), neither is already superseded, and neither is an active user-directive.
-- Produces: `audn_decision: 'update'` now means "a related prior entry was found and linked", NOT "the prior entry was retired". The value name is unchanged for continuity.
+- Consumes: `makeAudnDecision(input, candidates, newContent): AudnResult | null` from `./audn.js`. Its `update` decision means "a same-type candidate overlaps on symbol AND file and the content differs". It is a TOPICALITY signal, not consent to destroy.
+- Produces: `KBEntryInput.supersedes?: string`. When it equals the matched candidate's id, AUDN retires that candidate exactly as it does today. Otherwise AUDN links `refines` and both entries stay live.
 
-**Background for the implementer:**
+**Background for the implementer -- read this, it is the whole point of the task:**
 
-`makeAudnDecision` treats "same type + symbol overlap + file overlap + content differs" as an update and retires the prior entry. There is no similarity threshold -- content inequality is the entire test. Measured on real agent output: 6 of 24 captures (25%) destroyed a distinct entry. Symbol+file overlap is far too coarse: 27 of the 97 entries in `.fleet/kb-canonical.json` share `sqlite-provider.ts` alone.
+AUDN currently treats "same type + symbol overlap + file overlap + content differs" as licence to retire the prior entry. There is no similarity check -- content inequality is the entire gate. Measured on real agent output: 6 of 24 captures (25%) silently destroyed a DISTINCT note (e.g. "parseConfig is slow on large files" was destroyed by "parseConfig throws on null input" -- both true, one lost).
 
-The supersede MECHANISM stays. Only AUDN's automatic trigger goes.
+But supersede cannot simply be removed. `skills/pm/kb-review.md` Step 4 uses a corrective `kb_capture` to TRIGGER AUDN's auto-supersede in four of its five resolution paths. It is using AUDN's dedup as an implicit supersede API. Removing the trigger would leave the Merge and Delete-both paths with no retirement mechanism at all (the only other `superseded_at` writers are `resolveContradiction`, which demands a genuine contradiction pair, and directive-rejection, which demands `type='user-directive'`).
+
+So: supersede becomes OPT-IN. Callers that mean to replace something say so. Ordinary doer/reviewer captures do not, and stop destroying data.
+
+Two properties to preserve exactly:
+- The explicit branch must run the SAME UPDATE as today: `superseded_at` + `stale = 1`, and it must NOT clear `flagged_for_review`. Clearing the flag is `resolveContradiction`'s behavior (`sqlite-provider.ts:1327`), not this path's. `kb-flagged-pipeline.test.ts` asserts the difference.
+- Active user-directives are already unreachable from the update path -- `makeAudnDecision` `continue`s past them before the type gate. Do not add a second guard.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -301,11 +311,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
-// AUDN never auto-supersedes. Symbol+file overlap is too coarse a topicality
-// test -- measured 25% of real agent captures destroyed a DISTINCT entry.
-// A refinement links to its predecessor and both stay live; curation decides
-// what to retire. Supersede still happens, but only via the explicit path
-// (resolveContradiction / promote / kb-reconcile).
+// Supersede is OPT-IN. symbol+file overlap is a topicality signal, not consent
+// to destroy: measured 25% of real agent captures retired a DISTINCT entry.
+// A caller that means to replace something passes `supersedes`. Everything else
+// links and both entries stay live.
 
 function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
   return {
@@ -337,7 +346,7 @@ afterEach(() => {
   provider.close();
 });
 
-describe('AUDN does not auto-supersede', () => {
+describe('implicit capture does NOT supersede', () => {
   it('keeps two DISTINCT facts about the same symbol+file both live', async () => {
     const perf = await provider.capture(makeInput({
       title: 'parseConfig is slow on large files',
@@ -351,8 +360,6 @@ describe('AUDN does not auto-supersede', () => {
       source_files: ['src/config.ts'],
       symbols: ['parseConfig'],
     }));
-
-    expect(crash.id).not.toBe(perf.id);
 
     const live = await provider.query({ limit: 50 });
     const ids = live.results.map(e => e.id);
@@ -369,7 +376,6 @@ describe('AUDN does not auto-supersede', () => {
 
     const all = await provider.query({ include_superseded: true, include_stale: true });
     const old = all.results.find(e => e.id === first.id);
-    expect(old).toBeDefined();
     expect(old!.superseded_at).toBeFalsy();
     expect(old!.stale).toBe(false);
   });
@@ -391,48 +397,72 @@ describe('AUDN does not auto-supersede', () => {
   });
 });
 
-describe('explicit supersede still marks superseded_at AND stale', () => {
-  // The original invariant (T1.3 / D2 F2a): a superseded entry must carry BOTH
-  // superseded_at and stale = 1, so it cannot leak through query()/prime()
-  // paths that filter on stale independently of superseded_at. Still true --
-  // it is just no longer reachable by an ordinary capture.
-  it('resolveContradiction retires the loser with both markers', async () => {
-    const broken = await provider.capture(makeInput({
-      title: 'X is broken', summary: 'X is broken', content: 'X is broken',
-      symbols: ['symX'], source_files: ['src/x.ts'],
+describe('explicit supersedes DOES supersede', () => {
+  it('retires the named entry with superseded_at AND stale', async () => {
+    const first = await provider.capture(makeInput());
+    const second = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: first.id,
     }));
-    const works = await provider.capture(makeInput({
-      title: 'X now works', summary: 'X now works', content: 'X now works',
-      symbols: ['symX'], source_files: ['src/x.ts'],
-    }));
-    expect(works.audn_decision).toBe('flagged');
-
-    await provider.resolveContradiction(works.id, broken.id, 'verified fixed in v2');
+    expect(second.audn_decision).toBe('update');
 
     const all = await provider.query({ include_superseded: true, include_stale: true });
-    const loser = all.results.find(e => e.id === broken.id);
-    expect(loser!.superseded_at).toBeTruthy();
-    expect(loser!.stale).toBe(true);
+    const old = all.results.find(e => e.id === first.id);
+    expect(old!.superseded_at).toBeTruthy();
+    expect(old!.stale).toBe(true);
+    expect(old!.content_hash).toBe('');
 
-    const winner = all.results.find(e => e.id === works.id);
-    expect(winner!.superseded_at).toBeFalsy();
-    expect(winner!.stale).toBe(false);
+    const fresh = all.results.find(e => e.id === second.id);
+    expect(fresh!.superseded_at).toBeFalsy();
+    expect(fresh!.stale).toBe(false);
+  });
+
+  it('does NOT clear flagged_for_review on the superseded entry', async () => {
+    // resolveContradiction clears the flag; this path must not. kb-review.md
+    // depends on the difference.
+    const first = await provider.capture(makeInput({ flagged_for_review: true }));
+    const second = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: first.id,
+    }));
+    expect(second.id).not.toBe(first.id);
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    const old = all.results.find(e => e.id === first.id);
+    expect(old!.flagged_for_review).toBe(true);
   });
 
   it('query() excludes the explicitly superseded entry by default', async () => {
-    const broken = await provider.capture(makeInput({
-      title: 'X is broken', summary: 'X is broken', content: 'X is broken',
-      symbols: ['symX'], source_files: ['src/x.ts'],
+    const first = await provider.capture(makeInput());
+    const second = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: first.id,
     }));
-    const works = await provider.capture(makeInput({
-      title: 'X now works', summary: 'X now works', content: 'X now works',
-      symbols: ['symX'], source_files: ['src/x.ts'],
-    }));
-    await provider.resolveContradiction(works.id, broken.id, 'verified fixed in v2');
 
-    const results = await provider.query({ query: 'X' });
+    const results = await provider.query({ query: 'Registry initialization behavior' });
     const ids = results.results.map(e => e.id);
-    expect(ids).not.toContain(broken.id);
+    expect(ids).not.toContain(first.id);
+    expect(ids).toContain(second.id);
+  });
+
+  it('ignores a supersedes id that is not the matched candidate', async () => {
+    const first = await provider.capture(makeInput());
+    const unrelated = await provider.capture(makeInput({
+      title: 'Unrelated cache behavior',
+      content: 'The cache evicts on a 60s TTL.',
+      source_files: ['src/cache.ts'],
+      symbols: ['evictCache'],
+    }));
+    // Names an id AUDN did not match -> must not retire anything.
+    const third = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: unrelated.id,
+    }));
+    expect(third.id).not.toBe(first.id);
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    expect(all.results.find(e => e.id === unrelated.id)!.superseded_at).toBeFalsy();
+    expect(all.results.find(e => e.id === first.id)!.superseded_at).toBeFalsy();
   });
 });
 ```
@@ -440,104 +470,104 @@ describe('explicit supersede still marks superseded_at AND stale', () => {
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/knowledge/kb-supersede.test.ts`
-Expected: FAIL. `keeps two DISTINCT facts ... both live` fails because the perf entry was superseded; `leaves the prior entry unsuperseded` fails because `superseded_at` is set; `links the refinement` fails because no `refines` row exists.
+Expected: FAIL. `supersedes` does not exist on `KBEntryInput` yet (TypeScript error), and the implicit cases fail because today's AUDN supersedes unconditionally.
 
-- [ ] **Step 3: Make AUDN link instead of supersede**
+- [ ] **Step 3: Add `supersedes` to the type**
+
+In `src/services/knowledge/types.ts`, add to `KBEntry` (immediately after `contradiction_of`):
+
+```ts
+  // Opt-in supersede. When a capture names the entry it replaces AND AUDN
+  // independently matches that same entry as a same-topic candidate, the named
+  // entry is retired. symbol+file overlap alone is NOT consent to destroy --
+  // that inference silently retired 25% of real agent captures' predecessors.
+  // The curation layer (skills/pm/kb-review.md Step 4) sets this deliberately;
+  // ordinary doer/reviewer captures never do.
+  supersedes?: string;
+```
+
+`KBEntryInput` is `Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'superseded_at' | 'use_count' | 'last_accessed'>`, so it inherits `supersedes` automatically. Do not add it to the Omit list.
+
+- [ ] **Step 4: Make AUDN honour it**
 
 In `src/services/knowledge/sqlite-provider.ts`, replace the `update` branch of `evaluateAudn`:
 
 ```ts
     if (decision.decision === 'update') {
-      // AUDN NEVER auto-supersedes. symbol+file overlap is too coarse a
-      // topicality test -- content inequality was the entire gate, so two
-      // DISTINCT facts about one symbol destroyed each other (measured: 25% of
-      // real agent captures). Link the refinement to its predecessor and leave
-      // both live; curation decides what to retire. Supersede remains reachable
-      // ONLY through the explicit paths (resolveContradiction / promote /
-      // kb-reconcile), which is where a human or a real signal is in the loop.
       const newId = randomUUID();
+
+      if (input.supersedes === decision.matchedId) {
+        // EXPLICIT: the caller named what it replaces and AUDN independently
+        // matched it. Retire it exactly as before -- superseded_at + stale = 1.
+        // flagged_for_review is deliberately NOT cleared here; that is
+        // resolveContradiction's behavior, and kb-review.md depends on the
+        // difference (a kept entry stays listed under flagged_only).
+        db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?')
+          .run(now, decision.matchedId);
+        this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
+        this.wireLinks(db, newId, input);
+        return { id: newId, audn_decision: 'update' };
+      }
+
+      // IMPLICIT: same type, overlapping symbol and file, different content.
+      // That is a topicality signal, not consent to destroy -- two DISTINCT
+      // facts about one symbol used to eat each other. Link and keep both;
+      // curation retires what it means to retire, explicitly.
       this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
       this.wireLinks(db, newId, input);
       db.prepare(
         'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
       ).run(newId, decision.matchedId, 'refines');
-      // 'update' now means "a related prior entry was found and linked", NOT
-      // "the prior entry was retired".
       return { id: newId, audn_decision: 'update' };
     }
 ```
 
-- [ ] **Step 4: Run the rewritten supersede tests**
+- [ ] **Step 5: Run the supersede tests**
 
 Run: `npx vitest run tests/knowledge/kb-supersede.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (7 tests).
 
-- [ ] **Step 5: Run the full KB suite to surface every dependent test**
+- [ ] **Step 6: Expose `supersedes` on the kb_capture tool**
 
-Run: `npx vitest run tests/knowledge/`
-Expected: FAIL -- roughly 7 tests across 6 files that used AUDN as a fixture to manufacture a superseded row. Record the exact list before editing.
-
-- [ ] **Step 6: Repair each dependent test with the explicit-supersede fixture**
-
-Every one of these captures twice with overlapping symbol+file and then asserts the first entry vanished. That fixture no longer produces a superseded row. Replace it with a genuine contradiction pair plus `resolveContradiction`.
-
-The recipe. Call `resolveContradiction` directly -- do NOT wrap it in a helper.
-A one-line passthrough that only reorders arguments earns nothing and obscures
-which id is the winner:
+In `src/tools/kb-capture.ts`, add to `kbCaptureSchema`:
 
 ```ts
-// AUDN no longer auto-supersedes, so a superseded row must be driven through
-// the explicit path:
-//   1. capture A (negative polarity, e.g. "X is broken")
-//   2. capture B (positive polarity, e.g. "X now works") sharing A's symbols
-//      -> AUDN returns 'flagged' and sets B.contradiction_of = A.id
-//   3. resolveContradiction(B.id, A.id, evidence) -> retires A
-// Step 2 MUST carry an opposite-polarity signal or AUDN returns 'update'
-// (linked, both live) and step 3 throws "ids do not form a genuine
-// contradiction pair".
+  supersedes: z.string().optional()
+    .describe('Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not.'),
 ```
 
-`tests/knowledge/kb-query.test.ts` -- `superseded entry excluded by default` (line ~99). Replace the body:
+Then thread it into the `capture()` input the handler builds, alongside the other zod-parsed fields. Read the handler and follow its existing shape -- do not restructure it.
+
+- [ ] **Step 7: Run the full KB suite**
+
+Run: `npx vitest run tests/knowledge/`
+Expected: some failures. Every failure should be a test that manufactured a superseded row by capturing twice and relying on the inference. Record the exact list.
+
+- [ ] **Step 8: Repair each failing test**
+
+For each: add `supersedes: <firstEntryId>` to the SECOND capture. That restores the exact prior behavior, so **assertions stay unchanged**.
+
+Worked example -- `tests/knowledge/kb-query.test.ts`, `superseded entry excluded by default`:
 
 ```ts
   it('superseded entry excluded by default', async () => {
-    const broken = await provider.capture(makeInput({
-      title: 'X is broken', summary: 'X is broken', content: 'X is broken',
-      symbols: ['symX'], source_files: ['src/x.ts'],
-    }));
-    const works = await provider.capture(makeInput({
-      title: 'X now works', summary: 'X now works', content: 'X now works',
-      symbols: ['symX'], source_files: ['src/x.ts'],
-    }));
-    await provider.resolveContradiction(works.id, broken.id, 'fixed in v2');
+    const first = await provider.capture(makeInput());
 
-    const result = await provider.query({ query: 'X' });
-    const ids = result.results.map(e => e.id);
-    expect(ids).not.toContain(broken.id);
-    expect(ids).toContain(works.id);
+    const updated = makeInput({
+      content: 'The registry now initializes eagerly at startup.',
+      supersedes: first.id,
+    });
+    await provider.capture(updated);
+
+    const result = await provider.query({ query: 'registry' });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].id).not.toBe(first.id);
   });
 ```
 
-`tests/knowledge/kb-list.test.ts` -- `excludes superseded entries by default` (line ~131). Replace the body:
+Two tests encode the defect rather than depend on it, and DO need their assertions changed:
 
-```ts
-  it('excludes superseded entries by default', async () => {
-    const broken = await provider.capture(makeInput({
-      title: 'X is broken', summary: 'X is broken', content: 'X is broken',
-      symbols: ['symSupersede'], source_files: ['src/x.ts'],
-    }));
-    const works = await provider.capture(makeInput({
-      title: 'X now works', summary: 'X now works', content: 'X now works',
-      symbols: ['symSupersede'], source_files: ['src/x.ts'],
-    }));
-    await provider.resolveContradiction(works.id, broken.id, 'fixed in v2');
-
-    const results = await provider.list({});
-    expect(results.some(e => e.id === broken.id)).toBe(false);
-  });
-```
-
-`tests/knowledge/kb-capture.test.ts` -- `updated fact returns audn_decision=update and old entry has superseded_at set`. This test encodes the defect. Rename it and invert the supersede assertion, keeping the `audn_decision` assertion:
+`tests/knowledge/kb-capture.test.ts` -- `updated fact returns audn_decision=update and old entry has superseded_at set`. This asserts the inference. Split it:
 
 ```ts
   it('refined fact returns audn_decision=update and leaves the old entry live', async () => {
@@ -548,55 +578,94 @@ which id is the winner:
     expect(second.audn_decision).toBe('update');
 
     const all = await provider.query({ include_superseded: true, include_stale: true });
-    const old = all.results.find(e => e.id === first.id);
-    expect(old!.superseded_at).toBeFalsy();
+    expect(all.results.find(e => e.id === first.id)!.superseded_at).toBeFalsy();
+  });
+
+  it('an explicit supersedes capture returns update and retires the named entry', async () => {
+    const first = await provider.capture(makeInput());
+    const second = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup.',
+      supersedes: first.id,
+    }));
+    expect(second.audn_decision).toBe('update');
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    expect(all.results.find(e => e.id === first.id)!.superseded_at).toBeTruthy();
   });
 ```
 
-For `kb-export.test.ts`, `kb-stats.test.ts`, `kb-flagged-pipeline.test.ts`, and `kb-reconcile-e2e.test.ts`: each needs a superseded row for a count or an exclusion assertion. Apply the same substitution -- replace the "capture twice with overlapping symbol+file" fixture with the broken/now-works contradiction pair plus `resolveContradiction`. Do not change what these tests assert; only how they manufacture the superseded row. `kb-stats.test.ts` already uses exactly this broken/fixed pair for its `flagged` fixture (line ~80), so follow that local idiom.
+`tests/knowledge/kb-reconcile-e2e.test.ts:198` -- asserts a refinement IS superseded. If its scenario is a curation reconcile, pass `supersedes` and keep the assertion. If it is an ordinary refinement, invert the assertion and rename the test to say so. Read the surrounding scenario and decide; report which you chose and why.
 
-Note for `kb-stats.test.ts`: the `superseded` count expectation may need adjusting, because the contradiction pair produces one flagged entry AND one superseded entry where the old fixture produced only a superseded one. Read the current expected numbers and recompute rather than guessing.
+If any other test needs an assertion changed, STOP and return NEEDS_CONTEXT naming it. Only the two above are expected.
 
-- [ ] **Step 7: Run the full KB suite**
+- [ ] **Step 9: Rewrite kb-review.md Step 4**
+
+`skills/pm/kb-review.md` Step 4 currently tells the KB Agent to trigger supersede by inference. Make each path pass `supersedes` explicitly instead. Rewrite paths A, B, M and D:
+
+```markdown
+**A -- Keep original:**
+- `kb_promote(original.id, reason="contradiction resolved: original kept")` -- upgrades its confidence.
+- `kb_capture` a new entry with the SAME title/symbols/source_files as the challenger, corrected content, `confidence=UNVERIFIED`, and `supersedes=<challenger.id>`. That retires the challenger.
+
+**B -- Keep challenger:**
+- `kb_promote(challenger.id, reason="contradiction resolved: challenger kept")`.
+- `kb_capture` a corrected entry with the SAME title/symbols/source_files as the original, corrected content, and `supersedes=<original.id>`. That retires the original.
+
+**M -- Merge:**
+- Ask the user to provide the merged content.
+- `kb_capture` a new entry with merged content and `supersedes=<id of whichever entry it replaces>`. Repeat for the second entry if both must be retired -- `supersedes` names ONE entry, so retiring both takes two captures.
+- `kb_promote` the newly captured entry id.
+
+**D -- Delete both:**
+- `kb_capture` a retraction entry: `title=<original title>`, `content="Retracted: both entries were incorrect."`, `confidence=UNVERIFIED`, `supersedes=<original.id>`.
+- `kb_capture` same for the challenger, with `supersedes=<challenger.id>`.
+```
+
+Also update the "Verified actual behavior" block below Step 4. Its first bullet currently reads "Superseding an entry (via the corrective `kb_capture` above, AUDN decision `update`)". Replace that parenthetical with "(via the corrective `kb_capture` above with `supersedes` set, AUDN decision `update`)". The rest of that block is still accurate -- `kb_promote` still does not clear `flagged_for_review` or `contradiction_of`, and the explicit supersede path deliberately does not either.
+
+Remove the instruction to craft "corrected content that carries no contradiction keyword or polarity word (or AUDN will flag it again instead of updating)" ONLY if it is no longer true. It IS still true: `makeAudnDecision` checks the contradiction path before the update path, so a corrective capture carrying polarity words still gets flagged rather than superseding. Keep that guidance.
+
+- [ ] **Step 10: Full suite, build, ASCII**
 
 Run: `npx vitest run tests/knowledge/`
 Expected: PASS, all files.
 
-- [ ] **Step 8: Run the whole test suite**
-
 Run: `npm test`
-Expected: PASS. Nothing outside `tests/knowledge/` referenced AUDN supersede semantics at the time this plan was written, but confirm.
-
-- [ ] **Step 9: Build and ASCII check**
+Expected: PASS.
 
 Run: `npm run build`
 Expected: no TypeScript errors.
 
-Run: `node -e "const fs=require('fs'); let bad=0; for (const f of fs.readdirSync('src/services/knowledge')) { const t=fs.readFileSync('src/services/knowledge/'+f,'utf-8'); bad += [...t].filter(c=>c.charCodeAt(0)>127).length; } console.log('non-ASCII:', bad); process.exit(bad?1:0)"`
+Run: `node -e "const fs=require('fs'); let bad=0; const fl=['src/services/knowledge/types.ts','src/services/knowledge/sqlite-provider.ts','src/tools/kb-capture.ts','skills/pm/kb-review.md']; for (const f of fl) { const t=fs.readFileSync(f,'utf-8'); bad += [...t].filter(c=>c.charCodeAt(0)>127).length; } console.log('non-ASCII:', bad); process.exit(bad?1:0)"`
 Expected: `non-ASCII: 0`
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/services/knowledge/sqlite-provider.ts tests/knowledge/
-git commit -m "fix(kb): AUDN links refinements instead of auto-superseding
+git add src/services/knowledge/types.ts src/services/knowledge/sqlite-provider.ts src/tools/kb-capture.ts skills/pm/kb-review.md tests/knowledge/
+git commit -m "fix(kb): make supersede opt-in so AUDN stops destroying distinct notes
 
 AUDN treated 'same type + symbol overlap + file overlap + content differs' as
-an update and retired the prior entry. There was no similarity threshold --
-content inequality was the entire gate -- so two DISTINCT facts about one
-symbol destroyed each other. Measured on real agent output: 6 of 24 captures
-(25%) destroyed a distinct entry. symbol+file overlap is far too coarse: 27 of
-97 bible entries share sqlite-provider.ts alone.
+licence to retire the prior entry. There was no similarity check -- content
+inequality was the entire gate -- so two DISTINCT facts about one symbol ate
+each other. Measured on real agent output: 6 of 24 captures (25%) destroyed a
+distinct note. symbol+file overlap is far too coarse: 27 of 97 bible entries
+share sqlite-provider.ts alone.
 
-A refinement now links 'refines' -> its predecessor and both stay live.
-Supersede remains reachable through the explicit paths (resolveContradiction /
-promote / kb-reconcile). audn_decision 'update' now means 'a related prior
-entry was found and linked'.
+Supersede is now opt-in. A capture that means to replace something names it via
+supersedes; AUDN honors that only when it independently matches the same entry,
+so a caller cannot retire an arbitrary id. Everything else links 'refines' and
+both entries stay live.
 
-The design doc's Known Limitations already accepted duplicates as tolerable
-for the inverse (missed-merge) case; this applies the same posture to the
-destructive direction. Tests that used AUDN as a fixture to manufacture a
-superseded row now drive it through resolveContradiction."
+Supersede could not simply be removed: skills/pm/kb-review.md Step 4 used the
+corrective-capture inference as its retirement API in 4 of 5 paths, and the only
+other superseded_at writers require a contradiction pair or a user-directive --
+so Merge and Delete-both would have had no mechanism at all. Step 4 now passes
+supersedes explicitly.
+
+The explicit path runs the same UPDATE as before and deliberately does not clear
+flagged_for_review (that is resolveContradiction's behavior); kb-flagged-pipeline
+asserts the difference."
 ```
 
 ---
