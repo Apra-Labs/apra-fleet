@@ -595,6 +595,9 @@ function buildStreakAssignmentPrompt({ readyBeadIds }) {
         `Ready bead ids: ${readyBeadIds.join(', ')}`,
         'Every ready bead id listed above must appear in exactly one streak -- ' +
         'no bead id may be omitted, duplicated, or invented.',
+        'This is the complete input. Do not run bd, git, or any other command, ' +
+        'and do not read any files to investigate further -- respond immediately ' +
+        'using only the schema, based solely on the bead ids given above.',
     ].join('\n\n');
 }
 
@@ -1827,8 +1830,19 @@ export async function main(context) {
                 streakCandidate = await agent(
                     buildStreakAssignmentPrompt({ readyBeadIds: currentReady.map((b) => b.id) }),
                     {
+                        // No `agentType` here on purpose: this call has no
+                        // vendored persona of its own (see the streakAssignment
+                        // schema comment in contracts.mjs) and reuses the
+                        // planner MEMBER only for its model-tier routing.
+                        // Activating the full `planner` agentType/persona
+                        // (whose actual system prompt is "read open beads,
+                        // build a sprint DAG") on this narrow, fully-specified
+                        // grouping task caused the model to go exploring via
+                        // its Bash/Read/Grep tools instead of answering
+                        // directly from the prompt -- the real cause of this
+                        // dispatch intermittently running for many minutes
+                        // before the transport timeout fired.
                         member_name: getMemberForRole('planner'),
-                        agentType: 'planner',
                         label: 'Streak Assignment',
                         schema: streakAssignment,
                         model: FIXED_ROLE_TIER.planner,
@@ -1836,8 +1850,10 @@ export async function main(context) {
                 );
                 log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Streak Assignment: agent dispatch failed, falling back to one-bead-per-streak: ${err.message}`);
                 } else {
                     throw err;
                 }

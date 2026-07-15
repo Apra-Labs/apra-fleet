@@ -450,7 +450,15 @@ function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, options = 
             // prompt text instead -- apra-fleet-unw.17's buildFinalVerdictPrompt()
             // always starts with this exact prefix.
             const isFinalReview = opts.agent === 'reviewer' && opts.prompt.startsWith('Final review for sprint scope issue id(s):');
-            const isStreakAssignment = opts.agent === 'planner' && opts.prompt.includes('Ready bead ids:');
+            // No longer gated on opts.agent === 'planner': this dispatch has
+            // no vendored persona of its own (see the streakAssignment
+            // schema comment in contracts.mjs) and runner.js deliberately
+            // stopped setting agentType on it (activating the real
+            // planner.md persona for this narrow, self-contained grouping
+            // task caused the model to go exploring instead of answering
+            // directly -- the root cause of a real dispatch-timeout bug).
+            // Detect it by its distinctive prompt content instead.
+            const isStreakAssignment = opts.prompt.includes('Ready bead ids:');
             dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name });
             await sleep(DELAY_MS);
 
@@ -1461,7 +1469,7 @@ async function main() {
     // confirm the streak-assignment prompt/response shape round-trips (the
     // mock's streak JSON was parsed and used to build actual streaks, not
     // discarded and replaced unconditionally by the one-bead fallback).
-    const multiDoerStreakCalls = multiDoer.dispatched.filter((d) => d.agent === 'planner' && d.prompt.includes('Ready bead ids:'));
+    const multiDoerStreakCalls = multiDoer.dispatched.filter((d) => d.prompt.includes('Ready bead ids:'));
     check(multiDoerStreakCalls.length === 1, `Expected exactly 1 streak-assignment dispatch in the multi-doer scenario (single dev round), got ${multiDoerStreakCalls.length}`);
 
     // =========================================================================

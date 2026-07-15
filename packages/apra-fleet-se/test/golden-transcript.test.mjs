@@ -186,7 +186,10 @@ function buildTranscriptFleetApi(tempDir, epicBead, dispatchLog) {
 
         executePrompt: async (opts) => {
             const isFinalReview = opts.agent === 'reviewer' && opts.prompt.startsWith('Final review for sprint scope issue id(s):');
-            const isStreakAssignment = opts.agent === 'planner' && opts.prompt.includes('Ready bead ids:');
+            // Not gated on opts.agent === 'planner': runner.js no longer sets
+            // agentType on this dispatch (see the streakAssignment schema
+            // comment in contracts.mjs) -- detect it by prompt content instead.
+            const isStreakAssignment = opts.prompt.includes('Ready bead ids:');
 
             dispatchLog.push({
                 kind: 'prompt',
