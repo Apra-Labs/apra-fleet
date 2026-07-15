@@ -240,6 +240,87 @@ jobs:
         run: ./dist/${{ matrix.binary }} --help
         shell: bash
 
+      # apra-fleet-7pm.13: proves the workflow subsystem's "no system Node
+      # required" claim -- run the launcher with Node stripped from PATH and
+      # an isolated HOME, so the binary can only use its own embedded
+      # runtime (self-heal extraction from apra-fleet-7pm.8) and any
+      # accidental spawn('node') fails loudly. Scope: hello-world +
+      # arg/error-surface only -- the auto-sprint launcher path is verified
+      # separately by apra-fleet-7pm.15, which depends on this task.
+      - name: Smoke test - workflow hello-world (no system Node)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$(pwd)/dist/${{ matrix.binary }}"
+          FAKEHOME="$(mktemp -d)"
+          export HOME="$FAKEHOME"
+          export APRA_FLEET_DATA_DIR="$FAKEHOME/data"
+          export PATH="/usr/bin:/bin"
+          ! command -v node
+          OUT="$("$BIN" workflow hello-world one two)"
+          echo "$OUT"
+          echo "$OUT" | grep -qF '[OK] hello-world: args=one,two engine=resolved'
+          test -f "$FAKEHOME/.apra-fleet/workflows/auto-sprint/auto-sprint/runner.js"
+          test -f "$FAKEHOME/.apra-fleet/schemas/reviewer-output.json"
+
+      - name: Smoke test - workflow hello-world (no system Node) (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $FAKEHOME = Join-Path $env:RUNNER_TEMP "fakehome-$([guid]::NewGuid())"
+          New-Item -ItemType Directory -Path $FAKEHOME -Force | Out-Null
+          $env:HOME = $FAKEHOME
+          $env:USERPROFILE = $FAKEHOME
+          $env:APRA_FLEET_DATA_DIR = Join-Path $FAKEHOME "data"
+
+          $filtered = ($env:PATH -split ';') | Where-Object { $_ -notmatch 'hostedtoolcache.*node' -and $_ -notmatch '[\\/]nodejs' }
+          $env:PATH = ($filtered -join ';')
+          if (Get-Command node -ErrorAction SilentlyContinue) {
+            Write-Error "node is still resolvable on PATH after stripping"
+            exit 1
+          }
+
+          $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
+          $out = & $bin workflow hello-world one two
+          $out | Write-Host
+          if (-not ($out -join "`n").Contains('[OK] hello-world: args=one,two engine=resolved')) {
+            Write-Error "unexpected stdout from workflow hello-world"
+            exit 1
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "workflow hello-world exited $LASTEXITCODE"
+            exit 1
+          }
+
+          $runnerPath = Join-Path $FAKEHOME ".apra-fleet\workflows\auto-sprint\auto-sprint\runner.js"
+          $schemaPath = Join-Path $FAKEHOME ".apra-fleet\schemas\reviewer-output.json"
+          if (-not (Test-Path $runnerPath)) {
+            Write-Error "missing $runnerPath"
+            exit 1
+          }
+          if (-not (Test-Path $schemaPath)) {
+            Write-Error "missing $schemaPath"
+            exit 1
+          }
+
+      - name: Smoke test - workflow arg/error surface
+        run: |
+          set +e
+          OUT=$(./dist/${{ matrix.binary }} workflow does-not-exist 2>&1)
+          CODE=$?
+          set -e
+          echo "$OUT"
+          [ "$CODE" -eq 1 ]
+          echo "$OUT" | grep -qi 'workflow "does-not-exist" not found in'
+          echo "$OUT" | grep -q 'workflows'
+
+          LIST_OUT=$(./dist/${{ matrix.binary }} workflow --list)
+          echo "$LIST_OUT"
+          echo "$LIST_OUT" | grep -q 'auto-sprint'
+          echo "$LIST_OUT" | grep -q 'hello-world'
+        shell: bash
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
