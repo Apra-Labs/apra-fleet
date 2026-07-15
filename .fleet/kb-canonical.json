@@ -176,8 +176,8 @@
   {
     "id": "22818a94-5c57-42f8-83bc-6c8766217290",
     "type": "knowledge",
-    "title": "Supersede now marks both superseded_at AND stale columns",
-    "summary": "When evaluateAudn's 'update' branch executes (T1.2), the old entry is marked with BOTH superseded_at=now AND stale=1. Consequence: any KB reader must now also pass include_stale:true to see a superseded row, not just check superseded_at. All existing readers (query, context, getLinked, prime) have been audited and re-imposing stale filters independently.",
+    "title": "Supersede marks superseded_at AND stale only when the caller opts in",
+    "summary": "When evaluateAudn's 'update' branch executes (T1.2), the old entry is marked with BOTH superseded_at=now AND stale=1 ONLY when the caller explicitly opts in by passing supersedes:<matchedId>. By DEFAULT (no explicit supersedes match) the update branch leaves the old entry live and instead records a 'refines' link from the new entry to the matched entry -- two distinct facts are kept, not merged. Any KB reader relying on include_stale:true to see a superseded row only applies to the opt-in path.",
     "symbols": [
       "evaluateAudn",
       "query",
@@ -433,8 +433,8 @@
   {
     "id": "4f9637b6-5309-4734-be12-3c72b1208f3c",
     "type": "knowledge",
-    "title": "FTS OR-join applied at four sites closes yashr-5n2 (T2.1)",
-    "summary": "Shared orJoinFtsTerms helper (audn.ts) applied at all four implicit-AND sites: makeFtsQuery, sqlite-provider prime searchTerms, kb-session-prime neighbor batch, and kb-session-prime global-append. Each term still ftsSafeTerm-quoted; single-term unchanged. ORDER BY rank + LIMIT bound output so OR breadth does not flood.",
+    "title": "FTS OR-join centralized at two sites closes yashr-5n2 (T2.1)",
+    "summary": "Shared orJoinFtsTerms helper (audn.ts) is called at exactly TWO sites: makeFtsQuery (audn.ts) and SqliteProvider.query(). The two kb-session-prime sites (neighbor batch and global-append) now pass raw terms via fts_terms and do not sanitize themselves -- query() sanitizes centrally. Each term still ftsSafeTerm-quoted; single-term unchanged. ORDER BY rank + LIMIT bound output so OR breadth does not flood.",
     "symbols": [
       "orJoinFtsTerms",
       "ftsSafeTerm",
@@ -796,8 +796,8 @@
   {
     "id": "83726d75-4af9-442c-abf2-0f215fb19c77",
     "type": "knowledge",
-    "title": "FTS5 implicit-AND gotcha in KB multi-neighbor queries",
-    "summary": "SqliteProvider.query() passes the query string verbatim into FTS5 MATCH, treating space-separated terms as implicit AND. When kb-session-prime batches multiple neighbor names (e.g., 'nbrA' 'nbrB'), entries must contain ALL tokens to match, usually returning nothing. Common case (2+ unrelated neighbors) under-delivers on P4b intent. Non-blocking safety-wise (only yields fewer additions), but clean backlog follow-up: OR-join sanitized terms (neighbors.join(' OR ')) so entries matching ANY neighbor surface.",
+    "title": "FTS5 sanitization is now centralized in query()",
+    "summary": "SqliteProvider.query() is the SINGLE point where free text is sanitized into an FTS5 MATCH expression: it OR-joins terms via orJoinFtsTerms itself. Callers hand it either raw free text (query:) or a list of raw, unsanitized terms (fts_terms: string[]) -- e.g. kb-session-prime's multi-neighbor batch. Callers must NEVER pre-build an FTS expression and pass it as query:, since query() re-tokenizes query: through /[A-Za-z0-9_]+/g, swallowing a literal 'OR' as a search token.",
     "symbols": [
       "SqliteProvider.query",
       "entries_fts",
