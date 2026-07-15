@@ -136,6 +136,54 @@ describe('explicit supersedes DOES supersede', () => {
     expect(ids).toContain(second.id);
   });
 
+  it('honors supersedes when the named target is NOT rank-1', async () => {
+    // Two equally eligible entries (same type/symbols/source_files/title,
+    // different content). AUDN's rank-ordered candidate loop may return
+    // either as matchedId first; naming the SECOND explicitly must still
+    // retire it, not silently no-op because it lost the bm25 race.
+    const e1 = await provider.capture(makeInput({
+      content: 'The registry initializes lazily on first access via getOrCreate(), variant one.',
+    }));
+    const e2 = await provider.capture(makeInput({
+      content: 'The registry initializes lazily on first access via getOrCreate(), variant two.',
+    }));
+
+    const third = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: e2.id,
+    }));
+    expect(third.audn_decision).toBe('update');
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    const e1row = all.results.find(e => e.id === e1.id)!;
+    const e2row = all.results.find(e => e.id === e2.id)!;
+    expect(e2row.superseded_at).toBeTruthy();
+    expect(e2row.stale).toBe(true);
+    expect(e1row.superseded_at).toBeFalsy();
+    expect(e1row.stale).toBe(false);
+  });
+
+  it('kb-review path M: two corrective captures naming different targets with the SAME merged content retire BOTH', async () => {
+    const e1 = await provider.capture(makeInput({
+      content: 'The registry initializes lazily on first access via getOrCreate(), variant one.',
+    }));
+    const e2 = await provider.capture(makeInput({
+      content: 'The registry initializes lazily on first access via getOrCreate(), variant two.',
+    }));
+
+    const mergedContent = 'The registry initializes lazily via getOrCreate(); this single note merges the variant one and variant two descriptions.';
+    const capture1 = await provider.capture(makeInput({ content: mergedContent, supersedes: e1.id }));
+    const capture2 = await provider.capture(makeInput({ content: mergedContent, supersedes: e2.id }));
+    expect(capture1.audn_decision).toBe('update');
+    expect(capture2.audn_decision).toBe('update');
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    const e1row = all.results.find(e => e.id === e1.id)!;
+    const e2row = all.results.find(e => e.id === e2.id)!;
+    expect(e1row.superseded_at).toBeTruthy();
+    expect(e2row.superseded_at).toBeTruthy();
+  });
+
   it('ignores a supersedes id that is not the matched candidate', async () => {
     const first = await provider.capture(makeInput());
     const unrelated = await provider.capture(makeInput({

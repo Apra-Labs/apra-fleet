@@ -136,6 +136,26 @@ export function makeAudnDecision(
   candidates: KBEntry[],
   newContent: string
 ): AudnResult | null {
+  // EXPLICIT SUPERSEDE: the caller named its target. Locate that candidate by id
+  // under the SAME eligibility gates as the dedup path -- do not require it to
+  // win bm25 rank. Runs before the exact-dup pre-pass so an identical twin (e.g.
+  // the row a previous corrective capture just inserted) cannot shadow a
+  // deliberate curation act, and before the contradiction check so explicit
+  // curation intent beats heuristic contradiction detection.
+  if (input.supersedes) {
+    const target = candidates.find(c =>
+      c.id === input.supersedes &&
+      symbolsOverlap(input.symbols ?? [], c.symbols) &&
+      !(c.type === 'user-directive' && c.confidence === 'CONFIRMED') &&
+      c.type === input.type &&
+      filesOverlap(input.source_files ?? [], c.source_files));
+    if (target) {
+      return newContent === target.content
+        ? { decision: 'none', matchedId: target.id }
+        : { decision: 'update', matchedId: target.id };
+    }
+  }
+
   // C-1 PRE-PASS: exact content equality is the strongest dedup signal and
   // dominates candidate ORDER. Without this, an ordinary re-capture can match
   // an earlier, non-identical candidate (e.g. the live predecessor of a prior
