@@ -1575,7 +1575,14 @@ export async function main(context) {
             });
             const plannerRes = await agent(
                 plannerPrompt,
-                { member_name: getMemberForRole('planner'), agentType: 'planner', model: FIXED_ROLE_TIER.planner }
+                {
+                    member_name: getMemberForRole('planner'),
+                    agentType: 'planner',
+                    model: FIXED_ROLE_TIER.planner,
+                    // apra-fleet-j6i: plans the entire epic DAG, comparably
+                    // heavy to a doer streak -- same 300s-default gap.
+                    timeout_s: 900,
+                }
             );
             log(`Planner: ${plannerRes}`);
 
@@ -1588,6 +1595,8 @@ export async function main(context) {
                         agentType: 'plan-reviewer',
                         schema: planReviewerVerdict,
                         model: FIXED_ROLE_TIER['plan-reviewer'],
+                        // apra-fleet-j6i: same 300s-default gap as Planner.
+                        timeout_s: 900,
                     }
                 );
             } catch (err) {
@@ -1988,7 +1997,15 @@ export async function main(context) {
             try {
                 deployResult = await agent(
                     'Deploy to test env using deploy.md.',
-                    { member_name: getMemberForRole('deployer'), agentType: 'deployer', schema: deployerReport, model: FIXED_ROLE_TIER.deployer }
+                    {
+                        member_name: getMemberForRole('deployer'),
+                        agentType: 'deployer',
+                        schema: deployerReport,
+                        model: FIXED_ROLE_TIER.deployer,
+                        // apra-fleet-j6i: runs real deploy commands per a
+                        // runbook, plausibly long-running.
+                        timeout_s: 900,
+                    }
                 );
             } catch (err) {
                 if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
@@ -2014,7 +2031,15 @@ export async function main(context) {
             try {
                 integResult = await agent(
                     'Run tests using integ-test-playbook.md. Add bug beads if needed.',
-                    { member_name: getMemberForRole('integ-test-runner'), agentType: 'integ-test-runner', schema: integReport, model: FIXED_ROLE_TIER['integ-test-runner'] }
+                    {
+                        member_name: getMemberForRole('integ-test-runner'),
+                        agentType: 'integ-test-runner',
+                        schema: integReport,
+                        model: FIXED_ROLE_TIER['integ-test-runner'],
+                        // apra-fleet-j6i: runs a full test suite, plausibly
+                        // long-running.
+                        timeout_s: 900,
+                    }
                 );
             } catch (err) {
                 if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
@@ -2196,7 +2221,18 @@ export async function main(context) {
                 integFailures,
                 rejectedNewTasks,
             }),
-            { member_name: getMemberForRole('reviewer'), agentType: 'reviewer', schema: finalVerdict, label: 'Final Review', model: FIXED_ROLE_TIER.reviewer }
+            {
+                member_name: getMemberForRole('reviewer'),
+                agentType: 'reviewer',
+                schema: finalVerdict,
+                label: 'Final Review',
+                model: FIXED_ROLE_TIER.reviewer,
+                // apra-fleet-j6i: reviews the full diff/evidence across an
+                // entire epic's worth of closed tasks -- most costly of the
+                // 300s-default gaps since a timeout here flips a whole
+                // sprint's outcome to FAIL.
+                timeout_s: 900,
+            }
         );
     } catch (err) {
         if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
@@ -2248,7 +2284,15 @@ export async function main(context) {
     try {
         harvesterResult = await agent(
             harvesterPrompt,
-            { member_name: getMemberForRole('harvester'), agentType: 'harvester', schema: harvesterReport, model: FIXED_ROLE_TIER.harvester }
+            {
+                member_name: getMemberForRole('harvester'),
+                agentType: 'harvester',
+                schema: harvesterReport,
+                model: FIXED_ROLE_TIER.harvester,
+                // apra-fleet-j6i: writes docs/changelog/sprint-analysis
+                // across the whole epic, plausibly long-running.
+                timeout_s: 900,
+            }
         );
         log(`Harvester: ${JSON.stringify(harvesterResult)}`);
         if (harvesterResult.status !== 'OK') {
