@@ -697,12 +697,12 @@ function buildDoerPrompt({ beadIds, branch, feedback }) {
  * and the diff range are all spelled out here rather than assumed.
  *
  * CRITICAL: explicitly, redundantly forbids the reviewer from mutating
- * beads itself (contradicts the vendored agents/reviewer.md Step 5 prose,
- * which tells the reviewer to run `bd update` itself -- see contracts.mjs's
- * DIVERGENCE NOTE above `reviewerVerdict`). Per this issue's instructions,
- * the dispatch-prompt text is what's authoritative/validated today (the
- * schema alone doesn't stop the reviewer from ALSO shelling out `bd`
- * commands on the member side), so the prohibition must be stated here too.
+ * beads itself. agents/reviewer.md's own prose (Step 5, Rules) already
+ * states this same prohibition -- prose and dispatch prompt agree today --
+ * but the schema alone doesn't stop the reviewer from shelling out `bd`
+ * commands on the member side regardless of what either document says, so
+ * the prohibition is stated here too as defense in depth, not because of
+ * any known prose/code divergence.
  * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string }} opts
  * @returns {string}
  */
