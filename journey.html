@@ -519,7 +519,7 @@
 <span class="indent arrow">-> AUDN deduplication runs:</span><br>
 <span class="indent2 note">add (new): no match found</span><br>
 <span class="indent2 note">none (duplicate): skip, return existing id</span><br>
-<span class="indent2 note">update (superseded): mark old entry superseded, insert new</span><br>
+<span class="indent2 note">update (refines): link new entry to old by default -- both stay live; pass supersedes to retire the old one for real</span><br>
 <span class="indent2 note">flagged (contradiction): flag for review, keep both with reference</span><br>
 <span class="indent arrow">-> Stored in ~/.apra-fleet/data/knowledge/&lt;repo-slug&gt;/kb.sqlite</span><br><br>
 
