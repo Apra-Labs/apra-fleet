@@ -1573,7 +1573,7 @@ export async function main(context) {
                 requirementsContent,
                 feedback: plannerFeedback,
             });
-            const plannerRes = await agent(
+            const dispatchPlanner = () => agent(
                 plannerPrompt,
                 {
                     member_name: getMemberForRole('planner'),
@@ -1584,6 +1584,21 @@ export async function main(context) {
                     timeout_s: 900,
                 }
             );
+            // apra-fleet-j6i: unlike every other dispatch site in this file,
+            // the Planner call had no error handling at all -- a single
+            // AgentDispatchError (e.g. a timeout) propagated uncaught all the
+            // way to main() in bin/cli.mjs, killing the whole CLI process
+            // (and its dashboard server) instead of failing just this round.
+            // Mirror the doer-streak retry-once pattern (line ~1844) as an
+            // interim mitigation; apra-fleet-j6i.2/j6i.3 cover the fuller
+            // dispatch-vs-schema-error distinction this really deserves.
+            let plannerRes;
+            try {
+                plannerRes = await dispatchPlanner();
+            } catch (err) {
+                log(`Planner dispatch threw: ${err.message}. Retrying once.`);
+                plannerRes = await dispatchPlanner();
+            }
             log(`Planner: ${plannerRes}`);
 
             let verdict;
