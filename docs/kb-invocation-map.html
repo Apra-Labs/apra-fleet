@@ -185,7 +185,7 @@
       <div class="call"><span class="tool t-kb">kb_query</span>
         <span class="desc">Before every capture -- dedupe check + flagged-contradiction scan.</span></div>
       <div class="call"><span class="tool t-kb">kb_capture</span>
-        <span class="desc">Durable facts from the session. Lands INFERRED (clamped). AUDN runs on every capture: a correcting entry <b>really supersedes</b> the old one (superseded_at + stale=1); a same-symbol contradiction is <b>flagged cross-type</b> even without file overlap.</span>
+        <span class="desc">Durable facts from the session. Lands INFERRED (clamped). AUDN runs on every capture: a correcting entry <b>links to</b> the old one by default -- both stay live; pass supersedes to retire it for real (superseded_at + stale=1); a same-symbol contradiction is <b>flagged cross-type</b> even without file overlap.</span>
         <span class="trust tr-inf">INFERRED</span></div>
       <div class="call"><span class="tool t-kb">kb_promote</span>
         <span class="desc"><b>The only path to CONFIRMED</b> -- used only when the reviewer verdict was APPROVED and the entry describes approved behavior. Evidence trail appended.</span>

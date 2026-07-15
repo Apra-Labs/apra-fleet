@@ -160,7 +160,7 @@
       <div class="who">KB AGENT -- cheap model, dispatched by PM automatically; CURATOR, not sole capturer</div>
       <div class="step"><span class="tool">kb_query tag:phase</span><span><b>gather the phase's in-flight captures</b> (everything the planner/doer/reviewer captured at discovery time, found by sprint/phase tag).</span></div>
       <div class="step"><span class="tool">kb_promote</span><span><b>curate each against the verdict:</b> validated by APPROVED code -&gt; promoted to CONFIRMED with evidence; wrong -&gt; kb_feedback (flag + stale); fine-but-unvalidated -&gt; left INFERRED. Promotion remains the ONLY path to CONFIRMED.</span></div>
-      <div class="step"><span class="tool">kb_capture</span><span>residual gaps the in-flight captures missed (the curator's fallback job). Corrections supersede for real; contradictions get flagged.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span>residual gaps the in-flight captures missed (the curator's fallback job). Corrections link by default (both stay live); pass supersedes to retire one for real. Contradictions get flagged.</span></div>
       <div class="step"><span class="tool">kb_export</span><span>writes .fleet/kb-canonical.json and <b>AUTO-COMMITS it</b> (pm-kb identity, pathspec-only, non-fatal) -- the learning enters the codebase with zero manual steps. Fleet-mode sessions also get the transcript harvest autowire (UNVERIFIED tier).</span></div>
     </div>
     <div class="real"><span class="tag">FOR REAL -- FIRST CURATOR RUN (kb-inflight-capture)</span>

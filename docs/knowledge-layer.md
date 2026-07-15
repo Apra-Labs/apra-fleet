@@ -207,7 +207,7 @@ An entry is revivable only when all hold:
 
 ```
 stale = 1
-AND superseded_at IS NULL              (not retired by an AUDN update)
+AND superseded_at IS NULL              (not retired by an explicit supersede)
 AND flagged_for_review = 0             (not a live feedback downvote)
 AND content_hash != 'invalidated'      (not explicitly invalidated)
 AND content has no "[feedback ..." marker  (durable downvote record)
@@ -371,7 +371,7 @@ Content types:
 The AUDN system deduplicates automatically:
 - `add` -- new entry stored
 - `none` -- exact duplicate, existing entry returned
-- `update` -- same topic, supersedes old entry
+- `update` -- same-topic predecessor linked (refines; both entries stay live unless `supersedes` is passed explicitly)
 - `flagged` -- contradiction detected, both entries flagged for human review
 
 ### When to promote

@@ -184,9 +184,10 @@ For each entry in the phase's in-flight capture set from Step 2:
 1. **Dedupe first.** If two in-flight entries (or an in-flight entry and something
    already in the KB) describe the same concern, supersede the weaker one: capture a
    merged/corrected entry with the same title/symbols/source_files as the one you are
-   superseding (AUDN handles the supersede), or `kb_promote` the stronger one and let
-   the weaker one be superseded the same way. Do not leave near-duplicates for the
-   bible to carry forward.
+   superseding and pass `supersedes=<id of the weaker entry>` explicitly (supersede is
+   opt-in -- without it the capture is only linked as a refinement and both entries
+   stay live), or `kb_promote` the stronger one and let the weaker one be superseded
+   the same way. Do not leave near-duplicates for the bible to carry forward.
 2. **Assess against the reviewer's verdict:**
    - Verdict is APPROVED and the entry describes behavior the approved code actually
      has -> `kb_promote(id, reason="in-flight capture confirmed by reviewer verdict -- {{sprint_name}} phase {{phase}}")`.
@@ -314,8 +315,8 @@ For each flagged pair found in Step 4 within this sprint's domain (this excludes
 you already resolved in Step 3's dedupe/curation pass):
 - Read both entries.
 - Determine which is correct using the diff and reviewer feedback.
-- Keep the correct one: `kb_promote` on the correct entry, capture a superseding entry for the wrong one.
-- Both wrong: capture a new definitive entry (AUDN supersedes the closest match).
+- Keep the correct one: `kb_promote` on the correct entry, capture a corrected entry for the wrong one with `supersedes=<id of the wrong entry>` to retire it (supersede is opt-in; AUDN only honors it when it independently matches that same entry).
+- Both wrong: capture a new definitive entry with `supersedes=<id of the closest match>` to retire it.
 - Cannot determine: leave flagged -- do not guess.
 
 ### Step 10: Report to PM (inline, do not commit)
