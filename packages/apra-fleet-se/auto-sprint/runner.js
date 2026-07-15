@@ -98,6 +98,14 @@ const FIXED_ROLE_TIER = {
     deployer: 'standard',
     'integ-test-runner': 'standard',
     harvester: 'standard',
+    // Streak Assignment (runner.js's own ad-hoc "group these ready bead ids"
+    // call, no vendored persona -- see the streakAssignment schema comment
+    // in contracts.mjs) is a small, fully-specified classification task with
+    // no exploration or judgment call beyond what's already in the prompt.
+    // It has no business running on the same premium tier as real sprint
+    // planning; it previously inherited FIXED_ROLE_TIER.planner only because
+    // it borrows the planner MEMBER for routing convenience.
+    streakAssignment: 'cheap',
 };
 
 export const meta = { name: 'auto-sprint-runner' };
@@ -1845,7 +1853,7 @@ export async function main(context) {
                         member_name: getMemberForRole('planner'),
                         label: 'Streak Assignment',
                         schema: streakAssignment,
-                        model: FIXED_ROLE_TIER.planner,
+                        model: FIXED_ROLE_TIER.streakAssignment,
                     }
                 );
                 log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
