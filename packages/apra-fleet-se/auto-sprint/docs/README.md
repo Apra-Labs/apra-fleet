@@ -13,7 +13,7 @@ Workflow invocation.
 
 ```bash
 node packages/apra-fleet-se/bin/cli.mjs \
-  --issue apra-fleet-7pm \
+  --issue apra-fleet-xbu \
   --members fleet-reorg \
   --branch feat/fleet-reorg \
   --base main \
@@ -54,6 +54,42 @@ access, and no real Node.js APIs** -- calling
 "auto-sprint" names are unrelated: one is a real Node CLI, the other is a
 Claude-Code-internal sub-agent-fanout script format. Only the CLI form
 above is the real sprint.
+
+## How to make one bead represent a whole set (epics / manifest beads)
+
+If you want a single bead to stand in for a group of other beads (an epic,
+a "next sprint scope" manifest, etc.), the group members MUST be linked as
+**parent-child**, not as **blocked-by**:
+
+- Add each item as a child of the umbrella bead:
+  `bd create ... --parent <umbrella-id>` (new beads), or
+  `bd update <id> --parent <umbrella-id>` (existing beads).
+- The umbrella bead itself must have **zero** blocking dependencies of its
+  own -- do not also add `blocks` edges from the umbrella bead to its own
+  children. It should only ever be the *target* of parent-child edges
+  (children point at it), never the source of a `blocks` edge pointing at
+  them.
+- "All done" tracking (closing the umbrella bead once every child is
+  closed) is a manual/observational step based on child status
+  (`dependent_count`), not something enforced by a `blocks` edge.
+
+Why this matters: `bd`'s ready-work engine treats a `blocks` edge as a real
+blocker. If the umbrella bead both (a) is `blocked-by` its children (so it
+can't close until they do) AND (b) is their `parent` (so they belong to it),
+that is a 2-node cycle on every pair -- and `bd` marks every bead caught in
+a cycle as **not ready**, deadlocking the umbrella bead and all of its
+children simultaneously. This is exactly what "blocked-by" gets you wrong
+and "parent-child" gets right: a successful epic (e.g. `apra-fleet-7pm`)
+has `dependency_count: 0` (it depends on / is blocked by nothing) and a
+nonzero `dependent_count` (its children point at it). A broken manifest
+bead that used `blocks` instead had `dependency_count: 5` and, once
+children were also parented under it, deadlocked completely.
+
+This also matters for launching a sprint: `auto-sprint`'s `--issue <id>`
+flag resolves the sprint's scope via `bd list --parent <id>` internally --
+it only ever understands the `parent-child` hierarchy. A `blocked-by`-only
+manifest bead is invisible to auto-sprint's scope filter no matter what you
+pass to `--issue`; only true children are picked up.
 
 ## Preconditions worth checking first
 
