@@ -409,7 +409,6 @@ describe('D6 semantic 3: supersede guard (pure makeAudnDecision)', () => {
     const result = makeAudnDecision(input, [candidate], newContent);
     expect(result?.decision).toBe('flagged');
     expect(result?.newEntryOverrides?.contradiction_of).toBe(candidate.id);
-    expect(result?.shouldSupersede).toBeUndefined();
   });
 
   it('a directive PROPOSAL (UNVERIFIED user-directive) can NOT supersede an ACTIVE directive', () => {

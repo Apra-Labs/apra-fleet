@@ -112,7 +112,6 @@ export interface AudnResult {
   decision: AudnDecision;
   matchedId: string;
   shouldFlagExisting?: boolean;
-  shouldSupersede?: boolean;
   newEntryOverrides?: Partial<KBEntryInput>;
 }
 
@@ -212,7 +211,6 @@ export function makeAudnDecision(
     return {
       decision: 'update',
       matchedId: candidate.id,
-      shouldSupersede: true,
     };
   }
 

@@ -187,7 +187,6 @@ describe('makeAudnDecision', () => {
     const result = makeAudnDecision(input, [candidate], newContent);
     expect(result?.decision).toBe('update');
     expect(result?.matchedId).toBe(candidate.id);
-    expect(result?.shouldSupersede).toBe(true);
   });
 
   it('contradicting content with same symbols/files -> flagged', () => {
@@ -327,7 +326,6 @@ describe('makeAudnDecision contradiction path (D2, loosened)', () => {
 
     const result = makeAudnDecision(input, [candidate], newContent);
     expect(result?.decision).toBe('update');
-    expect(result?.shouldSupersede).toBe(true);
   });
 });
 
