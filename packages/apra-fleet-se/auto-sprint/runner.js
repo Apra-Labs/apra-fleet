@@ -1451,6 +1451,39 @@ export async function main(context) {
             if (notDoneBeads.length === 0) {
                 throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
             }
+
+            // apra-fleet-xbu.C4: the specific, self-inflicted deadlock shape
+            // this incident traced back to -- a `parent-child` edge one way
+            // plus a `blocks` edge the other way between the SAME two beads
+            // (see vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md). `bd
+            // dep cycles` does not detect this shape (it does not walk
+            // parent-child edges), so it silently reads as "everything
+            // blocked" with no actionable diagnosis. Check for it here,
+            // scoped to this sprint's own not-done beads, before falling
+            // through to the generic deadlock message below.
+            const byId = new Map(notDoneBeads.map((b) => [b.id, b]));
+            const cyclePairs = [];
+            for (const bead of notDoneBeads) {
+                for (const dep of bead.dependencies || []) {
+                    if (dep.type !== 'blocks') continue;
+                    const other = byId.get(dep.depends_on_id);
+                    const isParentChildPair = bead.parent === dep.depends_on_id
+                        || (other && other.parent === bead.id);
+                    if (isParentChildPair) {
+                        cyclePairs.push({ blockedIssue: bead.id, blockedBy: dep.depends_on_id });
+                    }
+                }
+            }
+            if (cyclePairs.length > 0) {
+                const fixCommands = cyclePairs.map((p) => `  bd dep remove ${p.blockedIssue} ${p.blockedBy}`);
+                throw new Error(
+                    `Pre-sprint validation failed: scope '${sprintFilter}' is deadlocked by ${cyclePairs.length} ` +
+                    `parent-child + blocks cycle(s) (a bead has a 'blocks' dependency on its own --parent ` +
+                    `ancestor/descendant, which fully blocks both beads even though 'bd dep cycles' will not ` +
+                    `flag it). Fix by removing the offending 'blocks' edge(s):\n${fixCommands.join('\n')}`
+                );
+            }
+
             const diagnostics = notDoneBeads.map((b) => {
                 const blockers = unmetBlockers(b);
                 return blockers.length > 0
