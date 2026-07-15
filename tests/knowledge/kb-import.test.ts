@@ -229,6 +229,35 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     expect(report.linked).toBe(1);     // the collision
   });
 
+  it('TEST 5b (C-1): re-importing the SAME bible entry on the refinement (update) path repeatedly adds no new rows', async () => {
+    // Seed a local note the bible entry will refine. Supersede is opt-in
+    // (bible entries never pass supersedes), so the AUDN 'update' path leaves
+    // the local note LIVE and links the new entry via 'refines'.
+    await provider.capture(localInput({
+      title: 'refIdemToken', content: 'refIdem original body',
+      symbols: ['refIdemSym'], source_files: ['src/refidem.ts'],
+    }));
+
+    const p = writeBible([
+      bibleEntry({
+        id: 'bib-refidem', title: 'refIdemToken', summary: 'refIdem refined body',
+        symbols: ['refIdemSym'], source_files: ['src/refidem.ts'],
+      }),
+    ]);
+
+    const first = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    expect(first.linked).toBe(1);
+    const countAfterFirst = rowCount(); // seeded note + refined entry = 2
+
+    const second = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    expect(second.imported).toBe(0);
+    expect(rowCount()).toBe(countAfterFirst); // no new row on re-import
+
+    const third = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+    expect(third.imported).toBe(0);
+    expect(rowCount()).toBe(countAfterFirst); // still no new row
+  });
+
   it('TEST 6: post-import sweep stales entries whose basis no longer matches the merged worktree', async () => {
     // Recompute-at-capture semantics: a freshly imported entry hashes the CURRENT
     // worktree at capture, so it matches and stays fresh. The post-import sweep's

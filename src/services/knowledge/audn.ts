@@ -137,6 +137,28 @@ export function makeAudnDecision(
   candidates: KBEntry[],
   newContent: string
 ): AudnResult | null {
+  // C-1 PRE-PASS: exact content equality is the strongest dedup signal and
+  // dominates candidate ORDER. Without this, an ordinary re-capture can match
+  // an earlier, non-identical candidate (e.g. the live predecessor of a prior
+  // 'update') and return 'update' again before ever reaching a byte-identical
+  // twin later in the pool -- growing the KB without bound on repeat imports.
+  // If the byte-identical entry already exists, the capture is a no-op
+  // regardless of what else is in the candidate pool. Scan ALL candidates
+  // first, applying the same eligibility gates as the loop's own dedup check,
+  // and return 'none' on the first exact match. This only changes behavior
+  // when a byte-identical twin exists, where 'none' is unambiguously correct;
+  // the loop below (including its own redundant exact-match check) is left
+  // untouched so the contradiction/update ordering is unaffected.
+  for (const candidate of candidates) {
+    if (!symbolsOverlap(input.symbols ?? [], candidate.symbols)) continue;
+    if (candidate.type === 'user-directive' && candidate.confidence === 'CONFIRMED') continue;
+    if (candidate.type !== input.type) continue;
+    if (!filesOverlap(input.source_files ?? [], candidate.source_files)) continue;
+    if (newContent === candidate.content) {
+      return { decision: 'none', matchedId: candidate.id };
+    }
+  }
+
   for (const candidate of candidates) {
     const symMatch = symbolsOverlap(input.symbols ?? [], candidate.symbols);
     if (!symMatch) continue;
