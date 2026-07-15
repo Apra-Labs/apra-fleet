@@ -83,7 +83,17 @@ export interface CaptureOpts {
 }
 
 export interface QueryOptions {
+  // Free text from a caller (kb_query). Tokenized + OR-joined inside query().
+  // NEVER pass a pre-built FTS expression here -- query() would re-tokenize it
+  // and turn '"a" OR "b"' into '"a" OR "OR" OR "b"'. Use fts_terms instead.
   query?: string;
+  // INTERNAL ONLY. Callers that already hold discrete terms (prime) pass them
+  // here so sanitization happens exactly once and AND-within-term semantics
+  // survive for qualified names (Parser.parsePower -> '"Parser" "parsePower"').
+  // Structurally unreachable from kbQuerySchema and the HTTP /api/kb/query
+  // route -- both build QueryOptions field-by-field from zod-parsed input.
+  // Do NOT add this to either surface.
+  fts_terms?: string[];
   type?: ContentType;
   symbols?: string[];
   source_files?: string[];

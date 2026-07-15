@@ -145,3 +145,53 @@ describe('F2 e2e: cross-type contradiction discovered and flagged at capture()',
     expect(old?.flagged_for_review).toBe(true);
   });
 });
+
+describe('prime() does not double-sanitize hint_symbols', () => {
+  it('bulk prime with MULTIPLE hints does not inject a literal OR term', async () => {
+    const provider = new SqliteProvider(':memory:');
+    await provider.init();
+
+    // Entry mentions alphaSym only. The word "or" appears in its prose.
+    await provider.capture({
+      type: 'knowledge',
+      title: 'alphaSym behavior',
+      summary: 'Describes alphaSym.',
+      content: 'This alphaSym path caches results or recomputes them.',
+      source_files: ['src/alpha.ts'],
+      symbols: ['alphaSym'],
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      author: 'test-agent',
+      source: 'doer',
+      confidence: 'INFERRED',
+    } as KBEntryInput);
+
+    // Entry that mentions NEITHER hint, but does contain the word "or".
+    await provider.capture({
+      type: 'knowledge',
+      title: 'unrelated subject',
+      summary: 'Mentions neither hint.',
+      content: 'This unrelated path either succeeds or fails.',
+      source_files: ['src/unrelated.ts'],
+      symbols: ['unrelatedSym'],
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      author: 'test-agent',
+      source: 'doer',
+      confidence: 'INFERRED',
+    } as KBEntryInput);
+
+    const r = await provider.prime({ hint_symbols: ['alphaSym', 'betaSym'] });
+    const titles = r.top_entries.map(e => e.title);
+
+    expect(titles).toContain('alphaSym behavior');
+    // If "OR" leaks in as a search term, the unrelated entry matches on "or".
+    expect(titles).not.toContain('unrelated subject');
+
+    provider.close();
+  });
+});

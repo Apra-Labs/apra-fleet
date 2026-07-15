@@ -794,7 +794,14 @@ export class SqliteProvider implements MemoryProvider {
 
     let rows: Record<string, unknown>[];
 
-    if (opts.query) {
+    if (opts.query || opts.fts_terms?.length) {
+      // ONE sanitization point. Free text is tokenized then OR-joined; internal
+      // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
+      // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
+      const ftsQuery = opts.fts_terms?.length
+        ? orJoinFtsTerms(opts.fts_terms)
+        : orJoinFtsTerms(opts.query!.match(/[A-Za-z0-9_]+/g) ?? []);
+      if (!ftsQuery) return { results: [], total: 0, l1_only: !!opts.l1_only };
       const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
       rows = db.prepare(`
         SELECT e.* FROM entries e
@@ -803,7 +810,7 @@ export class SqliteProvider implements MemoryProvider {
         ${ftsWhere}
         ORDER BY rank
         LIMIT ?
-      `).all(opts.query, ...params, limit) as Record<string, unknown>[];
+      `).all(ftsQuery, ...params, limit) as Record<string, unknown>[];
     } else {
       rows = db.prepare(`
         SELECT e.* FROM entries e
@@ -955,7 +962,7 @@ export class SqliteProvider implements MemoryProvider {
         // AND-joined), but terms are OR-joined so an entry matching ANY hint
         // symbol/module surfaces instead of requiring ALL of them.
         const l1 = await this.query({
-          query: orJoinFtsTerms(searchTerms),
+          fts_terms: searchTerms,
           l1_only: true,
           limit: 10,
           include_stale: false,

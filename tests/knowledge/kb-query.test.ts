@@ -183,6 +183,44 @@ describe('kb_query', () => {
       expect(entry.content.length).toBeGreaterThan(0);
     }
   });
+
+  it('does not throw on FTS-hostile strings agents actually send', async () => {
+    await provider.capture(makeInput());
+
+    // Each of these threw before sanitization. The doer skill instructs agents
+    // to "call kb_query before reading an unfamiliar file" -- a file path is
+    // the single most likely query.
+    const hostile = [
+      'src/services/registry.ts',
+      'getOrCreate() vs initRegistry()',
+      'kb-eval-project registry init',
+      'registry.ts init',
+      '.js ESM registry',
+    ];
+    for (const q of hostile) {
+      const r = await provider.query({ query: q });
+      expect(Array.isArray(r.results)).toBe(true);
+    }
+  });
+
+  it('finds an entry by a path-shaped query', async () => {
+    const e = await provider.capture(makeInput());
+    const r = await provider.query({ query: 'src/services/registry.ts' });
+    expect(r.results.map(x => x.id)).toContain(e.id);
+  });
+
+  it('OR-joins multi-term queries instead of requiring every term', async () => {
+    const e = await provider.capture(makeInput());
+    // 'registry' matches; 'nonexistentterm' does not. Implicit AND returned 0.
+    const r = await provider.query({ query: 'registry nonexistentterm' });
+    expect(r.results.map(x => x.id)).toContain(e.id);
+  });
+
+  it('returns empty (not a throw) for a query with no usable tokens', async () => {
+    await provider.capture(makeInput());
+    const r = await provider.query({ query: '--- ... ///' });
+    expect(r.results).toHaveLength(0);
+  });
 });
 
 describe('kb_query tool', () => {
