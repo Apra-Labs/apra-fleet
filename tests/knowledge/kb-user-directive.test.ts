@@ -420,6 +420,37 @@ describe('D6 semantic 3: supersede guard (pure makeAudnDecision)', () => {
     // Guard trips (candidate is an ACTIVE directive) -> falls through to add.
     expect(result).toBeNull();
   });
+
+  // The explicit-supersede block resolves `supersedes` against the candidate
+  // pool BEFORE the exact-content pre-pass and before the loop, so it carries
+  // its own copy of the active-directive guard. These two cases pin that guard
+  // on the explicit path -- the loop's guard above cannot cover it.
+  it('an explicit supersedes naming an ACTIVE directive is refused', () => {
+    const activeCandidate = makeCandidate({ confidence: 'CONFIRMED' });
+    const newContent = 'The user decided we deploy only on Mondays per the revised schedule.';
+    const input = makeInput({
+      type: 'user-directive',
+      confidence: 'UNVERIFIED',
+      content: newContent,
+      supersedes: activeCandidate.id,
+    });
+    const result = makeAudnDecision(input, [activeCandidate], newContent);
+    expect(result).toBeNull();
+  });
+
+  it('an explicit supersedes naming a PENDING proposal is honored (proposal-vs-proposal dedup)', () => {
+    const pendingCandidate = makeCandidate({ confidence: 'UNVERIFIED' });
+    const newContent = 'The user decided we deploy only on Mondays per the revised schedule.';
+    const input = makeInput({
+      type: 'user-directive',
+      confidence: 'UNVERIFIED',
+      content: newContent,
+      supersedes: pendingCandidate.id,
+    });
+    const result = makeAudnDecision(input, [pendingCandidate], newContent);
+    expect(result?.decision).toBe('update');
+    expect(result?.matchedId).toBe(pendingCandidate.id);
+  });
 });
 
 describe('D6 semantic 3: supersede flow (end-to-end via capture + CLI)', () => {
